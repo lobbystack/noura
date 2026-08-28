@@ -1,0 +1,55 @@
+{
+	"manifest": [
+		{
+			"name": "snake_case manifest",
+			"valid": true,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": [],
+				"ignore": []
+			}
+		},
+		{
+			"name": "camelCase keys",
+			"valid": false,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"formatVersion": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabledPlugins": [],
+				"ignore": []
+			}
+		},
+		{
+			"name": "path-like workspace ID",
+			"valid": false,
+			"value": {
+				"id": "../../outside",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": [],
+				"ignore": []
+			}
+		}
+	],
+	"object_id": [
+		{
+			"name": "lowercase stable ID",
+			"valid": true,
+			"value": "note_01j00000000000000000000000"
+		},
+		{
+			"name": "uppercase stable ID",
+			"valid": false,
+			"value": "note_01J00000000000000000000000"
+		}
+	]
+}

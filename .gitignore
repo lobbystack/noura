@@ -1,0 +1,12 @@
+node_modules/
+.svelte-kit/
+build/
+dist/
+target/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+index.sqlite*
+src-tauri/gen/

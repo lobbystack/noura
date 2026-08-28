@@ -1,0 +1,22 @@
+{
+	"name": "@noura/editor",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@tiptap/core": "latest",
+		"@tiptap/starter-kit": "latest",
+		"@tiptap/extension-collaboration": "latest",
+		"yjs": "latest",
+		"y-prosemirror": "latest"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

@@ -1,0 +1,21 @@
+{
+	"name": "@noura/plugin-tasks",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@noura/plugin-sdk": "workspace:*",
+		"@noura/shared": "workspace:*",
+		"fractional-indexing": "latest",
+		"zod": "latest"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

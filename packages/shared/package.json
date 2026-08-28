@@ -1,0 +1,14 @@
+{
+	"name": "@noura/shared",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src --ignore-path ../../.prettierignore"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

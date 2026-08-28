@@ -1,0 +1,19 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"productName": "Noura",
+	"version": "0.1.0",
+	"identifier": "org.noura.desktop",
+	"build": {
+		"beforeDevCommand": "bun --cwd apps/app dev",
+		"devUrl": "http://localhost:5173",
+		"beforeBuildCommand": "bun --cwd apps/app build",
+		"frontendDist": "../apps/app/build"
+	},
+	"app": {
+		"windows": [{ "title": "Noura", "width": 1024, "height": 720 }],
+		"security": {
+			"csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+		}
+	},
+	"bundle": { "active": true, "targets": "all" }
+}

@@ -1,0 +1,20 @@
+{
+	"name": "@noura/plugin-sdk",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@noura/ai": "workspace:*",
+		"@noura/shared": "workspace:*",
+		"zod": "latest"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

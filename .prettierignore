@@ -1,0 +1,12 @@
+node_modules/
+target/
+.git/
+.agents/
+.svelte-kit/
+build/
+dist/
+src-tauri/icons/
+Cargo.lock
+bun.lock
+crates/local-core/bindings/
+packages/shared/src/generated/

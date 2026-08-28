@@ -1,0 +1,28 @@
+{
+	"name": "@noura/workspace",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@noura/ai": "workspace:*",
+		"@noura/plugin-calendar": "workspace:*",
+		"@noura/plugin-folders": "workspace:*",
+		"@noura/plugin-notes": "workspace:*",
+		"@noura/plugin-projects": "workspace:*",
+		"@noura/plugin-sdk": "workspace:*",
+		"@noura/plugin-tasks": "workspace:*",
+		"@noura/shared": "workspace:*",
+		"@tauri-apps/api": "^2",
+		"fractional-indexing": "latest",
+		"svelte": "^5"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

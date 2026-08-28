@@ -1,0 +1,17 @@
+{
+	"name": "@noura/workspace-schema",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src"
+	},
+	"dependencies": {
+		"zod": "latest"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

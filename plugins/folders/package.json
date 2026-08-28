@@ -1,0 +1,17 @@
+{
+	"name": "@noura/plugin-folders",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src"
+	},
+	"dependencies": {
+		"@noura/plugin-sdk": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}
