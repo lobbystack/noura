@@ -83,7 +83,10 @@ export function requireCapability(
 
 export class PluginHost {
 	#active = new Map<string, PluginDefinition>();
-	constructor(private readonly services: PluginContext) {}
+	private readonly services: PluginContext;
+	constructor(services: PluginContext) {
+		this.services = services;
+	}
 	async activate(definition: PluginDefinition) {
 		if (this.#active.has(definition.manifest.id))
 			throw new Error(`Plugin already active: ${definition.manifest.id}`);

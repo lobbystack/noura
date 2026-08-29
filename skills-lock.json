@@ -7,6 +7,12 @@
 			"commit": "c288eb80629dd2309eed81f23d693f66a452d043",
 			"skillPath": "skills/rust-best-practices/SKILL.md",
 			"computedHash": "0ac6606adb27e64a31bdc8c1ed34e446ae0c14bff1c7648867c46e106adc048f"
+		},
+		"shadcn-svelte": {
+			"source": "huntabyte/shadcn-svelte",
+			"sourceType": "github",
+			"skillPath": "skills/shadcn-svelte/SKILL.md",
+			"computedHash": "d4f3f983a71466a86649985a8a7fbce47da29f44de3a9d02540bbcf3167134e0"
 		}
 	}
 }

@@ -35,6 +35,7 @@ export { createTauriTransport } from './tauri-transport';
 export { activateFirstPartyPlugins, firstPartyPlugins } from './first-party';
 
 export interface WorkspaceService {
+	pickFolder(input: { title: string }): Promise<string | null>;
 	create(input: { path: string; name: string }): Promise<WorkspaceState>;
 	open(input: { path: string }): Promise<WorkspaceState>;
 	close(): Promise<void>;
@@ -190,6 +191,8 @@ export function createNouraClient(
 	const projectObjects = objects<Project>(transport, 'project');
 	return {
 		workspaces: {
+			pickFolder: (input) =>
+				transport.request('workspace_pick_folder', { title: input.title }),
 			create: (input) => transport.request('workspace_create', { input }),
 			open: (input) => transport.request('workspace_open', { input }),
 			close: () => transport.request('workspace_close'),

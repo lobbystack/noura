@@ -1,9 +1,9 @@
-<svelte:head><title>Noura core harness</title></svelte:head>
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
 
-<main>
-	<h1>Noura core harness</h1>
-	<p>
-		The typed local workspace services are ready for the separate UI
-		implementation.
-	</p>
-</main>
+	onMount(() => {
+		if (browser) void goto('/home');
+	});
+</script>

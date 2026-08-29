@@ -12,6 +12,7 @@ use local_core::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
 struct AppState {
@@ -275,6 +276,31 @@ fn workspace_list_recent(app: AppHandle) -> Vec<RecentWorkspace> {
     load_recent(&app)
 }
 #[tauri::command]
+async fn workspace_pick_folder(app: AppHandle, title: String) -> Result<Option<String>, CoreError> {
+    let selected = app.dialog().file().set_title(title).blocking_pick_folder();
+    selected
+        .map(|path| {
+            path.into_path()
+                .map_err(|_| {
+                    CoreError::validation(
+                        "unsupported_path",
+                        "The selected folder cannot be represented as a local path",
+                        "workspace_pick_folder",
+                    )
+                })?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| {
+                    CoreError::validation(
+                        "unsupported_path",
+                        "The selected folder uses a path that Noura cannot represent safely",
+                        "workspace_pick_folder",
+                    )
+                })
+        })
+        .transpose()
+}
+#[tauri::command]
 fn objects_query(
     state: State<AppState>,
     query: ObjectQuery,
@@ -435,6 +461,7 @@ async fn ai_invoke(app: AppHandle, input: AiInvokeInput) -> Result<AiResponse, C
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -463,6 +490,7 @@ pub fn run() {
             workspace_state,
             workspace_rebuild_index,
             workspace_list_recent,
+            workspace_pick_folder,
             objects_query,
             objects_get,
             objects_create,

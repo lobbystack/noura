@@ -29,6 +29,21 @@ describe('typed client', () => {
 			'projects',
 		]);
 	});
+	test('delegates native workspace folder selection through the typed boundary', async () => {
+		const mock = transport({ workspace_pick_folder: '/Users/example/Notes' });
+		const client = createNouraClient(mock);
+
+		await expect(
+			client.workspaces.pickFolder({ title: 'Open a Noura workspace' }),
+		).resolves.toBe('/Users/example/Notes');
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> })
+				.calls[0],
+		).toEqual({
+			command: 'workspace_pick_folder',
+			payload: { title: 'Open a Noura workspace' },
+		});
+	});
 	test('task completion delegates to generic revision-checked object update', async () => {
 		const mock = transport({
 			objects_update: {

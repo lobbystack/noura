@@ -24,9 +24,11 @@ A durable mutation succeeds only after the canonical file operation completes du
 
 - Use Bun as the JavaScript and TypeScript runtime, package manager, and workspace tool.
 - Build the frontend with SvelteKit, Svelte 5, and TypeScript.
+- When working with Svelte, use the [@svelte](plugin://svelte@svelte) plugin.
 - Use Tauri 2 for the desktop and mobile shell.
 - Keep native and local-core work in Rust.
 - Use shadcn-svelte with preset `b2ZtALO3cm` for UI primitives. Do not replace the preset or introduce a competing component system without explicit approval.
+- When working with shadcn-svelte, use the [$shadcn-svelte](/home/user/Coding/noura/.agents/skills/shadcn-svelte/SKILL.md) skill.
 - Do not add npm, pnpm, Yarn, Nx, or Turborepo to the repository without a demonstrated need and explicit approval. Do not introduce another JavaScript lockfile.
 - Format Rust with `cargo fmt` and lint it with Clippy.
 
