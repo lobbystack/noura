@@ -35,7 +35,7 @@ pub enum ProjectStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, JsonSchema, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum ParseStatus {
@@ -85,6 +85,27 @@ pub struct UnmanagedFile {
     pub revision: String,
     pub parse_status: ParseStatus,
     pub parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceEntryKind {
+    File,
+    Folder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntry {
+    pub relative_path: String,
+    pub name: String,
+    pub kind: WorkspaceEntryKind,
+    pub parse_status: Option<ParseStatus>,
+    pub object_id: Option<String>,
+    pub object_type: Option<String>,
+    pub revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]

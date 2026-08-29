@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use local_core::{
     AiFoundation, AiInvokeInput, AiProviderConfig, AiResponse, CalendarEntry, CoreError, CoreEvent,
-    CreateObjectInput, MutationResult, ObjectPatch, SearchInput, SearchResult, WorkspaceEngine,
-    WorkspaceObject, WorkspaceState,
+    CreateObjectInput, MutationResult, ObjectPatch, SearchInput, SearchResult, UnmanagedFile,
+    WorkspaceEngine, WorkspaceEntry, WorkspaceObject, WorkspaceState,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -423,6 +423,22 @@ fn folders_list(state: State<AppState>) -> Result<Vec<local_core::FolderEntry>, 
     with_engine(&state, "folders_list", WorkspaceEngine::list_folders)
 }
 #[tauri::command]
+fn files_list(state: State<AppState>) -> Result<Vec<WorkspaceEntry>, CoreError> {
+    with_engine(
+        &state,
+        "files_list",
+        WorkspaceEngine::list_workspace_entries,
+    )
+}
+#[tauri::command]
+fn files_list_non_managed_markdown(
+    state: State<AppState>,
+) -> Result<Vec<UnmanagedFile>, CoreError> {
+    with_engine(&state, "files_list_non_managed_markdown", |engine| {
+        engine.list_non_managed_markdown()
+    })
+}
+#[tauri::command]
 fn folders_move(state: State<AppState>, input: FolderMoveInput) -> Result<(), CoreError> {
     with_engine(&state, "folders_move", |engine| {
         engine.move_folder(&input.from, &input.to)
@@ -502,6 +518,8 @@ pub fn run() {
             calendar_query,
             folders_create,
             folders_list,
+            files_list,
+            files_list_non_managed_markdown,
             folders_move,
             folders_remove,
             ai_provider_list,

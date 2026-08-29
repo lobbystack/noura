@@ -14,9 +14,10 @@ use ts_rs::TS;
 
 use crate::{
     CoreError, CoreEvent, CoreWarning, ErrorCategory, IndexStatus, IndexStore, MutationResult,
-    ParsedMarkdown, Result, SearchInput, SearchResult, WatchCoordinator, WorkspaceManifest,
-    WorkspaceObject, WorkspacePhase, WorkspaceState, index::CalendarEntry, markdown, new_object_id,
-    now_rfc3339, path::resolve_for_write, valid_object_id, valid_object_type,
+    ParseStatus, ParsedMarkdown, Result, SearchInput, SearchResult, UnmanagedFile,
+    WatchCoordinator, WorkspaceEntry, WorkspaceEntryKind, WorkspaceManifest, WorkspaceObject,
+    WorkspacePhase, WorkspaceState, index::CalendarEntry, markdown, new_object_id, now_rfc3339,
+    path::resolve_for_write, valid_object_id, valid_object_type,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -317,6 +318,11 @@ impl WorkspaceEngine {
 
     pub fn poll_external_changes(&self, wait: std::time::Duration) -> Result<Vec<String>> {
         let paths = self.watcher.drain_coalesced(wait)?;
+        self.process_external_changes(paths)
+    }
+
+    fn process_external_changes(&self, paths: Vec<PathBuf>) -> Result<Vec<String>> {
+        let ignores = compile_workspace_ignores(&self.root, &self.manifest.ignore)?;
         let mut external = Vec::new();
         let mut journal = self
             .self_writes
@@ -326,12 +332,19 @@ impl WorkspaceEngine {
             let Ok(relative) = path.strip_prefix(&self.root) else {
                 continue;
             };
-            if relative.starts_with(".noura") {
+            if !is_visible_workspace_path(relative, path.is_dir(), &ignores) {
                 continue;
             }
-            let Some(relative) = relative.to_str().map(|value| value.replace('\\', "/")) else {
-                continue;
-            };
+            let relative = relative
+                .to_str()
+                .map(|value| value.replace('\\', "/"))
+                .ok_or_else(|| {
+                    CoreError::validation(
+                        "non_utf8_path",
+                        "A changed workspace path is not UTF-8",
+                        "watcher_poll",
+                    )
+                })?;
             if let Some(expected) = journal.get(&relative).cloned() {
                 let matches = if expected == "<deleted>" {
                     !path.exists()
@@ -677,19 +690,7 @@ impl WorkspaceEngine {
 
     pub fn list_folders(&self) -> Result<Vec<crate::FolderEntry>> {
         let mut folders = Vec::new();
-        let root = self.root.clone();
-        let walker = WalkBuilder::new(&self.root)
-            .hidden(false)
-            .filter_entry(move |entry| {
-                !entry.path().strip_prefix(&root).is_ok_and(|relative| {
-                    relative.starts_with(".noura")
-                        || relative.starts_with(".git")
-                        || relative.starts_with("node_modules")
-                        || relative.starts_with("target")
-                })
-            })
-            .build();
-        for entry in walker {
+        for entry in workspace_walker(&self.root, &self.manifest.ignore)? {
             let entry = entry.map_err(|error| {
                 CoreError::new(
                     "scan_error",
@@ -701,25 +702,109 @@ impl WorkspaceEngine {
             if entry.path() == self.root || !entry.file_type().is_some_and(|kind| kind.is_dir()) {
                 continue;
             }
-            let relative = entry
-                .path()
-                .strip_prefix(&self.root)
-                .ok()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| {
-                    CoreError::validation(
-                        "non_utf8_path",
-                        "A folder path is not UTF-8",
-                        "folders_list",
-                    )
-                })?;
             folders.push(crate::FolderEntry {
-                relative_path: relative.replace('\\', "/"),
-                name: entry.file_name().to_string_lossy().into_owned(),
+                relative_path: normalized_relative_path(&self.root, entry.path(), "folders_list")?,
+                name: entry
+                    .file_name()
+                    .to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        CoreError::validation(
+                            "non_utf8_path",
+                            "A workspace folder name is not UTF-8",
+                            "folders_list",
+                        )
+                    })?,
             });
         }
         folders.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         Ok(folders)
+    }
+
+    pub fn list_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
+        self.reconcile()?;
+        let metadata = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("files_list"))?
+            .workspace_entry_metadata()?;
+        let mut entries = Vec::new();
+        for entry in workspace_walker(&self.root, &self.manifest.ignore)? {
+            let entry = entry.map_err(|error| {
+                CoreError::new(
+                    "scan_error",
+                    ErrorCategory::Filesystem,
+                    error.to_string(),
+                    "files_list",
+                )
+            })?;
+            if entry.path() == self.root {
+                continue;
+            }
+            let file_type = entry.file_type();
+            if !file_type.is_some_and(|kind| kind.is_dir() || kind.is_file()) {
+                continue;
+            }
+            let relative_path = normalized_relative_path(&self.root, entry.path(), "files_list")?;
+            let name = entry
+                .file_name()
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    CoreError::validation(
+                        "non_utf8_path",
+                        "A workspace entry name is not UTF-8",
+                        "files_list",
+                    )
+                })?;
+            if file_type.is_some_and(|kind| kind.is_dir()) {
+                entries.push(WorkspaceEntry {
+                    relative_path,
+                    name,
+                    kind: WorkspaceEntryKind::Folder,
+                    parse_status: None,
+                    object_id: None,
+                    object_type: None,
+                    revision: None,
+                });
+                continue;
+            }
+            let markdown = entry.path().extension().and_then(|value| value.to_str()) == Some("md");
+            let indexed = if markdown {
+                metadata.get(&relative_path)
+            } else {
+                None
+            };
+            if markdown && indexed.is_none() {
+                return Err(CoreError::new(
+                    "index_entry_missing",
+                    ErrorCategory::Index,
+                    "A Markdown file is missing from the local index",
+                    "files_list",
+                ));
+            }
+            entries.push(WorkspaceEntry {
+                relative_path,
+                name,
+                kind: WorkspaceEntryKind::File,
+                parse_status: indexed
+                    .map(|value| value.parse_status)
+                    .or(Some(ParseStatus::Binary)),
+                object_id: indexed.and_then(|value| value.object_id.clone()),
+                object_type: indexed.and_then(|value| value.object_type.clone()),
+                revision: indexed.map(|value| value.revision.clone()),
+            });
+        }
+        entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(entries)
+    }
+
+    pub fn list_non_managed_markdown(&self) -> Result<Vec<UnmanagedFile>> {
+        self.reconcile()?;
+        self.index
+            .lock()
+            .map_err(|_| lock_error("files_list_non_managed"))?
+            .query_non_managed_markdown()
     }
 
     pub fn move_folder(&self, from: &str, to: &str) -> Result<()> {
@@ -883,33 +968,7 @@ fn scan_changes(
     indexed: &HashMap<String, (i64, i64)>,
     forced: &std::collections::HashSet<String>,
 ) -> Result<WorkspaceScan> {
-    let ignores = compile_workspace_ignores(root, ignore_patterns)?;
-    let filter_root = root.to_owned();
-    let filter_ignores = ignores.clone();
-    let walker = WalkBuilder::new(root)
-        .hidden(false)
-        .ignore(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .parents(false)
-        .filter_entry(move |entry| {
-            let relative = entry
-                .path()
-                .strip_prefix(&filter_root)
-                .unwrap_or(entry.path());
-            !relative.starts_with(".noura")
-                && !relative.starts_with(".git")
-                && !relative.starts_with("node_modules")
-                && !relative.starts_with("target")
-                && !filter_ignores
-                    .matched_path_or_any_parents(
-                        relative,
-                        entry.file_type().is_some_and(|kind| kind.is_dir()),
-                    )
-                    .is_ignore()
-        })
-        .build();
+    let walker = workspace_walker(root, ignore_patterns)?;
     let mut changed = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for entry in walker {
@@ -926,19 +985,7 @@ fn scan_changes(
         {
             continue;
         }
-        let relative = entry
-            .path()
-            .strip_prefix(root)
-            .ok()
-            .and_then(|path| path.to_str())
-            .ok_or_else(|| {
-                CoreError::validation(
-                    "non_utf8_path",
-                    "The scanner found a non-UTF-8 path",
-                    "workspace_scan",
-                )
-            })?;
-        let relative = relative.replace('\\', "/");
+        let relative = normalized_relative_path(root, entry.path(), "workspace_scan")?;
         seen.insert(relative.clone());
         let size = entry
             .metadata()
@@ -985,6 +1032,65 @@ fn compile_workspace_ignores(
             "workspace_open",
         )
     })
+}
+
+fn workspace_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk> {
+    let ignores = compile_workspace_ignores(root, ignore_patterns)?;
+    let filter_root = root.to_owned();
+    Ok(WalkBuilder::new(root)
+        .hidden(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
+        .filter_entry(move |entry| {
+            let relative = entry
+                .path()
+                .strip_prefix(&filter_root)
+                .unwrap_or(entry.path());
+            is_visible_workspace_path(
+                relative,
+                entry.file_type().is_some_and(|kind| kind.is_dir()),
+                &ignores,
+            )
+        })
+        .build())
+}
+
+fn is_visible_workspace_path(
+    relative: &Path,
+    is_directory: bool,
+    ignores: &ignore::gitignore::Gitignore,
+) -> bool {
+    if relative.as_os_str().is_empty() {
+        return true;
+    }
+    if relative == Path::new("workspace.yaml")
+        || relative.starts_with(".noura")
+        || relative.starts_with(".git")
+        || relative.starts_with("node_modules")
+        || relative.starts_with("target")
+    {
+        return false;
+    }
+    !ignores
+        .matched_path_or_any_parents(relative, is_directory)
+        .is_ignore()
+}
+
+fn normalized_relative_path(root: &Path, path: &Path, operation: &str) -> Result<String> {
+    path.strip_prefix(root)
+        .ok()
+        .and_then(Path::to_str)
+        .map(|value| value.replace('\\', "/"))
+        .ok_or_else(|| {
+            CoreError::validation(
+                "non_utf8_path",
+                "The workspace contains a path that is not UTF-8",
+                operation,
+            )
+        })
 }
 fn atomic_write(root: &Path, relative: &Path, bytes: &[u8], operation: &str) -> Result<()> {
     let destination = root.join(relative);
@@ -1432,5 +1538,52 @@ mod tests {
                 .unwrap();
         assert_eq!(error.code, "symlink_escape");
         assert!(!outside.path().join("trash").exists());
+    }
+
+    #[test]
+    fn external_change_event_is_emitted_after_markdown_reconciliation() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let path = engine.root().join("watched.md");
+        let mut events = engine.subscribe();
+        std::fs::write(&path, "# Watched\n\nBody\n").unwrap();
+
+        let changes = engine.process_external_changes(vec![path]).unwrap();
+        let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        let event = received
+            .iter()
+            .find(|event| event.event_type == "file:changed");
+
+        assert_eq!(
+            (
+                changes,
+                event.map(|value| value.payload["paths"].clone()),
+                engine
+                    .list_non_managed_markdown()
+                    .unwrap()
+                    .iter()
+                    .any(|file| file.relative_path == "watched.md"),
+            ),
+            (
+                vec!["watched.md".to_owned()],
+                Some(serde_json::json!(["watched.md"])),
+                true,
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_path_normalization_rejects_non_utf8_paths() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let root = PathBuf::from("/workspace");
+        let invalid = OsString::from_vec(vec![b'i', b'n', b'v', 0xff]);
+        let error = normalized_relative_path(&root, &root.join(invalid), "files_list").unwrap_err();
+
+        assert_eq!(error.code, "non_utf8_path");
     }
 }

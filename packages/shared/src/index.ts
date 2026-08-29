@@ -13,6 +13,9 @@ export type { AiMessage } from './generated/AiMessage';
 export type { AiProviderConfig } from './generated/AiProviderConfig';
 export type { AiResponse } from './generated/AiResponse';
 export type { FolderEntry } from './generated/FolderEntry';
+export type { UnmanagedFile } from './generated/UnmanagedFile';
+export type { WorkspaceEntry } from './generated/WorkspaceEntry';
+export type { WorkspaceEntryKind } from './generated/WorkspaceEntryKind';
 
 export interface WorkspaceObject {
 	id: string;

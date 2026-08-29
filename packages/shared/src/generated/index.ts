@@ -22,5 +22,7 @@ export type { TaskStatus } from './TaskStatus';
 export type { UnmanagedFile } from './UnmanagedFile';
 export type { WorkspaceManifest } from './WorkspaceManifest';
 export type { WorkspaceObject } from './WorkspaceObject';
+export type { WorkspaceEntry } from './WorkspaceEntry';
+export type { WorkspaceEntryKind } from './WorkspaceEntryKind';
 export type { WorkspacePhase } from './WorkspacePhase';
 export type { WorkspaceState } from './WorkspaceState';

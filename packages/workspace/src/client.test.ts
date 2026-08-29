@@ -4,6 +4,8 @@ import {
 	firstPartyPlugins,
 	type CoreTransport,
 	type Task,
+	type UnmanagedFile,
+	type WorkspaceEntry,
 } from './index';
 
 function transport(responses: Record<string, unknown>): CoreTransport {
@@ -43,6 +45,47 @@ describe('typed client', () => {
 			command: 'workspace_pick_folder',
 			payload: { title: 'Open a Noura workspace' },
 		});
+	});
+	test('delegates workspace file discovery through the typed boundary', async () => {
+		const entries: WorkspaceEntry[] = [
+			{
+				relativePath: 'notes',
+				name: 'notes',
+				kind: 'folder',
+				parseStatus: null,
+				objectId: null,
+				objectType: null,
+				revision: null,
+			},
+		];
+		const mock = transport({ files_list: entries });
+		const client = createNouraClient(mock);
+
+		await expect(client.files.list()).resolves.toEqual(entries);
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> })
+				.calls[0],
+		).toEqual({ command: 'files_list' });
+	});
+	test('delegates non-managed Markdown discovery through the typed boundary', async () => {
+		const files: UnmanagedFile[] = [
+			{
+				relativePath: 'draft.md',
+				title: 'Draft',
+				body: '',
+				revision: 'abc',
+				parseStatus: 'unmanaged',
+				parseError: null,
+			},
+		];
+		const mock = transport({ files_list_non_managed_markdown: files });
+		const client = createNouraClient(mock);
+
+		await expect(client.files.listNonManagedMarkdown()).resolves.toEqual(files);
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> })
+				.calls[0],
+		).toEqual({ command: 'files_list_non_managed_markdown' });
 	});
 	test('task completion delegates to generic revision-checked object update', async () => {
 		const mock = transport({

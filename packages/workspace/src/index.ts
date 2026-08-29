@@ -21,6 +21,8 @@ import type {
 	SearchResult,
 	Task,
 	TaskStatus,
+	UnmanagedFile,
+	WorkspaceEntry,
 	WorkspaceObject,
 	WorkspaceState,
 } from '@noura/shared';
@@ -110,6 +112,11 @@ export interface KanbanService {
 	}): Promise<MutationResult<Task>>;
 }
 
+export interface FileService {
+	list(): Promise<WorkspaceEntry[]>;
+	listNonManagedMarkdown(): Promise<UnmanagedFile[]>;
+}
+
 export interface NouraClient {
 	workspaces: WorkspaceService;
 	notes: NoteService;
@@ -118,6 +125,7 @@ export interface NouraClient {
 	search: SearchService;
 	calendar: CalendarService;
 	kanban: KanbanService;
+	files: FileService;
 	folders: {
 		listTree(): Promise<FolderEntry[]>;
 		create(input: { relativePath: string }): Promise<void>;
@@ -205,6 +213,11 @@ export function createNouraClient(
 			create: (input) => transport.request('folders_create', { input }),
 			move: (input) => transport.request('folders_move', { input }),
 			removeEmpty: (input) => transport.request('folders_remove', { input }),
+		},
+		files: {
+			list: () => transport.request('files_list'),
+			listNonManagedMarkdown: () =>
+				transport.request('files_list_non_managed_markdown'),
 		},
 		notes: {
 			...noteObjects,

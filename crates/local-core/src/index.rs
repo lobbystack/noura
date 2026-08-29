@@ -4,7 +4,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{CoreError, ParsedMarkdown, Result, WorkspaceObject, markdown::revision};
+use crate::{
+    CoreError, ParseStatus, ParsedMarkdown, Result, UnmanagedFile, WorkspaceObject,
+    markdown::revision,
+};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
@@ -42,6 +45,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS object_fts USING fts5(stable_id UNINDEXED, re
 #[derive(Debug)]
 pub struct IndexStore {
     connection: Connection,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IndexedFileMetadata {
+    pub parse_status: ParseStatus,
+    pub object_id: Option<String>,
+    pub object_type: Option<String>,
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
@@ -215,6 +226,59 @@ impl IndexStore {
             .map_err(|error| CoreError::index(error, "object_query"))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| CoreError::index(error, "object_query"))
+    }
+
+    pub(crate) fn workspace_entry_metadata(&self) -> Result<HashMap<String, IndexedFileMetadata>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT f.relative_path,f.parse_status,o.stable_id,o.object_type,f.hash \
+                 FROM files f LEFT JOIN objects o ON o.file_id=f.id",
+            )
+            .map_err(|error| CoreError::index(error, "files_list"))?;
+        let rows = statement
+            .query_map([], |row| {
+                let status: String = row.get(1)?;
+                Ok((
+                    row.get(0)?,
+                    IndexedFileMetadata {
+                        parse_status: stored_parse_status(&status)?,
+                        object_id: row.get(2)?,
+                        object_type: row.get(3)?,
+                        revision: row.get(4)?,
+                    },
+                ))
+            })
+            .map_err(|error| CoreError::index(error, "files_list"))?;
+        rows.collect::<std::result::Result<HashMap<_, _>, _>>()
+            .map_err(|error| CoreError::index(error, "files_list"))
+    }
+
+    pub fn query_non_managed_markdown(&self) -> Result<Vec<UnmanagedFile>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT f.relative_path,fts.title,fts.body,f.hash,f.parse_status,f.parse_error \
+                 FROM files f JOIN object_fts fts ON fts.rowid=f.id \
+                 WHERE f.parse_status IN ('unmanaged','malformed') \
+                 ORDER BY f.relative_path",
+            )
+            .map_err(|error| CoreError::index(error, "files_list_non_managed"))?;
+        let rows = statement
+            .query_map([], |row| {
+                let status: String = row.get(4)?;
+                Ok(UnmanagedFile {
+                    relative_path: row.get(0)?,
+                    title: row.get(1)?,
+                    body: row.get(2)?,
+                    revision: row.get(3)?,
+                    parse_status: stored_parse_status(&status)?,
+                    parse_error: row.get(5)?,
+                })
+            })
+            .map_err(|error| CoreError::index(error, "files_list_non_managed"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "files_list_non_managed"))
     }
 
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
@@ -438,6 +502,16 @@ fn filename(path: &str) -> &str {
         .and_then(|value| value.to_str())
         .unwrap_or(path)
 }
+
+fn stored_parse_status(value: &str) -> rusqlite::Result<ParseStatus> {
+    match value {
+        "managed" => Ok(ParseStatus::Managed),
+        "unmanaged" => Ok(ParseStatus::Unmanaged),
+        "malformed" => Ok(ParseStatus::Malformed),
+        "binary" => Ok(ParseStatus::Binary),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
 fn value_text(value: &serde_json::Value) -> String {
     value
         .as_str()
@@ -542,6 +616,114 @@ mod tests {
                 .calendar("2026-09-01", "2026-10-01")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn non_managed_query_returns_unmanaged_and_malformed_markdown() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let unmanaged = b"# Draft\n\nVisible body\n";
+        index
+            .upsert_markdown(
+                "draft.md",
+                unmanaged,
+                1,
+                &parse_markdown("draft.md", unmanaged),
+            )
+            .unwrap();
+        let malformed = b"---\nid: note_missing_end\n# Broken\n";
+        index
+            .upsert_markdown(
+                "broken.md",
+                malformed,
+                2,
+                &parse_markdown("broken.md", malformed),
+            )
+            .unwrap();
+
+        let files = index.query_non_managed_markdown().unwrap();
+
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| (file.relative_path.as_str(), file.parse_status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("broken.md", ParseStatus::Malformed),
+                ("draft.md", ParseStatus::Unmanaged),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_managed_query_excludes_managed_markdown() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let now = now_rfc3339();
+        let object = WorkspaceObject {
+            id: new_object_id("note"),
+            object_type: "note".into(),
+            title: "Managed".into(),
+            body: String::new(),
+            relative_path: "managed.md".into(),
+            revision: String::new(),
+            created: Some(now.clone()),
+            updated: Some(now),
+            properties: BTreeMap::new(),
+        };
+        let bytes = serialize_object(&object).unwrap();
+        index
+            .upsert_markdown(
+                "managed.md",
+                &bytes,
+                1,
+                &parse_markdown("managed.md", &bytes),
+            )
+            .unwrap();
+
+        let files = index.query_non_managed_markdown().unwrap();
+
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn non_managed_query_preserves_content_revision_and_parse_error() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let unmanaged = b"# Draft\n\nVisible body\n";
+        index
+            .upsert_markdown(
+                "draft.md",
+                unmanaged,
+                1,
+                &parse_markdown("draft.md", unmanaged),
+            )
+            .unwrap();
+        let malformed = b"---\nid: note_missing_end\n# Broken\n";
+        index
+            .upsert_markdown(
+                "broken.md",
+                malformed,
+                2,
+                &parse_markdown("broken.md", malformed),
+            )
+            .unwrap();
+
+        let files = index.query_non_managed_markdown().unwrap();
+
+        assert_eq!(
+            (
+                files[0].body.as_str(),
+                files[0].parse_error.as_deref(),
+                files[1].title.as_str(),
+                files[1].body.as_str(),
+                files[1].revision.as_str(),
+            ),
+            (
+                "---\nid: note_missing_end\n# Broken\n",
+                Some("Frontmatter has no closing delimiter"),
+                "Draft",
+                "Visible body",
+                revision(unmanaged).as_str(),
+            )
         );
     }
 

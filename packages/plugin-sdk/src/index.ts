@@ -2,12 +2,13 @@ import { z } from 'zod';
 import type { AiContextProvider, AiToolDefinition } from '@noura/ai';
 import type {
 	CoreEvent,
-	FolderEntry,
 	MutationResult,
 	ObjectPatch,
 	ObjectQuery,
 	SearchInput,
 	SearchResult,
+	UnmanagedFile,
+	WorkspaceEntry,
 	WorkspaceObject,
 } from '@noura/shared';
 
@@ -31,7 +32,8 @@ export type PluginCapability = z.infer<typeof capabilitySchema>;
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
 export interface PluginContext {
 	files: {
-		list(): Promise<FolderEntry[]>;
+		list(): Promise<WorkspaceEntry[]>;
+		listNonManagedMarkdown(): Promise<UnmanagedFile[]>;
 		createFolder(relativePath: string): Promise<void>;
 		moveFolder(from: string, to: string): Promise<void>;
 		removeEmptyFolder(relativePath: string): Promise<void>;
@@ -105,6 +107,10 @@ export class PluginHost {
 				list: () => {
 					guard('workspace.files');
 					return this.services.files.list();
+				},
+				listNonManagedMarkdown: () => {
+					guard('workspace.files');
+					return this.services.files.listNonManagedMarkdown();
 				},
 				createFolder: (relativePath) => {
 					guard('workspace.files');
