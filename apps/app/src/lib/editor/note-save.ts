@@ -1,10 +1,16 @@
 import { isCoreError } from '@noura/workspace';
 import { getNouraClient } from '$lib/state.svelte';
 import type { Note } from '@noura/workspace';
+import { reconcileNoteTitle } from './title-reconciliation';
 
 export type NoteSaveResult =
 	| { status: 'saved'; value: Note }
-	| { status: 'conflict'; draft: string; current: Note };
+	| { status: 'conflict'; draft: NoteDraft; current: Note };
+
+export interface NoteDraft {
+	title: string;
+	body: string;
+}
 
 /**
  * Persist one note body with canonical-file reconciliation. Resolves with an
@@ -13,33 +19,45 @@ export type NoteSaveResult =
  */
 export async function saveNoteWithReconciliation(
 	note: Note,
-	base: { revision: string; body: string },
-	localBody: string,
+	base: { revision: string; title: string; body: string },
+	localDraft: NoteDraft,
 ): Promise<NoteSaveResult> {
-	let currentBody = localBody;
+	let currentDraft = localDraft;
 	let currentBaseBody = base.body;
+	let currentBaseTitle = base.title;
 	let currentBaseRevision = base.revision;
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		const reconciliation = await getNouraClient().notes.reconcileDraft({
 			id: note.id,
 			baseRevision: currentBaseRevision,
 			baseBody: currentBaseBody,
-			localBody: currentBody,
+			localBody: currentDraft.body,
 		});
 		if (reconciliation.status === 'conflict') {
 			return {
 				status: 'conflict',
-				draft: currentBody,
+				draft: currentDraft,
 				current: reconciliation.current as Note,
 			};
 		}
-		currentBody = reconciliation.body;
-		currentBaseBody = reconciliation.current.body;
-		currentBaseRevision = reconciliation.current.revision;
+		const canonical = reconciliation.current as Note;
+		const title = reconcileNoteTitle(
+			currentBaseTitle,
+			currentDraft.title,
+			canonical.title,
+		);
+		if (title.status === 'conflict') {
+			return { status: 'conflict', draft: currentDraft, current: canonical };
+		}
+		currentDraft = { title: title.title, body: reconciliation.body };
+		currentBaseBody = canonical.body;
+		currentBaseTitle = canonical.title;
+		currentBaseRevision = canonical.revision;
 		try {
 			const result = await getNouraClient().notes.update(note.id, {
 				expectedRevision: currentBaseRevision,
-				body: currentBody,
+				title: currentDraft.title,
+				body: currentDraft.body,
 			});
 			return { status: 'saved', value: result.value as Note };
 		} catch (error) {

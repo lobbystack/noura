@@ -9,13 +9,18 @@
 	import type { CoreEvent, Note } from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
 	import { AutosaveCoordinator } from '$lib/editor/autosave';
-	import { saveNoteWithReconciliation } from '$lib/editor/note-save';
+	import {
+		saveNoteWithReconciliation,
+		type NoteDraft,
+	} from '$lib/editor/note-save';
+	import { reconcileNoteTitle } from '$lib/editor/title-reconciliation';
 	import { registerPendingDraft } from '$lib/editor/pending-drafts.svelte';
 	import MarkdownPreview from '$lib/components/markdown-preview.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { Toggle } from '$lib/components/ui/toggle/index.js';
+	import * as Select from '$lib/components/ui/select/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
@@ -40,15 +45,25 @@
 		onsaved?: (updated: Note) => void;
 	} = $props();
 
-	type ConflictState = { draft: string; file: Note };
+	type ConflictState = { draft: NoteDraft; file: Note };
 	type Resolution = 'use-external' | 'replace-external';
+	type BlockStyle = 'paragraph' | 'heading-1' | 'heading-2' | 'heading-3';
+
+	const blockStyles: { value: BlockStyle; label: string }[] = [
+		{ value: 'paragraph', label: 'Text' },
+		{ value: 'heading-1', label: 'Heading 1' },
+		{ value: 'heading-2', label: 'Heading 2' },
+		{ value: 'heading-3', label: 'Heading 3' },
+	];
 
 	const initialNote = () => note;
 	let currentNote = $state.raw<Note | null>(initialNote());
+	let draftTitle = $state(initialNote()?.title ?? '');
 	let baseBody = $state(initialNote()?.body ?? '');
+	let baseTitle = $state(initialNote()?.title ?? '');
 	let baseRevision = $state(initialNote()?.revision ?? '');
 	let editor = $state.raw<Editor | null>(null);
-	let coordinator = $state.raw<AutosaveCoordinator | null>(null);
+	let coordinator = $state.raw<AutosaveCoordinator<NoteDraft> | null>(null);
 	let autosaveError = $state<unknown | null>(null);
 	let conflict = $state.raw<ConflictState | null>(null);
 	let reviewOpen = $state(false);
@@ -57,6 +72,16 @@
 	let resolving = $state(false);
 	let transientMessage = $state<string | null>(null);
 	let toolbarRevision = $state(0);
+	let blockStyle = $derived.by<BlockStyle>(() => {
+		toolbarRevision;
+		if (editor?.isActive('heading', { level: 1 })) return 'heading-1';
+		if (editor?.isActive('heading', { level: 2 })) return 'heading-2';
+		if (editor?.isActive('heading', { level: 3 })) return 'heading-3';
+		return 'paragraph';
+	});
+	let blockStyleLabel = $derived(
+		blockStyles.find((option) => option.value === blockStyle)?.label ?? 'Text',
+	);
 	let clearMessageTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function errorMessage(error: unknown) {
@@ -76,8 +101,11 @@
 		}, 2400);
 	}
 
-	function markdown() {
-		return editor?.getMarkdown() ?? coordinator?.getDraft() ?? baseBody;
+	function currentDraft(): NoteDraft {
+		return {
+			title: draftTitle,
+			body: editor?.getMarkdown() ?? coordinator?.getDraft()?.body ?? baseBody,
+		};
 	}
 
 	function replaceEditorBody(body: string, preserveSelection = true) {
@@ -99,27 +127,28 @@
 	function setCanonical(value: Note) {
 		currentNote = value;
 		baseBody = value.body;
+		baseTitle = value.title;
 		baseRevision = value.revision;
 		onsaved?.(value);
 	}
 
-	async function persistDraft(body: string, generation: number) {
+	async function persistDraft(draft: NoteDraft, generation: number) {
 		const target = currentNote;
 		if (!target) return;
 		const result = await saveNoteWithReconciliation(
 			target,
-			{ revision: baseRevision, body: baseBody },
-			body,
+			{ revision: baseRevision, title: baseTitle, body: baseBody },
+			draft,
 		);
 		if (result.status === 'conflict') {
-			conflict = { draft: body, file: result.current };
-			reviewOpen = true;
+			openConflict(result.draft, result.current);
 			return 'paused' as const;
 		}
 
-		const merged = result.value.body !== body;
+		const merged = result.value.body !== draft.body;
 		setCanonical(result.value);
 		if (coordinator?.currentGeneration === generation) {
+			draftTitle = result.value.title;
 			replaceEditorBody(result.value.body);
 		}
 		if (merged) showMessage('External changes merged');
@@ -132,6 +161,15 @@
 	function isActive(name: string) {
 		toolbarRevision;
 		return editor?.isActive(name) ?? false;
+	}
+
+	function applyBlockStyle(value: string) {
+		if (!editor) return;
+		const chain = editor.chain().focus();
+		if (value === 'paragraph') chain.setParagraph().run();
+		else if (value === 'heading-1') chain.setHeading({ level: 1 }).run();
+		else if (value === 'heading-2') chain.setHeading({ level: 2 }).run();
+		else if (value === 'heading-3') chain.setHeading({ level: 3 }).run();
 	}
 
 	function editorContainer(node: HTMLDivElement) {
@@ -160,7 +198,10 @@
 				},
 			},
 			onUpdate: ({ editor: updatedEditor }) => {
-				localCoordinator.noteEdit(updatedEditor.getMarkdown());
+				localCoordinator.noteEdit({
+					title: draftTitle,
+					body: updatedEditor.getMarkdown(),
+				});
 				toolbarRevision += 1;
 			},
 			onSelectionUpdate: () => {
@@ -189,7 +230,7 @@
 		};
 	}
 
-	function openConflict(draft: string, file: Note) {
+	function openConflict(draft: NoteDraft, file: Note) {
 		conflict = { draft, file };
 		reviewOpen = true;
 		coordinator?.pause();
@@ -206,36 +247,44 @@
 		const payload = event.payload as { id?: string };
 		if (payload.id !== target.id) return;
 		if (event.type === 'object:deleted') {
-			openConflict(markdown(), target);
+			openConflict(currentDraft(), target);
 			return;
 		}
 
 		const latest = await getNouraClient().notes.get(target.id);
 		if (!coordinator?.pendingEdits && !coordinator?.isWriting) {
 			setCanonical(latest);
+			draftTitle = latest.title;
 			replaceEditorBody(latest.body);
 			return;
 		}
-		const draft = markdown();
+		const draft = currentDraft();
 		const reconciliation = await getNouraClient().notes.reconcileDraft({
 			id: target.id,
 			baseRevision,
 			baseBody,
-			localBody: draft,
+			localBody: draft.body,
 		});
 		if (reconciliation.status === 'conflict') {
 			openConflict(draft, reconciliation.current as Note);
 			return;
 		}
 		const canonical = reconciliation.current as Note;
+		const title = reconcileNoteTitle(baseTitle, draft.title, canonical.title);
+		if (title.status === 'conflict') {
+			openConflict(draft, canonical);
+			return;
+		}
 		currentNote = canonical;
 		baseBody = canonical.body;
+		baseTitle = canonical.title;
 		baseRevision = canonical.revision;
+		draftTitle = title.title;
 		if (reconciliation.status === 'merged') {
 			replaceEditorBody(reconciliation.body);
-			coordinator?.noteEdit(reconciliation.body);
 			showMessage('External changes merged');
 		}
+		coordinator?.noteEdit(currentDraft());
 	}
 
 	function requestResolution(resolution: Resolution) {
@@ -247,17 +296,31 @@
 		if (!conflict || !pendingResolution || !currentNote) return;
 		resolving = true;
 		try {
-			const localBody = markdown();
+			const localDraft = currentDraft();
 			const result = await getNouraClient().notes.resolveConflict({
 				id: currentNote.id,
 				currentRevision: conflict.file.revision,
-				localBody,
+				localBody: localDraft.body,
 				resolution: pendingResolution,
 			});
-			const resolved = result.value as Note;
+			let resolved = result.value as Note;
+			if (
+				pendingResolution === 'replace-external' &&
+				resolved.title !== localDraft.title
+			) {
+				const renamed = await getNouraClient().notes.update(resolved.id, {
+					expectedRevision: resolved.revision,
+					title: localDraft.title,
+					body: resolved.body,
+				});
+				resolved = renamed.value as Note;
+			}
 			setCanonical(resolved);
 			if (pendingResolution === 'use-external') {
+				draftTitle = resolved.title;
 				replaceEditorBody(resolved.body, false);
+			} else {
+				draftTitle = localDraft.title;
 			}
 			coordinator?.acceptDurable();
 			coordinator?.resume();
@@ -314,11 +377,37 @@
 {:else}
 	<div class="flex min-h-0 flex-1 flex-col">
 		<header class="flex min-h-16 items-center px-6">
-			<h1 class="truncate text-lg font-semibold">{currentNote.title}</h1>
+			<input
+				bind:value={draftTitle}
+				oninput={() => coordinator?.noteEdit(currentDraft())}
+				onblur={() => void flushNow()}
+				aria-label="Note title"
+				placeholder="Untitled"
+				class="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none placeholder:text-muted-foreground"
+			/>
 		</header>
 		<Separator />
 
 		<div class="flex min-h-11 items-center gap-1 overflow-x-auto px-5 py-1.5">
+			<Select.Root
+				type="single"
+				value={blockStyle}
+				onValueChange={applyBlockStyle}
+			>
+				<Select.Trigger size="sm" class="w-28" aria-label="Paragraph style">
+					{blockStyleLabel}
+				</Select.Trigger>
+				<Select.Content>
+					<Select.Group>
+						{#each blockStyles as option (option.value)}
+							<Select.Item value={option.value} label={option.label}>
+								{option.label}
+							</Select.Item>
+						{/each}
+					</Select.Group>
+				</Select.Content>
+			</Select.Root>
+			<Separator orientation="vertical" class="mx-1 h-5" />
 			<Toggle
 				size="sm"
 				pressed={isActive('bold')}
@@ -474,7 +563,7 @@
 			<Sheet.Header>
 				<Sheet.Title>Review note conflict</Sheet.Title>
 				<Sheet.Description>
-					Noura preserved both versions. Choose which body should remain in the
+					Noura preserved both versions. Choose which note should remain in the
 					Markdown file.
 				</Sheet.Description>
 			</Sheet.Header>
@@ -484,11 +573,17 @@
 				>
 					<section class="min-w-0">
 						<h2 class="mb-3 text-sm font-medium">Your draft</h2>
-						<MarkdownPreview markdown={markdown()} />
+						<p class="mb-4 truncate text-base font-semibold">
+							{conflict.draft.title || 'Untitled'}
+						</p>
+						<MarkdownPreview markdown={conflict.draft.body} />
 					</section>
 					<Separator orientation="vertical" />
 					<section class="min-w-0">
 						<h2 class="mb-3 text-sm font-medium">File version</h2>
+						<p class="mb-4 truncate text-base font-semibold">
+							{conflict.file.title || 'Untitled'}
+						</p>
 						<MarkdownPreview markdown={conflict.file.body} />
 					</section>
 				</div>

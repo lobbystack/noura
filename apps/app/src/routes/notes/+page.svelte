@@ -49,6 +49,7 @@
 		// Refresh the list so the sidebar reflects renames
 		notes = notes.map((n) => (n.id === updated.id ? updated : n));
 		selected = updated;
+		tabsStore.renameObject(updated.id, updated.title);
 	}
 
 	onMount(() => {

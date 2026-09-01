@@ -67,6 +67,12 @@ class TabsStore {
 		this.activeId = id;
 	}
 
+	renameObject(objectId: string, title: string) {
+		this.tabs = this.tabs.map((tab) =>
+			tab.objectId === objectId ? { ...tab, title } : tab,
+		);
+	}
+
 	get active() {
 		return this.tabs.find((t) => t.id === this.activeId);
 	}

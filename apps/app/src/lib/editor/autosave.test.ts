@@ -43,7 +43,7 @@ describe('AutosaveCoordinator', () => {
 	test('saves 300 ms after typing stops', async () => {
 		const clock = new FakeClock();
 		const writes: string[] = [];
-		const coordinator = new AutosaveCoordinator({
+		const coordinator = new AutosaveCoordinator<string>({
 			now: () => clock.now,
 			schedule: clock.schedule,
 			write: async (body) => void writes.push(body),
@@ -59,7 +59,7 @@ describe('AutosaveCoordinator', () => {
 	test('saves at least every two seconds during continuous typing', async () => {
 		const clock = new FakeClock();
 		const writes: string[] = [];
-		const coordinator = new AutosaveCoordinator({
+		const coordinator = new AutosaveCoordinator<string>({
 			now: () => clock.now,
 			schedule: clock.schedule,
 			write: async (body) => void writes.push(body),
@@ -77,7 +77,7 @@ describe('AutosaveCoordinator', () => {
 	test('coalesces edits and cancels both timers after a durable write', async () => {
 		const clock = new FakeClock();
 		const writes: string[] = [];
-		const coordinator = new AutosaveCoordinator({
+		const coordinator = new AutosaveCoordinator<string>({
 			now: () => clock.now,
 			schedule: clock.schedule,
 			write: async (body) => void writes.push(body),
@@ -94,7 +94,7 @@ describe('AutosaveCoordinator', () => {
 	test('serializes writes and immediately drains edits made in flight', async () => {
 		const first = deferred<void>();
 		const writes: string[] = [];
-		const coordinator = new AutosaveCoordinator({
+		const coordinator = new AutosaveCoordinator<string>({
 			write: async (body) => {
 				writes.push(body);
 				if (writes.length === 1) await first.promise;
@@ -113,7 +113,7 @@ describe('AutosaveCoordinator', () => {
 	test('keeps the latest generation when an older response completes', async () => {
 		const first = deferred<void>();
 		const generations: number[] = [];
-		const coordinator = new AutosaveCoordinator({
+		const coordinator = new AutosaveCoordinator<string>({
 			write: async (_body, generation) => {
 				generations.push(generation);
 				if (generations.length === 1) await first.promise;
@@ -132,7 +132,7 @@ describe('AutosaveCoordinator', () => {
 
 	test('preserves a failed draft and retries only when asked', async () => {
 		let attempts = 0;
-		const coordinator = new AutosaveCoordinator({
+		const coordinator = new AutosaveCoordinator<string>({
 			write: async () => {
 				attempts += 1;
 				if (attempts === 1) throw new Error('disk full');
@@ -151,7 +151,7 @@ describe('AutosaveCoordinator', () => {
 	test('pauses conflict writes and resumes the preserved draft', async () => {
 		const writes: string[] = [];
 		let conflict = true;
-		const coordinator = new AutosaveCoordinator({
+		const coordinator = new AutosaveCoordinator<string>({
 			write: async (body) => {
 				writes.push(body);
 				if (conflict) return 'paused';

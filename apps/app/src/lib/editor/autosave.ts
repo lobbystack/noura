@@ -6,28 +6,28 @@ export interface AutosaveState {
 
 export type AutosaveWriteResult = void | 'paused';
 
-export interface AutosaveOptions {
+export interface AutosaveOptions<Draft> {
 	debounceDelayMs?: number;
 	maxDelayMs?: number;
 	now?: () => number;
 	schedule?: (callback: () => void, delayMs: number) => () => void;
 	/** Resolves only after the submitted generation is durable. */
-	write: (body: string, generation: number) => Promise<AutosaveWriteResult>;
+	write: (draft: Draft, generation: number) => Promise<AutosaveWriteResult>;
 	onStateChange?: (state: AutosaveState) => void;
 }
 
 const DEFAULT_DEBOUNCE_MS = 300;
 const DEFAULT_MAX_DELAY_MS = 2000;
 
-export class AutosaveCoordinator {
+export class AutosaveCoordinator<Draft> {
 	readonly debounceDelayMs: number;
 	readonly maxDelayMs: number;
-	private readonly writeDraft: AutosaveOptions['write'];
-	private readonly schedule: NonNullable<AutosaveOptions['schedule']>;
-	private readonly now: NonNullable<AutosaveOptions['now']>;
-	private readonly onStateChange?: AutosaveOptions['onStateChange'];
+	private readonly writeDraft: AutosaveOptions<Draft>['write'];
+	private readonly schedule: NonNullable<AutosaveOptions<Draft>['schedule']>;
+	private readonly now: NonNullable<AutosaveOptions<Draft>['now']>;
+	private readonly onStateChange?: AutosaveOptions<Draft>['onStateChange'];
 
-	private pendingBody: string | null = null;
+	private pendingDraft: Draft | null = null;
 	private pendingCount = 0;
 	private generation = 0;
 	private dirtySince: number | null = null;
@@ -38,7 +38,7 @@ export class AutosaveCoordinator {
 	private destroyed = false;
 	private failure: unknown | null = null;
 
-	constructor(options: AutosaveOptions) {
+	constructor(options: AutosaveOptions<Draft>) {
 		this.writeDraft = options.write;
 		this.schedule = options.schedule ?? defaultSchedule;
 		this.now = options.now ?? (() => Date.now());
@@ -79,9 +79,9 @@ export class AutosaveCoordinator {
 		};
 	}
 
-	noteEdit(body: string) {
+	noteEdit(draft: Draft) {
 		if (this.destroyed) return;
-		this.pendingBody = body;
+		this.pendingDraft = draft;
 		this.pendingCount += 1;
 		this.generation += 1;
 		this.dirtySince ??= this.now();
@@ -89,8 +89,8 @@ export class AutosaveCoordinator {
 		this.notify();
 	}
 
-	getDraft(): string | null {
-		return this.pendingBody;
+	getDraft(): Draft | null {
+		return this.pendingDraft;
 	}
 
 	pause() {
@@ -102,12 +102,12 @@ export class AutosaveCoordinator {
 	resume() {
 		if (this.destroyed || !this.paused) return;
 		this.paused = false;
-		if (this.pendingBody !== null && this.failure === null) this.armTimers();
+		if (this.pendingDraft !== null && this.failure === null) this.armTimers();
 	}
 
 	/** Mark the current editor body as durable and discard queued transactions. */
 	acceptDurable() {
-		this.pendingBody = null;
+		this.pendingDraft = null;
 		this.pendingCount = 0;
 		this.dirtySince = null;
 		this.failure = null;
@@ -118,19 +118,19 @@ export class AutosaveCoordinator {
 	/** Flush all known generations. Returns false when paused or a write fails. */
 	async flush(): Promise<boolean> {
 		if (this.destroyed) return false;
-		if (this.paused) return this.pendingBody === null;
+		if (this.paused) return this.pendingDraft === null;
 		this.cancelTimers();
 		this.failure = null;
 		while (!this.destroyed && !this.paused) {
 			if (this.running) {
 				if (!(await this.running)) return false;
-			} else if (this.pendingBody !== null) {
+			} else if (this.pendingDraft !== null) {
 				if (!(await this.runWrite())) return false;
 			} else {
 				return true;
 			}
 		}
-		return this.pendingBody === null;
+		return this.pendingDraft === null;
 	}
 
 	destroy() {
@@ -169,10 +169,10 @@ export class AutosaveCoordinator {
 
 	private async runWrite(): Promise<boolean> {
 		if (this.running) return this.running;
-		if (this.pendingBody === null) return true;
-		const submittedBody = this.pendingBody;
+		if (this.pendingDraft === null) return true;
+		const submittedDraft = this.pendingDraft;
 		const submittedGeneration = this.generation;
-		this.pendingBody = null;
+		this.pendingDraft = null;
 		this.pendingCount = 0;
 		this.dirtySince = null;
 		this.cancelTimers();
@@ -180,13 +180,13 @@ export class AutosaveCoordinator {
 		const operation = (async () => {
 			try {
 				const result = await this.writeDraft(
-					submittedBody,
+					submittedDraft,
 					submittedGeneration,
 				);
 				if (result === 'paused') {
 					this.paused = true;
-					if (this.pendingBody === null) {
-						this.pendingBody = submittedBody;
+					if (this.pendingDraft === null) {
+						this.pendingDraft = submittedDraft;
 						this.pendingCount = 1;
 						this.dirtySince = this.now();
 					}
@@ -196,8 +196,8 @@ export class AutosaveCoordinator {
 				return true;
 			} catch (error) {
 				this.failure = error;
-				if (this.pendingBody === null) {
-					this.pendingBody = submittedBody;
+				if (this.pendingDraft === null) {
+					this.pendingDraft = submittedDraft;
 					this.pendingCount = 1;
 					this.dirtySince = this.now();
 				}
