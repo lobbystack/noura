@@ -11,6 +11,8 @@ import type {
 	AiResponse,
 	CalendarEntry,
 	CoreEvent,
+	DraftReconcileInput,
+	DraftReconcileResult,
 	FolderEntry,
 	MutationResult,
 	Note,
@@ -25,8 +27,10 @@ import type {
 	WorkspaceEntry,
 	WorkspaceObject,
 	WorkspaceState,
+	ResolveConflictInput,
 } from '@noura/shared';
 export type * from '@noura/shared';
+export { isCoreError } from '@noura/shared';
 
 export interface CoreTransport {
 	request<T>(command: string, payload?: Record<string, unknown>): Promise<T>;
@@ -34,6 +38,12 @@ export interface CoreTransport {
 }
 
 export { createTauriTransport } from './tauri-transport';
+export {
+	installPendingDraftCloseGuard,
+	type HostCloseRequest,
+	type HostLifecycleAdapter,
+} from './host-lifecycle';
+export { createTauriHostLifecycle } from './tauri-host-lifecycle';
 export { activateFirstPartyPlugins, firstPartyPlugins } from './first-party';
 
 export interface WorkspaceService {
@@ -66,12 +76,18 @@ export interface ObjectService<T extends WorkspaceObject> {
 		id: string;
 		expectedRevision: string;
 	}): Promise<MutationResult<T>>;
+	/** Open this object's enclosing folder in the OS file manager. */
+	showInFolder(id: string): Promise<void>;
+	/** Open a terminal at this object's folder. */
+	openTerminal(id: string): Promise<void>;
 }
 export interface NoteService extends ObjectService<Note> {
 	adopt(input: {
 		relativePath: string;
 		expectedRevision: string;
 	}): Promise<MutationResult<Note>>;
+	reconcileDraft(input: DraftReconcileInput): Promise<DraftReconcileResult>;
+	resolveConflict(input: ResolveConflictInput): Promise<MutationResult<Note>>;
 }
 export interface TaskService extends ObjectService<Task> {
 	complete(input: {
@@ -163,6 +179,10 @@ function objects<T extends WorkspaceObject>(
 		update: (id, patch) => transport.request('objects_update', { id, patch }),
 		move: (input) => transport.request('objects_move', { input }),
 		delete: (input) => transport.request('objects_delete', { input }),
+		showInFolder: (id: string) =>
+			transport.request('object_show_in_folder', { id }),
+		openTerminal: (id: string) =>
+			transport.request('object_open_terminal', { id }),
 	};
 }
 
@@ -225,6 +245,10 @@ export function createNouraClient(
 				transport.request('objects_adopt', {
 					input: { ...input, type: 'note' },
 				}),
+			reconcileDraft: (input) =>
+				transport.request('notes_reconcile_draft', { input }),
+			resolveConflict: (input) =>
+				transport.request('notes_resolve_conflict', { input }),
 		},
 		tasks: {
 			...taskObjects,

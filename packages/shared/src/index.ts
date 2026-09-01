@@ -13,6 +13,8 @@ export type { AiMessage } from './generated/AiMessage';
 export type { AiProviderConfig } from './generated/AiProviderConfig';
 export type { AiResponse } from './generated/AiResponse';
 export type { FolderEntry } from './generated/FolderEntry';
+export type { DraftReconcileInput } from './generated/DraftReconcileInput';
+export type { ResolveConflictInput } from './generated/ResolveConflictInput';
 export type { UnmanagedFile } from './generated/UnmanagedFile';
 export type { WorkspaceEntry } from './generated/WorkspaceEntry';
 export type { WorkspaceEntryKind } from './generated/WorkspaceEntryKind';
@@ -88,6 +90,17 @@ export interface CoreError {
 	path?: string | null;
 	details?: Record<string, unknown> | null;
 }
+export function isCoreError(value: unknown): value is CoreError {
+	if (!value || typeof value !== 'object') return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		typeof candidate.code === 'string' &&
+		typeof candidate.category === 'string' &&
+		typeof candidate.message === 'string' &&
+		typeof candidate.retryable === 'boolean' &&
+		typeof candidate.operation === 'string'
+	);
+}
 
 export interface ObjectQuery {
 	type?: ObjectType;
@@ -103,6 +116,10 @@ export interface ObjectPatch {
 	removeProperties?: string[];
 	expectedRevision: string;
 }
+export type DraftReconcileResult =
+	| { status: 'unchanged'; current: Note; body: string }
+	| { status: 'merged'; current: Note; body: string }
+	| { status: 'conflict'; current: Note };
 export interface SearchInput {
 	query: string;
 	type?: ObjectType;

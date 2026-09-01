@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use local_core::{
     AiFoundation, AiInvokeInput, AiProviderConfig, AiResponse, CalendarEntry, CoreError, CoreEvent,
-    CreateObjectInput, MutationResult, ObjectPatch, SearchInput, SearchResult, UnmanagedFile,
-    WorkspaceEngine, WorkspaceEntry, WorkspaceObject, WorkspaceState,
+    CreateObjectInput, DraftReconcileInput, DraftReconcileResult, MutationResult, ObjectPatch,
+    ResolveConflictInput, SearchInput, SearchResult, UnmanagedFile, WorkspaceEngine,
+    WorkspaceEntry, WorkspaceObject, WorkspaceState,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -366,6 +367,24 @@ fn objects_update(
     })
 }
 #[tauri::command]
+fn notes_reconcile_draft(
+    state: State<AppState>,
+    input: DraftReconcileInput,
+) -> Result<DraftReconcileResult, CoreError> {
+    with_engine(&state, "notes_reconcile_draft", |engine| {
+        engine.reconcile_note_draft(input)
+    })
+}
+#[tauri::command]
+fn notes_resolve_conflict(
+    state: State<AppState>,
+    input: ResolveConflictInput,
+) -> Result<MutationResult<WorkspaceObject>, CoreError> {
+    with_engine(&state, "notes_resolve_conflict", |engine| {
+        engine.resolve_note_conflict(input)
+    })
+}
+#[tauri::command]
 fn objects_move(
     state: State<AppState>,
     input: MoveInput,
@@ -474,6 +493,30 @@ fn ai_credential_delete(app: AppHandle, input: CredentialDeleteInput) -> Result<
 async fn ai_invoke(app: AppHandle, input: AiInvokeInput) -> Result<AiResponse, CoreError> {
     ai_foundation(&app)?.invoke(input).await
 }
+mod os_files;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowInFolderInput {
+    id: String,
+}
+
+#[tauri::command]
+fn object_show_in_folder(
+    state: State<AppState>,
+    input: ShowInFolderInput,
+) -> Result<(), CoreError> {
+    with_engine(&state, "object_show_in_folder", |engine| {
+        os_files::reveal_in_file_manager(engine, &input.id)
+    })
+}
+
+#[tauri::command]
+fn object_open_terminal(state: State<AppState>, input: ShowInFolderInput) -> Result<(), CoreError> {
+    with_engine(&state, "object_open_terminal", |engine| {
+        os_files::open_in_terminal(engine, &input.id)
+    })
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -511,9 +554,13 @@ pub fn run() {
             objects_get,
             objects_create,
             objects_update,
+            notes_reconcile_draft,
+            notes_resolve_conflict,
             objects_move,
             objects_delete,
             objects_adopt,
+            object_show_in_folder,
+            object_open_terminal,
             search_query,
             calendar_query,
             folders_create,

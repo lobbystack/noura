@@ -113,6 +113,51 @@ describe('typed client', () => {
 			},
 		});
 	});
+	test('delegates draft reconciliation and explicit resolution through typed note commands', async () => {
+		const mock = transport({
+			notes_reconcile_draft: { status: 'conflict', current: {}, body: null },
+			notes_resolve_conflict: { value: {}, revision: 'next' },
+		});
+		const client = createNouraClient(mock);
+		await client.notes.reconcileDraft({
+			id: 'note_01k',
+			baseRevision: 'base',
+			baseBody: 'before',
+			localBody: 'local',
+		});
+		await client.notes.resolveConflict({
+			id: 'note_01k',
+			currentRevision: 'current',
+			localBody: 'local',
+			resolution: 'replace-external',
+		});
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,
+		).toEqual([
+			{
+				command: 'notes_reconcile_draft',
+				payload: {
+					input: {
+						id: 'note_01k',
+						baseRevision: 'base',
+						baseBody: 'before',
+						localBody: 'local',
+					},
+				},
+			},
+			{
+				command: 'notes_resolve_conflict',
+				payload: {
+					input: {
+						id: 'note_01k',
+						currentRevision: 'current',
+						localBody: 'local',
+						resolution: 'replace-external',
+					},
+				},
+			},
+		]);
+	});
 	test('kanban projection groups and orders indexed tasks without board storage', async () => {
 		const tasks = [
 			{

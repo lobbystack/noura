@@ -1,5 +1,5 @@
 import { browser } from '$app/environment';
-import type { Diagnostic, WorkspaceState } from '@noura/workspace';
+import type { WorkspaceState } from '@noura/workspace';
 import { createNouraClient, createTauriTransport } from '@noura/workspace';
 
 let client: ReturnType<typeof createNouraClient> | null = null;
@@ -141,18 +141,16 @@ class WorkspaceStore {
 export const workspace = new WorkspaceStore();
 
 class DiagnosticsStore {
-	private items = $state<Diagnostic[]>([]);
-
 	async refresh() {
 		if (!browser) return;
-		this.items = workspace.state?.diagnostics ?? [];
+		await workspace.refresh();
 	}
 
 	get issues() {
-		return this.items;
+		return workspace.state?.diagnostics ?? [];
 	}
 	get all() {
-		return this.items;
+		return workspace.state?.diagnostics ?? [];
 	}
 }
 

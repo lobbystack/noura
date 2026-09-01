@@ -13,7 +13,10 @@ mod path;
 mod watcher;
 
 pub use ai::*;
-pub use engine::{CreateObjectInput, ObjectPatch, WorkspaceEngine};
+pub use engine::{
+    ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ObjectPatch,
+    ResolveConflictInput, WorkspaceEngine,
+};
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{CalendarEntry, IndexStore, SearchInput, SearchResult};
 pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object};

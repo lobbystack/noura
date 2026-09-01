@@ -49,6 +49,51 @@ pub struct ObjectPatch {
     pub expected_revision: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftReconcileInput {
+    pub id: String,
+    pub base_revision: String,
+    pub base_body: String,
+    pub local_body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum DraftReconcileResult {
+    Unchanged {
+        current: WorkspaceObject,
+        body: String,
+    },
+    Merged {
+        current: WorkspaceObject,
+        body: String,
+    },
+    Conflict {
+        current: WorkspaceObject,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConflictResolution {
+    UseExternal,
+    ReplaceExternal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveConflictInput {
+    pub id: String,
+    pub current_revision: String,
+    pub local_body: String,
+    pub resolution: ConflictResolution,
+}
+
 type MarkdownIndexEntry = (String, Vec<u8>, i64, ParsedMarkdown);
 
 struct WorkspaceScan {
@@ -212,6 +257,13 @@ impl WorkspaceEngine {
     pub fn root(&self) -> &Path {
         &self.root
     }
+    /// Resolve a workspace-managed relative path for a native desktop action.
+    ///
+    /// Uses the same traversal/symlink validation as mutations; only the
+    /// operation label differs. Returns the canonical absolute destination.
+    pub fn resolve_managed_path(&self, relative: &str, operation: &str) -> Result<PathBuf> {
+        resolve_for_write(&self.root, relative, operation)
+    }
     pub fn index_path(&self) -> &Path {
         &self.index_path
     }
@@ -284,10 +336,26 @@ impl WorkspaceEngine {
     }
 
     pub fn reconcile(&self) -> Result<()> {
-        self.reconcile_forced(&std::collections::HashSet::new())
+        self.reconcile_forced_with_source(&std::collections::HashSet::new(), "reconciliation")
     }
 
     fn reconcile_forced(&self, forced: &std::collections::HashSet<String>) -> Result<()> {
+        self.reconcile_forced_with_source(forced, "reconciliation")
+    }
+
+    fn reconcile_forced_with_source(
+        &self,
+        forced: &std::collections::HashSet<String>,
+        source: &str,
+    ) -> Result<()> {
+        let before = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("workspace_reconcile"))?
+            .query_objects(None)?
+            .into_iter()
+            .map(|object| (object.id.clone(), object))
+            .collect::<HashMap<_, _>>();
         let metadata = self
             .index
             .lock()
@@ -308,11 +376,16 @@ impl WorkspaceEngine {
             .map_err(|_| lock_error("workspace_reconcile"))?;
         index.reconcile_markdown(&scan.changed, &removed)?;
         drop(index);
-        self.emit(
-            "search:index-updated",
-            "reconciliation",
-            serde_json::json!({}),
-        );
+        let after = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("workspace_reconcile"))?
+            .query_objects(None)?
+            .into_iter()
+            .map(|object| (object.id.clone(), object))
+            .collect::<HashMap<_, _>>();
+        self.emit_reconciled_object_events(&before, &after, source);
+        self.emit("search:index-updated", source, serde_json::json!({}));
         Ok(())
     }
 
@@ -364,7 +437,7 @@ impl WorkspaceEngine {
         external.sort();
         external.dedup();
         if !external.is_empty() {
-            self.reconcile_forced(&external.iter().cloned().collect())?;
+            self.reconcile_forced_with_source(&external.iter().cloned().collect(), "external")?;
             self.emit(
                 "file:changed",
                 "external",
@@ -479,6 +552,82 @@ impl WorkspaceEngine {
             .map_err(|_| lock_error("object_get"))?
             .get_object(id)
     }
+
+    pub fn reconcile_note_draft(&self, input: DraftReconcileInput) -> Result<DraftReconcileResult> {
+        let (current, current_bytes) = self.read_canonical_object(&input.id, "note_reconcile")?;
+        if current.object_type != "note" {
+            return Err(CoreError::validation(
+                "object_type_mismatch",
+                "Only note drafts can be reconciled",
+                "note_reconcile",
+            ));
+        }
+        if current.revision == input.base_revision {
+            return Ok(DraftReconcileResult::Unchanged {
+                current,
+                body: input.local_body,
+            });
+        }
+        match merge_markdown_body(&input.base_body, &input.local_body, &current.body) {
+            Some(body) => {
+                self.snapshot_bytes(&current.id, "external", &current_bytes)?;
+                Ok(DraftReconcileResult::Merged { current, body })
+            }
+            None => Ok(DraftReconcileResult::Conflict { current }),
+        }
+    }
+
+    pub fn resolve_note_conflict(
+        &self,
+        input: ResolveConflictInput,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        let (mut current, current_bytes) =
+            self.read_canonical_object(&input.id, "note_conflict_resolve")?;
+        if current.object_type != "note" {
+            return Err(CoreError::validation(
+                "object_type_mismatch",
+                "Only note conflicts can be resolved",
+                "note_conflict_resolve",
+            ));
+        }
+        if current.revision != input.current_revision {
+            let mut error = CoreError::new(
+                "revision_conflict",
+                ErrorCategory::Conflict,
+                "The file changed again while the conflict was being reviewed",
+                "note_conflict_resolve",
+            );
+            error.details = Some(serde_json::json!({"currentRevision": current.revision}));
+            return Err(error);
+        }
+        match input.resolution {
+            ConflictResolution::UseExternal => {
+                let mut local = current.clone();
+                local.body = input.local_body;
+                let local_bytes = markdown::serialize_object(&local)?;
+                self.snapshot_bytes(&current.id, "local", &local_bytes)?;
+                Ok(MutationResult {
+                    value: current.clone(),
+                    revision: current.revision.clone(),
+                    durability: "committed".into(),
+                    index_status: IndexStatus::Updated,
+                    warnings: Vec::new(),
+                })
+            }
+            ConflictResolution::ReplaceExternal => {
+                self.snapshot_bytes(&current.id, "external", &current_bytes)?;
+                current.body = input.local_body;
+                current.updated = Some(now_rfc3339());
+                self.commit_object(
+                    current,
+                    Some(&input.current_revision),
+                    "object:updated",
+                    "note_conflict_resolve",
+                )
+            }
+        }
+    }
+
     pub fn query_objects(&self, object_type: Option<&str>) -> Result<Vec<WorkspaceObject>> {
         self.index
             .lock()
@@ -867,7 +1016,7 @@ impl WorkspaceEngine {
         }
         let bytes = markdown::serialize_object(&object)?;
         let revision = markdown::revision(&bytes);
-        atomic_write(&self.root, &relative, &bytes, operation)?;
+        atomic_write_checked(&self.root, &relative, &bytes, expected, operation)?;
         if let Ok(mut journal) = self.self_writes.lock() {
             journal.insert(object.relative_path.clone(), revision.clone());
         }
@@ -912,6 +1061,77 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
         Ok(WorkspaceLock(file))
     }
+
+    fn read_canonical_object(
+        &self,
+        id: &str,
+        operation: &str,
+    ) -> Result<(WorkspaceObject, Vec<u8>)> {
+        if !valid_object_id(id, "note") {
+            return Err(CoreError::validation(
+                "invalid_object_id",
+                "The object ID is invalid",
+                operation,
+            ));
+        }
+        let mut forced = std::collections::HashSet::new();
+        if let Some(indexed) = self.get_object(id)? {
+            forced.insert(indexed.relative_path);
+        }
+        self.reconcile_forced(&forced)?;
+        let indexed = self.get_object(id)?.ok_or_else(|| {
+            CoreError::validation("object_not_found", "The object does not exist", operation)
+        })?;
+        let destination = resolve_for_write(&self.root, &indexed.relative_path, operation)?;
+        let bytes = std::fs::read(&destination)
+            .map_err(|error| CoreError::io(error, operation, Some(&indexed.relative_path)))?;
+        let ParsedMarkdown::Managed(object) =
+            markdown::parse_markdown(&indexed.relative_path, &bytes)
+        else {
+            return Err(CoreError::new(
+                "object_parse_failed",
+                ErrorCategory::Parse,
+                "The canonical Markdown file cannot be reconciled safely",
+                operation,
+            ));
+        };
+        if object.id != id {
+            return Err(CoreError::new(
+                "object_identity_changed",
+                ErrorCategory::Identity,
+                "The canonical file no longer has the expected stable ID",
+                operation,
+            ));
+        }
+        Ok((object, bytes))
+    }
+
+    fn snapshot_bytes(&self, id: &str, kind: &str, bytes: &[u8]) -> Result<()> {
+        if !valid_object_id(id, "note") || !matches!(kind, "local" | "external") {
+            return Err(CoreError::validation(
+                "invalid_history_target",
+                "The recovery snapshot target is invalid",
+                "history_snapshot",
+            ));
+        }
+        let revision = markdown::revision(bytes);
+        let relative = PathBuf::from(".noura")
+            .join("history")
+            .join(id)
+            .join(format!("{revision}-{kind}.md"));
+        let relative_text = relative.to_str().ok_or_else(|| {
+            CoreError::validation(
+                "non_utf8_path",
+                "The recovery snapshot path is not UTF-8",
+                "history_snapshot",
+            )
+        })?;
+        let destination = resolve_for_write(&self.root, relative_text, "history_snapshot")?;
+        if destination.exists() {
+            return Ok(());
+        }
+        atomic_write(&self.root, &relative, bytes, "history_snapshot")
+    }
     fn emit(&self, event_type: &str, source: &str, payload: serde_json::Value) {
         let _ = self.event_sender.send(CoreEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -921,6 +1141,55 @@ impl WorkspaceEngine {
             source: source.into(),
             payload,
         });
+    }
+
+    fn emit_reconciled_object_events(
+        &self,
+        before: &HashMap<String, WorkspaceObject>,
+        after: &HashMap<String, WorkspaceObject>,
+        source: &str,
+    ) {
+        for (id, object) in after {
+            let Some(previous) = before.get(id) else {
+                self.emit_object_event("object:created", object, source, None);
+                continue;
+            };
+            if previous.relative_path != object.relative_path {
+                self.emit_object_event(
+                    "object:moved",
+                    object,
+                    source,
+                    Some(&previous.relative_path),
+                );
+            } else if previous.revision != object.revision {
+                self.emit_object_event("object:updated", object, source, None);
+            }
+        }
+        for (id, object) in before {
+            if !after.contains_key(id) {
+                self.emit_object_event("object:deleted", object, source, None);
+            }
+        }
+    }
+
+    fn emit_object_event(
+        &self,
+        event_type: &str,
+        object: &WorkspaceObject,
+        source: &str,
+        previous_path: Option<&str>,
+    ) {
+        self.emit(
+            event_type,
+            source,
+            serde_json::json!({
+                "id": object.id,
+                "type": object.object_type,
+                "path": object.relative_path,
+                "previousPath": previous_path,
+                "revision": object.revision,
+            }),
+        );
     }
 
     fn index_outcome(&self, result: Result<()>) -> (IndexStatus, Vec<CoreWarning>) {
@@ -1093,6 +1362,16 @@ fn normalized_relative_path(root: &Path, path: &Path, operation: &str) -> Result
         })
 }
 fn atomic_write(root: &Path, relative: &Path, bytes: &[u8], operation: &str) -> Result<()> {
+    atomic_write_checked(root, relative, bytes, None, operation)
+}
+
+fn atomic_write_checked(
+    root: &Path,
+    relative: &Path,
+    bytes: &[u8],
+    expected_revision: Option<&str>,
+    operation: &str,
+) -> Result<()> {
     let destination = root.join(relative);
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)
@@ -1102,10 +1381,35 @@ fn atomic_write(root: &Path, relative: &Path, bytes: &[u8], operation: &str) -> 
         .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
-        .and_then(|()| file.commit())
+        .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
+    if let Some(expected) = expected_revision {
+        let current = std::fs::read(&destination)
+            .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
+        check_revision(&current, expected, operation)?;
+    }
+    file.commit()
         .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
     sync_parent(&destination, operation)?;
     Ok(())
+}
+
+fn markdown_requires_manual_review(body: &str) -> bool {
+    body.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("<")
+            || trimmed.starts_with(":::")
+            || (trimmed.starts_with('[') && trimmed.contains("]:"))
+    })
+}
+
+fn merge_markdown_body(base: &str, local: &str, external: &str) -> Option<String> {
+    if [base, local, external]
+        .into_iter()
+        .any(markdown_requires_manual_review)
+    {
+        return None;
+    }
+    diffy::merge(base, local, external).ok()
 }
 
 #[cfg(unix)]
@@ -1431,6 +1735,283 @@ mod tests {
     }
 
     #[test]
+    fn draft_reconciliation_merges_independent_markdown_edits_and_snapshots_external() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Merge".into(),
+                body: "first\n\nsecond\n".into(),
+                relative_path: Some("merge.md".into()),
+                properties: BTreeMap::from([("tag".into(), serde_json::json!("base"))]),
+            })
+            .unwrap();
+        let path = workspace.path().join("merge.md");
+        let external = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("tag: base", "tag: external")
+            .replace("second", "second from file");
+        std::fs::write(&path, external).unwrap();
+
+        let result = engine
+            .reconcile_note_draft(DraftReconcileInput {
+                id: created.value.id.clone(),
+                base_revision: created.revision,
+                base_body: "first\n\nsecond\n".into(),
+                local_body: "first in app\n\nsecond\n".into(),
+            })
+            .unwrap();
+
+        let DraftReconcileResult::Merged { current, body } = result else {
+            panic!("expected a clean merge");
+        };
+        assert_eq!(body, "first in app\n\nsecond from file");
+        assert_eq!(current.properties["tag"], "external");
+        let history = workspace
+            .path()
+            .join(".noura/history")
+            .join(&created.value.id);
+        assert_eq!(std::fs::read_dir(history).unwrap().count(), 1);
+        assert!(
+            engine
+                .list_workspace_entries()
+                .unwrap()
+                .iter()
+                .all(|entry| !entry.relative_path.starts_with(".noura"))
+        );
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("second from file")
+        );
+    }
+
+    #[test]
+    fn overlapping_and_unsupported_drafts_never_write_merge_markers() {
+        for local_body in ["local\n", "<aside>local</aside>\n"] {
+            let workspace = tempdir().unwrap();
+            let app_data = tempdir().unwrap();
+            let engine =
+                WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                    .unwrap();
+            let created = engine
+                .create_object(CreateObjectInput {
+                    object_type: "note".into(),
+                    title: "Conflict".into(),
+                    body: "base\n".into(),
+                    relative_path: Some("conflict.md".into()),
+                    properties: BTreeMap::new(),
+                })
+                .unwrap();
+            let path = workspace.path().join("conflict.md");
+            let external = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("base", "external");
+            std::fs::write(&path, external).unwrap();
+            let result = engine
+                .reconcile_note_draft(DraftReconcileInput {
+                    id: created.value.id,
+                    base_revision: created.revision,
+                    base_body: "base\n".into(),
+                    local_body: local_body.into(),
+                })
+                .unwrap();
+            assert!(matches!(result, DraftReconcileResult::Conflict { .. }));
+            let canonical = std::fs::read_to_string(path).unwrap();
+            assert!(!canonical.contains("<<<<<<<"));
+            assert!(canonical.contains("external"));
+        }
+    }
+
+    #[test]
+    fn markdown_merge_covers_common_line_oriented_content() {
+        let cases = [
+            (
+                "one\n\ntwo\n",
+                "one local\n\ntwo\n",
+                "one\n\ntwo external\n",
+                vec!["one local", "two external"],
+            ),
+            (
+                "same\n\nend\n",
+                "same edit\n\nend\n",
+                "same edit\n\nend\n",
+                vec!["same edit"],
+            ),
+            (
+                "start\n\nneutral one\n\nneutral two\n\nend\n",
+                "start\n\ninserted\n\nneutral one\n\nneutral two\n\nend\n",
+                "start\n\nneutral one\n\nneutral two\n\nend external\n",
+                vec!["inserted", "end external"],
+            ),
+            (
+                "keep\nremove local\nkeep two\nexternal tail\n",
+                "keep\nkeep two\nexternal tail\n",
+                "keep\nremove local\nkeep two\nchanged tail\n",
+                vec!["keep two", "changed tail"],
+            ),
+            (
+                "- alpha\n- beta\n\nparagraph\n",
+                "- alpha local\n- beta\n\nparagraph\n",
+                "- alpha\n- beta\n\nparagraph external\n",
+                vec!["alpha local", "paragraph external"],
+            ),
+            (
+                "```rs\nlet a = 1;\n```\n\nafter\n",
+                "```rs\nlet a = 2;\n```\n\nafter\n",
+                "```rs\nlet a = 1;\n```\n\nafter external\n",
+                vec!["let a = 2", "after external"],
+            ),
+            (
+                "| A | B |\n| - | - |\n| 1 | 2 |\n\nafter\n",
+                "| A | B |\n| - | - |\n| 1 | local |\n\nafter\n",
+                "| A | B |\n| - | - |\n| 1 | 2 |\n\nafter external\n",
+                vec!["local", "after external"],
+            ),
+            (
+                "café\n\n世界\n",
+                "café local\n\n世界\n",
+                "café\n\n世界 external\n",
+                vec!["café local", "世界 external"],
+            ),
+            (
+                "one\r\n\r\ntwo\r\n",
+                "one local\r\n\r\ntwo\r\n",
+                "one\r\n\r\ntwo external\r\n",
+                vec!["one local", "two external"],
+            ),
+            (
+                "one\n\ntwo",
+                "one local\n\ntwo",
+                "one\n\ntwo external",
+                vec!["one local", "two external"],
+            ),
+        ];
+        for (index, (base, local, external, fragments)) in cases.into_iter().enumerate() {
+            let merged = merge_markdown_body(base, local, external)
+                .unwrap_or_else(|| panic!("case {index} unexpectedly conflicted"));
+            for fragment in fragments {
+                assert!(
+                    merged.contains(fragment),
+                    "missing {fragment:?} in {merged:?}"
+                );
+            }
+            assert!(!merged.contains("<<<<<<<"));
+        }
+        assert!(merge_markdown_body("same\n", "local\n", "external\n").is_none());
+    }
+
+    #[test]
+    fn conflict_resolution_snapshots_each_displaced_version() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Resolve".into(),
+                body: "base\n".into(),
+                relative_path: Some("resolve.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let path = workspace.path().join("resolve.md");
+        let external = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("base", "external");
+        std::fs::write(&path, external).unwrap();
+        let reviewed = engine
+            .reconcile_note_draft(DraftReconcileInput {
+                id: created.value.id.clone(),
+                base_revision: created.revision,
+                base_body: "base\n".into(),
+                local_body: "local\n".into(),
+            })
+            .unwrap();
+        let DraftReconcileResult::Conflict { current } = reviewed else {
+            panic!("expected a conflict");
+        };
+        let replaced = engine
+            .resolve_note_conflict(ResolveConflictInput {
+                id: created.value.id.clone(),
+                current_revision: current.revision,
+                local_body: "local\n".into(),
+                resolution: ConflictResolution::ReplaceExternal,
+            })
+            .unwrap();
+        assert_eq!(replaced.value.body, "local\n");
+        let snapshots = std::fs::read_dir(
+            workspace
+                .path()
+                .join(".noura/history")
+                .join(created.value.id),
+        )
+        .unwrap()
+        .count();
+        assert_eq!(snapshots, 1);
+    }
+
+    #[test]
+    fn using_external_version_snapshots_the_local_draft() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Use external".into(),
+                body: "base\n".into(),
+                relative_path: Some("use-external.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let path = workspace.path().join("use-external.md");
+        let external = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("base", "external");
+        std::fs::write(&path, external).unwrap();
+        let DraftReconcileResult::Conflict { current } = engine
+            .reconcile_note_draft(DraftReconcileInput {
+                id: created.value.id.clone(),
+                base_revision: created.revision,
+                base_body: "base\n".into(),
+                local_body: "local\n".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected a conflict");
+        };
+        let resolved = engine
+            .resolve_note_conflict(ResolveConflictInput {
+                id: created.value.id.clone(),
+                current_revision: current.revision,
+                local_body: "local\n".into(),
+                resolution: ConflictResolution::UseExternal,
+            })
+            .unwrap();
+        assert_eq!(resolved.value.body, "external");
+        let history = workspace
+            .path()
+            .join(".noura/history")
+            .join(created.value.id);
+        let snapshot = std::fs::read_dir(history)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(std::fs::read_to_string(snapshot).unwrap().contains("local"));
+    }
+
+    #[test]
     fn create_does_not_overwrite_an_existing_manifest() {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
@@ -1573,6 +2154,40 @@ mod tests {
                 true,
             )
         );
+    }
+
+    #[test]
+    fn external_managed_changes_emit_semantic_object_events() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Watched".into(),
+                body: "before".into(),
+                relative_path: Some("watched-managed.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let path = engine.root().join("watched-managed.md");
+        let external = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("before", "after");
+        std::fs::write(&path, external).unwrap();
+        let mut events = engine.subscribe();
+
+        engine.process_external_changes(vec![path]).unwrap();
+
+        let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        let updated = received
+            .iter()
+            .find(|event| event.event_type == "object:updated")
+            .unwrap();
+        assert_eq!(updated.source, "external");
+        assert_eq!(updated.payload["id"], created.value.id);
     }
 
     #[cfg(unix)]

@@ -1,0 +1,11 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "main-window",
+	"description": "Permissions required by the local Noura desktop window.",
+	"windows": ["main"],
+	"permissions": [
+		"core:event:allow-listen",
+		"core:event:allow-unlisten",
+		"core:window:allow-destroy"
+	]
+}

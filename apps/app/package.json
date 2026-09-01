@@ -10,8 +10,17 @@
 		"tauri": "tauri"
 	},
 	"dependencies": {
+		"@noura/editor": "workspace:*",
 		"@noura/workspace": "workspace:*",
 		"@tauri-apps/api": "^2",
+		"@tiptap/core": "^3.30.6",
+		"@tiptap/extension-link": "^3.30.6",
+		"@tiptap/extension-task-item": "^3.30.6",
+		"@tiptap/extension-task-list": "^3.30.6",
+		"@tiptap/extension-underline": "^3.30.6",
+		"@tiptap/markdown": "^3.30.6",
+		"@tiptap/starter-kit": "^3.30.6",
+		"marked": "^18.0.11",
 		"svelte": "^5"
 	},
 	"devDependencies": {

@@ -3,9 +3,18 @@
 	import AppRail from '$lib/components/app-rail.svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
-	import { workspace, diagnostics } from '$lib/state.svelte';
+	import { workspace } from '$lib/state.svelte';
+	import {
+		flushPendingDrafts,
+		hasPendingDrafts,
+	} from '$lib/editor/pending-drafts.svelte';
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
+	import { beforeNavigate, goto } from '$app/navigation';
+	import {
+		createTauriHostLifecycle,
+		installPendingDraftCloseGuard,
+	} from '@noura/workspace';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Empty from '$lib/components/ui/empty/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -15,12 +24,42 @@
 
 	let { children } = $props<{ children: Snippet }>();
 
-	onMount(async () => {
-		if (browser) await workspace.init();
+	let allowedNavigation: string | null = null;
+
+	beforeNavigate((navigation) => {
+		const destination = navigation.to?.url;
+		if (destination?.href === allowedNavigation) {
+			allowedNavigation = null;
+			return;
+		}
+		if (!hasPendingDrafts()) return;
+		navigation.cancel();
+		void flushPendingDrafts().then((saved) => {
+			if (!saved || !destination) return;
+			allowedNavigation = destination.href;
+			void goto(destination, {
+				replaceState: navigation.type === 'popstate',
+			});
+		});
 	});
 
-	$effect(() => {
-		if (browser && workspace.isReady) diagnostics.refresh();
+	onMount(() => {
+		let disposed = false;
+		let unlistenClose: (() => void) | undefined;
+		if (browser) {
+			void workspace.init();
+			void installPendingDraftCloseGuard(
+				createTauriHostLifecycle(),
+				flushPendingDrafts,
+			).then((unlisten) => {
+				if (disposed) unlisten();
+				else unlistenClose = unlisten;
+			});
+		}
+		return () => {
+			disposed = true;
+			unlistenClose?.();
+		};
 	});
 </script>
 

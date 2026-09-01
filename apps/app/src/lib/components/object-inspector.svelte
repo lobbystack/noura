@@ -1,11 +1,15 @@
 <script lang="ts">
 	import type { Note, Project, Task, WorkspaceObject } from '@noura/workspace';
+	import { getNouraClient as getClient } from '$lib/state.svelte';
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
-	import { FileCode } from 'phosphor-svelte';
-	import { browser } from '$app/environment';
-	import { onMount } from 'svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { toast } from 'svelte-sonner';
+	import Copy from 'phosphor-svelte/lib/Copy';
+	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
+	import Terminal from 'phosphor-svelte/lib/Terminal';
+	import FileCode from 'phosphor-svelte/lib/FileCode';
 
 	let {
 		open = $bindable(false),
@@ -20,10 +24,44 @@
 	const taskProps = $derived(
 		object?.properties as Record<string, unknown> | undefined,
 	);
-	const status = $derived(
-		taskProps?.status ? String(taskProps.status) : 'unknown',
-	);
 	const title = $derived(object?.title ?? 'Untitled');
+	const source = $derived(
+		object
+			? `---\n${object.id ? `id: ${object.id}\n` : ''}type: ${object.type}\n---\n\n${object.body ?? ''}`
+			: '',
+	);
+
+	async function copyPath() {
+		if (!object?.relativePath) return;
+		try {
+			await navigator.clipboard.writeText(object.relativePath);
+			toast.success('Copied relative path');
+		} catch {
+			toast.error('Could not copy path');
+		}
+	}
+
+	async function revealInFolder() {
+		if (!object?.id) return;
+		try {
+			await getClient().notes.showInFolder(object.id);
+		} catch (error) {
+			toast.error('Could not open the folder', {
+				description: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	async function openTerminal() {
+		if (!object?.id) return;
+		try {
+			await getClient().notes.openTerminal(object.id);
+		} catch (error) {
+			toast.error('Could not open a terminal', {
+				description: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 </script>
 
 <Sheet.Root
@@ -42,7 +80,7 @@
 				{#if object.properties && Object.keys(object.properties).length > 0}
 					<div>
 						<h4
-							class="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide"
+							class="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
 						>
 							Properties
 						</h4>
@@ -52,7 +90,7 @@
 									<div
 										class="flex items-baseline justify-between gap-2 text-sm"
 									>
-										<span class="text-muted-foreground capitalize"
+										<span class="capitalize text-muted-foreground"
 											>{key.replace(/_/g, ' ')}</span
 										>
 										{#if String(value).startsWith('task_') && String(value).length > 5}
@@ -69,27 +107,28 @@
 				{/if}
 
 				<div>
-					<h4
-						class="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide"
-					>
-						File & History
-					</h4>
+					<div class="mb-2 flex items-center justify-between">
+						<h4
+							class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+						>
+							File & history
+						</h4>
+						<Badge variant="outline" class="gap-1 text-[10px]">
+							<FileCode data-icon="inline-start" />
+							Markdown
+						</Badge>
+					</div>
 					<div class="space-y-2 text-sm">
-						<div class="flex items-center justify-between">
+						<div class="flex items-center justify-between gap-2">
 							<span class="text-muted-foreground">Saved to</span>
-							<span
-								class="text-right text-xs font-mono opacity-70 truncate max-w-[160px]"
-								>{object.relativePath}</span
+							<button
+								class="max-w-40 truncate text-right font-mono text-xs opacity-70 hover:opacity-100"
+								onclick={copyPath}
+								title="Copy relative path"
 							>
+								{object.relativePath}
+							</button>
 						</div>
-						{#if object.revision}
-							<div class="flex items-center justify-between">
-								<span class="text-muted-foreground">Revision</span>
-								<code class="rounded bg-muted px-1 text-xs font-mono opacity-70"
-									>{String(object.revision).slice(0, 8)}</code
-								>
-							</div>
-						{/if}
 						{#if object.updated}
 							<div class="flex items-center justify-between">
 								<span class="text-muted-foreground">Updated</span>
@@ -98,22 +137,57 @@
 								>
 							</div>
 						{/if}
+						{#if object.created}
+							<div class="flex items-center justify-between">
+								<span class="text-muted-foreground">Created</span>
+								<span class="text-xs opacity-70"
+									>{new Date(object.created).toLocaleString()}</span
+								>
+							</div>
+						{/if}
+						<div class="pt-1">
+							<p class="mb-1.5 text-xs font-medium text-muted-foreground">
+								Source
+								<span class="ml-1 text-[10px] font-normal opacity-70"
+									>read-only · canonical Markdown</span
+								>
+							</p>
+							<pre
+								class="max-h-40 overflow-auto rounded-md bg-muted p-2 font-mono text-[11px] leading-relaxed"><code
+									>{source}</code
+								></pre>
+						</div>
+						<div class="flex gap-2 pt-1.5">
+							<Button
+								variant="outline"
+								size="sm"
+								class="h-7 flex-1 text-xs"
+								onclick={copyPath}
+							>
+								<Copy data-icon="inline-start" />
+								Copy path
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								class="h-7 flex-1 text-xs"
+								onclick={revealInFolder}
+							>
+								<FolderOpen data-icon="inline-start" />
+								Reveal
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								class="h-7 flex-1 text-xs"
+								onclick={openTerminal}
+							>
+								<Terminal data-icon="inline-start" />
+								Terminal
+							</Button>
+						</div>
 					</div>
 				</div>
-
-				{#if object.body}
-					<Separator />
-					<div>
-						<h4
-							class="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide"
-						>
-							Description
-						</h4>
-						<p class="whitespace-pre-wrap text-sm leading-relaxed">
-							{object.body}
-						</p>
-					</div>
-				{/if}
 			</div>
 		{:else}
 			<div

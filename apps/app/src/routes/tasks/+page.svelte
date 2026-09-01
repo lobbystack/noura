@@ -1,12 +1,18 @@
 <script lang="ts">
-	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import { getNouraClient } from '$lib/state.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import ObjectInspector from '$lib/components/object-inspector.svelte';
 	import PageHeader from '$lib/components/page-header.svelte';
+	import KanbanBoard from '$lib/components/kanban-board.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import * as Empty from '$lib/components/ui/empty/index.js';
-	import { FolderOpen, Plus } from 'phosphor-svelte';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
+	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
+	import Plus from 'phosphor-svelte/lib/Plus';
+	import ListBullets from 'phosphor-svelte/lib/ListBullets';
+	import Kanban from 'phosphor-svelte/lib/Kanban';
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 
@@ -18,6 +24,7 @@
 	let loading = $state(true);
 	let selectedTask = $state<Task | null>(null);
 	let inspectorOpen = $state(false);
+	let view = $state<'list' | 'board'>('list');
 
 	async function load() {
 		try {
@@ -56,18 +63,36 @@
 
 <PageHeader title="Tasks" description="All work items">
 	{#snippet actions()}
-		<button
-			class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium hover:bg-muted"
-			onclick={create}
+		<ToggleGroup.Root
+			bind:value={
+				() => view,
+				(value) => {
+					if (value === 'list' || value === 'board') view = value;
+				}
+			}
+			type="single"
+			variant="outline"
+			size="sm"
+			class="mr-1"
 		>
+			<ToggleGroup.Item value="list" aria-label="List view">
+				<ListBullets />
+			</ToggleGroup.Item>
+			<ToggleGroup.Item value="board" aria-label="Board view">
+				<Kanban />
+			</ToggleGroup.Item>
+		</ToggleGroup.Root>
+		<Button size="sm" onclick={create}>
 			<Plus data-icon="inline-start" />
 			Add task
-		</button>
+		</Button>
 	{/snippet}
 </PageHeader>
 
-{#if loading}
-	<div class="space-y-1 p-2">
+{#if view === 'board'}
+	<KanbanBoard />
+{:else if loading}
+	<div class="flex flex-col gap-1 p-2">
 		{#each [0, 1, 2, 3] as i (i)}
 			<Skeleton class="h-10 w-full" />
 		{/each}
@@ -84,10 +109,10 @@
 			>
 		</Empty.Header>
 		<Empty.Content>
-			<button
-				class="rounded-md px-3 py-1.5 text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90"
-				onclick={create}>Create task</button
-			>
+			<Button onclick={create}>
+				<Plus data-icon="inline-start" />
+				Create task
+			</Button>
 		</Empty.Content>
 	</Empty.Root>
 {:else}
@@ -103,8 +128,8 @@
 						type="checkbox"
 						checked={done}
 						class="size-4 rounded border-input text-primary focus:ring-primary"
-						onclick={(e) => {
-							e.stopPropagation();
+						onclick={(event) => {
+							event.stopPropagation();
 							toggleDone(task);
 						}}
 					/>
@@ -131,11 +156,12 @@
 	</div>
 {/if}
 
-<ObjectInspector
-	bind:open={inspectorOpen}
-	object={selectedTask}
-	onclose={() => {
-		selectedTask = null;
-		tabsStore.setActive('null');
-	}}
-/>
+{#if view === 'list'}
+	<ObjectInspector
+		bind:open={inspectorOpen}
+		object={selectedTask}
+		onclose={() => {
+			selectedTask = null;
+		}}
+	/>
+{/if}
