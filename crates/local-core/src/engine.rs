@@ -94,6 +94,127 @@ pub struct ResolveConflictInput {
     pub resolution: ConflictResolution,
 }
 
+/// Draft state captured by a client before a managed object was modified.
+/// Title, body, and properties are reconciled independently during merges;
+/// stable identity and canonical metadata always come from the file.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedDraftInput {
+    pub id: String,
+    pub base_revision: String,
+    pub base_title: String,
+    pub base_body: String,
+    #[ts(type = "Record<string, unknown>")]
+    pub base_properties: BTreeMap<String, serde_json::Value>,
+    pub local_title: String,
+    pub local_body: String,
+    #[ts(type = "Record<string, unknown>")]
+    pub local_properties: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum ManagedDraftResult {
+    Unchanged {
+        current: WorkspaceObject,
+    },
+    Merged {
+        current: WorkspaceObject,
+        title: String,
+        body: String,
+        #[ts(type = "Record<string, unknown>")]
+        properties: BTreeMap<String, serde_json::Value>,
+    },
+    Conflict {
+        current: WorkspaceObject,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManagedConflictResolution {
+    UseExternal,
+    ReplaceExternal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedConflictResolveInput {
+    pub id: String,
+    pub current_revision: String,
+    pub local_title: String,
+    pub local_body: String,
+    #[ts(type = "Record<string, unknown>")]
+    pub local_properties: BTreeMap<String, serde_json::Value>,
+    pub resolution: ManagedConflictResolution,
+}
+
+/// Complete current contents of one Markdown file addressed by relative path.
+/// Raw files expose their full bytes as UTF-8 text with CRLF normalized to LF;
+/// uses-crlf and has-bom flags are preserved for faithful writes.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RawMarkdownRead {
+    pub relative_path: String,
+    pub body: String,
+    pub revision: String,
+    pub uses_crlf: bool,
+    pub has_bom: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RawReconcileInput {
+    pub relative_path: String,
+    pub base_revision: String,
+    pub base_body: String,
+    pub local_body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum RawReconcileResult {
+    Unchanged { current: RawMarkdownRead },
+    Merged { current: RawMarkdownRead },
+    Conflict { current: RawMarkdownRead },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RawSaveInput {
+    pub relative_path: String,
+    pub base_revision: String,
+    pub base_body: String,
+    pub local_body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum RawSaveResult {
+    Saved { current: RawMarkdownRead },
+    Merged { current: RawMarkdownRead },
+    Conflict { current: RawMarkdownRead },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RawConflictResolveInput {
+    pub relative_path: String,
+    pub current_revision: String,
+    pub local_body: String,
+    pub resolution: ConflictResolution,
+}
+
 type MarkdownIndexEntry = (String, Vec<u8>, i64, ParsedMarkdown);
 
 struct WorkspaceScan {
@@ -628,6 +749,422 @@ impl WorkspaceEngine {
         }
     }
 
+    // --- Managed draft reconciliation (notes, tasks, and future types) ---
+
+    /// Reconcile a managed draft against the canonical file without writing.
+    /// Returns the merged draft content for clients that still need to render
+    /// the combination, or an explicit conflict marker.
+    pub fn reconcile_managed_draft(&self, input: ManagedDraftInput) -> Result<ManagedDraftResult> {
+        let canonical =
+            self.read_canonical_workspace_object(&input.id, "managed_draft_reconcile")?;
+        if canonical.revision == input.base_revision
+            && canonical.title == input.base_title
+            && canonical.body == input.base_body
+            && normalized_properties(&canonical.properties)
+                == normalized_properties(&input.base_properties)
+        {
+            return Ok(ManagedDraftResult::Unchanged { current: canonical });
+        }
+        match merge_managed_fields(&input, &canonical) {
+            Ok(merged) => Ok(ManagedDraftResult::Merged {
+                current: canonical.clone(),
+                title: merged.title,
+                body: merged.body,
+                properties: merged.properties.clone(),
+            }),
+            Err(_) => Ok(ManagedDraftResult::Conflict { current: canonical }),
+        }
+    }
+
+    /// Reconcile and durably commit a managed draft in one operation. A clean
+    /// base writes the local draft; a changed base merges field-by-field and
+    /// snapshots every displaced version before replacing bytes atomically.
+    pub fn save_managed_draft(&self, input: ManagedDraftInput) -> Result<ManagedDraftResult> {
+        let canonical = self.read_canonical_workspace_object(&input.id, "managed_draft_save")?;
+        if std::env::var("NOURA_DEBUG_MERGE").is_ok() {
+            eprintln!("canonical body: {:?}", canonical.body);
+            eprintln!("base body: {:?}", input.base_body);
+        }
+        let unchanged = canonical.revision == input.base_revision
+            && canonical.title == input.base_title
+            && canonical.body == input.base_body
+            && normalized_properties(&canonical.properties)
+                == normalized_properties(&input.base_properties);
+        if unchanged {
+            let mut object = canonical;
+            object.title = input.local_title;
+            object.body = input.local_body;
+            object.properties = normalized_properties(&input.local_properties);
+            let result = self.apply_managed_object(object, None, "managed_draft_save")?;
+            return Ok(ManagedDraftResult::Unchanged {
+                current: result.value,
+            });
+        }
+        let merged = match merge_managed_fields(&input, &canonical) {
+            Ok(value) => value,
+            Err(_) => return Ok(ManagedDraftResult::Conflict { current: canonical }),
+        };
+        let canonical_path =
+            resolve_for_write(&self.root, &canonical.relative_path, "managed_draft_save")?;
+        let canonical_bytes = std::fs::read(&canonical_path).map_err(|error| {
+            CoreError::io(error, "managed_draft_save", Some(&canonical.relative_path))
+        })?;
+        self.snapshot_bytes(&canonical.id, "external", &canonical_bytes)?;
+        let mut object = merged;
+        object.properties = normalized_properties(&object.properties);
+        let result =
+            self.apply_managed_object(object, Some(&canonical.revision), "managed_draft_save")?;
+        Ok(ManagedDraftResult::Merged {
+            current: result.value.clone(),
+            title: result.value.title.clone(),
+            body: result.value.body.clone(),
+            properties: result.value.properties.clone(),
+        })
+    }
+
+    /// Adopt the external file version or replace it with the reviewed local
+    /// draft. Both directions snapshot the version they displace before any
+    /// durable write, and both return the object the client should display.
+    pub fn resolve_managed_conflict(
+        &self,
+        input: ManagedConflictResolveInput,
+    ) -> Result<WorkspaceObject> {
+        let (current, current_bytes) =
+            self.read_canonical_object(&input.id, "managed_conflict_resolve")?;
+        if current.revision != input.current_revision {
+            let mut error = CoreError::new(
+                "revision_conflict",
+                ErrorCategory::Conflict,
+                "The file changed again while the conflict was being reviewed",
+                "managed_conflict_resolve",
+            );
+            error.details = Some(serde_json::json!({"currentRevision": current.revision}));
+            return Err(error);
+        }
+        match input.resolution {
+            ManagedConflictResolution::UseExternal => {
+                let mut local = current.clone();
+                local.title = input.local_title;
+                local.body = input.local_body;
+                local.properties = normalized_properties(&input.local_properties);
+                let local_bytes = markdown::serialize_object(&local)?;
+                self.snapshot_bytes(&current.id, "local", &local_bytes)?;
+                Ok(current)
+            }
+            ManagedConflictResolution::ReplaceExternal => {
+                self.snapshot_bytes(&current.id, "external", &current_bytes)?;
+                let mut object = current;
+                object.title = input.local_title;
+                object.body = input.local_body;
+                object.properties = normalized_properties(&input.local_properties);
+                let result = self.apply_managed_object(
+                    object,
+                    Some(&input.current_revision),
+                    "managed_conflict_resolve",
+                )?;
+                Ok(result.value)
+            }
+        }
+    }
+
+    fn read_canonical_workspace_object(
+        &self,
+        id: &str,
+        operation: &str,
+    ) -> Result<WorkspaceObject> {
+        let (object, _) = self.read_canonical_object(id, operation)?;
+        Ok(object)
+    }
+
+    fn apply_managed_object(
+        &self,
+        mut object: WorkspaceObject,
+        expected: Option<&str>,
+        operation: &str,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        normalize_domain_properties(&object.object_type, &mut object.properties)?;
+        object.updated = Some(now_rfc3339());
+        self.commit_object(object, expected, "object:updated", operation)
+    }
+
+    // --- Raw Markdown (unmanaged and malformed files) ---
+
+    /// Read one Markdown file addressed by relative path. Managed frontmatter
+    /// is returned as-is; the editor owns complete raw contents.
+    pub fn read_raw_markdown(&self, relative_path: &str) -> Result<RawMarkdownRead> {
+        let path = validate_raw_markdown_path(&self.root, relative_path)?;
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CoreError::io(error, "raw_markdown_read", Some(relative_path)))?;
+        let (body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        Ok(RawMarkdownRead {
+            relative_path: relative_path.to_owned(),
+            body,
+            revision: markdown::revision(&bytes),
+            uses_crlf,
+            has_bom,
+        })
+    }
+
+    /// Read one non-Markdown file (image or other asset) for inline preview.
+    /// Workspace containment is validated; total size is capped by the caller.
+    pub fn read_local_asset(&self, relative_path: &str, max_bytes: i64) -> Result<Vec<u8>> {
+        if relative_path.to_ascii_lowercase().ends_with(".md") {
+            return Err(CoreError::validation(
+                "invalid_asset_path",
+                "Markdown content is read through raw Markdown operations",
+                "raw_asset_read",
+            ));
+        }
+        let path = resolve_for_write(&self.root, relative_path, "raw_asset_read")?;
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(relative_path)))?;
+        if metadata.len() as i64 > max_bytes {
+            return Err(CoreError::validation(
+                "asset_too_large",
+                "The local asset exceeds the preview size limit",
+                "raw_asset_read",
+            ));
+        }
+        std::fs::read(&path)
+            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(relative_path)))
+    }
+
+    fn reindex_raw_markdown(
+        &self,
+        relative: &str,
+        bytes: &[u8],
+        operation: &str,
+    ) -> Result<IndexStatus> {
+        let destination = resolve_for_write(&self.root, relative, operation)?;
+        let parsed = markdown::parse_markdown(relative, bytes);
+        let result = self
+            .index
+            .lock()
+            .map_err(|_| lock_error(operation))
+            .and_then(|mut index| {
+                index.upsert_markdown(relative, bytes, mtime_ns(&destination), &parsed)
+            });
+        let (index_status, _) = self.index_outcome(result);
+        Ok(index_status)
+    }
+
+    /// Reconcile a raw Markdown draft against the canonical file without
+    /// writing. Bodies merge line-by-line; every overlap requires review.
+    pub fn reconcile_raw_markdown(&self, input: RawReconcileInput) -> Result<RawReconcileResult> {
+        let path = validate_raw_markdown_path(&self.root, &input.relative_path)?;
+        if !path.exists() {
+            return Err(CoreError::validation(
+                "raw_markdown_missing",
+                "The Markdown file no longer exists",
+                "raw_markdown_reconcile",
+            ));
+        }
+        let bytes = std::fs::read(&path).map_err(|error| {
+            CoreError::io(error, "raw_markdown_reconcile", Some(&input.relative_path))
+        })?;
+        let (external_body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        let current = RawMarkdownRead {
+            relative_path: input.relative_path.clone(),
+            body: external_body.clone(),
+            revision: markdown::revision(&bytes),
+            uses_crlf,
+            has_bom,
+        };
+        if current.revision == input.base_revision {
+            return Ok(RawReconcileResult::Unchanged { current });
+        }
+        match Self::merge_raw_body(&input, &external_body) {
+            Some(merged) => Ok(RawReconcileResult::Merged {
+                current: RawMarkdownRead {
+                    body: merged,
+                    ..current
+                },
+            }),
+            None => Ok(RawReconcileResult::Conflict { current }),
+        }
+    }
+
+    fn merge_raw_body(input: &RawReconcileInput, external_body: &str) -> Option<String> {
+        merge_markdown_text(&input.base_body, &input.local_body, external_body)
+    }
+
+    /// Reconcile and durably commit a raw Markdown draft. A clean base writes
+    /// the local body; a changed base merges line-by-line and snapshots the
+    /// displaced external version. CRLF and BOM conventions are preserved.
+    pub fn save_raw_markdown(&self, input: RawSaveInput) -> Result<RawSaveResult> {
+        let relative = crate::path::validate_relative(&input.relative_path, "raw_markdown_save")?
+            .to_str()
+            .ok_or_else(|| {
+                CoreError::validation(
+                    "non_utf8_path",
+                    "The raw Markdown path is not UTF-8",
+                    "raw_markdown_save",
+                )
+            })?
+            .replace('\\', "/");
+        let path = validate_raw_markdown_path(&self.root, &relative)?;
+        let _guard = self.write_lock("raw_markdown_save")?;
+        if !path.exists() {
+            return Err(CoreError::validation(
+                "raw_markdown_missing",
+                "The Markdown file no longer exists",
+                "raw_markdown_save",
+            ));
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CoreError::io(error, "raw_markdown_save", Some(&relative)))?;
+        let (external_body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        let current = RawMarkdownRead {
+            relative_path: relative.clone(),
+            body: external_body.clone(),
+            revision: markdown::revision(&bytes),
+            uses_crlf,
+            has_bom,
+        };
+        let merged_body = if current.revision == input.base_revision {
+            input.local_body.clone()
+        } else {
+            match merge_markdown_text(&input.base_body, &input.local_body, &external_body) {
+                Some(merged) => {
+                    let segment = raw_history_dir(&relative);
+                    write_snapshot(
+                        &self.root,
+                        "raw_markdown_save",
+                        &segment,
+                        "external",
+                        &bytes,
+                    )?;
+                    merged
+                }
+                None => return Ok(RawSaveResult::Conflict { current }),
+            }
+        };
+        let next_bytes = compose_raw_bytes(&merged_body, uses_crlf, has_bom);
+        let next_relative = PathBuf::from(&relative);
+        atomic_write_checked(
+            &self.root,
+            &next_relative,
+            &next_bytes,
+            None,
+            "raw_markdown_save",
+        )?;
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.insert(relative.clone(), markdown::revision(&next_bytes));
+        }
+        self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_save")?;
+        self.emit(
+            "file:changed",
+            "application",
+            serde_json::json!({ "paths": [relative] }),
+        );
+        self.emit("search:index-updated", "application", serde_json::json!({}));
+        Ok(RawSaveResult::Saved {
+            current: RawMarkdownRead {
+                relative_path: relative,
+                body: merged_body,
+                revision: markdown::revision(&next_bytes),
+                uses_crlf,
+                has_bom,
+            },
+        })
+    }
+
+    /// Adopt the external file version or replace it with the reviewed local
+    /// draft. Both directions snapshot the version they displace first.
+    pub fn resolve_raw_conflict(&self, input: RawConflictResolveInput) -> Result<RawMarkdownRead> {
+        let relative =
+            crate::path::validate_relative(&input.relative_path, "raw_markdown_resolve")?
+                .to_str()
+                .ok_or_else(|| {
+                    CoreError::validation(
+                        "non_utf8_path",
+                        "The raw Markdown path is not UTF-8",
+                        "raw_markdown_resolve",
+                    )
+                })?
+                .replace('\\', "/");
+        let path = validate_raw_markdown_path(&self.root, &relative)?;
+        let _guard = self.write_lock("raw_markdown_resolve")?;
+        if !path.exists() {
+            return Err(CoreError::validation(
+                "raw_markdown_missing",
+                "The Markdown file no longer exists",
+                "raw_markdown_resolve",
+            ));
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CoreError::io(error, "raw_markdown_resolve", Some(&relative)))?;
+        if markdown::revision(&bytes) != input.current_revision {
+            let mut error = CoreError::new(
+                "revision_conflict",
+                ErrorCategory::Conflict,
+                "The file changed again while the conflict was being reviewed",
+                "raw_markdown_resolve",
+            );
+            error.details = Some(serde_json::json!({
+                "currentRevision": markdown::revision(&bytes),
+            }));
+            return Err(error);
+        }
+        let (external_body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        match input.resolution {
+            ConflictResolution::UseExternal => {
+                let segment = raw_history_dir(&relative);
+                let local_bytes = compose_raw_bytes(&input.local_body, uses_crlf, has_bom);
+                write_snapshot(
+                    &self.root,
+                    "raw_markdown_resolve",
+                    &segment,
+                    "local",
+                    &local_bytes,
+                )?;
+                Ok(RawMarkdownRead {
+                    relative_path: relative,
+                    body: external_body,
+                    revision: markdown::revision(&bytes),
+                    uses_crlf,
+                    has_bom,
+                })
+            }
+            ConflictResolution::ReplaceExternal => {
+                let segment = raw_history_dir(&relative);
+                write_snapshot(
+                    &self.root,
+                    "raw_markdown_resolve",
+                    &segment,
+                    "external",
+                    &bytes,
+                )?;
+                let next_bytes = compose_raw_bytes(&input.local_body, uses_crlf, has_bom);
+                let next_relative = PathBuf::from(&relative);
+                atomic_write_checked(
+                    &self.root,
+                    &next_relative,
+                    &next_bytes,
+                    None,
+                    "raw_markdown_resolve",
+                )?;
+                if let Ok(mut journal) = self.self_writes.lock() {
+                    journal.insert(relative.clone(), markdown::revision(&next_bytes));
+                }
+                self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_resolve")?;
+                self.emit(
+                    "file:changed",
+                    "application",
+                    serde_json::json!({ "paths": [relative] }),
+                );
+                self.emit("search:index-updated", "application", serde_json::json!({}));
+                Ok(RawMarkdownRead {
+                    relative_path: relative,
+                    body: input.local_body,
+                    revision: markdown::revision(&next_bytes),
+                    uses_crlf,
+                    has_bom,
+                })
+            }
+        }
+    }
+
     pub fn query_objects(&self, object_type: Option<&str>) -> Result<Vec<WorkspaceObject>> {
         self.index
             .lock()
@@ -1067,7 +1604,8 @@ impl WorkspaceEngine {
         id: &str,
         operation: &str,
     ) -> Result<(WorkspaceObject, Vec<u8>)> {
-        if !valid_object_id(id, "note") {
+        let object_type = id.split('_').next().unwrap_or_default();
+        if object_type.is_empty() || !valid_object_id(id, object_type) {
             return Err(CoreError::validation(
                 "invalid_object_id",
                 "The object ID is invalid",
@@ -1107,7 +1645,11 @@ impl WorkspaceEngine {
     }
 
     fn snapshot_bytes(&self, id: &str, kind: &str, bytes: &[u8]) -> Result<()> {
-        if !valid_object_id(id, "note") || !matches!(kind, "local" | "external") {
+        let object_type = id.split('_').next().unwrap_or_default();
+        if object_type.is_empty()
+            || !valid_object_id(id, object_type)
+            || !matches!(kind, "local" | "external")
+        {
             return Err(CoreError::validation(
                 "invalid_history_target",
                 "The recovery snapshot target is invalid",
@@ -1410,6 +1952,165 @@ fn merge_markdown_body(base: &str, local: &str, external: &str) -> Option<String
         return None;
     }
     diffy::merge(base, local, external).ok()
+}
+
+fn merge_markdown_text(base: &str, local: &str, external: &str) -> Option<String> {
+    diffy::merge(base, local, external).ok()
+}
+
+/// Merge a managed draft field-by-field against the canonical file. Body text
+/// merges line-by-line; title and every top-level property merge
+/// independently. Differences to the same field from both sides conflict.
+fn merge_managed_fields(
+    base: &ManagedDraftInput,
+    canonical: &WorkspaceObject,
+) -> Result<WorkspaceObject> {
+    let merged_body = merge_markdown_text(&base.base_body, &base.local_body, &canonical.body)
+        .ok_or_else(|| {
+            CoreError::new(
+                "draft_conflict",
+                ErrorCategory::Conflict,
+                "The body changed on both sides and requires manual review",
+                "managed_draft_merge",
+            )
+        })?;
+    let merged_title = if base.local_title != base.base_title {
+        base.local_title.clone()
+    } else {
+        canonical.title.clone()
+    };
+    let mut merged_properties = canonical.properties.clone();
+    for (key, local_value) in &base.local_properties {
+        let external_value = canonical.properties.get(key);
+        let base_value = base.base_properties.get(key);
+        let locally_changed = Some(local_value) != base_value;
+        let externally_changed = external_value != base_value;
+        if locally_changed && externally_changed && external_value != Some(local_value) {
+            return Err(CoreError::new(
+                "draft_conflict",
+                ErrorCategory::Conflict,
+                "The same property changed on both sides and requires manual review",
+                "managed_draft_merge",
+            ));
+        }
+        if locally_changed {
+            merged_properties.insert(key.clone(), local_value.clone());
+        } else if externally_changed {
+            merged_properties.insert(
+                key.clone(),
+                external_value.cloned().unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+    for key in base.base_properties.keys() {
+        if !base.local_properties.contains_key(key)
+            && !canonical.properties.contains_key(key)
+            && !matches!(key.as_str(), "id" | "type" | "created" | "updated")
+        {
+            merged_properties.remove(key);
+        }
+    }
+    Ok(WorkspaceObject {
+        id: canonical.id.clone(),
+        object_type: canonical.object_type.clone(),
+        title: merged_title,
+        body: merged_body,
+        relative_path: canonical.relative_path.clone(),
+        revision: canonical.revision.clone(),
+        created: canonical.created.clone(),
+        updated: canonical.updated.clone(),
+        properties: merged_properties,
+    })
+}
+
+fn normalized_properties(
+    properties: &BTreeMap<String, serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    properties
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "id" | "type" | "created" | "updated"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn compose_raw_bytes(body: &str, uses_crlf: bool, has_bom: bool) -> Vec<u8> {
+    let text = if uses_crlf {
+        body.replace('\n', "\r\n")
+    } else {
+        body.to_owned()
+    };
+    let mut bytes = if has_bom {
+        b"\xEF\xBB\xBF".to_vec()
+    } else {
+        Vec::new()
+    };
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+
+fn split_raw_bytes(bytes: &[u8]) -> Result<(String, bool, bool)> {
+    let (has_bom, text_bytes) = if bytes.starts_with(b"\xEF\xBB\xBF") {
+        (true, &bytes[3..])
+    } else {
+        (false, bytes)
+    };
+    let text = std::str::from_utf8(text_bytes).map_err(|_| {
+        CoreError::new(
+            "invalid_utf8",
+            ErrorCategory::Parse,
+            "The raw Markdown file is not UTF-8",
+            "raw_markdown_read",
+        )
+    })?;
+    let uses_crlf = text.contains("\r\n");
+    let body = text.replace("\r\n", "\n");
+    Ok((body, uses_crlf, has_bom))
+}
+
+fn validate_raw_markdown_path(root: &Path, relative: &str) -> Result<PathBuf> {
+    if !relative.to_ascii_lowercase().ends_with(".md") {
+        return Err(CoreError::validation(
+            "invalid_raw_markdown_path",
+            "Raw edits are limited to Markdown files",
+            "raw_markdown",
+        ));
+    }
+    resolve_for_write(root, relative, "raw_markdown")
+}
+
+fn raw_history_dir(relative: &str) -> String {
+    let digest = blake3::hash(relative.as_bytes()).to_hex();
+    format!("raw-{}", &digest[..16])
+}
+
+fn write_snapshot(
+    root: &Path,
+    operation: &str,
+    segment: &str,
+    kind: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let revision = markdown::revision(bytes);
+    let relative_path = PathBuf::from(".noura")
+        .join("history")
+        .join(segment)
+        .join(format!("{revision}-{kind}.md"));
+    let relative = relative_path.to_str().ok_or_else(|| {
+        CoreError::validation(
+            "non_utf8_path",
+            "The recovery snapshot path is not UTF-8",
+            "history_snapshot",
+        )
+    })?;
+    let destination = resolve_for_write(root, relative, operation)?;
+    if destination.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
+    }
+    atomic_write(root, &relative_path, bytes, operation)
 }
 
 #[cfg(unix)]

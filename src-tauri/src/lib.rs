@@ -1,13 +1,16 @@
 #![allow(
     clippy::result_large_err,
-    reason = "Tauri commands return the complete structured CoreError contract over IPC"
+    clippy::manual_div_ceil,
+    reason = "Tauri commands return the complete structured CoreError contract over IPC; base64 sizing is intentional"
 )]
 
 use std::sync::{Arc, Mutex};
 
 use local_core::{
     AiFoundation, AiInvokeInput, AiProviderConfig, AiResponse, CalendarEntry, CoreError, CoreEvent,
-    CreateObjectInput, DraftReconcileInput, DraftReconcileResult, MutationResult, ObjectPatch,
+    CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ManagedConflictResolveInput,
+    ManagedDraftInput, ManagedDraftResult, MutationResult, ObjectPatch, RawConflictResolveInput,
+    RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult,
     ResolveConflictInput, SearchInput, SearchResult, UnmanagedFile, WorkspaceEngine,
     WorkspaceEntry, WorkspaceObject, WorkspaceState,
 };
@@ -384,6 +387,143 @@ fn notes_resolve_conflict(
         engine.resolve_note_conflict(input)
     })
 }
+
+#[tauri::command]
+fn managed_draft_save(
+    state: State<AppState>,
+    input: ManagedDraftInput,
+) -> Result<ManagedDraftResult, CoreError> {
+    with_engine(&state, "managed_draft_save", |engine| {
+        engine.save_managed_draft(input)
+    })
+}
+
+#[tauri::command]
+fn managed_draft_reconcile(
+    state: State<AppState>,
+    input: ManagedDraftInput,
+) -> Result<ManagedDraftResult, CoreError> {
+    with_engine(&state, "managed_draft_reconcile", |engine| {
+        engine.reconcile_managed_draft(input)
+    })
+}
+
+#[tauri::command]
+fn managed_conflict_resolve(
+    state: State<AppState>,
+    input: ManagedConflictResolveInput,
+) -> Result<WorkspaceObject, CoreError> {
+    with_engine(&state, "managed_conflict_resolve", |engine| {
+        engine.resolve_managed_conflict(input)
+    })
+}
+
+#[tauri::command]
+fn raw_markdown_read(
+    state: State<AppState>,
+    relative_path: String,
+) -> Result<RawMarkdownRead, CoreError> {
+    with_engine(&state, "raw_markdown_read", |engine| {
+        engine.read_raw_markdown(&relative_path)
+    })
+}
+
+#[tauri::command]
+fn raw_markdown_save(
+    state: State<AppState>,
+    input: RawSaveInput,
+) -> Result<RawSaveResult, CoreError> {
+    with_engine(&state, "raw_markdown_save", |engine| {
+        engine.save_raw_markdown(input)
+    })
+}
+
+#[tauri::command]
+fn raw_markdown_reconcile(
+    state: State<AppState>,
+    input: RawReconcileInput,
+) -> Result<RawReconcileResult, CoreError> {
+    with_engine(&state, "raw_markdown_reconcile", |engine| {
+        engine.reconcile_raw_markdown(input)
+    })
+}
+
+#[tauri::command]
+fn raw_markdown_resolve(
+    state: State<AppState>,
+    input: RawConflictResolveInput,
+) -> Result<RawMarkdownRead, CoreError> {
+    with_engine(&state, "raw_markdown_resolve", |engine| {
+        engine.resolve_raw_conflict(input)
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetInput {
+    relative_path: String,
+}
+
+const MIME_BY_EXTENSION: &[(&str, &str)] = &[
+    ("apng", "image/apng"),
+    ("avif", "image/avif"),
+    ("gif", "image/gif"),
+    ("jpeg", "image/jpeg"),
+    ("jpg", "image/jpeg"),
+    ("png", "image/png"),
+    ("svg", "image/svg+xml"),
+    ("webp", "image/webp"),
+];
+
+const MAX_ASSET_BYTES: i64 = 20 * 1024 * 1024;
+
+#[tauri::command]
+fn files_read_local_asset(
+    state: State<AppState>,
+    input: AssetInput,
+) -> Result<serde_json::Value, CoreError> {
+    with_engine(&state, "files_read_local_asset", |engine| {
+        let bytes = engine.read_local_asset(&input.relative_path, MAX_ASSET_BYTES)?;
+        let extension = input
+            .relative_path
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let mime = MIME_BY_EXTENSION
+            .iter()
+            .find(|(candidate, _)| *candidate == extension)
+            .map(|(_, mime)| *mime)
+            .unwrap_or("application/octet-stream");
+        Ok(serde_json::json!({
+            "dataUrl": format!("data:{mime};base64,{}", base64_encode(&bytes)),
+        }))
+    })
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        output.push(TABLE[((triple >> 18) & 63) as usize] as char);
+        output.push(TABLE[((triple >> 12) & 63) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            TABLE[((triple >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(triple & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
 #[tauri::command]
 fn objects_move(
     state: State<AppState>,
@@ -556,6 +696,14 @@ pub fn run() {
             objects_update,
             notes_reconcile_draft,
             notes_resolve_conflict,
+            managed_draft_save,
+            managed_draft_reconcile,
+            managed_conflict_resolve,
+            raw_markdown_read,
+            raw_markdown_save,
+            raw_markdown_reconcile,
+            raw_markdown_resolve,
+            files_read_local_asset,
             objects_move,
             objects_delete,
             objects_adopt,

@@ -28,6 +28,15 @@ import type {
 	WorkspaceObject,
 	WorkspaceState,
 	ResolveConflictInput,
+	ManagedDraftInput,
+	ManagedDraftResult,
+	ManagedConflictResolveInput,
+	RawMarkdownRead,
+	RawReconcileInput,
+	RawReconcileResult,
+	RawSaveInput,
+	RawSaveResult,
+	RawConflictResolveInput,
 } from '@noura/shared';
 export type * from '@noura/shared';
 export { isCoreError } from '@noura/shared';
@@ -88,6 +97,11 @@ export interface NoteService extends ObjectService<Note> {
 	}): Promise<MutationResult<Note>>;
 	reconcileDraft(input: DraftReconcileInput): Promise<DraftReconcileResult>;
 	resolveConflict(input: ResolveConflictInput): Promise<MutationResult<Note>>;
+	saveDraft(input: ManagedDraftInput): Promise<ManagedDraftResult>;
+	reconcileManaged(input: ManagedDraftInput): Promise<ManagedDraftResult>;
+	resolveManagedConflict(
+		input: ManagedConflictResolveInput,
+	): Promise<WorkspaceObject>;
 }
 export interface TaskService extends ObjectService<Task> {
 	complete(input: {
@@ -98,6 +112,11 @@ export interface TaskService extends ObjectService<Task> {
 		id: string;
 		expectedRevision: string;
 	}): Promise<MutationResult<Task>>;
+	saveDraft(input: ManagedDraftInput): Promise<ManagedDraftResult>;
+	reconcileManaged(input: ManagedDraftInput): Promise<ManagedDraftResult>;
+	resolveManagedConflict(
+		input: ManagedConflictResolveInput,
+	): Promise<WorkspaceObject>;
 }
 export interface ProjectService extends ObjectService<Project> {
 	listTasks(input: { projectId: string }): Promise<Task[]>;
@@ -131,6 +150,11 @@ export interface KanbanService {
 export interface FileService {
 	list(): Promise<WorkspaceEntry[]>;
 	listNonManagedMarkdown(): Promise<UnmanagedFile[]>;
+	readRawMarkdown(input: { relativePath: string }): Promise<RawMarkdownRead>;
+	saveRawMarkdown(input: RawSaveInput): Promise<RawSaveResult>;
+	reconcileRawMarkdown(input: RawReconcileInput): Promise<RawReconcileResult>;
+	resolveRawConflict(input: RawConflictResolveInput): Promise<RawMarkdownRead>;
+	readLocalAsset(input: { relativePath: string }): Promise<{ dataUrl: string }>;
 }
 
 export interface NouraClient {
@@ -238,6 +262,16 @@ export function createNouraClient(
 			list: () => transport.request('files_list'),
 			listNonManagedMarkdown: () =>
 				transport.request('files_list_non_managed_markdown'),
+			readRawMarkdown: (input) =>
+				transport.request('raw_markdown_read', { input }),
+			saveRawMarkdown: (input) =>
+				transport.request('raw_markdown_save', { input }),
+			reconcileRawMarkdown: (input) =>
+				transport.request('raw_markdown_reconcile', { input }),
+			resolveRawConflict: (input) =>
+				transport.request('raw_markdown_resolve', { input }),
+			readLocalAsset: (input) =>
+				transport.request('files_read_local_asset', { input }),
 		},
 		notes: {
 			...noteObjects,
@@ -249,6 +283,11 @@ export function createNouraClient(
 				transport.request('notes_reconcile_draft', { input }),
 			resolveConflict: (input) =>
 				transport.request('notes_resolve_conflict', { input }),
+			saveDraft: (input) => transport.request('managed_draft_save', { input }),
+			reconcileManaged: (input) =>
+				transport.request('managed_draft_reconcile', { input }),
+			resolveManagedConflict: (input) =>
+				transport.request('managed_conflict_resolve', { input }),
 		},
 		tasks: {
 			...taskObjects,
@@ -262,6 +301,11 @@ export function createNouraClient(
 					expectedRevision,
 					properties: { status: 'todo' },
 				}),
+			saveDraft: (input) => transport.request('managed_draft_save', { input }),
+			reconcileManaged: (input) =>
+				transport.request('managed_draft_reconcile', { input }),
+			resolveManagedConflict: (input) =>
+				transport.request('managed_conflict_resolve', { input }),
 		},
 		projects: {
 			...projectObjects,

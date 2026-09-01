@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use local_core::{
-    CreateObjectInput, ObjectPatch, ParseStatus, ParsedMarkdown, SearchInput, WorkspaceEngine,
-    WorkspaceEntryKind, WorkspaceManifest, parse_markdown,
+    ConflictResolution, CreateObjectInput, ManagedDraftInput, ManagedDraftResult, ObjectPatch,
+    ParseStatus, ParsedMarkdown, RawConflictResolveInput, RawSaveInput, RawSaveResult, SearchInput,
+    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -13,6 +14,76 @@ fn engine() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceEngine) {
         WorkspaceEngine::create_with_app_data(workspace.path(), "Domain tests", app_data.path())
             .unwrap();
     (workspace, app_data, engine)
+}
+
+#[test]
+fn managed_draft_save_merges_disjoint_fields_and_snapshots_external_version() {
+    let (workspace, app_data, engine) = engine();
+    let created = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Ship beta".into(),
+            body: "first opening\n\nsecond line detail".into(),
+            relative_path: None,
+            properties: BTreeMap::from([
+                ("status".into(), serde_json::json!("todo")),
+                ("priority".into(), serde_json::json!("medium")),
+            ]),
+        })
+        .unwrap();
+    let base = created.value;
+    let external = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+    external
+        .update_object(
+            &base.id,
+            ObjectPatch {
+                title: None,
+                body: Some("first opening\n\nsecond line detail from file".into()),
+                properties: BTreeMap::from([("priority".into(), serde_json::json!("high"))]),
+                remove_properties: Vec::new(),
+                expected_revision: base.revision.clone(),
+            },
+        )
+        .unwrap();
+    let local = ManagedDraftInput {
+        id: base.id.clone(),
+        base_revision: base.revision.clone(),
+        base_title: base.title.clone(),
+        base_body: "first opening\n\nsecond line detail".into(),
+        base_properties: base.properties.clone(),
+        local_title: base.title.clone(),
+        local_body: "first opening edited locally\n\nsecond line detail".into(),
+        local_properties: BTreeMap::from([("status".into(), serde_json::json!("in-progress"))]),
+    };
+    let result = engine.save_managed_draft(local).unwrap();
+    let ManagedDraftResult::Merged {
+        current,
+        title,
+        body,
+        properties,
+    } = result
+    else {
+        panic!("expected merged draft, got {result:?}");
+    };
+    assert_eq!(title, "Ship beta");
+    assert_eq!(
+        body,
+        "first opening edited locally\n\nsecond line detail from file",
+    );
+    assert_eq!(properties["status"], serde_json::json!("in-progress"));
+    assert_eq!(properties["priority"], serde_json::json!("high"));
+    assert_ne!(current.revision, base.revision);
+    assert!(
+        workspace
+            .path()
+            .join(".noura/history")
+            .join(&base.id)
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some(),
+        "external snapshot should be recoverable"
+    );
 }
 
 #[test]
@@ -409,4 +480,161 @@ fn workspace_entries_skip_symlinks() {
             .iter()
             .any(|entry| entry.relative_path == "shortcut")
     );
+}
+
+#[test]
+fn overlapping_managed_property_edits_conflict_without_writing() {
+    let (_workspace, app_data, engine) = engine();
+    let created = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Conflict".into(),
+            body: "body".into(),
+            relative_path: None,
+            properties: BTreeMap::from([("status".into(), serde_json::json!("todo"))]),
+        })
+        .unwrap();
+    let base = created.value;
+    let external = WorkspaceEngine::open_with_app_data(engine.root(), app_data.path()).unwrap();
+    external
+        .update_object(
+            &base.id,
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("status".into(), serde_json::json!("done"))]),
+                remove_properties: Vec::new(),
+                expected_revision: base.revision.clone(),
+            },
+        )
+        .unwrap();
+    let input = ManagedDraftInput {
+        id: base.id.clone(),
+        base_revision: base.revision.clone(),
+        base_title: base.title.clone(),
+        base_body: base.body.clone(),
+        base_properties: base.properties.clone(),
+        local_title: base.title.clone(),
+        local_body: base.body.clone(),
+        local_properties: BTreeMap::from([("status".into(), serde_json::json!("in-progress"))]),
+    };
+    let result = engine.save_managed_draft(input).unwrap();
+    assert!(matches!(result, ManagedDraftResult::Conflict { .. }));
+}
+
+#[test]
+fn raw_markdown_save_preserves_crlf_and_bom_and_reindexes() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(
+        workspace.path().join("scratch.md"),
+        b"\xEF\xBB\xBF# Scratch\r\n\r\nlorem\r\n",
+    )
+    .unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("scratch.md").unwrap();
+    assert!(base.has_bom);
+    assert!(base.uses_crlf);
+    assert!(base.body.starts_with("# Scratch\n"));
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "scratch.md".into(),
+            base_revision: base.revision.clone(),
+            base_body: base.body.clone(),
+            local_body: "# Scratch\n\nlorem\n\nmore\n".into(),
+        })
+        .unwrap();
+    let RawSaveResult::Saved { current } = saved else {
+        panic!("expected saved raw markdown, got {saved:?}");
+    };
+    assert!(current.uses_crlf);
+    assert!(current.has_bom);
+    assert_eq!(current.body, "# Scratch\n\nlorem\n\nmore\n");
+    let bytes = std::fs::read(workspace.path().join("scratch.md")).unwrap();
+    assert_eq!(bytes, b"\xEF\xBB\xBF# Scratch\r\n\r\nlorem\r\n\r\nmore\r\n");
+}
+
+#[test]
+fn raw_markdown_rejects_traversal_and_non_markdown_paths() {
+    let (_workspace, _app_data, engine) = engine();
+    assert!(engine.read_raw_markdown("../outside.md").is_err());
+    assert!(engine.read_raw_markdown("notes/file.txt").is_err());
+    assert!(engine.read_raw_markdown(".noura/history/notes.md").is_err());
+}
+
+#[test]
+fn raw_conflict_resolution_snapshots_each_side() {
+    let (workspace, app_data, engine) = engine();
+    std::fs::write(workspace.path().join("diary.md"), "day one\n").unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("diary.md").unwrap();
+    let external = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+    std::fs::write(
+        external.root().join("diary.md"),
+        "day one\nday two external\n",
+    )
+    .unwrap();
+    external.reconcile().unwrap();
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "diary.md".into(),
+            base_revision: base.revision.clone(),
+            base_body: base.body.clone(),
+            local_body: "day one\nday two local\n".into(),
+        })
+        .unwrap();
+    let RawSaveResult::Conflict { current } = saved else {
+        panic!("expected raw conflict, got {saved:?}");
+    };
+    let adopted = engine
+        .resolve_raw_conflict(RawConflictResolveInput {
+            relative_path: "diary.md".into(),
+            current_revision: current.revision.clone(),
+            local_body: "day one\nday two local\n".into(),
+            resolution: ConflictResolution::ReplaceExternal,
+        })
+        .unwrap();
+    assert_eq!(adopted.body, "day one\nday two local\n");
+    let history = workspace.path().join(".noura/history");
+    assert!(history.read_dir().unwrap().next().is_some());
+}
+
+#[test]
+fn managed_conflict_keeps_current_revisions_until_resolution() {
+    let (_workspace, _app_data, engine) = engine();
+    let created = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Pinned".into(),
+            body: "body".into(),
+            relative_path: None,
+            properties: BTreeMap::from([("status".into(), serde_json::json!("todo"))]),
+        })
+        .unwrap();
+    let base = created.value;
+    let external =
+        WorkspaceEngine::open_with_app_data(engine.root(), tempdir().unwrap().path()).unwrap();
+    external
+        .update_object(
+            &base.id,
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("status".into(), serde_json::json!("done"))]),
+                remove_properties: Vec::new(),
+                expected_revision: base.revision.clone(),
+            },
+        )
+        .unwrap();
+    let input = ManagedDraftInput {
+        id: base.id.clone(),
+        base_revision: base.revision.clone(),
+        base_title: base.title.clone(),
+        base_body: base.body.clone(),
+        base_properties: base.properties.clone(),
+        local_title: base.title.clone(),
+        local_body: base.body.clone(),
+        local_properties: BTreeMap::from([("status".into(), serde_json::json!("in-progress"))]),
+    };
+    let result = engine.save_managed_draft(input).unwrap();
+    assert!(matches!(result, ManagedDraftResult::Conflict { .. }));
 }

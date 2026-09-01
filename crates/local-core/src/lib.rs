@@ -14,8 +14,10 @@ mod watcher;
 
 pub use ai::*;
 pub use engine::{
-    ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ObjectPatch,
-    ResolveConflictInput, WorkspaceEngine,
+    ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult,
+    ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
+    ObjectPatch, RawConflictResolveInput, RawMarkdownRead, RawReconcileInput, RawReconcileResult,
+    RawSaveInput, RawSaveResult, ResolveConflictInput, WorkspaceEngine,
 };
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{CalendarEntry, IndexStore, SearchInput, SearchResult};

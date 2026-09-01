@@ -128,3 +128,111 @@
 		@apply font-sans;
 	}
 }
+
+/* Live Preview (CodeMirror) — boundaries only; typography lives in the theme. */
+.live-md .cm-editor {
+	background: transparent;
+	height: 100%;
+}
+.live-md .cm-scroller {
+	font-family: inherit;
+	line-height: 1.75;
+}
+.live-md .cm-content {
+	caret-color: var(--foreground);
+	padding: 0.5rem 0;
+}
+.live-md .cm-line {
+	padding: 0.1rem 0.25rem;
+}
+.live-md .cm-md-h1 {
+	font-size: 2rem;
+	font-weight: 600;
+	line-height: 1.3;
+	padding: 0.6rem 0 0.2rem;
+}
+.live-md .cm-md-h2 {
+	font-size: 1.6rem;
+	font-weight: 600;
+	padding: 0.5rem 0 0.2rem;
+}
+.live-md .cm-md-h3 {
+	font-size: 1.3rem;
+	font-weight: 600;
+	padding: 0.4rem 0 0.2rem;
+}
+.live-md .cm-md-h4 {
+	font-size: 1.1rem;
+	font-weight: 600;
+}
+.live-md .cm-md-strong {
+	font-weight: 700;
+}
+.live-md .cm-md-emphasis {
+	font-style: italic;
+}
+.live-md .cm-md-strike {
+	text-decoration: line-through;
+}
+.live-md .cm-md-code {
+	font-family: var(--font-mono, monospace);
+	background: var(--muted);
+	border-radius: 0.25rem;
+	padding: 0.05rem 0.3rem;
+}
+.live-md .cm-md-url {
+	color: var(--muted-foreground);
+}
+.live-md .cm-md-list-mark,
+.live-md .cm-md-quote-line {
+	color: var(--muted-foreground);
+}
+.live-md .cm-md-quote-line {
+	border-left: 2px solid var(--border);
+	padding-left: 0.75rem;
+}
+.live-md .cm-md-table-row {
+	font-variant-numeric: tabular-nums;
+}
+.live-md .cm-md-task-done {
+	color: var(--muted-foreground);
+	text-decoration: line-through;
+}
+.live-md .cm-md-checkbox {
+	display: inline-block;
+	width: 0.9rem;
+	height: 0.9rem;
+	border: 1px solid var(--muted-foreground);
+	border-radius: 0.2rem;
+	margin: 0 0.45rem 0 0;
+	cursor: pointer;
+	vertical-align: text-bottom;
+}
+.live-md .cm-md-checkbox[aria-checked='true'] {
+	background: var(--primary);
+	border-color: var(--primary);
+}
+.live-md .cm-md-image {
+	display: block;
+	padding: 0.35rem 0;
+}
+.live-md .cm-md-image img {
+	max-width: 100%;
+	border-radius: 0.5rem;
+	border: 1px solid var(--border);
+}
+.live-md .cm-md-image-placeholder {
+	border: 1px dashed var(--border);
+	border-radius: 0.5rem;
+	color: var(--muted-foreground);
+	display: inline-block;
+	font-size: 0.8rem;
+	padding: 0.6rem 1rem;
+}
+.live-md .cm-md-hr-line {
+	color: var(--muted-foreground);
+	letter-spacing: 1rem;
+}
+.live-md .cm-editor.cm-focused {
+	outline: none;
+}

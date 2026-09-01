@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
-	import { Editor } from '@tiptap/core';
-	import StarterKit from '@tiptap/starter-kit';
-	import TaskList from '@tiptap/extension-task-list';
-	import TaskItem from '@tiptap/extension-task-item';
-	import { Markdown } from '@tiptap/markdown';
+	import {
+		createLiveMarkdownDocument,
+		createLiveMarkdownEditor,
+		formattingCommands,
+		type LiveMarkdownEditor,
+	} from '@noura/editor';
 	import type { CoreEvent, Note } from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
 	import { AutosaveCoordinator } from '$lib/editor/autosave';
@@ -13,7 +14,6 @@
 		saveNoteWithReconciliation,
 		type NoteDraft,
 	} from '$lib/editor/note-save';
-	import { reconcileNoteTitle } from '$lib/editor/title-reconciliation';
 	import { registerPendingDraft } from '$lib/editor/pending-drafts.svelte';
 	import MarkdownPreview from '$lib/components/markdown-preview.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
@@ -27,7 +27,7 @@
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
 	import TextB from 'phosphor-svelte/lib/TextB';
 	import TextItalic from 'phosphor-svelte/lib/TextItalic';
-	import TextUnderline from 'phosphor-svelte/lib/TextUnderline';
+	import LinkSimple from 'phosphor-svelte/lib/LinkSimple';
 	import ListBullets from 'phosphor-svelte/lib/ListBullets';
 	import ListNumbers from 'phosphor-svelte/lib/ListNumbers';
 	import Checks from 'phosphor-svelte/lib/Checks';
@@ -62,7 +62,7 @@
 	let baseBody = $state(initialNote()?.body ?? '');
 	let baseTitle = $state(initialNote()?.title ?? '');
 	let baseRevision = $state(initialNote()?.revision ?? '');
-	let editor = $state.raw<Editor | null>(null);
+	let editor = $state.raw<LiveMarkdownEditor | null>(null);
 	let coordinator = $state.raw<AutosaveCoordinator<NoteDraft> | null>(null);
 	let autosaveError = $state<unknown | null>(null);
 	let conflict = $state.raw<ConflictState | null>(null);
@@ -74,9 +74,12 @@
 	let toolbarRevision = $state(0);
 	let blockStyle = $derived.by<BlockStyle>(() => {
 		toolbarRevision;
-		if (editor?.isActive('heading', { level: 1 })) return 'heading-1';
-		if (editor?.isActive('heading', { level: 2 })) return 'heading-2';
-		if (editor?.isActive('heading', { level: 3 })) return 'heading-3';
+		const view = editor?.view;
+		if (!view) return 'paragraph';
+		const line = view.state.doc.lineAt(view.state.selection.main.from).text;
+		if (line.startsWith('### ')) return 'heading-3';
+		if (line.startsWith('## ')) return 'heading-2';
+		if (line.startsWith('# ')) return 'heading-1';
 		return 'paragraph';
 	});
 	let blockStyleLabel = $derived(
@@ -104,24 +107,12 @@
 	function currentDraft(): NoteDraft {
 		return {
 			title: draftTitle,
-			body: editor?.getMarkdown() ?? coordinator?.getDraft()?.body ?? baseBody,
+			body: editor?.doc() ?? coordinator?.getDraft()?.body ?? baseBody,
 		};
 	}
 
-	function replaceEditorBody(body: string, preserveSelection = true) {
-		if (!editor || editor.getMarkdown() === body) return;
-		const selection = editor.state.selection;
-		editor.commands.setContent(body, {
-			contentType: 'markdown',
-			emitUpdate: false,
-		});
-		if (preserveSelection) {
-			const maximum = editor.state.doc.content.size;
-			editor.commands.setTextSelection({
-				from: Math.min(selection.from, maximum),
-				to: Math.min(selection.to, maximum),
-			});
-		}
+	function replaceEditorBody(body: string) {
+		editor?.setText(body);
 	}
 
 	function setCanonical(value: Note) {
@@ -158,18 +149,44 @@
 		return (await coordinator?.flush()) ?? true;
 	}
 
-	function isActive(name: string) {
-		toolbarRevision;
-		return editor?.isActive(name) ?? false;
+	function runCommand(command: (view: never) => void) {
+		if (!editor) return;
+		(command as (view: unknown) => void)(editor.view);
+		toolbarRevision += 1;
+		editor.focus();
 	}
 
 	function applyBlockStyle(value: string) {
-		if (!editor) return;
-		const chain = editor.chain().focus();
-		if (value === 'paragraph') chain.setParagraph().run();
-		else if (value === 'heading-1') chain.setHeading({ level: 1 }).run();
-		else if (value === 'heading-2') chain.setHeading({ level: 2 }).run();
-		else if (value === 'heading-3') chain.setHeading({ level: 3 }).run();
+		const level =
+			value === 'paragraph'
+				? 0
+				: value === 'heading-1'
+					? 1
+					: value === 'heading-2'
+						? 2
+						: 3;
+		runCommand(formattingCommands.heading(level as 0 | 1 | 2 | 3));
+	}
+
+	function currentLineStartsWith(marker: string) {
+		toolbarRevision;
+		const view = editor?.view;
+		if (!view) return false;
+		const line = view.state.doc.lineAt(view.state.selection.main.from).text;
+		return line.startsWith(marker);
+	}
+
+	function selectionWrapped(marker: string) {
+		toolbarRevision;
+		const view = editor?.view;
+		if (!view) return false;
+		const { from, to } = view.state.selection.main;
+		const text = view.state.sliceDoc(from, to);
+		return (
+			text.startsWith(marker) &&
+			text.endsWith(marker) &&
+			text.length >= marker.length * 2
+		);
 	}
 
 	function editorContainer(node: HTMLDivElement) {
@@ -181,37 +198,23 @@
 			},
 		});
 		coordinator = localCoordinator;
-		const localEditor = new Editor({
-			element: node,
-			extensions: [
-				StarterKit,
-				TaskList,
-				TaskItem.configure({ nested: true }),
-				Markdown,
-			],
-			content: currentNote.body,
-			contentType: 'markdown',
-			editorProps: {
-				attributes: {
-					class: 'min-h-full outline-none',
-					'aria-label': `Edit ${currentNote.title}`,
-				},
+		const document = createLiveMarkdownDocument('note-body', currentNote.body);
+		const handle = createLiveMarkdownEditor(node, {
+			ytext: document.ytext,
+			resolveImage: (src) => {
+				if (/^https?:|^(data|asset):/.test(src)) return null;
+				const resolved = src.replace(/^\.\//, '');
+				return getNouraClient()
+					.files.readLocalAsset({ relativePath: resolved })
+					.then((asset) => asset.dataUrl)
+					.catch(() => null);
 			},
-			onUpdate: ({ editor: updatedEditor }) => {
-				localCoordinator.noteEdit({
-					title: draftTitle,
-					body: updatedEditor.getMarkdown(),
-				});
+			onChange: () => {
+				localCoordinator.noteEdit({ title: draftTitle, body: handle.doc() });
 				toolbarRevision += 1;
-			},
-			onSelectionUpdate: () => {
-				toolbarRevision += 1;
-			},
-			onBlur: () => {
-				void localCoordinator.flush();
 			},
 		});
-		editor = localEditor;
+		editor = handle;
 		const unregister = registerPendingDraft(
 			currentNote.id,
 			() => localCoordinator.flush(),
@@ -224,9 +227,10 @@
 		return () => {
 			unregister();
 			localCoordinator.destroy();
-			localEditor.destroy();
+			handle.destroy();
+			document.destroy();
 			if (coordinator === localCoordinator) coordinator = null;
-			if (editor === localEditor) editor = null;
+			if (editor === handle) editor = null;
 		};
 	}
 
@@ -270,8 +274,14 @@
 			return;
 		}
 		const canonical = reconciliation.current as Note;
-		const title = reconcileNoteTitle(baseTitle, draft.title, canonical.title);
-		if (title.status === 'conflict') {
+		let mergedTitle = canonical.title;
+		if (draft.title !== baseTitle && canonical.title === baseTitle) {
+			mergedTitle = draft.title;
+		} else if (
+			draft.title !== baseTitle &&
+			canonical.title !== baseTitle &&
+			draft.title !== canonical.title
+		) {
 			openConflict(draft, canonical);
 			return;
 		}
@@ -279,9 +289,10 @@
 		baseBody = canonical.body;
 		baseTitle = canonical.title;
 		baseRevision = canonical.revision;
-		draftTitle = title.title;
+		draftTitle = mergedTitle;
 		if (reconciliation.status === 'merged') {
-			replaceEditorBody(reconciliation.body);
+			const mergedBody = reconciliation.body;
+			replaceEditorBody(mergedBody);
 			showMessage('External changes merged');
 		}
 		coordinator?.noteEdit(currentDraft());
@@ -318,7 +329,7 @@
 			setCanonical(resolved);
 			if (pendingResolution === 'use-external') {
 				draftTitle = resolved.title;
-				replaceEditorBody(resolved.body, false);
+				replaceEditorBody(resolved.body);
 			} else {
 				draftTitle = localDraft.title;
 			}
@@ -410,67 +421,58 @@
 			<Separator orientation="vertical" class="mx-1 h-5" />
 			<Toggle
 				size="sm"
-				pressed={isActive('bold')}
-				onPressedChange={() => editor?.chain().focus().toggleBold().run()}
+				pressed={selectionWrapped('**')}
+				onPressedChange={() => runCommand(formattingCommands.bold)}
 				aria-label="Bold"
 			>
 				<TextB />
 			</Toggle>
 			<Toggle
 				size="sm"
-				pressed={isActive('italic')}
-				onPressedChange={() => editor?.chain().focus().toggleItalic().run()}
+				pressed={selectionWrapped('*')}
+				onPressedChange={() => runCommand(formattingCommands.italic)}
 				aria-label="Italic"
 			>
 				<TextItalic />
 			</Toggle>
-			<Toggle
-				size="sm"
-				pressed={isActive('underline')}
-				onPressedChange={() => editor?.chain().focus().toggleUnderline().run()}
-				aria-label="Underline"
-			>
-				<TextUnderline />
-			</Toggle>
 			<Separator orientation="vertical" class="mx-1 h-5" />
 			<Toggle
 				size="sm"
-				pressed={isActive('bulletList')}
-				onPressedChange={() => editor?.chain().focus().toggleBulletList().run()}
+				pressed={currentLineStartsWith('- ')}
+				onPressedChange={() => runCommand(formattingCommands.bulletList)}
 				aria-label="Bulleted list"
 			>
 				<ListBullets />
 			</Toggle>
 			<Toggle
 				size="sm"
-				pressed={isActive('orderedList')}
-				onPressedChange={() =>
-					editor?.chain().focus().toggleOrderedList().run()}
+				pressed={currentLineStartsWith('1. ')}
+				onPressedChange={() => runCommand(formattingCommands.numberedList)}
 				aria-label="Numbered list"
 			>
 				<ListNumbers />
 			</Toggle>
 			<Toggle
 				size="sm"
-				pressed={isActive('taskList')}
-				onPressedChange={() => editor?.chain().focus().toggleTaskList().run()}
+				pressed={currentLineStartsWith('- [ ] ')}
+				onPressedChange={() => runCommand(formattingCommands.checkList)}
 				aria-label="Checklist"
 			>
 				<Checks />
 			</Toggle>
 			<Toggle
 				size="sm"
-				pressed={isActive('blockquote')}
-				onPressedChange={() => editor?.chain().focus().toggleBlockquote().run()}
+				pressed={currentLineStartsWith('> ')}
+				onPressedChange={() => runCommand(formattingCommands.blockQuote)}
 				aria-label="Quote"
 			>
 				<Quotes />
 			</Toggle>
 			<Toggle
 				size="sm"
-				pressed={isActive('codeBlock')}
-				onPressedChange={() => editor?.chain().focus().toggleCodeBlock().run()}
-				aria-label="Code block"
+				pressed={selectionWrapped('`')}
+				onPressedChange={() => runCommand(formattingCommands.code)}
+				aria-label="Inline code"
 			>
 				<Code />
 			</Toggle>
@@ -478,8 +480,7 @@
 			<Button
 				variant="ghost"
 				size="icon-sm"
-				onclick={() => editor?.chain().focus().undo().run()}
-				disabled={!editor?.can().undo()}
+				onclick={() => editor?.undo()}
 				aria-label="Undo"
 			>
 				<ArrowCounterClockwise />
@@ -487,8 +488,7 @@
 			<Button
 				variant="ghost"
 				size="icon-sm"
-				onclick={() => editor?.chain().focus().redo().run()}
-				disabled={!editor?.can().redo()}
+				onclick={() => editor?.redo()}
 				aria-label="Redo"
 			>
 				<ArrowClockwise />
@@ -542,17 +542,7 @@
 			<div class="mx-auto min-h-full max-w-3xl px-10 py-10">
 				<div
 					{@attach editorContainer}
-					class="
-						min-h-full text-base leading-7 [&_.ProseMirror]:min-h-[60vh]
-						[&_.ProseMirror_h1]:mb-4 [&_.ProseMirror_h1]:text-3xl [&_.ProseMirror_h1]:font-semibold
-						[&_.ProseMirror_h2]:mt-7 [&_.ProseMirror_h2]:mb-3 [&_.ProseMirror_h2]:text-2xl [&_.ProseMirror_h2]:font-semibold
-						[&_.ProseMirror_h3]:mt-6 [&_.ProseMirror_h3]:mb-2 [&_.ProseMirror_h3]:text-xl [&_.ProseMirror_h3]:font-semibold
-						[&_.ProseMirror_p]:mb-3 [&_.ProseMirror_ul]:my-3 [&_.ProseMirror_ul]:pl-6
-						[&_.ProseMirror_ol]:my-3 [&_.ProseMirror_ol]:pl-6
-						[&_.ProseMirror_blockquote]:my-4 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:border-border [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:text-muted-foreground
-						[&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:rounded-md [&_.ProseMirror_pre]:bg-muted [&_.ProseMirror_pre]:p-4
-						[&_.ProseMirror_a]:underline [&_.ProseMirror_a]:underline-offset-4
-					"
+					class="live-md min-h-full text-base"
 				></div>
 			</div>
 		</div>
