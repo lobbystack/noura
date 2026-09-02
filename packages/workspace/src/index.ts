@@ -1,5 +1,5 @@
 import { readable, type Readable } from 'svelte/store';
-import { generateKeyBetween } from 'fractional-indexing';
+import { nextKanbanOrder, projectKanban } from '@noura/plugin-tasks';
 import {
 	AiRegistry,
 	type AiContextProvider,
@@ -14,10 +14,12 @@ import type {
 	DraftReconcileInput,
 	DraftReconcileResult,
 	FolderEntry,
+	ManifestUpdateInput,
 	MutationResult,
 	Note,
 	ObjectPatch,
 	ObjectQuery,
+	ObjectType,
 	Project,
 	SearchInput,
 	SearchResult,
@@ -25,6 +27,7 @@ import type {
 	TaskStatus,
 	UnmanagedFile,
 	WorkspaceEntry,
+	WorkspaceManifest,
 	WorkspaceObject,
 	WorkspaceState,
 	ResolveConflictInput,
@@ -42,6 +45,12 @@ import type {
 } from '@noura/shared';
 export type * from '@noura/shared';
 export { isCoreError } from '@noura/shared';
+export { AiRegistry } from '@noura/ai';
+export {
+	PluginHost,
+	type PluginHostServices,
+	type PluginManifest,
+} from '@noura/plugin-sdk';
 
 export interface CoreTransport {
 	request<T>(command: string, payload?: Record<string, unknown>): Promise<T>;
@@ -56,6 +65,11 @@ export {
 } from './host-lifecycle';
 export { createTauriHostLifecycle } from './tauri-host-lifecycle';
 export { activateFirstPartyPlugins, firstPartyPlugins } from './first-party';
+export {
+	PluginRuntime,
+	createPluginHostServices,
+	type PluginSyncResult,
+} from './plugin-runtime';
 
 export interface WorkspaceService {
 	pickFolder(input: { title: string }): Promise<string | null>;
@@ -181,8 +195,39 @@ export interface FileService {
 	}): Promise<{ dataUrl: string }>;
 }
 
+export interface GenericObjectService {
+	list(query?: ObjectQuery): Promise<WorkspaceObject[]>;
+	get(id: string): Promise<WorkspaceObject>;
+	create(input: {
+		type: ObjectType;
+		title: string;
+		body?: string;
+		relativePath?: string;
+		properties?: Record<string, unknown>;
+	}): Promise<MutationResult<WorkspaceObject>>;
+	update(
+		id: string,
+		patch: ObjectPatch,
+	): Promise<MutationResult<WorkspaceObject>>;
+}
+
+export interface ManifestService {
+	read(): Promise<WorkspaceManifest>;
+	update(input: ManifestUpdateInput): Promise<WorkspaceManifest>;
+}
+
+export interface PluginStateService {
+	/** Disposable cache state; index rebuilds discard it by design. */
+	get<T = unknown>(pluginId: string, key: string): Promise<T | undefined>;
+	set(pluginId: string, key: string, value: unknown): Promise<void>;
+	delete(pluginId: string, key: string): Promise<boolean>;
+}
+
 export interface NouraClient {
 	workspaces: WorkspaceService;
+	objects: GenericObjectService;
+	manifest: ManifestService;
+	pluginState: PluginStateService;
 	notes: NoteService;
 	tasks: TaskService;
 	projects: ProjectService;
@@ -214,14 +259,23 @@ export interface NouraClient {
 	};
 }
 
+function genericObjects(transport: CoreTransport): GenericObjectService {
+	return {
+		list: (query = {}) => transport.request('objects_query', { query }),
+		get: (id) => transport.request('objects_get', { id }),
+		create: (input) => transport.request('objects_create', { input }),
+		update: (id, patch) => transport.request('objects_update', { id, patch }),
+	};
+}
+
 function objects<T extends WorkspaceObject>(
 	transport: CoreTransport,
-	type: string,
+	type: ObjectType,
 ): ObjectService<T> {
 	return {
 		list: (query = {}) =>
 			transport.request('objects_query', { query: { ...query, type } }),
-		get: (id) => transport.request('objects_get', { id }),
+		get: (id) => transport.request<T>('objects_get', { id }),
 		create: (input) =>
 			transport.request('objects_create', { input: { ...input, type } }),
 		update: (id, patch) => transport.request('objects_update', { id, patch }),
@@ -265,6 +319,35 @@ export function createNouraClient(
 	const noteObjects = objects<Note>(transport, 'note');
 	const taskObjects = objects<Task>(transport, 'task');
 	const projectObjects = objects<Project>(transport, 'project');
+	const objectService = genericObjects(transport);
+	const manifestService: ManifestService = {
+		read: async () =>
+			toManifest(await transport.request<ManifestDto>('manifest_read')),
+		update: async (input) =>
+			toManifest(
+				await transport.request<ManifestDto>('manifest_update', {
+					input: {
+						name: input.name ?? null,
+						enabledPlugins: input.enabledPlugins ?? null,
+						ignore: input.ignore ?? null,
+						expectedUpdated: input.expectedUpdated ?? null,
+					},
+				}),
+			),
+	};
+	const pluginStateService: PluginStateService = {
+		get: async (pluginId, key) => {
+			const value = await transport.request<unknown>('plugin_state_get', {
+				pluginId,
+				key,
+			});
+			return value === null ? undefined : (value as never);
+		},
+		set: (pluginId, key, value) =>
+			transport.request('plugin_state_set', { pluginId, key, value }),
+		delete: (pluginId, key) =>
+			transport.request('plugin_state_delete', { pluginId, key }),
+	};
 	const calendarQuery = async (input: {
 		start: string;
 		end: string;
@@ -299,6 +382,9 @@ export function createNouraClient(
 			rebuildIndex: () => transport.request('workspace_rebuild_index'),
 			listRecent: () => transport.request('workspace_list_recent'),
 		},
+		objects: objectService,
+		manifest: manifestService,
+		pluginState: pluginStateService,
 		folders: {
 			listTree: () => transport.request('folders_list'),
 			create: (input) => transport.request('folders_create', { input }),
@@ -410,29 +496,13 @@ export function createNouraClient(
 		},
 		calendar: { queryRange: calendarQuery },
 		kanban: {
+			// The projection and ordering live in the tasks plugin: bundled
+			// domains dogfood the same public logic ecosystem plugins use.
 			getBoard: async (input = {}) => {
 				const tasks = await taskObjects.list(
 					input.projectId ? { project: input.projectId } : {},
 				);
-				const statuses: TaskStatus[] = [
-					'todo',
-					'in-progress',
-					'done',
-					'cancelled',
-				];
-				return {
-					groups: statuses.map((status) => ({
-						id: status,
-						title: status,
-						items: tasks
-							.filter((task) => task.properties.status === status)
-							.sort((left, right) =>
-								(left.properties.kanban_order ?? left.id).localeCompare(
-									right.properties.kanban_order ?? right.id,
-								),
-							),
-					})),
-				};
+				return projectKanban(tasks);
 			},
 			moveTask: async (input) => {
 				const tasks = await taskObjects.list();
@@ -444,7 +514,7 @@ export function createNouraClient(
 					? tasks.find((task) => task.id === input.beforeId)?.properties
 							.kanban_order
 					: undefined;
-				const order = generateKeyBetween(after ?? null, before ?? null);
+				const order = nextKanbanOrder(after, before);
 				return taskObjects.update(input.taskId, {
 					expectedRevision: input.expectedRevision,
 					properties: { status: input.status, kanban_order: order },
@@ -465,6 +535,33 @@ export function createNouraClient(
 		},
 		commands,
 		events: { subscribe: (handler) => transport.subscribe(handler) },
+	};
+}
+
+/**
+ * The Rust manifest DTO keeps snake_case frontmatter names on the wire; the
+ * public TypeScript contract is camelCase. Fields keep their identities so
+ * no durability decision depends on this mapping.
+ */
+interface ManifestDto {
+	id: string;
+	format_version: number;
+	name: string;
+	created: string;
+	updated: string;
+	enabled_plugins: Array<string>;
+	ignore: Array<string>;
+}
+
+function toManifest(value: ManifestDto): WorkspaceManifest {
+	return {
+		id: value.id,
+		formatVersion: value.format_version,
+		name: value.name,
+		created: value.created,
+		updated: value.updated,
+		enabledPlugins: value.enabled_plugins,
+		ignore: value.ignore,
 	};
 }
 

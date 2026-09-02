@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    CoreError, ParseStatus, ParsedMarkdown, Result, UnmanagedFile, WorkspaceObject,
+    CoreError, ErrorCategory, ParseStatus, ParsedMarkdown, Result, UnmanagedFile, WorkspaceObject,
     markdown::revision,
 };
 
@@ -355,6 +355,57 @@ impl IndexStore {
         Ok(entries)
     }
 
+    /// Read one plugin-local state value. The value is derived cache state:
+    /// it lives in the disposable index, not in canonical workspace files.
+    pub fn plugin_state_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let json: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value_json FROM plugin_state WHERE plugin_id=?1 AND key=?2",
+                params![plugin_id, key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| CoreError::index(error, "plugin_state_get"))?;
+        json.map(|value| parse_plugin_state_value(&value, "plugin_state_get"))
+            .transpose()
+    }
+
+    /// Write one plugin-local state value. Values persist per workspace until
+    /// the index is deleted or rebuilt, which callers must treat as normal.
+    pub fn plugin_state_set(
+        &mut self,
+        plugin_id: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<()> {
+        let json = encode_plugin_state_value(value, "plugin_state_set")?;
+        self.connection
+            .execute(
+                "INSERT INTO plugin_state(plugin_id,key,value_json) VALUES(?1,?2,?3) \
+                 ON CONFLICT(plugin_id,key) DO UPDATE SET value_json=excluded.value_json",
+                params![plugin_id, key, json],
+            )
+            .map_err(|error| CoreError::index(error, "plugin_state_set"))?;
+        Ok(())
+    }
+
+    /// Remove one plugin-local state value. Returns whether a value existed.
+    pub fn plugin_state_delete(&mut self, plugin_id: &str, key: &str) -> Result<bool> {
+        let affected = self
+            .connection
+            .execute(
+                "DELETE FROM plugin_state WHERE plugin_id=?1 AND key=?2",
+                params![plugin_id, key],
+            )
+            .map_err(|error| CoreError::index(error, "plugin_state_delete"))?;
+        Ok(affected > 0)
+    }
+
     pub fn file_count(&self) -> Result<u64> {
         self.connection
             .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
@@ -479,6 +530,31 @@ fn upsert_markdown_tx(
         }
     }
     Ok(())
+}
+
+fn encode_plugin_state_value(value: &serde_json::Value, operation: &str) -> Result<String> {
+    let json = serde_json::to_string(value).map_err(|error| {
+        CoreError::new(
+            "plugin_state_unserializable",
+            ErrorCategory::Parse,
+            format!("Plugin state is not representable as JSON: {error}"),
+            operation,
+        )
+    })?;
+    // Round-trip the value so non-finite numbers cannot drop silently.
+    parse_plugin_state_value(&json, operation)?;
+    Ok(json)
+}
+
+fn parse_plugin_state_value(json: &str, operation: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(json).map_err(|error| {
+        CoreError::new(
+            "plugin_state_corrupt",
+            ErrorCategory::Parse,
+            format!("Stored plugin state is not valid JSON: {error}"),
+            operation,
+        )
+    })
 }
 
 fn calendar_instant(value: &str) -> Result<jiff::Timestamp> {
@@ -753,5 +829,63 @@ mod tests {
             .calendar("2026-08-31T22:00:00Z", "2026-08-31T23:00:00Z")
             .unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn plugin_state_round_trips_values_per_plugin() {
+        let mut index = IndexStore::in_memory().unwrap();
+        index
+            .plugin_state_set("tasks", "view", &serde_json::json!({ "groupBy": "status" }))
+            .unwrap();
+        index
+            .plugin_state_set("calendar", "view", &serde_json::json!("week"))
+            .unwrap();
+        assert_eq!(
+            index.plugin_state_get("tasks", "view").unwrap(),
+            Some(serde_json::json!({ "groupBy": "status" }))
+        );
+        assert_eq!(
+            index.plugin_state_get("calendar", "view").unwrap(),
+            Some(serde_json::json!("week"))
+        );
+        index
+            .plugin_state_set("tasks", "view", &serde_json::json!("board"))
+            .unwrap();
+        assert_eq!(
+            index.plugin_state_get("tasks", "view").unwrap(),
+            Some(serde_json::json!("board"))
+        );
+        assert_eq!(index.plugin_state_get("tasks", "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn plugin_state_delete_reports_presence() {
+        let mut index = IndexStore::in_memory().unwrap();
+        index
+            .plugin_state_set("tasks", "view", &serde_json::json!("board"))
+            .unwrap();
+        assert!(index.plugin_state_delete("tasks", "view").unwrap());
+        assert!(!index.plugin_state_delete("tasks", "view").unwrap());
+        assert_eq!(index.plugin_state_get("tasks", "view").unwrap(), None);
+    }
+
+    #[test]
+    fn plugin_state_rejects_corrupt_stored_values() {
+        let mut index = IndexStore::in_memory().unwrap();
+        index
+            .plugin_state_set("tasks", "view", &serde_json::json!([1, "two", null]))
+            .unwrap();
+        assert_eq!(
+            index.plugin_state_get("tasks", "view").unwrap(),
+            Some(serde_json::json!([1, "two", null]))
+        );
+        index
+            .connection
+            .execute(
+                "UPDATE plugin_state SET value_json='{ not json' WHERE plugin_id='tasks' AND key='view'",
+                [],
+            )
+            .unwrap();
+        assert!(index.plugin_state_get("tasks", "view").is_err());
     }
 }

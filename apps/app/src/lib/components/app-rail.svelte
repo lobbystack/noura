@@ -11,17 +11,18 @@
 	import Sparkle from 'phosphor-svelte/lib/Sparkle';
 	import GearSix from 'phosphor-svelte/lib/GearSix';
 	import { cn } from '$lib/utils.js';
+	import { plugins } from '$lib/plugins.svelte';
 	import type { Component } from 'svelte';
 
-	type RailEntry = readonly [string, string, Component];
+	type RailEntry = readonly [string, string, Component, string?];
 
 	const primary: readonly RailEntry[] = [
 		['Home', '/home', House],
 		['Inbox', '/inbox', Tray],
-		['Notes', '/notes', NotePencil],
-		['Tasks', '/tasks', Checks],
-		['Calendar', '/calendar', Calendar],
-		['Projects', '/projects', FolderOpen],
+		['Notes', '/notes', NotePencil, 'notes'],
+		['Tasks', '/tasks', Checks, 'tasks'],
+		['Calendar', '/calendar', Calendar, 'calendar'],
+		['Projects', '/projects', FolderOpen, 'projects'],
 	];
 
 	const secondary: readonly RailEntry[] = [
@@ -36,8 +37,10 @@
 	aria-label="Primary navigation"
 >
 	<div class="flex flex-col items-center gap-1">
-		{#each primary as [label, path, Icon] (path)}
-			{@render railEntry(label, path, Icon)}
+		{#each primary as [label, path, Icon, pluginId] (path)}
+			{#if !pluginId || plugins.isEnabled(pluginId)}
+				{@render railEntry(label, path, Icon)}
+			{/if}
 		{/each}
 	</div>
 	<div class="flex flex-col items-center gap-1">

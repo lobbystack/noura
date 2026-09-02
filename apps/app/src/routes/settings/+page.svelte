@@ -1,12 +1,15 @@
 <script lang="ts">
 	import { getNouraClient, workspace, diagnostics } from '$lib/state.svelte';
+	import { plugins } from '$lib/plugins.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Switch } from '$lib/components/ui/switch/index.js';
 	import * as Field from '$lib/components/ui/field/index.js';
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import GearSix from 'phosphor-svelte/lib/GearSix';
 
 	let providers = $state<
@@ -15,6 +18,8 @@
 		>
 	>([]);
 	let loadingProviders = $state(false);
+	let toggling = $state('');
+	const firstParty = ['folders', 'notes', 'tasks', 'calendar', 'projects'];
 
 	onMount(async () => {
 		if (!browser) return;
@@ -23,6 +28,7 @@
 			.ai.listProviders()
 			.catch(() => []);
 		loadingProviders = false;
+		await plugins.init();
 	});
 
 	async function rebuildIndex() {
@@ -30,6 +36,21 @@
 			await getNouraClient().workspaces.rebuildIndex();
 			await workspace.refresh();
 		} catch {}
+	}
+
+	async function setPluginEnabled(pluginId: string, enabled: boolean) {
+		toggling = pluginId;
+		try {
+			await plugins.setEnabled(pluginId, enabled);
+			toast.success(enabled ? `Enabled ${pluginId}` : `Disabled ${pluginId}`);
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : 'Could not update plugins',
+			);
+			await plugins.sync();
+		} finally {
+			toggling = '';
+		}
 	}
 </script>
 
@@ -73,6 +94,61 @@
 				</div>
 			{:else}
 				<p class="text-sm text-muted-foreground">No workspace open.</p>
+			{/if}
+		</section>
+
+		<section>
+			<h2 class="text-sm font-medium">Plugins</h2>
+			<p class="mt-1 text-xs text-muted-foreground">
+				Every change rewrites workspace.yaml in your folder
+			</p>
+			<Separator class="my-4" />
+			{#if workspace.isIdle}
+				<p class="text-sm text-muted-foreground">
+					Open a workspace to manage plugins.
+				</p>
+			{:else}
+				<div class="flex flex-col gap-2">
+					{#each firstParty as pluginId (pluginId)}
+						{@const active = plugins.activeManifests.find(
+							(m) => m.id === pluginId,
+						)}
+						<div
+							class="flex items-center justify-between rounded-lg border border-border p-3"
+						>
+							<div class="min-w-0">
+								<div class="flex items-center gap-2">
+									<span class="text-sm font-medium">
+										{active?.name ?? pluginId}
+									</span>
+									{#if active}
+										<Badge variant="secondary" class="text-xs"
+											>{active.version}</Badge
+										>
+									{:else if plugins.isEnabled(pluginId)}
+										<Badge variant="outline" class="text-xs"
+											>Pending restart</Badge
+										>
+									{/if}
+								</div>
+								<div class="mt-1 flex flex-wrap gap-1">
+									{#each active?.capabilities ?? [] as capability (capability)}
+										<Badge variant="outline" class="text-[10px]"
+											>{capability}</Badge
+										>
+									{/each}
+								</div>
+							</div>
+							<Switch
+								checked={plugins.enabledIds.includes(pluginId)}
+								disabled={toggling !== ''}
+								aria-label="Toggle {active?.name ?? pluginId} plugin"
+								onCheckedChange={(checked) =>
+									setPluginEnabled(pluginId, checked)}
+							/>
+						</div>
+					{/each}
+				</div>
 			{/if}
 		</section>
 

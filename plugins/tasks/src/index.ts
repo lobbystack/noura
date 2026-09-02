@@ -37,6 +37,15 @@ export function projectKanban(tasks: Task[]) {
 export function nextKanbanOrder(before?: string, after?: string) {
 	return generateKeyBetween(before ?? null, after ?? null);
 }
+interface CreateTaskInput {
+	title?: unknown;
+	properties?: Record<string, unknown>;
+}
+interface CompleteTaskInput {
+	id?: unknown;
+	expectedRevision?: unknown;
+}
+const commandDisposers = new WeakMap<object, Array<() => void>>();
 export default definePlugin({
 	manifest: {
 		id: 'tasks',
@@ -49,5 +58,50 @@ export default definePlugin({
 			'workspace.events',
 		],
 	},
-	activate() {},
+	activate(context) {
+		const disposers: Array<() => void> = [];
+		disposers.push(
+			context.commands.register({
+				id: 'tasks.create',
+				title: 'Create task',
+				async execute(input) {
+					const { title, properties } = (input ?? {}) as CreateTaskInput;
+					if (typeof title !== 'string' || title.trim().length === 0) {
+						throw new Error('A task title is required');
+					}
+					const result = await context.objects.create({
+						type: 'task',
+						title,
+						properties,
+					});
+					return result.value;
+				},
+			}),
+		);
+		disposers.push(
+			context.commands.register({
+				id: 'tasks.complete',
+				title: 'Complete task',
+				async execute(input) {
+					const { id, expectedRevision } = (input ?? {}) as CompleteTaskInput;
+					if (typeof id !== 'string' || typeof expectedRevision !== 'string') {
+						throw new Error(
+							'Completing a task needs its stable ID and expected revision',
+						);
+					}
+					const result = await context.objects.update(id, {
+						expectedRevision,
+						properties: { status: 'done' },
+					});
+					return result.value;
+				},
+			}),
+		);
+		commandDisposers.set(context, disposers);
+	},
+	deactivate(context) {
+		for (const dispose of commandDisposers.get(context)?.splice(0) ?? []) {
+			dispose();
+		}
+	},
 });

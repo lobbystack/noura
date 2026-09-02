@@ -26,12 +26,18 @@ export const projectStatusSchema = z.enum([
 	'completed',
 	'cancelled',
 ]);
+export const pluginIdSchema = z
+	.string()
+	.regex(
+		/^[a-z][a-z0-9-]{0,63}$/,
+		'Plugin identifiers use a lowercase letter, then lowercase letters, digits, or hyphens',
+	);
 export const workspaceManifestSchema = z.object({
 	id: objectIdSchema,
 	format_version: z.literal(1),
 	name: z.string().min(1),
 	created: z.string().datetime({ offset: true }),
 	updated: z.string().datetime({ offset: true }),
-	enabled_plugins: z.array(z.string()),
+	enabled_plugins: z.array(pluginIdSchema),
 	ignore: z.array(z.string()),
 });

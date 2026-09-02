@@ -63,7 +63,7 @@ After completing the code, ask the user if they want a playground link. Only cal
 - `packages/workspace-schema` contains public TypeScript validation for the workspace format.
 - `packages/workspace` contains the typed client, service facades, transports, and thin reactive adapters. Keep business rules out of stores.
 - `packages/plugin-sdk` contains capability contracts and the trusted first-party plugin host. Plugins must not import SQLite or Rust internals.
-- `packages/editor` contains headless Tiptap/Yjs configuration and Markdown safety checks. Visual editor components belong in `apps/app`.
+- `packages/editor` contains headless CodeMirror 6/Yjs configuration and Markdown safety checks. Visual editor components belong in `apps/app`.
 - `packages/ai` contains provider-neutral TypeScript context and tool registries. Secrets stay behind the native boundary.
 - `plugins/*` contains first-party domain adapters built against the same public capabilities intended for future plugins.
 - `crates/local-core` owns canonical parsing, deterministic serialization, filesystem safety, atomic writes, indexing, watching, reconciliation, credentials, and domain operations.

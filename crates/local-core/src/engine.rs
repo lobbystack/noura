@@ -257,6 +257,20 @@ pub enum MarkdownLinkTarget {
 
 type MarkdownIndexEntry = (String, Vec<u8>, i64, ParsedMarkdown);
 
+/// Patch for selected `workspace.yaml` fields. Omitted fields keep their
+/// current value; the manifest `updated` timestamp always refreshes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ManifestUpdateInput {
+    pub name: Option<String>,
+    pub enabled_plugins: Option<Vec<String>>,
+    pub ignore: Option<Vec<String>>,
+    /// Reject the update unless the on-disk manifest still has this
+    /// `updated` value, preventing silent overwrite of external edits.
+    pub expected_updated: Option<String>,
+}
+
 struct WorkspaceScan {
     changed: Vec<MarkdownIndexEntry>,
     seen: std::collections::HashSet<String>,
@@ -264,7 +278,7 @@ struct WorkspaceScan {
 
 pub struct WorkspaceEngine {
     root: PathBuf,
-    manifest: WorkspaceManifest,
+    manifest: std::sync::RwLock<WorkspaceManifest>,
     index_path: PathBuf,
     index: Arc<Mutex<IndexStore>>,
     lock_path: PathBuf,
@@ -373,23 +387,7 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, "workspace_open", root.as_ref().to_str()))?;
         let manifest_bytes = std::fs::read(root.join("workspace.yaml"))
             .map_err(|error| CoreError::io(error, "workspace_open", Some("workspace.yaml")))?;
-        let manifest: WorkspaceManifest =
-            serde_yaml_ng::from_slice(&manifest_bytes).map_err(|_| {
-                CoreError::new(
-                    "invalid_workspace_manifest",
-                    ErrorCategory::Parse,
-                    "workspace.yaml is invalid",
-                    "workspace_open",
-                )
-            })?;
-        validate_manifest(&manifest)?;
-        if manifest.format_version != 1 {
-            return Err(CoreError::validation(
-                "unsupported_workspace_version",
-                "This workspace format version is not supported",
-                "workspace_open",
-            ));
-        }
+        let manifest = parse_workspace_manifest(&manifest_bytes, "workspace_open")?;
         let local_dir = app_data.as_ref().join("workspaces").join(&manifest.id);
         std::fs::create_dir_all(&local_dir)
             .map_err(|error| CoreError::io(error, "workspace_open", local_dir.to_str()))?;
@@ -399,7 +397,7 @@ impl WorkspaceEngine {
         let watcher = WatchCoordinator::new(&root)?;
         let engine = Self {
             root,
-            manifest,
+            manifest: std::sync::RwLock::new(manifest),
             index_path,
             index: Arc::new(Mutex::new(index)),
             lock_path: local_dir.join("workspace.lock"),
@@ -412,8 +410,24 @@ impl WorkspaceEngine {
         Ok(engine)
     }
 
-    pub fn manifest(&self) -> &WorkspaceManifest {
-        &self.manifest
+    pub fn manifest(&self) -> std::sync::RwLockReadGuard<'_, WorkspaceManifest> {
+        self.manifest
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+    fn current_ignore(&self) -> Vec<String> {
+        self.manifest
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .ignore
+            .clone()
+    }
+    fn current_workspace_id(&self) -> String {
+        self.manifest
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .id
+            .clone()
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -441,11 +455,168 @@ impl WorkspaceEngine {
             });
         WorkspaceState {
             phase: WorkspacePhase::Ready,
-            workspace_id: Some(self.manifest.id.clone()),
+            workspace_id: Some(self.current_workspace_id()),
             root_path: self.root.to_str().map(str::to_owned),
             indexed_files,
             diagnostics,
         }
+    }
+
+    /// Canonical `workspace.yaml` contents, freshly read from disk. The file
+    /// wins over the in-memory snapshot, which only exists to avoid re-reading
+    /// the manifest on every write.
+    pub fn read_manifest(&self) -> Result<WorkspaceManifest> {
+        parse_workspace_manifest(&self.read_manifest_bytes()?, "manifest_read")
+    }
+
+    pub fn manifest_update(&self, input: ManifestUpdateInput) -> Result<WorkspaceManifest> {
+        let update_name = input.name.is_some();
+        let update_enabled = input.enabled_plugins.is_some();
+        let update_ignore = input.ignore.is_some();
+        if !update_name && !update_enabled && !update_ignore {
+            return self.read_manifest();
+        }
+        let name = match &input.name {
+            Some(value) => {
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(CoreError::validation(
+                        "workspace_name_required",
+                        "A workspace name is required",
+                        "manifest_update",
+                    ));
+                }
+                value.to_owned()
+            }
+            None => String::new(),
+        };
+        let mut enabled_plugins = match input.enabled_plugins {
+            Some(values) => {
+                let mut values = values;
+                for id in &values {
+                    validate_plugin_id(id, "manifest_update")?;
+                }
+                values.sort();
+                values.dedup();
+                values
+            }
+            None => Vec::new(),
+        };
+        let ignore = match input.ignore {
+            Some(values) => {
+                for pattern in &values {
+                    if pattern.trim().is_empty() {
+                        return Err(CoreError::validation(
+                            "invalid_ignore_pattern",
+                            "Workspace ignore patterns must not be empty",
+                            "manifest_update",
+                        ));
+                    }
+                }
+                values
+            }
+            None => Vec::new(),
+        };
+        let _guard = self.write_lock("manifest_update")?;
+        let current_bytes = self.read_manifest_bytes()?;
+        let mut manifest = parse_workspace_manifest(&current_bytes, "manifest_update")?;
+        if let Some(expected) = &input.expected_updated
+            && manifest.updated != *expected
+        {
+            return Err(CoreError::new(
+                "manifest_conflict",
+                ErrorCategory::Conflict,
+                "workspace.yaml changed on disk since it was last read",
+                "manifest_update",
+            ));
+        }
+        if update_name {
+            manifest.name = name;
+        }
+        if update_enabled {
+            manifest.enabled_plugins = std::mem::take(&mut enabled_plugins);
+        }
+        if update_ignore {
+            manifest.ignore = ignore;
+        }
+        manifest.updated = now_rfc3339();
+        validate_manifest(&manifest, "manifest_update")?;
+        let bytes = serde_yaml_ng::to_string(&manifest).map_err(|_| {
+            CoreError::new(
+                "manifest_serialize_failed",
+                ErrorCategory::Parse,
+                "workspace.yaml could not be serialized",
+                "manifest_update",
+            )
+        })?;
+        atomic_write_checked(
+            &self.root,
+            Path::new("workspace.yaml"),
+            bytes.as_bytes(),
+            Some(&markdown::revision(&current_bytes)),
+            "manifest_update",
+        )?;
+        *self
+            .manifest
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = manifest.clone();
+        self.emit(
+            "workspace:manifest-updated",
+            "application",
+            serde_json::json!({
+                "enabledPlugins": manifest.enabled_plugins,
+                "name": manifest.name,
+            }),
+        );
+        Ok(manifest)
+    }
+
+    fn read_manifest_bytes(&self) -> Result<Vec<u8>> {
+        std::fs::read(self.root.join("workspace.yaml"))
+            .map_err(|error| CoreError::io(error, "manifest_read", Some("workspace.yaml")))
+    }
+
+    /// Read one plugin-local cache value. The state lives in the disposable
+    /// index: durable plugin data belongs in workspace files.
+    pub fn plugin_state_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        validate_plugin_id(plugin_id, "plugin_state_get")?;
+        validate_plugin_key(key, "plugin_state_get")?;
+        let index = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("plugin_state_get"))?;
+        index.plugin_state_get(plugin_id, key)
+    }
+
+    /// Write one plugin-local cache value. Index rebuilds discard it by design.
+    pub fn plugin_state_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        validate_plugin_id(plugin_id, "plugin_state_set")?;
+        validate_plugin_key(key, "plugin_state_set")?;
+        let mut index = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("plugin_state_set"))?;
+        index.plugin_state_set(plugin_id, key, &value)
+    }
+
+    /// Remove one plugin-local cache value. Returns whether one existed.
+    pub fn plugin_state_delete(&self, plugin_id: &str, key: &str) -> Result<bool> {
+        validate_plugin_id(plugin_id, "plugin_state_delete")?;
+        validate_plugin_key(key, "plugin_state_delete")?;
+        let mut index = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("plugin_state_delete"))?;
+        index.plugin_state_delete(plugin_id, key)
     }
 
     pub fn rebuild_index(&self) -> Result<()> {
@@ -456,7 +627,7 @@ impl WorkspaceEngine {
                 .map_err(|error| CoreError::io(error, "index_rebuild", next.to_str()))?;
         }
         let mut replacement = IndexStore::open(&next)?;
-        scan_into(&self.root, &self.manifest.ignore, &mut replacement)?;
+        scan_into(&self.root, &self.current_ignore(), &mut replacement)?;
         drop(replacement);
         let previous = self.index_path.with_extension("sqlite.previous");
         if previous.exists() {
@@ -522,7 +693,7 @@ impl WorkspaceEngine {
             .lock()
             .map_err(|_| lock_error("workspace_reconcile"))?
             .file_metadata()?;
-        let scan = scan_changes(&self.root, &self.manifest.ignore, &metadata, forced)?;
+        let scan = scan_changes(&self.root, &self.current_ignore(), &metadata, forced)?;
         let removed = metadata
             .keys()
             .filter(|path| !scan.seen.contains(*path))
@@ -556,7 +727,7 @@ impl WorkspaceEngine {
     }
 
     fn process_external_changes(&self, paths: Vec<PathBuf>) -> Result<Vec<String>> {
-        let ignores = compile_workspace_ignores(&self.root, &self.manifest.ignore)?;
+        let ignores = compile_workspace_ignores(&self.root, &self.current_ignore())?;
         let mut external = Vec::new();
         let mut journal = self
             .self_writes
@@ -1538,7 +1709,7 @@ impl WorkspaceEngine {
 
     pub fn list_folders(&self) -> Result<Vec<crate::FolderEntry>> {
         let mut folders = Vec::new();
-        for entry in workspace_walker(&self.root, &self.manifest.ignore)? {
+        for entry in workspace_walker(&self.root, &self.current_ignore())? {
             let entry = entry.map_err(|error| {
                 CoreError::new(
                     "scan_error",
@@ -1577,7 +1748,7 @@ impl WorkspaceEngine {
             .map_err(|_| lock_error("files_list"))?
             .workspace_entry_metadata()?;
         let mut entries = Vec::new();
-        for entry in workspace_walker(&self.root, &self.manifest.ignore)? {
+        for entry in workspace_walker(&self.root, &self.current_ignore())? {
             let entry = entry.map_err(|error| {
                 CoreError::new(
                     "scan_error",
@@ -1840,7 +2011,7 @@ impl WorkspaceEngine {
         let _ = self.event_sender.send(CoreEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: event_type.into(),
-            workspace_id: self.manifest.id.clone(),
+            workspace_id: self.current_workspace_id(),
             occurred_at: now_rfc3339(),
             source: source.into(),
             payload,
@@ -2380,23 +2551,80 @@ fn check_revision(bytes: &[u8], expected: &str, operation: &str) -> Result<()> {
     }
     Ok(())
 }
-fn validate_manifest(manifest: &WorkspaceManifest) -> Result<()> {
+fn validate_manifest(manifest: &WorkspaceManifest, operation: &str) -> Result<()> {
     if !valid_object_id(&manifest.id, "workspace") {
         return Err(CoreError::validation(
             "invalid_workspace_id",
             "The workspace ID must be a lowercase stable workspace ID",
-            "workspace_open",
+            operation,
         ));
     }
     if manifest.name.trim().is_empty() {
         return Err(CoreError::validation(
             "workspace_name_required",
             "A workspace name is required",
-            "workspace_open",
+            operation,
         ));
+    }
+    for id in &manifest.enabled_plugins {
+        validate_plugin_id(id, operation)?;
     }
     compile_workspace_ignores(Path::new("."), &manifest.ignore)?;
     Ok(())
+}
+
+/// Plugin identifiers match the plugin-sdk manifest pattern: a lowercase
+/// letter, then lowercase letters, digits, or hyphens. Unknown plugin IDs are
+/// tolerated so future ecosystem plugins do not break older builds.
+fn validate_plugin_id(value: &str, operation: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 64 || !is_valid_plugin_id(value) {
+        return Err(CoreError::validation(
+            "invalid_plugin_id",
+            "Plugin identifiers use lowercase letters, digits, and hyphens",
+            operation,
+        ));
+    }
+    Ok(())
+}
+
+fn is_valid_plugin_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    let starts_lowercase = chars.next().is_some_and(|c| c.is_ascii_lowercase());
+    starts_lowercase
+        && value
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn validate_plugin_key(value: &str, operation: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(|c| c.is_control() || c == '\0') {
+        return Err(CoreError::validation(
+            "invalid_plugin_state_key",
+            "Plugin state keys must be 1..=256 characters without control characters",
+            operation,
+        ));
+    }
+    Ok(())
+}
+
+fn parse_workspace_manifest(bytes: &[u8], operation: &str) -> Result<WorkspaceManifest> {
+    let manifest: WorkspaceManifest = serde_yaml_ng::from_slice(bytes).map_err(|_| {
+        CoreError::new(
+            "invalid_workspace_manifest",
+            ErrorCategory::Parse,
+            "workspace.yaml is invalid",
+            operation,
+        )
+    })?;
+    validate_manifest(&manifest, operation)?;
+    if manifest.format_version != 1 {
+        return Err(CoreError::validation(
+            "unsupported_workspace_version",
+            "This workspace format version is not supported",
+            operation,
+        ));
+    }
+    Ok(manifest)
 }
 
 fn take_optional_timestamp(
@@ -2580,7 +2808,7 @@ mod tests {
         for fixture in fixtures.manifest {
             let accepted = serde_json::from_value::<WorkspaceManifest>(fixture.value)
                 .ok()
-                .is_some_and(|manifest| validate_manifest(&manifest).is_ok());
+                .is_some_and(|manifest| validate_manifest(&manifest, "manifest_validate").is_ok());
             assert_eq!(accepted, fixture.valid);
         }
     }

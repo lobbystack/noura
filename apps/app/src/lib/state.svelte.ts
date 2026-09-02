@@ -1,8 +1,13 @@
 import { browser } from '$app/environment';
 import type { WorkspaceState } from '@noura/workspace';
-import { createNouraClient, createTauriTransport } from '@noura/workspace';
+import {
+	createNouraClient,
+	createTauriTransport,
+	PluginRuntime,
+} from '@noura/workspace';
 
 let client: ReturnType<typeof createNouraClient> | null = null;
+let pluginRuntime: PluginRuntime | null = null;
 
 type RecentWorkspace = {
 	path: string;
@@ -21,6 +26,11 @@ function errorMessage(error: unknown) {
 export function getNouraClient() {
 	if (!client) client = createNouraClient(createTauriTransport());
 	return client;
+}
+
+export function getPluginRuntime(): PluginRuntime {
+	if (!pluginRuntime) pluginRuntime = new PluginRuntime(getNouraClient());
+	return pluginRuntime;
 }
 
 class WorkspaceStore {

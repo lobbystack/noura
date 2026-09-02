@@ -31,6 +31,23 @@ export type { UnmanagedFile } from './generated/UnmanagedFile';
 export type { WorkspaceEntry } from './generated/WorkspaceEntry';
 export type { WorkspaceEntryKind } from './generated/WorkspaceEntryKind';
 
+export interface WorkspaceManifest {
+	id: string;
+	formatVersion: number;
+	name: string;
+	created: string;
+	updated: string;
+	enabledPlugins: string[];
+	ignore: string[];
+}
+export interface ManifestUpdateInput {
+	name?: string | null;
+	enabledPlugins?: string[] | null;
+	ignore?: string[] | null;
+	/** Reject the update unless the on-disk manifest still has this `updated`. */
+	expectedUpdated?: string | null;
+}
+
 export interface WorkspaceObject {
 	id: string;
 	type: ObjectType;

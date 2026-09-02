@@ -135,6 +135,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@noura/plugin-sdk": "workspace:*",
+        "@noura/shared": "workspace:*",
       },
       "devDependencies": {
         "typescript": "^5.9.3",

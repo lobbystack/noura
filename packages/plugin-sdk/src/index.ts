@@ -30,6 +30,7 @@ export const pluginManifestSchema = z.object({
 });
 export type PluginCapability = z.infer<typeof capabilitySchema>;
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
+export type { AiContextProvider, AiToolDefinition };
 export interface PluginContext {
 	files: {
 		list(): Promise<WorkspaceEntry[]>;
@@ -55,6 +56,7 @@ export interface PluginContext {
 	storage: {
 		get<T>(key: string): Promise<T | undefined>;
 		set<T>(key: string, value: T): Promise<void>;
+		delete(key: string): Promise<boolean>;
 	};
 	ai: {
 		registerTool(definition: AiToolDefinition): () => boolean;
@@ -69,6 +71,30 @@ export interface PluginCommand {
 export interface PluginDefinition {
 	manifest: PluginManifest;
 	activate(context: PluginContext): void | Promise<void>;
+	/**
+	 * Runs on host.deactivate. Receives the same context instance activate
+	 * saw, so handlers and disposers captured during activation stay usable.
+	 */
+	deactivate?(context: PluginContext): void | Promise<void>;
+}
+/**
+ * Services the host grants to plugins. Storage is addressed per plugin so
+ * each plugin's cache values stay namespaced behind its manifest id.
+ * Durable plugin data always belongs in workspace files; storage here is
+ * disposable cache state (see the plugin runtime docs).
+ */
+export interface PluginHostServices {
+	files: PluginContext['files'];
+	objects: PluginContext['objects'];
+	search: PluginContext['search'];
+	events: PluginContext['events'];
+	commands: PluginContext['commands'];
+	storage: {
+		get<T>(pluginId: string, key: string): Promise<T | undefined>;
+		set<T>(pluginId: string, key: string, value: T): Promise<void>;
+		delete(pluginId: string, key: string): Promise<boolean>;
+	};
+	ai: PluginContext['ai'];
 }
 
 export function definePlugin(definition: PluginDefinition): PluginDefinition {
@@ -85,18 +111,34 @@ export function requireCapability(
 
 export class PluginHost {
 	#active = new Map<string, PluginDefinition>();
-	private readonly services: PluginContext;
-	constructor(services: PluginContext) {
+	#contexts = new Map<string, PluginContext>();
+	private readonly services: PluginHostServices;
+	constructor(services: PluginHostServices) {
 		this.services = services;
 	}
 	async activate(definition: PluginDefinition) {
 		if (this.#active.has(definition.manifest.id))
 			throw new Error(`Plugin already active: ${definition.manifest.id}`);
 		pluginManifestSchema.parse(definition.manifest);
-		await definition.activate(this.contextFor(definition.manifest));
+		const context = this.contextFor(definition.manifest);
+		await definition.activate(context);
 		this.#active.set(definition.manifest.id, definition);
+		this.#contexts.set(definition.manifest.id, context);
 	}
-	activeManifests() {
+	/** Deactivate a plugin and run its cleanup. Returns whether it was active. */
+	async deactivate(id: string): Promise<boolean> {
+		const definition = this.#active.get(id);
+		if (!definition) return false;
+		this.#active.delete(id);
+		const context = this.#contexts.get(id);
+		this.#contexts.delete(id);
+		if (definition.deactivate) await definition.deactivate(context!);
+		return true;
+	}
+	isActive(id: string): boolean {
+		return this.#active.has(id);
+	}
+	activeManifests(): PluginManifest[] {
 		return [...this.#active.values()].map((plugin) => plugin.manifest);
 	}
 	private contextFor(manifest: PluginManifest): PluginContext {
@@ -164,11 +206,15 @@ export class PluginHost {
 			storage: {
 				get: <T>(key: string) => {
 					guard('workspace.storage');
-					return this.services.storage.get<T>(`${manifest.id}:${key}`);
+					return this.services.storage.get<T>(manifest.id, key);
 				},
 				set: <T>(key: string, value: T) => {
 					guard('workspace.storage');
-					return this.services.storage.set(`${manifest.id}:${key}`, value);
+					return this.services.storage.set(manifest.id, key, value);
+				},
+				delete: (key: string) => {
+					guard('workspace.storage');
+					return this.services.storage.delete(manifest.id, key);
 				},
 			},
 			ai: {

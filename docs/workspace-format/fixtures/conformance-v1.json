@@ -38,6 +38,71 @@
 				"enabled_plugins": [],
 				"ignore": []
 			}
+		},
+		{
+			"name": "kebab-case plugin ids",
+			"valid": true,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": ["tasks", "my-plugin-2"],
+				"ignore": []
+			}
+		},
+		{
+			"name": "uppercase plugin id",
+			"valid": false,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": ["Tasks"],
+				"ignore": []
+			}
+		},
+		{
+			"name": "plugin id starting with a digit",
+			"valid": false,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": ["1tasks"],
+				"ignore": []
+			}
+		},
+		{
+			"name": "empty plugin id",
+			"valid": false,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": [""],
+				"ignore": []
+			}
+		},
+		{
+			"name": "plugin ids not a list",
+			"valid": false,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": "tasks",
+				"ignore": []
+			}
 		}
 	],
 	"object_id": [

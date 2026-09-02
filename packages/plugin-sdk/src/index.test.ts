@@ -3,7 +3,7 @@ import {
 	definePlugin,
 	PluginHost,
 	requireCapability,
-	type PluginContext,
+	type PluginHostServices,
 } from './index';
 
 test('plugin manifests enforce declared capabilities', () => {
@@ -21,7 +21,7 @@ test('plugin manifests enforce declared capabilities', () => {
 	).toThrow();
 });
 test('plugin host denies undeclared object access', async () => {
-	const services = {
+	const services: PluginHostServices = {
 		files: {
 			list: async () => [],
 			listNonManagedMarkdown: async () => [],
@@ -44,12 +44,16 @@ test('plugin host denies undeclared object access', async () => {
 		search: { query: async () => [] },
 		events: { subscribe: async () => () => {} },
 		commands: { register: () => () => {} },
-		storage: { get: async () => undefined, set: async () => {} },
+		storage: {
+			get: async () => undefined,
+			set: async () => {},
+			delete: async () => false,
+		},
 		ai: {
 			registerTool: () => () => true,
 			registerContextProvider: () => () => true,
 		},
-	} as PluginContext;
+	} satisfies PluginHostServices;
 	const host = new PluginHost(services);
 	await expect(
 		host.activate(
@@ -69,7 +73,7 @@ test('plugin host denies undeclared object access', async () => {
 });
 
 test('plugin host guards non-managed Markdown discovery', async () => {
-	const services = {
+	const services: PluginHostServices = {
 		files: {
 			list: async () => [],
 			listNonManagedMarkdown: async () => [],
@@ -92,12 +96,16 @@ test('plugin host guards non-managed Markdown discovery', async () => {
 		search: { query: async () => [] },
 		events: { subscribe: async () => () => {} },
 		commands: { register: () => () => {} },
-		storage: { get: async () => undefined, set: async () => {} },
+		storage: {
+			get: async () => undefined,
+			set: async () => {},
+			delete: async () => false,
+		},
 		ai: {
 			registerTool: () => () => true,
 			registerContextProvider: () => () => true,
 		},
-	} as PluginContext;
+	} satisfies PluginHostServices;
 	const host = new PluginHost(services);
 
 	await expect(
@@ -115,4 +123,60 @@ test('plugin host guards non-managed Markdown discovery', async () => {
 			}),
 		),
 	).rejects.toThrow('does not declare workspace.files');
+});
+
+test('plugin host deactivation runs the cleanup and updates active state', async () => {
+	let disposed = false;
+	const host = new PluginHost({
+		files: {
+			list: async () => [],
+			listNonManagedMarkdown: async () => [],
+			createFolder: async () => {},
+			moveFolder: async () => {},
+			removeEmptyFolder: async () => {},
+		},
+		objects: {
+			list: async () => [],
+			get: async () => {
+				throw new Error();
+			},
+			create: async () => {
+				throw new Error();
+			},
+			update: async () => {
+				throw new Error();
+			},
+		},
+		search: { query: async () => [] },
+		events: { subscribe: async () => () => {} },
+		commands: { register: () => () => {} },
+		storage: {
+			get: async () => undefined,
+			set: async () => {},
+			delete: async () => false,
+		},
+		ai: {
+			registerTool: () => () => true,
+			registerContextProvider: () => () => true,
+		},
+	} satisfies PluginHostServices);
+	await host.activate(
+		definePlugin({
+			manifest: {
+				id: 'disposable',
+				name: 'Disposable',
+				version: '1.0.0',
+				capabilities: [],
+			},
+			activate() {},
+			deactivate() {
+				disposed = true;
+			},
+		}),
+	);
+	expect(host.isActive('disposable')).toBe(true);
+	expect(await host.deactivate('disposable')).toBe(true);
+	expect(disposed).toBe(true);
+	expect(host.isActive('disposable')).toBe(false);
+	expect(await host.deactivate('disposable')).toBe(false);
 });

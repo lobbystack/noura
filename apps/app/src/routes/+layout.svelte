@@ -4,6 +4,7 @@
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
 	import { workspace } from '$lib/state.svelte';
+	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
 	import {
 		flushPendingDrafts,
 		hasPendingDrafts,
@@ -11,6 +12,7 @@
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { beforeNavigate, goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import {
 		createTauriHostLifecycle,
 		installPendingDraftCloseGuard,
@@ -43,11 +45,25 @@
 		});
 	});
 
+	// Turned-off modules genuinely simplify the workspace: routes backed by a
+	// disabled plugin fall back home instead of rendering a dead surface.
+	$effect(() => {
+		if (!browser || !plugins.synced) return;
+		const path = $page.url.pathname;
+		for (const [pluginId, route] of PLUGIN_ROUTES) {
+			if (path.startsWith(route) && !plugins.isEnabled(pluginId)) {
+				void goto('/home', { replaceState: true });
+				return;
+			}
+		}
+	});
+
 	onMount(() => {
 		let disposed = false;
 		let unlistenClose: (() => void) | undefined;
 		if (browser) {
 			void workspace.init();
+			void plugins.init();
 			void installPendingDraftCloseGuard(
 				createTauriHostLifecycle(),
 				flushPendingDrafts,

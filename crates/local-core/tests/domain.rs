@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, time::Duration};
 
 use local_core::{
     ConflictResolution, CreateObjectInput, ManagedConflictResolution, ManagedConflictResolveInput,
-    ManagedDraftInput, ManagedDraftResult, MarkdownLinkTarget, ObjectPatch, ParseStatus,
-    ParsedMarkdown, RawConflictResolveInput, RawSaveInput, RawSaveResult, SearchInput,
+    ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch,
+    ParseStatus, ParsedMarkdown, RawConflictResolveInput, RawSaveInput, RawSaveResult, SearchInput,
     WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id, parse_markdown,
 };
 use tempfile::tempdir;
@@ -880,4 +880,152 @@ fn managed_conflict_restore_requires_markdown_extension() {
         .unwrap_err();
 
     assert_eq!(error.code, "unsupported_extension");
+}
+
+#[test]
+fn plugin_state_is_namespaced_per_plugin_and_per_workspace() {
+    let (workspace, app_data, engine) = engine();
+    engine
+        .plugin_state_set("tasks", "view", serde_json::json!("board"))
+        .unwrap();
+    engine
+        .plugin_state_set("calendar", "view", serde_json::json!("week"))
+        .unwrap();
+    assert_eq!(
+        engine.plugin_state_get("tasks", "view").unwrap(),
+        Some(serde_json::json!("board"))
+    );
+    assert_eq!(
+        engine.plugin_state_get("calendar", "view").unwrap(),
+        Some(serde_json::json!("week"))
+    );
+    assert_eq!(engine.plugin_state_get("tasks", "missing").unwrap(), None);
+    assert!(engine.plugin_state_delete("tasks", "view").unwrap());
+    assert_eq!(engine.plugin_state_get("tasks", "view").unwrap(), None);
+
+    // Reopening the same workspace on the same device shares local state.
+    let same_device =
+        WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+    assert_eq!(
+        same_device.plugin_state_get("calendar", "view").unwrap(),
+        Some(serde_json::json!("week"))
+    );
+
+    // A different device keeps its own disposable index.
+    let other_device =
+        WorkspaceEngine::open_with_app_data(workspace.path(), tempdir().unwrap().path()).unwrap();
+    assert_eq!(
+        other_device.plugin_state_get("calendar", "view").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn plugin_state_rejects_invalid_plugin_ids_and_accepts_hyphenated_ids() {
+    let (_workspace, _app_data, engine) = engine();
+    for (plugin_id, key) in [
+        ("", "view"),
+        ("Tasks", "view"),
+        ("1tasks", "view"),
+        ("tasks with spaces", "view"),
+        ("tasks", ""),
+        ("tasks", "\n"),
+    ] {
+        assert!(
+            engine
+                .plugin_state_set(plugin_id, key, serde_json::json!("x"))
+                .is_err(),
+            "expected rejection for {plugin_id:?} / {key:?}"
+        );
+    }
+    let key = "key/with:symbols";
+    engine
+        .plugin_state_set("tasks-v2", key, serde_json::json!({"a": 1}))
+        .unwrap();
+    assert_eq!(
+        engine.plugin_state_get("tasks-v2", key).unwrap(),
+        Some(serde_json::json!({"a": 1}))
+    );
+}
+
+#[test]
+fn manifest_update_rewrites_enabled_plugins_durably_and_in_memory() {
+    let (workspace, _app_data, engine) = engine();
+    let before = engine.read_manifest().unwrap();
+    let updated = engine
+        .manifest_update(ManifestUpdateInput {
+            enabled_plugins: Some(vec!["tasks".into(), "notes".into(), "tasks".into()]),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        updated.enabled_plugins,
+        vec!["notes".to_owned(), "tasks".to_owned()]
+    );
+    assert_ne!(updated.updated, before.updated);
+    assert_eq!(updated.id, before.id);
+
+    let on_disk = std::fs::read_to_string(workspace.path().join("workspace.yaml")).unwrap();
+    assert!(on_disk.contains("enabled_plugins:"));
+    assert!(on_disk.contains("- notes"));
+    assert_eq!(
+        engine.read_manifest().unwrap().enabled_plugins,
+        updated.enabled_plugins
+    );
+
+    let error = engine
+        .manifest_update(ManifestUpdateInput {
+            enabled_plugins: Some(vec!["calendar".into()]),
+            expected_updated: Some(before.updated),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "manifest_conflict");
+}
+
+#[test]
+fn manifest_update_rejects_invalid_fields_and_leaves_no_op_patches_untouched() {
+    let (_workspace, _app_data, engine) = engine();
+    let unchanged = engine
+        .manifest_update(ManifestUpdateInput::default())
+        .unwrap();
+    let error = engine
+        .manifest_update(ManifestUpdateInput {
+            enabled_plugins: Some(vec!["".into()]),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_plugin_id");
+    let error = engine
+        .manifest_update(ManifestUpdateInput {
+            name: Some("   ".into()),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "workspace_name_required");
+    assert_eq!(
+        engine.read_manifest().unwrap().enabled_plugins,
+        unchanged.enabled_plugins
+    );
+}
+
+#[test]
+fn manifest_read_reflects_external_edits_to_workspace_yaml() {
+    let (workspace, _app_data, engine) = engine();
+    let bytes = std::fs::read_to_string(workspace.path().join("workspace.yaml")).unwrap();
+    assert!(bytes.contains("name: Domain tests"));
+    std::fs::write(
+        workspace.path().join("workspace.yaml"),
+        bytes.replace("name: Domain tests", "name: External name"),
+    )
+    .unwrap();
+    assert_eq!(engine.read_manifest().unwrap().name, "External name");
+    // The in-memory snapshot follows the file after a durable update.
+    engine
+        .manifest_update(ManifestUpdateInput {
+            name: Some("Renamed".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(engine.read_manifest().unwrap().name, "Renamed");
 }

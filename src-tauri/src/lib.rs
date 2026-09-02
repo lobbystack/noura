@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 use local_core::{
     AiFoundation, AiInvokeInput, AiProviderConfig, AiResponse, CalendarEntry, CoreError, CoreEvent,
     CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ManagedConflictResolveInput,
-    ManagedDraftInput, ManagedDraftResult, MarkdownLinkTarget, MutationResult, ObjectPatch,
-    RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead, RawReconcileInput,
-    RawReconcileResult, RawSaveInput, RawSaveResult, ResolveConflictInput, SearchInput,
-    SearchResult, UnmanagedFile, WorkspaceEngine, WorkspaceEntry, WorkspaceObject, WorkspaceState,
+    ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, MutationResult,
+    ObjectPatch, RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead,
+    RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult, ResolveConflictInput,
+    SearchInput, SearchResult, UnmanagedFile, WorkspaceEngine, WorkspaceEntry, WorkspaceManifest,
+    WorkspaceObject, WorkspaceState,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -274,6 +275,50 @@ fn workspace_rebuild_index(state: State<AppState>) -> Result<WorkspaceState, Cor
         .ok_or_else(|| unavailable("workspace_rebuild_index"))?;
     engine.rebuild_index()?;
     Ok(engine.state())
+}
+#[tauri::command]
+fn manifest_read(state: State<AppState>) -> Result<WorkspaceManifest, CoreError> {
+    with_engine(&state, "manifest_read", WorkspaceEngine::read_manifest)
+}
+#[tauri::command]
+fn manifest_update(
+    state: State<AppState>,
+    input: ManifestUpdateInput,
+) -> Result<WorkspaceManifest, CoreError> {
+    with_engine(&state, "manifest_update", |engine| {
+        engine.manifest_update(input)
+    })
+}
+#[tauri::command]
+fn plugin_state_get(
+    state: State<AppState>,
+    plugin_id: String,
+    key: String,
+) -> Result<Option<serde_json::Value>, CoreError> {
+    with_engine(&state, "plugin_state_get", |engine| {
+        engine.plugin_state_get(&plugin_id, &key)
+    })
+}
+#[tauri::command]
+fn plugin_state_set(
+    state: State<AppState>,
+    plugin_id: String,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), CoreError> {
+    with_engine(&state, "plugin_state_set", |engine| {
+        engine.plugin_state_set(&plugin_id, &key, value)
+    })
+}
+#[tauri::command]
+fn plugin_state_delete(
+    state: State<AppState>,
+    plugin_id: String,
+    key: String,
+) -> Result<bool, CoreError> {
+    with_engine(&state, "plugin_state_delete", |engine| {
+        engine.plugin_state_delete(&plugin_id, &key)
+    })
 }
 #[tauri::command]
 fn workspace_list_recent(app: AppHandle) -> Vec<RecentWorkspace> {
@@ -708,6 +753,11 @@ pub fn run() {
             workspace_rebuild_index,
             workspace_list_recent,
             workspace_pick_folder,
+            manifest_read,
+            manifest_update,
+            plugin_state_get,
+            plugin_state_set,
+            plugin_state_delete,
             objects_query,
             objects_get,
             objects_create,
