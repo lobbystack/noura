@@ -34,8 +34,14 @@ export function projectKanban(tasks: Task[]) {
 		})),
 	};
 }
-export function nextKanbanOrder(before?: string, after?: string) {
-	return generateKeyBetween(before ?? null, after ?? null);
+/**
+ * Fractional order key for a card positioned between two neighbors.
+ * `after` is the order key of the task visually above (the lower key)
+ * and `before` the order key of the task visually below (the higher
+ * key); either may be omitted to prepend or append at a column edge.
+ */
+export function nextKanbanOrder(after?: string, before?: string) {
+	return generateKeyBetween(after ?? null, before ?? null);
 }
 interface CreateTaskInput {
 	title?: unknown;

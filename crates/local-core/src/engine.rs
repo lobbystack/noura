@@ -410,10 +410,15 @@ impl WorkspaceEngine {
         Ok(engine)
     }
 
-    pub fn manifest(&self) -> std::sync::RwLockReadGuard<'_, WorkspaceManifest> {
+    /// Owned snapshot of the current manifest. Returning a clone (instead
+    /// of the live lock guard) means callers can hold the value across
+    /// engine writes without deadlocking `manifest_update` or an external
+    /// adopt on the same thread.
+    pub fn manifest(&self) -> WorkspaceManifest {
         self.manifest
             .read()
             .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
     fn current_ignore(&self) -> Vec<String> {
         self.manifest
@@ -556,6 +561,14 @@ impl WorkspaceEngine {
             Some(&markdown::revision(&current_bytes)),
             "manifest_update",
         )?;
+        // Journal like every other write site so the watcher poll does not
+        // resurface this engine's own atomic manifest write as external.
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.insert(
+                "workspace.yaml".to_owned(),
+                markdown::revision(bytes.as_bytes()),
+            );
+        }
         *self
             .manifest
             .write()
@@ -727,6 +740,12 @@ impl WorkspaceEngine {
     }
 
     fn process_external_changes(&self, paths: Vec<PathBuf>) -> Result<Vec<String>> {
+        // The manifest sits outside the indexed workspace (it is never a
+        // workspace object), so watcher events for `workspace.yaml` are
+        // reconciled directly against the in-memory snapshot instead of
+        // `file:changed`. This must run before the ignore set is compiled:
+        // an external edit to `ignore` scopes the very scan below.
+        self.sync_external_manifest(&paths)?;
         let ignores = compile_workspace_ignores(&self.root, &self.current_ignore())?;
         let mut external = Vec::new();
         let mut journal = self
@@ -777,6 +796,76 @@ impl WorkspaceEngine {
             );
         }
         Ok(external)
+    }
+
+    /// Applies watcher events for `workspace.yaml`: journal-suppress the
+    /// engine's own atomic write, then adopt any external change. The
+    /// journal guard is released before the adopt so it cannot interleave
+    /// with the write lock taken by `manifest_update`.
+    fn sync_external_manifest(&self, paths: &[PathBuf]) -> Result<()> {
+        let touched = paths.iter().any(|path| {
+            path.strip_prefix(&self.root)
+                .is_ok_and(|relative| relative == Path::new("workspace.yaml"))
+        });
+        if !touched {
+            return Ok(());
+        }
+        let journaled = self
+            .self_writes
+            .lock()
+            .map_err(|_| lock_error("watcher_poll"))?
+            .remove("workspace.yaml");
+        if let Some(expected) = journaled {
+            let unchanged = std::fs::read(self.root.join("workspace.yaml"))
+                .ok()
+                .is_some_and(|bytes| markdown::revision(&bytes) == expected);
+            if unchanged {
+                return Ok(());
+            }
+        }
+        self.apply_external_manifest()
+    }
+
+    /// The file wins: adopt the on-disk manifest into the engine snapshot
+    /// and notify listeners with the same event an application mutation
+    /// emits, so runtimes re-sync from the authoritative file. An
+    /// unreadable or invalid file keeps the last known-good snapshot — a
+    /// hand edit can be caught mid-save — until a later event resyncs.
+    fn apply_external_manifest(&self) -> Result<()> {
+        // Serialize with manifest_update: the file must not change under a
+        // read-modify-write while the watcher is adopting it.
+        let guard = self.write_lock("manifest_external_sync")?;
+        let Ok(manifest) = self.read_manifest() else {
+            return Ok(());
+        };
+        let (name, enabled_plugins) = (manifest.name.clone(), manifest.enabled_plugins.clone());
+        let ignore_changed = {
+            let mut current = self
+                .manifest
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            if *current == manifest {
+                return Ok(());
+            }
+            let ignore_changed = current.ignore != manifest.ignore;
+            *current = manifest;
+            ignore_changed
+        };
+        drop(guard);
+        self.emit(
+            "workspace:manifest-updated",
+            "external",
+            serde_json::json!({
+                "enabledPlugins": enabled_plugins,
+                "name": name,
+            }),
+        );
+        if ignore_changed {
+            // The visible scope of the workspace changed; realign the
+            // index now instead of waiting for periodic reconciliation.
+            self.reconcile()?;
+        }
+        Ok(())
     }
 
     pub fn create_object(
@@ -2608,7 +2697,7 @@ fn validate_plugin_key(value: &str, operation: &str) -> Result<()> {
 }
 
 fn parse_workspace_manifest(bytes: &[u8], operation: &str) -> Result<WorkspaceManifest> {
-    let manifest: WorkspaceManifest = serde_yaml_ng::from_slice(bytes).map_err(|_| {
+    let mut manifest: WorkspaceManifest = serde_yaml_ng::from_slice(bytes).map_err(|_| {
         CoreError::new(
             "invalid_workspace_manifest",
             ErrorCategory::Parse,
@@ -2624,6 +2713,11 @@ fn parse_workspace_manifest(bytes: &[u8], operation: &str) -> Result<WorkspaceMa
             operation,
         ));
     }
+    // `enabled_plugins` is deduplicated with insignificant order in the
+    // format; readers canonicalize so consumers never observe a raw hand
+    // edit's duplicates, matching the writer's normalization.
+    manifest.enabled_plugins.sort();
+    manifest.enabled_plugins.dedup();
     Ok(manifest)
 }
 
@@ -3349,6 +3443,163 @@ mod tests {
             .unwrap();
         assert_eq!(updated.source, "external");
         assert_eq!(updated.payload["id"], created.value.id);
+    }
+
+    #[test]
+    fn external_manifest_change_adopts_the_file_and_emits_manifest_updated() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let manifest_path = engine.root().join("workspace.yaml");
+        let mut events = engine.subscribe();
+        let external = std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("- calendar\n", "");
+        std::fs::write(&manifest_path, external).unwrap();
+
+        let changes = engine
+            .process_external_changes(vec![manifest_path])
+            .unwrap();
+
+        assert!(changes.is_empty());
+        assert!(
+            !engine
+                .manifest()
+                .enabled_plugins
+                .iter()
+                .any(|id| id == "calendar")
+        );
+        let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        let updated = received
+            .iter()
+            .find(|event| event.event_type == "workspace:manifest-updated")
+            .unwrap();
+        assert_eq!(updated.source, "external");
+        assert!(
+            !updated.payload["enabledPlugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| id == "calendar")
+        );
+        assert!(
+            !received
+                .iter()
+                .any(|event| event.event_type == "file:changed")
+        );
+    }
+
+    #[test]
+    fn manifest_update_write_is_not_reported_as_an_external_manifest_change() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let mut events = engine.subscribe();
+        let before = engine.read_manifest().unwrap();
+        engine
+            .manifest_update(ManifestUpdateInput {
+                enabled_plugins: Some(vec!["notes".into()]),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let manifest_path = engine.root().join("workspace.yaml");
+        let changes = engine
+            .process_external_changes(vec![manifest_path])
+            .unwrap();
+
+        assert!(changes.is_empty());
+        assert_eq!(engine.manifest().enabled_plugins, vec!["notes".to_owned()]);
+        let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        let manifest_events = received
+            .iter()
+            .filter(|event| event.event_type == "workspace:manifest-updated")
+            .collect::<Vec<_>>();
+        assert_eq!(manifest_events.len(), 1);
+        assert_eq!(manifest_events[0].source, "application");
+        assert_ne!(engine.manifest().updated, before.updated);
+    }
+
+    #[test]
+    fn invalid_external_manifest_keeps_the_last_known_good_snapshot() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let manifest_path = engine.root().join("workspace.yaml");
+        let before = engine.manifest();
+        let mut events = engine.subscribe();
+        std::fs::write(&manifest_path, "not: [valid, manifest").unwrap();
+
+        let changes = engine
+            .process_external_changes(vec![manifest_path])
+            .unwrap();
+
+        assert!(changes.is_empty());
+        assert_eq!(engine.manifest().enabled_plugins, before.enabled_plugins);
+        let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            !received
+                .iter()
+                .any(|event| event.event_type == "workspace:manifest-updated")
+        );
+    }
+
+    #[test]
+    fn external_ignore_change_realigned_the_scope_immediately() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Scoped".into(),
+                body: "needle-scoped".into(),
+                relative_path: Some("scope/note.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let manifest_path = engine.root().join("workspace.yaml");
+        let external = std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("ignore: []", "ignore:\n- scope/**");
+        std::fs::write(&manifest_path, external).unwrap();
+
+        engine
+            .process_external_changes(vec![manifest_path])
+            .unwrap();
+
+        assert!(
+            !engine
+                .search(&SearchInput {
+                    query: "needle-scoped".into(),
+                    ..Default::default()
+                })
+                .unwrap()
+                .iter()
+                .any(|result| result.relative_path == "scope/note.md")
+        );
+    }
+
+    #[test]
+    fn parsing_normalizes_duplicate_and_unsorted_enabled_plugins() {
+        let manifest = "id: workspace_01j00000000000000000000000\nformat_version: 1\nname: Test\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: [calendar, notes, calendar, tasks]\nignore: []\n";
+        let parsed = parse_workspace_manifest(manifest.as_bytes(), "manifest_parse").unwrap();
+        assert_eq!(
+            parsed.enabled_plugins,
+            vec![
+                "calendar".to_owned(),
+                "notes".to_owned(),
+                "tasks".to_owned()
+            ]
+        );
     }
 
     #[cfg(unix)]

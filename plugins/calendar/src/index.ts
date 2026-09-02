@@ -3,6 +3,12 @@ import type { WorkspaceObject } from '@noura/shared';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Statuses that make a dated object settled rather than upcoming work. */
+const settledStatuses: Record<string, ReadonlySet<string>> = {
+	task: new Set(['done', 'cancelled']),
+	project: new Set(['completed', 'cancelled']),
+};
+
 function calendarTimestamp(object: WorkspaceObject): string | null {
 	const { due, date, start } = object.properties;
 	for (const value of [start, date, due]) {
@@ -11,6 +17,19 @@ function calendarTimestamp(object: WorkspaceObject): string | null {
 	return null;
 }
 
+function isSettled(object: WorkspaceObject): boolean {
+	const statuses = settledStatuses[object.type];
+	const status = object.properties.status;
+	return (
+		statuses !== undefined && typeof status === 'string' && statuses.has(status)
+	);
+}
+
+/**
+ * Outstanding dated objects within a horizon — upcoming work, not a
+ * calendar view of everything with a date: settled tasks and projects
+ * (done, cancelled, completed) drop out.
+ */
 export function upcomingCalendarEntries(
 	objects: WorkspaceObject[],
 	now: Date,
@@ -19,6 +38,7 @@ export function upcomingCalendarEntries(
 	const limit = now.getTime() + days * DAY_MS;
 	return objects
 		.flatMap((object) => {
+			if (isSettled(object)) return [];
 			const startsAt = calendarTimestamp(object);
 			if (!startsAt) return [];
 			const start = new Date(

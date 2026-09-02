@@ -79,4 +79,18 @@ export class PluginRuntime {
 			enabledPluginIds: manifest.enabledPlugins,
 		};
 	}
+
+	/**
+	 * Deactivate every active plugin. Runs when no workspace is scoped
+	 * anymore (close, onboarding): commands, AI contributions, and event
+	 * subscriptions must not linger in the singleton runtime until the next
+	 * workspace opens and reconciles.
+	 */
+	async deactivateAll(): Promise<Array<string>> {
+		const deactivated: Array<string> = [];
+		for (const active of this.host.activeManifests()) {
+			if (await this.host.deactivate(active.id)) deactivated.push(active.id);
+		}
+		return deactivated;
+	}
 }

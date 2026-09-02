@@ -3,8 +3,12 @@ import folders from '@noura/plugin-folders';
 import notes from '@noura/plugin-notes';
 import projects from '@noura/plugin-projects';
 import tasks from '@noura/plugin-tasks';
-import type { PluginHost } from '@noura/plugin-sdk';
 
+/**
+ * The whole activation path belongs to `PluginRuntime.syncWithManifest`:
+ * every plugin, including these bundled domains, is driven by
+ * `enabled_plugins` in workspace.yaml.
+ */
 export const firstPartyPlugins = [
 	folders,
 	notes,
@@ -12,9 +16,3 @@ export const firstPartyPlugins = [
 	calendar,
 	projects,
 ] as const;
-
-export async function activateFirstPartyPlugins(
-	host: PluginHost,
-): Promise<void> {
-	for (const plugin of firstPartyPlugins) await host.activate(plugin);
-}

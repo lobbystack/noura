@@ -4,6 +4,6 @@
 	import { onMount } from 'svelte';
 
 	onMount(() => {
-		if (browser) void goto('/home');
+		if (browser) void goto('/inbox');
 	});
 </script>

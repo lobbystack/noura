@@ -172,13 +172,14 @@ fn save_recent(app: &AppHandle, workspace: &WorkspaceEngine) -> Result<(), CoreE
     }
     let mut values = load_recent(app);
     let root = workspace.root().to_string_lossy().into_owned();
-    values.retain(|value| value.workspace_id != workspace.manifest().id);
+    let manifest = workspace.manifest();
+    values.retain(|value| value.workspace_id != manifest.id);
     values.insert(
         0,
         RecentWorkspace {
             path: root,
-            name: workspace.manifest().name.clone(),
-            workspace_id: workspace.manifest().id.clone(),
+            name: manifest.name,
+            workspace_id: manifest.id,
         },
     );
     values.truncate(20);
@@ -238,7 +239,7 @@ fn workspace_close(app: AppHandle, state: State<AppState>) -> Result<(), CoreErr
             CoreEvent {
                 event_id: uuid::Uuid::new_v4().to_string(),
                 event_type: "workspace:closed".into(),
-                workspace_id: engine.manifest().id.clone(),
+                workspace_id: engine.manifest().id,
                 occurred_at: local_core::now_rfc3339(),
                 source: "application".into(),
                 payload: serde_json::json!({}),

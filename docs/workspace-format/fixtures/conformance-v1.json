@@ -53,6 +53,19 @@
 			}
 		},
 		{
+			"name": "duplicate plugin ids are tolerated and canonicalized on read",
+			"valid": true,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": ["tasks", "notes", "tasks"],
+				"ignore": []
+			}
+		},
+		{
 			"name": "uppercase plugin id",
 			"valid": false,
 			"value": {

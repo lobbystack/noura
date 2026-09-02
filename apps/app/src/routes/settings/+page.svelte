@@ -125,7 +125,7 @@
 										<Badge variant="secondary" class="text-xs"
 											>{active.version}</Badge
 										>
-									{:else if plugins.isEnabled(pluginId)}
+									{:else if plugins.enabledIds.includes(pluginId)}
 										<Badge variant="outline" class="text-xs"
 											>Pending restart</Badge
 										>

@@ -64,7 +64,7 @@ export {
 	type HostLifecycleAdapter,
 } from './host-lifecycle';
 export { createTauriHostLifecycle } from './tauri-host-lifecycle';
-export { activateFirstPartyPlugins, firstPartyPlugins } from './first-party';
+export { firstPartyPlugins } from './first-party';
 export {
 	PluginRuntime,
 	createPluginHostServices,
@@ -506,6 +506,9 @@ export function createNouraClient(
 			},
 			moveTask: async (input) => {
 				const tasks = await taskObjects.list();
+				// `after` is the card visually above (lower fractional key),
+				// `before` the card visually below (higher key); the moved
+				// card lands between the two.
 				const after = input.afterId
 					? tasks.find((task) => task.id === input.afterId)?.properties
 							.kanban_order

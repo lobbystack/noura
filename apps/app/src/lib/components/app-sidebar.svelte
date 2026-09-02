@@ -1,77 +1,61 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { getNouraClient } from '$lib/state.svelte';
+	import { plugins } from '$lib/plugins.svelte';
+	import { sidebarModuleFor } from '$lib/sidebar-modules';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
-	import House from 'phosphor-svelte/lib/House';
-	import Tray from 'phosphor-svelte/lib/Tray';
-	import NotePencil from 'phosphor-svelte/lib/NotePencil';
-	import Checks from 'phosphor-svelte/lib/Checks';
-	import Calendar from 'phosphor-svelte/lib/Calendar';
-	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
-	import MagnifyingGlass from 'phosphor-svelte/lib/MagnifyingGlass';
-	import Sparkle from 'phosphor-svelte/lib/Sparkle';
-	import GearSix from 'phosphor-svelte/lib/GearSix';
-	import { cn } from '$lib/utils.js';
+	import TasksViews from '$lib/components/sidebar/tasks-views.svelte';
+	import FileBrowser from '$lib/components/sidebar/file-browser.svelte';
 
-	const route = $derived($page.url.pathname.split('/')[1] ?? 'home');
+	let workspaceName = $state<string | null>(null);
 
-	const sections = {
-		tasks: {
-			title: 'Views',
-			items: [
-				{ label: 'Today', icon: Checks, active: false },
-				{ label: 'Upcoming', icon: Calendar, active: false },
-				{ label: 'All Tasks', icon: Checks, active: true },
-			],
-		},
-		notes: {
-			title: 'Recent',
-			items: [{ label: 'Getting started', icon: NotePencil, active: true }],
-		},
-		projects: {
-			title: 'Projects',
-			items: [{ label: 'All projects', icon: FolderOpen, active: true }],
-		},
-	} as const;
+	const SECTION_COMPONENTS: Record<
+		string,
+		typeof TasksViews | typeof FileBrowser
+	> = {
+		'tasks-views': TasksViews,
+		'file-browser': FileBrowser,
+	};
+
+	const activeModule = $derived(
+		sidebarModuleFor(page.url.pathname, new Set(plugins.enabledIds)),
+	);
+	const Section = $derived(
+		activeModule ? SECTION_COMPONENTS[activeModule.id] : undefined,
+	);
+
+	onMount(() => {
+		if (!browser) return;
+		void getNouraClient()
+			.manifest.read()
+			.then((manifest) => {
+				workspaceName = manifest.name;
+			})
+			.catch(() => {
+				workspaceName = null;
+			});
+	});
 </script>
 
 <Sidebar.Sidebar class="md:start-14" collapsible="offcanvas">
 	<Sidebar.SidebarHeader class="px-3 py-2.5">
 		<div class="flex items-center gap-2">
 			<div
-				class="flex size-7 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
+				class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
 			>
 				NR
 			</div>
-			<span class="truncate text-sm font-semibold">Noura</span>
+			<span class="min-w-0 truncate text-sm font-semibold">
+				{workspaceName ?? 'Noura'}
+			</span>
 		</div>
 	</Sidebar.SidebarHeader>
 
 	<Sidebar.SidebarContent>
-		{#if route === 'tasks' || route === 'notes' || route === 'projects'}
-			{@const section = sections[route as keyof typeof sections]}
-			<Sidebar.SidebarGroup>
-				<Sidebar.SidebarGroupLabel>{section.title}</Sidebar.SidebarGroupLabel>
-				<Sidebar.SidebarGroupContent>
-					<Sidebar.SidebarMenu>
-						{#each section.items as item (item.label)}
-							<Sidebar.SidebarMenuItem>
-								<Sidebar.SidebarMenuButton isActive={item.active}>
-									<item.icon />
-									<span>{item.label}</span>
-								</Sidebar.SidebarMenuButton>
-							</Sidebar.SidebarMenuItem>
-						{/each}
-					</Sidebar.SidebarMenu>
-				</Sidebar.SidebarGroupContent>
-			</Sidebar.SidebarGroup>
-		{:else}
-			<Sidebar.SidebarGroup>
-				<Sidebar.SidebarGroupContent>
-					<div class="px-3 py-8 text-center text-xs text-muted-foreground">
-						Select a section to browse
-					</div>
-				</Sidebar.SidebarGroupContent>
-			</Sidebar.SidebarGroup>
+		{#if Section}
+			<Section />
 		{/if}
 	</Sidebar.SidebarContent>
 </Sidebar.Sidebar>

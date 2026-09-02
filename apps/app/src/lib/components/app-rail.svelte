@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import House from 'phosphor-svelte/lib/House';
 	import Tray from 'phosphor-svelte/lib/Tray';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
 	import Checks from 'phosphor-svelte/lib/Checks';
@@ -17,7 +16,6 @@
 	type RailEntry = readonly [string, string, Component, string?];
 
 	const primary: readonly RailEntry[] = [
-		['Home', '/home', House],
 		['Inbox', '/inbox', Tray],
 		['Notes', '/notes', NotePencil, 'notes'],
 		['Tasks', '/tasks', Checks, 'tasks'],

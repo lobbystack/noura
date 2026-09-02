@@ -366,6 +366,18 @@ describe('first-party plugin dogfood', () => {
 							title: 'No date',
 							properties: { status: 'todo' },
 						},
+						{
+							id: 'task_settled',
+							type: 'task',
+							title: 'Already done',
+							properties: { status: 'done', due: tomorrow() },
+						},
+						{
+							id: 'project_settled',
+							type: 'project',
+							title: 'Cancelled project',
+							properties: { status: 'cancelled', due: tomorrow() },
+						},
 					] as T;
 				}
 				if (command === 'plugin_state_get') return null as T;
@@ -386,7 +398,11 @@ describe('first-party plugin dogfood', () => {
 		expect(providers.map((provider) => provider.id)).toEqual([
 			'calendar.upcoming-week',
 		]);
-		const context = await providers[0].provide({ workspaceId: 'workspace_01' });
+		const context = await providers[0]!.provide({
+			workspaceId: 'workspace_01',
+		});
+		// Upcoming context is outstanding work: the done task and the
+		// cancelled project above are settled and must not surface.
 		expect(context).toEqual([
 			{
 				title: 'Due soon',

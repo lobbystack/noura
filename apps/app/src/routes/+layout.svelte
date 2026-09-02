@@ -4,6 +4,7 @@
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
 	import { workspace } from '$lib/state.svelte';
+	import { sidebarModuleFor } from '$lib/sidebar-modules';
 	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
 	import {
 		flushPendingDrafts,
@@ -46,17 +47,36 @@
 	});
 
 	// Turned-off modules genuinely simplify the workspace: routes backed by a
-	// disabled plugin fall back home instead of rendering a dead surface.
+	// disabled plugin fall back to the inbox dashboard instead of rendering a
+	// dead surface.
 	$effect(() => {
 		if (!browser || !plugins.synced) return;
 		const path = $page.url.pathname;
 		for (const [pluginId, route] of PLUGIN_ROUTES) {
 			if (path.startsWith(route) && !plugins.isEnabled(pluginId)) {
-				void goto('/home', { replaceState: true });
+				void goto('/inbox', { replaceState: true });
 				return;
 			}
 		}
 	});
+
+	// The engine broadcasts workspace:ready before the host event bridge
+	// subscribes, so create/open flows would miss it. Reconcile plugins from
+	// the reactive workspace state on every settle (ready, idle, failed) so
+	// toggles and navigation always match workspace.yaml.
+	$effect(() => {
+		if (!browser) return;
+		const phase = workspace.state?.phase;
+		if (phase === 'ready' || phase === 'idle' || phase === 'failed')
+			void plugins.sync();
+	});
+
+	// Modules own their sidebar: routes with a contributing module get one
+	// (workspace name plus that module's section); everything else renders
+	// full-width — a module can simply opt out.
+	const showSidebar = $derived(
+		sidebarModuleFor($page.url.pathname, new Set(plugins.enabledIds)) !== null,
+	);
 
 	onMount(() => {
 		let disposed = false;
@@ -89,7 +109,9 @@
 		style="--sidebar-width: 14rem;"
 	>
 		<AppRail />
-		<AppSidebar />
+		{#if showSidebar}
+			<AppSidebar />
+		{/if}
 		<main class="flex min-w-0 flex-1 flex-col">
 			{@render children()}
 		</main>

@@ -23,6 +23,7 @@ class PluginStore {
 	synced = $state(false);
 
 	#initialized = false;
+	#syncChain: Promise<void> = Promise.resolve();
 	#unlisten: (() => void) | undefined;
 
 	get activeIds(): Array<string> {
@@ -58,7 +59,21 @@ class PluginStore {
 		}
 	}
 
+	/**
+	 * Synchronize with the manifest on disk. Runs are serialized: event
+	 * bursts and the explicit sync after `setEnabled` chain onto one
+	 * in-flight run, so two overlapping reconciliations can never both
+	 * pass the activation checks and double-activate a plugin (whose
+	 * lifecycle may await, per the plugin-sdk contract).
+	 */
 	async sync() {
+		const run = this.#syncChain.then(() => this.#runSync());
+		// Keep the chain resolvable even if a run ever rejects.
+		this.#syncChain = run.then(undefined, () => undefined);
+		await run;
+	}
+
+	async #runSync() {
 		try {
 			const result = await getPluginRuntime().syncWithManifest();
 			const runtime = getPluginRuntime();
@@ -67,8 +82,11 @@ class PluginStore {
 			this.lastError = null;
 		} catch (error) {
 			if (isCoreError(error) && error.code === 'workspace_not_open') {
-				// Onboarding or a closed workspace: no plugins are scoped to
-				// any manifest, so the feature surfaces hide.
+				// Onboarding or a closed workspace: no manifest is scoped,
+				// so the feature surfaces hide — and the runtime must let go
+				// of every plugin so its commands and AI contributions do
+				// not linger in the singleton registries.
+				await getPluginRuntime().deactivateAll();
 				this.activeManifests = [];
 				this.enabledIds = [];
 				this.lastError = null;

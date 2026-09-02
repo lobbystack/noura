@@ -25,10 +25,15 @@
 	let {
 		note,
 		onsaved,
+		autofocusTitle = false,
 	}: {
 		note: Note | null;
 		onsaved?: (updated: Note) => void;
+		/** Freshly created notes start with the title focused and selected. */
+		autofocusTitle?: boolean;
 	} = $props();
+
+	let titleInput = $state<HTMLInputElement | null>(null);
 
 	type ConflictState = { draft: NoteDraft; file: Note; deleted?: boolean };
 	type Resolution = 'use-external' | 'replace-external';
@@ -275,6 +280,18 @@
 		}
 	}
 
+	$effect(() => {
+		// The notes page remounts this editor per note; a fresh note starts
+		// with its placeholder title fully selected so typing renames it.
+		// Consume the flag: setCanonical reassigns currentNote on every
+		// autosave, and the pending focus must not steal back from the body.
+		if (autofocusTitle && titleInput && currentNote) {
+			autofocusTitle = false;
+			titleInput.focus();
+			titleInput.select();
+		}
+	});
+
 	onMount(() => {
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
@@ -300,13 +317,14 @@
 {#if !currentNote}
 	<EmptyState
 		icon={NotePencil}
-		title="Select a note"
-		description="Choose a note from the list or create a new one."
+		title="No document open"
+		description="Pick a document from the sidebar, or create a new note."
 	/>
 {:else}
 	<div class="flex min-h-0 flex-1 flex-col">
 		<header class="flex min-h-16 items-center px-6">
 			<input
+				bind:this={titleInput}
 				bind:value={draftTitle}
 				oninput={() => coordinator?.noteEdit(currentDraft())}
 				onblur={() => void flushNow()}

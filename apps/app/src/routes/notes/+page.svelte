@@ -1,76 +1,133 @@
 <script lang="ts">
 	import { getNouraClient } from '$lib/state.svelte';
+	import { plugins } from '$lib/plugins.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
-	import { cn } from '$lib/utils';
-	import PageHeader from '$lib/components/page-header.svelte';
 	import NoteEditor from '$lib/components/note-editor.svelte';
 	import RawMarkdownEditor from '$lib/components/raw-markdown-editor.svelte';
-	import EmptyState from '$lib/components/empty-state.svelte';
-	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { Badge } from '$lib/components/ui/badge/index.js';
-	import NotePencil from 'phosphor-svelte/lib/NotePencil';
 	import Plus from 'phosphor-svelte/lib/Plus';
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
+	import { toast } from 'svelte-sonner';
 	import { onMount } from 'svelte';
 
 	type Note = Awaited<
 		ReturnType<ReturnType<typeof getNouraClient>['notes']['list']>
 	>[number];
-
-	let notes = $state<Note[]>([]);
-	let rawFiles = $state<
-		Awaited<
-			ReturnType<
-				ReturnType<typeof getNouraClient>['files']['listNonManagedMarkdown']
-			>
+	type RawFile = Awaited<
+		ReturnType<
+			ReturnType<typeof getNouraClient>['files']['listNonManagedMarkdown']
 		>
-	>([]);
-	let loading = $state(true);
+	>[number];
+
+	// These lists are lookup indexes for URL-driven selection, not a
+	// navigator: the sidebar file tree owns navigation now.
+	let notes = $state<Note[]>([]);
+	let rawFiles = $state<RawFile[]>([]);
+	let loaded = $state(false);
 	let selected = $state<Note | null>(null);
-	let selectedRaw = $state<(typeof rawFiles)[number] | null>(null);
-	async function select(n: Note) {
-		if (selected?.id !== n.id && !(await flushPendingDrafts())) return;
+	let selectedRaw = $state<RawFile | null>(null);
+	let appliedKey = $state<string | null>(null);
+	let autofocusTitle = $state(false);
+
+	async function select(n: Note, options?: { isNew?: boolean }) {
+		if (selected?.id === n.id) return;
+		if (!(await flushPendingDrafts())) return;
+		autofocusTitle = options?.isNew ?? false;
 		selected = n;
 		selectedRaw = null;
 		tabsStore.open(n.id, 'note', n.title);
 	}
 
-	async function selectRaw(file: (typeof rawFiles)[number]) {
+	async function selectRaw(file: RawFile) {
+		if (selectedRaw?.relativePath === file.relativePath) return;
 		if (!(await flushPendingDrafts())) return;
+		autofocusTitle = false;
 		selected = null;
 		selectedRaw = file;
 		tabsStore.open(`raw:${file.relativePath}`, 'markdown', file.title);
 	}
 
-	async function load() {
-		try {
-			loading = true;
-			const [list, raw] = await Promise.all([
-				getNouraClient().notes.list(),
-				getNouraClient().files.listNonManagedMarkdown(),
-			]);
-			notes = list;
-			rawFiles = raw;
-			// Pre-select first note if one exists and nothing is selected yet
-			if (!selected && list.length > 0) await select(list[0]);
-		} finally {
-			loading = false;
-		}
+	async function load(): Promise<void> {
+		const [list, raw] = await Promise.all([
+			getNouraClient().notes.list(),
+			getNouraClient().files.listNonManagedMarkdown(),
+		]);
+		notes = list;
+		rawFiles = raw;
+		loaded = true;
 	}
+
+	// Selection is URL-driven: /notes?selected=<id> or /notes?raw=<path>.
+	// Plain /notes keeps whatever is already open, like any editor surface.
+	$effect(() => {
+		if (!browser) return;
+		const params = $page.url.searchParams;
+		const selectedId = params.get('selected');
+		const rawPath = params.get('raw');
+		const key = `${selectedId ?? ''}|${rawPath ?? ''}`;
+		if (key === appliedKey || key === '|') return;
+		appliedKey = key;
+		if (selected?.id === selectedId) return;
+		if (selectedRaw?.relativePath === rawPath) return;
+		void (async () => {
+			try {
+				if (!loaded) await load();
+				if (selectedId !== null) {
+					const note = notes.find((entry) => entry.id === selectedId);
+					if (note) {
+						// Param-driven selection comes from the sidebar tree; a
+						// pristine "Untitled" empty note is a fresh creation via
+						// the tree context menu, so its title starts selected.
+						const pristine =
+							note.title === 'Untitled' && note.body.trim().length === 0;
+						await select(note, { isNew: pristine });
+					} else {
+						toast.error('That note is no longer in the workspace');
+					}
+				} else if (rawPath !== null) {
+					const file = rawFiles.find((entry) => entry.relativePath === rawPath);
+					if (file) {
+						await selectRaw(file);
+					} else {
+						toast.error('That document is no longer in the workspace');
+					}
+				}
+			} catch (error) {
+				toast.error(
+					error instanceof Error
+						? error.message
+						: 'Could not open the document',
+				);
+			}
+		})();
+	});
+
+	onMount(() => {
+		if (browser) void load();
+	});
 
 	async function create() {
 		if (!(await flushPendingDrafts())) return;
-		const res = await getNouraClient().notes.create({ title: 'Untitled' });
-		await load();
-		if (res.value) await select(res.value as Note);
+		try {
+			const res = await getNouraClient().notes.create({ title: 'Untitled' });
+			await load();
+			if (res.value) {
+				await select(res.value as Note, { isNew: true });
+			}
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : 'Could not create the note',
+			);
+		}
 	}
 
 	function handleSaved(updated: Note) {
-		// Refresh the list so the sidebar reflects renames
-		notes = notes.map((n) => (n.id === updated.id ? updated : n));
+		notes = notes.some((entry) => entry.id === updated.id)
+			? notes.map((entry) => (entry.id === updated.id ? updated : entry))
+			: [...notes, updated];
 		selected = updated;
 		tabsStore.renameObject(updated.id, updated.title);
 	}
@@ -92,129 +149,32 @@
 			await goto(`/projects?selected=${encodeURIComponent(object.id)}`);
 			return;
 		}
-
-		const [list, raw] = await Promise.all([
-			getNouraClient().notes.list(),
-			getNouraClient().files.listNonManagedMarkdown(),
-		]);
-		notes = list;
-		rawFiles = raw;
-		const managed = list.find((note) => note.id === object.id);
+		await load();
+		const managed = notes.find((note) => note.id === object.id);
 		if (managed) selected = managed;
 	}
-
-	onMount(() => {
-		if (browser) load();
-	});
 </script>
 
-<div class="flex h-screen">
-	<aside
-		class="flex w-72 shrink-0 flex-col border-r border-border bg-background"
+<div class="flex h-full flex-col">
+	<div
+		class="flex h-14 shrink-0 items-center justify-between border-b border-border px-6"
 	>
-		<PageHeader
-			title="Notes"
-			description={`${notes.length + rawFiles.length} documents`}
-		>
-			{#snippet actions()}
-				<Button size="sm" onclick={create}>
-					<Plus data-icon="inline-start" />
-					New note
-				</Button>
-			{/snippet}
-		</PageHeader>
-
-		{#if loading}
-			<div class="flex flex-col gap-1 p-2">
-				{#each [0, 1, 2, 3] as i (i)}
-					<Skeleton class="h-10 w-full" />
-				{/each}
-			</div>
-		{:else if notes.length === 0 && rawFiles.length === 0}
-			<EmptyState
-				icon={NotePencil}
-				title="No notes"
-				description="Capture your first thought."
-				actionLabel="Create note"
-				onAction={create}
-			/>
-		{:else}
-			<div class="flex-1 overflow-y-auto">
-				<div class="divide-y divide-border/60">
-					{#each notes as n (n.id)}
-						<button
-							class={cn(
-								'w-full px-4 py-3 text-left hover:bg-muted/50',
-								selected?.id === n.id && 'bg-muted/60',
-							)}
-							onclick={() => void select(n)}
-						>
-							<div class="flex items-center gap-2">
-								<NotePencil
-									class={cn(
-										'size-4 shrink-0',
-										selected?.id === n.id
-											? 'text-foreground'
-											: 'text-muted-foreground',
-									)}
-								/>
-								<span
-									class={cn(
-										'truncate text-sm',
-										selected?.id === n.id
-											? 'font-semibold text-foreground'
-											: 'font-medium',
-									)}
-								>
-									{n.title}
-								</span>
-							</div>
-							{#if n.body}
-								<p
-									class="mt-0.5 line-clamp-1 pl-6 text-xs text-muted-foreground"
-								>
-									{n.body}
-								</p>
-							{/if}
-						</button>
-					{/each}
-					{#each rawFiles as file (file.relativePath)}
-						<button
-							class={cn(
-								'w-full px-4 py-3 text-left hover:bg-muted/50',
-								selectedRaw?.relativePath === file.relativePath &&
-									'bg-muted/60',
-							)}
-							onclick={() => void selectRaw(file)}
-						>
-							<div class="flex items-center gap-2">
-								<NotePencil /><span
-									class="min-w-0 flex-1 truncate text-sm font-medium"
-									>{file.title}</span
-								><Badge variant="secondary"
-									>{file.parseStatus === 'malformed'
-										? 'Needs repair'
-										: 'Markdown'}</Badge
-								>
-							</div>
-							<p class="mt-0.5 truncate pl-6 text-xs text-muted-foreground">
-								{file.relativePath}
-							</p>
-						</button>
-					{/each}
-				</div>
-			</div>
+		<h1 class="text-sm font-semibold">Notes</h1>
+		{#if plugins.isEnabled('notes')}
+			<Button size="sm" onclick={create}>
+				<Plus data-icon="inline-start" />
+				New note
+			</Button>
 		{/if}
-	</aside>
+	</div>
 
-	<main class="flex min-w-0 flex-1 flex-col">
-		{#key selected?.id ?? selectedRaw?.relativePath}
+	<div class="min-h-0 flex-1">
+		{#key selected?.id ?? `raw:${selectedRaw?.relativePath ?? ''}`}
 			{#if selectedRaw}
 				<RawMarkdownEditor file={selectedRaw} onmanaged={handleManaged} />
 			{:else}
-				<NoteEditor note={selected} onsaved={handleSaved} />
+				<NoteEditor note={selected} onsaved={handleSaved} {autofocusTitle} />
 			{/if}
 		{/key}
-	</main>
+	</div>
 </div>
-done
