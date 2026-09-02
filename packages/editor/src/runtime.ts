@@ -1,8 +1,11 @@
+export {
+	createLiveMarkdownDocument,
+	createLiveMarkdownEditor,
+} from './factory';
 export type {
 	EditorSelectionState,
-	LiveMarkdownEditor,
 	LiveMarkdownDocument,
+	LiveMarkdownEditor,
 	LiveMarkdownOptions,
 	MarkdownFormat,
 } from './types';
-export { detectSuspiciousShrink, preserveLineMetadata } from './fidelity';

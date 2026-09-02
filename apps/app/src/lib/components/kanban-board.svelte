@@ -1,12 +1,18 @@
 <script lang="ts">
 	import { getNouraClient } from '$lib/state.svelte';
+	import { toast } from 'svelte-sonner';
 	import { tabsStore } from '$lib/tabs.svelte';
-	import ObjectInspector from '$lib/components/object-inspector.svelte';
+	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
+	import TaskDetail from '$lib/components/task-detail.svelte';
 	import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import * as Empty from '$lib/components/ui/empty/index.js';
+	import * as Sheet from '$lib/components/ui/sheet/index.js';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import { FolderOpen } from 'phosphor-svelte';
+	import X from 'phosphor-svelte/lib/X';
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 
@@ -21,7 +27,11 @@
 	let groups = $state<Groups>([]);
 	let loading = $state(true);
 	let selectedTask = $state<Task | null>(null);
-	let inspectorOpen = $state(false);
+	let detailOpen = $state(false);
+	let closingDetail = $state(false);
+	let projects = $state<
+		Awaited<ReturnType<ReturnType<typeof getNouraClient>['projects']['list']>>
+	>([]);
 	let dragTask = $state<Task | null>(null);
 	let dragOverColumn = $state<string | null>(null);
 	let dragOverTaskId = $state<string | null>(null);
@@ -37,8 +47,12 @@
 	async function load() {
 		try {
 			loading = true;
-			const board = await getNouraClient().kanban.getBoard();
+			const [board, projectList] = await Promise.all([
+				getNouraClient().kanban.getBoard(),
+				getNouraClient().projects.list(),
+			]);
 			groups = board.groups;
+			projects = projectList;
 		} finally {
 			loading = false;
 		}
@@ -46,8 +60,34 @@
 
 	function select(task: Task) {
 		selectedTask = task;
-		inspectorOpen = true;
+		detailOpen = true;
 		tabsStore.open(task.id, 'task', task.title);
+	}
+
+	async function moveTaskFromMenu(task: Task, status: string) {
+		try {
+			await getNouraClient().kanban.moveTask({
+				taskId: task.id,
+				status: status as never,
+				expectedRevision: task.revision,
+			});
+		} catch {
+			toast.error('Could not move the task', {
+				description:
+					'The task changed while you were viewing it. Refreshed to the latest state.',
+			});
+		}
+		await load();
+	}
+
+	async function closeDetail() {
+		if (closingDetail) return;
+		closingDetail = true;
+		try {
+			if (await flushPendingDrafts()) detailOpen = false;
+		} finally {
+			closingDetail = false;
+		}
 	}
 
 	function handleDragStart(event: DragEvent, task: Task) {
@@ -104,13 +144,22 @@
 				: !beforeId && group && group.items.length > 0
 					? group.items[group.items.length - 1]?.id
 					: undefined;
-		await getNouraClient().kanban.moveTask({
-			taskId: task.id,
-			status: columnId as never,
-			beforeId,
-			afterId,
-			expectedRevision: task.revision ?? '',
-		});
+		try {
+			await getNouraClient().kanban.moveTask({
+				taskId: task.id,
+				status: columnId as never,
+				beforeId,
+				afterId,
+				expectedRevision: task.revision ?? '',
+			});
+		} catch {
+			// A stale revision is expected after edits land through another
+			// surface; reloading shows the authoritative column state.
+			toast.error('Could not move the task', {
+				description:
+					'The task changed while you were viewing it. Refreshed to the latest state.',
+			});
+		}
 		await load();
 	}
 
@@ -172,36 +221,59 @@
 				>
 					{#each group.items as task (task.id)}
 						{@const done = task.properties?.status === 'done'}
-						<button
-							class={`block w-full bg-background px-3 py-2.5 text-left transition-colors hover:bg-muted/70 ${dragTask?.id === task.id ? 'opacity-40' : ''} ${dragOverTaskId === task.id ? 'ring-1 ring-inset ring-primary/40' : ''}`}
+						<div
+							role="listitem"
+							class={`flex items-start bg-background transition-colors hover:bg-muted/70 ${dragTask?.id === task.id ? 'opacity-40' : ''} ${dragOverTaskId === task.id ? 'ring-1 ring-inset ring-primary/40' : ''}`}
 							draggable="true"
 							ondragstart={(event) => handleDragStart(event, task)}
 							ondragend={clearDrag}
 							ondragover={(event) => handleDragOver(event, group.id, task.id)}
 							ondragleave={() => handleDragLeave(group.id, task.id)}
 							ondrop={(event) => handleDrop(event, group.id, task.id)}
-							onclick={() => select(task)}
 						>
-							<span
-								class={`block text-sm font-medium ${done ? 'line-through text-muted-foreground' : ''}`}
+							<button
+								class="min-w-0 flex-1 px-3 py-2.5 text-left"
+								onclick={() => select(task)}
 							>
-								{task.title}
-							</span>
-							{#if task.properties?.due || task.properties?.project}
-								<span class="mt-1 flex items-center gap-1.5">
-									{#if task.properties?.project}
-										<Badge variant="secondary" class="text-[10px]"
-											>{task.properties.project}</Badge
-										>
-									{/if}
-									{#if task.properties?.due}
-										<span class="text-[10px] text-muted-foreground"
-											>{task.properties.due}</span
-										>
-									{/if}
+								<span
+									class={`block text-sm font-medium ${done ? 'line-through text-muted-foreground' : ''}`}
+								>
+									{task.title}
 								</span>
-							{/if}
-						</button>
+								{#if task.properties?.due || task.properties?.project}
+									<span class="mt-1 flex items-center gap-1.5">
+										{#if task.properties?.project}
+											<Badge variant="secondary" class="text-[10px]"
+												>{task.properties.project}</Badge
+											>
+										{/if}
+										{#if task.properties?.due}
+											<span class="text-[10px] text-muted-foreground"
+												>{task.properties.due}</span
+											>
+										{/if}
+									</span>
+								{/if}
+							</button>
+							<DropdownMenu.Root
+								><DropdownMenu.Trigger
+									><Button
+										variant="ghost"
+										size="icon-sm"
+										aria-label="Move {task.title}">•••</Button
+									></DropdownMenu.Trigger
+								><DropdownMenu.Content
+									><DropdownMenu.Group
+										><DropdownMenu.Label>Move to</DropdownMenu.Label
+										>{#each groups as destination (destination.id)}<DropdownMenu.Item
+												onclick={() =>
+													void moveTaskFromMenu(task, destination.id)}
+												>{columnLabel(destination.id)}</DropdownMenu.Item
+											>{/each}</DropdownMenu.Group
+									></DropdownMenu.Content
+								></DropdownMenu.Root
+							>
+						</div>
 					{/each}
 				</div>
 			</section>
@@ -209,10 +281,33 @@
 	</div>
 {/if}
 
-<ObjectInspector
-	bind:open={inspectorOpen}
-	object={selectedTask}
-	onclose={() => {
-		selectedTask = null;
-	}}
-/>
+<Sheet.Root bind:open={detailOpen}
+	><Sheet.Content
+		class="flex w-full flex-col p-0 sm:max-w-4xl"
+		showCloseButton={false}
+		onEscapeKeydown={(event) => {
+			event.preventDefault();
+			void closeDetail();
+		}}
+		onInteractOutside={(event) => {
+			event.preventDefault();
+			void closeDetail();
+		}}
+		><Sheet.Header class="sr-only"
+			><Sheet.Title>Task detail</Sheet.Title><Sheet.Description
+				>Edit the selected task.</Sheet.Description
+			></Sheet.Header
+		><Button
+			variant="ghost"
+			class="absolute top-4 right-4 bg-secondary"
+			size="icon-sm"
+			disabled={closingDetail}
+			onclick={() => void closeDetail()}
+			aria-label="Close task detail"><X /></Button
+		>{#if selectedTask}{#key selectedTask.id}<TaskDetail
+					task={selectedTask}
+					{projects}
+					onupdated={() => void load()}
+				/>{/key}{/if}</Sheet.Content
+	></Sheet.Root
+>

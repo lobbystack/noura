@@ -6,6 +6,14 @@ export interface FormattingCommand {
 }
 
 function toggleWrap(view: EditorView, marker: string): void {
+	toggleWrapPair(view, marker, marker);
+}
+
+function toggleWrapPair(
+	view: EditorView,
+	opening: string,
+	closing: string,
+): void {
 	const changes: Array<{ from: number; to: number; insert: string }> = [];
 	const ranges = view.state.selection.ranges;
 	const allWrapped =
@@ -13,9 +21,9 @@ function toggleWrap(view: EditorView, marker: string): void {
 		ranges.every((range) => {
 			const text = view.state.sliceDoc(range.from, range.to);
 			return (
-				text.startsWith(marker) &&
-				text.endsWith(marker) &&
-				text.length >= marker.length * 2
+				text.startsWith(opening) &&
+				text.endsWith(closing) &&
+				text.length >= opening.length + closing.length
 			);
 		});
 	let tail = ranges[ranges.length - 1]?.to ?? 0;
@@ -23,24 +31,24 @@ function toggleWrap(view: EditorView, marker: string): void {
 		const text = view.state.sliceDoc(range.from, range.to);
 		if (allWrapped) {
 			const inner = text.slice(
-				marker.length,
-				Math.max(marker.length, text.length - marker.length),
+				opening.length,
+				Math.max(opening.length, text.length - closing.length),
 			);
 			changes.push({ from: range.from, to: range.to, insert: inner });
 		} else if (text.length === 0) {
 			changes.push({
 				from: range.from,
 				to: range.to,
-				insert: marker + marker,
+				insert: opening + closing,
 			});
 		} else {
 			changes.push({
 				from: range.from,
 				to: range.to,
-				insert: marker + text + marker,
+				insert: opening + text + closing,
 			});
 		}
-		tail = range.to + marker.length * 2;
+		tail = range.to + opening.length + closing.length;
 	}
 	view.dispatch({
 		changes,
@@ -130,6 +138,7 @@ export function toggleCheckboxes(view: EditorView, lines: number[]): void {
 export const formattingCommands = {
 	bold: (view: EditorView) => toggleWrap(view, '**'),
 	italic: (view: EditorView) => toggleWrap(view, '*'),
+	underline: (view: EditorView) => toggleWrapPair(view, '<u>', '</u>'),
 	strikethrough: (view: EditorView) => toggleWrap(view, '~~'),
 	code: (view: EditorView) => toggleWrap(view, '`'),
 	bulletList: (view: EditorView) => setLineHints(view, '- '),

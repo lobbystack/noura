@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use local_core::{
-    ConflictResolution, CreateObjectInput, ManagedDraftInput, ManagedDraftResult, ObjectPatch,
-    ParseStatus, ParsedMarkdown, RawConflictResolveInput, RawSaveInput, RawSaveResult, SearchInput,
-    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, parse_markdown,
+    ConflictResolution, CreateObjectInput, ManagedConflictResolution, ManagedConflictResolveInput,
+    ManagedDraftInput, ManagedDraftResult, MarkdownLinkTarget, ObjectPatch, ParseStatus,
+    ParsedMarkdown, RawConflictResolveInput, RawSaveInput, RawSaveResult, SearchInput,
+    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id, parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -84,6 +85,47 @@ fn managed_draft_save_merges_disjoint_fields_and_snapshots_external_version() {
             .is_some(),
         "external snapshot should be recoverable"
     );
+}
+
+#[test]
+fn managed_draft_save_updates_an_unchanged_canonical_file() {
+    let (workspace, _app_data, engine) = engine();
+    let base = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Original".into(),
+            body: "base body".into(),
+            relative_path: None,
+            properties: BTreeMap::from([("status".into(), serde_json::json!("todo"))]),
+        })
+        .unwrap()
+        .value;
+
+    let result = engine
+        .save_managed_draft(ManagedDraftInput {
+            id: base.id.clone(),
+            base_revision: base.revision.clone(),
+            base_title: base.title.clone(),
+            base_body: base.body.clone(),
+            base_properties: base.properties.clone(),
+            local_title: "Renamed".into(),
+            local_body: "edited body".into(),
+            local_properties: BTreeMap::from([
+                ("status".into(), serde_json::json!("in-progress")),
+                ("priority".into(), serde_json::json!("high")),
+            ]),
+        })
+        .unwrap();
+    let ManagedDraftResult::Unchanged { current } = result else {
+        panic!("expected clean-base save, got {result:?}");
+    };
+
+    assert_eq!(current.title, "Renamed");
+    assert_eq!(current.body, "edited body");
+    assert_eq!(current.properties["status"], "in-progress");
+    assert_eq!(current.properties["priority"], "high");
+    assert_ne!(current.revision, base.revision);
+    assert!(workspace.path().join(&current.relative_path).exists());
 }
 
 #[test]
@@ -543,7 +585,7 @@ fn raw_markdown_save_preserves_crlf_and_bom_and_reindexes() {
             local_body: "# Scratch\n\nlorem\n\nmore\n".into(),
         })
         .unwrap();
-    let RawSaveResult::Saved { current } = saved else {
+    let RawSaveResult::Saved { current, .. } = saved else {
         panic!("expected saved raw markdown, got {saved:?}");
     };
     assert!(current.uses_crlf);
@@ -559,6 +601,74 @@ fn raw_markdown_rejects_traversal_and_non_markdown_paths() {
     assert!(engine.read_raw_markdown("../outside.md").is_err());
     assert!(engine.read_raw_markdown("notes/file.txt").is_err());
     assert!(engine.read_raw_markdown(".noura/history/notes.md").is_err());
+}
+
+#[test]
+fn markdown_link_fragments_resolve_as_unresolved() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+    std::fs::write(workspace.path().join("notes/target.md"), "# Target\n").unwrap();
+    engine.reconcile().unwrap();
+
+    for fragment_only in ["#heading", "|alias", "| alias"] {
+        let resolved = engine
+            .resolve_markdown_link("notes/source.md", fragment_only)
+            .unwrap();
+        assert!(
+            matches!(resolved, MarkdownLinkTarget::Unresolved),
+            "expected `{fragment_only}` to be unresolved, got {resolved:?}"
+        );
+    }
+
+    // Real files keep resolving with their fragments intact.
+    let resolved = engine
+        .resolve_markdown_link("notes/source.md", "target#heading")
+        .unwrap();
+    assert!(matches!(resolved, MarkdownLinkTarget::Markdown { .. }));
+}
+
+#[test]
+fn markdown_targets_resolve_relative_files_and_reject_workspace_escape() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+    std::fs::write(workspace.path().join("notes/target.md"), "# Target\n").unwrap();
+    std::fs::write(workspace.path().join("image.png"), b"png").unwrap();
+    engine.reconcile().unwrap();
+    let markdown = engine
+        .resolve_markdown_link("notes/source.md", "target")
+        .unwrap();
+    assert!(matches!(markdown, MarkdownLinkTarget::Markdown { .. }));
+    let (relative, bytes) = engine
+        .read_local_asset("notes/source.md", "../image.png", 1024)
+        .unwrap();
+    assert_eq!((relative, bytes), ("image.png".into(), b"png".to_vec()));
+    assert!(
+        engine
+            .read_local_asset("notes/source.md", "../../outside.png", 1024)
+            .is_err()
+    );
+}
+
+#[test]
+fn raw_markdown_save_reports_managed_identity_after_repair() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("repair.md"), "---\nid: broken\n---\n").unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("repair.md").unwrap();
+    let id = new_object_id("note");
+    let repaired = format!("---\nid: {id}\ntype: note\n---\n\n# Repaired\n");
+    let result = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "repair.md".into(),
+            base_revision: base.revision,
+            base_body: base.body,
+            local_body: repaired,
+        })
+        .unwrap();
+    let RawSaveResult::Saved { managed_object, .. } = result else {
+        panic!("expected repaired raw Markdown to save");
+    };
+    assert_eq!(managed_object.map(|object| object.id), Some(id));
 }
 
 #[test]
@@ -582,7 +692,7 @@ fn raw_conflict_resolution_snapshots_each_side() {
             local_body: "day one\nday two local\n".into(),
         })
         .unwrap();
-    let RawSaveResult::Conflict { current } = saved else {
+    let RawSaveResult::Conflict { current, .. } = saved else {
         panic!("expected raw conflict, got {saved:?}");
     };
     let adopted = engine
@@ -593,7 +703,7 @@ fn raw_conflict_resolution_snapshots_each_side() {
             resolution: ConflictResolution::ReplaceExternal,
         })
         .unwrap();
-    assert_eq!(adopted.body, "day one\nday two local\n");
+    assert_eq!(adopted.current.body, "day one\nday two local\n");
     let history = workspace.path().join(".noura/history");
     assert!(history.read_dir().unwrap().next().is_some());
 }
@@ -637,4 +747,137 @@ fn managed_conflict_keeps_current_revisions_until_resolution() {
     };
     let result = engine.save_managed_draft(input).unwrap();
     assert!(matches!(result, ManagedDraftResult::Conflict { .. }));
+}
+
+#[test]
+fn managed_conflict_restore_recreates_an_externally_deleted_file() {
+    let (workspace, _app_data, engine) = engine();
+    let original = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Recover me".into(),
+            body: "original body".into(),
+            relative_path: Some("tasks/recover-me.md".into()),
+            properties: BTreeMap::from([("status".into(), serde_json::json!("todo"))]),
+        })
+        .unwrap()
+        .value;
+    std::fs::remove_file(workspace.path().join(&original.relative_path)).unwrap();
+    engine.reconcile().unwrap();
+
+    let restored = engine
+        .resolve_managed_conflict(ManagedConflictResolveInput {
+            id: original.id.clone(),
+            current_revision: original.revision,
+            relative_path: original.relative_path.clone(),
+            created: original.created.clone(),
+            local_title: "Recovered task".into(),
+            local_body: "draft survived deletion".into(),
+            local_properties: BTreeMap::from([("status".into(), serde_json::json!("in-progress"))]),
+            resolution: ManagedConflictResolution::ReplaceExternal,
+        })
+        .unwrap();
+
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.relative_path, original.relative_path);
+    assert_eq!(restored.created, original.created);
+    assert_eq!(restored.body, "draft survived deletion");
+    assert!(workspace.path().join(&restored.relative_path).is_file());
+    assert_eq!(engine.get_object(&restored.id).unwrap(), Some(restored));
+}
+
+#[test]
+fn managed_conflict_restore_rejects_invalid_created_timestamp() {
+    let (workspace, _app_data, engine) = engine();
+    let original = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Validate my clock".into(),
+            body: "original body".into(),
+            relative_path: Some("tasks/recover-timestamp.md".into()),
+            properties: BTreeMap::from([("status".into(), serde_json::json!("todo"))]),
+        })
+        .unwrap()
+        .value;
+    std::fs::remove_file(workspace.path().join(&original.relative_path)).unwrap();
+    engine.reconcile().unwrap();
+
+    let error = engine
+        .resolve_managed_conflict(ManagedConflictResolveInput {
+            id: original.id,
+            current_revision: original.revision,
+            relative_path: original.relative_path,
+            created: Some("yesterday".into()),
+            local_title: "Recovered task".into(),
+            local_body: "draft survived deletion".into(),
+            local_properties: BTreeMap::from([("status".into(), serde_json::json!("in-progress"))]),
+            resolution: ManagedConflictResolution::ReplaceExternal,
+        })
+        .unwrap_err();
+
+    assert_eq!(error.code, "invalid_timestamp");
+}
+
+#[test]
+fn managed_conflict_restore_rejects_reserved_directories() {
+    let (workspace, _app_data, engine) = engine();
+    let original = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Recover me".into(),
+            body: "original body".into(),
+            relative_path: Some("tasks/recover-reserved.md".into()),
+            properties: BTreeMap::from([("status".into(), serde_json::json!("todo"))]),
+        })
+        .unwrap()
+        .value;
+    std::fs::remove_file(workspace.path().join(&original.relative_path)).unwrap();
+    engine.reconcile().unwrap();
+
+    let error = engine
+        .resolve_managed_conflict(ManagedConflictResolveInput {
+            id: original.id,
+            current_revision: original.revision,
+            relative_path: ".noura/recovered.md".into(),
+            created: original.created,
+            local_title: "Recovered task".into(),
+            local_body: "draft survived deletion".into(),
+            local_properties: BTreeMap::from([("status".into(), serde_json::json!("in-progress"))]),
+            resolution: ManagedConflictResolution::ReplaceExternal,
+        })
+        .unwrap_err();
+
+    assert_eq!(error.code, "reserved_path");
+}
+
+#[test]
+fn managed_conflict_restore_requires_markdown_extension() {
+    let (workspace, _app_data, engine) = engine();
+    let original = engine
+        .create_object(CreateObjectInput {
+            object_type: "task".into(),
+            title: "Recover me".into(),
+            body: "original body".into(),
+            relative_path: Some("tasks/recover-extension.md".into()),
+            properties: BTreeMap::from([("status".into(), serde_json::json!("todo"))]),
+        })
+        .unwrap()
+        .value;
+    std::fs::remove_file(workspace.path().join(&original.relative_path)).unwrap();
+    engine.reconcile().unwrap();
+
+    let error = engine
+        .resolve_managed_conflict(ManagedConflictResolveInput {
+            id: original.id,
+            current_revision: original.revision,
+            relative_path: "tasks/recovered.txt".into(),
+            created: original.created,
+            local_title: "Recovered task".into(),
+            local_body: "draft survived deletion".into(),
+            local_properties: BTreeMap::from([("status".into(), serde_json::json!("in-progress"))]),
+            resolution: ManagedConflictResolution::ReplaceExternal,
+        })
+        .unwrap_err();
+
+    assert_eq!(error.code, "unsupported_extension");
 }

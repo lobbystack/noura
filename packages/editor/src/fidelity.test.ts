@@ -23,6 +23,20 @@ describe('preserveLineMetadata', () => {
 		expect(metadata.hasBom).toBe(false);
 		expect(composeRawText(text, metadata)).toBe(raw);
 	});
+
+	for (const [name, raw] of [
+		['tables', '| A | B |\n| - | - |\n| 1 | 2 |\n'],
+		['math', '$x^2$\n\n$$y = mx + b$$\n'],
+		['obsidian syntax', '[[Note|Alias]] ![[image.png]] #tag ^block\n'],
+		['html and comments', '<custom value="1">text</custom>\n%%hidden%%\n'],
+		['unicode', '# Café ☕️\n\nこんにちは\n'],
+		['missing final newline', 'last line'],
+	] as const) {
+		test(`${name} remains exact`, () => {
+			const { text, metadata } = preserveLineMetadata(raw);
+			expect(composeRawText(text, metadata)).toBe(raw);
+		});
+	}
 });
 
 describe('detectSuspiciousShrink', () => {

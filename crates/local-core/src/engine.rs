@@ -146,6 +146,8 @@ pub enum ManagedConflictResolution {
 pub struct ManagedConflictResolveInput {
     pub id: String,
     pub current_revision: String,
+    pub relative_path: String,
+    pub created: Option<String>,
     pub local_title: String,
     pub local_body: String,
     #[ts(type = "Record<string, unknown>")]
@@ -200,9 +202,21 @@ pub struct RawSaveInput {
 #[ts(export)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum RawSaveResult {
-    Saved { current: RawMarkdownRead },
-    Merged { current: RawMarkdownRead },
-    Conflict { current: RawMarkdownRead },
+    Saved {
+        current: RawMarkdownRead,
+        #[ts(rename = "managedObject")]
+        managed_object: Option<WorkspaceObject>,
+    },
+    Merged {
+        current: RawMarkdownRead,
+        #[ts(rename = "managedObject")]
+        managed_object: Option<WorkspaceObject>,
+    },
+    Conflict {
+        current: RawMarkdownRead,
+        #[ts(rename = "managedObject")]
+        managed_object: Option<WorkspaceObject>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -213,6 +227,32 @@ pub struct RawConflictResolveInput {
     pub current_revision: String,
     pub local_body: String,
     pub resolution: ConflictResolution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RawConflictResolveResult {
+    pub current: RawMarkdownRead,
+    #[ts(rename = "managedObject")]
+    pub managed_object: Option<WorkspaceObject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum MarkdownLinkTarget {
+    Managed {
+        object: WorkspaceObject,
+    },
+    Markdown {
+        document: RawMarkdownRead,
+    },
+    Asset {
+        #[ts(rename = "relativePath")]
+        relative_path: String,
+    },
+    Unresolved,
 }
 
 type MarkdownIndexEntry = (String, Vec<u8>, i64, ParsedMarkdown);
@@ -792,10 +832,12 @@ impl WorkspaceEngine {
                 == normalized_properties(&input.base_properties);
         if unchanged {
             let mut object = canonical;
+            let expected_revision = object.revision.clone();
             object.title = input.local_title;
             object.body = input.local_body;
             object.properties = normalized_properties(&input.local_properties);
-            let result = self.apply_managed_object(object, None, "managed_draft_save")?;
+            let result =
+                self.apply_managed_object(object, Some(&expected_revision), "managed_draft_save")?;
             return Ok(ManagedDraftResult::Unchanged {
                 current: result.value,
             });
@@ -830,7 +872,16 @@ impl WorkspaceEngine {
         input: ManagedConflictResolveInput,
     ) -> Result<WorkspaceObject> {
         let (current, current_bytes) =
-            self.read_canonical_object(&input.id, "managed_conflict_resolve")?;
+            match self.read_canonical_object(&input.id, "managed_conflict_resolve") {
+                Ok(value) => value,
+                Err(error)
+                    if error.code == "object_not_found"
+                        && input.resolution == ManagedConflictResolution::ReplaceExternal =>
+                {
+                    return self.restore_deleted_managed_object(input);
+                }
+                Err(error) => return Err(error),
+            };
         if current.revision != input.current_revision {
             let mut error = CoreError::new(
                 "revision_conflict",
@@ -865,6 +916,46 @@ impl WorkspaceEngine {
                 Ok(result.value)
             }
         }
+    }
+
+    fn restore_deleted_managed_object(
+        &self,
+        input: ManagedConflictResolveInput,
+    ) -> Result<WorkspaceObject> {
+        crate::path::validate_relative(&input.relative_path, "managed_object_restore")?;
+        let object_type = input.id.split('_').next().unwrap_or_default().to_owned();
+        if object_type.is_empty() || !valid_object_id(&input.id, &object_type) {
+            return Err(CoreError::validation(
+                "invalid_object_id",
+                "The object ID is invalid",
+                "managed_conflict_resolve",
+            ));
+        }
+        let timestamp = now_rfc3339();
+        let created = match input.created {
+            Some(created) => {
+                ensure_rfc3339_timestamp(
+                    &created,
+                    "created must be an RFC 3339 timestamp".into(),
+                    "managed_conflict_resolve",
+                )?;
+                Some(created)
+            }
+            None => Some(timestamp.clone()),
+        };
+        let object = WorkspaceObject {
+            id: input.id,
+            object_type,
+            title: input.local_title,
+            body: input.local_body,
+            relative_path: input.relative_path,
+            revision: String::new(),
+            created,
+            updated: Some(timestamp),
+            properties: normalized_properties(&input.local_properties),
+        };
+        let result = self.apply_managed_object(object, None, "managed_conflict_resolve")?;
+        Ok(result.value)
     }
 
     fn read_canonical_workspace_object(
@@ -907,7 +998,13 @@ impl WorkspaceEngine {
 
     /// Read one non-Markdown file (image or other asset) for inline preview.
     /// Workspace containment is validated; total size is capped by the caller.
-    pub fn read_local_asset(&self, relative_path: &str, max_bytes: i64) -> Result<Vec<u8>> {
+    pub fn read_local_asset(
+        &self,
+        source_relative_path: &str,
+        target: &str,
+        max_bytes: i64,
+    ) -> Result<(String, Vec<u8>)> {
+        let relative_path = resolve_markdown_target(source_relative_path, target, false)?;
         if relative_path.to_ascii_lowercase().ends_with(".md") {
             return Err(CoreError::validation(
                 "invalid_asset_path",
@@ -915,9 +1012,9 @@ impl WorkspaceEngine {
                 "raw_asset_read",
             ));
         }
-        let path = resolve_for_write(&self.root, relative_path, "raw_asset_read")?;
+        let path = resolve_for_write(&self.root, &relative_path, "raw_asset_read")?;
         let metadata = std::fs::metadata(&path)
-            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(relative_path)))?;
+            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(&relative_path)))?;
         if metadata.len() as i64 > max_bytes {
             return Err(CoreError::validation(
                 "asset_too_large",
@@ -925,8 +1022,46 @@ impl WorkspaceEngine {
                 "raw_asset_read",
             ));
         }
-        std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(relative_path)))
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(&relative_path)))?;
+        Ok((relative_path, bytes))
+    }
+
+    pub fn resolve_markdown_link(
+        &self,
+        source_relative_path: &str,
+        target: &str,
+    ) -> Result<MarkdownLinkTarget> {
+        if target.starts_with("http://") || target.starts_with("https://") {
+            return Ok(MarkdownLinkTarget::Unresolved);
+        }
+        // A target that only names an alias or heading has no file behind it
+        // to resolve; callers represent it as an ordinary unresolved link.
+        if markdown_target_path(target, true).is_empty() {
+            return Ok(MarkdownLinkTarget::Unresolved);
+        }
+        let mut relative = resolve_markdown_target(source_relative_path, target, true)?;
+        let mut path = resolve_for_write(&self.root, &relative, "markdown_link_resolve")?;
+        if !path.exists() && Path::new(&relative).extension().is_none() {
+            relative.push_str(".md");
+            path = resolve_for_write(&self.root, &relative, "markdown_link_resolve")?;
+        }
+        if !path.exists() || !path.is_file() {
+            return Ok(MarkdownLinkTarget::Unresolved);
+        }
+        if relative.to_ascii_lowercase().ends_with(".md") {
+            let bytes = std::fs::read(&path)
+                .map_err(|error| CoreError::io(error, "markdown_link_resolve", Some(&relative)))?;
+            if let ParsedMarkdown::Managed(object) = markdown::parse_markdown(&relative, &bytes) {
+                return Ok(MarkdownLinkTarget::Managed { object });
+            }
+            return self
+                .read_raw_markdown(&relative)
+                .map(|document| MarkdownLinkTarget::Markdown { document });
+        }
+        Ok(MarkdownLinkTarget::Asset {
+            relative_path: relative,
+        })
     }
 
     fn reindex_raw_markdown(
@@ -1036,7 +1171,12 @@ impl WorkspaceEngine {
                     )?;
                     merged
                 }
-                None => return Ok(RawSaveResult::Conflict { current }),
+                None => {
+                    return Ok(RawSaveResult::Conflict {
+                        current,
+                        managed_object: None,
+                    });
+                }
             }
         };
         let next_bytes = compose_raw_bytes(&merged_body, uses_crlf, has_bom);
@@ -1058,6 +1198,10 @@ impl WorkspaceEngine {
             serde_json::json!({ "paths": [relative] }),
         );
         self.emit("search:index-updated", "application", serde_json::json!({}));
+        let managed_object = match markdown::parse_markdown(&relative, &next_bytes) {
+            ParsedMarkdown::Managed(object) => Some(object),
+            _ => None,
+        };
         Ok(RawSaveResult::Saved {
             current: RawMarkdownRead {
                 relative_path: relative,
@@ -1066,12 +1210,16 @@ impl WorkspaceEngine {
                 uses_crlf,
                 has_bom,
             },
+            managed_object,
         })
     }
 
     /// Adopt the external file version or replace it with the reviewed local
     /// draft. Both directions snapshot the version they displace first.
-    pub fn resolve_raw_conflict(&self, input: RawConflictResolveInput) -> Result<RawMarkdownRead> {
+    pub fn resolve_raw_conflict(
+        &self,
+        input: RawConflictResolveInput,
+    ) -> Result<RawConflictResolveResult> {
         let relative =
             crate::path::validate_relative(&input.relative_path, "raw_markdown_resolve")?
                 .to_str()
@@ -1118,12 +1266,19 @@ impl WorkspaceEngine {
                     "local",
                     &local_bytes,
                 )?;
-                Ok(RawMarkdownRead {
-                    relative_path: relative,
-                    body: external_body,
-                    revision: markdown::revision(&bytes),
-                    uses_crlf,
-                    has_bom,
+                let managed_object = match markdown::parse_markdown(&relative, &bytes) {
+                    ParsedMarkdown::Managed(object) => Some(object),
+                    _ => None,
+                };
+                Ok(RawConflictResolveResult {
+                    current: RawMarkdownRead {
+                        relative_path: relative,
+                        body: external_body,
+                        revision: markdown::revision(&bytes),
+                        uses_crlf,
+                        has_bom,
+                    },
+                    managed_object,
                 })
             }
             ConflictResolution::ReplaceExternal => {
@@ -1154,12 +1309,19 @@ impl WorkspaceEngine {
                     serde_json::json!({ "paths": [relative] }),
                 );
                 self.emit("search:index-updated", "application", serde_json::json!({}));
-                Ok(RawMarkdownRead {
-                    relative_path: relative,
-                    body: input.local_body,
-                    revision: markdown::revision(&next_bytes),
-                    uses_crlf,
-                    has_bom,
+                let managed_object = match markdown::parse_markdown(&relative, &next_bytes) {
+                    ParsedMarkdown::Managed(object) => Some(object),
+                    _ => None,
+                };
+                Ok(RawConflictResolveResult {
+                    current: RawMarkdownRead {
+                        relative_path: relative,
+                        body: input.local_body,
+                        revision: markdown::revision(&next_bytes),
+                        uses_crlf,
+                        has_bom,
+                    },
+                    managed_object,
                 })
             }
         }
@@ -2078,6 +2240,69 @@ fn validate_raw_markdown_path(root: &Path, relative: &str) -> Result<PathBuf> {
     resolve_for_write(root, relative, "raw_markdown")
 }
 
+/// Strip the alias (`|`) and — when fragments are meaningful — the heading
+/// fragment (`#`) from an Obsidian-style target, leaving the resolvable
+/// path. An empty result means the target named only an alias or fragment.
+fn markdown_target_path(target: &str, allow_fragment: bool) -> &str {
+    let path = target.split('|').next().unwrap_or_default().trim();
+    if allow_fragment {
+        path.split('#').next().unwrap_or_default()
+    } else {
+        path
+    }
+}
+
+fn resolve_markdown_target(
+    source_relative_path: &str,
+    target: &str,
+    allow_fragment: bool,
+) -> Result<String> {
+    let target = markdown_target_path(target, allow_fragment);
+    if target.is_empty() || target.contains('\0') {
+        return Err(CoreError::validation(
+            "invalid_markdown_target",
+            "The Markdown target is empty or invalid",
+            "markdown_target_resolve",
+        ));
+    }
+    let source = crate::path::validate_relative(source_relative_path, "markdown_target_resolve")?;
+    let parent = source.parent().unwrap_or_else(|| Path::new(""));
+    let joined = parent.join(target);
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            std::path::Component::Normal(value) => normalized.push(value),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(CoreError::validation(
+                        "path_traversal",
+                        "The Markdown target escapes the workspace",
+                        "markdown_target_resolve",
+                    ));
+                }
+            }
+            _ => {
+                return Err(CoreError::validation(
+                    "invalid_markdown_target",
+                    "The Markdown target must be a relative workspace path",
+                    "markdown_target_resolve",
+                ));
+            }
+        }
+    }
+    normalized
+        .to_str()
+        .map(|value| value.replace('\\', "/"))
+        .ok_or_else(|| {
+            CoreError::validation(
+                "non_utf8_path",
+                "The Markdown target path is not UTF-8",
+                "markdown_target_resolve",
+            )
+        })
+}
+
 fn raw_history_dir(relative: &str) -> String {
     let digest = blake3::hash(relative.as_bytes()).to_hex();
     format!("raw-{}", &digest[..16])
@@ -2189,14 +2414,21 @@ fn take_optional_timestamp(
             operation,
         )
     })?;
-    value.parse::<jiff::Timestamp>().map_err(|_| {
-        CoreError::validation(
-            "invalid_timestamp",
-            format!("{key} must be an RFC 3339 timestamp"),
-            operation,
-        )
-    })?;
+    ensure_rfc3339_timestamp(
+        value,
+        format!("{key} must be an RFC 3339 timestamp"),
+        operation,
+    )?;
     Ok(Some(value.to_owned()))
+}
+
+/// Client-supplied durable timestamps keep working files consistent; a
+/// malformed value must fail the mutation instead of becoming frontmatter.
+fn ensure_rfc3339_timestamp(value: &str, message: String, operation: &str) -> Result<()> {
+    value
+        .parse::<jiff::Timestamp>()
+        .map(|_| ())
+        .map_err(|_| CoreError::validation("invalid_timestamp", message, operation))
 }
 
 fn validate_object_type(value: &str) -> Result<()> {

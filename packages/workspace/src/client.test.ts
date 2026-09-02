@@ -87,6 +87,59 @@ describe('typed client', () => {
 				.calls[0],
 		).toEqual({ command: 'files_list_non_managed_markdown' });
 	});
+	test('passes a raw Markdown path as the command payload', async () => {
+		const document = {
+			relativePath: 'draft.md',
+			body: 'draft',
+			revision: 'abc',
+			usesCrlf: false,
+			hasBom: false,
+		};
+		const mock = transport({ raw_markdown_read: document });
+		const client = createNouraClient(mock);
+
+		await expect(
+			client.files.readRawMarkdown({ relativePath: 'draft.md' }),
+		).resolves.toEqual(document);
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> })
+				.calls[0],
+		).toEqual({
+			command: 'raw_markdown_read',
+			payload: { relativePath: 'draft.md' },
+		});
+	});
+	test('resolves Markdown links and assets relative to the source document', async () => {
+		const mock = transport({
+			files_resolve_markdown_link: { kind: 'unresolved' },
+			files_read_local_asset: { dataUrl: 'data:image/png;base64,AA==' },
+		});
+		const client = createNouraClient(mock);
+		await client.files.resolveMarkdownLink({
+			sourceRelativePath: 'notes/a.md',
+			target: '../image.png',
+		});
+		await client.files.readLocalAsset({
+			sourceRelativePath: 'notes/a.md',
+			target: '../image.png',
+		});
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,
+		).toEqual([
+			{
+				command: 'files_resolve_markdown_link',
+				payload: {
+					input: { sourceRelativePath: 'notes/a.md', target: '../image.png' },
+				},
+			},
+			{
+				command: 'files_read_local_asset',
+				payload: {
+					input: { sourceRelativePath: 'notes/a.md', target: '../image.png' },
+				},
+			},
+		]);
+	});
 	test('task completion delegates to generic revision-checked object update', async () => {
 		const mock = transport({
 			objects_update: {

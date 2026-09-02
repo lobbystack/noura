@@ -25,6 +25,8 @@ export type { RawReconcileResult } from './generated/RawReconcileResult';
 export type { RawSaveInput } from './generated/RawSaveInput';
 export type { RawSaveResult } from './generated/RawSaveResult';
 export type { RawConflictResolveInput } from './generated/RawConflictResolveInput';
+export type { RawConflictResolveResult } from './generated/RawConflictResolveResult';
+export type { MarkdownLinkTarget } from './generated/MarkdownLinkTarget';
 export type { UnmanagedFile } from './generated/UnmanagedFile';
 export type { WorkspaceEntry } from './generated/WorkspaceEntry';
 export type { WorkspaceEntryKind } from './generated/WorkspaceEntryKind';

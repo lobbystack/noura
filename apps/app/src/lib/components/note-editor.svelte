@@ -1,13 +1,9 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
-	import {
-		createLiveMarkdownDocument,
-		createLiveMarkdownEditor,
-		formattingCommands,
-		type LiveMarkdownEditor,
-	} from '@noura/editor';
+	import type { LiveMarkdownEditor } from '@noura/editor/types';
 	import type { CoreEvent, Note } from '@noura/workspace';
+	import { isCoreError } from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
 	import { AutosaveCoordinator } from '$lib/editor/autosave';
 	import {
@@ -16,25 +12,14 @@
 	} from '$lib/editor/note-save';
 	import { registerPendingDraft } from '$lib/editor/pending-drafts.svelte';
 	import MarkdownPreview from '$lib/components/markdown-preview.svelte';
+	import LiveMarkdownSurface from '$lib/components/live-markdown-surface.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
-	import { Toggle } from '$lib/components/ui/toggle/index.js';
-	import * as Select from '$lib/components/ui/select/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
-	import TextB from 'phosphor-svelte/lib/TextB';
-	import TextItalic from 'phosphor-svelte/lib/TextItalic';
-	import LinkSimple from 'phosphor-svelte/lib/LinkSimple';
-	import ListBullets from 'phosphor-svelte/lib/ListBullets';
-	import ListNumbers from 'phosphor-svelte/lib/ListNumbers';
-	import Checks from 'phosphor-svelte/lib/Checks';
-	import Quotes from 'phosphor-svelte/lib/Quotes';
-	import Code from 'phosphor-svelte/lib/Code';
-	import ArrowCounterClockwise from 'phosphor-svelte/lib/ArrowCounterClockwise';
-	import ArrowClockwise from 'phosphor-svelte/lib/ArrowClockwise';
 	import Warning from 'phosphor-svelte/lib/Warning';
 
 	let {
@@ -45,16 +30,8 @@
 		onsaved?: (updated: Note) => void;
 	} = $props();
 
-	type ConflictState = { draft: NoteDraft; file: Note };
+	type ConflictState = { draft: NoteDraft; file: Note; deleted?: boolean };
 	type Resolution = 'use-external' | 'replace-external';
-	type BlockStyle = 'paragraph' | 'heading-1' | 'heading-2' | 'heading-3';
-
-	const blockStyles: { value: BlockStyle; label: string }[] = [
-		{ value: 'paragraph', label: 'Text' },
-		{ value: 'heading-1', label: 'Heading 1' },
-		{ value: 'heading-2', label: 'Heading 2' },
-		{ value: 'heading-3', label: 'Heading 3' },
-	];
 
 	const initialNote = () => note;
 	let currentNote = $state.raw<Note | null>(initialNote());
@@ -71,20 +48,7 @@
 	let pendingResolution = $state<Resolution | null>(null);
 	let resolving = $state(false);
 	let transientMessage = $state<string | null>(null);
-	let toolbarRevision = $state(0);
-	let blockStyle = $derived.by<BlockStyle>(() => {
-		toolbarRevision;
-		const view = editor?.view;
-		if (!view) return 'paragraph';
-		const line = view.state.doc.lineAt(view.state.selection.main.from).text;
-		if (line.startsWith('### ')) return 'heading-3';
-		if (line.startsWith('## ')) return 'heading-2';
-		if (line.startsWith('# ')) return 'heading-1';
-		return 'paragraph';
-	});
-	let blockStyleLabel = $derived(
-		blockStyles.find((option) => option.value === blockStyle)?.label ?? 'Text',
-	);
+	let editorCleanup: (() => void) | null = null;
 	let clearMessageTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function errorMessage(error: unknown) {
@@ -149,48 +113,11 @@
 		return (await coordinator?.flush()) ?? true;
 	}
 
-	function runCommand(command: (view: never) => void) {
-		if (!editor) return;
-		(command as (view: unknown) => void)(editor.view);
-		toolbarRevision += 1;
-		editor.focus();
-	}
-
-	function applyBlockStyle(value: string) {
-		const level =
-			value === 'paragraph'
-				? 0
-				: value === 'heading-1'
-					? 1
-					: value === 'heading-2'
-						? 2
-						: 3;
-		runCommand(formattingCommands.heading(level as 0 | 1 | 2 | 3));
-	}
-
-	function currentLineStartsWith(marker: string) {
-		toolbarRevision;
-		const view = editor?.view;
-		if (!view) return false;
-		const line = view.state.doc.lineAt(view.state.selection.main.from).text;
-		return line.startsWith(marker);
-	}
-
-	function selectionWrapped(marker: string) {
-		toolbarRevision;
-		const view = editor?.view;
-		if (!view) return false;
-		const { from, to } = view.state.selection.main;
-		const text = view.state.sliceDoc(from, to);
-		return (
-			text.startsWith(marker) &&
-			text.endsWith(marker) &&
-			text.length >= marker.length * 2
-		);
-	}
-
-	function editorContainer(node: HTMLDivElement) {
-		if (!browser || !currentNote) return;
+	function connectEditor(handle: LiveMarkdownEditor | null) {
+		editorCleanup?.();
+		editorCleanup = null;
+		editor = handle;
+		if (!handle || !currentNote) return;
 		const localCoordinator = new AutosaveCoordinator({
 			write: persistDraft,
 			onStateChange: (state) => {
@@ -198,23 +125,6 @@
 			},
 		});
 		coordinator = localCoordinator;
-		const document = createLiveMarkdownDocument('note-body', currentNote.body);
-		const handle = createLiveMarkdownEditor(node, {
-			ytext: document.ytext,
-			resolveImage: (src) => {
-				if (/^https?:|^(data|asset):/.test(src)) return null;
-				const resolved = src.replace(/^\.\//, '');
-				return getNouraClient()
-					.files.readLocalAsset({ relativePath: resolved })
-					.then((asset) => asset.dataUrl)
-					.catch(() => null);
-			},
-			onChange: () => {
-				localCoordinator.noteEdit({ title: draftTitle, body: handle.doc() });
-				toolbarRevision += 1;
-			},
-		});
-		editor = handle;
 		const unregister = registerPendingDraft(
 			currentNote.id,
 			() => localCoordinator.flush(),
@@ -224,18 +134,19 @@
 				localCoordinator.error !== null,
 		);
 
-		return () => {
+		editorCleanup = () => {
 			unregister();
 			localCoordinator.destroy();
-			handle.destroy();
-			document.destroy();
 			if (coordinator === localCoordinator) coordinator = null;
-			if (editor === handle) editor = null;
 		};
 	}
 
-	function openConflict(draft: NoteDraft, file: Note) {
-		conflict = { draft, file };
+	function handleEditorEdit(body: string) {
+		coordinator?.noteEdit({ title: draftTitle, body });
+	}
+
+	function openConflict(draft: NoteDraft, file: Note, deleted = false) {
+		conflict = { draft, file, deleted };
 		reviewOpen = true;
 		coordinator?.pause();
 	}
@@ -251,51 +162,61 @@
 		const payload = event.payload as { id?: string };
 		if (payload.id !== target.id) return;
 		if (event.type === 'object:deleted') {
-			openConflict(currentDraft(), target);
+			openConflict(currentDraft(), target, true);
 			return;
 		}
 
-		const latest = await getNouraClient().notes.get(target.id);
-		if (!coordinator?.pendingEdits && !coordinator?.isWriting) {
-			setCanonical(latest);
-			draftTitle = latest.title;
-			replaceEditorBody(latest.body);
-			return;
+		try {
+			const latest = await getNouraClient().notes.get(target.id);
+			if (!coordinator?.pendingEdits && !coordinator?.isWriting) {
+				setCanonical(latest);
+				draftTitle = latest.title;
+				replaceEditorBody(latest.body);
+				return;
+			}
+			const draft = currentDraft();
+			const reconciliation = await getNouraClient().notes.reconcileDraft({
+				id: target.id,
+				baseRevision,
+				baseBody,
+				localBody: draft.body,
+			});
+			if (reconciliation.status === 'conflict') {
+				openConflict(draft, reconciliation.current as Note);
+				return;
+			}
+			const canonical = reconciliation.current as Note;
+			let mergedTitle = canonical.title;
+			if (draft.title !== baseTitle && canonical.title === baseTitle) {
+				mergedTitle = draft.title;
+			} else if (
+				draft.title !== baseTitle &&
+				canonical.title !== baseTitle &&
+				draft.title !== canonical.title
+			) {
+				openConflict(draft, canonical);
+				return;
+			}
+			currentNote = canonical;
+			baseBody = canonical.body;
+			baseTitle = canonical.title;
+			baseRevision = canonical.revision;
+			draftTitle = mergedTitle;
+			if (reconciliation.status === 'merged') {
+				const mergedBody = reconciliation.body;
+				replaceEditorBody(mergedBody);
+				showMessage('External changes merged');
+			}
+			coordinator?.noteEdit(currentDraft());
+		} catch (error) {
+			if (isCoreError(error) && error.code === 'object_not_found') {
+				// The file disappeared between the event and the fetch; show the
+				// same review surface the deleted event would.
+				openConflict(currentDraft(), target, true);
+				return;
+			}
+			autosaveError = error;
 		}
-		const draft = currentDraft();
-		const reconciliation = await getNouraClient().notes.reconcileDraft({
-			id: target.id,
-			baseRevision,
-			baseBody,
-			localBody: draft.body,
-		});
-		if (reconciliation.status === 'conflict') {
-			openConflict(draft, reconciliation.current as Note);
-			return;
-		}
-		const canonical = reconciliation.current as Note;
-		let mergedTitle = canonical.title;
-		if (draft.title !== baseTitle && canonical.title === baseTitle) {
-			mergedTitle = draft.title;
-		} else if (
-			draft.title !== baseTitle &&
-			canonical.title !== baseTitle &&
-			draft.title !== canonical.title
-		) {
-			openConflict(draft, canonical);
-			return;
-		}
-		currentNote = canonical;
-		baseBody = canonical.body;
-		baseTitle = canonical.title;
-		baseRevision = canonical.revision;
-		draftTitle = mergedTitle;
-		if (reconciliation.status === 'merged') {
-			const mergedBody = reconciliation.body;
-			replaceEditorBody(mergedBody);
-			showMessage('External changes merged');
-		}
-		coordinator?.noteEdit(currentDraft());
 	}
 
 	function requestResolution(resolution: Resolution) {
@@ -305,27 +226,21 @@
 
 	async function resolveConflict() {
 		if (!conflict || !pendingResolution || !currentNote) return;
+		const pendingConflict = conflict;
+		if (pendingConflict.deleted && pendingResolution === 'use-external') return;
 		resolving = true;
 		try {
-			const localDraft = currentDraft();
-			const result = await getNouraClient().notes.resolveConflict({
+			const localDraft = pendingConflict.draft;
+			const resolved = (await getNouraClient().notes.resolveManagedConflict({
 				id: currentNote.id,
-				currentRevision: conflict.file.revision,
+				currentRevision: pendingConflict.file.revision,
+				relativePath: currentNote.relativePath,
+				created: currentNote.created,
+				localTitle: localDraft.title,
 				localBody: localDraft.body,
+				localProperties: currentNote.properties,
 				resolution: pendingResolution,
-			});
-			let resolved = result.value as Note;
-			if (
-				pendingResolution === 'replace-external' &&
-				resolved.title !== localDraft.title
-			) {
-				const renamed = await getNouraClient().notes.update(resolved.id, {
-					expectedRevision: resolved.revision,
-					title: localDraft.title,
-					body: resolved.body,
-				});
-				resolved = renamed.value as Note;
-			}
+			})) as Note;
 			setCanonical(resolved);
 			if (pendingResolution === 'use-external') {
 				draftTitle = resolved.title;
@@ -339,9 +254,11 @@
 			reviewOpen = false;
 			confirmOpen = false;
 			showMessage(
-				pendingResolution === 'use-external'
-					? 'File version restored'
-					: 'File replaced',
+				pendingConflict.deleted
+					? 'Note restored'
+					: pendingResolution === 'use-external'
+						? 'File version restored'
+						: 'File replaced',
 			);
 			pendingResolution = null;
 		} catch (error) {
@@ -373,6 +290,7 @@
 			disposed = true;
 			unsubscribe?.();
 			if (clearMessageTimer) clearTimeout(clearMessageTimer);
+			editorCleanup?.();
 		};
 	});
 </script>
@@ -399,116 +317,19 @@
 		</header>
 		<Separator />
 
-		<div class="flex min-h-11 items-center gap-1 overflow-x-auto px-5 py-1.5">
-			<Select.Root
-				type="single"
-				value={blockStyle}
-				onValueChange={applyBlockStyle}
-			>
-				<Select.Trigger size="sm" class="w-28" aria-label="Paragraph style">
-					{blockStyleLabel}
-				</Select.Trigger>
-				<Select.Content>
-					<Select.Group>
-						{#each blockStyles as option (option.value)}
-							<Select.Item value={option.value} label={option.label}>
-								{option.label}
-							</Select.Item>
-						{/each}
-					</Select.Group>
-				</Select.Content>
-			</Select.Root>
-			<Separator orientation="vertical" class="mx-1 h-5" />
-			<Toggle
-				size="sm"
-				pressed={selectionWrapped('**')}
-				onPressedChange={() => runCommand(formattingCommands.bold)}
-				aria-label="Bold"
-			>
-				<TextB />
-			</Toggle>
-			<Toggle
-				size="sm"
-				pressed={selectionWrapped('*')}
-				onPressedChange={() => runCommand(formattingCommands.italic)}
-				aria-label="Italic"
-			>
-				<TextItalic />
-			</Toggle>
-			<Separator orientation="vertical" class="mx-1 h-5" />
-			<Toggle
-				size="sm"
-				pressed={currentLineStartsWith('- ')}
-				onPressedChange={() => runCommand(formattingCommands.bulletList)}
-				aria-label="Bulleted list"
-			>
-				<ListBullets />
-			</Toggle>
-			<Toggle
-				size="sm"
-				pressed={currentLineStartsWith('1. ')}
-				onPressedChange={() => runCommand(formattingCommands.numberedList)}
-				aria-label="Numbered list"
-			>
-				<ListNumbers />
-			</Toggle>
-			<Toggle
-				size="sm"
-				pressed={currentLineStartsWith('- [ ] ')}
-				onPressedChange={() => runCommand(formattingCommands.checkList)}
-				aria-label="Checklist"
-			>
-				<Checks />
-			</Toggle>
-			<Toggle
-				size="sm"
-				pressed={currentLineStartsWith('> ')}
-				onPressedChange={() => runCommand(formattingCommands.blockQuote)}
-				aria-label="Quote"
-			>
-				<Quotes />
-			</Toggle>
-			<Toggle
-				size="sm"
-				pressed={selectionWrapped('`')}
-				onPressedChange={() => runCommand(formattingCommands.code)}
-				aria-label="Inline code"
-			>
-				<Code />
-			</Toggle>
-			<Separator orientation="vertical" class="mx-1 h-5" />
-			<Button
-				variant="ghost"
-				size="icon-sm"
-				onclick={() => editor?.undo()}
-				aria-label="Undo"
-			>
-				<ArrowCounterClockwise />
-			</Button>
-			<Button
-				variant="ghost"
-				size="icon-sm"
-				onclick={() => editor?.redo()}
-				aria-label="Redo"
-			>
-				<ArrowClockwise />
-			</Button>
-			{#if transientMessage}
-				<span class="ml-auto text-xs text-muted-foreground" role="status">
-					{transientMessage}
-				</span>
-			{/if}
-		</div>
-		<Separator />
-
 		{#if conflict}
 			<div class="px-6 pt-4">
 				<Alert.Root>
 					<Warning />
-					<Alert.Title>This note changed in another app</Alert.Title>
+					<Alert.Title
+						>{conflict.deleted
+							? 'This note file was deleted'
+							: 'This note changed in another app'}</Alert.Title
+					>
 					<Alert.Description>
-						Your draft is safe. Review both versions before choosing which one
-						to keep.
+						{conflict.deleted
+							? 'Your draft is safe and can restore the deleted Markdown file.'
+							: 'Your draft is safe. Review both versions before choosing which one to keep.'}
 					</Alert.Description>
 					<Alert.Action>
 						<Button
@@ -538,13 +359,20 @@
 			</div>
 		{/if}
 
-		<div class="min-h-0 flex-1 overflow-y-auto">
-			<div class="mx-auto min-h-full max-w-3xl px-10 py-10">
-				<div
-					{@attach editorContainer}
-					class="live-md min-h-full text-base"
-				></div>
-			</div>
+		{#if transientMessage}
+			<p class="px-6 pt-3 text-xs text-muted-foreground" role="status">
+				{transientMessage}
+			</p>
+		{/if}
+
+		<div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+			<LiveMarkdownSurface
+				value={baseBody}
+				sourceRelativePath={currentNote.relativePath}
+				label="Note body"
+				onedit={handleEditorEdit}
+				onready={connectEditor}
+			/>
 		</div>
 	</div>
 
@@ -553,13 +381,16 @@
 			<Sheet.Header>
 				<Sheet.Title>Review note conflict</Sheet.Title>
 				<Sheet.Description>
-					Noura preserved both versions. Choose which note should remain in the
-					Markdown file.
+					{conflict?.deleted
+						? 'The Markdown file was deleted outside Noura. Restore it from your preserved draft.'
+						: 'Noura preserved both versions. Choose which note should remain in the Markdown file.'}
 				</Sheet.Description>
 			</Sheet.Header>
 			{#if conflict}
 				<div
-					class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-5 overflow-y-auto px-4 pb-4"
+					class="grid min-h-0 flex-1 gap-5 overflow-y-auto px-4 pb-4 {conflict.deleted
+						? 'grid-cols-1'
+						: 'grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]'}"
 				>
 					<section class="min-w-0">
 						<h2 class="mb-3 text-sm font-medium">Your draft</h2>
@@ -568,28 +399,34 @@
 						</p>
 						<MarkdownPreview markdown={conflict.draft.body} />
 					</section>
-					<Separator orientation="vertical" />
-					<section class="min-w-0">
-						<h2 class="mb-3 text-sm font-medium">File version</h2>
-						<p class="mb-4 truncate text-base font-semibold">
-							{conflict.file.title || 'Untitled'}
-						</p>
-						<MarkdownPreview markdown={conflict.file.body} />
-					</section>
+					{#if !conflict.deleted}
+						<Separator orientation="vertical" />
+						<section class="min-w-0">
+							<h2 class="mb-3 text-sm font-medium">File version</h2>
+							<p class="mb-4 truncate text-base font-semibold">
+								{conflict.file.title || 'Untitled'}
+							</p>
+							<MarkdownPreview markdown={conflict.file.body} />
+						</section>
+					{/if}
 				</div>
 			{/if}
 			<Sheet.Footer>
 				<Button variant="outline" onclick={() => (reviewOpen = false)}>
 					Cancel and continue reviewing
 				</Button>
-				<Button
-					variant="outline"
-					onclick={() => requestResolution('use-external')}
-				>
-					Use file version
-				</Button>
+				{#if !conflict?.deleted}
+					<Button
+						variant="outline"
+						onclick={() => requestResolution('use-external')}
+					>
+						Use file version
+					</Button>
+				{/if}
 				<Button onclick={() => requestResolution('replace-external')}>
-					Replace file with my version
+					{conflict?.deleted
+						? 'Restore note file'
+						: 'Replace file with my version'}
 				</Button>
 			</Sheet.Footer>
 		</Sheet.Content>
@@ -599,14 +436,18 @@
 		<AlertDialog.Content>
 			<AlertDialog.Header>
 				<AlertDialog.Title>
-					{pendingResolution === 'use-external'
-						? 'Use the file version?'
-						: 'Replace the file version?'}
+					{conflict?.deleted
+						? 'Restore the note file?'
+						: pendingResolution === 'use-external'
+							? 'Use the file version?'
+							: 'Replace the file version?'}
 				</AlertDialog.Title>
 				<AlertDialog.Description>
-					{pendingResolution === 'use-external'
-						? 'Your visible draft will be saved to recovery history before the file version replaces it.'
-						: 'The current file version will be saved to recovery history before your draft replaces it.'}
+					{conflict?.deleted
+						? 'Your preserved draft will be written back to its original Markdown path.'
+						: pendingResolution === 'use-external'
+							? 'Your visible draft will be saved to recovery history before the file version replaces it.'
+							: 'The current file version will be saved to recovery history before your draft replaces it.'}
 				</AlertDialog.Description>
 			</AlertDialog.Header>
 			<AlertDialog.Footer>

@@ -37,6 +37,8 @@ import type {
 	RawSaveInput,
 	RawSaveResult,
 	RawConflictResolveInput,
+	RawConflictResolveResult,
+	MarkdownLinkTarget,
 } from '@noura/shared';
 export type * from '@noura/shared';
 export { isCoreError } from '@noura/shared';
@@ -120,6 +122,19 @@ export interface TaskService extends ObjectService<Task> {
 }
 export interface ProjectService extends ObjectService<Project> {
 	listTasks(input: { projectId: string }): Promise<Task[]>;
+	listSummaries(): Promise<Array<{ project: Project; taskCount: number }>>;
+	listFolderNotes(input: { projectId: string }): Promise<Note[]>;
+	listFolderFiles(input: { projectId: string }): Promise<WorkspaceEntry[]>;
+	queryCalendar(input: {
+		projectId: string;
+		start: string;
+		end: string;
+	}): Promise<CalendarEntry[]>;
+	saveDraft(input: ManagedDraftInput): Promise<ManagedDraftResult>;
+	reconcileManaged(input: ManagedDraftInput): Promise<ManagedDraftResult>;
+	resolveManagedConflict(
+		input: ManagedConflictResolveInput,
+	): Promise<WorkspaceObject>;
 }
 export interface SearchService {
 	query(input: SearchInput): Promise<SearchResult[]>;
@@ -153,8 +168,17 @@ export interface FileService {
 	readRawMarkdown(input: { relativePath: string }): Promise<RawMarkdownRead>;
 	saveRawMarkdown(input: RawSaveInput): Promise<RawSaveResult>;
 	reconcileRawMarkdown(input: RawReconcileInput): Promise<RawReconcileResult>;
-	resolveRawConflict(input: RawConflictResolveInput): Promise<RawMarkdownRead>;
-	readLocalAsset(input: { relativePath: string }): Promise<{ dataUrl: string }>;
+	resolveRawConflict(
+		input: RawConflictResolveInput,
+	): Promise<RawConflictResolveResult>;
+	resolveMarkdownLink(input: {
+		sourceRelativePath: string;
+		target: string;
+	}): Promise<MarkdownLinkTarget>;
+	readLocalAsset(input: {
+		sourceRelativePath: string;
+		target: string;
+	}): Promise<{ dataUrl: string }>;
 }
 
 export interface NouraClient {
@@ -241,6 +265,29 @@ export function createNouraClient(
 	const noteObjects = objects<Note>(transport, 'note');
 	const taskObjects = objects<Task>(transport, 'task');
 	const projectObjects = objects<Project>(transport, 'project');
+	const calendarQuery = async (input: {
+		start: string;
+		end: string;
+		types?: string[];
+	}) => {
+		const values = await transport.request<CalendarEntry[]>('calendar_query', {
+			input,
+		});
+		return input.types
+			? values.filter((value) => input.types?.includes(value.sourceType))
+			: values;
+	};
+	/**
+	 * The folder a project file represents: the parent folder it sits in,
+	 * matching the Obsidian folder-note convention. A project file at the
+	 * workspace root has no containing folder, so it owns no contents.
+	 */
+	const projectFolder = (project: Project) => {
+		const separator = project.relativePath.lastIndexOf('/');
+		return separator === -1
+			? null
+			: project.relativePath.slice(0, separator + 1);
+	};
 	return {
 		workspaces: {
 			pickFolder: (input) =>
@@ -263,13 +310,17 @@ export function createNouraClient(
 			listNonManagedMarkdown: () =>
 				transport.request('files_list_non_managed_markdown'),
 			readRawMarkdown: (input) =>
-				transport.request('raw_markdown_read', { input }),
+				transport.request('raw_markdown_read', {
+					relativePath: input.relativePath,
+				}),
 			saveRawMarkdown: (input) =>
 				transport.request('raw_markdown_save', { input }),
 			reconcileRawMarkdown: (input) =>
 				transport.request('raw_markdown_reconcile', { input }),
 			resolveRawConflict: (input) =>
 				transport.request('raw_markdown_resolve', { input }),
+			resolveMarkdownLink: (input) =>
+				transport.request('files_resolve_markdown_link', { input }),
 			readLocalAsset: (input) =>
 				transport.request('files_read_local_asset', { input }),
 		},
@@ -310,6 +361,44 @@ export function createNouraClient(
 		projects: {
 			...projectObjects,
 			listTasks: ({ projectId }) => taskObjects.list({ project: projectId }),
+			listSummaries: async () => {
+				const [projects, tasks] = await Promise.all([
+					projectObjects.list(),
+					taskObjects.list(),
+				]);
+				return projects.map((project) => ({
+					project,
+					taskCount: tasks.filter(
+						(task) => task.properties.project === project.id,
+					).length,
+				}));
+			},
+			listFolderNotes: async ({ projectId }) => {
+				const project = await projectObjects.get(projectId);
+				const folder = projectFolder(project);
+				if (folder === null) return [];
+				return noteObjects.list({ pathPrefix: folder });
+			},
+			listFolderFiles: async ({ projectId }) => {
+				const project = await projectObjects.get(projectId);
+				const prefix = projectFolder(project);
+				if (prefix === null) return [];
+				return (await transport.request<WorkspaceEntry[]>('files_list')).filter(
+					(entry) => entry.relativePath.startsWith(prefix),
+				);
+			},
+			queryCalendar: async ({ projectId, start, end }) => {
+				const tasks = await taskObjects.list({ project: projectId });
+				const sourceIds = new Set([projectId, ...tasks.map((task) => task.id)]);
+				return (await calendarQuery({ start, end })).filter((entry) =>
+					sourceIds.has(entry.sourceId),
+				);
+			},
+			saveDraft: (input) => transport.request('managed_draft_save', { input }),
+			reconcileManaged: (input) =>
+				transport.request('managed_draft_reconcile', { input }),
+			resolveManagedConflict: (input) =>
+				transport.request('managed_conflict_resolve', { input }),
 		},
 		search: {
 			query: async (input) => {
@@ -319,17 +408,7 @@ export function createNouraClient(
 				return values.map((value) => ({ ...value, highlights: [] }));
 			},
 		},
-		calendar: {
-			queryRange: async (input) => {
-				const values = await transport.request<CalendarEntry[]>(
-					'calendar_query',
-					{ input },
-				);
-				return input.types
-					? values.filter((value) => input.types?.includes(value.sourceType))
-					: values;
-			},
-		},
+		calendar: { queryRange: calendarQuery },
 		kanban: {
 			getBoard: async (input = {}) => {
 				const tasks = await taskObjects.list(

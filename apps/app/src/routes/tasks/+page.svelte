@@ -1,62 +1,28 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import {
-		createLiveMarkdownDocument,
-		createLiveMarkdownEditor,
-		type LiveMarkdownEditor,
-	} from '@noura/editor';
 	import type { CoreEvent, Project, Task } from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
-	import { AutosaveCoordinator } from '$lib/editor/autosave';
-	import { registerPendingDraft } from '$lib/editor/pending-drafts.svelte';
+	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
+	import TaskDetail from '$lib/components/task-detail.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
-	import * as Select from '$lib/components/ui/select/index.js';
-	import * as Alert from '$lib/components/ui/alert/index.js';
-	import * as Sheet from '$lib/components/ui/sheet/index.js';
-	import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
 	import Plus from 'phosphor-svelte/lib/Plus';
 	import CalendarBlank from 'phosphor-svelte/lib/CalendarBlank';
-	import Warning from 'phosphor-svelte/lib/Warning';
 	import { filterTasks, isDone, type TaskView } from '$lib/tasks/filters';
 	import { tabsStore } from '$lib/tabs.svelte';
-
-	type TaskDraft = {
-		title: string;
-		body: string;
-		properties: Record<string, unknown>;
-	};
-	type ConflictState = { draft: TaskDraft; file: Task };
-	type Resolution = 'use-external' | 'replace-external';
-
-	const STATUSES = ['todo', 'in-progress', 'done', 'cancelled'] as const;
-	const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 
 	let tasks = $state<Task[]>([]);
 	let projects = $state<Project[]>([]);
 	let loading = $state(true);
 	let view = $state<TaskView>({ mode: 'today' });
 	let selectedId = $state<string | null>(null);
+	const requestedTaskId = page.url.searchParams.get('selected');
 	let selected = $derived(tasks.find((task) => task.id === selectedId) ?? null);
-	let draftTitle = $state('');
-	let baseTitle = $state('');
-	let baseBody = $state('');
-	let baseRevision = $state('');
-	let baseProperties = $state<Record<string, unknown>>({});
-	let editor = $state.raw<LiveMarkdownEditor | null>(null);
-	let coordinator = $state.raw<AutosaveCoordinator<TaskDraft> | null>(null);
-	let autosaveError = $state<unknown | null>(null);
-	let transientMessage = $state<string | null>(null);
-	let clearMessageTimer: ReturnType<typeof setTimeout> | null = null;
-	let conflict = $state.raw<ConflictState | null>(null);
-	let reviewOpen = $state(false);
-	let confirmOpen = $state(false);
-	let pendingResolution = $state<Resolution | null>(null);
-	let resolving = $state(false);
 
 	let projectsById = $derived(
 		Object.fromEntries(projects.map((project) => [project.id, project])),
@@ -90,52 +56,8 @@
 		return projectsById[projectId]?.title ?? projectId;
 	}
 
-	function errorMessage(error: unknown) {
-		if (error instanceof Error) return error.message;
-		if (error && typeof error === 'object' && 'message' in error) {
-			return String(error.message);
-		}
-		return 'Noura could not save this task.';
-	}
-
-	function showMessage(message: string) {
-		transientMessage = message;
-		if (clearMessageTimer) clearTimeout(clearMessageTimer);
-		clearMessageTimer = setTimeout(() => {
-			transientMessage = null;
-			clearMessageTimer = null;
-		}, 2400);
-	}
-
-	function currentDraft(): TaskDraft {
-		return {
-			title: draftTitle,
-			body: editor?.doc() ?? baseBody,
-			properties: { ...baseProperties },
-		};
-	}
-
-	function draftInput(draft: TaskDraft) {
-		return {
-			id: selectedId ?? '',
-			baseRevision,
-			baseTitle,
-			baseBody,
-			baseProperties,
-			localTitle: draft.title,
-			localBody: draft.body,
-			localProperties: draft.properties,
-		};
-	}
-
 	function adoptSelection(task: Task) {
 		selectedId = task.id;
-		baseRevision = task.revision;
-		baseTitle = task.title;
-		baseBody = task.body;
-		baseProperties = { ...task.properties };
-		draftTitle = task.title;
-		editor?.setText(task.body);
 		tabsStore.open(task.id, 'task', task.title);
 	}
 
@@ -148,61 +70,19 @@
 			]);
 			tasks = taskList;
 			projects = projectList;
+			if (!selectedId && requestedTaskId) {
+				const requested = taskList.find((task) => task.id === requestedTaskId);
+				if (requested) adoptSelection(requested);
+			}
 		} finally {
 			loading = false;
 		}
 	}
 
-	function select(task: Task) {
+	async function select(task: Task) {
 		if (selectedId === task.id) return;
-		void adoptIfFlushed(task);
-	}
-
-	async function adoptIfFlushed(task: Task) {
-		const flushed = await coordinator?.flush();
-		if (flushed === false) return;
+		if (!(await flushPendingDrafts())) return;
 		adoptSelection(task);
-	}
-
-	function applyStatus(status: string) {
-		if (!selected) return;
-		baseProperties = { ...baseProperties, status };
-		coordinator?.noteEdit(currentDraft());
-		void coordinator?.flush();
-	}
-
-	function applyPriority(priority: string) {
-		if (!selected) return;
-		baseProperties = { ...baseProperties, priority };
-		coordinator?.noteEdit(currentDraft());
-		void coordinator?.flush();
-	}
-
-	function applyDue(due: string) {
-		if (!selected) return;
-		baseProperties = due
-			? { ...baseProperties, due }
-			: omitKey(baseProperties, 'due');
-		coordinator?.noteEdit(currentDraft());
-		void coordinator?.flush();
-	}
-
-	function applyProject(project: string) {
-		if (!selected) return;
-		baseProperties = project
-			? { ...baseProperties, project }
-			: omitKey(baseProperties, 'project');
-		coordinator?.noteEdit(currentDraft());
-		void coordinator?.flush();
-	}
-
-	function omitKey(
-		properties: Record<string, unknown>,
-		key: string,
-	): Record<string, unknown> {
-		const next = { ...properties };
-		delete next[key];
-		return next;
 	}
 
 	async function toggleDone(task: Task) {
@@ -215,91 +95,12 @@
 	}
 
 	async function create() {
+		if (!(await flushPendingDrafts())) return;
 		const result = await getNouraClient().tasks.create({ title: 'New task' });
 		await load();
 		const created = result.value as Task;
 		view = { mode: 'all' };
-		select(created);
-	}
-
-	function mergeCanonical(task: Task) {
-		tasks = tasks.map((entry) => (entry.id === task.id ? task : entry));
-		baseRevision = task.revision;
-		baseTitle = task.title;
-		baseBody = task.body;
-		baseProperties = { ...task.properties };
-	}
-
-	async function persistDraft(draft: TaskDraft, generation: number) {
-		if (!selectedId) return;
-		const result = await getNouraClient().tasks.saveDraft(draftInput(draft));
-		if (result.status === 'conflict') {
-			openConflict(draft, result.current as Task);
-			return 'paused' as const;
-		}
-		if (result.status === 'unchanged') {
-			mergeCanonical(result.current as Task);
-			return;
-		}
-		const merged = result.body !== draft.body;
-		mergeCanonical(result.current as Task);
-		if (coordinator?.currentGeneration === generation) {
-			draftTitle = result.title;
-			editor?.setText(result.body);
-		}
-		if (merged) showMessage('External changes merged');
-	}
-
-	function editorContainer(node: HTMLDivElement) {
-		if (!browser || !selected) return;
-		const localCoordinator = new AutosaveCoordinator<TaskDraft>({
-			write: persistDraft,
-			onStateChange: (state) => {
-				autosaveError = state.error;
-			},
-		});
-		coordinator = localCoordinator;
-		const document = createLiveMarkdownDocument('task-body', baseBody);
-		const handle = createLiveMarkdownEditor(node, {
-			ytext: document.ytext,
-			resolveImage: (src) => {
-				if (/^https?:|^(data|asset):/.test(src)) return null;
-				return getNouraClient()
-					.files.readLocalAsset({ relativePath: src.replace(/^\.\//, '') })
-					.then((asset) => asset.dataUrl)
-					.catch(() => null);
-			},
-			onChange: () => {
-				localCoordinator.noteEdit({
-					title: draftTitle,
-					body: handle.doc(),
-					properties: { ...baseProperties },
-				});
-			},
-		});
-		editor = handle;
-		const unregister = registerPendingDraft(
-			selected.id,
-			() => localCoordinator.flush(),
-			() =>
-				localCoordinator.pendingEdits > 0 ||
-				localCoordinator.isWriting ||
-				localCoordinator.error !== null,
-		);
-		return () => {
-			unregister();
-			localCoordinator.destroy();
-			handle.destroy();
-			document.destroy();
-			if (coordinator === localCoordinator) coordinator = null;
-			if (editor === handle) editor = null;
-		};
-	}
-
-	function openConflict(draft: TaskDraft, file: Task) {
-		conflict = { draft, file };
-		reviewOpen = true;
-		coordinator?.pause();
+		await select(created);
 	}
 
 	async function handleExternalEvent(event: CoreEvent) {
@@ -308,59 +109,9 @@
 			!['object:updated', 'object:moved', 'object:deleted'].includes(event.type)
 		)
 			return;
-		await load();
 		const payload = event.payload as { id?: string };
-		if (
-			payload.id &&
-			selectedId === payload.id &&
-			event.type === 'object:deleted'
-		) {
-			showMessage('This task was deleted in the workspace');
-		}
-	}
-
-	function requestResolution(resolution: Resolution) {
-		pendingResolution = resolution;
-		confirmOpen = true;
-	}
-
-	async function resolveConflict() {
-		if (!conflict || !pendingResolution || !selectedId) return;
-		resolving = true;
-		try {
-			const localDraft = conflict.draft;
-			await getNouraClient().tasks.resolveManagedConflict({
-				id: selectedId,
-				currentRevision: conflict.file.revision,
-				localTitle: localDraft.title,
-				localBody: localDraft.body,
-				localProperties: localDraft.properties,
-				resolution: pendingResolution,
-			});
-			await load();
-			coordinator?.acceptDurable();
-			coordinator?.resume();
-			conflict = null;
-			reviewOpen = false;
-			confirmOpen = false;
-			showMessage(
-				pendingResolution === 'use-external'
-					? 'File version restored'
-					: 'File replaced',
-			);
-			pendingResolution = null;
-		} catch (error) {
-			autosaveError = error;
-		} finally {
-			resolving = false;
-		}
-	}
-
-	function handleShortcut(event: KeyboardEvent) {
-		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-			event.preventDefault();
-			void coordinator?.flush();
-		}
+		if (event.type === 'object:deleted' && payload.id === selectedId) return;
+		await load();
 	}
 
 	onMount(() => {
@@ -378,12 +129,9 @@
 		return () => {
 			disposed = true;
 			unsubscribe?.();
-			if (clearMessageTimer) clearTimeout(clearMessageTimer);
 		};
 	});
 </script>
-
-<svelte:window onkeydown={handleShortcut} />
 
 <div class="flex min-h-0 flex-1">
 	<aside
@@ -529,179 +277,9 @@
 				description="Choose a task from the list or create a new one."
 			/>
 		{:else}
-			<div class="flex min-h-0 flex-1 flex-col">
-				<header class="flex min-h-16 items-center px-6">
-					<input
-						bind:value={draftTitle}
-						oninput={() => coordinator?.noteEdit(currentDraft())}
-						onblur={() => void coordinator?.flush()}
-						aria-label="Task title"
-						placeholder="Task title"
-						class="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none placeholder:text-muted-foreground"
-					/>
-				</header>
-				<Separator />
-				<div class="flex flex-wrap items-center gap-3 px-6 py-3 text-sm">
-					<Select.Root
-						type="single"
-						value={String(selected.properties?.status ?? 'todo')}
-						onValueChange={(value) => (value ? applyStatus(value) : null)}
-					>
-						<Select.Trigger size="sm" class="w-36" aria-label="Status"
-							>{String(selected.properties?.status ?? 'todo')}</Select.Trigger
-						>
-						<Select.Content>
-							{#each STATUSES as status (status)}<Select.Item
-									value={status}
-									label={status}>{status}</Select.Item
-								>{/each}
-						</Select.Content>
-					</Select.Root>
-					<Select.Root
-						type="single"
-						value={String(selected.properties?.priority ?? 'medium')}
-						onValueChange={(value) => (value ? applyPriority(value) : null)}
-					>
-						<Select.Trigger size="sm" class="w-32" aria-label="Priority"
-							>{String(
-								selected.properties?.priority ?? 'medium',
-							)}</Select.Trigger
-						>
-						<Select.Content>
-							{#each PRIORITIES as priority (priority)}<Select.Item
-									value={priority}
-									label={priority}>{priority}</Select.Item
-								>{/each}
-						</Select.Content>
-					</Select.Root>
-					<label class="flex items-center gap-2 text-xs text-muted-foreground">
-						<span>Due</span>
-						<input
-							type="date"
-							value={typeof selected.properties?.due === 'string'
-								? selected.properties.due
-								: ''}
-							onchange={(event) => applyDue(event.currentTarget.value)}
-							class="rounded-md border border-input bg-transparent px-2 py-1"
-						/>
-					</label>
-					<Select.Root
-						type="single"
-						value={typeof selected.properties?.project === 'string'
-							? selected.properties.project
-							: ''}
-						onValueChange={applyProject}
-					>
-						<Select.Trigger size="sm" class="w-44" aria-label="Project"
-							>{projectLabel(selected.properties) ||
-								'No project'}</Select.Trigger
-						>
-						<Select.Content>
-							<Select.Item value="" label="No project">No project</Select.Item>
-							{#each projects as project (project.id)}<Select.Item
-									value={project.id}
-									label={project.title}>{project.title}</Select.Item
-								>{/each}
-						</Select.Content>
-					</Select.Root>
-					{#if transientMessage}<span
-							class="text-xs text-muted-foreground"
-							role="status">{transientMessage}</span
-						>{/if}
-				</div>
-				{#if conflict}
-					<div class="px-6 pb-3">
-						<Alert.Root>
-							<Warning />
-							<Alert.Title>This task changed in another app</Alert.Title>
-							<Alert.Description
-								>Review both versions before choosing which one to keep.</Alert.Description
-							>
-							<Alert.Action
-								><Button
-									variant="outline"
-									size="sm"
-									onclick={() => (reviewOpen = true)}>Review conflict</Button
-								></Alert.Action
-							>
-						</Alert.Root>
-					</div>
-				{/if}
-				{#if autosaveError}
-					<div class="px-6 pb-3">
-						<Alert.Root variant="destructive">
-							<Warning />
-							<Alert.Title>Changes could not be saved</Alert.Title>
-							<Alert.Description
-								>{errorMessage(autosaveError)}</Alert.Description
-							>
-							<Alert.Action
-								><Button
-									variant="outline"
-									size="sm"
-									onclick={() => void coordinator?.flush()}>Retry</Button
-								></Alert.Action
-							>
-						</Alert.Root>
-					</div>
-				{/if}
-				<div class="min-h-0 flex-1 overflow-y-auto">
-					<div class="mx-auto min-h-full max-w-3xl px-10 py-8">
-						<div
-							class="live-md min-h-full text-base"
-							{@attach editorContainer}
-						></div>
-					</div>
-				</div>
-			</div>
+			{#key selected.id}
+				<TaskDetail task={selected} {projects} onupdated={() => void load()} />
+			{/key}
 		{/if}
 	</main>
 </div>
-
-{#if conflict}
-	<Sheet.Root bind:open={reviewOpen}>
-		<Sheet.Content class="sm:max-w-2xl">
-			<Sheet.Header>
-				<Sheet.Title>Review task conflict</Sheet.Title>
-				<Sheet.Description
-					>Noura preserved both versions of this task.</Sheet.Description
-				>
-			</Sheet.Header>
-			<Sheet.Footer>
-				<Button variant="outline" onclick={() => (reviewOpen = false)}
-					>Cancel and continue reviewing</Button
-				>
-				<Button
-					variant="outline"
-					onclick={() => requestResolution('use-external')}
-					>Use file version</Button
-				>
-				<Button onclick={() => requestResolution('replace-external')}
-					>Replace file with my version</Button
-				>
-			</Sheet.Footer>
-		</Sheet.Content>
-	</Sheet.Root>
-{/if}
-
-<AlertDialog.Root bind:open={confirmOpen}>
-	<AlertDialog.Content>
-		<AlertDialog.Header>
-			<AlertDialog.Title
-				>{pendingResolution === 'use-external'
-					? 'Use the file version?'
-					: 'Replace the file version?'}</AlertDialog.Title
-			>
-			<AlertDialog.Description
-				>The displaced version is saved to recovery history first.</AlertDialog.Description
-			>
-		</AlertDialog.Header>
-		<AlertDialog.Footer>
-			<AlertDialog.Cancel disabled={resolving}>Cancel</AlertDialog.Cancel>
-			<AlertDialog.Action
-				disabled={resolving}
-				onclick={() => void resolveConflict()}>Continue</AlertDialog.Action
-			>
-		</AlertDialog.Footer>
-	</AlertDialog.Content>
-</AlertDialog.Root>

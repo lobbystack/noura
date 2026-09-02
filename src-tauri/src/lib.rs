@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 use local_core::{
     AiFoundation, AiInvokeInput, AiProviderConfig, AiResponse, CalendarEntry, CoreError, CoreEvent,
     CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ManagedConflictResolveInput,
-    ManagedDraftInput, ManagedDraftResult, MutationResult, ObjectPatch, RawConflictResolveInput,
-    RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult,
-    ResolveConflictInput, SearchInput, SearchResult, UnmanagedFile, WorkspaceEngine,
-    WorkspaceEntry, WorkspaceObject, WorkspaceState,
+    ManagedDraftInput, ManagedDraftResult, MarkdownLinkTarget, MutationResult, ObjectPatch,
+    RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead, RawReconcileInput,
+    RawReconcileResult, RawSaveInput, RawSaveResult, ResolveConflictInput, SearchInput,
+    SearchResult, UnmanagedFile, WorkspaceEngine, WorkspaceEntry, WorkspaceObject, WorkspaceState,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -452,7 +452,7 @@ fn raw_markdown_reconcile(
 fn raw_markdown_resolve(
     state: State<AppState>,
     input: RawConflictResolveInput,
-) -> Result<RawMarkdownRead, CoreError> {
+) -> Result<RawConflictResolveResult, CoreError> {
     with_engine(&state, "raw_markdown_resolve", |engine| {
         engine.resolve_raw_conflict(input)
     })
@@ -461,7 +461,15 @@ fn raw_markdown_resolve(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AssetInput {
-    relative_path: String,
+    source_relative_path: String,
+    target: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkdownLinkInput {
+    source_relative_path: String,
+    target: String,
 }
 
 const MIME_BY_EXTENSION: &[(&str, &str)] = &[
@@ -483,9 +491,9 @@ fn files_read_local_asset(
     input: AssetInput,
 ) -> Result<serde_json::Value, CoreError> {
     with_engine(&state, "files_read_local_asset", |engine| {
-        let bytes = engine.read_local_asset(&input.relative_path, MAX_ASSET_BYTES)?;
-        let extension = input
-            .relative_path
+        let (relative_path, bytes) =
+            engine.read_local_asset(&input.source_relative_path, &input.target, MAX_ASSET_BYTES)?;
+        let extension = relative_path
             .rsplit('.')
             .next()
             .unwrap_or_default()
@@ -498,6 +506,16 @@ fn files_read_local_asset(
         Ok(serde_json::json!({
             "dataUrl": format!("data:{mime};base64,{}", base64_encode(&bytes)),
         }))
+    })
+}
+
+#[tauri::command]
+fn files_resolve_markdown_link(
+    state: State<AppState>,
+    input: MarkdownLinkInput,
+) -> Result<MarkdownLinkTarget, CoreError> {
+    with_engine(&state, "files_resolve_markdown_link", |engine| {
+        engine.resolve_markdown_link(&input.source_relative_path, &input.target)
     })
 }
 
@@ -704,6 +722,7 @@ pub fn run() {
             raw_markdown_reconcile,
             raw_markdown_resolve,
             files_read_local_asset,
+            files_resolve_markdown_link,
             objects_move,
             objects_delete,
             objects_adopt,

@@ -1,40 +1,16 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
-	import {
-		createLiveMarkdownDocument,
-		createLiveMarkdownEditor,
-		type LiveMarkdownEditor,
-	} from '@noura/editor';
+	import LiveMarkdownSurface from '$lib/components/live-markdown-surface.svelte';
 
-	let { markdown }: { markdown: string } = $props();
-	let editor: LiveMarkdownEditor | null = null;
-
-	function render(node: HTMLDivElement) {
-		if (!browser || !node) {
-			return;
-		}
-		const document = createLiveMarkdownDocument('preview', markdown);
-		const handle = createLiveMarkdownEditor(node, {
-			ytext: document.ytext,
-			collaborative: false,
-		});
-		editor = handle;
-		return () => {
-			editor = null;
-			handle.destroy();
-			document.destroy();
-		};
-	}
-
-	$effect(() => {
-		if (browser) {
-			editor?.setText(markdown);
-		}
-	});
+	let {
+		markdown,
+		sourceRelativePath,
+	}: { markdown: string; sourceRelativePath?: string } = $props();
 </script>
 
-<div
-	{@attach render}
-	class="live-md live-md--preview text-sm"
-	aria-readonly="true"
-></div>
+<LiveMarkdownSurface
+	value={markdown}
+	{sourceRelativePath}
+	readOnly
+	showToolbar={false}
+	label="Markdown preview"
+/>

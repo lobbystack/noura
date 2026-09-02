@@ -62,6 +62,15 @@ describe('formattingCommands', () => {
 		);
 	});
 
+	test('underline wraps with safe inline HTML', () => {
+		expect(commandResult('hi', 0, 2, formattingCommands.underline)).toBe(
+			'<u>hi</u>',
+		);
+		expect(commandResult('<u>hi</u>', 0, 9, formattingCommands.underline)).toBe(
+			'hi',
+		);
+	});
+
 	test('heading applies and replaces level', () => {
 		const h1 = formattingCommands.heading(1);
 		expect(commandResult('text', 0, 4, h1)).toBe('# text');
