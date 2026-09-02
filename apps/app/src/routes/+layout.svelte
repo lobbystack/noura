@@ -23,6 +23,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Toaster } from '$lib/components/ui/sonner/index.js';
 	import { Spinner } from '$lib/components/ui/spinner/index.js';
+	import CommandPalette from '$lib/components/command-palette.svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children } = $props<{ children: Snippet }>();
@@ -115,6 +116,7 @@
 		<main class="flex min-w-0 flex-1 flex-col">
 			{@render children()}
 		</main>
+		<CommandPalette />
 	</Sidebar.Provider>
 	<Toaster />
 {:else if !browser || !workspace.initialized || workspace.isLoading}

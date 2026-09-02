@@ -31,19 +31,33 @@
 	let selectedRaw = $state<RawFile | null>(null);
 	let appliedKey = $state<string | null>(null);
 	let autofocusTitle = $state(false);
+	let selectionGeneration = 0;
 
-	async function select(n: Note, options?: { isNew?: boolean }) {
+	async function select(
+		n: Note,
+		options?: { isNew?: boolean; selectionGeneration?: number },
+	) {
 		if (selected?.id === n.id) return;
 		if (!(await flushPendingDrafts())) return;
+		if (
+			options?.selectionGeneration !== undefined &&
+			options.selectionGeneration !== selectionGeneration
+		)
+			return;
 		autofocusTitle = options?.isNew ?? false;
 		selected = n;
 		selectedRaw = null;
 		tabsStore.open(n.id, 'note', n.title);
 	}
 
-	async function selectRaw(file: RawFile) {
+	async function selectRaw(file: RawFile, requestedGeneration?: number) {
 		if (selectedRaw?.relativePath === file.relativePath) return;
 		if (!(await flushPendingDrafts())) return;
+		if (
+			requestedGeneration !== undefined &&
+			requestedGeneration !== selectionGeneration
+		)
+			return;
 		autofocusTitle = false;
 		selected = null;
 		selectedRaw = file;
@@ -68,13 +82,19 @@
 		const selectedId = params.get('selected');
 		const rawPath = params.get('raw');
 		const key = `${selectedId ?? ''}|${rawPath ?? ''}`;
-		if (key === appliedKey || key === '|') return;
+		if (key === appliedKey) return;
+		const generation = ++selectionGeneration;
 		appliedKey = key;
+		if (key === '|') return;
 		if (selected?.id === selectedId) return;
 		if (selectedRaw?.relativePath === rawPath) return;
 		void (async () => {
 			try {
-				if (!loaded) await load();
+				// Command-palette navigation can change this URL while this page is
+				// already mounted. Refresh both lookup projections before resolving a
+				// managed ID or raw path so external additions and moves are visible.
+				if (!loaded || selectedId !== null || rawPath !== null) await load();
+				if (generation !== selectionGeneration || key !== appliedKey) return;
 				if (selectedId !== null) {
 					const note = notes.find((entry) => entry.id === selectedId);
 					if (note) {
@@ -83,14 +103,17 @@
 						// the tree context menu, so its title starts selected.
 						const pristine =
 							note.title === 'Untitled' && note.body.trim().length === 0;
-						await select(note, { isNew: pristine });
+						await select(note, {
+							isNew: pristine,
+							selectionGeneration: generation,
+						});
 					} else {
 						toast.error('That note is no longer in the workspace');
 					}
 				} else if (rawPath !== null) {
 					const file = rawFiles.find((entry) => entry.relativePath === rawPath);
 					if (file) {
-						await selectRaw(file);
+						await selectRaw(file, generation);
 					} else {
 						toast.error('That document is no longer in the workspace');
 					}

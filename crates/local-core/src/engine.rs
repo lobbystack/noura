@@ -3446,6 +3446,45 @@ mod tests {
     }
 
     #[test]
+    fn external_task_priority_edit_reconciles_before_emitting_the_object_event() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "task".into(),
+                title: "Ship beta".into(),
+                body: String::new(),
+                relative_path: Some("tasks/ship-beta.md".into()),
+                properties: BTreeMap::from([
+                    ("status".into(), serde_json::json!("todo")),
+                    ("priority".into(), serde_json::json!("medium")),
+                ]),
+            })
+            .unwrap();
+        let path = engine.root().join(&created.value.relative_path);
+        let bytes = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("priority: medium", "priority: high");
+        std::fs::write(&path, bytes).unwrap();
+        let mut events = engine.subscribe();
+
+        engine.process_external_changes(vec![path]).unwrap();
+
+        let current = engine.get_object(&created.value.id).unwrap().unwrap();
+        assert_eq!(current.properties["priority"], serde_json::json!("high"));
+        let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        let updated = received
+            .iter()
+            .find(|event| event.event_type == "object:updated")
+            .unwrap();
+        assert_eq!(updated.source, "external");
+        assert_eq!(updated.payload["id"], created.value.id);
+    }
+
+    #[test]
     fn external_manifest_change_adopts_the_file_and_emits_manifest_updated() {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();

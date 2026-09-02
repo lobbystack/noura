@@ -1,15 +1,19 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
+	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
 		CalendarEntry,
+		CoreEvent,
+		KanbanGroup,
 		Note,
 		Project,
 		Task,
 		WorkspaceEntry,
 	} from '@noura/workspace';
-	import { getNouraClient } from '$lib/state.svelte';
+	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import { isLiveRefreshEvent, LiveRefresh } from '$lib/live-refresh';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
 	import ProjectOverview from '$lib/components/project-overview.svelte';
@@ -33,23 +37,27 @@
 	>[number];
 	let summaries = $state<Summary[]>([]);
 	let selectedId = $state<string | null>(null);
+	let selectedProjectSnapshot = $state.raw<Project | null>(null);
 	let selected = $derived(
-		summaries.find((entry) => entry.project.id === selectedId)?.project ?? null,
+		summaries.find((entry) => entry.project.id === selectedId)?.project ??
+			(selectedProjectSnapshot?.id === selectedId
+				? selectedProjectSnapshot
+				: null),
 	);
 	let tasks = $state<Task[]>([]);
 	let notes = $state<Note[]>([]);
 	let files = $state<WorkspaceEntry[]>([]);
 	let calendar = $state<CalendarEntry[]>([]);
+	let boardGroups = $state<KanbanGroup[]>([]);
 	let selectedTask = $state<Task | null>(null);
 	let selectedNote = $state<Note | null>(null);
 	let loading = $state(true);
 	let tab = $state('overview');
 	let deleteOpen = $state(false);
 	let projectLoadGeneration = 0;
-	const requestedProjectId = page.url.searchParams.get('selected');
-	let boardProjectionKey = $derived(
-		tasks.map((task) => `${task.id}:${task.revision}`).join('|'),
-	);
+	let requestedProjectGeneration = 0;
+	const requestedProjectId = $derived(page.url.searchParams.get('selected'));
+	let liveRefresh = $state.raw<LiveRefresh | null>(null);
 
 	function monthRange() {
 		const now = new Date();
@@ -66,18 +74,30 @@
 	}
 
 	async function loadProjects() {
-		summaries = await getNouraClient().projects.listSummaries();
-		if (!selectedId) {
+		const nextSummaries = await getNouraClient().projects.listSummaries();
+		const currentSelection = selected;
+		const currentSelectedId = selectedId;
+		const selectedStillExists =
+			currentSelectedId !== null &&
+			nextSummaries.some((entry) => entry.project.id === currentSelectedId);
+		const retainDeletedSelection =
+			currentSelectedId !== null &&
+			!selectedStillExists &&
+			currentSelection?.id === currentSelectedId;
+
+		// An external deletion must not unmount ProjectOverview before its
+		// coordinator can surface and resolve the preserved draft.
+		selectedProjectSnapshot = retainDeletedSelection ? currentSelection : null;
+		summaries = nextSummaries;
+		if (!currentSelectedId) {
 			selectedId =
 				summaries.find((entry) => entry.project.id === requestedProjectId)
 					?.project.id ??
 				summaries[0]?.project.id ??
 				null;
+			return;
 		}
-		if (
-			selectedId &&
-			!summaries.some((entry) => entry.project.id === selectedId)
-		)
+		if (!selectedStillExists && !retainDeletedSelection)
 			selectedId = summaries[0]?.project.id ?? null;
 	}
 
@@ -89,6 +109,7 @@
 			notes = [];
 			files = [];
 			calendar = [];
+			boardGroups = [];
 			selectedTask = null;
 			selectedNote = null;
 			return;
@@ -102,34 +123,67 @@
 				projectId,
 				...range,
 			}),
+			getNouraClient().kanban.getBoard({ projectId }),
 		]);
 		if (generation !== projectLoadGeneration || selectedId !== projectId)
 			return;
-		[tasks, notes, files, calendar] = loaded;
+		[tasks, notes, files, calendar, { groups: boardGroups }] = loaded;
 		if (selectedTask) {
-			selectedTask = tasks.find((task) => task.id === selectedTask?.id) ?? null;
+			// Retain a deleted selection until TaskDetail handles its external-delete
+			// conflict flow; clearing it here would discard the protected draft UI.
+			const current = tasks.find((task) => task.id === selectedTask?.id);
+			if (current) selectedTask = current;
 		}
 		if (selectedNote) {
-			selectedNote = notes.find((note) => note.id === selectedNote?.id) ?? null;
+			const current = notes.find((note) => note.id === selectedNote?.id);
+			if (current) selectedNote = current;
 		}
 	}
 
 	async function load() {
-		loading = true;
+		const isInitialLoad = loading;
 		try {
 			await loadProjects();
+			// Folder projections resolve the project object, which no longer exists
+			// while ProjectOverview is preserving an external-delete draft.
+			if (selectedProjectSnapshot?.id === selectedId) return;
 			await loadProject();
 		} finally {
-			loading = false;
+			if (isInitialLoad) loading = false;
 		}
 	}
 
-	async function select(project: Project) {
+	async function refreshProjection() {
+		if (liveRefresh) await liveRefresh.refreshNow();
+		else await load();
+	}
+
+	function replaceSelectedProjectInUrl(projectId: string | null) {
+		const next = new URL(page.url);
+		if (projectId) next.searchParams.set('selected', projectId);
+		else next.searchParams.delete('selected');
+		replaceState(next, {});
+	}
+
+	async function select(
+		project: Project,
+		options?: { requestedGeneration?: number },
+	) {
 		if (project.id !== selectedId && !(await flushPendingDrafts())) return;
+		if (
+			options?.requestedGeneration !== undefined &&
+			options.requestedGeneration !== requestedProjectGeneration
+		)
+			return;
 		selectedId = project.id;
 		selectedTask = null;
 		selectedNote = null;
 		tabsStore.open(project.id, 'project', project.title);
+		// Keep the URL authoritative without adding a history entry for every
+		// project click. Otherwise the deep-link effect can restore a stale ID.
+		if (page.url.searchParams.get('selected') !== project.id) {
+			replaceSelectedProjectInUrl(project.id);
+		}
 		await loadProject();
 	}
 
@@ -143,13 +197,39 @@
 		await select(result.value as Project);
 	}
 
+	// Search navigation may update only the query string while this page stays
+	// mounted. Keep the selection synchronized with the URL in that case.
+	$effect(() => {
+		const generation = ++requestedProjectGeneration;
+		const requestedId = requestedProjectId;
+		if (!browser || loading || !requestedId || requestedId === selectedId)
+			return;
+		void (async () => {
+			// Search and external filesystem changes can discover a project after
+			// this page's lookup projection was loaded. Refresh before resolving it.
+			await loadProjects();
+			if (
+				generation !== requestedProjectGeneration ||
+				requestedProjectId !== requestedId ||
+				requestedId === selectedId
+			)
+				return;
+			const requested = summaries.find(
+				(entry) => entry.project.id === requestedId,
+			);
+			if (requested) {
+				await select(requested.project, { requestedGeneration: generation });
+			}
+		})();
+	});
+
 	async function createTask() {
 		if (!selected || !(await flushPendingDrafts())) return;
 		const result = await getNouraClient().tasks.create({
 			title: 'New task',
 			properties: { project: selected.id, status: 'todo', priority: 'medium' },
 		});
-		await Promise.all([loadProject(), loadProjects()]);
+		await refreshProjection();
 		selectedTask = result.value as Task;
 		tabsStore.open(selectedTask.id, 'task', selectedTask.title);
 	}
@@ -180,7 +260,9 @@
 		});
 		deleteOpen = false;
 		selectedId = null;
-		await load();
+		replaceSelectedProjectInUrl(null);
+		await refreshProjection();
+		replaceSelectedProjectInUrl(selectedId);
 	}
 
 	function statusVariant(status: unknown): 'default' | 'secondary' | 'outline' {
@@ -190,7 +272,40 @@
 	}
 
 	onMount(() => {
-		if (browser) void load();
+		if (!browser) return;
+		const coordinator = new LiveRefresh({
+			refresh: load,
+			// Keep the last durable projection visible on transient background
+			// failures. The next core event or focus refresh retries it.
+			onError: () => {},
+		});
+		liveRefresh = coordinator;
+		let disposed = false;
+		let unsubscribe: (() => void) | undefined;
+		const refreshOnFocus = () => void coordinator.refreshNow();
+		const refreshOnVisible = () => {
+			if (document.visibilityState === 'visible') refreshOnFocus();
+		};
+		void coordinator.refreshNow();
+		void getNouraClient()
+			.events.subscribe((event: CoreEvent) => {
+				if (!isLiveRefreshEvent(event, workspace.state?.workspaceId)) return;
+				coordinator.invalidate();
+			})
+			.then((unlisten) => {
+				if (disposed) unlisten();
+				else unsubscribe = unlisten;
+			});
+		window.addEventListener('focus', refreshOnFocus);
+		document.addEventListener('visibilitychange', refreshOnVisible);
+		return () => {
+			disposed = true;
+			unsubscribe?.();
+			coordinator.dispose();
+			if (liveRefresh === coordinator) liveRefresh = null;
+			window.removeEventListener('focus', refreshOnFocus);
+			document.removeEventListener('visibilitychange', refreshOnVisible);
+		};
 	});
 </script>
 
@@ -281,7 +396,7 @@
 				<Tabs.Content value="overview" class="flex min-h-0 flex-1"
 					>{#key selected.id}<ProjectOverview
 							project={selected}
-							onupdated={() => void loadProjects()}
+							onupdated={() => void refreshProjection()}
 						/>{/key}</Tabs.Content
 				>
 				<Tabs.Content value="tasks" class="flex min-h-0 flex-1"
@@ -326,9 +441,12 @@
 					</section></Tabs.Content
 				>
 				<Tabs.Content value="board" class="flex min-h-0 flex-1"
-					>{#key `${selected.id}:${boardProjectionKey}`}<ProjectBoard
+					>{#key selected.id}<ProjectBoard
 							projectId={selected.id}
 							projectTitle={selected.title}
+							groups={boardGroups}
+							projects={summaries.map((entry) => entry.project)}
+							onRefresh={refreshProjection}
 						/>{/key}</Tabs.Content
 				>
 				<Tabs.Content value="calendar" class="min-h-0 flex-1 overflow-y-auto"

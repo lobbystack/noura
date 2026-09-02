@@ -5,36 +5,27 @@
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
 	import TaskDetail from '$lib/components/task-detail.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import * as Empty from '$lib/components/ui/empty/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+	import type { KanbanGroup, Project, Task } from '@noura/workspace';
+	import { untrack } from 'svelte';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
 	import Plus from 'phosphor-svelte/lib/Plus';
 	import X from 'phosphor-svelte/lib/X';
-	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
 
-	let { projectId, projectTitle } = $props<{
+	let { projectId, projectTitle, groups, projects, onRefresh } = $props<{
 		projectId: string;
 		projectTitle: string;
+		groups: KanbanGroup[];
+		projects: Project[];
+		onRefresh: () => Promise<void>;
 	}>();
 
-	type Task = Awaited<
-		ReturnType<ReturnType<typeof getNouraClient>['tasks']['list']>
-	>[number];
-
-	type Group = { id: string; title: string; items: Task[] };
-
-	let groups = $state<Group[]>([]);
-	let loading = $state(true);
 	let selectedTask = $state<Task | null>(null);
 	let detailOpen = $state(false);
 	let closingDetail = $state(false);
-	let projects = $state<
-		Awaited<ReturnType<ReturnType<typeof getNouraClient>['projects']['list']>>
-	>([]);
 	let dragTask = $state<Task | null>(null);
 	let dragOverColumn = $state<string | null>(null);
 	let dragOverTaskId = $state<string | null>(null);
@@ -45,21 +36,9 @@
 			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
 			.join(' ');
 
-	const isEmpty = $derived(groups.every((g) => g.items.length === 0));
-
-	async function load() {
-		try {
-			loading = true;
-			const [board, projectList] = await Promise.all([
-				getNouraClient().kanban.getBoard({ projectId }),
-				getNouraClient().projects.list(),
-			]);
-			groups = board.groups;
-			projects = projectList;
-		} finally {
-			loading = false;
-		}
-	}
+	const isEmpty = $derived(
+		groups.every((g: KanbanGroup) => g.items.length === 0),
+	);
 
 	function select(task: Task) {
 		selectedTask = task;
@@ -72,7 +51,7 @@
 			title: 'New task',
 			properties: { project: projectId, status: 'todo', priority: 'medium' },
 		});
-		await load();
+		await onRefresh();
 		select(result.value as Task);
 	}
 
@@ -84,12 +63,14 @@
 				expectedRevision: task.revision,
 			});
 		} catch {
+			await onRefresh();
 			toast.error('Could not move the task', {
 				description:
 					'The task changed while you were viewing it. Refreshed to the latest state.',
 			});
+			return;
 		}
-		await load();
+		await onRefresh();
 	}
 
 	async function closeDetail() {
@@ -146,9 +127,9 @@
 			'todo';
 		if (columnId === sourceStatus && beforeId === task.id) return;
 		if (columnId === sourceStatus && !beforeId) return;
-		const group = groups.find((entry) => entry.id === columnId);
+		const group = groups.find((entry: KanbanGroup) => entry.id === columnId);
 		const beforeIndex = beforeId
-			? (group?.items.findIndex((item) => item.id === beforeId) ?? -1)
+			? (group?.items.findIndex((item: Task) => item.id === beforeId) ?? -1)
 			: -1;
 		const afterId =
 			beforeIndex > 0
@@ -167,32 +148,33 @@
 		} catch {
 			// A stale revision is expected after edits land through another
 			// surface; reloading shows the authoritative column state.
+			await onRefresh();
 			toast.error('Could not move the task', {
 				description:
 					'The task changed while you were viewing it. Refreshed to the latest state.',
 			});
+			return;
 		}
-		await load();
+		await onRefresh();
 	}
 
-	onMount(() => {
-		if (browser) load();
+	// Depend only on incoming canonical list data. Local selection and drag
+	// state must not rerun this effect, or starting a drag would cancel it.
+	$effect(() => {
+		const nextGroups = groups;
+		const task = untrack(() => selectedTask);
+		if (untrack(() => dragTask)) clearDrag();
+		if (!task) return;
+		const latest = nextGroups
+			.flatMap((group: KanbanGroup) => group.items)
+			.find((candidate: Task) => candidate.id === task.id);
+		if (latest) selectedTask = latest;
+		// When the task disappeared, keep its detail mounted. TaskDetail owns the
+		// external-delete conflict flow and may still need to protect a draft.
 	});
 </script>
 
-{#if loading}
-	<div class="flex flex-1 gap-px overflow-x-auto bg-border/40 p-px">
-		{#each [0, 1, 2, 3] as i (i)}
-			<div class="flex-1 bg-background p-2">
-				<Skeleton class="h-5 w-24" />
-				<div class="mt-3 flex flex-col gap-2">
-					<Skeleton class="h-10 w-full" />
-					<Skeleton class="h-10 w-full" />
-				</div>
-			</div>
-		{/each}
-	</div>
-{:else if isEmpty}
+{#if isEmpty}
 	<Empty.Root class="flex-1">
 		<Empty.Media variant="icon">
 			<FolderOpen />
@@ -239,6 +221,7 @@
 				>
 					{#each group.items as task (task.id)}
 						{@const done = task.properties?.status === 'done'}
+						{@const priority = task.properties?.priority}
 						<div
 							role="listitem"
 							class={`flex items-start bg-background transition-colors hover:bg-muted/70 ${dragTask?.id === task.id ? 'opacity-40' : ''} ${dragOverTaskId === task.id ? 'ring-1 ring-inset ring-primary/40' : ''}`}
@@ -255,9 +238,15 @@
 								><span
 									class={`block text-sm font-medium ${done ? 'line-through text-muted-foreground' : ''}`}
 									>{task.title}</span
-								>{#if task.properties?.due}<span
-										class="mt-1 text-[10px] text-muted-foreground"
-										>{task.properties.due}</span
+								>{#if task.properties?.due || (typeof priority === 'string' && priority !== 'medium')}<span
+										class="mt-1 flex items-center gap-1.5"
+										>{#if task.properties?.due}<span
+												class="text-[10px] text-muted-foreground"
+												>{task.properties.due}</span
+											>{/if}{#if typeof priority === 'string' && priority !== 'medium'}<Badge
+												variant="secondary"
+												class="px-1 py-0 text-[9px] uppercase">{priority}</Badge
+											>{/if}</span
 									>{/if}</button
 							>
 							<DropdownMenu.Root
@@ -315,7 +304,7 @@
 		{#if selectedTask}{#key selectedTask.id}<TaskDetail
 					task={selectedTask}
 					{projects}
-					onupdated={() => void load()}
+					onupdated={() => void onRefresh()}
 				/>{/key}{/if}
 	</Sheet.Content>
 </Sheet.Root>

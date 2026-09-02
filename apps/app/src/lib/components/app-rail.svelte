@@ -11,6 +11,7 @@
 	import GearSix from 'phosphor-svelte/lib/GearSix';
 	import { cn } from '$lib/utils.js';
 	import { plugins } from '$lib/plugins.svelte';
+	import { commandPalette } from '$lib/command-palette.svelte';
 	import type { Component } from 'svelte';
 
 	type RailEntry = readonly [string, string, Component, string?];
@@ -24,7 +25,6 @@
 	];
 
 	const secondary: readonly RailEntry[] = [
-		['Search', '/search', MagnifyingGlass],
 		['AI', '/ai', Sparkle],
 		['Settings', '/settings', GearSix],
 	];
@@ -42,6 +42,18 @@
 		{/each}
 	</div>
 	<div class="flex flex-col items-center gap-1">
+		<button
+			type="button"
+			class={cn(
+				'flex size-9 items-center justify-center rounded-xl transition-colors',
+				'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+			)}
+			aria-label="Search (Cmd+K)"
+			title="Search (Cmd+K)"
+			onclick={() => commandPalette.show()}
+		>
+			<MagnifyingGlass class="size-5" weight="regular" />
+		</button>
 		{#each secondary as [label, path, Icon] (path)}
 			{@render railEntry(label, path, Icon)}
 		{/each}

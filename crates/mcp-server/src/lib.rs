@@ -312,4 +312,50 @@ mod tests {
             .unwrap_err();
         assert!(error.starts_with("object_type_mismatch:"));
     }
+
+    #[tokio::test]
+    async fn task_create_writes_a_durable_project_task() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "MCP", app_data.path())
+                .unwrap();
+        let project = engine
+            .create_object(CreateObjectInput {
+                object_type: "project".into(),
+                title: "Demo".into(),
+                body: String::new(),
+                relative_path: None,
+                properties: std::collections::BTreeMap::new(),
+            })
+            .unwrap()
+            .value;
+        let server = NouraMcp::new(engine);
+
+        let output = server
+            .tasks_create(Parameters(TaskCreateParams {
+                title: "Verify board refresh".into(),
+                body: Some("- Accepts external edits without data loss".into()),
+                relative_path: None,
+                status: Some("todo".into()),
+                priority: Some("high".into()),
+                due: None,
+                project: Some(project.id.clone()),
+            }))
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let task = &result["value"];
+        let id = task["id"].as_str().unwrap();
+        let relative_path = task["relativePath"].as_str().unwrap();
+
+        assert!(workspace.path().join(relative_path).is_file());
+        let stored = server
+            .with_engine(|engine| engine.get_object(id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.properties["priority"], "high");
+        assert_eq!(stored.properties["project"], project.id);
+        assert_eq!(stored.body, "- Accepts external edits without data loss");
+    }
 }

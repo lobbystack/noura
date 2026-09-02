@@ -130,8 +130,19 @@ fn with_engine<T>(
 fn forward_events(app: AppHandle, engine: &WorkspaceEngine) {
     let mut events = engine.subscribe();
     tauri::async_runtime::spawn(async move {
-        while let Ok(event) = events.recv().await {
-            let _ = app.emit("noura://core-event", event);
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    let _ = app.emit("noura://core-event", event);
+                }
+                // A bounded broadcast channel may drop a burst. Keep the bridge
+                // alive: the next event or a projection refresh will reconcile
+                // the canonical files rather than leaving the session stale.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!("noura event bridge lagged; skipped {skipped} events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
         }
     });
 }
