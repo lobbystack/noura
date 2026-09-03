@@ -18,3 +18,25 @@ test('AI tool registration rejects duplicate public names', () => {
 		}),
 	).toThrow();
 });
+
+test('AI registry tracks contribution ownership, revision, and risk', () => {
+	const registry = new AiRegistry();
+	const dispose = registry.registerInstructionProvider(
+		{
+			id: 'calendar.rules',
+			risk: 'medium',
+			provide: async () => 'Use calendar data carefully.',
+		},
+		{ owner: 'calendar' },
+	);
+	const entry = registry.instructionEntries()[0];
+	expect(entry).toMatchObject({
+		category: 'instructions',
+		owner: 'calendar',
+		revision: 1,
+		risk: 'medium',
+	});
+	expect(registry.isCurrent(entry!)).toBe(true);
+	expect(dispose()).toBe(true);
+	expect(registry.isCurrent(entry!)).toBe(false);
+});

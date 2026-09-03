@@ -1,4 +1,8 @@
-import { definePlugin, type AiContextProvider } from '@noura/plugin-sdk';
+import {
+	definePlugin,
+	type AiContextProvider,
+	type PluginContext,
+} from '@noura/plugin-sdk';
 import type { WorkspaceObject } from '@noura/shared';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -76,6 +80,7 @@ const contextProvider: (
 
 interface RegisteredProvider {
 	dispose: () => void;
+	disposeTool: () => boolean;
 }
 
 const registrations = new WeakMap<object, RegisteredProvider>();
@@ -85,16 +90,55 @@ export default definePlugin({
 		id: 'calendar',
 		name: 'Calendar',
 		version: '0.1.0',
-		capabilities: ['workspace.objects', 'workspace.events', 'ai.context'],
+		capabilities: [
+			'workspace.objects',
+			'workspace.events',
+			'ai.context',
+			'ai.tools',
+		],
 	},
 	activate(context) {
 		const dispose = context.ai.registerContextProvider(
 			contextProvider(() => context.objects.list()),
 		);
-		registrations.set(context, { dispose });
+		const disposeTool = context.ai.registerTool(calendarTool(context));
+		registrations.set(context, { dispose, disposeTool });
 	},
 	deactivate(context) {
-		registrations.get(context)?.dispose();
+		const registration = registrations.get(context);
+		registration?.dispose();
+		registration?.disposeTool();
 		registrations.delete(context);
 	},
 });
+
+function calendarTool(context: PluginContext) {
+	return {
+		name: 'calendar.upcoming',
+		description: 'List outstanding dated workspace objects in the next days.',
+		inputSchema: {
+			type: 'object',
+			properties: { days: { type: 'integer', minimum: 1, maximum: 31 } },
+			additionalProperties: false,
+		},
+		risk: 'low' as const,
+		execute: async (input: unknown) => {
+			const { days } = (input ?? {}) as { days?: unknown };
+			if (
+				days !== undefined &&
+				(typeof days !== 'number' ||
+					!Number.isInteger(days) ||
+					days < 1 ||
+					days > 31)
+			) {
+				throw new Error('Calendar days must be an integer between 1 and 31');
+			}
+			const horizon = days === undefined ? 7 : days;
+			return upcomingCalendarEntries(
+				await context.objects.list(),
+				new Date(),
+				horizon,
+			);
+		},
+	};
+}

@@ -4,24 +4,162 @@
     reason = "Tauri commands return the complete structured CoreError contract over IPC; base64 sizing is intentional"
 )]
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use local_core::{
-    AiFoundation, AiInvokeInput, AiProviderConfig, AiResponse, CalendarEntry, CoreError, CoreEvent,
-    CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ManagedConflictResolveInput,
-    ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, MutationResult,
-    ObjectPatch, RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead,
-    RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult, ResolveConflictInput,
-    SearchInput, SearchResult, UnmanagedFile, WorkspaceEngine, WorkspaceEntry, WorkspaceManifest,
-    WorkspaceObject, WorkspaceState,
+    AiCancelOutcome, AiConsentGrant, AiConsentGrantInput, AiConsentReadInput, AiConsentRevokeInput,
+    AiConsentRevokeOutcome, AiFoundation, AiProviderConfig, AiStreamFrame, AiStreamInput,
+    AppendChatContextSummaryInput, AppendChatToolResultInput, AppendChatUserMessageInput,
+    BeginChatAssistantInput, BeginChatToolCallInput, CalendarEntry, ChangeChatRetentionInput, Chat,
+    ChatMessage, ChatRead, CoreError, CoreEvent, CreateChatInput, CreateObjectInput,
+    DraftReconcileInput, DraftReconcileResult, ErrorCategory, FinishChatAssistantInput,
+    FinishChatToolCallInput, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
+    ManifestUpdateInput, MarkdownLinkTarget, MutationResult, ObjectPatch, RawConflictResolveInput,
+    RawConflictResolveResult, RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput,
+    RawSaveResult, RenameChatInput, ResolveConflictInput, SearchInput, SearchResult, UnmanagedFile,
+    WorkspaceEngine, WorkspaceEntry, WorkspaceManifest, WorkspaceObject, WorkspaceState,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, ipc::Channel};
 use tauri_plugin_dialog::DialogExt;
 
-#[derive(Default)]
 struct AppState {
     engine: Mutex<Option<Arc<WorkspaceEngine>>>,
+    ai: Mutex<Option<Arc<AiFoundation>>>,
+    ai_data_root: PathBuf,
+    runtime_spike: Arc<PiRuntimeSpikeRegistry>,
+}
+
+impl AppState {
+    fn new(ai_data_root: PathBuf) -> Self {
+        Self {
+            engine: Mutex::new(None),
+            ai: Mutex::new(None),
+            ai_data_root,
+            runtime_spike: Arc::new(PiRuntimeSpikeRegistry::default()),
+        }
+    }
+
+    fn ai(&self, operation: &str) -> Result<Arc<AiFoundation>, CoreError> {
+        let mut ai = self.ai.lock().map_err(|_| ai_unavailable(operation))?;
+        if let Some(ai) = ai.as_ref() {
+            return Ok(ai.clone());
+        }
+
+        let foundation = AiFoundation::open(
+            self.ai_data_root.join("ai/providers.json"),
+            self.ai_data_root.join("ai/consents.json"),
+        )
+        .map_err(|_| ai_unavailable(operation))?;
+        let foundation = Arc::new(foundation);
+        *ai = Some(foundation.clone());
+        Ok(foundation)
+    }
+}
+
+fn ai_unavailable(operation: &str) -> CoreError {
+    let mut error = CoreError::new(
+        "ai_unavailable",
+        ErrorCategory::Transient,
+        "AI settings are unavailable. Check them and try again.",
+        operation,
+    );
+    error.retryable = true;
+    error
+}
+
+#[derive(Default)]
+struct PiRuntimeSpikeRegistry {
+    operations: Mutex<HashMap<String, tokio::sync::watch::Sender<()>>>,
+}
+
+struct PiRuntimeSpikeOperation {
+    registry: Arc<PiRuntimeSpikeRegistry>,
+    operation_id: String,
+    cancellation: tokio::sync::watch::Receiver<()>,
+}
+
+impl Drop for PiRuntimeSpikeOperation {
+    fn drop(&mut self) {
+        if let Ok(mut operations) = self.registry.operations.lock() {
+            operations.remove(&self.operation_id);
+        }
+    }
+}
+
+impl PiRuntimeSpikeRegistry {
+    fn start(self: &Arc<Self>, operation_id: String) -> Result<PiRuntimeSpikeOperation, CoreError> {
+        let (sender, cancellation) = tokio::sync::watch::channel(());
+        let mut operations = self.operations.lock().map_err(|_| {
+            CoreError::validation(
+                "ai_operation_lock_unavailable",
+                "The AI operation state is unavailable",
+                "pi_runtime_spike_stream",
+            )
+        })?;
+        match operations.entry(operation_id.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(sender);
+            }
+            Entry::Occupied(_) => {
+                return Err(CoreError::validation(
+                    "ai_operation_in_progress",
+                    "An AI operation with this identifier is already running",
+                    "pi_runtime_spike_stream",
+                ));
+            }
+        }
+        Ok(PiRuntimeSpikeOperation {
+            registry: self.clone(),
+            operation_id,
+            cancellation,
+        })
+    }
+
+    fn cancel(&self, operation_id: &str) -> Result<bool, CoreError> {
+        let operations = self.operations.lock().map_err(|_| {
+            CoreError::validation(
+                "ai_operation_lock_unavailable",
+                "The AI operation state is unavailable",
+                "pi_runtime_spike_cancel",
+            )
+        })?;
+        Ok(operations
+            .get(operation_id)
+            .is_some_and(|cancellation| cancellation.send(()).is_ok()))
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiRuntimeSpikeFrame {
+    operation_id: String,
+    sequence: u64,
+    kind: PiRuntimeSpikeFrameKind,
+    text: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PiRuntimeSpikeFrameKind {
+    Delta,
+    Done,
+    Aborted,
+}
+
+fn validate_pi_runtime_spike_operation(operation_id: &str) -> Result<(), CoreError> {
+    uuid::Uuid::parse_str(operation_id).map_err(|_| {
+        CoreError::validation(
+            "ai_operation_invalid",
+            "The AI operation identifier is invalid",
+            "pi_runtime_spike_stream",
+        )
+    })?;
+    Ok(())
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,12 +265,26 @@ fn with_engine<T>(
         .ok_or_else(|| unavailable(operation))?;
     run(&engine)
 }
-fn forward_events(app: AppHandle, engine: &WorkspaceEngine) {
+fn forward_events(app: AppHandle, engine: Arc<WorkspaceEngine>) {
     let mut events = engine.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
             match events.recv().await {
                 Ok(event) => {
+                    // Opening another workspace replaces the engine. Do not leak
+                    // delayed events from the retired workspace into its UI projection.
+                    let current = app
+                        .state::<AppState>()
+                        .engine
+                        .lock()
+                        .ok()
+                        .and_then(|value| value.clone());
+                    if !current
+                        .as_ref()
+                        .is_some_and(|value| Arc::ptr_eq(value, &engine))
+                    {
+                        break;
+                    }
                     let _ = app.emit("noura://core-event", event);
                 }
                 // A bounded broadcast channel may drop a burst. Keep the bridge
@@ -157,16 +309,6 @@ fn recent_path(app: &AppHandle) -> Result<std::path::PathBuf, CoreError> {
                 "workspace_recent",
             )
         })
-}
-fn ai_foundation(app: &AppHandle) -> Result<AiFoundation, CoreError> {
-    let root = app.path().app_local_data_dir().map_err(|_| {
-        CoreError::validation(
-            "app_data_unavailable",
-            "The application-data directory is unavailable",
-            "ai_provider_load",
-        )
-    })?;
-    AiFoundation::open(root.join("ai/providers.json"))
 }
 fn load_recent(app: &AppHandle) -> Vec<RecentWorkspace> {
     recent_path(app)
@@ -214,11 +356,12 @@ fn workspace_create(
     let engine = WorkspaceEngine::create(&input.path, &input.name)?;
     let value = engine.state();
     save_recent(&app, &engine)?;
-    forward_events(app, &engine);
+    let engine = Arc::new(engine);
     *state
         .engine
         .lock()
-        .map_err(|_| unavailable("workspace_create"))? = Some(Arc::new(engine));
+        .map_err(|_| unavailable("workspace_create"))? = Some(engine.clone());
+    forward_events(app, engine);
     Ok(value)
 }
 #[tauri::command]
@@ -230,11 +373,12 @@ fn workspace_open(
     let engine = WorkspaceEngine::open(&input.path)?;
     let value = engine.state();
     save_recent(&app, &engine)?;
-    forward_events(app, &engine);
+    let engine = Arc::new(engine);
     *state
         .engine
         .lock()
-        .map_err(|_| unavailable("workspace_open"))? = Some(Arc::new(engine));
+        .map_err(|_| unavailable("workspace_open"))? = Some(engine.clone());
+    forward_events(app, engine);
     Ok(value)
 }
 #[tauri::command]
@@ -426,6 +570,125 @@ fn objects_update(
         engine.update_object(&id, patch)
     })
 }
+
+#[tauri::command]
+fn chats_create(
+    state: State<AppState>,
+    input: CreateChatInput,
+) -> Result<MutationResult<Chat>, CoreError> {
+    with_engine(&state, "chat_create", |engine| engine.create_chat(input))
+}
+
+#[tauri::command]
+fn chats_change_retention(
+    state: State<AppState>,
+    input: ChangeChatRetentionInput,
+) -> Result<MutationResult<Chat>, CoreError> {
+    with_engine(&state, "chat_change_retention", |engine| {
+        engine.change_chat_retention(input)
+    })
+}
+
+#[tauri::command]
+fn chats_rename(
+    state: State<AppState>,
+    input: RenameChatInput,
+) -> Result<MutationResult<Chat>, CoreError> {
+    with_engine(&state, "chat_rename", |engine| engine.rename_chat(input))
+}
+
+#[tauri::command]
+fn chats_list(state: State<AppState>) -> Result<Vec<Chat>, CoreError> {
+    with_engine(&state, "chat_list", WorkspaceEngine::list_chats)
+}
+
+#[tauri::command]
+fn chats_read(state: State<AppState>, id: String) -> Result<ChatRead, CoreError> {
+    with_engine(&state, "chat_read", |engine| engine.read_chat(&id))
+}
+
+#[tauri::command]
+fn chats_append_user_message(
+    state: State<AppState>,
+    input: AppendChatUserMessageInput,
+) -> Result<MutationResult<ChatMessage>, CoreError> {
+    with_engine(&state, "chat_append_user_message", |engine| {
+        engine.append_chat_user_message(input)
+    })
+}
+
+#[tauri::command]
+fn chats_begin_assistant(
+    state: State<AppState>,
+    input: BeginChatAssistantInput,
+) -> Result<MutationResult<ChatMessage>, CoreError> {
+    with_engine(&state, "chat_begin_assistant", |engine| {
+        engine.begin_chat_assistant(input)
+    })
+}
+
+#[tauri::command]
+fn chats_finish_assistant(
+    state: State<AppState>,
+    input: FinishChatAssistantInput,
+) -> Result<MutationResult<ChatMessage>, CoreError> {
+    with_engine(&state, "chat_finish_assistant", |engine| {
+        engine.finish_chat_assistant(input)
+    })
+}
+
+#[tauri::command]
+fn chats_begin_tool_call(
+    state: State<AppState>,
+    input: BeginChatToolCallInput,
+) -> Result<MutationResult<ChatMessage>, CoreError> {
+    with_engine(&state, "chat_begin_tool_call", |engine| {
+        engine.begin_chat_tool_call(input)
+    })
+}
+
+#[tauri::command]
+fn chats_finish_tool_call(
+    state: State<AppState>,
+    input: FinishChatToolCallInput,
+) -> Result<MutationResult<ChatMessage>, CoreError> {
+    with_engine(&state, "chat_finish_tool_call", |engine| {
+        engine.finish_chat_tool_call(input)
+    })
+}
+
+#[tauri::command]
+fn chats_append_tool_result(
+    state: State<AppState>,
+    input: AppendChatToolResultInput,
+) -> Result<MutationResult<ChatMessage>, CoreError> {
+    with_engine(&state, "chat_append_tool_result", |engine| {
+        engine.append_chat_tool_result(input)
+    })
+}
+
+#[tauri::command]
+fn chats_append_context_summary(
+    state: State<AppState>,
+    input: AppendChatContextSummaryInput,
+) -> Result<MutationResult<ChatMessage>, CoreError> {
+    with_engine(&state, "chat_append_context_summary", |engine| {
+        engine.append_chat_context_summary(input)
+    })
+}
+
+#[tauri::command]
+fn chats_recover_interrupted(state: State<AppState>, id: String) -> Result<ChatRead, CoreError> {
+    with_engine(&state, "chat_recover_interrupted", |engine| {
+        engine.recover_interrupted_chat(&id)
+    })
+}
+
+#[tauri::command]
+fn chats_expire(state: State<AppState>, now: String) -> Result<Vec<String>, CoreError> {
+    with_engine(&state, "chat_expire", |engine| engine.expire_chats(&now))
+}
+
 #[tauri::command]
 fn notes_reconcile_draft(
     state: State<AppState>,
@@ -685,29 +948,166 @@ fn folders_remove(state: State<AppState>, input: FolderInput) -> Result<(), Core
     })
 }
 #[tauri::command]
-fn ai_provider_list(app: AppHandle) -> Result<Vec<AiProviderConfig>, CoreError> {
-    ai_foundation(&app)?.list_providers()
+fn ai_provider_list(state: State<AppState>) -> Result<Vec<AiProviderConfig>, CoreError> {
+    state.ai("ai_provider_list")?.list_providers()
 }
 #[tauri::command]
-fn ai_provider_save(app: AppHandle, input: AiProviderConfig) -> Result<(), CoreError> {
-    ai_foundation(&app)?.save_provider(input)
+fn ai_provider_save(state: State<AppState>, input: AiProviderConfig) -> Result<(), CoreError> {
+    state.ai("ai_provider_save")?.save_provider(input)
 }
 #[tauri::command]
 fn ai_credential_set(
-    app: AppHandle,
+    state: State<AppState>,
     input: CredentialSetInput,
 ) -> Result<serde_json::Value, CoreError> {
-    let credential_ref = ai_foundation(&app)?.set_credential(&input.provider_id, &input.secret)?;
+    let credential_ref = state
+        .ai("ai_credential_set")?
+        .set_credential(&input.provider_id, &input.secret)?;
     Ok(serde_json::json!({"credentialRef":credential_ref}))
 }
 #[tauri::command]
-fn ai_credential_delete(app: AppHandle, input: CredentialDeleteInput) -> Result<(), CoreError> {
-    ai_foundation(&app)?.delete_credential(&input.credential_ref)
+fn ai_credential_delete(
+    state: State<AppState>,
+    input: CredentialDeleteInput,
+) -> Result<(), CoreError> {
+    state
+        .ai("ai_credential_delete")?
+        .delete_credential(&input.credential_ref)
 }
 #[tauri::command]
-async fn ai_invoke(app: AppHandle, input: AiInvokeInput) -> Result<AiResponse, CoreError> {
-    ai_foundation(&app)?.invoke(input).await
+fn ai_consent_read(
+    state: State<AppState>,
+    input: AiConsentReadInput,
+) -> Result<Option<AiConsentGrant>, CoreError> {
+    with_engine(&state, "ai_consent_read", |engine| {
+        state
+            .ai("ai_consent_read")?
+            .read_consent(&engine.manifest().id, input)
+    })
 }
+#[tauri::command]
+fn ai_consent_grant(
+    state: State<AppState>,
+    input: AiConsentGrantInput,
+) -> Result<AiConsentGrant, CoreError> {
+    with_engine(&state, "ai_consent_grant", |engine| {
+        state
+            .ai("ai_consent_grant")?
+            .grant_consent(&engine.manifest().id, input)
+    })
+}
+#[tauri::command]
+fn ai_consent_revoke(
+    state: State<AppState>,
+    input: AiConsentRevokeInput,
+) -> Result<AiConsentRevokeOutcome, CoreError> {
+    with_engine(&state, "ai_consent_revoke", |engine| {
+        state
+            .ai("ai_consent_revoke")?
+            .revoke_consent(&engine.manifest().id, input)
+    })
+}
+#[tauri::command]
+async fn ai_stream(
+    state: State<'_, AppState>,
+    input: AiStreamInput,
+    channel: Channel<AiStreamFrame>,
+) -> Result<(), CoreError> {
+    let operation_id = input.operation_id.clone();
+    let workspace_id = with_engine(&state, "ai_stream", |engine| Ok(engine.manifest().id))?;
+    let ai = state.ai("ai_stream")?;
+    let mut operation = ai.start_stream(&workspace_id, input)?;
+    while let Some(frame) = operation.receiver.recv().await {
+        if channel.send(frame).is_err() {
+            let _ = ai.cancel_stream(&operation_id);
+            break;
+        }
+    }
+    Ok(())
+}
+#[tauri::command]
+fn ai_stream_cancel(
+    state: State<AppState>,
+    operation_id: String,
+) -> Result<AiCancelOutcome, CoreError> {
+    state.ai("ai_stream_cancel")?.cancel_stream(&operation_id)
+}
+
+fn send_pi_runtime_spike_frame(
+    channel: &Channel<PiRuntimeSpikeFrame>,
+    operation_id: &str,
+    sequence: u64,
+    kind: PiRuntimeSpikeFrameKind,
+    text: Option<&str>,
+) -> bool {
+    channel
+        .send(PiRuntimeSpikeFrame {
+            operation_id: operation_id.into(),
+            sequence,
+            kind,
+            text: text.map(str::to_owned),
+        })
+        .is_ok()
+}
+
+#[tauri::command]
+async fn pi_runtime_spike_stream(
+    state: State<'_, AppState>,
+    operation_id: String,
+    channel: Channel<PiRuntimeSpikeFrame>,
+) -> Result<(), CoreError> {
+    validate_pi_runtime_spike_operation(&operation_id)?;
+    let mut operation = state.runtime_spike.start(operation_id.clone())?;
+    let mut sequence = 1;
+
+    for text in ["Native ", "Tauri Channel ", "stream verified."] {
+        tokio::select! {
+            changed = operation.cancellation.changed() => {
+                if changed.is_ok() {
+                    let _ = send_pi_runtime_spike_frame(
+                        &channel,
+                        &operation_id,
+                        sequence,
+                        PiRuntimeSpikeFrameKind::Aborted,
+                        None,
+                    );
+                }
+                return Ok(());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(120)) => {
+                if !send_pi_runtime_spike_frame(
+                    &channel,
+                    &operation_id,
+                    sequence,
+                    PiRuntimeSpikeFrameKind::Delta,
+                    Some(text),
+                ) {
+                    return Ok(());
+                }
+                sequence += 1;
+            }
+        }
+    }
+
+    let _ = send_pi_runtime_spike_frame(
+        &channel,
+        &operation_id,
+        sequence,
+        PiRuntimeSpikeFrameKind::Done,
+        None,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn pi_runtime_spike_cancel(
+    state: State<'_, AppState>,
+    operation_id: String,
+) -> Result<bool, CoreError> {
+    validate_pi_runtime_spike_operation(&operation_id)?;
+    state.runtime_spike.cancel(&operation_id)
+}
+
 mod os_files;
 
 #[derive(Deserialize)]
@@ -736,8 +1136,15 @@ fn object_open_terminal(state: State<AppState>, input: ShowInFolderInput) -> Res
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default())
         .setup(|app| {
+            let root = app.path().app_local_data_dir().map_err(|_| {
+                CoreError::validation(
+                    "app_data_unavailable",
+                    "The application-data directory is unavailable",
+                    "ai_provider_load",
+                )
+            })?;
+            app.manage(AppState::new(root));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut last_full_reconciliation = std::time::Instant::now();
@@ -774,6 +1181,20 @@ pub fn run() {
             objects_get,
             objects_create,
             objects_update,
+            chats_create,
+            chats_change_retention,
+            chats_rename,
+            chats_list,
+            chats_read,
+            chats_append_user_message,
+            chats_begin_assistant,
+            chats_finish_assistant,
+            chats_begin_tool_call,
+            chats_finish_tool_call,
+            chats_append_tool_result,
+            chats_append_context_summary,
+            chats_recover_interrupted,
+            chats_expire,
             notes_reconcile_draft,
             notes_resolve_conflict,
             managed_draft_save,
@@ -802,8 +1223,110 @@ pub fn run() {
             ai_provider_save,
             ai_credential_set,
             ai_credential_delete,
-            ai_invoke
+            ai_consent_read,
+            ai_consent_grant,
+            ai_consent_revoke,
+            ai_stream,
+            ai_stream_cancel,
+            pi_runtime_spike_stream,
+            pi_runtime_spike_cancel
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Noura desktop host");
+}
+
+#[cfg(test)]
+mod runtime_spike_tests {
+    use super::*;
+
+    #[test]
+    fn start_rejects_an_operation_id_that_is_already_running() {
+        let registry = Arc::new(PiRuntimeSpikeRegistry::default());
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let _operation = registry.start(operation_id.clone()).unwrap();
+
+        let Err(error) = registry.start(operation_id) else {
+            panic!("the duplicate operation should be rejected");
+        };
+
+        assert_eq!(error.code, "ai_operation_in_progress");
+    }
+
+    #[tokio::test]
+    async fn duplicate_start_keeps_the_original_operation_cancellable() {
+        let registry = Arc::new(PiRuntimeSpikeRegistry::default());
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let mut original = registry.start(operation_id.clone()).unwrap();
+
+        assert!(registry.start(operation_id.clone()).is_err());
+        assert!(registry.cancel(&operation_id).unwrap());
+        assert!(original.cancellation.changed().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancel_notifies_the_active_operation() {
+        let registry = Arc::new(PiRuntimeSpikeRegistry::default());
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let mut operation = registry.start(operation_id.clone()).unwrap();
+
+        let cancelled = registry.cancel(&operation_id).unwrap();
+
+        assert!(cancelled);
+        assert!(operation.cancellation.changed().await.is_ok());
+    }
+
+    fn temporary_ai_data_root() -> PathBuf {
+        std::env::temp_dir().join(format!("noura-desktop-ai-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn ai_initialization_is_lazy_and_retries_after_invalid_provider_settings() {
+        let root = temporary_ai_data_root();
+        std::fs::create_dir_all(root.join("ai")).unwrap();
+        std::fs::write(root.join("ai/providers.json"), b"not json").unwrap();
+        let state = AppState::new(root.clone());
+
+        let Err(error) = state.ai("ai_provider_list") else {
+            panic!("invalid provider settings should not initialize AI");
+        };
+
+        assert_eq!(error.code, "ai_unavailable");
+        assert_eq!(error.operation, "ai_provider_list");
+        assert!(error.retryable);
+        assert!(error.path.is_none());
+        assert!(state.ai.lock().unwrap().is_none());
+
+        std::fs::remove_file(root.join("ai/providers.json")).unwrap();
+        assert!(
+            state
+                .ai("ai_provider_list")
+                .unwrap()
+                .list_providers()
+                .unwrap()
+                .is_empty()
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ai_initialization_redacts_unavailable_consent_settings() {
+        let root = temporary_ai_data_root();
+        std::fs::create_dir_all(root.join("ai/consents.json")).unwrap();
+        let state = AppState::new(root.clone());
+
+        let Err(error) = state.ai("ai_consent_read") else {
+            panic!("unavailable consent settings should not initialize AI");
+        };
+
+        assert_eq!(error.code, "ai_unavailable");
+        assert_eq!(error.operation, "ai_consent_read");
+        assert!(error.retryable);
+        assert!(error.path.is_none());
+        assert!(error.details.is_none());
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -116,6 +116,7 @@ export const plugins = new PluginStore();
 
 /** Routes backed by a first-party plugin, mapped to the plugin's id. */
 export const PLUGIN_ROUTES: ReadonlyArray<readonly [string, string]> = [
+	['ai', '/ai'],
 	['notes', '/notes'],
 	['tasks', '/tasks'],
 	['calendar', '/calendar'],

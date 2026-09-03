@@ -1,6 +1,6 @@
 import { generateKeyBetween } from 'fractional-indexing';
 import { z } from 'zod';
-import { definePlugin } from '@noura/plugin-sdk';
+import { definePlugin, type PluginContext } from '@noura/plugin-sdk';
 import type { Task, TaskStatus } from '@noura/shared';
 export const taskPropertiesSchema = z
 	.object({
@@ -52,6 +52,33 @@ interface CompleteTaskInput {
 	expectedRevision?: unknown;
 }
 const commandDisposers = new WeakMap<object, Array<() => void>>();
+
+async function createTask(context: PluginContext, input: unknown) {
+	const { title, properties } = (input ?? {}) as CreateTaskInput;
+	if (typeof title !== 'string' || title.trim().length === 0) {
+		throw new Error('A task title is required');
+	}
+	const result = await context.objects.create({
+		type: 'task',
+		title,
+		properties,
+	});
+	return result.value;
+}
+
+async function completeTask(context: PluginContext, input: unknown) {
+	const { id, expectedRevision } = (input ?? {}) as CompleteTaskInput;
+	if (typeof id !== 'string' || typeof expectedRevision !== 'string') {
+		throw new Error(
+			'Completing a task needs its stable ID and expected revision',
+		);
+	}
+	const result = await context.objects.update(id, {
+		expectedRevision,
+		properties: { status: 'done' },
+	});
+	return result.value;
+}
 export default definePlugin({
 	manifest: {
 		id: 'tasks',
@@ -62,6 +89,7 @@ export default definePlugin({
 			'workspace.search',
 			'workspace.commands',
 			'workspace.events',
+			'ai.tools',
 		],
 	},
 	activate(context) {
@@ -71,16 +99,7 @@ export default definePlugin({
 				id: 'tasks.create',
 				title: 'Create task',
 				async execute(input) {
-					const { title, properties } = (input ?? {}) as CreateTaskInput;
-					if (typeof title !== 'string' || title.trim().length === 0) {
-						throw new Error('A task title is required');
-					}
-					const result = await context.objects.create({
-						type: 'task',
-						title,
-						properties,
-					});
-					return result.value;
+					return createTask(context, input);
 				},
 			}),
 		);
@@ -89,18 +108,43 @@ export default definePlugin({
 				id: 'tasks.complete',
 				title: 'Complete task',
 				async execute(input) {
-					const { id, expectedRevision } = (input ?? {}) as CompleteTaskInput;
-					if (typeof id !== 'string' || typeof expectedRevision !== 'string') {
-						throw new Error(
-							'Completing a task needs its stable ID and expected revision',
-						);
-					}
-					const result = await context.objects.update(id, {
-						expectedRevision,
-						properties: { status: 'done' },
-					});
-					return result.value;
+					return completeTask(context, input);
 				},
+			}),
+		);
+		disposers.push(
+			context.ai.registerTool({
+				name: 'tasks.create',
+				description: 'Create a task in the workspace.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						title: { type: 'string', minLength: 1 },
+						properties: { type: 'object' },
+					},
+					required: ['title'],
+					additionalProperties: false,
+				},
+				risk: 'high',
+				execute: (input) => createTask(context, input),
+			}),
+		);
+		disposers.push(
+			context.ai.registerTool({
+				name: 'tasks.complete',
+				description:
+					'Mark a task complete using its current expected revision.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						id: { type: 'string', minLength: 1 },
+						expectedRevision: { type: 'string', minLength: 1 },
+					},
+					required: ['id', 'expectedRevision'],
+					additionalProperties: false,
+				},
+				risk: 'high',
+				execute: (input) => completeTask(context, input),
 			}),
 		);
 		commandDisposers.set(context, disposers);

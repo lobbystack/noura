@@ -1,10 +1,14 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use local_core::{
-    ConflictResolution, CreateObjectInput, ManagedConflictResolution, ManagedConflictResolveInput,
-    ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch,
-    ParseStatus, ParsedMarkdown, RawConflictResolveInput, RawSaveInput, RawSaveResult, SearchInput,
-    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id, parse_markdown,
+    AppendChatContextSummaryInput, AppendChatToolResultInput, AppendChatUserMessageInput,
+    BeginChatAssistantInput, BeginChatToolCallInput, ChangeChatRetentionInput, ChatMessageStatus,
+    ChatRetention, ConflictResolution, CreateChatInput, CreateObjectInput,
+    FinishChatAssistantInput, FinishChatToolCallInput, ManagedConflictResolution,
+    ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
+    MarkdownLinkTarget, ObjectPatch, ParseStatus, ParsedMarkdown, RawConflictResolveInput,
+    RawSaveInput, RawSaveResult, RenameChatInput, SearchInput, WorkspaceEngine, WorkspaceEntryKind,
+    WorkspaceManifest, new_object_id, parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -15,6 +19,767 @@ fn engine() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceEngine) {
         WorkspaceEngine::create_with_app_data(workspace.path(), "Domain tests", app_data.path())
             .unwrap();
     (workspace, app_data, engine)
+}
+
+fn replace_frontmatter_timestamp(path: &std::path::Path, field: &str, value: &str) {
+    let bytes = std::fs::read_to_string(path).unwrap();
+    let mut replaced = false;
+    let rewritten = bytes
+        .lines()
+        .map(|line| {
+            if line.starts_with(&format!("{field}: ")) {
+                replaced = true;
+                format!("{field}: {value}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(replaced, "{field} frontmatter field must be present");
+    std::fs::write(path, format!("{rewritten}\n")).unwrap();
+}
+
+#[test]
+fn chats_are_canonical_revision_checked_and_rebuildable() {
+    let (workspace, app_data, engine) = engine();
+    let created = engine
+        .create_chat(CreateChatInput {
+            title: "Release planning".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    assert!(
+        created
+            .value
+            .relative_path
+            .starts_with("chats/release-planning--")
+    );
+    assert!(created.value.relative_path.ends_with("/chat.md"));
+
+    let user = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_release".into(),
+            content: "What changed?".into(),
+            expected_chat_revision: created.revision,
+        })
+        .unwrap();
+    assert!(user.value.relative_path.contains("/messages/"));
+    assert!(
+        user.value
+            .relative_path
+            .ends_with(&format!("{}.md", user.value.id))
+    );
+    let after_user = engine.read_chat(&created.value.id).unwrap();
+
+    let assistant = engine
+        .begin_chat_assistant(BeginChatAssistantInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_release".into(),
+            provider_id: "openai".into(),
+            model_id: "gpt-5.6".into(),
+            expected_chat_revision: after_user.chat.revision,
+        })
+        .unwrap();
+    let after_begin = engine.read_chat(&created.value.id).unwrap();
+    let _assistant = engine
+        .finish_chat_assistant(FinishChatAssistantInput {
+            chat_id: created.value.id.clone(),
+            message_id: assistant.value.id,
+            content: "The release is ready.".into(),
+            status: ChatMessageStatus::Completed,
+            error_code: None,
+            expected_chat_revision: after_begin.chat.revision,
+            expected_message_revision: assistant.revision,
+        })
+        .unwrap();
+    let after_assistant = engine.read_chat(&created.value.id).unwrap();
+
+    let tool_call = engine
+        .begin_chat_tool_call(BeginChatToolCallInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_release".into(),
+            tool_call_id: "call_release".into(),
+            tool_name: "workspace.search".into(),
+            content: "{\"query\":\"release\"}".into(),
+            expected_chat_revision: after_assistant.chat.revision,
+        })
+        .unwrap();
+    let after_tool_begin = engine.read_chat(&created.value.id).unwrap();
+    engine
+        .finish_chat_tool_call(FinishChatToolCallInput {
+            chat_id: created.value.id.clone(),
+            message_id: tool_call.value.id.clone(),
+            content: r#"{"status":"invoked"}"#.into(),
+            status: ChatMessageStatus::Completed,
+            error_code: None,
+            expected_chat_revision: after_tool_begin.chat.revision,
+            expected_message_revision: tool_call.revision,
+        })
+        .unwrap();
+    let after_tool_call = engine.read_chat(&created.value.id).unwrap();
+    engine
+        .append_chat_tool_result(AppendChatToolResultInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_release".into(),
+            tool_call_id: "call_release".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"result":"Found release notes"}"#.into(),
+            expected_chat_revision: after_tool_call.chat.revision,
+        })
+        .unwrap();
+    let after_tool_result = engine.read_chat(&created.value.id).unwrap();
+    engine
+        .append_chat_context_summary(AppendChatContextSummaryInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_release".into(),
+            content: "The release discussion is ready to continue.".into(),
+            summarizes_through_message_id: tool_call.value.id.clone(),
+            expected_chat_revision: after_tool_result.chat.revision,
+        })
+        .unwrap();
+    let read = engine.read_chat(&created.value.id).unwrap();
+    assert_eq!(read.messages.len(), 5);
+    assert_eq!(read.messages[0].content, "What changed?");
+    assert_eq!(read.messages[1].content, "The release is ready.");
+    assert!(
+        read.messages
+            .iter()
+            .all(|message| message.status == ChatMessageStatus::Completed)
+    );
+
+    let stale = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_release".into(),
+            content: "stale".into(),
+            expected_chat_revision: created.value.revision,
+        })
+        .unwrap_err();
+    assert_eq!(stale.code, "revision_conflict");
+
+    let index_path = engine.index_path().to_owned();
+    drop(engine);
+    std::fs::remove_file(index_path).unwrap();
+    let rebuilt = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+    let rebuilt_read = rebuilt.read_chat(&created.value.id).unwrap();
+    assert_eq!(rebuilt_read.messages.len(), 5);
+    assert_eq!(
+        rebuilt_read.messages[4].content,
+        "The release discussion is ready to continue."
+    );
+}
+
+#[test]
+fn chat_mutation_intents_recover_each_write_failure_across_restart_and_rebuild() {
+    for target in ["message", "chat"] {
+        let (workspace, app_data, engine) = engine();
+        let created = engine
+            .create_chat(CreateChatInput {
+                title: format!("Recover {target}"),
+                retention: None,
+                retention_days: None,
+            })
+            .unwrap();
+        let mut events = engine.subscribe();
+        engine.fail_chat_mutation_write_for_testing(target, 1);
+        let error = engine
+            .append_chat_user_message(AppendChatUserMessageInput {
+                chat_id: created.value.id.clone(),
+                run_id: "run_recovery".into(),
+                content: format!("recover after {target} write failure"),
+                expected_chat_revision: created.revision.clone(),
+            })
+            .unwrap_err();
+        assert_eq!(error.code, "chat_mutation_write_failed");
+        assert!(
+            events.try_recv().is_err(),
+            "failed commits must not emit chat events"
+        );
+
+        let index_path = engine.index_path().to_owned();
+        drop(engine);
+        std::fs::remove_file(index_path).unwrap();
+        let reopened =
+            WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+        let recovered = reopened.read_chat(&created.value.id).unwrap();
+        assert_eq!(
+            recovered.messages.len(),
+            1,
+            "failed {target} write was not recovered"
+        );
+        assert_eq!(
+            recovered.messages[0].content,
+            format!("recover after {target} write failure")
+        );
+        assert!(
+            !workspace.path().join(".noura/chat-mutations").exists()
+                || workspace
+                    .path()
+                    .join(".noura/chat-mutations")
+                    .read_dir()
+                    .unwrap()
+                    .next()
+                    .is_none()
+        );
+
+        let stale = reopened
+            .append_chat_user_message(AppendChatUserMessageInput {
+                chat_id: created.value.id.clone(),
+                run_id: "run_stale".into(),
+                content: "must not replay as a new message".into(),
+                expected_chat_revision: created.revision.clone(),
+            })
+            .unwrap_err();
+        assert_eq!(stale.code, "revision_conflict");
+    }
+}
+
+#[test]
+fn chat_mutation_recovery_does_not_clobber_an_external_parent_edit() {
+    let (workspace, _app_data, engine) = engine();
+    let created = engine
+        .create_chat(CreateChatInput {
+            title: "Do not overwrite".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    engine.fail_chat_mutation_write_for_testing("chat", 1);
+    let error = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_external".into(),
+            content: "the child write completed first".into(),
+            expected_chat_revision: created.revision,
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "chat_mutation_write_failed");
+
+    let chat_path = workspace.path().join(&created.value.relative_path);
+    let external = std::fs::read_to_string(&chat_path)
+        .unwrap()
+        .replace("title: Do not overwrite", "title: Edited outside Noura");
+    std::fs::write(&chat_path, external).unwrap();
+
+    let recovery = engine.reconcile().unwrap_err();
+    assert_eq!(recovery.code, "chat_mutation_recovery_conflict");
+    assert!(
+        std::fs::read_to_string(chat_path)
+            .unwrap()
+            .contains("title: Edited outside Noura")
+    );
+    assert!(
+        workspace
+            .path()
+            .join(".noura/chat-mutations")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some(),
+        "the unresolved intent must remain available for explicit recovery"
+    );
+}
+
+#[test]
+fn chat_retention_changes_are_revision_checked_and_durable() {
+    let (workspace, _app_data, engine) = engine();
+    let created = engine
+        .create_chat(CreateChatInput {
+            title: "Retention".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let mut events = engine.subscribe();
+    let changed = engine
+        .change_chat_retention(ChangeChatRetentionInput {
+            chat_id: created.value.id.clone(),
+            retention: ChatRetention::Ephemeral,
+            retention_days: Some(30),
+            expected_chat_revision: created.revision.clone(),
+        })
+        .unwrap();
+    assert_eq!(changed.value.retention, ChatRetention::Ephemeral);
+    assert_eq!(changed.value.retention_days, Some(30));
+    assert_ne!(changed.revision, created.revision);
+    assert_eq!(
+        events.try_recv().unwrap().event_type,
+        "chat:retention-changed"
+    );
+
+    let bytes = std::fs::read(workspace.path().join(&changed.value.relative_path)).unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains("retention: ephemeral\nretention_days: 30\n"));
+
+    let invalid = engine
+        .change_chat_retention(ChangeChatRetentionInput {
+            chat_id: changed.value.id.clone(),
+            retention: ChatRetention::Ephemeral,
+            retention_days: None,
+            expected_chat_revision: changed.revision.clone(),
+        })
+        .unwrap_err();
+    assert_eq!(invalid.code, "invalid_chat_markdown");
+
+    let permanent = engine
+        .change_chat_retention(ChangeChatRetentionInput {
+            chat_id: changed.value.id.clone(),
+            retention: ChatRetention::Permanent,
+            retention_days: None,
+            expected_chat_revision: changed.revision,
+        })
+        .unwrap();
+    assert_eq!(permanent.value.retention, ChatRetention::Permanent);
+    assert_eq!(permanent.value.retention_days, None);
+
+    let stale = engine
+        .change_chat_retention(ChangeChatRetentionInput {
+            chat_id: created.value.id,
+            retention: ChatRetention::Permanent,
+            retention_days: None,
+            expected_chat_revision: created.revision,
+        })
+        .unwrap_err();
+    assert_eq!(stale.code, "revision_conflict");
+}
+
+#[test]
+fn chat_rename_preserves_path_and_is_revision_checked_and_durable() {
+    let (workspace, _app_data, engine) = engine();
+    let created = engine
+        .create_chat(CreateChatInput {
+            title: "Initial title".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let path = created.value.relative_path.clone();
+    let mut events = engine.subscribe();
+
+    let renamed = engine
+        .rename_chat(RenameChatInput {
+            chat_id: created.value.id.clone(),
+            title: "  Renamed chat  ".into(),
+            expected_chat_revision: created.revision.clone(),
+        })
+        .unwrap();
+    assert_eq!(renamed.value.title, "Renamed chat");
+    assert_eq!(renamed.value.relative_path, path);
+    assert_ne!(renamed.revision, created.revision);
+    assert_eq!(events.try_recv().unwrap().event_type, "chat:renamed");
+
+    let bytes = std::fs::read(workspace.path().join(&renamed.value.relative_path)).unwrap();
+    assert!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .contains("title: Renamed chat\n")
+    );
+
+    let invalid = engine
+        .rename_chat(RenameChatInput {
+            chat_id: renamed.value.id.clone(),
+            title: "Renamed\nchat".into(),
+            expected_chat_revision: renamed.revision.clone(),
+        })
+        .unwrap_err();
+    assert_eq!(invalid.code, "chat_title_required");
+
+    let stale = engine
+        .rename_chat(RenameChatInput {
+            chat_id: renamed.value.id,
+            title: "Stale title".into(),
+            expected_chat_revision: created.revision,
+        })
+        .unwrap_err();
+    assert_eq!(stale.code, "revision_conflict");
+}
+
+#[test]
+fn chat_finishes_persist_terminal_statuses_and_partial_content() {
+    let (_workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Terminal states".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let cancelled = engine
+        .begin_chat_assistant(BeginChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_terminal".into(),
+            provider_id: "openai".into(),
+            model_id: "gpt-5.6".into(),
+            expected_chat_revision: chat.revision,
+        })
+        .unwrap();
+    let after_cancelled_begin = engine.read_chat(&chat.value.id).unwrap();
+    let cancelled = engine
+        .finish_chat_assistant(FinishChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            message_id: cancelled.value.id,
+            content: "Partial response".into(),
+            status: ChatMessageStatus::Cancelled,
+            error_code: None,
+            expected_chat_revision: after_cancelled_begin.chat.revision,
+            expected_message_revision: cancelled.revision,
+        })
+        .unwrap();
+    assert_eq!(cancelled.value.status, ChatMessageStatus::Cancelled);
+    assert_eq!(cancelled.value.content, "Partial response");
+    let after_cancelled = engine.read_chat(&chat.value.id).unwrap();
+
+    let invalid_cancelled = engine
+        .begin_chat_assistant(BeginChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_terminal".into(),
+            provider_id: "openai".into(),
+            model_id: "gpt-5.6".into(),
+            expected_chat_revision: after_cancelled.chat.revision.clone(),
+        })
+        .unwrap();
+    let after_invalid_cancelled_begin = engine.read_chat(&chat.value.id).unwrap();
+    let invalid_cancelled = engine
+        .finish_chat_assistant(FinishChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            message_id: invalid_cancelled.value.id,
+            content: "Partial response".into(),
+            status: ChatMessageStatus::Cancelled,
+            error_code: Some("cancelled".into()),
+            expected_chat_revision: after_invalid_cancelled_begin.chat.revision,
+            expected_message_revision: invalid_cancelled.revision,
+        })
+        .unwrap_err();
+    assert_eq!(invalid_cancelled.code, "invalid_chat_markdown");
+    let after_cancelled = engine.read_chat(&chat.value.id).unwrap();
+
+    let failed = engine
+        .begin_chat_assistant(BeginChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_terminal".into(),
+            provider_id: "openai".into(),
+            model_id: "gpt-5.6".into(),
+            expected_chat_revision: after_cancelled.chat.revision,
+        })
+        .unwrap();
+    let after_failed_begin = engine.read_chat(&chat.value.id).unwrap();
+    let unsafe_error = engine
+        .finish_chat_assistant(FinishChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            message_id: failed.value.id.clone(),
+            content: "Provider stopped after partial text".into(),
+            status: ChatMessageStatus::Failed,
+            error_code: Some("provider failure".into()),
+            expected_chat_revision: after_failed_begin.chat.revision.clone(),
+            expected_message_revision: failed.revision.clone(),
+        })
+        .unwrap_err();
+    assert_eq!(unsafe_error.code, "invalid_chat_markdown");
+    let failed = engine
+        .finish_chat_assistant(FinishChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            message_id: failed.value.id,
+            content: "Provider stopped after partial text".into(),
+            status: ChatMessageStatus::Failed,
+            error_code: Some("provider_unavailable".into()),
+            expected_chat_revision: after_failed_begin.chat.revision,
+            expected_message_revision: failed.revision,
+        })
+        .unwrap();
+    assert_eq!(failed.value.status, ChatMessageStatus::Failed);
+    assert_eq!(
+        failed.value.error_code.as_deref(),
+        Some("provider_unavailable")
+    );
+    let after_failed = engine.read_chat(&chat.value.id).unwrap();
+
+    let tool_call = engine
+        .begin_chat_tool_call(BeginChatToolCallInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_terminal".into(),
+            tool_call_id: "call_terminal".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"query":"terminal"}"#.into(),
+            expected_chat_revision: after_failed.chat.revision,
+        })
+        .unwrap();
+    let after_tool_begin = engine.read_chat(&chat.value.id).unwrap();
+    let non_terminal = engine
+        .finish_chat_tool_call(FinishChatToolCallInput {
+            chat_id: chat.value.id.clone(),
+            message_id: tool_call.value.id.clone(),
+            content: r#"{"retry":true}"#.into(),
+            status: ChatMessageStatus::InProgress,
+            error_code: None,
+            expected_chat_revision: after_tool_begin.chat.revision.clone(),
+            expected_message_revision: tool_call.revision.clone(),
+        })
+        .unwrap_err();
+    assert_eq!(non_terminal.code, "chat_message_not_terminal");
+    let tool_call = engine
+        .finish_chat_tool_call(FinishChatToolCallInput {
+            chat_id: chat.value.id,
+            message_id: tool_call.value.id,
+            content: r#"{"cancelled":true}"#.into(),
+            status: ChatMessageStatus::Interrupted,
+            error_code: Some("plugin-disabled".into()),
+            expected_chat_revision: after_tool_begin.chat.revision,
+            expected_message_revision: tool_call.revision,
+        })
+        .unwrap();
+    assert_eq!(tool_call.value.status, ChatMessageStatus::Interrupted);
+    assert_eq!(
+        tool_call.value.error_code.as_deref(),
+        Some("plugin-disabled")
+    );
+}
+
+#[test]
+fn chat_recovery_marks_interrupted_messages_and_retention_trashes_only_safe_directories() {
+    let (workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Recovery".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap()
+        .value;
+    let pending = engine
+        .begin_chat_assistant(BeginChatAssistantInput {
+            chat_id: chat.id.clone(),
+            run_id: "run_recovery".into(),
+            provider_id: "openai".into(),
+            model_id: "gpt-5.6".into(),
+            expected_chat_revision: chat.revision.clone(),
+        })
+        .unwrap();
+    let recovered = engine.recover_interrupted_chat(&chat.id).unwrap();
+    assert_eq!(recovered.messages.len(), 1);
+    assert_eq!(recovered.messages[0].id, pending.value.id);
+    assert_eq!(recovered.messages[0].status, ChatMessageStatus::Interrupted);
+
+    let retained = engine
+        .create_chat(CreateChatInput {
+            title: "Keep unknown files".into(),
+            retention: Some(ChatRetention::Ephemeral),
+            retention_days: Some(30),
+        })
+        .unwrap()
+        .value;
+    let retained_dir = workspace
+        .path()
+        .join(&retained.relative_path)
+        .parent()
+        .unwrap()
+        .to_owned();
+    std::fs::write(retained_dir.join("manual.txt"), "do not move").unwrap();
+    assert!(
+        engine
+            .expire_chats("2031-01-01T00:00:00Z")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(retained_dir.exists());
+
+    let expiring = engine
+        .create_chat(CreateChatInput {
+            title: "Expire safely".into(),
+            retention: Some(ChatRetention::Ephemeral),
+            retention_days: Some(30),
+        })
+        .unwrap()
+        .value;
+    let expired = engine.expire_chats("2031-01-01T00:00:00Z").unwrap();
+    assert_eq!(expired, vec![expiring.id]);
+    assert!(!workspace.path().join(expiring.relative_path).exists());
+    assert!(
+        workspace
+            .path()
+            .join(".noura/trash")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some()
+    );
+}
+
+#[test]
+fn chat_recovery_completes_tool_calls_with_matching_durable_results() {
+    let (workspace, app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Recovery tool result".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let tool_call = engine
+        .begin_chat_tool_call(BeginChatToolCallInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_recovery".into(),
+            tool_call_id: "call_recovery".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"query":"status"}"#.into(),
+            expected_chat_revision: chat.revision,
+        })
+        .unwrap();
+    let after_call = engine.read_chat(&chat.value.id).unwrap();
+    let tool_result = engine
+        .append_chat_tool_result(AppendChatToolResultInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_recovery".into(),
+            tool_call_id: "call_recovery".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"matches":1}"#.into(),
+            expected_chat_revision: after_call.chat.revision,
+        })
+        .unwrap();
+
+    drop(engine);
+    let reopened = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+    let recovered = reopened.recover_interrupted_chat(&chat.value.id).unwrap();
+    let recovered_call = recovered
+        .messages
+        .iter()
+        .find(|message| message.id == tool_call.value.id)
+        .unwrap();
+    assert_eq!(recovered_call.status, ChatMessageStatus::Completed);
+    assert_eq!(recovered_call.content, r#"{"query":"status"}"#);
+    assert!(recovered.messages.iter().any(|message| {
+        message.id == tool_result.value.id && message.status == ChatMessageStatus::Completed
+    }));
+}
+
+#[test]
+fn chat_recovery_interrupts_tool_calls_without_matching_durable_results() {
+    let (_workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Unmatched recovery result".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let tool_call = engine
+        .begin_chat_tool_call(BeginChatToolCallInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_recovery".into(),
+            tool_call_id: "call_pending".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"query":"status"}"#.into(),
+            expected_chat_revision: chat.revision,
+        })
+        .unwrap();
+    let after_call = engine.read_chat(&chat.value.id).unwrap();
+    engine
+        .append_chat_tool_result(AppendChatToolResultInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_other".into(),
+            tool_call_id: "call_pending".into(),
+            tool_name: "workspace.list".into(),
+            content: r#"{"entries":[]}"#.into(),
+            expected_chat_revision: after_call.chat.revision,
+        })
+        .unwrap();
+
+    let recovered = engine.recover_interrupted_chat(&chat.value.id).unwrap();
+    assert_eq!(
+        recovered
+            .messages
+            .iter()
+            .find(|message| message.id == tool_call.value.id)
+            .unwrap()
+            .status,
+        ChatMessageStatus::Interrupted
+    );
+}
+
+#[test]
+fn chat_reads_sort_rfc3339_offsets_by_instant() {
+    let (workspace, _app_data, engine) = engine();
+    let earlier_chat = engine
+        .create_chat(CreateChatInput {
+            title: "Earlier instant".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap()
+        .value;
+    let later_chat = engine
+        .create_chat(CreateChatInput {
+            title: "Later instant".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap()
+        .value;
+    replace_frontmatter_timestamp(
+        &workspace.path().join(&earlier_chat.relative_path),
+        "updated",
+        "2026-01-01T00:30:00+01:00",
+    );
+    replace_frontmatter_timestamp(
+        &workspace.path().join(&later_chat.relative_path),
+        "updated",
+        "2025-12-31T23:45:00Z",
+    );
+
+    let chats = engine.list_chats().unwrap();
+    let ordered_ids = chats
+        .iter()
+        .map(|chat| chat.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ordered_ids[..2],
+        [later_chat.id.as_str(), earlier_chat.id.as_str()]
+    );
+
+    let first = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: later_chat.id.clone(),
+            run_id: "run_sort".into(),
+            content: "First instant".into(),
+            expected_chat_revision: chats
+                .iter()
+                .find(|chat| chat.id == later_chat.id)
+                .unwrap()
+                .revision
+                .clone(),
+        })
+        .unwrap();
+    let after_first = engine.read_chat(&later_chat.id).unwrap();
+    let second = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: later_chat.id.clone(),
+            run_id: "run_sort".into(),
+            content: "Second instant".into(),
+            expected_chat_revision: after_first.chat.revision,
+        })
+        .unwrap();
+    replace_frontmatter_timestamp(
+        &workspace.path().join(&first.value.relative_path),
+        "created",
+        "2026-01-01T00:30:00+01:00",
+    );
+    replace_frontmatter_timestamp(
+        &workspace.path().join(&second.value.relative_path),
+        "created",
+        "2025-12-31T23:45:00Z",
+    );
+
+    let messages = engine.read_chat(&later_chat.id).unwrap().messages;
+    let ordered_ids = messages
+        .iter()
+        .map(|message| message.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ordered_ids,
+        [first.value.id.as_str(), second.value.id.as_str()]
+    );
 }
 
 #[test]

@@ -510,10 +510,13 @@ fn upsert_markdown_tx(
             for (key, value) in &object.properties {
                 let (value_type, value_text) = scalar(value);
                 tx.execute("INSERT INTO object_properties(file_id,property_name,value_text,value_type) VALUES(?1,?2,?3,?4)", params![file_id,key,value_text,value_type]).map_err(|error| CoreError::index(error, "index_upsert"))?;
-                if key == "project"
-                    && let Some(target) = value.as_str()
+                if let Some(relation) = match key.as_str() {
+                    "project" => Some("project"),
+                    "chat_id" => Some("chat"),
+                    _ => None,
+                } && let Some(target) = value.as_str()
                 {
-                    tx.execute("INSERT OR IGNORE INTO object_links(source_file_id,relation,target_stable_id) VALUES(?1,'project',?2)", params![file_id,target]).map_err(|error| CoreError::index(error,"index_upsert"))?;
+                    tx.execute("INSERT OR IGNORE INTO object_links(source_file_id,relation,target_stable_id) VALUES(?1,?2,?3)", params![file_id,relation,target]).map_err(|error| CoreError::index(error,"index_upsert"))?;
                 }
             }
             let metadata = object
@@ -629,7 +632,11 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceObject> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{new_object_id, now_rfc3339, parse_markdown, serialize_object};
+    use crate::chat::serialize_chat_message;
+    use crate::{
+        ChatMessage, ChatMessageKind, ChatMessageStatus, new_object_id, now_rfc3339,
+        parse_markdown, serialize_object,
+    };
     use std::collections::BTreeMap;
     #[test]
     fn fts_and_rebuildable_index_work() {
@@ -693,6 +700,52 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn chat_messages_create_rebuildable_chat_relations() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let now = now_rfc3339();
+        let chat_id = new_object_id("chat");
+        let message = ChatMessage {
+            id: new_object_id("chat-message"),
+            chat_id: chat_id.clone(),
+            run_id: "run_example".into(),
+            kind: ChatMessageKind::User,
+            status: ChatMessageStatus::Completed,
+            content_type: "text/markdown".into(),
+            content: "result".into(),
+            relative_path: "chats/example--abc123/messages/2026-09-02/chat-message.md".into(),
+            revision: String::new(),
+            created: now.clone(),
+            updated: now,
+            provider_id: None,
+            model_id: None,
+            tool_call_id: None,
+            tool_name: None,
+            error_code: None,
+            summarizes_through_message_id: None,
+            properties: BTreeMap::new(),
+        };
+        let bytes = serialize_chat_message(&message).unwrap();
+        index
+            .upsert_markdown(
+                &message.relative_path,
+                &bytes,
+                1,
+                &parse_markdown(&message.relative_path, &bytes),
+            )
+            .unwrap();
+
+        let count: i64 = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM object_links WHERE relation='chat' AND target_stable_id=?1",
+                [&chat_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
 	import { workspace } from '$lib/state.svelte';
+	import { aiChats } from '$lib/ai/chat-store.svelte';
 	import { sidebarModuleFor } from '$lib/sidebar-modules';
 	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
 	import {
@@ -72,6 +73,16 @@
 			void plugins.sync();
 	});
 
+	// AI providers are global, while chats are workspace-scoped. Reconcile both
+	// projections from settled workspace state in case the host event bridge
+	// subscribed after a workspace transition.
+	$effect(() => {
+		if (!browser) return;
+		const phase = workspace.state?.phase;
+		if (phase === 'ready' || phase === 'idle' || phase === 'failed')
+			void aiChats.refresh();
+	});
+
 	// Modules own their sidebar: routes with a contributing module get one
 	// (workspace name plus that module's section); everything else renders
 	// full-width — a module can simply opt out.
@@ -85,6 +96,7 @@
 		if (browser) {
 			void workspace.init();
 			void plugins.init();
+			void aiChats.init();
 			void installPendingDraftCloseGuard(
 				createTauriHostLifecycle(),
 				flushPendingDrafts,

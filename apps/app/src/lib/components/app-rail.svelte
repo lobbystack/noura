@@ -25,7 +25,7 @@
 	];
 
 	const secondary: readonly RailEntry[] = [
-		['AI', '/ai', Sparkle],
+		['AI', '/ai', Sparkle, 'ai'],
 		['Settings', '/settings', GearSix],
 	];
 </script>
@@ -54,8 +54,10 @@
 		>
 			<MagnifyingGlass class="size-5" weight="regular" />
 		</button>
-		{#each secondary as [label, path, Icon] (path)}
-			{@render railEntry(label, path, Icon)}
+		{#each secondary as [label, path, Icon, pluginId] (path)}
+			{#if !pluginId || plugins.isEnabled(pluginId)}
+				{@render railEntry(label, path, Icon)}
+			{/if}
 		{/each}
 	</div>
 </nav>

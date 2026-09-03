@@ -17,6 +17,15 @@ function transport(responses: Record<string, unknown>): CoreTransport {
 			calls.push(payload === undefined ? { command } : { command, payload });
 			return responses[command] as T;
 		},
+		stream: async <T>(
+			command: string,
+			payload: Record<string, unknown>,
+			handler: (frame: T) => void,
+		) => {
+			calls.push({ command, payload });
+			for (const frame of (responses[command] as T[] | undefined) ?? [])
+				handler(frame);
+		},
 		subscribe: async () => () => {},
 	} as CoreTransport & { calls: typeof calls };
 }
@@ -24,6 +33,7 @@ function transport(responses: Record<string, unknown>): CoreTransport {
 describe('typed client', () => {
 	test('registers every Initial MVP domain as a first-party plugin', () => {
 		expect(firstPartyPlugins.map((plugin) => plugin.manifest.id)).toEqual([
+			'ai',
 			'folders',
 			'notes',
 			'tasks',
@@ -45,6 +55,231 @@ describe('typed client', () => {
 			command: 'workspace_pick_folder',
 			payload: { title: 'Open a Noura workspace' },
 		});
+	});
+	test('delegates AI streaming and cancellation through the typed boundary', async () => {
+		const operationId = '7cd5ab0c-b143-4ae7-9e99-867e20b8cd73';
+		const frames = [
+			{
+				operationId,
+				sequence: 1,
+				event: {
+					type: 'started',
+					model: { providerId: 'test', model: 'test-model' },
+				},
+			},
+		];
+		const mock = transport({
+			ai_stream: frames,
+			ai_stream_cancel: { operationId, cancelled: true },
+		});
+		const client = createNouraClient(mock);
+		const received: unknown[] = [];
+
+		await client.ai.stream(
+			{
+				operationId,
+				model: { providerId: 'test', model: 'test-model' },
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+				],
+				tools: [],
+			},
+			(frame) => received.push(frame),
+		);
+		await expect(client.ai.cancel(operationId)).resolves.toEqual({
+			operationId,
+			cancelled: true,
+		});
+		expect(received).toEqual(frames);
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,
+		).toEqual([
+			{
+				command: 'ai_stream',
+				payload: {
+					input: {
+						operationId,
+						model: { providerId: 'test', model: 'test-model' },
+						messages: [
+							{ role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+						],
+						tools: [],
+					},
+				},
+			},
+			{ command: 'ai_stream_cancel', payload: { operationId } },
+		]);
+	});
+	test('delegates device-local AI consent without a workspace ID', async () => {
+		const mock = transport({
+			ai_consent_read: null,
+			ai_consent_grant: {
+				providerId: 'test',
+				policyVersion: '2026-09',
+				dataCategory: 'workspace-content',
+				grantedAt: '2026-09-03T00:00:00Z',
+			},
+			ai_consent_revoke: {
+				providerId: 'test',
+				policyVersion: '2026-09',
+				revoked: true,
+				cancelledOperations: 1,
+			},
+		});
+		const client = createNouraClient(mock);
+		const input = { providerId: 'test', policyVersion: '2026-09' };
+
+		await expect(client.ai.readConsent(input)).resolves.toBeNull();
+		await client.ai.grantConsent({
+			...input,
+			dataCategory: 'workspace-content',
+		});
+		await client.ai.revokeConsent(input);
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,
+		).toEqual([
+			{ command: 'ai_consent_read', payload: { input } },
+			{
+				command: 'ai_consent_grant',
+				payload: { input: { ...input, dataCategory: 'workspace-content' } },
+			},
+			{ command: 'ai_consent_revoke', payload: { input } },
+		]);
+	});
+	test('delegates durable chat lifecycle commands through the typed boundary', async () => {
+		const mock = transport({
+			chats_create: { value: {}, revision: 'chat-1' },
+			chats_change_retention: { value: {}, revision: 'chat-2' },
+			chats_rename: { value: {}, revision: 'chat-3' },
+			chats_append_user_message: { value: {}, revision: 'message-1' },
+			chats_finish_assistant: { value: {}, revision: 'message-2' },
+			chats_finish_tool_call: { value: {}, revision: 'message-3' },
+			chats_recover_interrupted: { chat: {}, messages: [] },
+			chats_expire: ['chat_old'],
+		});
+		const client = createNouraClient(mock);
+
+		await client.chats.create({ title: 'Planning' });
+		await client.chats.changeRetention({
+			chatId: 'chat_01j00000000000000000000000',
+			retention: 'ephemeral',
+			retentionDays: 30,
+			expectedChatRevision: 'chat-1',
+		});
+		await client.chats.rename({
+			chatId: 'chat_01j00000000000000000000000',
+			title: 'Release planning',
+			expectedChatRevision: 'chat-2',
+		});
+		await client.chats.appendUserMessage({
+			chatId: 'chat_01j00000000000000000000000',
+			runId: 'run_1',
+			content: 'Hello',
+			expectedChatRevision: 'chat-1',
+		});
+		await client.chats.finishAssistant({
+			chatId: 'chat_01j00000000000000000000000',
+			messageId: 'chat-message_01j00000000000000000000000',
+			content: 'Partial response',
+			status: 'cancelled',
+			errorCode: null,
+			expectedChatRevision: 'chat-1',
+			expectedMessageRevision: 'message-1',
+		});
+		await client.chats.finishToolCall({
+			chatId: 'chat_01j00000000000000000000000',
+			messageId: 'chat-message_01j00000000000000000000000',
+			content: '{"error":"provider unavailable"}',
+			status: 'failed',
+			errorCode: 'provider_unavailable',
+			expectedChatRevision: 'chat-1',
+			expectedMessageRevision: 'message-1',
+		});
+		await client.chats.recoverInterrupted('chat_01j00000000000000000000000');
+		await client.chats.expire('2031-01-01T00:00:00Z');
+
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,
+		).toEqual([
+			{
+				command: 'chats_create',
+				payload: {
+					input: {
+						title: 'Planning',
+						retention: 'permanent',
+						retentionDays: null,
+					},
+				},
+			},
+			{
+				command: 'chats_change_retention',
+				payload: {
+					input: {
+						chatId: 'chat_01j00000000000000000000000',
+						retention: 'ephemeral',
+						retentionDays: 30,
+						expectedChatRevision: 'chat-1',
+					},
+				},
+			},
+			{
+				command: 'chats_rename',
+				payload: {
+					input: {
+						chatId: 'chat_01j00000000000000000000000',
+						title: 'Release planning',
+						expectedChatRevision: 'chat-2',
+					},
+				},
+			},
+			{
+				command: 'chats_append_user_message',
+				payload: {
+					input: {
+						chatId: 'chat_01j00000000000000000000000',
+						runId: 'run_1',
+						content: 'Hello',
+						expectedChatRevision: 'chat-1',
+					},
+				},
+			},
+			{
+				command: 'chats_finish_assistant',
+				payload: {
+					input: {
+						chatId: 'chat_01j00000000000000000000000',
+						messageId: 'chat-message_01j00000000000000000000000',
+						content: 'Partial response',
+						status: 'cancelled',
+						errorCode: null,
+						expectedChatRevision: 'chat-1',
+						expectedMessageRevision: 'message-1',
+					},
+				},
+			},
+			{
+				command: 'chats_finish_tool_call',
+				payload: {
+					input: {
+						chatId: 'chat_01j00000000000000000000000',
+						messageId: 'chat-message_01j00000000000000000000000',
+						content: '{"error":"provider unavailable"}',
+						status: 'failed',
+						errorCode: 'provider_unavailable',
+						expectedChatRevision: 'chat-1',
+						expectedMessageRevision: 'message-1',
+					},
+				},
+			},
+			{
+				command: 'chats_recover_interrupted',
+				payload: { id: 'chat_01j00000000000000000000000' },
+			},
+			{
+				command: 'chats_expire',
+				payload: { now: '2031-01-01T00:00:00Z' },
+			},
+		]);
 	});
 	test('delegates workspace file discovery through the typed boundary', async () => {
 		const entries: WorkspaceEntry[] = [

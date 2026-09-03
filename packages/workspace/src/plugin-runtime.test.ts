@@ -46,8 +46,10 @@ function harness(initialEnabled: Array<string>) {
 		},
 		subscribe: async () => () => {},
 	};
-	const client = createNouraClient(transport);
+	const aiRegistry = new AiRegistry();
+	const client = createNouraClient(transport, undefined, aiRegistry);
 	return {
+		aiRegistry,
 		client,
 		calls,
 		store,
@@ -157,13 +159,24 @@ describe('plugin runtime', () => {
 	});
 
 	test('host services pass through the typed client contracts', async () => {
-		const { client } = harness([]);
+		const { aiRegistry, client } = harness([]);
 		const services = createPluginHostServices(client);
 		expect(services.objects).toBe(client.objects);
 		expect(services.search).toBe(client.search);
 		expect(services.events).toBe(client.events);
 		expect(services.commands).toBe(client.commands);
 		expect(services.storage).toBe(client.pluginState);
+		services.ai.registerInstructionProvider(
+			{
+				id: 'adapter.instructions',
+				provide: async () => 'Use workspace data.',
+			},
+			{ owner: 'adapter' },
+		);
+		expect(aiRegistry.instructionEntries()[0]).toMatchObject({
+			owner: 'adapter',
+			category: 'instructions',
+		});
 	});
 });
 
@@ -208,14 +221,17 @@ describe('first-party plugin dogfood', () => {
 						warnings: [],
 					} as T;
 				}
+				if (command === 'objects_query' || command === 'files_list')
+					return [] as T;
 				return null as T;
 			},
 			subscribe: async () => () => {},
 		};
-		const client = createNouraClient(transport);
+		const aiRegistry = new AiRegistry();
+		const client = createNouraClient(transport, undefined, aiRegistry);
 		const runtime = new PluginRuntime(client);
 		await runtime.syncWithManifest();
-		return { client, calls, runtime, store };
+		return { aiRegistry, client, calls, runtime, store };
 	}
 
 	test('enabled domains register their commands through the capability surface', async () => {
@@ -232,6 +248,121 @@ describe('first-party plugin dogfood', () => {
 			'tasks.create',
 			'tasks.complete',
 		]);
+	});
+
+	test('enabled domains register public JSON-schema AI tools', async () => {
+		const { aiRegistry } = await activatedClient([
+			'notes',
+			'tasks',
+			'calendar',
+			'projects',
+			'folders',
+		]);
+		const tools = aiRegistry.tools();
+		expect(tools.map((tool) => tool.name)).toEqual([
+			'calendar.upcoming',
+			'folders.list',
+			'notes.create',
+			'projects.create',
+			'tasks.complete',
+			'tasks.create',
+		]);
+		expect(
+			tools.find((tool) => tool.name === 'notes.create')?.inputSchema,
+		).toMatchObject({
+			type: 'object',
+			required: ['title'],
+			properties: { title: { type: 'string' }, body: { type: 'string' } },
+		});
+		expect(
+			tools.find((tool) => tool.name === 'tasks.complete')?.inputSchema,
+		).toMatchObject({
+			type: 'object',
+			required: ['id', 'expectedRevision'],
+			properties: {
+				id: { type: 'string' },
+				expectedRevision: { type: 'string' },
+			},
+		});
+		expect(
+			tools.find((tool) => tool.name === 'projects.create')?.inputSchema,
+		).toMatchObject({
+			type: 'object',
+			required: ['title'],
+			properties: {
+				title: { type: 'string' },
+				body: { type: 'string' },
+				properties: { type: 'object' },
+			},
+		});
+		expect(
+			tools.find((tool) => tool.name === 'calendar.upcoming')?.inputSchema,
+		).toEqual({
+			type: 'object',
+			properties: { days: { type: 'integer', minimum: 1, maximum: 31 } },
+			additionalProperties: false,
+		});
+		expect(
+			tools.find((tool) => tool.name === 'folders.list')?.inputSchema,
+		).toEqual({ type: 'object', additionalProperties: false });
+	});
+
+	test('AI tools reuse typed object services and preserve expected revisions', async () => {
+		const { aiRegistry, calls } = await activatedClient([
+			'notes',
+			'tasks',
+			'projects',
+			'calendar',
+			'folders',
+		]);
+		const tool = (name: string) =>
+			aiRegistry.tools().find((value) => value.name === name)!;
+
+		await tool('notes.create').execute({
+			title: 'AI note',
+			body: '# AI note',
+		});
+		expect(calls.at(-1)).toEqual({
+			command: 'objects_create',
+			payload: {
+				input: { type: 'note', title: 'AI note', body: '# AI note' },
+			},
+		});
+		await tool('tasks.create').execute({ title: 'AI task' });
+		expect(calls.at(-1)).toEqual({
+			command: 'objects_create',
+			payload: { input: { type: 'task', title: 'AI task' } },
+		});
+		await tool('projects.create').execute({
+			title: 'AI project',
+			properties: {},
+		});
+		expect(calls.at(-1)).toEqual({
+			command: 'objects_create',
+			payload: {
+				input: {
+					type: 'project',
+					title: 'AI project',
+					properties: { status: 'planned' },
+				},
+			},
+		});
+		expect(await tool('calendar.upcoming').execute({ days: 7 })).toEqual([]);
+		expect(await tool('folders.list').execute({})).toEqual([]);
+		await expect(
+			tool('tasks.complete').execute({ id: 'task_01' }),
+		).rejects.toThrow('expected revision');
+		await tool('tasks.complete').execute({
+			id: 'task_01',
+			expectedRevision: 'rev-1',
+		});
+		expect(calls.at(-1)).toEqual({
+			command: 'objects_update',
+			payload: {
+				id: 'task_01',
+				patch: { expectedRevision: 'rev-1', properties: { status: 'done' } },
+			},
+		});
 	});
 
 	test('tasks.create runs as a guarded durable object create', async () => {

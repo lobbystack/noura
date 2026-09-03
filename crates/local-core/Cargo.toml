@@ -11,6 +11,7 @@ blake3.workspace = true
 directories.workspace = true
 diffy.workspace = true
 fs2.workspace = true
+futures.workspace = true
 genai.workspace = true
 ignore.workspace = true
 jiff.workspace = true

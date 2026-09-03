@@ -1,4 +1,4 @@
-import { definePlugin } from '@noura/plugin-sdk';
+import { definePlugin, type PluginContext } from '@noura/plugin-sdk';
 
 interface CreateNoteInput {
 	title?: unknown;
@@ -6,6 +6,22 @@ interface CreateNoteInput {
 }
 
 const commandDisposers = new WeakMap<object, Array<() => void>>();
+
+async function createNote(context: PluginContext, input: unknown) {
+	const { title, body } = (input ?? {}) as CreateNoteInput;
+	if (typeof title !== 'string' || title.trim().length === 0) {
+		throw new Error('A note title is required');
+	}
+	if (body !== undefined && typeof body !== 'string') {
+		throw new Error('A note body must be Markdown text');
+	}
+	const result = await context.objects.create({
+		type: 'note',
+		title,
+		body,
+	});
+	return result.value;
+}
 
 export default definePlugin({
 	manifest: {
@@ -17,6 +33,7 @@ export default definePlugin({
 			'workspace.search',
 			'workspace.commands',
 			'workspace.events',
+			'ai.tools',
 		],
 	},
 	activate(context) {
@@ -26,20 +43,25 @@ export default definePlugin({
 				id: 'notes.create',
 				title: 'Create note',
 				async execute(input) {
-					const { title, body } = (input ?? {}) as CreateNoteInput;
-					if (typeof title !== 'string' || title.trim().length === 0) {
-						throw new Error('A note title is required');
-					}
-					if (body !== undefined && typeof body !== 'string') {
-						throw new Error('A note body must be Markdown text');
-					}
-					const result = await context.objects.create({
-						type: 'note',
-						title,
-						body,
-					});
-					return result.value;
+					return createNote(context, input);
 				},
+			}),
+		);
+		disposers.push(
+			context.ai.registerTool({
+				name: 'notes.create',
+				description: 'Create a Markdown note in the workspace.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						title: { type: 'string', minLength: 1 },
+						body: { type: 'string' },
+					},
+					required: ['title'],
+					additionalProperties: false,
+				},
+				risk: 'high',
+				execute: (input) => createNote(context, input),
 			}),
 		);
 		commandDisposers.set(context, disposers);

@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import type { AiContextProvider, AiToolDefinition } from '@noura/ai';
+import type {
+	AiContextProvider,
+	AiContributionRegistration,
+	AiInstructionProvider,
+	AiToolDefinition,
+} from '@noura/ai';
 import type {
 	CoreEvent,
 	MutationResult,
@@ -21,6 +26,7 @@ export const capabilitySchema = z.enum([
 	'workspace.storage',
 	'ai.tools',
 	'ai.context',
+	'ai.instructions',
 ]);
 export const pluginManifestSchema = z.object({
 	id: z.string().regex(/^[a-z][a-z0-9-]*$/),
@@ -30,7 +36,7 @@ export const pluginManifestSchema = z.object({
 });
 export type PluginCapability = z.infer<typeof capabilitySchema>;
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
-export type { AiContextProvider, AiToolDefinition };
+export type { AiContextProvider, AiInstructionProvider, AiToolDefinition };
 export interface PluginContext {
 	files: {
 		list(): Promise<WorkspaceEntry[]>;
@@ -61,6 +67,9 @@ export interface PluginContext {
 	ai: {
 		registerTool(definition: AiToolDefinition): () => boolean;
 		registerContextProvider(definition: AiContextProvider): () => boolean;
+		registerInstructionProvider(
+			definition: AiInstructionProvider,
+		): () => boolean;
 	};
 }
 export interface PluginCommand {
@@ -94,7 +103,20 @@ export interface PluginHostServices {
 		set<T>(pluginId: string, key: string, value: T): Promise<void>;
 		delete(pluginId: string, key: string): Promise<boolean>;
 	};
-	ai: PluginContext['ai'];
+	ai: {
+		registerTool(
+			definition: AiToolDefinition,
+			registration: AiContributionRegistration,
+		): () => boolean;
+		registerContextProvider(
+			definition: AiContextProvider,
+			registration: AiContributionRegistration,
+		): () => boolean;
+		registerInstructionProvider(
+			definition: AiInstructionProvider,
+			registration: AiContributionRegistration,
+		): () => boolean;
+	};
 }
 
 export function definePlugin(definition: PluginDefinition): PluginDefinition {
@@ -112,6 +134,12 @@ export function requireCapability(
 export class PluginHost {
 	#active = new Map<string, PluginDefinition>();
 	#contexts = new Map<string, PluginContext>();
+	/**
+	 * Registrations made through a context belong to that activation, even when
+	 * a plugin forgets to repeat the disposal in its optional deactivate hook.
+	 * This also rolls registrations back when activation throws midway through.
+	 */
+	#disposers = new Map<string, Set<() => boolean>>();
 	private readonly services: PluginHostServices;
 	constructor(services: PluginHostServices) {
 		this.services = services;
@@ -120,10 +148,16 @@ export class PluginHost {
 		if (this.#active.has(definition.manifest.id))
 			throw new Error(`Plugin already active: ${definition.manifest.id}`);
 		pluginManifestSchema.parse(definition.manifest);
+		this.#disposers.set(definition.manifest.id, new Set());
 		const context = this.contextFor(definition.manifest);
-		await definition.activate(context);
-		this.#active.set(definition.manifest.id, definition);
-		this.#contexts.set(definition.manifest.id, context);
+		try {
+			await definition.activate(context);
+			this.#active.set(definition.manifest.id, definition);
+			this.#contexts.set(definition.manifest.id, context);
+		} catch (error) {
+			this.#dispose(definition.manifest.id);
+			throw error;
+		}
 	}
 	/** Deactivate a plugin and run its cleanup. Returns whether it was active. */
 	async deactivate(id: string): Promise<boolean> {
@@ -132,6 +166,9 @@ export class PluginHost {
 		this.#active.delete(id);
 		const context = this.#contexts.get(id);
 		this.#contexts.delete(id);
+		// Contributions must be gone before user-defined asynchronous cleanup
+		// yields. A disabled plugin cannot remain callable during this window.
+		this.#dispose(id);
 		if (definition.deactivate) await definition.deactivate(context!);
 		return true;
 	}
@@ -192,15 +229,21 @@ export class PluginHost {
 				},
 			},
 			events: {
-				subscribe: (handler) => {
+				subscribe: async (handler) => {
 					guard('workspace.events');
-					return this.services.events.subscribe(handler);
+					return this.#track(
+						manifest.id,
+						await this.services.events.subscribe(handler),
+					);
 				},
 			},
 			commands: {
 				register: (command) => {
 					guard('workspace.commands');
-					return this.services.commands.register(command);
+					return this.#track(
+						manifest.id,
+						this.services.commands.register(command),
+					);
 				},
 			},
 			storage: {
@@ -220,13 +263,54 @@ export class PluginHost {
 			ai: {
 				registerTool: (definition) => {
 					guard('ai.tools');
-					return this.services.ai.registerTool(definition);
+					return this.#track(
+						manifest.id,
+						this.services.ai.registerTool(definition, { owner: manifest.id }),
+					);
 				},
 				registerContextProvider: (definition) => {
 					guard('ai.context');
-					return this.services.ai.registerContextProvider(definition);
+					return this.#track(
+						manifest.id,
+						this.services.ai.registerContextProvider(definition, {
+							owner: manifest.id,
+						}),
+					);
+				},
+				registerInstructionProvider: (definition) => {
+					guard('ai.instructions');
+					return this.#track(
+						manifest.id,
+						this.services.ai.registerInstructionProvider(definition, {
+							owner: manifest.id,
+						}),
+					);
 				},
 			},
 		};
+	}
+	#track(pluginId: string, dispose: () => void): () => boolean {
+		const disposers = this.#disposers.get(pluginId);
+		// An event subscription can finish after an activation rollback or a
+		// deactivation. Do not leave that late registration alive.
+		if (!disposers) {
+			dispose();
+			return () => false;
+		}
+		let disposed = false;
+		const tracked = () => {
+			if (disposed) return false;
+			disposed = true;
+			disposers.delete(tracked);
+			dispose();
+			return true;
+		};
+		disposers.add(tracked);
+		return tracked;
+	}
+	#dispose(pluginId: string) {
+		const disposers = this.#disposers.get(pluginId);
+		this.#disposers.delete(pluginId);
+		for (const dispose of disposers ?? []) dispose();
 	}
 }

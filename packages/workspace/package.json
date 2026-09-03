@@ -11,6 +11,7 @@
 	},
 	"dependencies": {
 		"@noura/ai": "workspace:*",
+		"@noura/plugin-ai": "workspace:*",
 		"@noura/plugin-calendar": "workspace:*",
 		"@noura/plugin-folders": "workspace:*",
 		"@noura/plugin-notes": "workspace:*",

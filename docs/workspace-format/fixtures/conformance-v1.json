@@ -129,5 +129,345 @@
 			"valid": false,
 			"value": "note_01J00000000000000000000000"
 		}
+	],
+	"chat": [
+		{
+			"name": "canonical chat frontmatter",
+			"valid": true,
+			"value": {
+				"id": "chat_01j00000000000000000000000",
+				"type": "chat",
+				"title": "Release planning",
+				"retention": "ephemeral",
+				"retention_days": 30,
+				"created": "2026-09-02T12:00:00Z",
+				"updated": "2026-09-02T12:00:00Z"
+			}
+		},
+		{
+			"name": "chat ID must use the chat prefix",
+			"valid": false,
+			"value": {
+				"id": "note_01j00000000000000000000000",
+				"type": "chat",
+				"title": "Invalid",
+				"retention": "permanent",
+				"retention_days": null,
+				"created": "2026-09-02T12:00:00Z",
+				"updated": "2026-09-02T12:00:00Z"
+			}
+		},
+		{
+			"name": "permanent chat may omit retention days",
+			"valid": true,
+			"value": {
+				"id": "chat_01j00000000000000000000000",
+				"type": "chat",
+				"title": "Archived planning",
+				"retention": "permanent",
+				"created": "2026-09-02T12:00:00Z",
+				"updated": "2026-09-02T12:00:00Z"
+			}
+		},
+		{
+			"name": "ephemeral chat requires retention days",
+			"valid": false,
+			"value": {
+				"id": "chat_01j00000000000000000000000",
+				"type": "chat",
+				"title": "Temporary planning",
+				"retention": "ephemeral",
+				"created": "2026-09-02T12:00:00Z",
+				"updated": "2026-09-02T12:00:00Z"
+			}
+		}
+	],
+	"chat_message": [
+		{
+			"name": "completed user message with unknown property",
+			"valid": true,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "user",
+				"status": "completed",
+				"content_type": "text/markdown",
+				"provider_id": null,
+				"model_id": null,
+				"tool_call_id": null,
+				"tool_name": null,
+				"error_code": null,
+				"summarizes_through_message_id": null,
+				"future_field": true,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "in-progress tool call",
+			"valid": true,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "tool-call",
+				"status": "in-progress",
+				"content_type": "application/json",
+				"provider_id": null,
+				"model_id": null,
+				"tool_call_id": "call_123",
+				"tool_name": "workspace.search",
+				"error_code": null,
+				"summarizes_through_message_id": null,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "assistant requires provider metadata",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "completed",
+				"content_type": "text/markdown",
+				"provider_id": null,
+				"model_id": null,
+				"tool_call_id": null,
+				"tool_name": null,
+				"error_code": null,
+				"summarizes_through_message_id": null,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "tool message requires call fields",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "tool-result",
+				"status": "completed",
+				"content_type": "application/json",
+				"provider_id": null,
+				"model_id": null,
+				"tool_call_id": null,
+				"tool_name": null,
+				"error_code": null,
+				"summarizes_through_message_id": null,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "interrupted assistant may include an error code",
+			"valid": true,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "interrupted",
+				"content_type": "text/markdown",
+				"provider_id": "openai",
+				"model_id": "gpt-5.6",
+				"tool_call_id": null,
+				"tool_name": null,
+				"error_code": "plugin-disabled",
+				"summarizes_through_message_id": null,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "interrupted assistant may omit an error code",
+			"valid": true,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "interrupted",
+				"content_type": "text/markdown",
+				"provider_id": "openai",
+				"model_id": "gpt-5.6",
+				"tool_call_id": null,
+				"tool_name": null,
+				"error_code": null,
+				"summarizes_through_message_id": null,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "cancelled message omits an error code",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "cancelled",
+				"content_type": "text/markdown",
+				"provider_id": "openai",
+				"model_id": "gpt-5.6",
+				"tool_call_id": null,
+				"tool_name": null,
+				"error_code": "cancelled",
+				"summarizes_through_message_id": null,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "failed message requires an error code",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "failed",
+				"content_type": "text/markdown",
+				"provider_id": "openai",
+				"model_id": "gpt-5.6",
+				"tool_call_id": null,
+				"tool_name": null,
+				"error_code": null,
+				"summarizes_through_message_id": null,
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "context summary may omit unrelated optional fields",
+			"valid": true,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "context-summary",
+				"status": "completed",
+				"content_type": "text/markdown",
+				"summarizes_through_message_id": "chat-message_01j00000000000000000000000",
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "context summary requires a message reference",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "context-summary",
+				"status": "completed",
+				"content_type": "text/markdown",
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "run ID must be a non-empty single line",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123\nnext",
+				"kind": "user",
+				"status": "completed",
+				"content_type": "text/markdown",
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "message metadata must be a single line",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "completed",
+				"content_type": "text/markdown",
+				"provider_id": "openai\ninternal",
+				"model_id": "gpt-5.6",
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "error code permits 128 ASCII bytes",
+			"valid": true,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "failed",
+				"content_type": "text/markdown",
+				"provider_id": "openai",
+				"model_id": "gpt-5.6",
+				"error_code": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "error code rejects more than 128 ASCII bytes",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "failed",
+				"content_type": "text/markdown",
+				"provider_id": "openai",
+				"model_id": "gpt-5.6",
+				"error_code": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		},
+		{
+			"name": "error code rejects non-ASCII characters",
+			"valid": false,
+			"value": {
+				"id": "chat-message_01j00000000000000000000000",
+				"type": "chat-message",
+				"chat_id": "chat_01j00000000000000000000000",
+				"run_id": "run_123",
+				"kind": "assistant",
+				"status": "failed",
+				"content_type": "text/markdown",
+				"provider_id": "openai",
+				"model_id": "gpt-5.6",
+				"error_code": "provider-échec",
+				"created": "2026-09-02T12:01:00Z",
+				"updated": "2026-09-02T12:01:00Z"
+			}
+		}
 	]
 }

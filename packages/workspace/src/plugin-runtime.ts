@@ -25,9 +25,12 @@ export function createPluginHostServices(
 		commands: client.commands,
 		storage: client.pluginState,
 		ai: {
-			registerTool: (definition) => client.ai.registerTool(definition),
-			registerContextProvider: (definition) =>
-				client.ai.registerContextProvider(definition),
+			registerTool: (definition, registration) =>
+				client.ai.registerTool(definition, registration),
+			registerContextProvider: (definition, registration) =>
+				client.ai.registerContextProvider(definition, registration),
+			registerInstructionProvider: (definition, registration) =>
+				client.ai.registerInstructionProvider(definition, registration),
 		},
 	};
 }

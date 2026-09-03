@@ -2645,6 +2645,7 @@ dependencies = [
  "diffy",
  "directories",
  "fs2",
+ "futures",
  "genai",
  "ignore",
  "jiff",

@@ -6,6 +6,7 @@ export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
 	clearScreen: false,
 	server: { strictPort: true },
+	ssr: { noExternal: ['@noura/ai'] },
 	build: {
 		rolldownOptions: {
 			output: {

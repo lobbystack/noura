@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { objectIdSchema, workspaceManifestSchema } from './index';
+import {
+	chatFrontmatterSchema,
+	chatMessageFrontmatterSchema,
+	objectIdSchema,
+	workspaceManifestSchema,
+} from './index';
 
 type Fixture = { name: string; valid: boolean; value: unknown };
 const fixtures = (await Bun.file(
@@ -7,7 +12,12 @@ const fixtures = (await Bun.file(
 		'../../../docs/workspace-format/fixtures/conformance-v1.json',
 		import.meta.url,
 	),
-).json()) as { manifest: Fixture[]; object_id: Fixture[] };
+).json()) as {
+	manifest: Fixture[];
+	object_id: Fixture[];
+	chat: Fixture[];
+	chat_message: Fixture[];
+};
 
 describe('workspace format conformance', () => {
 	for (const fixture of fixtures.manifest) {
@@ -24,4 +34,56 @@ describe('workspace format conformance', () => {
 			);
 		});
 	}
+	for (const fixture of fixtures.chat) {
+		test(`chat: ${fixture.name}`, () => {
+			expect(chatFrontmatterSchema.safeParse(fixture.value).success).toBe(
+				fixture.valid,
+			);
+		});
+	}
+	for (const fixture of fixtures.chat_message) {
+		test(`chat message: ${fixture.name}`, () => {
+			expect(
+				chatMessageFrontmatterSchema.safeParse(fixture.value).success,
+			).toBe(fixture.valid);
+		});
+	}
+
+	test('omitted optional chat message fields normalize to null', () => {
+		const fixture = fixtures.chat_message.find(
+			({ name }) =>
+				name === 'context summary may omit unrelated optional fields',
+		);
+		const parsed = chatMessageFrontmatterSchema.safeParse(fixture?.value);
+
+		expect(parsed.success).toBe(true);
+		if (parsed.success) {
+			expect(parsed.data.provider_id).toBeNull();
+			expect(parsed.data.model_id).toBeNull();
+			expect(parsed.data.tool_call_id).toBeNull();
+			expect(parsed.data.tool_name).toBeNull();
+			expect(parsed.data.error_code).toBeNull();
+		}
+	});
+
+	test('chat metadata is not accepted on the wrong message kind', () => {
+		const base = structuredClone(
+			fixtures.chat_message.find(
+				({ name }) => name === 'completed user message with unknown property',
+			)?.value,
+		) as Record<string, unknown>;
+
+		expect(
+			chatMessageFrontmatterSchema.safeParse({
+				...base,
+				provider_id: 'provider-that-does-not-belong-on-a-user-message',
+			}).success,
+		).toBe(false);
+		expect(
+			chatMessageFrontmatterSchema.safeParse({
+				...base,
+				tool_call_id: 'call-that-does-not-belong-on-a-user-message',
+			}).success,
+		).toBe(false);
+	});
 });

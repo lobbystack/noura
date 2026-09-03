@@ -4,6 +4,8 @@
 )]
 
 mod ai;
+mod chat;
+mod consent;
 mod engine;
 mod error;
 mod index;
@@ -11,8 +13,14 @@ mod markdown;
 mod model;
 mod path;
 mod watcher;
+mod web_access;
 
 pub use ai::*;
+pub use chat::*;
+pub use consent::{
+    AiConsentDataCategory, AiConsentGrant, AiConsentGrantInput, AiConsentReadInput,
+    AiConsentRevokeInput, AiConsentRevokeOutcome,
+};
 pub use engine::{
     ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult,
     ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
@@ -25,3 +33,4 @@ pub use index::{CalendarEntry, IndexStore, SearchInput, SearchResult};
 pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object};
 pub use model::*;
 pub use watcher::WatchCoordinator;
+pub use web_access::*;

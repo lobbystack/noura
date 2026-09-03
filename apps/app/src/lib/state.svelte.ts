@@ -39,6 +39,9 @@ class WorkspaceStore {
 	private errorMessage = $state<string | null>(null);
 	private ready = $state(false);
 	private recentItems = $state.raw<RecentWorkspace[]>([]);
+	/** The newest workspace action owns the visible projection. */
+	#requestSequence = 0;
+	#recentRequestSequence = 0;
 
 	get state() {
 		return this.data;
@@ -71,79 +74,98 @@ class WorkspaceStore {
 
 	async refresh() {
 		if (!browser) return;
+		const requestSequence = ++this.#requestSequence;
 		try {
 			this.loadingState = true;
 			this.errorMessage = null;
-			this.data = await getNouraClient().workspaces.current();
+			const data = await getNouraClient().workspaces.current();
+			if (requestSequence === this.#requestSequence) this.data = data;
 		} catch (error) {
-			this.errorMessage = errorMessage(error);
+			if (requestSequence === this.#requestSequence)
+				this.errorMessage = errorMessage(error);
 		} finally {
-			this.loadingState = false;
+			if (requestSequence === this.#requestSequence) this.loadingState = false;
 		}
 	}
 
 	async refreshRecents() {
 		if (!browser) return;
+		const requestSequence = ++this.#recentRequestSequence;
 		try {
-			this.recentItems = await getNouraClient().workspaces.listRecent();
+			const recents = await getNouraClient().workspaces.listRecent();
+			if (requestSequence === this.#recentRequestSequence)
+				this.recentItems = recents;
 		} catch (error) {
-			this.errorMessage = errorMessage(error);
+			if (requestSequence === this.#recentRequestSequence)
+				this.errorMessage = errorMessage(error);
 		}
 	}
 
 	async open(path: string) {
+		const requestSequence = ++this.#requestSequence;
 		this.loadingState = true;
 		this.errorMessage = null;
 		try {
-			this.data = await getNouraClient().workspaces.open({ path });
+			const data = await getNouraClient().workspaces.open({ path });
+			if (requestSequence === this.#requestSequence) this.data = data;
 		} catch (error) {
-			this.errorMessage = errorMessage(error);
+			if (requestSequence === this.#requestSequence)
+				this.errorMessage = errorMessage(error);
 		} finally {
-			this.loadingState = false;
+			if (requestSequence === this.#requestSequence) this.loadingState = false;
 		}
 	}
 
 	async pickAndOpen() {
+		const requestSequence = ++this.#requestSequence;
 		this.loadingState = true;
 		this.errorMessage = null;
 		try {
 			const path = await getNouraClient().workspaces.pickFolder({
 				title: 'Open a Noura workspace',
 			});
-			if (path) this.data = await getNouraClient().workspaces.open({ path });
+			if (!path || requestSequence !== this.#requestSequence) return;
+			const data = await getNouraClient().workspaces.open({ path });
+			if (requestSequence === this.#requestSequence) this.data = data;
 		} catch (error) {
-			this.errorMessage = errorMessage(error);
+			if (requestSequence === this.#requestSequence)
+				this.errorMessage = errorMessage(error);
 		} finally {
-			this.loadingState = false;
+			if (requestSequence === this.#requestSequence) this.loadingState = false;
 		}
 	}
 
 	async create(path: string, name: string) {
+		const requestSequence = ++this.#requestSequence;
 		this.loadingState = true;
 		this.errorMessage = null;
 		try {
-			this.data = await getNouraClient().workspaces.create({ path, name });
+			const data = await getNouraClient().workspaces.create({ path, name });
+			if (requestSequence === this.#requestSequence) this.data = data;
 		} catch (error) {
-			this.errorMessage = errorMessage(error);
+			if (requestSequence === this.#requestSequence)
+				this.errorMessage = errorMessage(error);
 		} finally {
-			this.loadingState = false;
+			if (requestSequence === this.#requestSequence) this.loadingState = false;
 		}
 	}
 
 	async pickAndCreate(name: string) {
+		const requestSequence = ++this.#requestSequence;
 		this.loadingState = true;
 		this.errorMessage = null;
 		try {
 			const path = await getNouraClient().workspaces.pickFolder({
 				title: 'Choose or create a workspace folder',
 			});
-			if (path) {
-				this.data = await getNouraClient().workspaces.create({ path, name });
-			}
+			if (!path || requestSequence !== this.#requestSequence) return;
+			const data = await getNouraClient().workspaces.create({ path, name });
+			if (requestSequence === this.#requestSequence) this.data = data;
 		} catch (error) {
-			this.errorMessage = errorMessage(error);
+			if (requestSequence === this.#requestSequence)
+				this.errorMessage = errorMessage(error);
 		} finally {
-			this.loadingState = false;
+			if (requestSequence === this.#requestSequence) this.loadingState = false;
 		}
 	}
 }

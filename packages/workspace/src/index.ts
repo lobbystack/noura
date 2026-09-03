@@ -2,18 +2,38 @@ import { readable, type Readable } from 'svelte/store';
 import { nextKanbanOrder, projectKanban } from '@noura/plugin-tasks';
 import {
 	AiRegistry,
+	type AiContributionRegistration,
 	type AiContextProvider,
+	type AiInstructionProvider,
 	type AiToolDefinition,
 } from '@noura/ai';
 import type {
-	AiInvokeInput,
+	AiCancelOutcome,
+	AiConsentGrant,
+	AiConsentGrantInput,
+	AiConsentReadInput,
+	AiConsentRevokeInput,
+	AiConsentRevokeOutcome,
 	AiProviderConfig,
-	AiResponse,
+	AiStreamFrame,
+	AiStreamInput,
+	AppendChatContextSummaryInput,
+	AppendChatToolResultInput,
+	AppendChatUserMessageInput,
+	BeginChatAssistantInput,
+	BeginChatToolCallInput,
+	ChangeChatRetentionInput,
 	CalendarEntry,
+	Chat,
+	ChatRetention,
+	ChatMessage,
+	ChatRead,
 	CoreEvent,
 	DraftReconcileInput,
 	DraftReconcileResult,
 	FolderEntry,
+	FinishChatAssistantInput,
+	FinishChatToolCallInput,
 	ManifestUpdateInput,
 	MutationResult,
 	Note,
@@ -42,6 +62,7 @@ import type {
 	RawConflictResolveInput,
 	RawConflictResolveResult,
 	MarkdownLinkTarget,
+	RenameChatInput,
 } from '@noura/shared';
 export type * from '@noura/shared';
 export { isCoreError } from '@noura/shared';
@@ -54,6 +75,11 @@ export {
 
 export interface CoreTransport {
 	request<T>(command: string, payload?: Record<string, unknown>): Promise<T>;
+	stream?<T>(
+		command: string,
+		payload: Record<string, unknown>,
+		handler: (frame: T) => void,
+	): Promise<void>;
 	subscribe(handler: (event: CoreEvent) => void): Promise<() => void>;
 }
 
@@ -160,6 +186,41 @@ export interface CalendarService {
 		types?: string[];
 	}): Promise<CalendarEntry[]>;
 }
+export interface ChatService {
+	list(): Promise<Chat[]>;
+	read(id: string): Promise<ChatRead>;
+	create(input: {
+		title: string;
+		retention?: ChatRetention;
+	}): Promise<MutationResult<Chat>>;
+	changeRetention(
+		input: ChangeChatRetentionInput,
+	): Promise<MutationResult<Chat>>;
+	rename(input: RenameChatInput): Promise<MutationResult<Chat>>;
+	appendUserMessage(
+		input: AppendChatUserMessageInput,
+	): Promise<MutationResult<ChatMessage>>;
+	beginAssistant(
+		input: BeginChatAssistantInput,
+	): Promise<MutationResult<ChatMessage>>;
+	finishAssistant(
+		input: FinishChatAssistantInput,
+	): Promise<MutationResult<ChatMessage>>;
+	beginToolCall(
+		input: BeginChatToolCallInput,
+	): Promise<MutationResult<ChatMessage>>;
+	finishToolCall(
+		input: FinishChatToolCallInput,
+	): Promise<MutationResult<ChatMessage>>;
+	appendToolResult(
+		input: AppendChatToolResultInput,
+	): Promise<MutationResult<ChatMessage>>;
+	appendContextSummary(
+		input: AppendChatContextSummaryInput,
+	): Promise<MutationResult<ChatMessage>>;
+	recoverInterrupted(id: string): Promise<ChatRead>;
+	expire(now: string): Promise<string[]>;
+}
 export interface KanbanGroup {
 	id: string;
 	title: string;
@@ -233,6 +294,7 @@ export interface NouraClient {
 	projects: ProjectService;
 	search: SearchService;
 	calendar: CalendarService;
+	chats: ChatService;
 	kanban: KanbanService;
 	files: FileService;
 	folders: {
@@ -242,6 +304,8 @@ export interface NouraClient {
 		removeEmpty(input: { relativePath: string }): Promise<void>;
 	};
 	ai: {
+		/** The client-scoped registry that activated plugins contribute to. */
+		registry: AiRegistry;
 		listProviders(): Promise<AiProviderConfig[]>;
 		saveProvider(input: AiProviderConfig): Promise<void>;
 		setCredential(input: {
@@ -249,9 +313,26 @@ export interface NouraClient {
 			secret: string;
 		}): Promise<{ credentialRef: string }>;
 		deleteCredential(input: { credentialRef: string }): Promise<void>;
-		invoke(input: AiInvokeInput): Promise<AiResponse>;
-		registerTool(definition: AiToolDefinition): () => boolean;
-		registerContextProvider(definition: AiContextProvider): () => boolean;
+		readConsent(input: AiConsentReadInput): Promise<AiConsentGrant | null>;
+		grantConsent(input: AiConsentGrantInput): Promise<AiConsentGrant>;
+		revokeConsent(input: AiConsentRevokeInput): Promise<AiConsentRevokeOutcome>;
+		stream(
+			input: AiStreamInput,
+			handler: (frame: AiStreamFrame) => void,
+		): Promise<void>;
+		cancel(operationId: string): Promise<AiCancelOutcome>;
+		registerTool(
+			definition: AiToolDefinition,
+			registration?: AiContributionRegistration,
+		): () => boolean;
+		registerContextProvider(
+			definition: AiContextProvider,
+			registration?: AiContributionRegistration,
+		): () => boolean;
+		registerInstructionProvider(
+			definition: AiInstructionProvider,
+			registration?: AiContributionRegistration,
+		): () => boolean;
 	};
 	commands: CommandRegistry;
 	events: {
@@ -495,6 +576,38 @@ export function createNouraClient(
 			},
 		},
 		calendar: { queryRange: calendarQuery },
+		chats: {
+			list: () => transport.request('chats_list'),
+			read: (id) => transport.request('chats_read', { id }),
+			create: (input) =>
+				transport.request('chats_create', {
+					input: {
+						title: input.title,
+						retention: input.retention ?? 'permanent',
+						retentionDays: input.retention === 'ephemeral' ? 30 : null,
+					},
+				}),
+			changeRetention: (input) =>
+				transport.request('chats_change_retention', { input }),
+			rename: (input) => transport.request('chats_rename', { input }),
+			appendUserMessage: (input) =>
+				transport.request('chats_append_user_message', { input }),
+			beginAssistant: (input) =>
+				transport.request('chats_begin_assistant', { input }),
+			finishAssistant: (input) =>
+				transport.request('chats_finish_assistant', { input }),
+			beginToolCall: (input) =>
+				transport.request('chats_begin_tool_call', { input }),
+			finishToolCall: (input) =>
+				transport.request('chats_finish_tool_call', { input }),
+			appendToolResult: (input) =>
+				transport.request('chats_append_tool_result', { input }),
+			appendContextSummary: (input) =>
+				transport.request('chats_append_context_summary', { input }),
+			recoverInterrupted: (id) =>
+				transport.request('chats_recover_interrupted', { id }),
+			expire: (now) => transport.request('chats_expire', { now }),
+		},
 		kanban: {
 			// The projection and ordering live in the tasks plugin: bundled
 			// domains dogfood the same public logic ecosystem plugins use.
@@ -525,16 +638,33 @@ export function createNouraClient(
 			},
 		},
 		ai: {
+			registry: aiRegistry,
 			listProviders: () => transport.request('ai_provider_list'),
 			saveProvider: (input) => transport.request('ai_provider_save', { input }),
 			setCredential: (input) =>
 				transport.request('ai_credential_set', { input }),
 			deleteCredential: (input) =>
 				transport.request('ai_credential_delete', { input }),
-			invoke: (input) => transport.request('ai_invoke', { input }),
-			registerTool: (definition) => aiRegistry.registerTool(definition),
-			registerContextProvider: (definition) =>
-				aiRegistry.registerContextProvider(definition),
+			readConsent: (input) => transport.request('ai_consent_read', { input }),
+			grantConsent: (input) => transport.request('ai_consent_grant', { input }),
+			revokeConsent: (input) =>
+				transport.request('ai_consent_revoke', { input }),
+			stream: (input, handler) =>
+				transport.stream
+					? transport.stream('ai_stream', { input }, handler)
+					: Promise.reject(
+							new Error(
+								'The selected native transport does not support AI streaming',
+							),
+						),
+			cancel: (operationId) =>
+				transport.request('ai_stream_cancel', { operationId }),
+			registerTool: (definition, registration) =>
+				aiRegistry.registerTool(definition, registration),
+			registerContextProvider: (definition, registration) =>
+				aiRegistry.registerContextProvider(definition, registration),
+			registerInstructionProvider: (definition, registration) =>
+				aiRegistry.registerInstructionProvider(definition, registration),
 		},
 		commands,
 		events: { subscribe: (handler) => transport.subscribe(handler) },
