@@ -308,6 +308,8 @@ struct WorkspaceScan {
     seen: std::collections::HashSet<String>,
 }
 
+mod sync;
+
 pub struct WorkspaceEngine {
     root: PathBuf,
     manifest: std::sync::RwLock<WorkspaceManifest>,
@@ -341,6 +343,15 @@ impl WorkspaceEngine {
         name: &str,
         app_data: impl AsRef<Path>,
     ) -> Result<Self> {
+        Self::create_with_identity(root, name, app_data, None)
+    }
+
+    fn create_with_identity(
+        root: impl AsRef<Path>,
+        name: &str,
+        app_data: impl AsRef<Path>,
+        workspace_id: Option<&str>,
+    ) -> Result<Self> {
         let root = root.as_ref();
         std::fs::create_dir_all(root)
             .map_err(|error| CoreError::io(error, "workspace_create", root.to_str()))?;
@@ -364,7 +375,9 @@ impl WorkspaceEngine {
         }
         let now = now_rfc3339();
         let manifest = WorkspaceManifest {
-            id: format!("workspace_{}", ulid::Ulid::new().to_string().to_lowercase()),
+            id: workspace_id.map(str::to_owned).unwrap_or_else(|| {
+                format!("workspace_{}", ulid::Ulid::new().to_string().to_lowercase())
+            }),
             format_version: 1,
             name: name.trim().to_owned(),
             created: now.clone(),
@@ -2568,7 +2581,7 @@ impl WorkspaceEngine {
             .join(date)
             .join(format!("{id}.md"))
             .to_str()
-            .map(str::to_owned)
+            .map(|value| value.replace(std::path::MAIN_SEPARATOR, "/"))
             .ok_or_else(|| {
                 CoreError::validation(
                     "non_utf8_path",
@@ -4228,47 +4241,166 @@ mod tests {
         let engine =
             WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
                 .unwrap();
-        let created = engine
+        let project = engine
             .create_object(CreateObjectInput {
-                object_type: "note".into(),
-                title: "First".into(),
-                body: "Original".into(),
-                relative_path: Some("notes/first.md".into()),
-                properties: BTreeMap::new(),
+                object_type: "project".into(),
+                title: "Alpha proof project".into(),
+                body: "projectquartz durable body".into(),
+                relative_path: Some("projects/alpha/project.md".into()),
+                properties: BTreeMap::from([
+                    ("status".into(), serde_json::json!("active")),
+                    ("start".into(), serde_json::json!("2026-09-01")),
+                    ("end".into(), serde_json::json!("2026-09-04")),
+                ]),
             })
             .unwrap();
-        assert!(workspace.path().join("notes/first.md").exists());
-        assert_eq!(
-            engine
-                .search(&SearchInput {
-                    query: "Original".into(),
-                    ..Default::default()
-                })
-                .unwrap()
-                .len(),
-            1
-        );
-        let path = workspace.path().join("notes/first.md");
+        let task = engine
+            .create_object(CreateObjectInput {
+                object_type: "task".into(),
+                title: "Alpha proof task".into(),
+                body: "taskcobalt durable body".into(),
+                relative_path: Some("projects/alpha/tasks/proof.md".into()),
+                properties: BTreeMap::from([
+                    ("status".into(), serde_json::json!("todo")),
+                    ("priority".into(), serde_json::json!("high")),
+                    ("due".into(), serde_json::json!("2026-09-02")),
+                    (
+                        "project".into(),
+                        serde_json::json!(project.value.id.clone()),
+                    ),
+                ]),
+            })
+            .unwrap();
+        let note = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Alpha proof note".into(),
+                body: "Original noteamber body".into(),
+                relative_path: Some("notes/proof.md".into()),
+                properties: BTreeMap::from([("date".into(), serde_json::json!("2026-09-03"))]),
+            })
+            .unwrap();
+        let path = workspace.path().join("notes/proof.md");
         let external = std::fs::read_to_string(&path)
             .unwrap()
-            .replace("Original", "External");
+            .replace("Original", "Externally edited");
         std::fs::write(&path, external).unwrap();
         engine.reconcile().unwrap();
-        let current = engine.get_object(&created.value.id).unwrap().unwrap();
-        assert_eq!(current.body, "External");
+        let current = engine.get_object(&note.value.id).unwrap().unwrap();
+        assert_eq!(current.body, "Externally edited noteamber body");
         let moved = engine
-            .move_object(&current.id, "archive/first.md", &current.revision)
+            .move_object(&current.id, "archive/proof.md", &current.revision)
             .unwrap();
-        assert_eq!(moved.value.id, created.value.id);
+        assert_eq!(moved.value.id, note.value.id);
+
+        let before_objects = engine
+            .query_objects(None)
+            .unwrap()
+            .into_iter()
+            .map(|object| {
+                (
+                    object.id,
+                    object.object_type,
+                    object.title,
+                    object.relative_path,
+                    object.body,
+                    object.properties,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(before_objects.len(), 3);
+        for query in ["projectquartz", "taskcobalt", "noteamber"] {
+            assert_eq!(
+                engine
+                    .search(&SearchInput {
+                        query: query.into(),
+                        ..Default::default()
+                    })
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        let before_calendar = engine.calendar("2026-09-01", "2026-09-05").unwrap();
+        assert_eq!(before_calendar.len(), 3);
+        assert!(
+            before_calendar
+                .iter()
+                .any(|entry| entry.source_id == project.value.id && entry.end.is_some())
+        );
+        assert!(
+            before_calendar
+                .iter()
+                .any(|entry| entry.source_id == task.value.id)
+        );
+        assert!(
+            before_calendar
+                .iter()
+                .any(|entry| entry.source_id == note.value.id)
+        );
+
         let index_path = engine.index_path().to_owned();
         drop(engine);
         std::fs::remove_file(index_path).unwrap();
         let rebuilt =
             WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
-        let after = rebuilt.get_object(&created.value.id).unwrap().unwrap();
-        assert_eq!(after.id, created.value.id);
-        assert_eq!(after.relative_path, "archive/first.md");
-        assert_eq!(after.body, "External");
+        let after_objects = rebuilt
+            .query_objects(None)
+            .unwrap()
+            .into_iter()
+            .map(|object| {
+                (
+                    object.id,
+                    object.object_type,
+                    object.title,
+                    object.relative_path,
+                    object.body,
+                    object.properties,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(after_objects, before_objects);
+        assert_eq!(
+            rebuilt
+                .get_object(&note.value.id)
+                .unwrap()
+                .unwrap()
+                .relative_path,
+            "archive/proof.md"
+        );
+        for query in ["projectquartz", "taskcobalt", "noteamber"] {
+            assert_eq!(
+                rebuilt
+                    .search(&SearchInput {
+                        query: query.into(),
+                        ..Default::default()
+                    })
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        let after_calendar = rebuilt.calendar("2026-09-01", "2026-09-05").unwrap();
+        assert_eq!(
+            after_calendar
+                .iter()
+                .map(|entry| (
+                    entry.source_id.as_str(),
+                    entry.property.as_str(),
+                    entry.start.as_str(),
+                    entry.end.as_deref(),
+                ))
+                .collect::<Vec<_>>(),
+            before_calendar
+                .iter()
+                .map(|entry| (
+                    entry.source_id.as_str(),
+                    entry.property.as_str(),
+                    entry.start.as_str(),
+                    entry.end.as_deref(),
+                ))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

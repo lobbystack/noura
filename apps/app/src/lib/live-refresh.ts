@@ -8,6 +8,7 @@ export const LIVE_REFRESH_EVENT_TYPES = new Set([
 	'file:changed',
 	'search:index-updated',
 	'workspace:ready',
+	'workspace:manifest-updated',
 ]);
 
 type Schedule = (callback: () => void, delayMs: number) => () => void;
@@ -22,6 +23,19 @@ export interface LiveRefreshOptions {
 	onError?: (error: unknown) => void;
 	delayMs?: number;
 	schedule?: Schedule;
+}
+
+type EventSource = Pick<
+	EventTarget,
+	'addEventListener' | 'removeEventListener'
+>;
+type VisibilitySource = EventSource & { visibilityState: string };
+
+export interface LiveProjectionOptions extends LiveRefreshOptions {
+	subscribe: (handler: (event: CoreEvent) => void) => Promise<() => void>;
+	workspaceId: () => string | null | undefined;
+	focusSource?: EventSource;
+	visibilitySource?: VisibilitySource;
 }
 
 /**
@@ -71,6 +85,98 @@ export class LiveRefresh {
 		this.#cancelTimer?.();
 		this.#cancelTimer = undefined;
 	}
+}
+
+/**
+ * Owns the complete lifecycle for a live, disposable projection: initial
+ * loading, event invalidation, missed-event recovery, and cleanup.
+ */
+export class LiveProjection {
+	readonly #coordinator: LiveRefresh;
+	readonly #subscribe: LiveProjectionOptions['subscribe'];
+	readonly #workspaceId: LiveProjectionOptions['workspaceId'];
+	readonly #focusSource?: EventSource;
+	readonly #visibilitySource?: VisibilitySource;
+	readonly #onError?: (error: unknown) => void;
+	#subscription: (() => void) | undefined;
+	#subscriptionPending: Promise<void> | undefined;
+	#started = false;
+	#disposed = false;
+
+	constructor(options: LiveProjectionOptions) {
+		this.#subscribe = options.subscribe;
+		this.#workspaceId = options.workspaceId;
+		this.#focusSource = options.focusSource;
+		this.#visibilitySource = options.visibilitySource;
+		this.#onError = options.onError;
+		this.#coordinator = new LiveRefresh(options);
+	}
+
+	start(): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
+		if (!this.#started) {
+			this.#started = true;
+			this.#focusSource?.addEventListener('focus', this.#recover);
+			this.#visibilitySource?.addEventListener(
+				'visibilitychange',
+				this.#recoverWhenVisible,
+			);
+			this.#ensureSubscribed();
+		}
+		return this.#coordinator.refreshNow();
+	}
+
+	invalidate(): void {
+		this.#coordinator.invalidate();
+	}
+
+	refreshNow(): Promise<void> {
+		if (this.#started && !this.#disposed) this.#ensureSubscribed();
+		return this.#coordinator.refreshNow();
+	}
+
+	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.#coordinator.dispose();
+		this.#subscription?.();
+		this.#subscription = undefined;
+		this.#focusSource?.removeEventListener('focus', this.#recover);
+		this.#visibilitySource?.removeEventListener(
+			'visibilitychange',
+			this.#recoverWhenVisible,
+		);
+	}
+
+	#ensureSubscribed(): void {
+		if (this.#disposed || this.#subscription || this.#subscriptionPending)
+			return;
+		this.#subscriptionPending = this.#subscribe((event) => {
+			if (isLiveRefreshEvent(event, this.#workspaceId())) {
+				this.#coordinator.invalidate();
+			}
+		})
+			.then((unsubscribe) => {
+				if (this.#disposed) unsubscribe();
+				else this.#subscription = unsubscribe;
+			})
+			.catch((error: unknown) => {
+				if (!this.#disposed) this.#onError?.(error);
+			})
+			.finally(() => {
+				this.#subscriptionPending = undefined;
+			});
+	}
+
+	#recover = () => {
+		if (this.#disposed) return;
+		this.#ensureSubscribed();
+		void this.#coordinator.refreshNow().catch(() => {});
+	};
+
+	#recoverWhenVisible = () => {
+		if (this.#visibilitySource?.visibilityState === 'visible') this.#recover();
+	};
 }
 
 export function isLiveRefreshEvent(

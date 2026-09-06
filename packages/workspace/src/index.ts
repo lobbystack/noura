@@ -8,6 +8,17 @@ import {
 	type AiToolDefinition,
 } from '@noura/ai';
 import type {
+	WorkspaceSyncStatus,
+	SyncDevice,
+	SyncInvitation,
+	SyncInvitationLink,
+	SyncInvitationRole,
+	RemoteSyncWorkspace,
+	SyncConflict,
+	ResolveSyncConflict,
+	SyncAccount,
+	SyncAccountPoll,
+	DeviceSignInInfo,
 	AiCancelOutcome,
 	AiConsentGrant,
 	AiConsentGrantInput,
@@ -285,6 +296,43 @@ export interface PluginStateService {
 }
 
 export interface NouraClient {
+	sync: {
+		workspaceStatus(): Promise<WorkspaceSyncStatus>;
+		workspaceDevices(): Promise<SyncDevice[]>;
+		workspaceInvitations(): Promise<SyncInvitation[]>;
+		createWorkspaceInvitation(
+			role: SyncInvitationRole,
+		): Promise<SyncInvitationLink>;
+		approveInvitedDevice(
+			invitationId: string,
+			deviceId: string,
+			fingerprint: string,
+		): Promise<void>;
+		finalizeWorkspaceInvitation(invitationId: string): Promise<void>;
+		revokeWorkspaceInvitation(invitationId: string): Promise<void>;
+		workspaceConflicts(): Promise<SyncConflict[]>;
+		resolveWorkspaceConflict(input: ResolveSyncConflict): Promise<void>;
+		remoteWorkspaces(): Promise<RemoteSyncWorkspace[]>;
+		joinWorkspace(
+			workspaceId: string,
+			name: string,
+		): Promise<WorkspaceState | null>;
+		approveWorkspaceDevice(
+			deviceId: string,
+			fingerprint: string,
+		): Promise<void>;
+		enableWorkspace(): Promise<WorkspaceSyncStatus>;
+		pauseWorkspace(): Promise<WorkspaceSyncStatus>;
+		resumeWorkspace(): Promise<WorkspaceSyncStatus>;
+		account(): Promise<SyncAccount | null>;
+		beginSignIn(origin: string): Promise<DeviceSignInInfo>;
+		openSignInBrowser(): Promise<void>;
+		exportRecoveryIdentity(): Promise<boolean>;
+		importRecoveryKit(): Promise<boolean>;
+		pollSignIn(): Promise<SyncAccountPoll>;
+		cancelSignIn(): Promise<void>;
+		disconnect(): Promise<void>;
+	};
 	workspaces: WorkspaceService;
 	objects: GenericObjectService;
 	manifest: ManifestService;
@@ -453,6 +501,53 @@ export function createNouraClient(
 			: project.relativePath.slice(0, separator + 1);
 	};
 	return {
+		sync: {
+			workspaceStatus: () => transport.request('sync_workspace_status'),
+			workspaceDevices: () => transport.request('sync_workspace_devices'),
+			workspaceInvitations: () =>
+				transport.request('sync_workspace_invitations'),
+			createWorkspaceInvitation: (role) =>
+				transport.request('sync_workspace_create_invitation', { role }),
+			approveInvitedDevice: (invitationId, deviceId, fingerprint) =>
+				transport.request('sync_workspace_approve_invited_device', {
+					invitationId,
+					deviceId,
+					fingerprint,
+				}),
+			finalizeWorkspaceInvitation: (invitationId) =>
+				transport.request('sync_workspace_finalize_invitation', {
+					invitationId,
+				}),
+			revokeWorkspaceInvitation: (invitationId) =>
+				transport.request('sync_workspace_revoke_invitation', {
+					invitationId,
+				}),
+			workspaceConflicts: () => transport.request('sync_workspace_conflicts'),
+			resolveWorkspaceConflict: (input) =>
+				transport.request('sync_workspace_resolve_conflict', { input }),
+			remoteWorkspaces: () => transport.request('sync_remote_workspaces'),
+			joinWorkspace: (workspaceId, name) =>
+				transport.request('sync_workspace_join', { workspaceId, name }),
+			approveWorkspaceDevice: (deviceId, fingerprint) =>
+				transport.request('sync_workspace_approve_device', {
+					deviceId,
+					fingerprint,
+				}),
+			enableWorkspace: () => transport.request('sync_workspace_enable'),
+			pauseWorkspace: () => transport.request('sync_workspace_pause'),
+			resumeWorkspace: () => transport.request('sync_workspace_resume'),
+			account: () => transport.request('sync_account_current'),
+			beginSignIn: (origin) =>
+				transport.request('sync_account_begin', { origin }),
+			openSignInBrowser: () => transport.request('sync_account_open_browser'),
+			exportRecoveryIdentity: () =>
+				transport.request('sync_account_export_recovery'),
+			importRecoveryKit: () =>
+				transport.request('sync_account_import_recovery'),
+			pollSignIn: () => transport.request('sync_account_poll'),
+			cancelSignIn: () => transport.request('sync_account_cancel'),
+			disconnect: () => transport.request('sync_account_disconnect'),
+		},
 		workspaces: {
 			pickFolder: (input) =>
 				transport.request('workspace_pick_folder', { title: input.title }),

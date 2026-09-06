@@ -1,0 +1,33 @@
+{
+	"name": "@noura/server",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build:release": "bun run --cwd ../server-web build && bun run build && bun scripts/web-assets.ts",
+		"dev": "bun --watch src/main.ts",
+		"start": "bun src/main.ts",
+		"migrate": "bun src/migrate.ts",
+		"check": "tsc --noEmit",
+		"build": "bun build src/main.ts src/migrate.ts --target=bun --outdir=dist --metafile=dist/metafile.json && bun scripts/notices.ts",
+		"lint": "prettier --check src scripts --ignore-path ../../.prettierignore",
+		"test": "bun test src",
+		"test:integration": "bun src/integration.ts",
+		"test:restore": "bun scripts/restore-rehearsal.ts"
+	},
+	"dependencies": {
+		"@better-auth/passkey": "1.7.2",
+		"@tus/file-store": "2.1.0",
+		"@tus/server": "2.4.5",
+		"better-auth": "1.7.2",
+		"hono": "4.13.7",
+		"nodemailer": "10.0.0",
+		"pg": "8.23.0",
+		"postgres": "3.4.9"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3",
+		"@types/pg": "8.23.1",
+		"@types/nodemailer": "8.0.1"
+	}
+}

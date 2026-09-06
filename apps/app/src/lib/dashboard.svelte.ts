@@ -1,8 +1,8 @@
 import { browser } from '$app/environment';
 import type { CalendarEntry, Note, Task } from '@noura/workspace';
 import { filterTasks } from './tasks/filters';
-import { getNouraClient } from './state.svelte';
-import { plusDays } from './dashboard-dates';
+import { addCalendarDays, formatCalendarBoundary } from './calendar';
+import { getNouraClient, workspace } from './state.svelte';
 
 export { daypartGreeting, dueLabel } from './dashboard-dates';
 
@@ -25,55 +25,67 @@ class DashboardStore {
 	todayTasks = $state<Task[]>([]);
 	upcoming = $state<CalendarEntry[]>([]);
 	recentNotes = $state<Note[]>([]);
+	loading = $state(false);
+	error = $state<string | null>(null);
+	#refreshSequence = 0;
 
 	async refresh(enabled: DashboardSectionState): Promise<void> {
 		if (!browser) return;
+		const sequence = ++this.#refreshSequence;
+		const workspaceId = workspace.state?.workspaceId;
+		this.loading = true;
 		const client = getNouraClient();
 		const now = new Date();
-		const jobs: Array<Promise<void>> = [];
-		if (enabled.tasks) {
-			jobs.push(
-				client.tasks
-					.list()
-					.then((tasks) => {
-						this.todayTasks = filterTasks(tasks, { mode: 'today' }, now).slice(
-							0,
-							TODAY_LIMIT,
-						);
-					})
-					.catch(() => {
-						this.todayTasks = [];
-					}),
-			);
+		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+		const [tasks, calendar, notes] = await Promise.all([
+			enabled.tasks
+				? client.tasks.list().then(
+						(value) => ({ ok: true as const, value }),
+						(error: unknown) => ({ ok: false as const, error }),
+					)
+				: null,
+			enabled.calendar
+				? client.calendar
+						.queryRange({
+							start: formatCalendarBoundary(today),
+							end: formatCalendarBoundary(addCalendarDays(today, 7)),
+						})
+						.then(
+							(value) => ({ ok: true as const, value }),
+							(error: unknown) => ({ ok: false as const, error }),
+						)
+				: null,
+			enabled.notes
+				? client.notes.list().then(
+						(value) => ({ ok: true as const, value }),
+						(error: unknown) => ({ ok: false as const, error }),
+					)
+				: null,
+		]);
+		if (
+			sequence !== this.#refreshSequence ||
+			workspace.state?.workspaceId !== workspaceId
+		) {
+			if (sequence === this.#refreshSequence) this.loading = false;
+			return;
 		}
-		if (enabled.calendar) {
-			jobs.push(
-				client.calendar
-					.queryRange({
-						start: now.toISOString(),
-						end: plusDays(now, 7).toISOString(),
-					})
-					.then((entries) => {
-						this.upcoming = entries.slice(0, UPCOMING_LIMIT);
-					})
-					.catch(() => {
-						this.upcoming = [];
-					}),
+		if (tasks?.ok)
+			this.todayTasks = filterTasks(tasks.value, { mode: 'today' }, now).slice(
+				0,
+				TODAY_LIMIT,
 			);
-		}
-		if (enabled.notes) {
-			jobs.push(
-				client.notes
-					.list()
-					.then((notes) => {
-						this.recentNotes = notes.slice(0, RECENT_LIMIT);
-					})
-					.catch(() => {
-						this.recentNotes = [];
-					}),
-			);
-		}
-		await Promise.all(jobs);
+		if (calendar?.ok) this.upcoming = calendar.value.slice(0, UPCOMING_LIMIT);
+		if (notes?.ok) this.recentNotes = notes.value.slice(0, RECENT_LIMIT);
+		const failure = [tasks, calendar, notes].find(
+			(result) => result && !result.ok,
+		);
+		this.error =
+			failure && !failure.ok
+				? failure.error instanceof Error
+					? failure.error.message
+					: 'Could not refresh the inbox'
+				: null;
+		this.loading = false;
 	}
 
 	/** Create a task through the tasks plugin command, then refresh Today. */

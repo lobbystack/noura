@@ -1,17 +1,8 @@
 import { browser } from '$app/environment';
-import type { CoreEvent } from '@noura/workspace';
+import { SvelteSet } from 'svelte/reactivity';
 import { buildWorkspaceTree, type WorkspaceTreeNode } from './workspace-tree';
-import { getNouraClient } from './state.svelte';
-
-const REFRESH_DEBOUNCE_MS = 250;
-const LIVE_EVENTS = new Set([
-	'object:created',
-	'object:updated',
-	'object:deleted',
-	'object:moved',
-	'file:changed',
-	'search:index-updated',
-]);
+import { LiveProjection } from './live-refresh';
+import { getNouraClient, workspace } from './state.svelte';
 
 /**
  * Reactive projection of the workspace folder tree for the sidebar.
@@ -21,52 +12,52 @@ const LIVE_EVENTS = new Set([
 class WorkspaceTreeStore {
 	tree = $state<WorkspaceTreeNode[]>([]);
 	/** Folder paths currently expanded, collapsed back to empty on reload. */
-	expanded = $state<Set<string>>(new Set());
+	expanded = new SvelteSet<string>();
 	loading = $state(false);
 
-	#started = false;
-	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	#projection: LiveProjection | undefined;
+	#refreshSequence = 0;
 
 	async start(): Promise<void> {
-		if (!browser || this.#started) return;
-		this.#started = true;
-		await this.refresh();
-		try {
-			await getNouraClient().events.subscribe((event: CoreEvent) => {
-				if (!LIVE_EVENTS.has(event.type)) return;
-				clearTimeout(this.#refreshTimer);
-				this.#refreshTimer = setTimeout(() => {
-					void this.refresh();
-				}, REFRESH_DEBOUNCE_MS);
-			});
-		} catch {
-			this.#started = false;
-		}
+		if (!browser) return;
+		this.#projection ??= new LiveProjection({
+			refresh: () => this.refresh(),
+			subscribe: (handler) => getNouraClient().events.subscribe(handler),
+			workspaceId: () => workspace.state?.workspaceId,
+			focusSource: window,
+			visibilitySource: document,
+		});
+		await this.#projection.start();
 	}
 
 	async refresh(): Promise<void> {
 		if (!browser) return;
+		const sequence = ++this.#refreshSequence;
+		const workspaceId = workspace.state?.workspaceId;
 		this.loading = true;
 		try {
 			const entries = await getNouraClient().files.list();
-			this.tree = buildWorkspaceTree(entries);
-			this.pruneExpanded();
+			if (
+				sequence === this.#refreshSequence &&
+				workspace.state?.workspaceId === workspaceId
+			) {
+				this.tree = buildWorkspaceTree(entries);
+				this.pruneExpanded();
+			}
 		} catch {
 			// No workspace open (or transient failure): keep the last tree
 			// rather than flashing the explorer empty.
 		} finally {
-			this.loading = false;
+			if (sequence === this.#refreshSequence) this.loading = false;
 		}
 	}
 
 	toggle(path: string) {
-		const next = new Set(this.expanded);
-		if (next.has(path)) {
-			next.delete(path);
+		if (this.expanded.has(path)) {
+			this.expanded.delete(path);
 		} else {
-			next.add(path);
+			this.expanded.add(path);
 		}
-		this.expanded = next;
 	}
 
 	isExpanded(path: string): boolean {
@@ -75,14 +66,12 @@ class WorkspaceTreeStore {
 
 	expandTo(path: string) {
 		if (this.expanded.has(path)) return;
-		const next = new Set(this.expanded);
-		next.add(path);
-		this.expanded = next;
+		this.expanded.add(path);
 	}
 
 	/** Drop expanded folders that no longer exist (moves, deletes, reloads). */
 	private pruneExpanded() {
-		const known = new Set<string>();
+		const known = new SvelteSet<string>();
 		const walk = (nodes: WorkspaceTreeNode[]) => {
 			for (const node of nodes) {
 				if (node.kind === 'folder') {

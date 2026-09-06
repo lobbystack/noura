@@ -1,4 +1,10 @@
 export type ObjectType = 'note' | 'task' | 'project' | (string & {});
+export type {
+	EncryptedOperation,
+	SequencedOperation,
+	SyncPage,
+	SyncTransport,
+} from './sync';
 export type WorkspacePhase =
 	| 'idle'
 	| 'opening'
@@ -226,3 +232,17 @@ export type Project = WorkspaceObject & {
 	type: 'project';
 	properties: WorkspaceObject['properties'] & { status: ProjectStatus };
 };
+export type { SyncAccount } from './generated/SyncAccount';
+export type { SyncAccountPoll } from './generated/SyncAccountPoll';
+export type { DeviceSignInInfo } from './generated/DeviceSignInInfo';
+export type { WorkspaceSyncStatus } from './generated/WorkspaceSyncStatus';
+export type { WorkspaceSyncPhase } from './generated/WorkspaceSyncPhase';
+export type { SyncDevice } from './generated/SyncDevice';
+export type { SyncInvitation } from './generated/SyncInvitation';
+export type { SyncInvitationLink } from './generated/SyncInvitationLink';
+export type { SyncInvitationRole } from './generated/SyncInvitationRole';
+export type { SyncInvitationStatus } from './generated/SyncInvitationStatus';
+export type { RemoteSyncWorkspace } from './generated/RemoteSyncWorkspace';
+export type { SyncConflict } from './generated/SyncConflict';
+export type { ResolveSyncConflict } from './generated/ResolveSyncConflict';
+export type { SyncResolutionChoice } from './generated/SyncResolutionChoice';

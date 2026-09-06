@@ -1,11 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
-	import { replaceState } from '$app/navigation';
+	import { afterNavigate, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
 		CalendarEntry,
-		CoreEvent,
 		KanbanGroup,
 		Note,
 		Project,
@@ -13,7 +12,8 @@
 		WorkspaceEntry,
 	} from '@noura/workspace';
 	import { getNouraClient, workspace } from '$lib/state.svelte';
-	import { isLiveRefreshEvent, LiveRefresh } from '$lib/live-refresh';
+	import { LiveProjection } from '$lib/live-refresh';
+	import { formatCalendarBoundary } from '$lib/calendar';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
 	import ProjectOverview from '$lib/components/project-overview.svelte';
@@ -57,20 +57,16 @@
 	let projectLoadGeneration = 0;
 	let requestedProjectGeneration = 0;
 	const requestedProjectId = $derived(page.url.searchParams.get('selected'));
-	let liveRefresh = $state.raw<LiveRefresh | null>(null);
+	let liveRefresh = $state.raw<LiveProjection | null>(null);
 
 	function monthRange() {
 		const now = new Date();
 		const start = new Date(now.getFullYear(), now.getMonth(), 1);
 		const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-		return { start: localDate(start), end: localDate(end) };
-	}
-
-	function localDate(value: Date) {
-		const year = value.getFullYear();
-		const month = String(value.getMonth() + 1).padStart(2, '0');
-		const day = String(value.getDate()).padStart(2, '0');
-		return `${year}-${month}-${day}`;
+		return {
+			start: formatCalendarBoundary(start),
+			end: formatCalendarBoundary(end),
+		};
 	}
 
 	async function loadProjects() {
@@ -198,8 +194,8 @@
 	}
 
 	// Search navigation may update only the query string while this page stays
-	// mounted. Keep the selection synchronized with the URL in that case.
-	$effect(() => {
+	// mounted. Keep the selection synchronized after every navigation settles.
+	afterNavigate(() => {
 		const generation = ++requestedProjectGeneration;
 		const requestedId = requestedProjectId;
 		if (!browser || loading || !requestedId || requestedId === selectedId)
@@ -273,38 +269,18 @@
 
 	onMount(() => {
 		if (!browser) return;
-		const coordinator = new LiveRefresh({
+		const coordinator = new LiveProjection({
 			refresh: load,
-			// Keep the last durable projection visible on transient background
-			// failures. The next core event or focus refresh retries it.
-			onError: () => {},
+			subscribe: (handler) => getNouraClient().events.subscribe(handler),
+			workspaceId: () => workspace.state?.workspaceId,
+			focusSource: window,
+			visibilitySource: document,
 		});
 		liveRefresh = coordinator;
-		let disposed = false;
-		let unsubscribe: (() => void) | undefined;
-		const refreshOnFocus = () => void coordinator.refreshNow();
-		const refreshOnVisible = () => {
-			if (document.visibilityState === 'visible') refreshOnFocus();
-		};
-		void coordinator.refreshNow();
-		void getNouraClient()
-			.events.subscribe((event: CoreEvent) => {
-				if (!isLiveRefreshEvent(event, workspace.state?.workspaceId)) return;
-				coordinator.invalidate();
-			})
-			.then((unlisten) => {
-				if (disposed) unlisten();
-				else unsubscribe = unlisten;
-			});
-		window.addEventListener('focus', refreshOnFocus);
-		document.addEventListener('visibilitychange', refreshOnVisible);
+		void coordinator.start().catch(() => {});
 		return () => {
-			disposed = true;
-			unsubscribe?.();
 			coordinator.dispose();
 			if (liveRefresh === coordinator) liveRefresh = null;
-			window.removeEventListener('focus', refreshOnFocus);
-			document.removeEventListener('visibilitychange', refreshOnVisible);
 		};
 	});
 </script>

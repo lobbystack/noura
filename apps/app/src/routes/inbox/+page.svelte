@@ -2,8 +2,9 @@
 	import { browser } from '$app/environment';
 	import { toast } from 'svelte-sonner';
 	import { dashboard, daypartGreeting, dueLabel } from '$lib/dashboard.svelte';
+	import { LiveProjection } from '$lib/live-refresh';
 	import { plugins } from '$lib/plugins.svelte';
-	import { workspace, diagnostics } from '$lib/state.svelte';
+	import { workspace, diagnostics, getNouraClient } from '$lib/state.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -18,6 +19,7 @@
 	let newTaskTitle = $state('');
 	let adding = $state(false);
 	let completing = $state<string | null>(null);
+	let projection = $state.raw<LiveProjection | null>(null);
 
 	const hasAnySection = $derived(
 		plugins.isEnabled('tasks') ||
@@ -26,19 +28,30 @@
 	);
 	const issues = $derived(diagnostics.issues);
 
-	onMount(() => {
-		if (browser) void diagnostics.refresh();
-	});
-
-	// Re-project whenever the workspace settles or the enabled plugins
-	// change (settings toggles, first sync after creation).
-	$effect(() => {
-		if (!browser || !workspace.isReady) return;
-		void dashboard.refresh({
+	function enabledSections() {
+		return {
 			tasks: plugins.isEnabled('tasks'),
 			calendar: plugins.isEnabled('calendar'),
 			notes: plugins.isEnabled('notes'),
+		};
+	}
+
+	onMount(() => {
+		if (!browser) return;
+		void diagnostics.refresh();
+		const coordinator = new LiveProjection({
+			refresh: () => dashboard.refresh(enabledSections()),
+			subscribe: (handler) => getNouraClient().events.subscribe(handler),
+			workspaceId: () => workspace.state?.workspaceId,
+			focusSource: window,
+			visibilitySource: document,
 		});
+		projection = coordinator;
+		void plugins.init().then(() => coordinator.start());
+		return () => {
+			coordinator.dispose();
+			if (projection === coordinator) projection = null;
+		};
 	});
 
 	async function submitTask(event: SubmitEvent) {

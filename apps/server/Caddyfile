@@ -1,0 +1,4 @@
+# Run Caddy on the host; the application port is bound to loopback by Compose.
+{$NOURA_DOMAIN} {
+	reverse_proxy 127.0.0.1:1900
+}

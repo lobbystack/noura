@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { getNouraClient } from '$lib/state.svelte';
+	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import { LiveProjection } from '$lib/live-refresh';
 	import { plugins } from '$lib/plugins.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
@@ -8,7 +9,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import Plus from 'phosphor-svelte/lib/Plus';
 	import { browser } from '$app/environment';
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { toast } from 'svelte-sonner';
 	import { onMount } from 'svelte';
@@ -29,9 +30,11 @@
 	let loaded = $state(false);
 	let selected = $state<Note | null>(null);
 	let selectedRaw = $state<RawFile | null>(null);
-	let appliedKey = $state<string | null>(null);
+	let appliedKey: string | null = null;
 	let autofocusTitle = $state(false);
+	let projection = $state.raw<LiveProjection | null>(null);
 	let selectionGeneration = 0;
+	let loadGeneration = 0;
 
 	async function select(
 		n: Note,
@@ -65,18 +68,25 @@
 	}
 
 	async function load(): Promise<void> {
+		const generation = ++loadGeneration;
+		const workspaceId = workspace.state?.workspaceId;
 		const [list, raw] = await Promise.all([
 			getNouraClient().notes.list(),
 			getNouraClient().files.listNonManagedMarkdown(),
 		]);
-		notes = list;
-		rawFiles = raw;
-		loaded = true;
+		if (
+			generation === loadGeneration &&
+			workspace.state?.workspaceId === workspaceId
+		) {
+			notes = list;
+			rawFiles = raw;
+			loaded = true;
+		}
 	}
 
 	// Selection is URL-driven: /notes?selected=<id> or /notes?raw=<path>.
 	// Plain /notes keeps whatever is already open, like any editor surface.
-	$effect(() => {
+	afterNavigate(() => {
 		if (!browser) return;
 		const params = $page.url.searchParams;
 		const selectedId = params.get('selected');
@@ -129,7 +139,20 @@
 	});
 
 	onMount(() => {
-		if (browser) void load();
+		if (!browser) return;
+		const coordinator = new LiveProjection({
+			refresh: load,
+			subscribe: (handler) => getNouraClient().events.subscribe(handler),
+			workspaceId: () => workspace.state?.workspaceId,
+			focusSource: window,
+			visibilitySource: document,
+		});
+		projection = coordinator;
+		void coordinator.start().catch(() => {});
+		return () => {
+			coordinator.dispose();
+			if (projection === coordinator) projection = null;
+		};
 	});
 
 	async function create() {

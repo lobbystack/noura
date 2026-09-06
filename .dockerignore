@@ -1,0 +1,11 @@
+.git
+**/node_modules
+**/.svelte-kit
+**/dist
+**/build
+target
+**/.env
+**/.env.*
+**/*.log
+.agents
+.codex

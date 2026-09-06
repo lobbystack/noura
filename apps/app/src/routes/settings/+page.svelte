@@ -5,6 +5,7 @@
 	import type { AiConsentGrant } from '@noura/workspace';
 	import { plugins } from '$lib/plugins.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
+	import SyncAccountSettings from '$lib/components/sync-account-settings.svelte';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
@@ -241,6 +242,7 @@
 
 <div class="flex-1 overflow-y-auto p-6">
 	<div class="mx-auto max-w-2xl space-y-8">
+		<SyncAccountSettings />
 		<section>
 			<h2 class="text-sm font-medium">Workspace</h2>
 			<p class="mt-1 text-xs text-muted-foreground">

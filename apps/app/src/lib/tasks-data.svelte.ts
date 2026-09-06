@@ -1,16 +1,7 @@
 import { browser } from '$app/environment';
-import type { CoreEvent, Project, Task } from '@noura/workspace';
-import { getNouraClient } from './state.svelte';
-
-const REFRESH_DEBOUNCE_MS = 250;
-const LIVE_EVENTS = new Set([
-	'object:created',
-	'object:updated',
-	'object:deleted',
-	'object:moved',
-	'file:changed',
-	'search:index-updated',
-]);
+import type { Project, Task } from '@noura/workspace';
+import { LiveProjection } from './live-refresh';
+import { getNouraClient, workspace } from './state.svelte';
 
 /**
  * Shared task and project projection for the tasks page and the tasks
@@ -22,28 +13,25 @@ class TasksDataStore {
 	projects = $state<Project[]>([]);
 	loading = $state(false);
 
-	#started = false;
-	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	#projection: LiveProjection | undefined;
+	#loadSequence = 0;
 
 	async start(): Promise<void> {
-		if (!browser || this.#started) return;
-		this.#started = true;
-		await this.load();
-		try {
-			await getNouraClient().events.subscribe((event: CoreEvent) => {
-				if (!LIVE_EVENTS.has(event.type)) return;
-				clearTimeout(this.#refreshTimer);
-				this.#refreshTimer = setTimeout(() => {
-					void this.load();
-				}, REFRESH_DEBOUNCE_MS);
-			});
-		} catch {
-			this.#started = false;
-		}
+		if (!browser) return;
+		this.#projection ??= new LiveProjection({
+			refresh: () => this.load(),
+			subscribe: (handler) => getNouraClient().events.subscribe(handler),
+			workspaceId: () => workspace.state?.workspaceId,
+			focusSource: window,
+			visibilitySource: document,
+		});
+		await this.#projection.start();
 	}
 
 	async load(): Promise<void> {
 		if (!browser) return;
+		const sequence = ++this.#loadSequence;
+		const workspaceId = workspace.state?.workspaceId;
 		this.loading = true;
 		try {
 			const client = getNouraClient();
@@ -51,13 +39,18 @@ class TasksDataStore {
 				client.tasks.list(),
 				client.projects.list(),
 			]);
-			this.tasks = taskList;
-			this.projects = projectList;
+			if (
+				sequence === this.#loadSequence &&
+				workspace.state?.workspaceId === workspaceId
+			) {
+				this.tasks = taskList;
+				this.projects = projectList;
+			}
 		} catch {
 			// Keep the last projection on transient failures; the workspace
 			// onboarding flow owns the no-workspace experience.
 		} finally {
-			this.loading = false;
+			if (sequence === this.#loadSequence) this.loading = false;
 		}
 	}
 }

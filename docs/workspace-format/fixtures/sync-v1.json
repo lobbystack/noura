@@ -1,0 +1,478 @@
+{
+	"valid": [
+		{
+			"input": {
+				"version": 1,
+				"path": "notes/\u00e9.md",
+				"content": "aGVsbG8="
+			},
+			"canonical": "{\"version\":1,\"path\":\"notes/\u00e9.md\",\"previousPath\":null,\"baseRevision\":null,\"content\":\"aGVsbG8=\"}"
+		},
+		{
+			"input": {
+				"version": 1,
+				"path": "gone.bin",
+				"content": null
+			},
+			"canonical": "{\"version\":1,\"path\":\"gone.bin\",\"previousPath\":null,\"baseRevision\":null,\"content\":null}"
+		},
+		{
+			"input": {
+				"version": 1,
+				"path": "new.md",
+				"previousPath": "old.md",
+				"content": ""
+			},
+			"canonical": "{\"version\":1,\"path\":\"new.md\",\"previousPath\":\"old.md\",\"baseRevision\":null,\"content\":\"\"}"
+		},
+		{
+			"input": {
+				"version": 2,
+				"path": "resolved.md",
+				"previousPath": null,
+				"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"content": "YQ==",
+				"acceptedRevisions": [
+					"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+				]
+			},
+			"canonical": "{\"version\":2,\"path\":\"resolved.md\",\"previousPath\":null,\"baseRevision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":\"YQ==\",\"acceptedRevisions\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]}"
+		},
+		{
+			"input": {
+				"version": 2,
+				"path": "resolved.md",
+				"previousPath": null,
+				"baseRevision": null,
+				"content": null,
+				"acceptedRevisions": [
+					null,
+					"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				]
+			},
+			"canonical": "{\"version\":2,\"path\":\"resolved.md\",\"previousPath\":null,\"baseRevision\":null,\"content\":null,\"acceptedRevisions\":[null,\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]}"
+		},
+		{
+			"input": {
+				"version": 3,
+				"path": "attachments/photo.bin",
+				"previousPath": null,
+				"baseRevision": null,
+				"content": null,
+				"blob": {
+					"id": "1111111111111111111111111111111111111111111111111111111111111111",
+					"size": 1048832,
+					"plaintextSize": 1048576,
+					"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+				}
+			},
+			"canonical": "{\"version\":3,\"path\":\"attachments/photo.bin\",\"previousPath\":null,\"baseRevision\":null,\"content\":null,\"blob\":{\"id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"size\":1048832,\"plaintextSize\":1048576,\"revision\":\"2222222222222222222222222222222222222222222222222222222222222222\"}}"
+		},
+		{
+			"input": {
+				"version": 3,
+				"path": "attachments/photo.bin",
+				"previousPath": "old/photo.bin",
+				"baseRevision": "3333333333333333333333333333333333333333333333333333333333333333",
+				"content": null,
+				"blob": {
+					"id": "1111111111111111111111111111111111111111111111111111111111111111",
+					"size": 1048832,
+					"plaintextSize": 1048576,
+					"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+				}
+			},
+			"canonical": "{\"version\":3,\"path\":\"attachments/photo.bin\",\"previousPath\":\"old/photo.bin\",\"baseRevision\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"content\":null,\"blob\":{\"id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"size\":1048832,\"plaintextSize\":1048576,\"revision\":\"2222222222222222222222222222222222222222222222222222222222222222\"}}"
+		}
+	],
+	"invalid": [
+		{
+			"version": 2,
+			"path": "a.md"
+		},
+		{
+			"version": 1,
+			"path": "../a.md"
+		},
+		{
+			"version": 1,
+			"path": "/a.md"
+		},
+		{
+			"version": 1,
+			"path": "a//b"
+		},
+		{
+			"version": 1,
+			"path": "a/./b"
+		},
+		{
+			"version": 1,
+			"path": "a\\b"
+		},
+		{
+			"version": 1,
+			"path": "CON.md"
+		},
+		{
+			"version": 1,
+			"path": "CON .md"
+		},
+		{
+			"version": 1,
+			"path": " COM\u00b9.txt"
+		},
+		{
+			"version": 1,
+			"path": "nested/lpt\u00b2.txt"
+		},
+		{
+			"version": 1,
+			"path": "CONIN$"
+		},
+		{
+			"version": 1,
+			"path": "CONOUT$.txt"
+		},
+		{
+			"version": 1,
+			"path": "a/LPT2"
+		},
+		{
+			"version": 1,
+			"path": ".noura/sync/state.json"
+		},
+		{
+			"version": 1,
+			"path": ".NOURA/sync/state.json"
+		},
+		{
+			"version": 1,
+			"path": ".GiT/config"
+		},
+		{
+			"version": 1,
+			"path": "WORKSPACE.YAML"
+		},
+		{
+			"version": 1,
+			"path": "Node_Modules/package/index.js"
+		},
+		{
+			"version": 1,
+			"path": "Target/output"
+		},
+		{
+			"version": 1,
+			"path": "safe.md",
+			"previousPath": ".NOURA/private.md",
+			"content": ""
+		},
+		{
+			"version": 1,
+			"path": "workspace.yaml"
+		},
+		{
+			"version": 1,
+			"path": "a.",
+			"content": ""
+		},
+		{
+			"version": 1,
+			"path": "a",
+			"content": "YQ"
+		},
+		{
+			"version": 1,
+			"path": "a",
+			"content": "YR=="
+		},
+		{
+			"version": 1,
+			"path": "a",
+			"content": "YQ==\n"
+		},
+		{
+			"version": 1,
+			"path": "a",
+			"previousPath": "a",
+			"content": ""
+		},
+		{
+			"version": 1,
+			"path": "a",
+			"previousPath": "b",
+			"content": null
+		},
+		{
+			"version": 1,
+			"path": "a",
+			"baseRevision": "abc"
+		},
+		{
+			"version": 1,
+			"path": "a",
+			"unknown": true
+		},
+		{
+			"version": 2,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": []
+		},
+		{
+			"version": 2,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": null
+		},
+		{
+			"version": 2,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": [
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			]
+		},
+		{
+			"version": 2,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": [
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				null
+			]
+		},
+		{
+			"version": 2,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": [
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			]
+		},
+		{
+			"version": 2,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": ["bad"]
+		},
+		{
+			"version": 2,
+			"path": "resolved.md",
+			"previousPath": "old.md",
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": [
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			]
+		},
+		{
+			"version": 1,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": [
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			]
+		},
+		{
+			"version": 1,
+			"path": "resolved.md",
+			"previousPath": null,
+			"baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"content": "YQ==",
+			"acceptedRevisions": null
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "../x",
+				"size": 1048832,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+				"size": 1048832,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 0,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1073741825,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1.5,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1048832,
+				"plaintextSize": -1,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1048832,
+				"plaintextSize": 1048832,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1048832,
+				"plaintextSize": 1048576,
+				"revision": "wrong"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": null
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": "YQ==",
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1048832,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1048832,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			},
+			"acceptedRevisions": [null]
+		},
+		{
+			"version": 1,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1048832,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 2,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null,
+			"blob": {
+				"id": "1111111111111111111111111111111111111111111111111111111111111111",
+				"size": 1048832,
+				"plaintextSize": 1048576,
+				"revision": "2222222222222222222222222222222222222222222222222222222222222222"
+			}
+		},
+		{
+			"version": 3,
+			"path": "attachments/photo.bin",
+			"previousPath": null,
+			"baseRevision": null,
+			"content": null
+		}
+	]
+}

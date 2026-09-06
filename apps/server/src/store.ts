@@ -1,0 +1,298 @@
+import postgres from 'postgres';
+import type {
+	EncryptedOperation,
+	SequencedOperation,
+	SyncPage,
+} from '../../../packages/shared/src/sync';
+import {
+	digest,
+	operationDigest,
+	SyncError,
+	verifyOperation,
+} from './protocol';
+import { schema } from './schema';
+
+type Db = ReturnType<typeof postgres>;
+type Tx = postgres.TransactionSql;
+export interface Actor {
+	deviceId: string;
+	accountId: string;
+	publicKey: string;
+}
+
+export class SyncStore {
+	readonly db: Db;
+	private listening: Promise<postgres.ListenMeta> | undefined;
+	private watchers = new Map<string, Set<() => void>>();
+	private activeWatches = 0;
+	get subscriptionCount() {
+		return this.activeWatches;
+	}
+	constructor(url: string) {
+		this.db = postgres(url, { max: 10, onnotice: () => {} });
+	}
+	async migrate() {
+		await this.db.begin(async (tx) => {
+			await tx`SELECT pg_advisory_xact_lock(192837465)`;
+			await tx.unsafe(schema);
+		});
+	}
+	async ready() {
+		// Resolve the required release columns even when the tables contain no rows.
+		await this
+			.db`SELECT w.access_revision,d.encryption_recipient,k.signing_device,k.signature,a.policy,p.snapshot,
+		 s.token_hash,c.expires_at,r.count,m.role,o.epoch,g.role,u.ciphertext,b.tus_info,b.complete,
+		 i.accepted_account_id,i.completed_at,i.revoked_at
+		 FROM noura_workspaces w
+		 LEFT JOIN noura_devices d ON false
+		 LEFT JOIN noura_key_envelopes k ON false
+		 LEFT JOIN noura_access_log a ON false
+		 LEFT JOIN noura_sessions s ON false
+		 LEFT JOIN noura_device_challenges c ON false
+		 LEFT JOIN noura_rate_limits r ON false
+		 LEFT JOIN noura_members m ON false
+		 LEFT JOIN noura_objects o ON false
+		 LEFT JOIN noura_grants g ON false
+		 LEFT JOIN noura_operations u ON false
+		 LEFT JOIN noura_public_links p ON false
+		 LEFT JOIN noura_invitations i ON false
+		 LEFT JOIN noura_blobs b ON false LIMIT 0`;
+	}
+	async close() {
+		for (const callbacks of this.watchers.values()) {
+			for (const callback of callbacks) callback();
+		}
+		await this.listening
+			?.then((listener) => listener.unlisten())
+			.catch(() => {});
+		await this.db.end();
+	}
+
+	/** Subscribe before reading a page, so a commit between read and wait cannot be missed. */
+	async watch(workspace: string, signal: AbortSignal, milliseconds = 25_000) {
+		this.listening ??= this.db
+			.listen(
+				'noura_sync',
+				(id) => {
+					for (const callback of this.watchers.get(id) ?? []) callback();
+				},
+				() => {
+					// A reconnect may have missed notifications; every waiter must re-read its cursor.
+					for (const callbacks of this.watchers.values())
+						for (const callback of callbacks) callback();
+				},
+			)
+			.catch((error: unknown) => {
+				this.listening = undefined;
+				throw error;
+			});
+		await this.listening;
+		if (this.activeWatches >= 1000) throw new SyncError('sync.busy', 503);
+		this.activeWatches += 1;
+		let finish!: () => void;
+		const changed = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		const callbacks = this.watchers.get(workspace) ?? new Set<() => void>();
+		callbacks.add(finish);
+		this.watchers.set(workspace, callbacks);
+		const timer = setTimeout(finish, milliseconds);
+		signal.addEventListener('abort', finish, { once: true });
+		if (signal.aborted) finish();
+		let closed = false;
+		return {
+			changed,
+			close: () => {
+				if (closed) return;
+				closed = true;
+				this.activeWatches -= 1;
+				clearTimeout(timer);
+				signal.removeEventListener('abort', finish);
+				callbacks.delete(finish);
+				if (callbacks.size === 0) this.watchers.delete(workspace);
+				finish();
+			},
+		};
+	}
+	async rateLimit(actor: Actor) {
+		const [row] = await this
+			.db`INSERT INTO noura_rate_limits(account_id,window_start,count)
+		 VALUES(${actor.accountId},floor(extract(epoch FROM now())/60)::bigint,1)
+		 ON CONFLICT(account_id) DO UPDATE SET
+		 count=CASE WHEN noura_rate_limits.window_start=EXCLUDED.window_start THEN noura_rate_limits.count+1 ELSE 1 END,
+		 window_start=EXCLUDED.window_start RETURNING count`;
+		if (row!.count > 120) throw new SyncError('sync.rate_limited', 429);
+	}
+	async authenticate(token: string): Promise<Actor> {
+		const [row] = await this.db`
+		 SELECT d.id, d.account_id, d.public_key FROM noura_sessions s
+		 JOIN noura_devices d ON d.id=s.device_id
+		 WHERE s.token_hash=${digest(token)} AND s.expires_at>now() AND NOT d.revoked`;
+		if (!row) throw new SyncError('sync.unauthorized', 401);
+		return {
+			deviceId: row.id,
+			accountId: row.account_id,
+			publicKey: row.public_key,
+		};
+	}
+	private async lock(tx: Tx, workspaceId: string) {
+		const [row] =
+			await tx`SELECT * FROM noura_workspaces WHERE id=${workspaceId} FOR UPDATE`;
+		if (!row) throw new SyncError('sync.not_found', 404);
+		return row;
+	}
+	private async member(
+		tx: Tx,
+		actor: Actor,
+		workspaceId: string,
+	): Promise<string | undefined> {
+		const [device] =
+			await tx`SELECT id FROM noura_devices WHERE id=${actor.deviceId} AND account_id=${actor.accountId} AND public_key=${actor.publicKey} AND NOT revoked FOR SHARE`;
+		if (!device) throw new SyncError('sync.unauthorized', 401);
+		const [row] =
+			await tx`SELECT role FROM noura_members WHERE workspace_id=${workspaceId} AND account_id=${actor.accountId}`;
+		return row?.role;
+	}
+	async createWorkspace(actor: Actor, id: string) {
+		await this.db.begin(async (tx) => {
+			await this.member(tx, actor, id);
+			const inserted =
+				await tx`INSERT INTO noura_workspaces(id) VALUES(${id}) ON CONFLICT DO NOTHING RETURNING id`;
+			if (!inserted.length) {
+				await this.lock(tx, id);
+				if ((await this.member(tx, actor, id)) !== 'owner')
+					throw new SyncError('sync.forbidden', 403);
+				return;
+			}
+			await tx`INSERT INTO noura_members(workspace_id,account_id,role) VALUES(${id},${actor.accountId},'owner')`;
+		});
+	}
+	async withWorkspace<T>(
+		actor: Actor,
+		workspace: string,
+		run: (tx: Tx, state: postgres.Row, role: string | undefined) => Promise<T>,
+	): Promise<T> {
+		return (await this.db.begin(async (tx) => {
+			const state = await this.lock(tx, workspace);
+			const role = await this.member(tx, actor, workspace);
+			return await run(tx, state, role);
+		})) as unknown as T;
+	}
+	async createObject(actor: Actor, workspace: string, id: string) {
+		return await this.withWorkspace(
+			actor,
+			workspace,
+			async (tx, _state, role) => {
+				const [existing] =
+					await tx`SELECT epoch FROM noura_objects WHERE workspace_id=${workspace} AND id=${id}`;
+				if (existing) {
+					const [grant] =
+						await tx`SELECT 1 FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${id} AND account_id=${actor.accountId}`;
+					if (!role && !grant) throw new SyncError('sync.forbidden', 403);
+					return Number(existing.epoch);
+				}
+				if (!role || role === 'viewer')
+					throw new SyncError('sync.forbidden', 403);
+				await tx`INSERT INTO noura_objects(workspace_id,id) VALUES(${workspace},${id}) ON CONFLICT DO NOTHING`;
+				return 1;
+			},
+		);
+	}
+	async push(
+		actor: Actor,
+		workspace: string,
+		ops: EncryptedOperation[],
+	): Promise<string[]> {
+		for (const op of ops) {
+			if (op.workspaceId !== workspace || op.deviceId !== actor.deviceId)
+				throw new SyncError('sync.identity_mismatch', 403);
+			verifyOperation(op, actor.publicKey);
+		}
+		return (await this.db.begin(async (tx) => {
+			const state = await this.lock(tx, workspace);
+			const memberRole = await this.member(tx, actor, workspace);
+			const sequences: string[] = [];
+			let sequence = BigInt(state.sequence);
+			let used = BigInt(state.used_bytes);
+			for (const op of ops) {
+				const [object] =
+					await tx`SELECT epoch FROM noura_objects WHERE workspace_id=${workspace} AND id=${op.objectId}`;
+				const [grant] =
+					await tx`SELECT role FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${op.objectId} AND account_id=${actor.accountId}`;
+				if (
+					!object ||
+					(!['owner', 'admin', 'editor'].includes(memberRole ?? '') &&
+						grant?.role !== 'editor')
+				)
+					throw new SyncError('sync.forbidden', 403);
+				const hash = operationDigest(op);
+				const [existing] =
+					await tx`SELECT sequence,digest FROM noura_operations WHERE workspace_id=${workspace} AND operation_id=${op.operationId}`;
+				if (existing) {
+					if (existing.digest !== hash)
+						throw new SyncError('sync.operation_id_reused', 409);
+					sequences.push(String(existing.sequence));
+					continue;
+				}
+				if (BigInt(object.epoch) !== BigInt(op.epoch))
+					throw new SyncError('sync.stale_epoch', 409);
+				if (BigInt(op.policyRevision) > BigInt(state.access_revision))
+					throw new SyncError('sync.stale_policy', 409);
+				const bytes = Buffer.byteLength(op.ciphertext, 'base64');
+				used += BigInt(bytes);
+				if (used > BigInt(state.quota_bytes))
+					throw new SyncError('sync.quota_exceeded', 413);
+				sequence++;
+				await tx`INSERT INTO noura_operations(workspace_id,operation_id,object_id,device_id,sequence,epoch,policy_revision,nonce,ciphertext,signature,digest,payload_bytes)
+				 VALUES(${workspace},${op.operationId},${op.objectId},${op.deviceId},${sequence.toString()},${op.epoch},${op.policyRevision},${op.nonce},${op.ciphertext},${op.signature},${hash},${bytes})`;
+				sequences.push(sequence.toString());
+			}
+			await tx`UPDATE noura_workspaces SET sequence=${sequence.toString()},used_bytes=${used.toString()} WHERE id=${workspace}`;
+			await tx`SELECT pg_notify('noura_sync',${workspace})`;
+			return sequences;
+		})) as unknown as string[];
+	}
+	async pull(
+		actor: Actor,
+		workspace: string,
+		after: string,
+	): Promise<SyncPage> {
+		return (await this.db.begin(async (tx) => {
+			const state = await this.lock(tx, workspace);
+			const role = await this.member(tx, actor, workspace);
+			const [grant] =
+				await tx`SELECT 1 FROM noura_grants WHERE workspace_id=${workspace} AND account_id=${actor.accountId} LIMIT 1`;
+			if (!role && !grant) throw new SyncError('sync.forbidden', 403);
+			if (BigInt(after) > BigInt(state.sequence))
+				throw new SyncError('sync.cursor_ahead', 409);
+			const rows = await tx`SELECT o.* FROM noura_operations o
+			 WHERE o.workspace_id=${workspace} AND o.sequence>${after}
+			 AND (${Boolean(role)} OR EXISTS(SELECT 1 FROM noura_grants g WHERE g.workspace_id=o.workspace_id AND g.object_id=o.object_id AND g.account_id=${actor.accountId}))
+			 ORDER BY o.sequence LIMIT 101`;
+			const hasMore = rows.length > 100;
+			const operations: SequencedOperation[] = rows
+				.slice(0, 100)
+				.map((row) => ({
+					version: 1,
+					workspaceId: workspace,
+					operationId: row.operation_id,
+					objectId: row.object_id,
+					deviceId: row.device_id,
+					epoch: Number(row.epoch),
+					policyRevision: String(row.policy_revision),
+					nonce: row.nonce,
+					ciphertext: row.ciphertext,
+					signature: row.signature,
+					sequence: String(row.sequence),
+				}));
+			return {
+				operations,
+				accessRevision: String(state.access_revision),
+				hasMore,
+				cursor: hasMore
+					? operations[operations.length - 1]!.sequence
+					: String(state.sequence),
+			};
+		})) as unknown as SyncPage;
+	}
+}

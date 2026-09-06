@@ -26,12 +26,18 @@ use local_core::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Channel};
 use tauri_plugin_dialog::DialogExt;
+mod sync_commands;
 
 struct AppState {
     engine: Mutex<Option<Arc<WorkspaceEngine>>>,
     ai: Mutex<Option<Arc<AiFoundation>>>,
     ai_data_root: PathBuf,
     runtime_spike: Arc<PiRuntimeSpikeRegistry>,
+    sync_account: tokio::sync::Mutex<local_core::sync::SyncAccountService>,
+    sync_gate: tokio::sync::Mutex<()>,
+    sync_cancel: tokio::sync::Notify,
+    sync_wake: tokio::sync::Notify,
+    sync_status: Mutex<Option<(PathBuf, local_core::sync::WorkspaceSyncStatus)>>,
 }
 
 impl AppState {
@@ -41,6 +47,11 @@ impl AppState {
             ai: Mutex::new(None),
             ai_data_root,
             runtime_spike: Arc::new(PiRuntimeSpikeRegistry::default()),
+            sync_account: tokio::sync::Mutex::new(local_core::sync::SyncAccountService::default()),
+            sync_gate: tokio::sync::Mutex::new(()),
+            sync_cancel: tokio::sync::Notify::new(),
+            sync_wake: tokio::sync::Notify::new(),
+            sync_status: Mutex::new(None),
         }
     }
 
@@ -357,6 +368,8 @@ fn workspace_create(
     let value = engine.state();
     save_recent(&app, &engine)?;
     let engine = Arc::new(engine);
+    state.sync_cancel.notify_one();
+    state.sync_wake.notify_one();
     *state
         .engine
         .lock()
@@ -374,6 +387,8 @@ fn workspace_open(
     let value = engine.state();
     save_recent(&app, &engine)?;
     let engine = Arc::new(engine);
+    state.sync_cancel.notify_one();
+    state.sync_wake.notify_one();
     *state
         .engine
         .lock()
@@ -383,6 +398,8 @@ fn workspace_open(
 }
 #[tauri::command]
 fn workspace_close(app: AppHandle, state: State<AppState>) -> Result<(), CoreError> {
+    state.sync_cancel.notify_one();
+    state.sync_wake.notify_one();
     let engine = state
         .engine
         .lock()
@@ -1145,6 +1162,7 @@ pub fn run() {
                 )
             })?;
             app.manage(AppState::new(root));
+            sync_commands::start(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut last_full_reconciliation = std::time::Instant::now();
@@ -1165,6 +1183,29 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            sync_commands::sync_workspace_status,
+            sync_commands::sync_workspace_devices,
+            sync_commands::sync_workspace_conflicts,
+            sync_commands::sync_workspace_resolve_conflict,
+            sync_commands::sync_remote_workspaces,
+            sync_commands::sync_workspace_join,
+            sync_commands::sync_workspace_approve_device,
+            sync_commands::sync_workspace_invitations,
+            sync_commands::sync_workspace_create_invitation,
+            sync_commands::sync_workspace_approve_invited_device,
+            sync_commands::sync_workspace_finalize_invitation,
+            sync_commands::sync_workspace_revoke_invitation,
+            sync_commands::sync_workspace_enable,
+            sync_commands::sync_workspace_pause,
+            sync_commands::sync_workspace_resume,
+            sync_commands::sync_account_current,
+            sync_commands::sync_account_export_recovery,
+            sync_commands::sync_account_import_recovery,
+            sync_commands::sync_account_open_browser,
+            sync_commands::sync_account_begin,
+            sync_commands::sync_account_poll,
+            sync_commands::sync_account_cancel,
+            sync_commands::sync_account_disconnect,
             workspace_create,
             workspace_open,
             workspace_close,

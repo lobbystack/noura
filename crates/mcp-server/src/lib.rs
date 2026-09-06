@@ -358,4 +358,138 @@ mod tests {
         assert_eq!(stored.properties["project"], project.id);
         assert_eq!(stored.body, "- Accepts external edits without data loss");
     }
+
+    #[tokio::test]
+    async fn local_app_and_mcp_share_canonical_files_and_rebuilt_projections() {
+        // A workspace under the current directory keeps notify's reported path
+        // representation identical on macOS (`/var` can otherwise become
+        // `/private/var` and fail a lexical strip_prefix in the test fixture).
+        let workspace = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let app_data = tempdir().unwrap();
+        let mcp_data = tempdir().unwrap();
+        let bootstrap_engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Local alpha", app_data.path())
+                .unwrap();
+        let project = bootstrap_engine
+            .create_object(CreateObjectInput {
+                object_type: "project".into(),
+                title: "Alpha project".into(),
+                body: "Canonical project body".into(),
+                relative_path: Some("projects/alpha/project.md".into()),
+                properties: std::collections::BTreeMap::from([(
+                    "status".into(),
+                    serde_json::json!("active"),
+                )]),
+            })
+            .unwrap()
+            .value;
+        let first_task = bootstrap_engine
+            .create_object(CreateObjectInput {
+                object_type: "task".into(),
+                title: "Initial local task".into(),
+                body: "Created by the desktop engine".into(),
+                relative_path: Some("projects/alpha/tasks/initial.md".into()),
+                properties: std::collections::BTreeMap::from([
+                    ("status".into(), serde_json::json!("todo")),
+                    ("priority".into(), serde_json::json!("medium")),
+                    ("due".into(), serde_json::json!("2026-09-15")),
+                    ("project".into(), serde_json::json!(project.id.clone())),
+                ]),
+            })
+            .unwrap();
+
+        let project_bytes =
+            std::fs::read_to_string(workspace.path().join(&project.relative_path)).unwrap();
+        let task_bytes =
+            std::fs::read_to_string(workspace.path().join(&first_task.value.relative_path))
+                .unwrap();
+        assert!(project_bytes.contains(&format!("id: {}", project.id)));
+        assert!(project_bytes.contains("Canonical project body"));
+        assert!(task_bytes.contains(&format!("project: {}", project.id)));
+        assert!(task_bytes.contains("due: 2026-09-15"));
+
+        drop(bootstrap_engine);
+        let app_engine =
+            WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+
+        let mcp_engine =
+            WorkspaceEngine::open_with_app_data(workspace.path(), mcp_data.path()).unwrap();
+        let server = NouraMcp::new(mcp_engine);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let updated = server
+            .tasks_update(Parameters(UpdateParams {
+                id: first_task.value.id.clone(),
+                title: Some("MCP revised task".into()),
+                body: Some("Updated through the shared MCP adapter".into()),
+                properties: Some(serde_json::Map::from_iter([(
+                    "status".into(),
+                    serde_json::json!("in-progress"),
+                )])),
+                expected_revision: first_task.revision,
+            }))
+            .await
+            .unwrap();
+        let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated["value"]["title"], "MCP revised task");
+
+        let created = server
+            .tasks_create(Parameters(TaskCreateParams {
+                title: "MCP follow-up".into(),
+                body: Some("Second canonical task".into()),
+                relative_path: Some("projects/alpha/tasks/follow-up.md".into()),
+                status: Some("todo".into()),
+                priority: Some("high".into()),
+                due: Some("2026-09-16".into()),
+                project: Some(project.id.clone()),
+            }))
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_str(&created).unwrap();
+        let second_id = created["value"]["id"].as_str().unwrap().to_owned();
+
+        let mut reconciled_paths = Vec::new();
+        for _ in 0..10 {
+            reconciled_paths.extend(
+                app_engine
+                    .poll_external_changes(std::time::Duration::from_millis(50))
+                    .unwrap(),
+            );
+            let tasks = app_engine.query_objects(Some("task")).unwrap();
+            if tasks.len() == 2 && tasks.iter().any(|task| task.title == "MCP revised task") {
+                break;
+            }
+        }
+        // Some sandboxed test hosts suppress native filesystem notifications.
+        // The app's focus recovery performs this same full-file reconciliation.
+        if reconciled_paths.is_empty() {
+            app_engine.reconcile().unwrap();
+        }
+
+        let tasks = app_engine.query_objects(Some("task")).unwrap();
+        assert_eq!(tasks.len(), 2);
+        let revised = tasks
+            .iter()
+            .find(|task| task.id == first_task.value.id)
+            .unwrap();
+        assert_eq!(revised.title, "MCP revised task");
+        assert_eq!(revised.properties["status"], "in-progress");
+        assert_eq!(revised.properties["project"], project.id);
+        let follow_up = tasks.iter().find(|task| task.id == second_id).unwrap();
+        assert_eq!(follow_up.properties["status"], "todo");
+        assert_eq!(follow_up.properties["priority"], "high");
+        assert_eq!(follow_up.properties["project"], project.id);
+
+        let search = app_engine
+            .search(&SearchInput {
+                query: "MCP".into(),
+                object_type: None,
+                path_prefix: None,
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(search.len(), 2);
+        let calendar = app_engine.calendar("2026-09-15", "2026-09-17").unwrap();
+        assert_eq!(calendar.len(), 2);
+        assert!(calendar.iter().any(|entry| entry.source_id == second_id));
+    }
 }

@@ -10,7 +10,16 @@
 		"frontendDist": "../apps/app/build"
 	},
 	"app": {
-		"windows": [{ "title": "Noura", "width": 1024, "height": 720 }],
+		"windows": [
+			{
+				"title": "Noura",
+				"width": 1024,
+				"height": 720,
+				"titleBarStyle": "Overlay",
+				"hiddenTitle": true,
+				"trafficLightPosition": { "x": 16, "y": 16 }
+			}
+		],
 		"security": {
 			"csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
 		}

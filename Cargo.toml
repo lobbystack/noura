@@ -9,6 +9,14 @@ license = "MIT"
 rust-version = "1.91"
 
 [workspace.dependencies]
+age = { version = "=0.12.1", default-features = false }
+aes-gcm = "=0.10.3"
+base64 = "0.22"
+bech32 = "=0.11.1"
+sha2 = "=0.10.9"
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
+zeroize = { version = "1", features = ["derive"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 atomic-write-file = "0.3.1"
 blake3 = "1.8"
 directories = "6"

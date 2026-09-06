@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -265,18 +264,8 @@ impl AiConsentStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| consent_storage_error(operation))?;
         }
-        let mut file = atomic_write_file::AtomicWriteFile::open(&self.path)
+        crate::durable_settings::write(&self.path, &bytes)
             .map_err(|_| consent_storage_error(operation))?;
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|_| consent_storage_error(operation))?;
-        file.commit()
-            .map_err(|_| consent_storage_error(operation))?;
-        if let Some(parent) = self.path.parent() {
-            std::fs::File::open(parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|_| consent_storage_error(operation))?;
-        }
         Ok(())
     }
 }

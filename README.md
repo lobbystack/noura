@@ -1,10 +1,17 @@
 # Noura
 
-Noura is the open workspace for humans and AI. The Initial MVP stores durable workspace state in ordinary Markdown and binary files. A local SQLite database supplies a disposable index, metadata cache, and full-text search.
+Noura is the open workspace for humans and AI. The Local Alpha stores durable workspace state in ordinary Markdown and binary files. A local SQLite database supplies its disposable index, metadata cache, and full-text search.
 
 ## Status
 
-The repository contains the Initial MVP core implementation. The visual application remains a separate workstream.
+The repository contains the desktop Local Alpha with:
+
+- File-backed notes, tasks, and projects
+- Month Calendar projection
+- External-edit reconciliation and conflict review
+- Model Context Protocol (MCP) mutations
+- Full-text search
+- Index recovery from canonical workspace files
 
 ## Development
 
@@ -20,4 +27,4 @@ Run the desktop development host with `bun run tauri dev` after installing the T
 
 ## Storage contract
 
-Workspace files are canonical. Paths identify current locations, while frontmatter IDs identify managed objects. Noura can rebuild the local index after deletion without losing durable workspace data. See `docs/workspace-format/v1.md` for the file format.
+Workspace files are canonical. Paths identify current locations, while frontmatter IDs identify managed objects. Noura can rebuild a deleted local index without losing durable workspace data. See the [workspace format](docs/workspace-format/v1.md) for details.

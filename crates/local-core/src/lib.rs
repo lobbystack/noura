@@ -6,12 +6,14 @@
 mod ai;
 mod chat;
 mod consent;
+mod durable_settings;
 mod engine;
 mod error;
 mod index;
 mod markdown;
 mod model;
 mod path;
+pub mod sync;
 mod watcher;
 mod web_access;
 

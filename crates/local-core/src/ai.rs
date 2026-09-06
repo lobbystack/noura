@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
     future::Future,
-    io::Write,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
@@ -1132,18 +1131,8 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
             "ai_provider_save",
         )
     })?;
-    let mut file = atomic_write_file::AtomicWriteFile::open(path)
+    crate::durable_settings::write(path, &bytes)
         .map_err(|error| CoreError::io(error, "ai_provider_save", path.to_str()))?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| CoreError::io(error, "ai_provider_save", path.to_str()))?;
-    file.commit()
-        .map_err(|error| CoreError::io(error, "ai_provider_save", path.to_str()))?;
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| CoreError::io(error, "ai_provider_save", parent.to_str()))?;
-    }
     Ok(())
 }
 

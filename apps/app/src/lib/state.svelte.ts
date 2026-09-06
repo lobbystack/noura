@@ -64,12 +64,27 @@ class WorkspaceStore {
 	get recents() {
 		return this.recentItems;
 	}
+	get name() {
+		const workspaceId = this.data?.workspaceId;
+		const current = workspaceId
+			? this.recentItems.find((recent) => recent.workspaceId === workspaceId)
+			: undefined;
+		if (current) return current.name;
+
+		const rootPath = this.data?.rootPath;
+		if (rootPath) {
+			const segments = rootPath.split(/[\\/]/).filter(Boolean);
+			return segments.at(-1) ?? 'Noura';
+		}
+
+		return 'Noura';
+	}
 
 	async init() {
 		if (this.ready) return;
 		this.ready = true;
 		await this.refresh();
-		if (this.isIdle) await this.refreshRecents();
+		await this.refreshRecents();
 	}
 
 	async refresh() {
@@ -107,7 +122,10 @@ class WorkspaceStore {
 		this.errorMessage = null;
 		try {
 			const data = await getNouraClient().workspaces.open({ path });
-			if (requestSequence === this.#requestSequence) this.data = data;
+			if (requestSequence === this.#requestSequence) {
+				this.data = data;
+				await this.refreshRecents();
+			}
 		} catch (error) {
 			if (requestSequence === this.#requestSequence)
 				this.errorMessage = errorMessage(error);
@@ -126,7 +144,10 @@ class WorkspaceStore {
 			});
 			if (!path || requestSequence !== this.#requestSequence) return;
 			const data = await getNouraClient().workspaces.open({ path });
-			if (requestSequence === this.#requestSequence) this.data = data;
+			if (requestSequence === this.#requestSequence) {
+				this.data = data;
+				await this.refreshRecents();
+			}
 		} catch (error) {
 			if (requestSequence === this.#requestSequence)
 				this.errorMessage = errorMessage(error);
@@ -141,7 +162,10 @@ class WorkspaceStore {
 		this.errorMessage = null;
 		try {
 			const data = await getNouraClient().workspaces.create({ path, name });
-			if (requestSequence === this.#requestSequence) this.data = data;
+			if (requestSequence === this.#requestSequence) {
+				this.data = data;
+				await this.refreshRecents();
+			}
 		} catch (error) {
 			if (requestSequence === this.#requestSequence)
 				this.errorMessage = errorMessage(error);
@@ -160,7 +184,10 @@ class WorkspaceStore {
 			});
 			if (!path || requestSequence !== this.#requestSequence) return;
 			const data = await getNouraClient().workspaces.create({ path, name });
-			if (requestSequence === this.#requestSequence) this.data = data;
+			if (requestSequence === this.#requestSequence) {
+				this.data = data;
+				await this.refreshRecents();
+			}
 		} catch (error) {
 			if (requestSequence === this.#requestSequence)
 				this.errorMessage = errorMessage(error);

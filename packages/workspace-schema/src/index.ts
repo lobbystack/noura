@@ -1,4 +1,5 @@
 import { z } from 'zod';
+export { syncFileChangeSchema } from './sync';
 
 export const objectIdSchema = z
 	.string()

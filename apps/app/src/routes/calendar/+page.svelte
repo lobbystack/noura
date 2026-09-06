@@ -1,5 +1,15 @@
 <script lang="ts">
-	import { getNouraClient } from '$lib/state.svelte';
+	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import {
+		calendarDayRange,
+		calendarRange,
+		calendarWeekRange,
+		projectCalendarDay,
+		projectCalendarWeek,
+	} from '$lib/calendar';
+	import { LiveProjection } from '$lib/live-refresh';
+	import CalendarWeek from '$lib/components/calendar-week.svelte';
+	import CalendarDayView from '$lib/components/calendar-day-view.svelte';
 	import type { Note, Project, Task, WorkspaceObject } from '@noura/workspace';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import ObjectInspector from '$lib/components/object-inspector.svelte';
@@ -31,21 +41,30 @@
 	const startOfMonth = (d: Date) =>
 		new SvelteDate(d.getFullYear(), d.getMonth(), 1);
 
-	let cursor = $state(startOfMonth(today));
+	let cursor = new SvelteDate(
+		today.getFullYear(),
+		today.getMonth(),
+		today.getDate(),
+	);
 	let mode = $state<'month' | 'week' | 'day'>('month');
 	let entries = $state<CalendarEntry[]>([]);
 	let loading = $state(true);
+	let initialError = $state<string | null>(null);
 	let selected = $state<{ id: string; type: string; title: string } | null>(
 		null,
 	);
 	let inspectorOpen = $state(false);
+	let selectedEntry = $state<CalendarEntry | null>(null);
 	let selectedObject = $state<WorkspaceObject | Task | Note | Project | null>(
 		null,
 	);
+	let projection = $state.raw<LiveProjection | null>(null);
 
 	const monthLabel = $derived(
 		cursor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
 	);
+	const weekDays = $derived(projectCalendarWeek(entries, cursor));
+	const day = $derived(projectCalendarDay(entries, cursor));
 
 	function isoDay(d: Date) {
 		const y = d.getFullYear();
@@ -54,21 +73,25 @@
 		return `${y}-${m}-${day}`;
 	}
 
+	function errorMessage(error: unknown): string {
+		return error instanceof Error
+			? error.message
+			: 'Could not load the calendar';
+	}
+
 	async function load() {
 		try {
 			loading = true;
-			const start = new SvelteDate(cursor.getFullYear(), cursor.getMonth(), 1);
-			start.setDate(start.getDate() - 7);
-			const end = new SvelteDate(
-				cursor.getFullYear(),
-				cursor.getMonth() + 1,
-				0,
-			);
-			end.setDate(end.getDate() + 7);
-			entries = await getNouraClient().calendar.queryRange({
-				start: start.toISOString(),
-				end: end.toISOString(),
-			});
+			const range =
+				mode === 'week'
+					? calendarWeekRange(cursor)
+					: mode === 'day'
+						? calendarDayRange(cursor)
+						: calendarRange(cursor);
+			entries = await getNouraClient().calendar.queryRange(range);
+			initialError = null;
+		} catch (error) {
+			if (entries.length === 0) initialError = errorMessage(error);
 		} finally {
 			loading = false;
 		}
@@ -105,17 +128,69 @@
 	});
 
 	function shift(months: number) {
-		cursor = new SvelteDate(
-			cursor.getFullYear(),
-			cursor.getMonth() + months,
-			1,
-		);
-		load();
+		if (mode === 'week' || mode === 'day') {
+			cursor.setDate(cursor.getDate() + months * (mode === 'week' ? 7 : 1));
+			clearDaySelection();
+			void load();
+			return;
+		}
+		cursor.setFullYear(cursor.getFullYear(), cursor.getMonth() + months, 1);
+		void load();
 	}
 
 	function goToday() {
-		cursor = startOfMonth(today);
-		load();
+		cursor.setFullYear(today.getFullYear(), today.getMonth(), today.getDate());
+		clearDaySelection();
+		void load();
+	}
+
+	function clearDaySelection() {
+		selectedEntry = null;
+		selectedObject = null;
+		selected = null;
+	}
+
+	function selectDate(date: Date) {
+		cursor.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+		clearDaySelection();
+		void load();
+	}
+
+	function setMode(value: string | undefined) {
+		if (
+			(value !== 'month' && value !== 'week' && value !== 'day') ||
+			value === mode
+		)
+			return;
+		mode = value;
+		clearDaySelection();
+		void load();
+	}
+
+	async function loadEntryObject(
+		entry: CalendarEntry,
+	): Promise<WorkspaceObject | Task | Note | Project | null> {
+		try {
+			const client = getNouraClient();
+			return entry.sourceType === 'task'
+				? await client.tasks.get(entry.sourceId)
+				: entry.sourceType === 'project'
+					? await client.projects.get(entry.sourceId)
+					: await client.notes.get(entry.sourceId);
+		} catch {
+			return null;
+		}
+	}
+
+	async function selectDayEntry(entry: CalendarEntry) {
+		selectedEntry = entry;
+		selectedObject = null;
+		const object = await loadEntryObject(entry);
+		if (
+			selectedEntry?.sourceId === entry.sourceId &&
+			selectedEntry.property === entry.property
+		)
+			selectedObject = object;
 	}
 
 	async function openEntry(entry: CalendarEntry) {
@@ -125,23 +200,28 @@
 			title: entry.title,
 		};
 		inspectorOpen = true;
-		try {
-			const client = getNouraClient();
-			const obj =
-				entry.sourceType === 'task'
-					? await client.tasks.get(entry.sourceId)
-					: entry.sourceType === 'project'
-						? await client.projects.get(entry.sourceId)
-						: await client.notes.get(entry.sourceId);
-			selectedObject = obj;
-		} catch {
-			selectedObject = null;
-		}
+		selectedObject = await loadEntryObject(entry);
 		tabsStore.open(entry.sourceId, entry.sourceType, entry.title);
 	}
 
 	onMount(() => {
-		if (browser) load();
+		if (!browser) return;
+		const coordinator = new LiveProjection({
+			refresh: load,
+			subscribe: (handler) => getNouraClient().events.subscribe(handler),
+			workspaceId: () => workspace.state?.workspaceId,
+			focusSource: window,
+			visibilitySource: document,
+			onError: (error) => {
+				if (entries.length === 0) initialError = errorMessage(error);
+			},
+		});
+		projection = coordinator;
+		void coordinator.start().catch(() => {});
+		return () => {
+			coordinator.dispose();
+			if (projection === coordinator) projection = null;
+		};
 	});
 </script>
 
@@ -149,13 +229,7 @@
 	{#snippet actions()}
 		<div class="flex items-center gap-1">
 			<ToggleGroup.Root
-				bind:value={
-					() => mode,
-					(value) => {
-						if (value === 'month' || value === 'week' || value === 'day')
-							mode = value;
-					}
-				}
+				bind:value={() => mode, setMode}
 				type="single"
 				variant="outline"
 				size="sm"
@@ -194,18 +268,30 @@
 			{/each}
 		</div>
 	</div>
-{:else if mode !== 'month'}
+{:else if initialError}
 	<Empty.Root class="flex-1">
 		<Empty.Media variant="icon">
 			<CalendarBlank />
 		</Empty.Media>
 		<Empty.Header>
-			<Empty.Title>{mode === 'week' ? 'Week' : 'Day'} view</Empty.Title>
-			<Empty.Description>
-				The agenda views are next. The month grid shows every dated item.
-			</Empty.Description>
+			<Empty.Title>Calendar unavailable</Empty.Title>
+			<Empty.Description>{initialError}</Empty.Description>
 		</Empty.Header>
+		<Empty.Content>
+			<Button onclick={() => void projection?.refreshNow()}>Retry</Button>
+		</Empty.Content>
 	</Empty.Root>
+{:else if mode === 'week'}
+	<CalendarWeek days={weekDays} {today} onopen={openEntry} />
+{:else if mode === 'day'}
+	<CalendarDayView
+		{day}
+		{selectedEntry}
+		{selectedObject}
+		ondatechange={selectDate}
+		onselect={selectDayEntry}
+		onopen={openEntry}
+	/>
 {:else}
 	<div class="flex-1 overflow-auto border-t border-border/60">
 		<div class="grid grid-cols-7 border-b border-border/60 bg-muted/40">

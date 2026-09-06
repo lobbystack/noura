@@ -17,7 +17,7 @@
 	}
 </script>
 
-<main class="flex min-h-svh items-center justify-center px-6 py-12">
+<main class="flex min-h-0 flex-1 items-center justify-center px-6 py-12">
 	<Empty.Root class="w-full max-w-2xl">
 		<Empty.Header>
 			<Empty.Media variant="icon">

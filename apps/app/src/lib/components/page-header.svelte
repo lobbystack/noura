@@ -8,7 +8,7 @@
 		title = $bindable(''),
 		description,
 		actions,
-		searchValue = $bindable(''),
+		searchValue = $bindable(),
 		searchPlaceholder = 'Search…',
 	}: {
 		title?: string;
@@ -23,7 +23,7 @@
 	<div class="min-w-0 flex-1">
 		<h1 class="text-sm font-semibold">{title}</h1>
 		{#if description}
-			<p class="text-xs text-muted-foreground">{description}</p>
+			<p class="truncate text-xs text-muted-foreground">{description}</p>
 		{/if}
 	</div>
 	{#if searchValue !== undefined}

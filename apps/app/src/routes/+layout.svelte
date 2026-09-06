@@ -2,6 +2,7 @@
 	import '../app.css';
 	import AppRail from '$lib/components/app-rail.svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
+	import WorkspaceSwitcher from '$lib/components/workspace-switcher.svelte';
 	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
 	import { workspace } from '$lib/state.svelte';
 	import { aiChats } from '$lib/ai/chat-store.svelte';
@@ -113,44 +114,55 @@
 </script>
 
 <svelte:head>
-	<title>Noura</title>
+	<title>{workspace.name}</title>
 </svelte:head>
 
-{#if browser && workspace.isReady}
-	<Sidebar.Provider
-		class="h-svh min-h-0 overflow-hidden"
-		style="--sidebar-width: 14rem;"
+<div class="flex h-svh min-h-0 flex-col overflow-hidden">
+	<header
+		class="flex h-12 shrink-0 items-center border-b border-border/60 bg-background"
+		data-tauri-drag-region
 	>
-		<AppRail />
-		{#if showSidebar}
-			<AppSidebar />
-		{/if}
-		<main class="flex min-w-0 flex-1 flex-col">
-			{@render children()}
-		</main>
-		<CommandPalette />
-	</Sidebar.Provider>
-	<Toaster />
-{:else if !browser || !workspace.initialized || workspace.isLoading}
-	<div class="flex h-svh w-full items-center justify-center">
-		<div class="flex flex-col items-center gap-3">
-			<Spinner class="size-6" />
-			<p class="text-sm text-muted-foreground">Loading workspace…</p>
+		<div class="w-[4.75rem] shrink-0" data-tauri-drag-region></div>
+		<WorkspaceSwitcher />
+	</header>
+
+	{#if browser && workspace.isReady}
+		<Sidebar.Provider
+			class="min-h-0 flex-1 overflow-hidden"
+			style="--sidebar-width: 14rem;"
+		>
+			<AppRail />
+			{#if showSidebar}
+				<AppSidebar />
+			{/if}
+			<main class="flex min-w-0 flex-1 flex-col">
+				{@render children()}
+			</main>
+			<CommandPalette />
+		</Sidebar.Provider>
+	{:else if !browser || !workspace.initialized || workspace.isLoading}
+		<div class="flex min-h-0 flex-1 items-center justify-center">
+			<div class="flex flex-col items-center gap-3">
+				<Spinner class="size-6" />
+				<p class="text-sm text-muted-foreground">Loading workspace…</p>
+			</div>
 		</div>
-	</div>
-{:else if workspace.isIdle}
-	<WorkspaceOnboarding />
-{:else}
-	<Empty.Root class="min-h-svh">
-		<Empty.Header>
-			<Empty.Title>Workspace unavailable</Empty.Title>
-			<Empty.Description
-				>{workspace.error ??
-					'Noura could not read the current workspace state.'}</Empty.Description
-			>
-		</Empty.Header>
-		<Empty.Content>
-			<Button onclick={() => workspace.refresh()}>Retry</Button>
-		</Empty.Content>
-	</Empty.Root>
-{/if}
+	{:else if workspace.isIdle}
+		<WorkspaceOnboarding />
+	{:else}
+		<Empty.Root class="min-h-0">
+			<Empty.Header>
+				<Empty.Title>Workspace unavailable</Empty.Title>
+				<Empty.Description
+					>{workspace.error ??
+						'Noura could not read the current workspace state.'}</Empty.Description
+				>
+			</Empty.Header>
+			<Empty.Content>
+				<Button onclick={() => workspace.refresh()}>Retry</Button>
+			</Empty.Content>
+		</Empty.Root>
+	{/if}
+</div>
+
+<Toaster />
