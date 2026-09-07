@@ -90,6 +90,10 @@ impl WorkspaceEngine {
         {
             return Ok(true);
         }
+        self.collaboration_guard_file_mutation(path)?;
+        if let Some(previous) = previous {
+            self.collaboration_guard_file_mutation(&previous.path)?;
+        }
         if let Some(previous) = previous
             && previous.path != path
             && self.sync_file_path(&previous.path)?.exists()

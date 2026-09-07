@@ -70,8 +70,34 @@ describe('opaque wire validation', () => {
 		expect(() => operation({ ...op, path: 'private.md' })).toThrow(
 			'sync.invalid_envelope',
 		);
-		expect(() => operation({ ...op, version: 2 })).toThrow(
+		expect(() => operation({ ...op, version: 3 })).toThrow(
 			'sync.unsupported_version',
+		);
+		expect(() => operation({ ...op, version: 2 })).toThrow(
+			'sync.invalid_envelope',
+		);
+	});
+	test('version two authenticates generation and operation kind', () => {
+		const f = fixture();
+		const value: EncryptedOperation = {
+			...f.make(),
+			version: 2,
+			generation: 'fresh',
+			kind: 'text',
+		};
+		value.signature = sign(
+			null,
+			signingBytes(value),
+			f.keys.privateKey,
+		).toString('base64');
+		expect(() => verifyOperation(operation(value), f.publicKey)).not.toThrow();
+		for (const changed of [{ generation: 'old' }, { kind: 'file' as const }]) {
+			expect(() =>
+				verifyOperation(operation({ ...value, ...changed }), f.publicKey),
+			).toThrow('sync.invalid_signature');
+		}
+		expect(() => operation({ ...value, version: 1 })).toThrow(
+			'sync.invalid_envelope',
 		);
 	});
 	test('base64 is canonical and bounded', () => {

@@ -71,3 +71,40 @@ export async function saveNoteWithReconciliation(
 	}
 	throw new Error('The note could not be reconciled automatically');
 }
+
+/** Title-only metadata patch: never reserialize a potentially stale editor body. */
+export async function saveCollaborativeNoteTitle(
+	note: Note,
+	baseTitle: string,
+	localTitle: string,
+): Promise<NoteSaveResult> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const current = await getNouraClient().notes.get(note.id);
+		const title = reconcileNoteTitle(baseTitle, localTitle, current.title);
+		if (title.status === 'conflict')
+			return {
+				status: 'conflict',
+				draft: { title: localTitle, body: current.body },
+				current,
+			};
+		if (title.title === current.title)
+			return { status: 'saved', value: current };
+		try {
+			const result = await getNouraClient().notes.update(note.id, {
+				expectedRevision: current.revision,
+				title: title.title,
+			});
+			return { status: 'saved', value: result.value as Note };
+		} catch (error) {
+			if (
+				!isCoreError(error) ||
+				error.code !== 'revision_conflict' ||
+				attempt === 2
+			)
+				throw error;
+		}
+	}
+	throw new Error(
+		'The title changed while saving. Retry to review the current title.',
+	);
+}

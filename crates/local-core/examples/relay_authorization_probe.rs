@@ -70,6 +70,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             },
         ],
         vec![AccessObject {
+            document: None,
             object_id: captured.object_id.clone(),
             epoch: 1,
             grants: vec![],

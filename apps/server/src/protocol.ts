@@ -63,12 +63,19 @@ export function operation(value: unknown): EncryptedOperation {
 		'ciphertext',
 		'signature',
 	];
+	if (input.version === 2) keys.push('generation', 'kind');
 	if (
 		Object.keys(input).length !== keys.length ||
 		keys.some((key) => !(key in input))
 	)
 		throw new SyncError('sync.invalid_envelope');
-	if (input.version !== 1) throw new SyncError('sync.unsupported_version');
+	if (input.version !== 1 && input.version !== 2)
+		throw new SyncError('sync.unsupported_version');
+	if (input.version === 2) {
+		identifier(input.generation);
+		if (!['text', 'metadata', 'file'].includes(input.kind as string))
+			throw new SyncError('sync.invalid_operation_kind');
+	}
 	for (const key of ['operationId', 'workspaceId', 'objectId', 'deviceId'])
 		identifier(input[key]);
 	if (!Number.isSafeInteger(input.epoch) || (input.epoch as number) < 1)
@@ -96,6 +103,7 @@ export function signingBytes(
 			op.policyRevision,
 			op.nonce,
 			op.ciphertext,
+			...(op.version === 2 ? [op.generation, op.kind] : []),
 		]),
 	);
 }

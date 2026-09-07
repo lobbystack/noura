@@ -246,3 +246,8 @@ export type { RemoteSyncWorkspace } from './generated/RemoteSyncWorkspace';
 export type { SyncConflict } from './generated/SyncConflict';
 export type { ResolveSyncConflict } from './generated/ResolveSyncConflict';
 export type { SyncResolutionChoice } from './generated/SyncResolutionChoice';
+
+export type { CollaborationOpenInput } from './generated/CollaborationOpenInput';
+export type { CollaborationSession } from './generated/CollaborationSession';
+export type { CollaborationSubmitInput } from './generated/CollaborationSubmitInput';
+export type { CollaborationReceipt } from './generated/CollaborationReceipt';

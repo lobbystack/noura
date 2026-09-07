@@ -1,3 +1,4 @@
+import { isPlainTextPath } from './editor/text-files';
 import type { WorkspaceEntry } from '@noura/workspace';
 
 export interface WorkspaceTreeNode {
@@ -177,5 +178,7 @@ export function treeTargetFor(node: WorkspaceTreeNode): TreeNavigationTarget {
 	if (node.parseStatus === 'unmanaged' || node.parseStatus === 'malformed') {
 		return { route: '/notes', query: { raw: node.relativePath } };
 	}
+	if (isPlainTextPath(node.relativePath))
+		return { route: '/notes', query: { raw: node.relativePath } };
 	return { route: null, query: {} };
 }

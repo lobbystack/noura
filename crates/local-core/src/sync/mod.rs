@@ -4,16 +4,20 @@ mod access;
 mod account;
 mod approvals;
 pub(crate) mod blobs;
+mod checkpoints;
+pub mod collaboration;
 mod conflicts;
+pub use checkpoints::{AccessTransition, CheckpointContent, EncryptedCheckpoint};
 mod coordinator;
 mod crypto;
+pub(crate) use crypto::decode;
 mod keys;
 mod recovery;
 mod signin;
 mod transport;
 pub use access::{
-    AccessMember, AccessObject, AccessPolicy, ObjectGrant, ObjectRole, PolicyEnvelope,
-    WorkspaceRole,
+    AccessMember, AccessObject, AccessPolicy, DocumentDescriptor, DocumentMode, ObjectGrant,
+    ObjectRole, PolicyEnvelope, WorkspaceRole,
 };
 pub use account::{SyncAccount, SyncAccountPoll, SyncAccountService};
 pub use approvals::{
@@ -27,7 +31,7 @@ pub use coordinator::{
     RemoteSyncWorkspace, WorkspaceSyncConfig, WorkspaceSyncCoordinator, WorkspaceSyncPhase,
     WorkspaceSyncStatus,
 };
-pub use crypto::{EncryptedOperation, ObjectKey, SigningIdentity};
+pub use crypto::{EncryptedOperation, ObjectKey, OperationKind, SigningIdentity};
 pub use keys::{DeviceKeys, KeyEnvelope, OsSyncCredentials, SyncCredentials};
 use serde::{Deserialize, Serialize};
 pub use signin::{DeviceConnection, DeviceSignIn, DeviceSignInInfo, DeviceSignInStatus};

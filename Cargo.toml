@@ -9,6 +9,7 @@ license = "MIT"
 rust-version = "1.91"
 
 [workspace.dependencies]
+yrs = { version = "=0.26.0", features = ["small-client", "sync"] }
 age = { version = "=0.12.1", default-features = false }
 aes-gcm = "=0.10.3"
 base64 = "0.22"

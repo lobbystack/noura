@@ -440,6 +440,7 @@ impl WorkspaceSyncCoordinator {
                 envelopes.push(PolicyEnvelope::from(envelope));
             }
             objects.push(AccessObject {
+                document: None,
                 object_id: object.object_id.clone(),
                 epoch,
                 grants,
@@ -788,6 +789,7 @@ impl HttpSyncTransport {
                 envelopes.push(PolicyEnvelope::from(envelope));
             }
             objects.push(AccessObject {
+                document: None,
                 object_id: object.object_id.clone(),
                 epoch,
                 grants,

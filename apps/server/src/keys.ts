@@ -86,6 +86,9 @@ export async function storeOwnKey(
 				throw new SyncError('sync.key_changed', 409);
 			return;
 		}
+		const [checkpoint] =
+			await tx`SELECT 1 FROM noura_checkpoints WHERE workspace_id=${workspace} AND object_id=${object} LIMIT 1`;
+		if (checkpoint) throw new SyncError('sync.key_rotation_required', 409);
 		await tx`INSERT INTO noura_key_envelopes(workspace_id,object_id,epoch,device_id,wrapped_key,signing_device,signature) VALUES(${workspace},${object},${epoch},${recipient},${value.wrappedKey as string},${actor.deviceId},${value.signature as string})`;
 	});
 }

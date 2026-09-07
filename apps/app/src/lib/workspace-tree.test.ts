@@ -105,6 +105,19 @@ describe('tree navigation targets', () => {
 		});
 	});
 
+	test('plain text and code files open through the native collaborative surface', () => {
+		const tree = buildWorkspaceTree([
+			entry('draft.txt'),
+			entry('main.rs'),
+			entry('component.svelte'),
+		]);
+		for (const node of tree)
+			expect(treeTargetFor(node)).toEqual({
+				route: '/notes',
+				query: { raw: node.relativePath },
+			});
+	});
+
 	test('folders and binaries are not openable', () => {
 		const tree = buildWorkspaceTree([
 			entry('assets', 'folder'),

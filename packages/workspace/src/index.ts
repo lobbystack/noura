@@ -8,6 +8,10 @@ import {
 	type AiToolDefinition,
 } from '@noura/ai';
 import type {
+	CollaborationOpenInput,
+	CollaborationSession,
+	CollaborationSubmitInput,
+	CollaborationReceipt,
 	WorkspaceSyncStatus,
 	SyncDevice,
 	SyncInvitation,
@@ -296,6 +300,14 @@ export interface PluginStateService {
 }
 
 export interface NouraClient {
+	collaboration: {
+		open(input: CollaborationOpenInput): Promise<CollaborationSession | null>;
+		submitUpdates(
+			input: CollaborationSubmitInput,
+		): Promise<CollaborationReceipt>;
+		flush(input: { sessionId: string }): Promise<void>;
+		close(input: { sessionId: string }): Promise<void>;
+	};
 	sync: {
 		workspaceStatus(): Promise<WorkspaceSyncStatus>;
 		workspaceDevices(): Promise<SyncDevice[]>;
@@ -501,6 +513,19 @@ export function createNouraClient(
 			: project.relativePath.slice(0, separator + 1);
 	};
 	return {
+		collaboration: {
+			open: (input) => transport.request('collaboration_open', { input }),
+			submitUpdates: (input) =>
+				transport.request('collaboration_submit_updates', { input }),
+			flush: (input) =>
+				transport.request('collaboration_flush', {
+					sessionId: input.sessionId,
+				}),
+			close: (input) =>
+				transport.request('collaboration_close', {
+					sessionId: input.sessionId,
+				}),
+		},
 		sync: {
 			workspaceStatus: () => transport.request('sync_workspace_status'),
 			workspaceDevices: () => transport.request('sync_workspace_devices'),

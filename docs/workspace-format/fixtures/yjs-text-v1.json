@@ -1,0 +1,20 @@
+{
+	"version": 1,
+	"producer": "yjs@13.6.32",
+	"base": "AQERAAQBB2NvbnRlbnQbQfCfmIAgZcyBIOS4reaWhw0KcmVtb3ZlIG1lAA==",
+	"updates": [
+		"AQERFMQRAhEDBPCfpoABEQEBAg==",
+		"AQERFoQREwcgcmVtb3RlAA==",
+		"AQERHcQRABEBBPCfmIABEQEUAg==",
+		"AQERH8QRAhEUBPCfpoABEQEdAg=="
+	],
+	"states": [
+		"A🦀 é 中文\r\nremove me",
+		"A🦀 é 中文\r\nremove me remote",
+		"A😀 é 中文\r\nremove me remote",
+		"A🦀 é 中文\r\nremove me remote"
+	],
+	"text": "A🦀 é 中文\r\nremove me remote",
+	"state": "AQcRAAQBB2NvbnRlbnQBQYQRAATwn5iAhBECFiBlzIEg5Lit5paHDQpyZW1vdmUgbWXEEQIRAwTwn6aAhBETByByZW1vdGXEEQARAQTwn5iAxBECERQE8J+mgAERAwECFAIdAg==",
+	"vector": "AREh"
+}

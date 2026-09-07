@@ -1,0 +1,53 @@
+{
+	"digest": "9697ccecccb4feeb243de6d1b4f94c7e80eb1934d87ec7879d20cf71e0099b3e",
+	"publicKey": "JYbprL07G5v9/IcPvG7r7mIPCaRboVcCYRrodvu+F/U=",
+	"transition": {
+		"checkpoints": [
+			{
+				"coveredSequence": "4",
+				"generation": "generation_2",
+				"payload": {
+					"ciphertext": "i1M/cvlHFKjYa+/4jpTR6MQGBINpIRxGME2gXQ32y7m8oDSw62w8gdehBT50cCNN7T5j39iTHm1TMOZIWDJbRk/08S6GVRkTbUvbMPwZGiwUmr1fKBnWBvyT4QMj91nOxJXJDVv2sFXtq1Rqr5h90ITq7QL7YaY4wrs6V2JLO9UCk3/G2hSYDkmpmMiE2+d8Yk1yP5DgYxUh/M3wcyyQuqQK+QjikQmZDb8dQNZT/b1MNUbMuwXdsCbbJp4p7cfqtmG+IQXuJGC5bkp75bnCbVNGcRU67RWoKlmqNxJb3yINpHCVx29SXkRf6gb5P7aUDrUJuyzOzVIDxmN+kFEDgb2WdOWsY16/+eojE8yForZTdm4y/lND+1UvkN3KlAJQ",
+					"deviceId": "device_7e5710cf-4df6-40d0-89b9-dc6ec9e775c0",
+					"epoch": 2,
+					"nonce": "zR7RR8IIVkEGgmPM",
+					"objectId": "object",
+					"operationId": "c0eecfc0-3fb5-44b1-a23e-a6099d2067b2",
+					"policyRevision": "1",
+					"signature": "xbV/o0tpfibdfz1MQlV0oMgjt6ijd4r9Vizyh0ssbOI21TxzsRpwX0OYgtSAto8IhkSZ+Mvmrj/lxWW7eQESAQ==",
+					"version": 1,
+					"workspaceId": "workspace"
+				},
+				"signature": "N/wLpuvlCPr0Ic3hN/vfIpidTb91sD5BPJx+X3GwKIwjHXkHOazkWy3d3zgT4cXFX27KXDFcr+JcI1+pAjqtCg==",
+				"version": 1
+			}
+		],
+		"coveredSequence": "4",
+		"policy": {
+			"deviceId": "device_7e5710cf-4df6-40d0-89b9-dc6ec9e775c0",
+			"members": [{ "accountId": "owner", "role": "owner" }],
+			"objects": [
+				{
+					"envelopes": [
+						{
+							"deviceId": "device_7e5710cf-4df6-40d0-89b9-dc6ec9e775c0",
+							"signature": "mV5pC3MuB1/Ld1SoX4JxUguMlWcpOEesWDn9hp5I0SB7CvSQffvB7Vd/kgBOxkSxHSrMIz1AMRB6EOjcbaC8DQ==",
+							"wrappedKey": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBsbk5qNFNvbENOczFVRDA1Q2pmaThraHJZbnR6TFF6ZlFkaFFmUHA4Q25nCmViRzIvZTRNcE5hQ2xFaFpzWmVmdFVDL3hCQzNIeFBzOVNMKytzSHRzWXMKLT4gKj1UJWUoVy1ncmVhc2UgYGxfWyBjS0hcIX49IGsgVApxUzBDVWJIS2I2a0pMNHF6cDE0cFVFY3liMDVCYkRrajBsczNRejQ2eHZweTB1aFZrUmY2dytqWDJ3QWhpa2ZFCjVBNDRjNko1OEwwL2lDNWZyTGMxUll5akJWLzZUWWU2bTJMdmpTdm9VclFCVzFQeVBvQS8zTDBNQUtqVVhMaE4KTmN5RAotLS0ga3VBVE43NUQwM0ppRGVNZVN0SHk1aWhZQjN0a1JPWkhUejJ0UjdJd28wVQrA+SO6/zo/VvSjNIxNokTYhbmzdG25nxbYeesZsVIwu+Mj3Q2URCr6+qEIigRf2KqJju8e/rjg2OIgWbrr6SlwTnEjhPQWeW+TbBnmV1jcwGPavsveY3lSOoLkV66HBk7cQxADLQIAroabypRVxwHsk/08N2Y9m7DWSRK/rL3kLL4="
+						}
+					],
+					"epoch": 2,
+					"grants": [],
+					"objectId": "object"
+				}
+			],
+			"previousPolicyDigest": null,
+			"revision": "1",
+			"signature": "YfEIH1CB0TrBlNRS+tGmn3Y+GrlRSLbgRPieCw18Gk2aA8lpypzuGgEIHhbjITFIHb6Xmekr/hdvf5FhXHI8Bw==",
+			"version": 1,
+			"workspaceId": "workspace"
+		},
+		"signature": "Fw08IuRiEK+joNym+8esfLMzBoAF0DqoRLwaEgW3S9VXfrK1yhnQv/NCYjAo6sHn2neXG2NhCX4GQNg7pbjwDQ==",
+		"transitionId": "b1b4899e-a913-4d19-9c67-c3896df34b58",
+		"version": 1
+	}
+}

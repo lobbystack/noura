@@ -1,25 +1,15 @@
+import {
+	accessTransition,
+	transitionDigest,
+	verifyTransition,
+	type AccessTransition,
+} from './checkpoints';
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { base64, cursor, identifier, record, SyncError } from './protocol';
 import type { SyncStore, Actor } from './store';
 
-export interface AccessPolicy {
-	version: 1;
-	workspaceId: string;
-	revision: string;
-	previousPolicyDigest: string | null;
-	deviceId: string;
-	members: {
-		accountId: string;
-		role: 'owner' | 'admin' | 'editor' | 'viewer';
-	}[];
-	objects: {
-		objectId: string;
-		epoch: number;
-		grants: { accountId: string; role: 'editor' | 'viewer' }[];
-		envelopes: { deviceId: string; wrappedKey: string; signature: string }[];
-	}[];
-	signature: string;
-}
+import type { AccessPolicy } from '../../../packages/shared/src/generated/AccessPolicy';
+export type { AccessPolicy };
 
 function exact(value: unknown, fields: string[]) {
 	const body = record(value);
@@ -55,7 +45,7 @@ export function accessPolicy(input: unknown): AccessPolicy {
 		'objects',
 		'signature',
 	]);
-	if (body.version !== 1 || cursor(body.revision) === '0')
+	if (![1, 2].includes(body.version as number) || cursor(body.revision) === '0')
 		throw new SyncError('sync.invalid_policy');
 	if (
 		body.previousPolicyDigest !== null &&
@@ -84,10 +74,27 @@ export function accessPolicy(input: unknown): AccessPolicy {
 		body.objects,
 		(v: AccessPolicy['objects'][number]) => v.objectId,
 		(input) => {
-			const value = exact(input, ['objectId', 'epoch', 'grants', 'envelopes']);
+			const value = exact(input, [
+				'objectId',
+				'epoch',
+				'grants',
+				'envelopes',
+				...(body.version === 2 ? ['document'] : []),
+			]);
+			let document: AccessPolicy['objects'][number]['document'];
+			if (body.version === 2) {
+				const descriptor = exact(value.document, ['generation', 'mode']);
+				if (!['text', 'attachment'].includes(descriptor.mode as string))
+					throw new SyncError('sync.invalid_document_mode');
+				document = {
+					generation: identifier(descriptor.generation),
+					mode: descriptor.mode as 'text' | 'attachment',
+				};
+			}
 			if (!Number.isSafeInteger(value.epoch) || (value.epoch as number) < 1)
 				throw new SyncError('sync.invalid_epoch');
 			return {
+				...(document ? { document } : {}),
 				objectId: identifier(value.objectId),
 				epoch: value.epoch as number,
 				grants: sorted(
@@ -127,7 +134,7 @@ export function accessPolicy(input: unknown): AccessPolicy {
 	);
 	base64(body.signature, 64);
 	return {
-		version: 1,
+		version: body.version as 1 | 2,
 		workspaceId: identifier(body.workspaceId),
 		revision: cursor(body.revision),
 		previousPolicyDigest: body.previousPolicyDigest as string | null,
@@ -157,6 +164,9 @@ export function accessSigningBytes(policy: Omit<AccessPolicy, 'signature'>) {
 					envelope.wrappedKey,
 					envelope.signature,
 				]),
+				...(policy.version === 2
+					? [[object.document!.generation, object.document!.mode]]
+					: []),
 			]),
 		]),
 	);
@@ -207,15 +217,31 @@ export async function setAccess(
 	store: SyncStore,
 	actor: Actor,
 	policy: AccessPolicy,
+	transition?: AccessTransition,
 ) {
 	if (policy.deviceId !== actor.deviceId)
 		throw new SyncError('sync.identity_mismatch', 403);
 	verifyAccess(policy, actor.publicKey);
+	if (transition) {
+		transition = accessTransition(transition);
+		verifyTransition(transition, actor.publicKey);
+		if (accessDigest(transition.policy) !== accessDigest(policy))
+			throw new SyncError('sync.invalid_transition');
+	}
 	await store.withWorkspace(
 		actor,
 		policy.workspaceId,
 		async (tx, state, role) => {
 			const workspace = policy.workspaceId;
+			if (transition) {
+				const [staged] =
+					await tx`SELECT digest,committed FROM noura_transitions WHERE workspace_id=${workspace} AND id=${transition.transitionId}`;
+				if (!staged || staged.digest !== transitionDigest(transition))
+					throw new SyncError('sync.transition_not_staged', 409);
+				if (staged.committed) return;
+				if (transition.coveredSequence !== String(state.sequence))
+					throw new SyncError('sync.transition_stale', 409);
+			}
 			if (!['owner', 'admin'].includes(role ?? ''))
 				throw new SyncError('sync.forbidden', 403);
 			if (BigInt(policy.revision) === BigInt(state.access_revision)) {
@@ -234,6 +260,11 @@ export async function setAccess(
 				throw new SyncError('sync.policy_revision_changed', 409);
 			const [previous] =
 				await tx`SELECT policy FROM noura_access_log WHERE workspace_id=${workspace} ORDER BY revision DESC LIMIT 1`;
+			if (
+				(previous?.policy as AccessPolicy | undefined)?.version === 2 &&
+				policy.version !== 2
+			)
+				throw new SyncError('sync.client_upgrade_required', 409);
 			const expectedPrevious = previous
 				? accessDigest(accessPolicy(previous.policy))
 				: null;
@@ -287,15 +318,55 @@ export async function setAccess(
 				);
 				const oldEnvelopes =
 					await tx`SELECT device_id,wrapped_key FROM noura_key_envelopes WHERE workspace_id=${workspace} AND object_id=${object.id} AND epoch=${object.epoch}`;
+				const [checkpointState] =
+					await tx`SELECT 1 FROM noura_checkpoints WHERE workspace_id=${workspace} AND object_id=${object.id} LIMIT 1`;
+				const changesReaders =
+					[...nextAccounts].some((account) => !oldAccounts.has(account)) ||
+					next.envelopes.some(
+						(envelope) =>
+							!oldEnvelopes.some((old) => old.device_id === envelope.deviceId),
+					);
 				const removesAccess =
 					[...oldAccounts].some((account) => !nextAccounts.has(account)) ||
 					oldEnvelopes.some((envelope) => !devices.has(envelope.device_id));
 				if (
 					next.epoch < Number(object.epoch) ||
 					next.epoch > Number(object.epoch) + 1 ||
-					(removesAccess && next.epoch !== Number(object.epoch) + 1)
+					((removesAccess ||
+						((transition || checkpointState) && changesReaders)) &&
+						next.epoch !== Number(object.epoch) + 1)
 				)
 					throw new SyncError('sync.key_rotation_required', 409);
+				const rotates = next.epoch !== Number(object.epoch);
+				const checkpoint = transition?.checkpoints.find(
+					(entry) => entry.payload.objectId === object.id,
+				);
+				if ((transition || checkpointState) && rotates && !checkpoint)
+					throw new SyncError('sync.checkpoint_required', 409);
+				const priorObject = (
+					previous?.policy as AccessPolicy | undefined
+				)?.objects.find((entry) => entry.objectId === object.id);
+				if (
+					policy.version === 2 &&
+					JSON.stringify(priorObject?.document) !==
+						JSON.stringify(next.document) &&
+					!checkpoint
+				)
+					throw new SyncError('sync.checkpoint_required', 409);
+				if (
+					checkpoint &&
+					policy.version === 2 &&
+					checkpoint.generation !== next.document?.generation
+				)
+					throw new SyncError('sync.invalid_generation');
+				if (checkpoint && !rotates)
+					throw new SyncError('sync.checkpoint_epoch_unchanged', 409);
+				if (checkpoint) {
+					const [reused] =
+						await tx`SELECT 1 FROM noura_checkpoints WHERE workspace_id=${workspace} AND object_id=${object.id} AND generation=${checkpoint.generation}`;
+					if (reused) throw new SyncError('sync.generation_reused', 409);
+					await tx`INSERT INTO noura_checkpoints(workspace_id,object_id,epoch,transition_id,generation,covered_sequence,checkpoint) VALUES(${workspace},${object.id},${next.epoch},${transition!.transitionId},${checkpoint.generation},${checkpoint.coveredSequence},${tx.json(JSON.parse(JSON.stringify(checkpoint)))})`;
+				}
 				const expectedDevices = activeDevices
 					.filter((device) => nextAccounts.has(device.account_id))
 					.map((device) => device.id)
@@ -318,7 +389,7 @@ export async function setAccess(
 					await tx`INSERT INTO noura_key_envelopes(workspace_id,object_id,epoch,device_id,wrapped_key,signing_device,signature)
 				 VALUES(${workspace},${object.id},${next.epoch},${envelope.deviceId},${envelope.wrappedKey},${actor.deviceId},${envelope.signature}) ON CONFLICT DO NOTHING`;
 				}
-				await tx`UPDATE noura_objects SET epoch=${next.epoch} WHERE workspace_id=${workspace} AND id=${object.id}`;
+				await tx`UPDATE noura_objects SET epoch=${next.epoch},generation=${next.document?.generation ?? null},document_mode=${next.document?.mode ?? null} WHERE workspace_id=${workspace} AND id=${object.id}`;
 				if (next.epoch !== Number(object.epoch))
 					await tx`UPDATE noura_public_links SET revoked=true WHERE workspace_id=${workspace} AND object_id=${object.id}`;
 				await tx`DELETE FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${object.id}`;
@@ -334,6 +405,8 @@ export async function setAccess(
 				 AND role=${member.role} AND completed_at IS NULL AND revoked_at IS NULL`;
 			await tx`INSERT INTO noura_access_log(workspace_id,revision,device_id,policy,signature) VALUES(${workspace},${policy.revision},${actor.deviceId},${tx.json(JSON.parse(JSON.stringify(policy)))},${policy.signature})`;
 			await tx`UPDATE noura_workspaces SET access_revision=${policy.revision} WHERE id=${workspace}`;
+			if (transition)
+				await tx`UPDATE noura_transitions SET committed=true WHERE workspace_id=${workspace} AND id=${transition.transitionId}`;
 			await tx`SELECT pg_notify('noura_sync',${workspace})`;
 		},
 	);

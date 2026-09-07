@@ -9,3 +9,4 @@ export type {
 	LiveMarkdownOptions,
 	MarkdownFormat,
 } from './types';
+export { createCollaborativeView } from './collaborative-view';

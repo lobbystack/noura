@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS noura_device_challenges (
 CREATE TABLE IF NOT EXISTS noura_rate_limits (
  account_id text PRIMARY KEY, window_start bigint NOT NULL, count integer NOT NULL
 );
+CREATE TABLE IF NOT EXISTS noura_collaboration_limits (
+ device_id text NOT NULL REFERENCES noura_devices(id) ON DELETE CASCADE,
+ bucket text NOT NULL CHECK(bucket IN ('durable','presence')),
+ tokens double precision NOT NULL, updated_at timestamptz NOT NULL,
+ PRIMARY KEY(device_id,bucket)
+);
 CREATE TABLE IF NOT EXISTS noura_workspaces (
  id text PRIMARY KEY, sequence bigint NOT NULL DEFAULT 0,
  quota_bytes bigint NOT NULL DEFAULT 1073741824, used_bytes bigint NOT NULL DEFAULT 0
@@ -28,6 +34,8 @@ CREATE TABLE IF NOT EXISTS noura_objects (
  epoch bigint NOT NULL DEFAULT 1,
  PRIMARY KEY(workspace_id, id)
 );
+ALTER TABLE noura_objects ADD COLUMN IF NOT EXISTS generation text;
+ALTER TABLE noura_objects ADD COLUMN IF NOT EXISTS document_mode text;
 CREATE TABLE IF NOT EXISTS noura_grants (
  workspace_id text NOT NULL, object_id text NOT NULL, account_id text NOT NULL,
  role text NOT NULL CHECK(role IN ('editor','viewer')),
@@ -45,6 +53,8 @@ CREATE TABLE IF NOT EXISTS noura_operations (
 );
 CREATE INDEX IF NOT EXISTS noura_operations_object_seq ON noura_operations(workspace_id,object_id,sequence);
 ALTER TABLE noura_operations ADD COLUMN IF NOT EXISTS policy_revision bigint NOT NULL DEFAULT 0;
+ALTER TABLE noura_operations ADD COLUMN IF NOT EXISTS generation text;
+ALTER TABLE noura_operations ADD COLUMN IF NOT EXISTS kind text;
 CREATE TABLE IF NOT EXISTS noura_key_envelopes (
  workspace_id text NOT NULL, object_id text NOT NULL, epoch bigint NOT NULL,
  device_id text REFERENCES noura_devices(id), wrapped_key text NOT NULL,
@@ -60,6 +70,20 @@ CREATE TABLE IF NOT EXISTS noura_access_log (
  device_id text NOT NULL REFERENCES noura_devices(id), policy jsonb NOT NULL,
  signature text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(workspace_id, revision)
+);
+CREATE TABLE IF NOT EXISTS noura_transitions (
+ workspace_id text NOT NULL REFERENCES noura_workspaces(id), id text NOT NULL,
+ device_id text NOT NULL REFERENCES noura_devices(id), digest text NOT NULL,
+ body jsonb NOT NULL, payload_bytes integer NOT NULL, committed boolean NOT NULL DEFAULT false,
+ created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(workspace_id,id)
+);
+CREATE TABLE IF NOT EXISTS noura_checkpoints (
+ workspace_id text NOT NULL, object_id text NOT NULL, epoch bigint NOT NULL,
+ transition_id text NOT NULL, generation text NOT NULL, covered_sequence bigint NOT NULL,
+ checkpoint jsonb NOT NULL,
+ PRIMARY KEY(workspace_id,object_id,epoch),
+ FOREIGN KEY(workspace_id,object_id) REFERENCES noura_objects(workspace_id,id),
+ FOREIGN KEY(workspace_id,transition_id) REFERENCES noura_transitions(workspace_id,id)
 );
 CREATE TABLE IF NOT EXISTS noura_public_links (
  id text PRIMARY KEY, token_hash text NOT NULL UNIQUE,

@@ -1,3 +1,8 @@
+import {
+	accessTransition,
+	readTransition,
+	stageTransition,
+} from './checkpoints';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
@@ -40,6 +45,8 @@ export function createApp(
 		auth?: AccountAuth;
 		webRoot?: string;
 		blobs?: BlobService;
+		/** Experimental protocol; desktop checkpoint recovery is not yet integrated. */
+		checkpointTransitions?: boolean;
 	},
 ) {
 	const app = new Hono<Env>();
@@ -174,7 +181,11 @@ export function createApp(
 		if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization))
 			throw new SyncError('sync.unauthorized', 401);
 		const actor = await store.authenticate(authorization.slice(7));
-		await store.rateLimit(actor);
+		if (/^\/v1\/workspaces\/[^/]+\/operations$/.test(c.req.path)) {
+			await store.collaborationRateLimit(actor);
+		} else {
+			await store.rateLimit(actor);
+		}
 		c.set('actor', actor);
 		await next();
 	});
@@ -336,6 +347,70 @@ export function createApp(
 			watcher?.close();
 		}
 	});
+	app.get('/v1/capabilities', (c) =>
+		c.json({
+			protocol: 1,
+			checkpoints: options.checkpointTransitions ? [1] : [],
+			accessTransitions: options.checkpointTransitions ? [1] : [],
+			liveText: [],
+		}),
+	);
+	if (options.checkpointTransitions) {
+		app.post('/v1/workspaces/:workspace/transitions', async (c) => {
+			const value = accessTransition(await c.req.json());
+			if (value.policy.workspaceId !== identifier(c.req.param('workspace')))
+				throw new SyncError('sync.identity_mismatch', 403);
+			return c.json(await stageTransition(store, c.get('actor'), value));
+		});
+		app.get('/v1/workspaces/:workspace/transitions/:transition', async (c) =>
+			c.json(
+				await readTransition(
+					store,
+					c.get('actor'),
+					identifier(c.req.param('workspace')),
+					identifier(c.req.param('transition')),
+				),
+			),
+		);
+		app.post(
+			'/v1/workspaces/:workspace/transitions/:transition/commit',
+			async (c) => {
+				const workspace = identifier(c.req.param('workspace'));
+				const id = identifier(c.req.param('transition'));
+				await readTransition(store, c.get('actor'), workspace, id);
+				const [row] =
+					await store.db`SELECT body FROM noura_transitions WHERE workspace_id=${workspace} AND id=${id}`;
+				if (!row) throw new SyncError('sync.not_found', 404);
+				const value = accessTransition(row.body);
+				await setAccess(store, c.get('actor'), value.policy, value);
+				return c.json(
+					await readTransition(store, c.get('actor'), workspace, id),
+				);
+			},
+		);
+		app.get(
+			'/v1/workspaces/:workspace/objects/:object/checkpoint',
+			async (c) => {
+				const workspace = identifier(c.req.param('workspace'));
+				const object = identifier(c.req.param('object'));
+				return c.json(
+					await store.withWorkspace(
+						c.get('actor'),
+						workspace,
+						async (tx, _state, role) => {
+							const [grant] =
+								await tx`SELECT 1 FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${object} AND account_id=${c.get('actor').accountId}`;
+							if (!role && !grant) throw new SyncError('sync.forbidden', 403);
+							const [row] =
+								await tx`SELECT c.checkpoint FROM noura_checkpoints c JOIN noura_objects o ON o.workspace_id=c.workspace_id AND o.id=c.object_id AND o.epoch=c.epoch WHERE c.workspace_id=${workspace} AND c.object_id=${object}`;
+							if (!row) throw new SyncError('sync.not_found', 404);
+							return row.checkpoint;
+						},
+					),
+				);
+			},
+		);
+	}
 	app.put('/v1/workspaces/:workspace/access', async (c) => {
 		const policy = accessPolicy(await c.req.json());
 		if (policy.workspaceId !== identifier(c.req.param('workspace')))

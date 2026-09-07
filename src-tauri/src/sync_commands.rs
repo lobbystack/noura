@@ -614,3 +614,70 @@ pub async fn sync_account_disconnect(state: State<'_, AppState>) -> Result<(), C
         .disconnect(&OsSyncCredentials)
         .await
 }
+
+#[tauri::command]
+pub async fn collaboration_open(
+    state: State<'_, AppState>,
+    input: local_core::sync::collaboration::CollaborationOpenInput,
+) -> Result<Option<local_core::sync::collaboration::CollaborationSession>, CoreError> {
+    let engine = current_engine(&state)?;
+    if engine.sync_configuration()?.is_none() {
+        return Ok(None);
+    }
+    let Some(connection) = state
+        .sync_account
+        .lock()
+        .await
+        .connection(&OsSyncCredentials)?
+    else {
+        return Ok(None);
+    };
+    WorkspaceSyncCoordinator::collaboration_open(&engine, &connection, &OsSyncCredentials, input)
+}
+#[tauri::command]
+pub async fn collaboration_submit_updates(
+    state: State<'_, AppState>,
+    input: local_core::sync::collaboration::CollaborationSubmitInput,
+) -> Result<local_core::sync::collaboration::CollaborationReceipt, CoreError> {
+    let engine = current_engine(&state)?;
+    let connection = state
+        .sync_account
+        .lock()
+        .await
+        .connection(&OsSyncCredentials)?
+        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let receipt = WorkspaceSyncCoordinator::collaboration_submit(
+        &engine,
+        &connection,
+        &OsSyncCredentials,
+        input,
+    )?;
+    state.sync_wake.notify_one();
+    Ok(receipt)
+}
+#[tauri::command]
+pub fn collaboration_close(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), CoreError> {
+    current_engine(&state)?.collaboration_close(&session_id)
+}
+#[tauri::command]
+pub async fn collaboration_flush(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), CoreError> {
+    let engine = current_engine(&state)?;
+    let connection = state
+        .sync_account
+        .lock()
+        .await
+        .connection(&OsSyncCredentials)?
+        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    WorkspaceSyncCoordinator::collaboration_flush(
+        &engine,
+        &connection,
+        &OsSyncCredentials,
+        &session_id,
+    )
+}

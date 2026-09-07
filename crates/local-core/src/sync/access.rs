@@ -5,7 +5,8 @@ use sha2::{Digest, Sha256};
 use super::{DeviceKeys, KeyEnvelope, crypto::decode, identifier, invalid};
 use crate::Result;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceRole {
     Owner,
@@ -14,28 +15,32 @@ pub enum WorkspaceRole {
     Viewer,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum ObjectRole {
     Editor,
     Viewer,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessMember {
     pub account_id: String,
     pub role: WorkspaceRole,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObjectGrant {
     pub account_id: String,
     pub role: ObjectRole,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyEnvelope {
     pub device_id: String,
@@ -43,19 +48,41 @@ pub struct PolicyEnvelope {
     pub signature: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentDescriptor {
+    pub generation: String,
+    pub mode: DocumentMode,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentMode {
+    Text,
+    Attachment,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessObject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub document: Option<DocumentDescriptor>,
     pub object_id: String,
+    #[ts(type = "number")]
     pub epoch: u64,
     pub grants: Vec<ObjectGrant>,
     pub envelopes: Vec<PolicyEnvelope>,
 }
 
 /// Signed authorization metadata; it contains no plaintext content keys or workspace paths.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessPolicy {
+    #[ts(type = "1 | 2")]
     pub version: u8,
     pub workspace_id: String,
     pub revision: String,
@@ -88,7 +115,11 @@ impl AccessPolicy {
         objects: Vec<AccessObject>,
     ) -> Result<Self> {
         let mut policy = Self {
-            version: 1,
+            version: if objects.iter().any(|object| object.document.is_some()) {
+                2
+            } else {
+                1
+            },
             workspace_id: workspace.into(),
             revision: revision.into(),
             previous_policy_digest,
@@ -145,7 +176,7 @@ impl AccessPolicy {
             .revision
             .parse()
             .map_err(|_| invalid("sync_invalid_policy"))?;
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || revision == 0
             || revision > i64::MAX as u64
             || revision.to_string() != self.revision
@@ -170,6 +201,14 @@ impl AccessPolicy {
             return Err(invalid("sync_owner_required"));
         }
         for object in &self.objects {
+            if let Some(document) = &object.document {
+                identifier(&document.generation)?;
+                if self.version != 2 {
+                    return Err(invalid("sync_invalid_policy"));
+                }
+            } else if self.version == 2 {
+                return Err(invalid("sync_document_required"));
+            }
             if object.epoch == 0 || object.epoch > 9_007_199_254_740_991 {
                 return Err(invalid("sync_invalid_epoch"));
             }
@@ -207,7 +246,17 @@ impl AccessPolicy {
                     .iter()
                     .map(|e| (&e.device_id, &e.wrapped_key, &e.signature))
                     .collect();
-                (&v.object_id, v.epoch, grants, envelopes)
+                if self.version == 2 {
+                    serde_json::json!([
+                        &v.object_id,
+                        v.epoch,
+                        grants,
+                        envelopes,
+                        v.document.as_ref().map(|d| (&d.generation, d.mode))
+                    ])
+                } else {
+                    serde_json::json!([&v.object_id, v.epoch, grants, envelopes])
+                }
             })
             .collect();
         serde_json::to_vec(&(

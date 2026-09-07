@@ -1183,6 +1183,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            sync_commands::collaboration_open,
+            sync_commands::collaboration_submit_updates,
+            sync_commands::collaboration_close,
+            sync_commands::collaboration_flush,
             sync_commands::sync_workspace_status,
             sync_commands::sync_workspace_devices,
             sync_commands::sync_workspace_conflicts,

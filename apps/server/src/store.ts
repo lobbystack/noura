@@ -42,7 +42,7 @@ export class SyncStore {
 		await this
 			.db`SELECT w.access_revision,d.encryption_recipient,k.signing_device,k.signature,a.policy,p.snapshot,
 		 s.token_hash,c.expires_at,r.count,m.role,o.epoch,g.role,u.ciphertext,b.tus_info,b.complete,
-		 i.accepted_account_id,i.completed_at,i.revoked_at
+		 i.accepted_account_id,i.completed_at,i.revoked_at,t.committed,cp.checkpoint
 		 FROM noura_workspaces w
 		 LEFT JOIN noura_devices d ON false
 		 LEFT JOIN noura_key_envelopes k ON false
@@ -56,6 +56,8 @@ export class SyncStore {
 		 LEFT JOIN noura_operations u ON false
 		 LEFT JOIN noura_public_links p ON false
 		 LEFT JOIN noura_invitations i ON false
+		 LEFT JOIN noura_transitions t ON false
+		 LEFT JOIN noura_checkpoints cp ON false
 		 LEFT JOIN noura_blobs b ON false LIMIT 0`;
 	}
 	async close() {
@@ -122,6 +124,28 @@ export class SyncStore {
 		 count=CASE WHEN noura_rate_limits.window_start=EXCLUDED.window_start THEN noura_rate_limits.count+1 ELSE 1 END,
 		 window_start=EXCLUDED.window_start RETURNING count`;
 		if (row!.count > 120) throw new SyncError('sync.rate_limited', 429);
+	}
+	/** Per-device token buckets shared across server instances; no content or presence is retained. */
+	async collaborationRateLimit(
+		actor: Actor,
+		bucket: 'durable' | 'presence' = 'durable',
+	) {
+		const rate = bucket === 'durable' ? 20 : 10;
+		const burst = bucket === 'durable' ? 40 : 10;
+		const allowed = await this.db.begin(async (tx) => {
+			await tx`INSERT INTO noura_collaboration_limits(device_id,bucket,tokens,updated_at)
+			 VALUES(${actor.deviceId},${bucket},${burst},clock_timestamp()) ON CONFLICT DO NOTHING`;
+			const [row] =
+				await tx`SELECT tokens,updated_at FROM noura_collaboration_limits
+			 WHERE device_id=${actor.deviceId} AND bucket=${bucket} FOR UPDATE`;
+			const [balance] = await tx`UPDATE noura_collaboration_limits SET
+			 tokens=LEAST(${burst},tokens+GREATEST(0,extract(epoch FROM clock_timestamp()-updated_at))*${rate}),
+			 updated_at=clock_timestamp() WHERE device_id=${actor.deviceId} AND bucket=${bucket} RETURNING tokens`;
+			if (!row || !balance || Number(balance.tokens) < 1) return false;
+			await tx`UPDATE noura_collaboration_limits SET tokens=tokens-1 WHERE device_id=${actor.deviceId} AND bucket=${bucket}`;
+			return true;
+		});
+		if (!allowed) throw new SyncError('sync.rate_limited', 429);
 	}
 	async authenticate(token: string): Promise<Actor> {
 		const [row] = await this.db`
@@ -216,7 +240,7 @@ export class SyncStore {
 			let used = BigInt(state.used_bytes);
 			for (const op of ops) {
 				const [object] =
-					await tx`SELECT epoch FROM noura_objects WHERE workspace_id=${workspace} AND id=${op.objectId}`;
+					await tx`SELECT epoch,generation,document_mode FROM noura_objects WHERE workspace_id=${workspace} AND id=${op.objectId}`;
 				const [grant] =
 					await tx`SELECT role FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${op.objectId} AND account_id=${actor.accountId}`;
 				if (
@@ -236,6 +260,15 @@ export class SyncStore {
 				}
 				if (BigInt(object.epoch) !== BigInt(op.epoch))
 					throw new SyncError('sync.stale_epoch', 409);
+				if (
+					object.generation &&
+					(op.version !== 2 || op.generation !== object.generation)
+				)
+					throw new SyncError('sync.generation_changed', 409);
+				if (object.document_mode === 'text' && op.kind === 'file')
+					throw new SyncError('sync.whole_file_replacement_forbidden', 409);
+				if (!object.generation && op.version !== 1)
+					throw new SyncError('sync.checkpoint_required', 409);
 				if (BigInt(op.policyRevision) > BigInt(state.access_revision))
 					throw new SyncError('sync.stale_policy', 409);
 				const bytes = Buffer.byteLength(op.ciphertext, 'base64');
@@ -243,8 +276,8 @@ export class SyncStore {
 				if (used > BigInt(state.quota_bytes))
 					throw new SyncError('sync.quota_exceeded', 413);
 				sequence++;
-				await tx`INSERT INTO noura_operations(workspace_id,operation_id,object_id,device_id,sequence,epoch,policy_revision,nonce,ciphertext,signature,digest,payload_bytes)
-				 VALUES(${workspace},${op.operationId},${op.objectId},${op.deviceId},${sequence.toString()},${op.epoch},${op.policyRevision},${op.nonce},${op.ciphertext},${op.signature},${hash},${bytes})`;
+				await tx`INSERT INTO noura_operations(workspace_id,operation_id,object_id,device_id,sequence,epoch,policy_revision,nonce,ciphertext,signature,digest,payload_bytes,generation,kind)
+				 VALUES(${workspace},${op.operationId},${op.objectId},${op.deviceId},${sequence.toString()},${op.epoch},${op.policyRevision},${op.nonce},${op.ciphertext},${op.signature},${hash},${bytes},${op.generation ?? null},${op.kind ?? null})`;
 				sequences.push(sequence.toString());
 			}
 			await tx`UPDATE noura_workspaces SET sequence=${sequence.toString()},used_bytes=${used.toString()} WHERE id=${workspace}`;
@@ -273,7 +306,10 @@ export class SyncStore {
 			const operations: SequencedOperation[] = rows
 				.slice(0, 100)
 				.map((row) => ({
-					version: 1,
+					version: row.generation ? 2 : 1,
+					...(row.generation
+						? { generation: row.generation, kind: row.kind }
+						: {}),
 					workspaceId: workspace,
 					operationId: row.operation_id,
 					objectId: row.object_id,

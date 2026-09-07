@@ -22,8 +22,8 @@
 		"@lezer/common": "^1.2.3",
 		"@lezer/markdown": "^1.4.3",
 		"katex": "0.16.22",
-		"y-codemirror.next": "^0.3.5",
-		"yjs": "^13.6.21"
+		"y-codemirror.next": "0.3.6",
+		"yjs": "13.6.32"
 	},
 	"devDependencies": {
 		"@happy-dom/global-registrator": "^20.12.2",

@@ -93,6 +93,20 @@ pub struct RemoteSyncWorkspace {
 pub struct WorkspaceSyncCoordinator;
 
 impl WorkspaceSyncCoordinator {
+    pub fn collaboration_flush(
+        engine: &WorkspaceEngine,
+        connection: &DeviceConnection,
+        store: &impl SyncCredentials,
+        session_id: &str,
+    ) -> Result<()> {
+        let config = engine
+            .sync_configuration()?
+            .ok_or_else(|| invalid("sync_not_enabled"))?;
+        let device = DeviceKeys::load(store, &connection.device_id)?;
+        Self::check_connection(&config, connection, &device)?;
+        let secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
+        engine.collaboration_flush(session_id, &secrets)
+    }
     pub fn conflicts(
         engine: &WorkspaceEngine,
         connection: &DeviceConnection,
@@ -224,6 +238,7 @@ impl WorkspaceSyncCoordinator {
             .receive_keys(engine, &device, &mut secrets)
             .await?;
         let role = access.authorize_writers(engine, &device, &config, &mut secrets)?;
+        transport.receive_checkpoints(engine, &secrets).await?;
         if role == WorkspaceRole::Viewer {
             return transport.synchronize_readonly(engine, &secrets, wait).await;
         }
@@ -254,6 +269,51 @@ impl WorkspaceSyncCoordinator {
             return Err(invalid("sync_connection_changed"));
         }
         Ok(())
+    }
+}
+
+impl WorkspaceSyncCoordinator {
+    pub fn collaboration_open(
+        engine: &WorkspaceEngine,
+        connection: &DeviceConnection,
+        store: &impl SyncCredentials,
+        input: super::collaboration::CollaborationOpenInput,
+    ) -> Result<Option<super::collaboration::CollaborationSession>> {
+        let Some(config) = engine.sync_configuration()? else {
+            return Ok(None);
+        };
+        let device = DeviceKeys::load(store, &connection.device_id)?;
+        Self::check_connection(&config, connection, &device)?;
+        let Some(policy) = engine.sync_access_policy()? else {
+            return Ok(None);
+        };
+        let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
+        (
+            secrets.authorized_workspace_writers,
+            secrets.authorized_object_writers,
+        ) = super::approvals::policy_authorizations(&policy, &config);
+        engine.collaboration_open(input, &device, &secrets)
+    }
+    pub fn collaboration_submit(
+        engine: &WorkspaceEngine,
+        connection: &DeviceConnection,
+        store: &impl SyncCredentials,
+        input: super::collaboration::CollaborationSubmitInput,
+    ) -> Result<super::collaboration::CollaborationReceipt> {
+        let config = engine
+            .sync_configuration()?
+            .ok_or_else(|| invalid("sync_not_enabled"))?;
+        let device = DeviceKeys::load(store, &connection.device_id)?;
+        Self::check_connection(&config, connection, &device)?;
+        let policy = engine
+            .sync_access_policy()?
+            .ok_or_else(|| invalid("collaboration_checkpoint_required"))?;
+        let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
+        (
+            secrets.authorized_workspace_writers,
+            secrets.authorized_object_writers,
+        ) = super::approvals::policy_authorizations(&policy, &config);
+        engine.collaboration_submit(input, &device, &secrets)
     }
 }
 

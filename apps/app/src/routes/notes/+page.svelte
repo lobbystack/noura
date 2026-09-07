@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import { isPlainTextPath } from '$lib/editor/text-files';
 	import { LiveProjection } from '$lib/live-refresh';
 	import { plugins } from '$lib/plugins.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
@@ -17,11 +18,13 @@
 	type Note = Awaited<
 		ReturnType<ReturnType<typeof getNouraClient>['notes']['list']>
 	>[number];
-	type RawFile = Awaited<
-		ReturnType<
-			ReturnType<typeof getNouraClient>['files']['listNonManagedMarkdown']
-		>
-	>[number];
+	type RawFile =
+		| Awaited<
+				ReturnType<
+					ReturnType<typeof getNouraClient>['files']['listNonManagedMarkdown']
+				>
+		  >[number]
+		| { relativePath: string; title: string; parseStatus: null };
 
 	// These lists are lookup indexes for URL-driven selection, not a
 	// navigator: the sidebar file tree owns navigation now.
@@ -70,16 +73,32 @@
 	async function load(): Promise<void> {
 		const generation = ++loadGeneration;
 		const workspaceId = workspace.state?.workspaceId;
-		const [list, raw] = await Promise.all([
+		const [list, raw, entries] = await Promise.all([
 			getNouraClient().notes.list(),
 			getNouraClient().files.listNonManagedMarkdown(),
+			getNouraClient().files.list(),
 		]);
 		if (
 			generation === loadGeneration &&
 			workspace.state?.workspaceId === workspaceId
 		) {
 			notes = list;
-			rawFiles = raw;
+			rawFiles = [
+				...raw,
+				...entries
+					.filter(
+						(entry) =>
+							entry.kind === 'file' &&
+							entry.parseStatus !== 'managed' &&
+							isPlainTextPath(entry.relativePath) &&
+							!raw.some((file) => file.relativePath === entry.relativePath),
+					)
+					.map((entry) => ({
+						relativePath: entry.relativePath,
+						title: entry.name,
+						parseStatus: null,
+					})),
+			];
 			loaded = true;
 		}
 	}

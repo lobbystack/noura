@@ -12,6 +12,7 @@ use crate::sync::{invalid, validate_file_change as validate_change};
 
 const STATE_PATH: &str = ".noura/sync/state.json";
 mod blobs;
+mod collaboration;
 mod conflicts;
 
 // Windows FlushFileBuffers requires a handle opened with GENERIC_WRITE, even
@@ -37,6 +38,8 @@ struct Journal {
     receipts: BTreeMap<String, Receipt>,
     objects: BTreeMap<String, ObjectState>,
     outbox: Vec<EncryptedOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transition: Option<crate::sync::AccessTransition>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -63,6 +66,72 @@ struct Receipt {
 }
 
 impl WorkspaceEngine {
+    /// Persist exact signed transition bytes before any relay submission. Outbox edits are retained.
+    pub fn sync_prepare_transition(
+        &self,
+        transition: &crate::sync::AccessTransition,
+        public_key: &str,
+    ) -> Result<()> {
+        transition.verify(public_key)?;
+        if transition.policy.workspace_id != self.manifest().id {
+            return Err(invalid("sync_wrong_workspace"));
+        }
+        let _lock = self.write_lock("sync_transition")?;
+        let mut journal = self.sync_journal()?;
+        if let Some(existing) = &journal.transition {
+            if existing.digest()? != transition.digest()? {
+                return Err(invalid("sync_transition_pending"));
+            }
+            return Ok(());
+        }
+        if sync_cursor(&transition.covered_sequence)? != sync_cursor(&journal.cursor)?
+            || sync_cursor(&transition.policy.revision)?
+                != sync_cursor(&journal.access_revision)? + 1
+        {
+            return Err(invalid("sync_transition_stale"));
+        }
+        journal.transition = Some(transition.clone());
+        self.sync_write(STATE_PATH, &journal)
+    }
+
+    pub fn sync_pending_transition(&self) -> Result<Option<crate::sync::AccessTransition>> {
+        let _lock = self.write_lock("sync_transition")?;
+        Ok(self.sync_journal()?.transition)
+    }
+
+    /// Resolve a checkpoint's policy through the hash chain anchored by the accepted head.
+    /// Missing policy history fails closed; an untrusted relay cannot invent an earlier authority.
+    pub fn sync_checkpoint_policy(&self, revision: &str) -> Result<crate::sync::AccessPolicy> {
+        let target = sync_cursor(revision)?;
+        let _lock = self.write_lock("sync_checkpoint_policy")?;
+        let mut policy = self
+            .sync_journal()?
+            .access_policy
+            .ok_or_else(|| invalid("sync_policy_chain_changed"))?;
+        for _ in 0..10_000 {
+            let current = sync_cursor(&policy.revision)?;
+            if current == target {
+                return Ok(policy);
+            }
+            if current < target || current == 0 {
+                break;
+            }
+            let bytes = read_optional(
+                &self.sync_path(&format!(".noura/sync/policies/{}.json", current - 1))?,
+            )?
+            .ok_or_else(|| invalid("sync_policy_history_required"))?;
+            let prior: crate::sync::AccessPolicy =
+                serde_json::from_slice(&bytes).map_err(|_| invalid("sync_policy_chain_changed"))?;
+            if sync_cursor(&prior.revision)? != current - 1
+                || policy.previous_policy_digest.as_ref() != Some(&prior.digest()?)
+            {
+                return Err(invalid("sync_policy_chain_changed"));
+            }
+            policy = prior;
+        }
+        Err(invalid("sync_policy_history_required"))
+    }
+
     /// Create a new empty local replica. Existing workspace identities are never changed.
     pub fn create_sync_replica(
         root: impl AsRef<Path>,
@@ -510,6 +579,10 @@ impl WorkspaceEngine {
         {
             return Ok(None);
         }
+        self.collaboration_guard_file_mutation(path)?;
+        if let Some(previous) = previous {
+            self.collaboration_guard_file_mutation(&previous.path)?;
+        }
         if previous.is_some_and(|value| value.path != path)
             && let Some(old) = previous
             && self.sync_file_path(&old.path)?.exists()
@@ -607,7 +680,22 @@ impl WorkspaceEngine {
                 change_digest: None,
             },
         );
-        self.sync_write(STATE_PATH, &journal)
+        self.sync_write(STATE_PATH, &journal)?;
+        if let Some(generation) = &op.generation
+            && !journal
+                .outbox
+                .iter()
+                .any(|pending| pending.object_id == op.object_id)
+        {
+            self.emit(
+                "collaboration:status",
+                "sync",
+                serde_json::json!({
+                    "objectId":op.object_id,"generation":generation,"status":"Synced"
+                }),
+            );
+        }
+        Ok(())
     }
 
     /// Persist incoming ciphertext, authenticate it, then apply or preserve a conflict.
@@ -625,6 +713,17 @@ impl WorkspaceEngine {
         validate_change(&change)?;
         let _lock = self.write_lock("sync_apply")?;
         let mut journal = self.sync_journal()?;
+        if journal.access_policy.as_ref().is_some_and(|policy| {
+            policy.objects.iter().any(|object| {
+                object.object_id == op.object_id
+                    && object
+                        .document
+                        .as_ref()
+                        .is_some_and(|document| document.mode == crate::sync::DocumentMode::Text)
+            })
+        }) {
+            return Err(invalid("collaboration_transaction_required"));
+        }
         let digest = markdown::revision(
             &serde_json::to_vec(op).map_err(|_| invalid("sync_serialize_failed"))?,
         );
@@ -770,6 +869,16 @@ impl WorkspaceEngine {
             return Err(invalid("sync_policy_chain_changed"));
         }
         journal.access_revision = policy.revision.clone();
+        if let Some(prior) = &journal.access_policy {
+            self.sync_write_once(
+                &format!(".noura/sync/policies/{}.json", prior.revision),
+                prior,
+            )?;
+        }
+        self.sync_write_once(
+            &format!(".noura/sync/policies/{}.json", policy.revision),
+            policy,
+        )?;
         journal.access_policy = Some(policy.clone());
         journal.cursor = "0".into();
         self.sync_write(STATE_PATH, &journal)

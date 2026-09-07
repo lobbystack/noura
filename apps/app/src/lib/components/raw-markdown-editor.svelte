@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import type { CollaborationSession } from '@noura/editor';
+	import { acquireNativeCollaboration } from '$lib/editor/native-collaboration';
+	import type { CollaborationLease } from '$lib/editor/collaboration-registry';
+	import CollaborativeTextSurface from '$lib/components/collaborative-text-surface.svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
 	import type {
 		CoreEvent,
@@ -24,12 +28,23 @@
 		file,
 		onmanaged,
 	}: {
-		file: UnmanagedFile;
+		file: Pick<UnmanagedFile, 'relativePath' | 'title'> & {
+			parseStatus?: UnmanagedFile['parseStatus'] | null;
+		};
 		onmanaged?: (object: WorkspaceObject) => void | Promise<void>;
 	} = $props();
 
 	type Conflict = { localBody: string; file: RawMarkdownRead };
 	type Resolution = 'use-external' | 'replace-external';
+
+	let collaboration = $state.raw<CollaborationSession | null>(null);
+	let collaborationOpening = $state(true);
+	let collaborationFailed = $state(false);
+	let collaborationLease: CollaborationLease | null = null;
+	let activationInProgress = $state(false);
+	let activationNeedsReview = $state(false);
+	let activationRequested: string[] | null = null;
+	let editorDisposed = false;
 
 	let loaded = $state.raw<RawMarkdownRead | null>(null);
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
@@ -51,6 +66,7 @@
 	}
 
 	async function persist(body: string, generation: number) {
+		if (activationInProgress || activationNeedsReview) return 'paused' as const;
 		if (!loaded) return;
 		const result = await getNouraClient().files.saveRawMarkdown({
 			relativePath: loaded.relativePath,
@@ -58,6 +74,7 @@
 			baseBody: loaded.body,
 			localBody: body,
 		});
+		if (activationInProgress || activationNeedsReview) return 'paused' as const;
 		if (result.status === 'conflict') {
 			conflict = { localBody: body, file: result.current };
 			reviewOpen = true;
@@ -75,7 +92,60 @@
 		if (result.managedObject) await onmanaged?.(result.managedObject);
 	}
 
+	function hasActivationDraft() {
+		return Boolean(
+			coordinator?.pendingEdits ||
+			coordinator?.isWriting ||
+			coordinator?.error ||
+			(editor && loaded && editor.doc() !== loaded.body),
+		);
+	}
+	async function activateCollaboration(objectIds: string[]) {
+		if (collaboration || activationInProgress || activationNeedsReview) return;
+		if (collaborationOpening) {
+			activationRequested = objectIds;
+			return;
+		}
+		activationInProgress = true;
+		coordinator?.pause();
+		try {
+			const lease = await acquireNativeCollaboration(file.relativePath);
+			if (editorDisposed) {
+				await lease?.release();
+				return;
+			}
+			if (!lease || !objectIds.includes(lease.session.bootstrap.objectId)) {
+				await lease?.release();
+				coordinator?.resume();
+				return;
+			}
+			if (hasActivationDraft()) {
+				activationNeedsReview = true;
+				await lease.release();
+				return;
+			}
+			editorCleanup?.();
+			editorCleanup = null;
+			collaborationLease = lease;
+			collaboration = lease.session;
+			error = null;
+			collaborationFailed = false;
+		} catch (value) {
+			error = value;
+			activationNeedsReview = true;
+		} finally {
+			activationInProgress = false;
+		}
+	}
+
 	async function handleExternalEvent(event: CoreEvent) {
+		if (event.type === 'collaboration:activated') {
+			const payload = event.payload as { objectIds?: string[] };
+			if (payload.objectIds) await activateCollaboration(payload.objectIds);
+			return;
+		}
+		if (activationInProgress || activationNeedsReview) return;
+		if (collaboration) return;
 		if (
 			!loaded ||
 			(event.source !== 'external' && event.source !== 'reconciliation') ||
@@ -136,8 +206,13 @@
 		coordinator = localCoordinator;
 		const unregister = registerPendingDraft(
 			`raw:${loaded.relativePath}`,
-			() => localCoordinator.flush(),
 			() =>
+				activationInProgress || activationNeedsReview
+					? Promise.resolve(false)
+					: localCoordinator.flush(),
+			() =>
+				activationInProgress ||
+				activationNeedsReview ||
 				localCoordinator.pendingEdits > 0 ||
 				localCoordinator.isWriting ||
 				localCoordinator.error !== null,
@@ -179,20 +254,58 @@
 		}
 	}
 
+	async function flushNow() {
+		if (activationInProgress || activationNeedsReview) return;
+		try {
+			await collaboration?.flush();
+			await coordinator?.flush();
+		} catch (value) {
+			error = value;
+		}
+	}
 	function handleShortcut(event: KeyboardEvent) {
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
 			event.preventDefault();
-			void coordinator?.flush();
+			void flushNow();
 		}
 	}
 
 	onMount(() => {
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
-		void getNouraClient()
-			.files.readRawMarkdown({ relativePath: file.relativePath })
-			.then((value) => {
-				if (!disposed) loaded = value;
+		void acquireNativeCollaboration(file.relativePath)
+			.then(async (lease) => {
+				if (disposed) {
+					await lease?.release();
+					return;
+				}
+				collaborationLease = lease;
+				collaboration = lease?.session ?? null;
+				if (!lease) {
+					if (!/\.md$/i.test(file.relativePath))
+						throw new Error(
+							'This text file is not available for collaborative editing yet. You can still edit its workspace file in another application.',
+						);
+					const value = await getNouraClient().files.readRawMarkdown({
+						relativePath: file.relativePath,
+					});
+					if (!disposed) loaded = value;
+				}
+				if (!disposed) {
+					collaborationOpening = false;
+					if (activationRequested && !collaboration) {
+						const ids = activationRequested;
+						activationRequested = null;
+						void activateCollaboration(ids);
+					}
+				}
+			})
+			.catch((value) => {
+				if (!disposed) {
+					error = value;
+					collaborationFailed = true;
+					collaborationOpening = false;
+				}
 			});
 		if (browser) {
 			void getNouraClient()
@@ -204,8 +317,12 @@
 		}
 		return () => {
 			disposed = true;
+			editorDisposed = true;
 			unsubscribe?.();
 			editorCleanup?.();
+			void collaborationLease?.release().catch((value) => {
+				error = value;
+			});
 		};
 	});
 </script>
@@ -231,6 +348,28 @@
 			>
 		</div>
 	{/if}
+	{#if activationNeedsReview}
+		<div class="px-6 pt-4">
+			<Alert.Root>
+				<Warning /><Alert.Title>Needs review</Alert.Title>
+				<Alert.Description
+					>Sharing became live while this editor had a draft. Autosave is
+					paused. Your visible draft remains available to copy before reviewing
+					the shared document.</Alert.Description
+				>
+				<Alert.Action
+					><Button
+						variant="outline"
+						size="sm"
+						onclick={() =>
+							void navigator.clipboard.writeText(
+								editor?.doc() ?? loaded?.body ?? '',
+							)}>Copy draft</Button
+					></Alert.Action
+				>
+			</Alert.Root>
+		</div>
+	{/if}
 	{#if conflict}
 		<div class="px-6 pt-4">
 			<Alert.Root
@@ -254,16 +393,17 @@
 				><Alert.Description>{errorMessage(error)}</Alert.Description
 				><Alert.Action
 					><div class="flex gap-2">
-						<Button
-							variant="outline"
-							size="sm"
-							onclick={() => void coordinator?.flush()}>Retry</Button
+						<Button variant="outline" size="sm" onclick={() => void flushNow()}
+							>Retry</Button
 						><Button
 							variant="outline"
 							size="sm"
 							onclick={() =>
 								void navigator.clipboard.writeText(
-									editor?.doc() ?? loaded?.body ?? '',
+									collaboration?.text.toString() ??
+										editor?.doc() ??
+										loaded?.body ??
+										'',
 								)}>Copy draft</Button
 						>
 					</div></Alert.Action
@@ -274,7 +414,13 @@
 	{#if message}<p class="px-6 pt-3 text-xs text-muted-foreground" role="status">
 			{message}
 		</p>{/if}
-	{#if loaded}
+	{#if collaboration}
+		<CollaborativeTextSurface
+			session={collaboration}
+			language={/\.md$/i.test(file.relativePath) ? 'markdown' : 'text'}
+			onerror={(value) => (error = value)}
+		/>
+	{:else if loaded}
 		<div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
 			<LiveMarkdownSurface
 				value={loaded.body}
@@ -284,8 +430,8 @@
 				onready={connectEditor}
 			/>
 		</div>
-	{:else}
-		<p class="p-6 text-sm text-muted-foreground">Opening Markdown…</p>
+	{:else if collaborationOpening && !collaborationFailed}
+		<p class="p-6 text-sm text-muted-foreground">Opening document…</p>
 	{/if}
 </div>
 

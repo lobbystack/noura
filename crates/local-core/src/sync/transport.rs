@@ -27,7 +27,7 @@ pub struct SyncSecrets {
 }
 
 impl SyncSecrets {
-    fn writer_is_authorized(&self, revision: &str, object: &str, device: &str) -> bool {
+    pub(crate) fn writer_is_authorized(&self, revision: &str, object: &str, device: &str) -> bool {
         self.historical_workspace_writers
             .get(revision)
             .is_some_and(|writers| writers.contains(device))
@@ -84,6 +84,65 @@ pub struct HttpSyncTransport {
 }
 
 impl HttpSyncTransport {
+    pub async fn collaboration_available(&self) -> Result<bool> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Capabilities {
+            #[serde(default)]
+            live_text: Vec<u8>,
+        }
+        let result: Capabilities = self.request(Method::GET, "/v1/capabilities", None).await?;
+        Ok(result.live_text.contains(&1))
+    }
+
+    pub(crate) async fn receive_checkpoints(
+        &self,
+        engine: &WorkspaceEngine,
+        secrets: &SyncSecrets,
+    ) -> Result<()> {
+        let Some(policy) = engine.sync_access_policy()? else {
+            return Ok(());
+        };
+        for object in policy.objects {
+            let Some(document) = object.document else {
+                continue;
+            };
+            if document.mode != super::DocumentMode::Text
+                || !engine
+                    .collaboration_checkpoint_needed(&object.object_id, &document.generation)?
+            {
+                continue;
+            }
+            let checkpoint: super::EncryptedCheckpoint = self
+                .request(
+                    Method::GET,
+                    &format!(
+                        "/v1/workspaces/{}/objects/{}/checkpoint",
+                        policy.workspace_id, object.object_id
+                    ),
+                    None,
+                )
+                .await?;
+            let public = secrets
+                .trusted_devices
+                .get(&checkpoint.payload.device_id)
+                .ok_or_else(|| invalid("sync_untrusted_device"))?;
+            if !secrets.writer_is_authorized(
+                &checkpoint.payload.policy_revision,
+                &object.object_id,
+                &checkpoint.payload.device_id,
+            ) {
+                return Err(invalid("sync_writer_not_authorized"));
+            }
+            let key = secrets
+                .objects
+                .get(&(object.object_id, object.epoch))
+                .ok_or_else(|| invalid("sync_key_required"))?;
+            engine.collaboration_install_checkpoint(&checkpoint, key, public)?;
+        }
+        Ok(())
+    }
+
     pub async fn workspaces(&self) -> Result<Vec<super::RemoteSyncWorkspace>> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -349,6 +408,71 @@ impl HttpSyncTransport {
             .await?;
         Ok(())
     }
+    /// Retry exactly the durable transition after interruption. Keep uploads paused until checkpoint rebase.
+    pub async fn submit_transition(
+        &self,
+        engine: &WorkspaceEngine,
+        transition: &super::AccessTransition,
+        trusted_signer: &str,
+    ) -> Result<()> {
+        engine.sync_prepare_transition(transition, trusted_signer)?;
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Receipt {
+            transition_id: String,
+            committed: bool,
+            digest: String,
+        }
+        let path = format!(
+            "/v1/workspaces/{}/transitions",
+            transition.policy.workspace_id
+        );
+        // Resolve a possibly committed prior request by its durable identity first.
+        // Only an explicit not-found response authorizes staging it again.
+        let staged: Receipt = match self
+            .request(
+                Method::GET,
+                &format!("{}/{}", path, transition.transition_id),
+                None,
+            )
+            .await
+        {
+            Ok(receipt) => receipt,
+            Err(error) if error.code == "sync_not_found" => {
+                self.request(
+                    Method::POST,
+                    &path,
+                    Some(
+                        &serde_json::to_value(transition)
+                            .map_err(|_| invalid("sync_serialize_failed"))?,
+                    ),
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
+        let hash = transition.digest()?;
+        if staged.transition_id != transition.transition_id || staged.digest != hash {
+            return Err(invalid("sync_invalid_response"));
+        }
+        if !staged.committed {
+            let committed: Receipt = self
+                .request(
+                    Method::POST,
+                    &format!("{}/{}/commit", path, transition.transition_id),
+                    Some(&serde_json::json!({})),
+                )
+                .await?;
+            if !committed.committed
+                || committed.transition_id != transition.transition_id
+                || committed.digest != hash
+            {
+                return Err(invalid("sync_invalid_response"));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn set_access(
         &self,
         policy: &super::AccessPolicy,
@@ -549,9 +673,18 @@ impl HttpSyncTransport {
         let workspace = engine.manifest().id;
         identifier(&workspace)?;
         let mut result = SyncPass::default();
+        let pending_transition = engine.sync_pending_transition()?;
         for op in engine
             .sync_outbox()?
             .into_iter()
+            .filter(|op| {
+                pending_transition.as_ref().is_none_or(|transition| {
+                    transition
+                        .checkpoints
+                        .iter()
+                        .all(|checkpoint| checkpoint.payload.object_id != op.object_id)
+                })
+            })
             .take(if upload { 25 } else { 0 })
         {
             if !secrets.writer_is_authorized(&op.policy_revision, &op.object_id, &op.device_id) {
@@ -589,14 +722,16 @@ impl HttpSyncTransport {
                 .objects
                 .get(&(op.object_id.clone(), op.epoch))
                 .ok_or_else(|| invalid("sync_key_required"))?;
-            let plaintext = op.open(key, public_key)?;
-            let change: super::FileChange =
-                serde_json::from_slice(&plaintext).map_err(|_| invalid("sync_invalid_change"))?;
-            super::validate_file_change(&change)?;
-            if let Some(blob) = &change.blob {
-                let mut file = engine.sync_blob_file(blob, false)?;
-                self.upload_blob(&workspace, &op.object_id, op.epoch, blob, &mut file)
-                    .await?;
+            if op.kind != Some(super::OperationKind::Text) {
+                let plaintext = op.open(key, public_key)?;
+                let change: super::FileChange = serde_json::from_slice(&plaintext)
+                    .map_err(|_| invalid("sync_invalid_change"))?;
+                super::validate_file_change(&change)?;
+                if let Some(blob) = &change.blob {
+                    let mut file = engine.sync_blob_file(blob, false)?;
+                    self.upload_blob(&workspace, &op.object_id, op.epoch, blob, &mut file)
+                        .await?;
+                }
             }
             #[derive(Deserialize)]
             struct Push {
@@ -660,21 +795,30 @@ impl HttpSyncTransport {
                     .trusted_devices
                     .get(&op.device_id)
                     .ok_or_else(|| invalid("sync_untrusted_device"))?;
+                op.verify(public_key)?;
+                if engine.collaboration_cover_history(&op, &entry.sequence)? {
+                    applied.push(op);
+                    continue;
+                }
                 let key = secrets
                     .objects
                     .get(&(op.object_id.clone(), op.epoch))
                     .ok_or_else(|| invalid("sync_key_required"))?;
-                let plaintext = op.open(key, public_key)?;
-                let change: super::FileChange = serde_json::from_slice(&plaintext)
-                    .map_err(|_| invalid("sync_invalid_change"))?;
-                super::validate_file_change(&change)?;
-                if let Some(blob) = &change.blob {
-                    let mut file = engine.sync_blob_file(blob, true)?;
-                    self.download_blob(&workspace, &op.object_id, blob, &mut file)
-                        .await?;
-                }
-                if engine.sync_apply_file(&op, key, public_key)? == ApplyOutcome::Conflict {
-                    result.conflicts += 1;
+                if op.kind == Some(super::OperationKind::Text) {
+                    engine.collaboration_apply_remote(&op, key, public_key, secrets)?;
+                } else {
+                    let plaintext = op.open(key, public_key)?;
+                    let change: super::FileChange = serde_json::from_slice(&plaintext)
+                        .map_err(|_| invalid("sync_invalid_change"))?;
+                    super::validate_file_change(&change)?;
+                    if let Some(blob) = &change.blob {
+                        let mut file = engine.sync_blob_file(blob, true)?;
+                        self.download_blob(&workspace, &op.object_id, blob, &mut file)
+                            .await?;
+                    }
+                    if engine.sync_apply_file(&op, key, public_key)? == ApplyOutcome::Conflict {
+                        result.conflicts += 1;
+                    }
                 }
                 result.downloaded += 1;
                 applied.push(op);

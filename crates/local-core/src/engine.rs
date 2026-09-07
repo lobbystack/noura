@@ -320,6 +320,7 @@ pub struct WorkspaceEngine {
     watcher: WatchCoordinator,
     self_writes: Mutex<HashMap<String, String>>,
     chat_mutation_fault: Mutex<Option<ChatMutationFault>>,
+    collaboration_sessions: Mutex<HashMap<String, (String, String, bool)>>,
 }
 
 impl WorkspaceEngine {
@@ -451,6 +452,7 @@ impl WorkspaceEngine {
             watcher,
             self_writes: Mutex::new(HashMap::new()),
             chat_mutation_fault: Mutex::new(None),
+            collaboration_sessions: Mutex::new(HashMap::new()),
         };
         engine.recover_pending_chat_mutations()?;
         engine.reconcile()?;
@@ -1448,6 +1450,7 @@ impl WorkspaceEngine {
             .replace('\\', "/");
         let path = validate_raw_markdown_path(&self.root, &relative)?;
         let _guard = self.write_lock("raw_markdown_save")?;
+        self.collaboration_guard_file_mutation(&relative)?;
         if !path.exists() {
             return Err(CoreError::validation(
                 "raw_markdown_missing",
@@ -1542,6 +1545,7 @@ impl WorkspaceEngine {
                 .replace('\\', "/");
         let path = validate_raw_markdown_path(&self.root, &relative)?;
         let _guard = self.write_lock("raw_markdown_resolve")?;
+        self.collaboration_guard_file_mutation(&relative)?;
         if !path.exists() {
             return Err(CoreError::validation(
                 "raw_markdown_missing",
@@ -2163,6 +2167,7 @@ impl WorkspaceEngine {
         let source = resolve_for_write(&self.root, &object.relative_path, "object_move")?;
         let destination_path = resolve_for_write(&self.root, destination, "object_move")?;
         let _guard = self.write_lock("object_move")?;
+        self.collaboration_guard_file_mutation(&object.relative_path)?;
         let bytes = std::fs::read(&source)
             .map_err(|error| CoreError::io(error, "object_move", Some(&object.relative_path)))?;
         check_revision(&bytes, expected_revision, "object_move")?;
@@ -2223,6 +2228,7 @@ impl WorkspaceEngine {
         })?;
         let source = resolve_for_write(&self.root, &object.relative_path, "object_delete")?;
         let _guard = self.write_lock("object_delete")?;
+        self.collaboration_guard_file_mutation(&object.relative_path)?;
         let bytes = std::fs::read(&source)
             .map_err(|error| CoreError::io(error, "object_delete", Some(&object.relative_path)))?;
         check_revision(&bytes, expected_revision, "object_delete")?;
@@ -2431,6 +2437,7 @@ impl WorkspaceEngine {
         let destination = resolve_for_write(&self.root, &object.relative_path, operation)?;
         let _guard = self.write_lock(operation)?;
         if let Some(expected) = expected {
+            self.collaboration_guard_file_mutation(&object.relative_path)?;
             let current = std::fs::read(&destination)
                 .map_err(|error| CoreError::io(error, operation, Some(&object.relative_path)))?;
             check_revision(&current, expected, operation)?;

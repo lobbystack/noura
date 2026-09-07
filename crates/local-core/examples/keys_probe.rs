@@ -94,6 +94,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             })
             .collect::<std::result::Result<Vec<_>, &str>>()?,
         vec![AccessObject {
+            document: None,
             object_id: "object".into(),
             epoch: 1,
             grants: vec![ObjectGrant {
