@@ -95,9 +95,350 @@ impl HttpSyncTransport {
         Ok(result.live_text.contains(&1))
     }
 
+    pub(crate) async fn access_transitions_available(&self) -> Result<bool> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Capabilities {
+            #[serde(default)]
+            access_transitions: Vec<u8>,
+        }
+        let result: Capabilities = self.request(Method::GET, "/v1/capabilities", None).await?;
+        Ok(result.access_transitions.contains(&1))
+    }
+
+    pub(crate) async fn object_activations_available(&self) -> Result<bool> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Capabilities {
+            #[serde(default)]
+            object_activations: Vec<u8>,
+        }
+        let result: Capabilities = self.request(Method::GET, "/v1/capabilities", None).await?;
+        Ok(result.object_activations.contains(&1))
+    }
+
+    pub async fn realtime_available(&self) -> Result<bool> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Capabilities {
+            #[serde(default)]
+            realtime_notifications: Vec<u8>,
+            #[serde(default)]
+            presence: Vec<u8>,
+        }
+        let result: Capabilities = self.request(Method::GET, "/v1/capabilities", None).await?;
+        Ok(result.realtime_notifications.contains(&1) && result.presence.contains(&1))
+    }
+
+    pub(crate) async fn workspace_capability(
+        &self,
+        workspace: &str,
+        trusted_devices: &BTreeMap<String, String>,
+    ) -> Result<super::WorkspaceCapability> {
+        identifier(workspace)?;
+        let capability: super::WorkspaceCapability = self
+            .request(
+                Method::GET,
+                &format!("/v1/workspaces/{workspace}/collaboration-capability"),
+                None,
+            )
+            .await?;
+        if capability.workspace_id != workspace {
+            return Err(invalid("sync_wrong_workspace"));
+        }
+        let signer = trusted_devices
+            .get(&capability.device_id)
+            .ok_or_else(|| invalid("sync_untrusted_device"))?;
+        capability.verify(signer)?;
+        Ok(capability)
+    }
+
+    pub(crate) async fn submit_object_activation(
+        &self,
+        engine: &WorkspaceEngine,
+        activation: &super::ObjectActivation,
+        device: &super::DeviceKeys,
+        secrets: &SyncSecrets,
+    ) -> Result<()> {
+        let public = device.signer().public_key();
+        activation.verify(&public)?;
+        if activation.device_id != device.device_id() {
+            return Err(invalid("sync_identity_mismatch"));
+        }
+        engine.sync_prepare_activation(activation, &public)?;
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Status {
+            activation_id: String,
+            committed: bool,
+            digest: String,
+        }
+        let path = format!(
+            "/v1/workspaces/{}/activations/{}",
+            activation.workspace_id, activation.activation_id
+        );
+        let mut status: Option<Status> = match self.request(Method::GET, &path, None).await {
+            Ok(status) => Some(status),
+            Err(error) if error.code == "sync_not_found" => None,
+            Err(error) => return Err(error),
+        };
+        if status.is_none() {
+            status = Some(
+                self.request(
+                    Method::POST,
+                    &format!("/v1/workspaces/{}/activations", activation.workspace_id),
+                    Some(
+                        &serde_json::to_value(activation)
+                            .map_err(|_| invalid("sync_serialize_failed"))?,
+                    ),
+                )
+                .await?,
+            );
+        }
+        let expected = activation.digest()?;
+        let staged = status.ok_or_else(|| invalid("sync_invalid_activation_response"))?;
+        if staged.activation_id != activation.activation_id || staged.digest != expected {
+            return Err(invalid("sync_activation_changed"));
+        }
+        if !staged.committed {
+            for manifest in &activation.blobs {
+                let mut file = engine.sync_transition_blob_file(manifest)?;
+                self.upload_activation_blob(
+                    &activation.workspace_id,
+                    &activation.activation_id,
+                    manifest,
+                    &mut file,
+                )
+                .await?;
+            }
+            let committed: Status = self
+                .request(Method::POST, &format!("{path}/commit"), None)
+                .await?;
+            if !committed.committed
+                || committed.activation_id != activation.activation_id
+                || committed.digest != expected
+            {
+                return Err(invalid("sync_invalid_activation_response"));
+            }
+        }
+        engine.sync_accept_activation(activation, &public)?;
+        let object_id = &activation.checkpoint.payload.object_id;
+        let key = secrets
+            .objects
+            .get(&(object_id.clone(), 1))
+            .ok_or_else(|| invalid("sync_key_required"))?;
+        engine.collaboration_install_checkpoint(
+            &activation.checkpoint,
+            key,
+            &public,
+            device,
+            secrets,
+        )?;
+        engine.sync_finish_activation(&activation.activation_id)
+    }
+
+    pub(crate) async fn object_activation_is_committed(
+        &self,
+        activation: &super::ObjectActivation,
+    ) -> Result<bool> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Status {
+            activation_id: String,
+            committed: bool,
+            digest: String,
+        }
+        let status: Status = match self
+            .request(
+                Method::GET,
+                &format!(
+                    "/v1/workspaces/{}/activations/{}",
+                    activation.workspace_id, activation.activation_id
+                ),
+                None,
+            )
+            .await
+        {
+            Ok(status) => status,
+            Err(error) if error.code == "sync_not_found" => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if status.activation_id != activation.activation_id
+            || status.digest != activation.digest()?
+        {
+            return Err(invalid("sync_activation_changed"));
+        }
+        Ok(status.committed)
+    }
+
+    pub(crate) async fn ensure_workspace_capability(
+        &self,
+        workspace: &str,
+        device: &super::DeviceKeys,
+        trusted_devices: &BTreeMap<String, String>,
+    ) -> Result<super::WorkspaceCapability> {
+        identifier(workspace)?;
+        let path = format!("/v1/workspaces/{workspace}/collaboration-capability");
+        let capability: super::WorkspaceCapability =
+            match self.request(Method::GET, &path, None).await {
+                Ok(capability) => capability,
+                Err(error) if error.code == "sync_not_found" => {
+                    let proposed = super::WorkspaceCapability::sign(workspace, device)?;
+                    match self
+                        .request(
+                            Method::PUT,
+                            &path,
+                            Some(
+                                &serde_json::to_value(&proposed)
+                                    .map_err(|_| invalid("sync_serialize_failed"))?,
+                            ),
+                        )
+                        .await
+                    {
+                        Ok(capability) => capability,
+                        Err(error)
+                            if matches!(
+                                error.code.as_str(),
+                                "sync_already_exists" | "sync_collaboration_capability_changed"
+                            ) =>
+                        {
+                            self.request(Method::GET, &path, None).await?
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            };
+        if capability.workspace_id != workspace {
+            return Err(invalid("sync_wrong_workspace"));
+        }
+        let signer = trusted_devices
+            .get(&capability.device_id)
+            .ok_or_else(|| invalid("sync_untrusted_device"))?;
+        capability.verify(signer)?;
+        Ok(capability)
+    }
+
+    pub(crate) async fn receive_activations(
+        &self,
+        engine: &WorkspaceEngine,
+        device: &super::DeviceKeys,
+        secrets: &mut SyncSecrets,
+    ) -> Result<()> {
+        if !self.object_activations_available().await? {
+            return Ok(());
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct List {
+            activations: Vec<super::ObjectActivation>,
+        }
+        let workspace = engine.manifest().id;
+        let capability = match self
+            .workspace_capability(&workspace, &secrets.trusted_devices)
+            .await
+        {
+            Ok(capability) => capability,
+            // Transition support is relay-wide, while enrollment is per workspace.
+            // Existing shared workspaces continue ordinary sync until the owner
+            // explicitly begins their first collaboration transition.
+            Err(error) if error.code == "sync_not_found" => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let list: List = self
+            .request(
+                Method::GET,
+                &format!("/v1/workspaces/{workspace}/activations"),
+                None,
+            )
+            .await?;
+        if list.activations.len() > 1000 {
+            return Err(invalid("sync_activation_limit"));
+        }
+        for activation in list.activations {
+            let object_id = activation.checkpoint.payload.object_id.clone();
+            let signer = secrets
+                .trusted_devices
+                .get(&activation.device_id)
+                .ok_or_else(|| invalid("sync_untrusted_device"))?;
+            activation.verify(signer)?;
+            if activation.workspace_id != workspace
+                || activation.capability_digest != capability.digest()?
+                || !secrets.writer_is_authorized(
+                    &activation.policy_revision,
+                    &object_id,
+                    &activation.device_id,
+                )
+            {
+                return Err(invalid("sync_writer_not_authorized"));
+            }
+            let envelope = activation
+                .envelopes
+                .iter()
+                .find(|envelope| envelope.device_id == device.device_id())
+                .ok_or_else(|| invalid("sync_key_required"))?;
+            let key_envelope = super::KeyEnvelope {
+                workspace_id: workspace.clone(),
+                object_id: object_id.clone(),
+                epoch: 1,
+                device_id: envelope.device_id.clone(),
+                wrapped_key: envelope.wrapped_key.clone(),
+                signing_device: activation.device_id.clone(),
+                signature: envelope.signature.clone(),
+            };
+            engine.sync_store_key(&key_envelope, device, signer)?;
+            let key = device.unwrap_key(&key_envelope, signer)?;
+            if let Some(existing) = secrets.objects.get(&(object_id.clone(), 1)) {
+                if existing.secret() != key.secret() {
+                    return Err(invalid("sync_object_key_changed"));
+                }
+            } else {
+                secrets.objects.insert((object_id.clone(), 1), key);
+            }
+            engine.sync_accept_activation(&activation, signer)?;
+            let key = secrets
+                .objects
+                .get(&(object_id.clone(), 1))
+                .ok_or_else(|| invalid("sync_key_required"))?;
+            let content = activation.checkpoint.open(key, signer)?;
+            if let Some(blob) = &content.change.blob {
+                let manifest = activation
+                    .blobs
+                    .iter()
+                    .find(|manifest| manifest.ciphertext_digest == blob.id)
+                    .ok_or_else(|| invalid("sync_invalid_object_activation_blob"))?;
+                if manifest.object_id != object_id
+                    || manifest.epoch != 1
+                    || manifest.ciphertext_size != blob.size
+                {
+                    return Err(invalid("sync_invalid_object_activation_blob"));
+                }
+                let mut file = engine.sync_blob_file(blob, true)?;
+                self.download_blob(&workspace, &object_id, blob, &mut file)
+                    .await?;
+            }
+            engine.collaboration_install_checkpoint(
+                &activation.checkpoint,
+                key,
+                signer,
+                device,
+                secrets,
+            )?;
+            if engine
+                .sync_pending_activation()?
+                .as_ref()
+                .is_some_and(|pending| pending.activation_id == activation.activation_id)
+            {
+                engine.sync_finish_activation(&activation.activation_id)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn receive_checkpoints(
         &self,
         engine: &WorkspaceEngine,
+        device: &super::DeviceKeys,
         secrets: &SyncSecrets,
     ) -> Result<()> {
         let Some(policy) = engine.sync_access_policy()? else {
@@ -107,10 +448,7 @@ impl HttpSyncTransport {
             let Some(document) = object.document else {
                 continue;
             };
-            if document.mode != super::DocumentMode::Text
-                || !engine
-                    .collaboration_checkpoint_needed(&object.object_id, &document.generation)?
-            {
+            if !engine.collaboration_checkpoint_needed(&object.object_id, &document.generation)? {
                 continue;
             }
             let checkpoint: super::EncryptedCheckpoint = self
@@ -138,7 +476,18 @@ impl HttpSyncTransport {
                 .objects
                 .get(&(object.object_id, object.epoch))
                 .ok_or_else(|| invalid("sync_key_required"))?;
-            engine.collaboration_install_checkpoint(&checkpoint, key, public)?;
+            let content = checkpoint.open(key, public)?;
+            if let Some(blob) = content.change.blob.as_ref() {
+                let mut file = engine.sync_blob_file(blob, true)?;
+                self.download_blob(&policy.workspace_id, &content.object_id, blob, &mut file)
+                    .await?;
+            }
+            engine.collaboration_install_checkpoint(&checkpoint, key, public, device, secrets)?;
+        }
+        if let Some(transition) = engine.sync_pending_transition()?
+            && transition.policy.revision == engine.sync_access_revision()?
+        {
+            engine.sync_finish_transition_install(&transition.transition_id)?;
         }
         Ok(())
     }
@@ -455,7 +804,19 @@ impl HttpSyncTransport {
         if staged.transition_id != transition.transition_id || staged.digest != hash {
             return Err(invalid("sync_invalid_response"));
         }
+        engine.sync_advance_transition(&transition.transition_id, "stage")?;
+        engine.sync_advance_transition(&transition.transition_id, "resolve_commit")?;
         if !staged.committed {
+            for manifest in &transition.blobs {
+                let mut file = engine.sync_transition_blob_file(manifest)?;
+                self.upload_transition_blob(
+                    &transition.policy.workspace_id,
+                    &transition.transition_id,
+                    manifest,
+                    &mut file,
+                )
+                .await?;
+            }
             let committed: Receipt = self
                 .request(
                     Method::POST,
@@ -470,6 +831,7 @@ impl HttpSyncTransport {
                 return Err(invalid("sync_invalid_response"));
             }
         }
+        engine.sync_advance_transition(&transition.transition_id, "install")?;
         Ok(())
     }
 
@@ -722,7 +1084,16 @@ impl HttpSyncTransport {
                 .objects
                 .get(&(op.object_id.clone(), op.epoch))
                 .ok_or_else(|| invalid("sync_key_required"))?;
-            if op.kind != Some(super::OperationKind::Text) {
+            if matches!(
+                op.kind,
+                Some(super::OperationKind::Text | super::OperationKind::Metadata)
+            ) {
+                if let Some(blob) = engine.collaboration_operation_blob(&op, key, public_key)? {
+                    let mut file = engine.sync_blob_file(&blob, false)?;
+                    self.upload_blob(&workspace, &op.object_id, op.epoch, &blob, &mut file)
+                        .await?;
+                }
+            } else {
                 let plaintext = op.open(key, public_key)?;
                 let change: super::FileChange = serde_json::from_slice(&plaintext)
                     .map_err(|_| invalid("sync_invalid_change"))?;
@@ -804,8 +1175,25 @@ impl HttpSyncTransport {
                     .objects
                     .get(&(op.object_id.clone(), op.epoch))
                     .ok_or_else(|| invalid("sync_key_required"))?;
-                if op.kind == Some(super::OperationKind::Text) {
-                    engine.collaboration_apply_remote(&op, key, public_key, secrets)?;
+                if matches!(
+                    op.kind,
+                    Some(super::OperationKind::Text | super::OperationKind::Metadata)
+                ) {
+                    if let Some(blob) = engine.collaboration_operation_blob(&op, key, public_key)? {
+                        let mut file = engine.sync_blob_file(&blob, true)?;
+                        self.download_blob(&workspace, &op.object_id, &blob, &mut file)
+                            .await?;
+                    }
+                    if engine.collaboration_apply_remote(
+                        &op,
+                        key,
+                        public_key,
+                        secrets,
+                        &entry.sequence,
+                    )? == ApplyOutcome::Conflict
+                    {
+                        result.conflicts += 1;
+                    }
                 } else {
                     let plaintext = op.open(key, public_key)?;
                     let change: super::FileChange = serde_json::from_slice(&plaintext)

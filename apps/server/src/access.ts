@@ -241,6 +241,19 @@ export async function setAccess(
 				if (staged.committed) return;
 				if (transition.coveredSequence !== String(state.sequence))
 					throw new SyncError('sync.transition_stale', 409);
+				for (const blob of transition.blobs ?? []) {
+					const [stored] =
+						await tx`SELECT epoch,size,complete,failed,transition_id FROM noura_blobs WHERE workspace_id=${workspace} AND object_id=${blob.objectId} AND id=${blob.ciphertextDigest}`;
+					if (
+						!stored ||
+						Number(stored.epoch) !== blob.epoch ||
+						Number(stored.size) !== blob.ciphertextSize ||
+						stored.transition_id !== transition.transitionId ||
+						!stored.complete ||
+						stored.failed
+					)
+						throw new SyncError('sync.transition_blob_incomplete', 409);
+				}
 			}
 			if (!['owner', 'admin'].includes(role ?? ''))
 				throw new SyncError('sync.forbidden', 403);
@@ -271,7 +284,9 @@ export async function setAccess(
 			if (policy.previousPolicyDigest !== expectedPrevious)
 				throw new SyncError('sync.policy_chain_changed', 409);
 			const oldMembers =
-				await tx`SELECT account_id,role FROM noura_members WHERE workspace_id=${workspace} ORDER BY account_id COLLATE "C"`;
+				await tx`SELECT account_id,role,history_after FROM noura_members WHERE workspace_id=${workspace} ORDER BY account_id COLLATE "C"`;
+			const [capabilityState] =
+				await tx`SELECT 1 FROM noura_workspace_capabilities WHERE workspace_id=${workspace}`;
 			const changedMembers =
 				JSON.stringify(oldMembers.map((m) => [m.account_id, m.role])) !==
 				JSON.stringify(policy.members.map((m) => [m.accountId, m.role]));
@@ -307,7 +322,7 @@ export async function setAccess(
 				const object = objects[i]!;
 				const next = policy.objects[i]!;
 				const oldGrants =
-					await tx`SELECT account_id,role FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${object.id}`;
+					await tx`SELECT account_id,role,history_after FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${object.id}`;
 				const oldAccounts = new Set(
 					[...oldMembers, ...oldGrants].map(
 						(value) => value.account_id as string,
@@ -329,6 +344,8 @@ export async function setAccess(
 				const removesAccess =
 					[...oldAccounts].some((account) => !nextAccounts.has(account)) ||
 					oldEnvelopes.some((envelope) => !devices.has(envelope.device_id));
+				if (capabilityState && changesReaders && !transition)
+					throw new SyncError('sync.access_transition_required', 409);
 				if (
 					next.epoch < Number(object.epoch) ||
 					next.epoch > Number(object.epoch) + 1 ||
@@ -393,12 +410,24 @@ export async function setAccess(
 				if (next.epoch !== Number(object.epoch))
 					await tx`UPDATE noura_public_links SET revoked=true WHERE workspace_id=${workspace} AND object_id=${object.id}`;
 				await tx`DELETE FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${object.id}`;
-				for (const grant of next.grants)
-					await tx`INSERT INTO noura_grants(workspace_id,object_id,account_id,role) VALUES(${workspace},${object.id},${grant.accountId},${grant.role})`;
+				for (const grant of next.grants) {
+					const prior = oldGrants.find(
+						(entry) => entry.account_id === grant.accountId,
+					);
+					const historyAfter =
+						prior?.history_after ?? transition?.coveredSequence ?? '0';
+					await tx`INSERT INTO noura_grants(workspace_id,object_id,account_id,role,history_after) VALUES(${workspace},${object.id},${grant.accountId},${grant.role},${historyAfter})`;
+				}
 			}
 			await tx`DELETE FROM noura_members WHERE workspace_id=${workspace}`;
-			for (const member of policy.members)
-				await tx`INSERT INTO noura_members(workspace_id,account_id,role) VALUES(${workspace},${member.accountId},${member.role})`;
+			for (const member of policy.members) {
+				const prior = oldMembers.find(
+					(entry) => entry.account_id === member.accountId,
+				);
+				const historyAfter =
+					prior?.history_after ?? transition?.coveredSequence ?? '0';
+				await tx`INSERT INTO noura_members(workspace_id,account_id,role,history_after) VALUES(${workspace},${member.accountId},${member.role},${historyAfter})`;
+			}
 			for (const member of policy.members)
 				await tx`UPDATE noura_invitations SET completed_at=now()
 				 WHERE workspace_id=${workspace} AND accepted_account_id=${member.accountId}

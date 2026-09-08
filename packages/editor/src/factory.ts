@@ -1,3 +1,5 @@
+import { PdfWidget } from './pdf-widget';
+import { isPdfTarget } from './pdf-target';
 import { history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { GFM } from '@lezer/markdown';
@@ -329,6 +331,8 @@ const checkboxClickPlugin = ViewPlugin.fromClass(
 interface PreviewSpecs {
 	resolveImage?: LiveMarkdownOptions['resolveImage'];
 	resolveLink?: LiveMarkdownOptions['resolveLink'];
+	openPdf?: LiveMarkdownOptions['openPdf'];
+	mountPdfEmbed?: LiveMarkdownOptions['mountPdfEmbed'];
 }
 
 function previewWidgetFactories(specs: PreviewSpecs) {
@@ -344,7 +348,10 @@ function previewWidgetFactories(specs: PreviewSpecs) {
 			embed: boolean,
 			from: number,
 			to: number,
-		) => new LinkWidget(target, label, embed, from, to, specs.resolveLink),
+		) =>
+			isPdfTarget(target)
+				? new PdfWidget(target, label, embed, from, to, specs)
+				: new LinkWidget(target, label, embed, from, to, specs.resolveLink),
 	};
 }
 
@@ -377,20 +384,36 @@ const viewportSyncPlugin = ViewPlugin.fromClass(
  * a plugin (the facet function path runs after layout), while
  * `EditorView.decorations.from(field)` is the supported layout-capable path.
  */
-function createPreviewField(specs: PreviewSpecs) {
+export function createPdfPreviewExtensions(specs: PreviewSpecs): Extension[] {
+	return [createPreviewField(specs, true), viewportSyncPlugin];
+}
+
+function createPreviewField(specs: PreviewSpecs, pdfOnly = false) {
 	const factories = previewWidgetFactories(specs);
+	const decorate = (
+		state: EditorState,
+		viewport: readonly PreviewViewportRange[],
+	) => {
+		const decorations = buildDecorations(
+			state,
+			viewport,
+			Decoration,
+			factories,
+		);
+		return pdfOnly
+			? decorations.update({
+					filter: (_from, _to, decoration) =>
+						decoration.spec.widget instanceof PdfWidget,
+				})
+			: decorations;
+	};
 	return StateField.define<{
 		decorations: DecorationSet;
 		viewport: readonly PreviewViewportRange[];
 	}>({
 		create: (state) => ({
 			viewport: fullDocument(state),
-			decorations: buildDecorations(
-				state,
-				fullDocument(state),
-				Decoration,
-				factories,
-			),
+			decorations: decorate(state, fullDocument(state)),
 		}),
 		update(value, transaction) {
 			const viewportEffect = transaction.effects.reduce<
@@ -417,12 +440,7 @@ function createPreviewField(specs: PreviewSpecs) {
 					: value.viewport);
 			return {
 				viewport,
-				decorations: buildDecorations(
-					transaction.state,
-					viewport,
-					Decoration,
-					factories,
-				),
+				decorations: decorate(transaction.state, viewport),
 			};
 		},
 		provide: (field) =>
@@ -479,6 +497,8 @@ export function createLiveMarkdownEditor(
 		createPreviewField({
 			resolveImage: options.resolveImage,
 			resolveLink: options.resolveLink,
+			openPdf: options.openPdf,
+			mountPdfEmbed: options.mountPdfEmbed,
 		}),
 		viewportSyncPlugin,
 		checkboxClickPlugin,

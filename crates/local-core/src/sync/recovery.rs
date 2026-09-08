@@ -217,6 +217,9 @@ impl WorkspaceSyncCoordinator {
             access = transport.access_state(&config.workspace_id).await?;
         }
         access.authorize_writers(engine, &device, &config, &mut secrets)?;
+        transport
+            .receive_checkpoints(engine, &device, &secrets)
+            .await?;
         loop {
             let result = transport
                 .synchronize_readonly(engine, &secrets, false)

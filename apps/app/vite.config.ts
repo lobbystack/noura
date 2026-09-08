@@ -1,9 +1,10 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
+import { pdfAssets } from './pdf-assets.js';
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit()],
+	plugins: [pdfAssets(), tailwindcss(), sveltekit()],
 	clearScreen: false,
 	server: { strictPort: true },
 	ssr: { noExternal: ['@noura/ai'] },

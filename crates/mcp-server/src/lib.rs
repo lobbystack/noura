@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use local_core::sync::{OsSyncCredentials, SyncAccountService, WorkspaceSyncCoordinator};
 use local_core::{CreateObjectInput, ObjectPatch, SearchInput, WorkspaceEngine};
 use rmcp::{
     ServerHandler,
@@ -226,30 +227,77 @@ impl NouraMcp {
         relative_path: Option<String>,
         properties: std::collections::BTreeMap<String, serde_json::Value>,
     ) -> Result<String, String> {
+        let input = CreateObjectInput {
+            object_type: object_type.into(),
+            title,
+            body: body.unwrap_or_default(),
+            relative_path,
+            properties,
+        };
         let value = self.with_engine(|engine| {
-            engine.create_object(CreateObjectInput {
-                object_type: object_type.into(),
-                title,
-                body: body.unwrap_or_default(),
-                relative_path,
-                properties,
-            })
+            if engine.sync_configuration()?.is_none() {
+                return engine.create_object(input);
+            }
+            let connection = SyncAccountService::default()
+                .connection(&OsSyncCredentials)?
+                .ok_or_else(|| {
+                    local_core::CoreError::validation(
+                        "sync_sign_in_required",
+                        "Sign in before changing a shared workspace",
+                        "mcp_create",
+                    )
+                })?;
+            WorkspaceSyncCoordinator::collaboration_create_object(
+                engine,
+                &connection,
+                &OsSyncCredentials,
+                input,
+            )
         })?;
         serde_json::to_string(&value).map_err(|_| "response serialization failed".into())
     }
     fn update(&self, expected_type: &str, input: UpdateParams) -> Result<String, String> {
         let properties = input.properties.unwrap_or_default().into_iter().collect();
         let value = self.with_engine(|engine| {
-            engine.update_object_typed(
+            let object = engine.get_object(&input.id)?.ok_or_else(|| {
+                local_core::CoreError::validation(
+                    "object_not_found",
+                    "The object does not exist",
+                    "mcp_update",
+                )
+            })?;
+            if object.object_type != expected_type {
+                return Err(local_core::CoreError::validation(
+                    "object_type_mismatch",
+                    "The object does not match this operation",
+                    "mcp_update",
+                ));
+            }
+            let patch = ObjectPatch {
+                title: input.title,
+                body: input.body,
+                properties,
+                remove_properties: Vec::new(),
+                expected_revision: input.expected_revision,
+            };
+            if !engine.collaboration_object_is_active(&input.id)? {
+                return engine.update_object_typed(&input.id, expected_type, patch);
+            }
+            let connection = SyncAccountService::default()
+                .connection(&OsSyncCredentials)?
+                .ok_or_else(|| {
+                    local_core::CoreError::validation(
+                        "sync_sign_in_required",
+                        "Sign in before changing a shared workspace",
+                        "mcp_update",
+                    )
+                })?;
+            WorkspaceSyncCoordinator::collaboration_update_object(
+                engine,
+                &connection,
+                &OsSyncCredentials,
                 &input.id,
-                expected_type,
-                ObjectPatch {
-                    title: input.title,
-                    body: input.body,
-                    properties,
-                    remove_properties: Vec::new(),
-                    expected_revision: input.expected_revision,
-                },
+                patch,
             )
         })?;
         serde_json::to_string(&value).map_err(|_| "response serialization failed".into())

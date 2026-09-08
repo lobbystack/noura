@@ -32,6 +32,11 @@ jobs:
           NOURA_NATIVE_PROBE: ${{ github.workspace }}/target/debug/examples/sync_probe
           NOURA_NATIVE_SIGNIN_PROBE: ${{ github.workspace }}/target/debug/examples/signin_probe
           NOURA_NATIVE_KEYS_PROBE: ${{ github.workspace }}/target/debug/examples/keys_probe
+      - name: Realtime collaboration load gate
+        run: bun run --filter @noura/server test:collaboration-load
+        env:
+          NOURA_LOAD_FORCE_RECONNECT_BATCH: '1'
+          NOURA_LOAD_FORCE_RECOVERY_BATCH: '1'
       - run: bun run --filter @noura/server build
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
       - run: bun run --filter @noura/server test:restore

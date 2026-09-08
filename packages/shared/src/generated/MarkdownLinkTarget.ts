@@ -2,4 +2,4 @@
 import type { RawMarkdownRead } from "./RawMarkdownRead";
 import type { WorkspaceObject } from "./WorkspaceObject";
 
-export type MarkdownLinkTarget = { "kind": "managed", object: WorkspaceObject, } | { "kind": "markdown", document: RawMarkdownRead, } | { "kind": "asset", relativePath: string, } | { "kind": "unresolved" };
+export type MarkdownLinkTarget = { "kind": "managed", object: WorkspaceObject, } | { "kind": "markdown", document: RawMarkdownRead, } | { "kind": "pdf", relativePath: string, page: number | null, } | { "kind": "asset", relativePath: string, } | { "kind": "unresolved" };

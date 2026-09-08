@@ -5,13 +5,19 @@
 		CollaborationPresence,
 	} from '@noura/editor';
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
-	import { createCollaborativeView } from '@noura/editor/runtime';
+	import { markdownAssets } from '$lib/pdf/markdown';
+	import {
+		createCollaborativeView,
+		createPdfPreviewExtensions,
+	} from '@noura/editor/runtime';
 	let {
 		session,
+		sourceRelativePath,
 		language = 'text',
 		onerror,
 	}: {
 		session: CollaborationSession;
+		sourceRelativePath?: string;
 		language?: 'markdown' | 'text';
 		onerror?: (error: unknown) => void;
 	} = $props();
@@ -19,7 +25,14 @@
 	let presence = $state.raw<CollaborationPresence[]>([]);
 	function attachEditor(element: HTMLElement) {
 		const active = session;
-		const view = createCollaborativeView(element, active, language);
+		const view = createCollaborativeView(
+			element,
+			active,
+			language,
+			language === 'markdown'
+				? createPdfPreviewExtensions(markdownAssets(sourceRelativePath))
+				: [],
+		);
 		const unsubscribe = active.subscribe(() => {
 			status = active.status;
 			presence = active.presence;

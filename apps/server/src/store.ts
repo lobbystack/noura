@@ -4,6 +4,7 @@ import type {
 	SequencedOperation,
 	SyncPage,
 } from '../../../packages/shared/src/sync';
+import type { EncryptedPresence } from '../../../packages/shared/src/generated/EncryptedPresence';
 import {
 	digest,
 	operationDigest,
@@ -23,7 +24,9 @@ export interface Actor {
 export class SyncStore {
 	readonly db: Db;
 	private listening: Promise<postgres.ListenMeta> | undefined;
+	private presenceListening: Promise<postgres.ListenMeta> | undefined;
 	private watchers = new Map<string, Set<() => void>>();
+	private presenceWatchers = new Map<string, Set<(payload: string) => void>>();
 	private activeWatches = 0;
 	get subscriptionCount() {
 		return this.activeWatches;
@@ -31,8 +34,27 @@ export class SyncStore {
 	constructor(url: string) {
 		this.db = postgres(url, { max: 10, onnotice: () => {} });
 	}
+	async transaction<T>(run: (tx: Tx) => T | Promise<T>): Promise<T> {
+		// postgres.js 3.4.9 can skip its BEGIN reservation hook at a pipeline
+		// boundary. Reserving first keeps every transaction on an exclusively
+		// owned physical connection even if that upstream race is triggered.
+		const connection = await this.db.reserve();
+		try {
+			await connection.unsafe('BEGIN');
+			try {
+				const result = await run(connection as unknown as Tx);
+				await connection.unsafe('COMMIT');
+				return result;
+			} catch (error) {
+				await connection.unsafe('ROLLBACK').catch(() => {});
+				throw error;
+			}
+		} finally {
+			connection.release();
+		}
+	}
 	async migrate() {
-		await this.db.begin(async (tx) => {
+		await this.transaction(async (tx) => {
 			await tx`SELECT pg_advisory_xact_lock(192837465)`;
 			await tx.unsafe(schema);
 		});
@@ -41,8 +63,8 @@ export class SyncStore {
 		// Resolve the required release columns even when the tables contain no rows.
 		await this
 			.db`SELECT w.access_revision,d.encryption_recipient,k.signing_device,k.signature,a.policy,p.snapshot,
-		 s.token_hash,c.expires_at,r.count,m.role,o.epoch,g.role,u.ciphertext,b.tus_info,b.complete,
-		 i.accepted_account_id,i.completed_at,i.revoked_at,t.committed,cp.checkpoint
+			 s.token_hash,c.expires_at,r.count,m.role,m.history_after,o.epoch,g.role,g.history_after,u.ciphertext,b.tus_info,b.complete,
+			 i.accepted_account_id,i.completed_at,i.revoked_at,t.committed,cp.checkpoint,b.transition_id,wc.capability
 		 FROM noura_workspaces w
 		 LEFT JOIN noura_devices d ON false
 		 LEFT JOIN noura_key_envelopes k ON false
@@ -57,8 +79,9 @@ export class SyncStore {
 		 LEFT JOIN noura_public_links p ON false
 		 LEFT JOIN noura_invitations i ON false
 		 LEFT JOIN noura_transitions t ON false
-		 LEFT JOIN noura_checkpoints cp ON false
-		 LEFT JOIN noura_blobs b ON false LIMIT 0`;
+			 LEFT JOIN noura_checkpoints cp ON false
+			 LEFT JOIN noura_workspace_capabilities wc ON false
+			 LEFT JOIN noura_blobs b ON false LIMIT 0`;
 	}
 	async close() {
 		for (const callbacks of this.watchers.values()) {
@@ -67,7 +90,164 @@ export class SyncStore {
 		await this.listening
 			?.then((listener) => listener.unlisten())
 			.catch(() => {});
+		await this.presenceListening
+			?.then((listener) => listener.unlisten())
+			.catch(() => {});
 		await this.db.end();
+	}
+
+	async authorizeRealtimeWorkspace(actor: Actor, workspace: string) {
+		await this.withWorkspace(actor, workspace, async (tx, _state, role) => {
+			const [grant] = role
+				? [undefined]
+				: await tx`SELECT 1 FROM noura_grants WHERE workspace_id=${workspace} AND account_id=${actor.accountId} LIMIT 1`;
+			if (!role && !grant) throw new SyncError('sync.forbidden', 403);
+		});
+	}
+
+	async publishPresence(actor: Actor, value: EncryptedPresence) {
+		const payload = JSON.stringify({
+			type: 'presence',
+			presence: value,
+			expiresAt: Date.now() + 30_000,
+		});
+		if (Buffer.byteLength(payload) >= 8_000)
+			throw new SyncError('sync.invalid_presence');
+		await this.withWorkspace(
+			actor,
+			value.workspaceId,
+			async (tx, _state, role) => {
+				const [object] =
+					await tx`SELECT epoch,generation FROM noura_objects WHERE workspace_id=${value.workspaceId} AND id=${value.objectId}`;
+				const [grant] = role
+					? [undefined]
+					: await tx`SELECT role FROM noura_grants WHERE workspace_id=${value.workspaceId} AND object_id=${value.objectId} AND account_id=${actor.accountId}`;
+				if (!object || (!role && !grant))
+					throw new SyncError('sync.forbidden', 403);
+				if (
+					Number(object.epoch) !== value.epoch ||
+					object.generation !== value.generation
+				)
+					throw new SyncError('sync.generation_changed', 409);
+				await tx`SELECT pg_notify('noura_presence',${payload})`;
+			},
+		);
+	}
+
+	async publishPresenceDeparture(
+		workspace: string,
+		deviceId: string,
+		sessionId: string,
+	) {
+		const payload = JSON.stringify({
+			type: 'presence-left',
+			workspaceId: workspace,
+			deviceId,
+			sessionId,
+		});
+		await this.db`SELECT pg_notify('noura_presence',${payload})`;
+	}
+
+	async watchPresence(
+		workspace: string,
+		signal: AbortSignal,
+		handler: (payload: string) => void,
+	) {
+		this.presenceListening ??= this.db
+			.listen('noura_presence', (payload) => {
+				let target: unknown;
+				try {
+					target = JSON.parse(payload);
+				} catch {
+					return;
+				}
+				if (
+					!target ||
+					typeof target !== 'object' ||
+					!('workspaceId' in target)
+				) {
+					if (
+						!target ||
+						typeof target !== 'object' ||
+						!('presence' in target) ||
+						!target.presence ||
+						typeof target.presence !== 'object' ||
+						!('workspaceId' in target.presence)
+					)
+						return;
+					target = { ...target, workspaceId: target.presence.workspaceId };
+				}
+				const id = (target as { workspaceId: unknown }).workspaceId;
+				if (typeof id !== 'string') return;
+				for (const callback of this.presenceWatchers.get(id) ?? [])
+					callback(payload);
+			})
+			.catch((error: unknown) => {
+				this.presenceListening = undefined;
+				throw error;
+			});
+		await this.presenceListening;
+		if (this.activeWatches >= 1000) throw new SyncError('sync.busy', 503);
+		this.activeWatches += 1;
+		const callbacks =
+			this.presenceWatchers.get(workspace) ??
+			new Set<(payload: string) => void>();
+		callbacks.add(handler);
+		this.presenceWatchers.set(workspace, callbacks);
+		let closed = false;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			this.activeWatches -= 1;
+			signal.removeEventListener('abort', close);
+			callbacks.delete(handler);
+			if (!callbacks.size) this.presenceWatchers.delete(workspace);
+		};
+		signal.addEventListener('abort', close, { once: true });
+		if (signal.aborted) close();
+		return { close };
+	}
+
+	/** Keep realtime invalidation subscribed while authorization is revalidated. */
+	async watchChanges(
+		workspace: string,
+		signal: AbortSignal,
+		handler: () => void,
+	) {
+		this.listening ??= this.db
+			.listen(
+				'noura_sync',
+				(id) => {
+					for (const callback of this.watchers.get(id) ?? []) callback();
+				},
+				() => {
+					// A reconnect may have missed notifications; every subscriber must pull.
+					for (const callbacks of this.watchers.values())
+						for (const callback of callbacks) callback();
+				},
+			)
+			.catch((error: unknown) => {
+				this.listening = undefined;
+				throw error;
+			});
+		await this.listening;
+		if (this.activeWatches >= 1000) throw new SyncError('sync.busy', 503);
+		this.activeWatches += 1;
+		const callbacks = this.watchers.get(workspace) ?? new Set<() => void>();
+		callbacks.add(handler);
+		this.watchers.set(workspace, callbacks);
+		let closed = false;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			this.activeWatches -= 1;
+			signal.removeEventListener('abort', close);
+			callbacks.delete(handler);
+			if (!callbacks.size) this.watchers.delete(workspace);
+		};
+		signal.addEventListener('abort', close, { once: true });
+		if (signal.aborted) close();
+		return { close };
 	}
 
 	/** Subscribe before reading a page, so a commit between read and wait cannot be missed. */
@@ -132,7 +312,7 @@ export class SyncStore {
 	) {
 		const rate = bucket === 'durable' ? 20 : 10;
 		const burst = bucket === 'durable' ? 40 : 10;
-		const allowed = await this.db.begin(async (tx) => {
+		const allowed = await this.transaction(async (tx) => {
 			await tx`INSERT INTO noura_collaboration_limits(device_id,bucket,tokens,updated_at)
 			 VALUES(${actor.deviceId},${bucket},${burst},clock_timestamp()) ON CONFLICT DO NOTHING`;
 			const [row] =
@@ -178,7 +358,7 @@ export class SyncStore {
 		return row?.role;
 	}
 	async createWorkspace(actor: Actor, id: string) {
-		await this.db.begin(async (tx) => {
+		await this.transaction(async (tx) => {
 			await this.member(tx, actor, id);
 			const inserted =
 				await tx`INSERT INTO noura_workspaces(id) VALUES(${id}) ON CONFLICT DO NOTHING RETURNING id`;
@@ -196,7 +376,7 @@ export class SyncStore {
 		workspace: string,
 		run: (tx: Tx, state: postgres.Row, role: string | undefined) => Promise<T>,
 	): Promise<T> {
-		return (await this.db.begin(async (tx) => {
+		return (await this.transaction(async (tx) => {
 			const state = await this.lock(tx, workspace);
 			const role = await this.member(tx, actor, workspace);
 			return await run(tx, state, role);
@@ -217,6 +397,10 @@ export class SyncStore {
 				}
 				if (!role || role === 'viewer')
 					throw new SyncError('sync.forbidden', 403);
+				const [collaboration] =
+					await tx`SELECT 1 FROM noura_workspace_capabilities c JOIN noura_access_log a ON a.workspace_id=c.workspace_id WHERE c.workspace_id=${workspace} AND (a.policy->>'version')::integer=2 ORDER BY a.revision DESC LIMIT 1`;
+				if (collaboration)
+					throw new SyncError('sync.object_activation_required', 409);
 				await tx`INSERT INTO noura_objects(workspace_id,id) VALUES(${workspace},${id}) ON CONFLICT DO NOTHING`;
 				return 1;
 			},
@@ -232,7 +416,7 @@ export class SyncStore {
 				throw new SyncError('sync.identity_mismatch', 403);
 			verifyOperation(op, actor.publicKey);
 		}
-		return (await this.db.begin(async (tx) => {
+		return (await this.transaction(async (tx) => {
 			const state = await this.lock(tx, workspace);
 			const memberRole = await this.member(tx, actor, workspace);
 			const sequences: string[] = [];
@@ -290,17 +474,20 @@ export class SyncStore {
 		workspace: string,
 		after: string,
 	): Promise<SyncPage> {
-		return (await this.db.begin(async (tx) => {
+		return (await this.transaction(async (tx) => {
 			const state = await this.lock(tx, workspace);
-			const role = await this.member(tx, actor, workspace);
+			await this.member(tx, actor, workspace);
+			const [membership] =
+				await tx`SELECT role,history_after FROM noura_members WHERE workspace_id=${workspace} AND account_id=${actor.accountId}`;
 			const [grant] =
 				await tx`SELECT 1 FROM noura_grants WHERE workspace_id=${workspace} AND account_id=${actor.accountId} LIMIT 1`;
-			if (!role && !grant) throw new SyncError('sync.forbidden', 403);
+			if (!membership && !grant) throw new SyncError('sync.forbidden', 403);
 			if (BigInt(after) > BigInt(state.sequence))
 				throw new SyncError('sync.cursor_ahead', 409);
 			const rows = await tx`SELECT o.* FROM noura_operations o
 			 WHERE o.workspace_id=${workspace} AND o.sequence>${after}
-			 AND (${Boolean(role)} OR EXISTS(SELECT 1 FROM noura_grants g WHERE g.workspace_id=o.workspace_id AND g.object_id=o.object_id AND g.account_id=${actor.accountId}))
+				 AND ((${Boolean(membership)} AND o.sequence>${membership?.history_after ?? '0'})
+				 OR EXISTS(SELECT 1 FROM noura_grants g WHERE g.workspace_id=o.workspace_id AND g.object_id=o.object_id AND g.account_id=${actor.accountId} AND o.sequence>g.history_after))
 			 ORDER BY o.sequence LIMIT 101`;
 			const hasMore = rows.length > 100;
 			const operations: SequencedOperation[] = rows

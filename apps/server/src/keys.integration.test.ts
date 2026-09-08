@@ -27,6 +27,7 @@ describe.skipIf(
 		const app = createApp(store, {
 			origin: 'http://127.0.0.1:1900',
 			blobs: await BlobService.open(store, directory, testS3Client()),
+			checkpointTransitions: true,
 		});
 		const server = Bun.serve({
 			hostname: '127.0.0.1',
@@ -84,7 +85,7 @@ describe.skipIf(
 			await child.stdin.flush();
 			const fixture = await line();
 			expect(JSON.stringify(fixture)).not.toContain('private shared content');
-			await store.db.begin(async (tx) => {
+			await store.transaction(async (tx) => {
 				for (const [device, account, session] of [
 					[fixture.owner, ownerAccount, ownerToken],
 					[fixture.reader, readerAccount, token],

@@ -107,30 +107,49 @@
 			return;
 		}
 		activationInProgress = true;
+		const retainedBody = hasActivationDraft()
+			? (editor?.doc() ?? coordinator?.getDraft() ?? loaded?.body)
+			: null;
 		coordinator?.pause();
+		let lease: CollaborationLease | null = null;
 		try {
-			const lease = await acquireNativeCollaboration(file.relativePath);
+			lease = await acquireNativeCollaboration(file.relativePath);
 			if (editorDisposed) {
 				await lease?.release();
+				lease = null;
 				return;
 			}
 			if (!lease || !objectIds.includes(lease.session.bootstrap.objectId)) {
 				await lease?.release();
+				lease = null;
 				coordinator?.resume();
 				return;
 			}
-			if (hasActivationDraft()) {
-				activationNeedsReview = true;
-				await lease.release();
-				return;
+			if (retainedBody !== null && retainedBody !== undefined) {
+				if (lease.session.text.toString() !== retainedBody) {
+					lease.session.transact((text) => {
+						text.delete(0, text.length);
+						text.insert(0, retainedBody);
+					});
+					await lease.session.flush();
+				}
+				coordinator?.acceptDurable();
+				if (loaded)
+					loaded = {
+						...loaded,
+						body: retainedBody,
+						revision: lease.session.revision,
+					};
 			}
 			editorCleanup?.();
 			editorCleanup = null;
 			collaborationLease = lease;
 			collaboration = lease.session;
+			lease = null;
 			error = null;
 			collaborationFailed = false;
 		} catch (value) {
+			await lease?.release().catch(() => {});
 			error = value;
 			activationNeedsReview = true;
 		} finally {
@@ -417,6 +436,7 @@
 	{#if collaboration}
 		<CollaborativeTextSurface
 			session={collaboration}
+			sourceRelativePath={file.relativePath}
 			language={/\.md$/i.test(file.relativePath) ? 'markdown' : 'text'}
 			onerror={(value) => (error = value)}
 		/>

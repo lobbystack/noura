@@ -12,6 +12,7 @@ import {
 	verifyOperation,
 } from './protocol';
 import type { Actor, SyncStore } from './store';
+import { verifyWorkspaceCapability, workspaceCapability } from './capabilities';
 
 import type { AccessTransition } from '../../../packages/shared/src/generated/AccessTransition';
 import type { EncryptedCheckpoint } from '../../../packages/shared/src/generated/EncryptedCheckpoint';
@@ -62,16 +63,24 @@ export function checkpointDigest(value: EncryptedCheckpoint) {
 	);
 }
 export function transitionSigningBytes(value: AccessTransition) {
-	return Buffer.from(
-		JSON.stringify([
-			'noura.sync.transition',
-			value.version,
-			value.transitionId,
-			value.coveredSequence,
-			accessDigest(value.policy),
-			value.checkpoints.map(checkpointDigest),
-		]),
-	);
+	const tuple: unknown[] = [
+		'noura.sync.transition',
+		value.version,
+		value.transitionId,
+		value.coveredSequence,
+		accessDigest(value.policy),
+		value.checkpoints.map(checkpointDigest),
+	];
+	if (value.version === 2)
+		tuple.push(
+			(value.blobs ?? []).map((blob) => [
+				blob.objectId,
+				blob.epoch,
+				blob.ciphertextDigest,
+				blob.ciphertextSize,
+			]),
+		);
+	return Buffer.from(JSON.stringify(tuple));
 }
 export function transitionDigest(value: AccessTransition) {
 	return digest(
@@ -90,24 +99,67 @@ function verifySignature(bytes: Buffer, signature: string, publicKey: string) {
 	if (!verify(null, bytes, key, base64(signature, 64)))
 		throw new SyncError('sync.invalid_signature', 403);
 }
+export function verifyCheckpoint(
+	value: EncryptedCheckpoint,
+	publicKey: string,
+) {
+	verifyOperation(value.payload, publicKey);
+	verifySignature(checkpointSigningBytes(value), value.signature, publicKey);
+}
 export function accessTransition(input: unknown): AccessTransition {
+	const raw = record(input);
+	if (raw.version !== 1 && raw.version !== 2)
+		throw new SyncError('sync.unsupported_version');
 	const value = exact(input, [
 		'version',
 		'transitionId',
 		'coveredSequence',
 		'policy',
 		'checkpoints',
+		...(raw.version === 2 ? ['blobs'] : []),
 		'signature',
 	]);
-	if (value.version !== 1) throw new SyncError('sync.unsupported_version');
 	if (!Array.isArray(value.checkpoints) || value.checkpoints.length > 1000)
 		throw new SyncError('sync.invalid_transition');
+	if (
+		value.version === 2 &&
+		(!Array.isArray(value.blobs) || value.blobs.length > 1000)
+	)
+		throw new SyncError('sync.invalid_transition');
+	const blobs =
+		value.version === 2
+			? (value.blobs as unknown[]).map((input) => {
+					const blob = exact(input, [
+						'objectId',
+						'epoch',
+						'ciphertextDigest',
+						'ciphertextSize',
+					]);
+					if (
+						!Number.isSafeInteger(blob.epoch) ||
+						(blob.epoch as number) < 1 ||
+						typeof blob.ciphertextDigest !== 'string' ||
+						!/^[0-9a-f]{64}$/.test(blob.ciphertextDigest) ||
+						!Number.isSafeInteger(blob.ciphertextSize) ||
+						(blob.ciphertextSize as number) < 1 ||
+						(blob.ciphertextSize as number) > 1024 * 1024 * 1024
+					)
+						throw new SyncError('sync.invalid_transition_blob');
+					return {
+						objectId: identifier(blob.objectId),
+						epoch: blob.epoch as number,
+						ciphertextDigest: blob.ciphertextDigest,
+						ciphertextSize: blob.ciphertextSize as number,
+					};
+				})
+			: [];
 	const result: AccessTransition = {
-		version: 1,
+		version: value.version as 1 | 2,
 		transitionId: identifier(value.transitionId),
 		coveredSequence: cursor(value.coveredSequence),
 		policy: accessPolicy(value.policy),
 		checkpoints: value.checkpoints.map(checkpoint),
+		...(value.version === 2 ? { blobs } : {}),
 		signature: base64(value.signature, 64).toString('base64'),
 	};
 	let previous = '';
@@ -129,12 +181,28 @@ export function accessTransition(input: unknown): AccessTransition {
 			throw new SyncError('sync.invalid_transition');
 		previous = op.objectId;
 	}
+	let previousBlob = '';
+	for (const blob of result.blobs ?? []) {
+		const key = `${blob.objectId}\0${blob.ciphertextDigest}`;
+		const object = result.policy.objects.find(
+			(object) => object.objectId === blob.objectId,
+		);
+		if (
+			key <= previousBlob ||
+			!object ||
+			object.epoch !== blob.epoch ||
+			!result.checkpoints.some(
+				(checkpoint) => checkpoint.payload.objectId === blob.objectId,
+			)
+		)
+			throw new SyncError('sync.invalid_transition_blob');
+		previousBlob = key;
+	}
 	return result;
 }
 export function verifyTransition(value: AccessTransition, publicKey: string) {
 	for (const entry of value.checkpoints) {
-		verifyOperation(entry.payload, publicKey);
-		verifySignature(checkpointSigningBytes(entry), entry.signature, publicKey);
+		verifyCheckpoint(entry, publicKey);
 	}
 	verifySignature(transitionSigningBytes(value), value.signature, publicKey);
 }
@@ -156,6 +224,14 @@ export async function stageTransition(
 		async (tx, state, role) => {
 			if (!['owner', 'admin'].includes(role ?? ''))
 				throw new SyncError('sync.forbidden', 403);
+			const [capability] =
+				await tx`SELECT c.capability,d.public_key FROM noura_workspace_capabilities c JOIN noura_devices d ON d.id=c.device_id WHERE c.workspace_id=${value.policy.workspaceId}`;
+			if (!capability)
+				throw new SyncError('sync.collaboration_capability_required', 409);
+			const signedCapability = workspaceCapability(capability.capability);
+			if (signedCapability.workspaceId !== value.policy.workspaceId)
+				throw new SyncError('sync.identity_mismatch', 403);
+			verifyWorkspaceCapability(signedCapability, capability.public_key);
 			const hash = transitionDigest(value);
 			const [existing] =
 				await tx`SELECT digest,committed FROM noura_transitions WHERE workspace_id=${value.policy.workspaceId} AND id=${value.transitionId}`;

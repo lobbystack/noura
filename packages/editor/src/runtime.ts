@@ -1,4 +1,5 @@
 export {
+	createPdfPreviewExtensions,
 	createLiveMarkdownDocument,
 	createLiveMarkdownEditor,
 } from './factory';

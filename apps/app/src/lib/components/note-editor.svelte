@@ -209,35 +209,53 @@
 			return;
 		}
 		activationInProgress = true;
+		const retainedDraft = hasActivationDraft() ? currentDraft() : null;
 		coordinator?.pause();
-		if (hasActivationDraft()) {
-			activationNeedsReview = true;
-			activationInProgress = false;
-			return;
-		}
+		let lease: CollaborationLease | null = null;
 		try {
-			const lease = await acquireNativeCollaboration(currentNote.relativePath);
+			const target = currentNote;
+			lease = await acquireNativeCollaboration(target.relativePath);
 			if (editorDisposed) {
 				await lease?.release();
+				lease = null;
 				return;
 			}
 			if (!lease)
 				throw new Error(
 					'Collaboration activation is not ready. Reopen this document.',
 				);
-			if (hasActivationDraft()) {
-				activationNeedsReview = true;
+			if (retainedDraft) {
+				const result = await getNouraClient().notes.update(target.id, {
+					expectedRevision: lease.session.revision,
+					title: retainedDraft.title,
+					body: retainedDraft.body,
+				});
 				await lease.release();
-				return;
+				lease = null;
+				lease = await acquireNativeCollaboration(result.value.relativePath);
+				if (!lease)
+					throw new Error(
+						'The retained draft was saved locally, but the collaboration session could not reopen.',
+					);
+				if (editorDisposed) {
+					await lease.release();
+					lease = null;
+					return;
+				}
+				setCanonical(result.value as Note);
+				draftTitle = result.value.title;
+				coordinator?.acceptDurable();
 			}
 			editorCleanup?.();
 			editorCleanup = null;
 			collaborationLease = lease;
 			collaboration = lease.session;
+			lease = null;
 			autosaveError = null;
 			collaborationFailed = false;
 			connectEditor(null);
 		} catch (error) {
+			await lease?.release().catch(() => {});
 			autosaveError = error;
 			activationNeedsReview = true;
 		} finally {
@@ -586,6 +604,7 @@
 			{#if collaboration}
 				<CollaborativeTextSurface
 					session={collaboration}
+					sourceRelativePath={currentNote.relativePath}
 					language="markdown"
 					onerror={(error) => (autosaveError = error)}
 				/>

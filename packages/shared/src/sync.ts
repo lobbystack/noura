@@ -2,7 +2,11 @@
 import type { EncryptedOperation } from './generated/EncryptedOperation';
 export type { EncryptedOperation };
 export type { AccessTransition } from './generated/AccessTransition';
+export type { CheckpointBlobManifest } from './generated/CheckpointBlobManifest';
 export type { EncryptedCheckpoint } from './generated/EncryptedCheckpoint';
+export type { ObjectActivation } from './generated/ObjectActivation';
+export type { WorkspaceCapability } from './generated/WorkspaceCapability';
+export type { EncryptedPresence } from './generated/EncryptedPresence';
 
 export interface SequencedOperation extends EncryptedOperation {
 	sequence: string;

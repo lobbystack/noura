@@ -97,3 +97,80 @@ describe('live markdown editor view', () => {
 		}
 	});
 });
+
+describe('PDF previews', () => {
+	test('both syntaxes mount app-owned viewers and preserve source bytes', async () => {
+		const source =
+			'![[lecture.pdf#page=7]]\n\n![](lecture.pdf#page=9)\n\n[Read](lecture.pdf#page=11)\n\nInline ![[lecture.pdf#page=3]] end\n';
+		const originalObserver = globalThis.IntersectionObserver;
+		const visibility: IntersectionObserverCallback[] = [];
+		globalThis.IntersectionObserver = class {
+			constructor(callback: IntersectionObserverCallback) {
+				visibility.push(callback);
+			}
+			observe() {}
+			disconnect() {}
+			unobserve() {}
+			takeRecords() {
+				return [];
+			}
+		} as unknown as typeof IntersectionObserver;
+		const host = document.createElement('div');
+		document.body.append(host);
+		const documentModel = createLiveMarkdownDocument('markdown', source);
+		let mounts = 0;
+		let cleanups = 0;
+		const opened: number[] = [];
+		const editor = createLiveMarkdownEditor(host, {
+			ytext: documentModel.ytext,
+			readOnly: true,
+			resolveLink: async (target) => ({
+				kind: 'pdf',
+				relativePath: 'lecture.pdf',
+				page: Number(target.split('page=')[1]),
+			}),
+			openPdf: (target) => {
+				opened.push(target.page ?? 1);
+			},
+			mountPdfEmbed: (container) => {
+				mounts++;
+				container.textContent = 'App PDF viewer';
+				return () => {
+					cleanups++;
+				};
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(mounts).toBe(0);
+		for (const callback of visibility)
+			callback(
+				[{ isIntersecting: true } as IntersectionObserverEntry],
+				{} as IntersectionObserver,
+			);
+		expect(mounts).toBe(2);
+		for (const callback of visibility)
+			callback(
+				[{ isIntersecting: false } as IntersectionObserverEntry],
+				{} as IntersectionObserver,
+			);
+		expect(cleanups).toBe(2);
+		for (const callback of visibility)
+			callback(
+				[{ isIntersecting: true } as IntersectionObserverEntry],
+				{} as IntersectionObserver,
+			);
+		expect(host.querySelectorAll('.cm-pdf-preview').length).toBe(4);
+		expect(host.querySelectorAll('.cm-pdf-preview > div').length).toBe(2);
+		const read = Array.from(host.querySelectorAll('button')).find(
+			(button) => button.textContent === 'Read',
+		);
+		read?.click();
+		expect(opened).toEqual([11]);
+		expect(editor.doc()).toBe(source);
+		editor.destroy();
+		documentModel.destroy();
+		host.remove();
+		expect(cleanups).toBe(4);
+		globalThis.IntersectionObserver = originalObserver;
+	});
+});

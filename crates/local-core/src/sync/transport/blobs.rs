@@ -8,6 +8,15 @@ use crate::sync::EncryptedBlob;
 
 const CHUNK: u64 = 1024 * 1024;
 
+struct BlobUpload<'a> {
+    object: &'a str,
+    epoch: u64,
+    digest: &'a str,
+    size: u64,
+    transition: Option<&'a str>,
+    activation: Option<&'a str>,
+}
+
 impl HttpSyncTransport {
     /// Resume a previously sealed ciphertext file. Never regenerate encryption on retry.
     pub async fn upload_blob(
@@ -18,13 +27,83 @@ impl HttpSyncTransport {
         descriptor: &EncryptedBlob,
         file: &mut File,
     ) -> Result<()> {
-        let path = blob_path(workspace, object, descriptor)?;
-        if epoch == 0 || epoch > 9_007_199_254_740_991 {
+        descriptor.validate()?;
+        file.rewind()
+            .map_err(|_| invalid("sync_blob_read_failed"))?;
+        descriptor.verify(&mut *file)?;
+        self.upload_ciphertext(
+            workspace,
+            BlobUpload {
+                object,
+                epoch,
+                digest: &descriptor.id,
+                size: descriptor.size,
+                transition: None,
+                activation: None,
+            },
+            file,
+        )
+        .await
+    }
+
+    pub(crate) async fn upload_transition_blob(
+        &self,
+        workspace: &str,
+        transition: &str,
+        manifest: &super::super::CheckpointBlobManifest,
+        file: &mut File,
+    ) -> Result<()> {
+        identifier(transition)?;
+        self.upload_ciphertext(
+            workspace,
+            BlobUpload {
+                object: &manifest.object_id,
+                epoch: manifest.epoch,
+                digest: &manifest.ciphertext_digest,
+                size: manifest.ciphertext_size,
+                transition: Some(transition),
+                activation: None,
+            },
+            file,
+        )
+        .await
+    }
+
+    pub(crate) async fn upload_activation_blob(
+        &self,
+        workspace: &str,
+        activation: &str,
+        manifest: &super::super::CheckpointBlobManifest,
+        file: &mut File,
+    ) -> Result<()> {
+        identifier(activation)?;
+        self.upload_ciphertext(
+            workspace,
+            BlobUpload {
+                object: &manifest.object_id,
+                epoch: manifest.epoch,
+                digest: &manifest.ciphertext_digest,
+                size: manifest.ciphertext_size,
+                transition: None,
+                activation: Some(activation),
+            },
+            file,
+        )
+        .await
+    }
+
+    async fn upload_ciphertext(
+        &self,
+        workspace: &str,
+        upload: BlobUpload<'_>,
+        file: &mut File,
+    ) -> Result<()> {
+        let path = blob_path(workspace, upload.object, upload.digest)?;
+        if upload.epoch == 0 || upload.epoch > 9_007_199_254_740_991 {
             return Err(invalid("sync_stale_epoch"));
         }
         file.rewind()
             .map_err(|_| invalid("sync_blob_read_failed"))?;
-        descriptor.verify(&mut *file)?;
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Reservation {
@@ -36,14 +115,23 @@ impl HttpSyncTransport {
         let reservation: Reservation = self
             .request(
                 Method::POST,
-                &format!("/v1/workspaces/{workspace}/objects/{object}/blobs"),
-                Some(&serde_json::json!({"id":descriptor.id,"size":descriptor.size,"epoch":epoch})),
+                &format!(
+                    "/v1/workspaces/{workspace}/objects/{}/blobs",
+                    upload.object
+                ),
+                Some(&if let Some(transition) = upload.transition {
+                    serde_json::json!({"id":upload.digest,"size":upload.size,"epoch":upload.epoch,"transitionId":transition})
+                } else if let Some(activation) = upload.activation {
+                    serde_json::json!({"id":upload.digest,"size":upload.size,"epoch":upload.epoch,"activationId":activation})
+                } else {
+                    serde_json::json!({"id":upload.digest,"size":upload.size,"epoch":upload.epoch})
+                }),
             )
             .await?;
-        if reservation.id != descriptor.id
-            || reservation.offset > descriptor.size
+        if reservation.id != upload.digest
+            || reservation.offset > upload.size
             || reservation.failed
-            || (reservation.complete && reservation.offset != descriptor.size)
+            || (reservation.complete && reservation.offset != upload.size)
         {
             return Err(invalid("sync_invalid_blob_response"));
         }
@@ -60,19 +148,19 @@ impl HttpSyncTransport {
             .await
             .map_err(|_| network_error())?;
         blob_status(&head)?;
-        if header_number(&head, "Upload-Length")? != descriptor.size {
+        if header_number(&head, "Upload-Length")? != upload.size {
             return Err(invalid("sync_invalid_blob_response"));
         }
         let mut offset = header_number(&head, "Upload-Offset")?;
-        if offset > descriptor.size {
+        if offset > upload.size {
             return Err(invalid("sync_invalid_blob_response"));
         }
-        if offset == descriptor.size {
+        if offset == upload.size {
             return complete(&head);
         }
         let mut buffer = vec![0u8; CHUNK as usize];
-        while offset < descriptor.size {
-            let length = CHUNK.min(descriptor.size - offset) as usize;
+        while offset < upload.size {
+            let length = CHUNK.min(upload.size - offset) as usize;
             file.seek(SeekFrom::Start(offset))
                 .and_then(|_| file.read_exact(&mut buffer[..length]))
                 .map_err(|_| invalid("sync_blob_read_failed"))?;
@@ -92,7 +180,7 @@ impl HttpSyncTransport {
             if header_number(&response, "Upload-Offset")? != offset {
                 return Err(invalid("sync_invalid_blob_response"));
             }
-            if offset == descriptor.size {
+            if offset == upload.size {
                 complete(&response)?;
             }
         }
@@ -108,7 +196,7 @@ impl HttpSyncTransport {
         descriptor: &EncryptedBlob,
         file: &mut File,
     ) -> Result<()> {
-        let path = blob_path(workspace, object, descriptor)?;
+        let path = blob_path(workspace, object, &descriptor.id)?;
         let mut offset = file
             .metadata()
             .map_err(|_| invalid("sync_blob_read_failed"))?
@@ -169,13 +257,19 @@ impl HttpSyncTransport {
     }
 }
 
-fn blob_path(workspace: &str, object: &str, descriptor: &EncryptedBlob) -> Result<String> {
+fn blob_path(workspace: &str, object: &str, digest: &str) -> Result<String> {
     identifier(workspace)?;
     identifier(object)?;
-    descriptor.validate()?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid("sync_invalid_blob"));
+    }
     Ok(format!(
         "/v1/workspaces/{workspace}/objects/{object}/blobs/{}",
-        descriptor.id
+        digest
     ))
 }
 fn header_number(response: &reqwest::Response, name: &str) -> Result<u64> {

@@ -31,7 +31,7 @@ describe.skipIf(!url)('account to device enrollment', () => {
 	const app = createApp(store, { origin, auth: identity.auth });
 	beforeAll(async () => {
 		await store.migrate();
-		await store.db.begin(async (tx) => {
+		await store.transaction(async (tx) => {
 			await tx`SELECT pg_advisory_xact_lock(192837466)`;
 			await (await getMigrations(identity.auth.options)).runMigrations();
 		});

@@ -168,6 +168,8 @@ export interface TreeNavigationTarget {
  */
 export function treeTargetFor(node: WorkspaceTreeNode): TreeNavigationTarget {
 	if (node.kind !== 'file') return { route: null, query: {} };
+	if (/\.pdf$/i.test(node.relativePath))
+		return { route: '/pdf', query: { path: node.relativePath } };
 	if (node.parseStatus === 'managed') {
 		const route = node.objectType ? ROUTES_BY_TYPE[node.objectType] : undefined;
 		if (route && node.objectId) {

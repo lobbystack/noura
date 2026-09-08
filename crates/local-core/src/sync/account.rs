@@ -215,6 +215,10 @@ mod tests {
         SyncAccountPoll::export_all_to("bindings")?;
         DeviceSignInInfo::export_all_to("bindings")?;
         crate::sync::WorkspaceSyncStatus::export_all_to("bindings")?;
+        crate::sync::CollaborationPresenceInput::export_all_to("bindings")?;
+        crate::sync::CollaborationPresenceMember::export_all_to("bindings")?;
+        crate::sync::CollaborationPresenceEvent::export_all_to("bindings")?;
+        crate::sync::EncryptedPresence::export_all_to("bindings")?;
         crate::sync::SyncDevice::export_all_to("bindings")?;
         crate::sync::SyncInvitation::export_all_to("bindings")?;
         crate::sync::SyncInvitationLink::export_all_to("bindings")?;

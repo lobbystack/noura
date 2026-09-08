@@ -6,9 +6,18 @@ export interface Tab {
 	objectType: ObjectType;
 	title: string;
 	pinned: boolean;
+	href?: string;
+	pdfPosition?: { page: number; scale: string };
 }
 
 class TabsStore {
+	#workspaceId: string | null | undefined;
+	setWorkspace(id: string | null | undefined) {
+		if (this.#workspaceId !== id) {
+			this.#workspaceId = id;
+			this.clear();
+		}
+	}
 	tabs = $state<Tab[]>([]);
 	activeId = $state<string | null>(null);
 
@@ -61,6 +70,21 @@ class TabsStore {
 		this.tabs = this.tabs.filter((t) => t.id !== id);
 		if (wasActive)
 			this.activeId = this.tabs[Math.max(0, index - 1)]?.id ?? null;
+	}
+
+	setLocation(id: string, href: string) {
+		this.tabs = this.tabs.map((tab) =>
+			tab.id === id ? { ...tab, href } : tab,
+		);
+	}
+	setPdfPosition(id: string, pdfPosition: { page: number; scale: string }) {
+		this.tabs = this.tabs.map((tab) =>
+			tab.id === id ? { ...tab, pdfPosition } : tab,
+		);
+	}
+	clear() {
+		this.tabs = [];
+		this.activeId = null;
 	}
 
 	setActive(id: string | null) {

@@ -30,6 +30,7 @@ const result = Bun.spawnSync(
 		'src/checkpoints.test.ts',
 		'src/checkpoints.integration.test.ts',
 		'src/collaboration-limits.integration.test.ts',
+		'src/realtime.integration.test.ts',
 		'src/invitations.integration.test.ts',
 		'src/signin.integration.test.ts',
 		'src/public-links.integration.test.ts',

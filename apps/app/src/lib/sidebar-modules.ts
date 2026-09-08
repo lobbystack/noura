@@ -19,7 +19,7 @@ export interface SidebarModule {
 
 export const SIDEBAR_MODULES: readonly SidebarModule[] = [
 	{ id: 'tasks-views', pluginId: 'tasks', routes: ['/tasks'] },
-	{ id: 'file-browser', pluginId: 'folders', routes: ['/notes'] },
+	{ id: 'file-browser', pluginId: 'folders', routes: ['/notes', '/pdf'] },
 ];
 
 function routeMatches(pathname: string, route: string): boolean {

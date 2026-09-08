@@ -1,33 +1,19 @@
 import * as Y from 'yjs';
+import type {
+	CollaborationPresenceMember,
+	CollaborationSession as NativeCollaborationBootstrap,
+	CollaborationStatus as NativeCollaborationStatus,
+} from '@noura/shared';
 
-export type CollaborationStatus =
-	| 'Saving'
-	| 'Saved locally'
-	| 'Synced'
-	| 'Offline'
-	| 'Reconnecting'
-	| 'Needs review';
-export interface CollaborationBootstrap {
-	objectId: string;
-	generation: string;
-	sessionId: string;
-	update: string;
-	revision: string;
-	readOnly: boolean;
-}
+export type CollaborationStatus = NativeCollaborationStatus;
+export type CollaborationBootstrap = NativeCollaborationBootstrap;
 export interface CollaborationBatch {
 	sessionId: string;
 	generation: string;
 	batchId: string;
 	updates: string[];
 }
-export interface CollaborationPresence {
-	deviceId: string;
-	name: string;
-	color: string;
-	anchor: string;
-	head: string;
-}
+export type CollaborationPresence = CollaborationPresenceMember;
 export type CollaborationEvent =
 	| { type: 'update'; generation: string; update: string }
 	| { type: 'status'; generation: string; status: CollaborationStatus }
@@ -59,7 +45,7 @@ export class CollaborationSession {
 	readonly undoManager = new Y.UndoManager(this.text, {
 		trackedOrigins: new Set([this.localOrigin]),
 	});
-	status: CollaborationStatus = 'Saved locally';
+	status: CollaborationStatus;
 	revision: string;
 	error: unknown = null;
 	presence: CollaborationPresence[] = [];
@@ -79,6 +65,7 @@ export class CollaborationSession {
 		private provider: CollaborationProvider,
 	) {
 		this.revision = bootstrap.revision;
+		this.status = bootstrap.status;
 		Y.applyUpdate(
 			this.doc,
 			decodeCollaborationUpdate(bootstrap.update),

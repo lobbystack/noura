@@ -10,6 +10,8 @@ const bootstrap = {
 	update: 'AAA=',
 	revision: 'revision',
 	readOnly: false,
+	role: 'writer' as const,
+	status: 'Synced' as const,
 };
 function fixture() {
 	let opened = 0;

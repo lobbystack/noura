@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::sync::{
-    ApplyOutcome, DeviceKeys, EncryptedOperation, FileChange, KeyEnvelope, ObjectKey,
-    SigningIdentity,
+    ApplyOutcome, DeviceKeys, DocumentDescriptor, DocumentMode, EncryptedOperation, FileChange,
+    KeyEnvelope, ObjectKey, OperationKind, SigningIdentity,
 };
-use crate::sync::{invalid, validate_file_change as validate_change};
+use crate::sync::{identifier, invalid, validate_file_change as validate_change};
 
 const STATE_PATH: &str = ".noura/sync/state.json";
 mod blobs;
@@ -40,6 +40,36 @@ struct Journal {
     outbox: Vec<EncryptedOperation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transition: Option<crate::sync::AccessTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transition_phase: Option<TransitionPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activation: Option<crate::sync::ObjectActivation>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    activations: BTreeMap<String, crate::sync::ObjectActivation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TransitionPhase {
+    Prepare,
+    Stage,
+    ResolveCommit,
+    Install,
+    Rebase,
+    Complete,
+}
+
+impl TransitionPhase {
+    fn order(self) -> u8 {
+        match self {
+            Self::Prepare => 0,
+            Self::Stage => 1,
+            Self::ResolveCommit => 2,
+            Self::Install => 3,
+            Self::Rebase => 4,
+            Self::Complete => 5,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -66,6 +96,36 @@ struct Receipt {
 }
 
 impl WorkspaceEngine {
+    fn sync_document_descriptor(journal: &Journal, object_id: &str) -> Option<DocumentDescriptor> {
+        Self::sync_document(journal, object_id).map(|(_, descriptor)| descriptor)
+    }
+
+    fn sync_document(journal: &Journal, object_id: &str) -> Option<(u64, DocumentDescriptor)> {
+        journal
+            .access_policy
+            .as_ref()
+            .and_then(|policy| {
+                policy
+                    .objects
+                    .iter()
+                    .find(|object| object.object_id == object_id)
+                    .and_then(|object| {
+                        object
+                            .document
+                            .clone()
+                            .map(|document| (object.epoch, document))
+                    })
+            })
+            .or_else(|| {
+                journal.activations.get(object_id).map(|activation| {
+                    (
+                        activation.checkpoint.payload.epoch,
+                        activation.document.clone(),
+                    )
+                })
+            })
+    }
+
     /// Persist exact signed transition bytes before any relay submission. Outbox edits are retained.
     pub fn sync_prepare_transition(
         &self,
@@ -82,6 +142,10 @@ impl WorkspaceEngine {
             if existing.digest()? != transition.digest()? {
                 return Err(invalid("sync_transition_pending"));
             }
+            if journal.transition_phase.is_none() {
+                journal.transition_phase = Some(TransitionPhase::Prepare);
+                self.sync_write(STATE_PATH, &journal)?;
+            }
             return Ok(());
         }
         if sync_cursor(&transition.covered_sequence)? != sync_cursor(&journal.cursor)?
@@ -91,12 +155,180 @@ impl WorkspaceEngine {
             return Err(invalid("sync_transition_stale"));
         }
         journal.transition = Some(transition.clone());
+        journal.transition_phase = Some(TransitionPhase::Prepare);
         self.sync_write(STATE_PATH, &journal)
     }
 
     pub fn sync_pending_transition(&self) -> Result<Option<crate::sync::AccessTransition>> {
         let _lock = self.write_lock("sync_transition")?;
-        Ok(self.sync_journal()?.transition)
+        let mut journal = self.sync_journal()?;
+        if journal.transition_phase == Some(TransitionPhase::Complete) {
+            journal.transition = None;
+            journal.transition_phase = None;
+            self.sync_write(STATE_PATH, &journal)?;
+        }
+        Ok(journal.transition)
+    }
+
+    /// Persist an exact unpublished activation before contacting the relay.
+    pub fn sync_prepare_activation(
+        &self,
+        activation: &crate::sync::ObjectActivation,
+        public_key: &str,
+    ) -> Result<()> {
+        activation.verify(public_key)?;
+        if activation.workspace_id != self.manifest().id {
+            return Err(invalid("sync_wrong_workspace"));
+        }
+        let _lock = self.write_lock("sync_activation")?;
+        let mut journal = self.sync_journal()?;
+        if let Some(existing) = &journal.activation {
+            if existing.digest()? != activation.digest()? {
+                return Err(invalid("sync_activation_pending"));
+            }
+            return Ok(());
+        }
+        if activation.policy_revision != journal.access_revision
+            || activation.covered_sequence != journal.cursor
+        {
+            return Err(invalid("sync_activation_stale"));
+        }
+        journal.activation = Some(activation.clone());
+        self.sync_write(STATE_PATH, &journal)
+    }
+
+    pub fn sync_pending_activation(&self) -> Result<Option<crate::sync::ObjectActivation>> {
+        let _lock = self.write_lock("sync_activation")?;
+        Ok(self.sync_journal()?.activation)
+    }
+
+    /// Record a committed activation before installing its canonical checkpoint.
+    pub fn sync_accept_activation(
+        &self,
+        activation: &crate::sync::ObjectActivation,
+        public_key: &str,
+    ) -> Result<()> {
+        activation.verify(public_key)?;
+        if activation.workspace_id != self.manifest().id {
+            return Err(invalid("sync_wrong_workspace"));
+        }
+        let object_id = &activation.checkpoint.payload.object_id;
+        let _lock = self.write_lock("sync_activation")?;
+        let mut journal = self.sync_journal()?;
+        if sync_cursor(&activation.policy_revision)? > sync_cursor(&journal.access_revision)? {
+            return Err(invalid("sync_activation_stale"));
+        }
+        if let Some(existing) = journal.activations.get(object_id) {
+            if existing.digest()? != activation.digest()? {
+                return Err(invalid("sync_activation_changed"));
+            }
+            return Ok(());
+        }
+        journal
+            .activations
+            .insert(object_id.clone(), activation.clone());
+        self.sync_write(STATE_PATH, &journal)
+    }
+
+    pub fn sync_finish_activation(&self, activation_id: &str) -> Result<()> {
+        identifier(activation_id)?;
+        let _lock = self.write_lock("sync_activation")?;
+        let mut journal = self.sync_journal()?;
+        let Some(activation) = journal.activation.as_ref() else {
+            return Ok(());
+        };
+        if activation.activation_id != activation_id {
+            return Err(invalid("sync_activation_pending"));
+        }
+        if !self.collaboration_generation_is_installed(
+            &activation.checkpoint.payload.object_id,
+            &activation.document.generation,
+        )? {
+            return Err(invalid("sync_activation_install_incomplete"));
+        }
+        journal.activation = None;
+        self.sync_write(STATE_PATH, &journal)
+    }
+
+    /// Clear only an activation proven uncommitted by the relay. Captured local bytes and
+    /// legacy outbox ciphertext remain available to rebuild against the new policy boundary.
+    pub fn sync_abandon_activation(&self, activation_id: &str) -> Result<()> {
+        identifier(activation_id)?;
+        let _lock = self.write_lock("sync_activation")?;
+        let mut journal = self.sync_journal()?;
+        let Some(activation) = journal.activation.as_ref() else {
+            return Ok(());
+        };
+        if activation.activation_id != activation_id {
+            return Err(invalid("sync_activation_pending"));
+        }
+        journal.activation = None;
+        self.sync_write(STATE_PATH, &journal)
+    }
+
+    pub(crate) fn sync_advance_transition(&self, transition_id: &str, phase: &str) -> Result<()> {
+        crate::sync::identifier(transition_id)?;
+        let next = match phase {
+            "stage" => TransitionPhase::Stage,
+            "resolve_commit" => TransitionPhase::ResolveCommit,
+            "install" => TransitionPhase::Install,
+            "rebase" => TransitionPhase::Rebase,
+            "complete" => TransitionPhase::Complete,
+            _ => return Err(invalid("sync_invalid_transition_phase")),
+        };
+        let _lock = self.write_lock("sync_transition_phase")?;
+        let mut journal = self.sync_journal()?;
+        let transition = journal
+            .transition
+            .as_ref()
+            .ok_or_else(|| invalid("sync_transition_missing"))?;
+        if transition.transition_id != transition_id {
+            return Err(invalid("sync_transition_changed"));
+        }
+        let current = journal.transition_phase.unwrap_or(TransitionPhase::Prepare);
+        // Retrying an exact durable transition replays the orchestration from the start.
+        // Phases already crossed are successful no-ops; skipping a phase still fails closed.
+        if next.order() <= current.order() {
+            return Ok(());
+        }
+        if next.order() > current.order() + 1 {
+            return Err(invalid("sync_invalid_transition_phase"));
+        }
+        journal.transition_phase = Some(next);
+        self.sync_write(STATE_PATH, &journal)?;
+        Ok(())
+    }
+
+    pub(crate) fn sync_finish_transition_install(&self, transition_id: &str) -> Result<()> {
+        let _lock = self.write_lock("sync_transition_finish")?;
+        let mut journal = self.sync_journal()?;
+        let transition = journal
+            .transition
+            .as_ref()
+            .filter(|transition| transition.transition_id == transition_id)
+            .ok_or_else(|| invalid("sync_transition_changed"))?;
+        if journal.access_revision != transition.policy.revision {
+            return Err(invalid("sync_transition_install_incomplete"));
+        }
+        for checkpoint in &transition.checkpoints {
+            if !self.collaboration_generation_is_installed(
+                &checkpoint.payload.object_id,
+                &checkpoint.generation,
+            )? {
+                return Err(invalid("sync_transition_install_incomplete"));
+            }
+        }
+        let current = journal.transition_phase.unwrap_or(TransitionPhase::Prepare);
+        if current == TransitionPhase::Install {
+            journal.transition_phase = Some(TransitionPhase::Rebase);
+            self.sync_write(STATE_PATH, &journal)?;
+            journal = self.sync_journal()?;
+        }
+        if journal.transition_phase != Some(TransitionPhase::Rebase) {
+            return Err(invalid("sync_invalid_transition_phase"));
+        }
+        journal.transition_phase = Some(TransitionPhase::Complete);
+        self.sync_write(STATE_PATH, &journal)
     }
 
     /// Resolve a checkpoint's policy through the hash chain anchored by the accepted head.
@@ -182,7 +414,11 @@ impl WorkspaceEngine {
     }
 
     pub fn sync_status(&self) -> Result<crate::sync::WorkspaceSyncStatus> {
-        use crate::sync::{WorkspaceSyncPhase, WorkspaceSyncStatus};
+        use crate::sync::{
+            WorkspaceSyncActivationStatus, WorkspaceSyncPhase, WorkspaceSyncStatus,
+            WorkspaceSyncTransitionObject, WorkspaceSyncTransitionPhase,
+            WorkspaceSyncTransitionStatus,
+        };
         let config = self.sync_configuration()?;
         let _lock = self.write_lock("sync_status")?;
         let journal = self.sync_journal()?;
@@ -203,6 +439,63 @@ impl WorkspaceEngine {
                 .unwrap_or(u32::MAX),
             error_code: None,
             last_success: None,
+            transition: journal
+                .transition
+                .as_ref()
+                .map(|transition| {
+                    let phase = match journal.transition_phase.unwrap_or(TransitionPhase::Prepare) {
+                        TransitionPhase::Prepare => WorkspaceSyncTransitionPhase::Prepare,
+                        TransitionPhase::Stage => WorkspaceSyncTransitionPhase::Stage,
+                        TransitionPhase::ResolveCommit => {
+                            WorkspaceSyncTransitionPhase::ResolveCommit
+                        }
+                        TransitionPhase::Install => WorkspaceSyncTransitionPhase::Install,
+                        TransitionPhase::Rebase => WorkspaceSyncTransitionPhase::Rebase,
+                        TransitionPhase::Complete => WorkspaceSyncTransitionPhase::Complete,
+                    };
+                    let objects = transition
+                        .checkpoints
+                        .iter()
+                        .map(|checkpoint| {
+                            Ok(WorkspaceSyncTransitionObject {
+                                object_id: checkpoint.payload.object_id.clone(),
+                                path: journal
+                                    .objects
+                                    .get(&checkpoint.payload.object_id)
+                                    .map(|object| object.path.clone()),
+                                installed: self.collaboration_generation_is_installed(
+                                    &checkpoint.payload.object_id,
+                                    &checkpoint.generation,
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(WorkspaceSyncTransitionStatus {
+                        transition_id: transition.transition_id.clone(),
+                        phase,
+                        objects,
+                    })
+                })
+                .transpose()?,
+            activation: journal
+                .activation
+                .as_ref()
+                .map(|activation| {
+                    let object_id = activation.checkpoint.payload.object_id.clone();
+                    Ok(WorkspaceSyncActivationStatus {
+                        activation_id: activation.activation_id.clone(),
+                        path: journal
+                            .objects
+                            .get(&object_id)
+                            .map(|object| object.path.clone()),
+                        installed: self.collaboration_generation_is_installed(
+                            &object_id,
+                            &activation.document.generation,
+                        )?,
+                        object_id,
+                    })
+                })
+                .transpose()?,
         })
     }
 
@@ -339,12 +632,15 @@ impl WorkspaceEngine {
         device: &DeviceKeys,
         secrets: &mut crate::sync::SyncSecrets,
     ) -> Result<()> {
+        if self.collaboration_capture_external(path, device, secrets)? {
+            return Ok(());
+        }
         if self.sync_capture_attachment(path, device, secrets)? {
             return Ok(());
         }
         self.sync_capture_with(
             path,
-            |workspace, object, is_new, policy_revision, plaintext| {
+            |workspace, object, is_new, policy_revision, document, plaintext| {
                 let epoch = secrets
                     .objects
                     .keys()
@@ -373,17 +669,44 @@ impl WorkspaceEngine {
                     .objects
                     .get(&(object.into(), epoch))
                     .ok_or_else(|| invalid("sync_key_required"))?;
-                device.signer().seal_at_revision(
-                    key,
-                    workspace,
-                    object,
-                    device.device_id(),
-                    (epoch, policy_revision),
-                    plaintext,
-                )
+                match document {
+                    Some(document) if document.mode == DocumentMode::Attachment => {
+                        device.signer().seal_for_document(
+                            key,
+                            workspace,
+                            object,
+                            device.device_id(),
+                            (
+                                epoch,
+                                policy_revision,
+                                &document.generation,
+                                OperationKind::File,
+                            ),
+                            plaintext,
+                        )
+                    }
+                    Some(_) => Err(invalid("collaboration_transaction_required")),
+                    None => device.signer().seal_at_revision(
+                        key,
+                        workspace,
+                        object,
+                        device.device_id(),
+                        (epoch, policy_revision),
+                        plaintext,
+                    ),
+                }
             },
         )?;
         Ok(())
+    }
+
+    pub(crate) fn sync_capture_path(
+        &self,
+        path: &str,
+        device: &DeviceKeys,
+        secrets: &mut crate::sync::SyncSecrets,
+    ) -> Result<()> {
+        self.sync_capture_device_path(path, device, secrets)
     }
 
     /// Persist only an authenticated, recipient-encrypted key. Plain object keys never enter files.
@@ -436,16 +759,34 @@ impl WorkspaceEngine {
         device: &str,
         epoch: u64,
     ) -> Result<Option<EncryptedOperation>> {
-        self.sync_capture_with(path, |workspace, object, _, policy_revision, plaintext| {
-            signer.seal_at_revision(
-                key,
-                workspace,
-                object,
-                device,
-                (epoch, policy_revision),
-                plaintext,
-            )
-        })
+        self.sync_capture_with(
+            path,
+            |workspace, object, _, policy_revision, document, plaintext| match document {
+                Some(document) if document.mode == DocumentMode::Attachment => signer
+                    .seal_for_document(
+                        key,
+                        workspace,
+                        object,
+                        device,
+                        (
+                            epoch,
+                            policy_revision,
+                            &document.generation,
+                            OperationKind::File,
+                        ),
+                        plaintext,
+                    ),
+                Some(_) => Err(invalid("collaboration_transaction_required")),
+                None => signer.seal_at_revision(
+                    key,
+                    workspace,
+                    object,
+                    device,
+                    (epoch, policy_revision),
+                    plaintext,
+                ),
+            },
+        )
     }
 
     /// Capture using an object-specific key encrypted to this native device.
@@ -459,7 +800,7 @@ impl WorkspaceEngine {
     ) -> Result<Option<EncryptedOperation>> {
         self.sync_capture_with(
             path,
-            |workspace, object, is_new, policy_revision, plaintext| {
+            |workspace, object, is_new, policy_revision, document, plaintext| {
                 let path = key_path(object, epoch, device.device_id())?;
                 let key = match read_optional(&self.sync_path(&path)?)? {
                     Some(bytes) => {
@@ -488,14 +829,32 @@ impl WorkspaceEngine {
                     }
                     None => return Err(invalid("sync_key_required")),
                 };
-                device.signer().seal_at_revision(
-                    &key,
-                    workspace,
-                    object,
-                    device.device_id(),
-                    (epoch, policy_revision),
-                    plaintext,
-                )
+                match document {
+                    Some(document) if document.mode == DocumentMode::Attachment => {
+                        device.signer().seal_for_document(
+                            &key,
+                            workspace,
+                            object,
+                            device.device_id(),
+                            (
+                                epoch,
+                                policy_revision,
+                                &document.generation,
+                                OperationKind::File,
+                            ),
+                            plaintext,
+                        )
+                    }
+                    Some(_) => Err(invalid("collaboration_transaction_required")),
+                    None => device.signer().seal_at_revision(
+                        &key,
+                        workspace,
+                        object,
+                        device.device_id(),
+                        (epoch, policy_revision),
+                        plaintext,
+                    ),
+                }
             },
         )
     }
@@ -503,7 +862,14 @@ impl WorkspaceEngine {
     fn sync_capture_with(
         &self,
         path: &str,
-        seal: impl FnOnce(&str, &str, bool, &str, &[u8]) -> Result<EncryptedOperation>,
+        seal: impl FnOnce(
+            &str,
+            &str,
+            bool,
+            &str,
+            Option<DocumentDescriptor>,
+            &[u8],
+        ) -> Result<EncryptedOperation>,
     ) -> Result<Option<EncryptedOperation>> {
         validate_change(&FileChange {
             version: 1,
@@ -603,11 +969,13 @@ impl WorkspaceEngine {
         let plaintext = zeroize::Zeroizing::new(
             serde_json::to_vec(&change).map_err(|_| invalid("sync_serialize_failed"))?,
         );
+        let document = Self::sync_document_descriptor(&journal, &object_id);
         let op = seal(
             &journal.workspace_id,
             &object_id,
             previous.is_none(),
             &journal.access_revision,
+            document,
             &plaintext,
         )?;
         journal.outbox.push(op.clone());
@@ -665,6 +1033,7 @@ impl WorkspaceEngine {
         if &journal.outbox[index] != op {
             return Err(invalid("sync_operation_id_reused"));
         }
+        self.collaboration_acknowledge(op, sequence)?;
         self.sync_write_once(
             &format!(".noura/sync/sent/{}.json", op.operation_id),
             &serde_json::json!({"version":1,"sequence":sequence,"operation":op}),
@@ -690,9 +1059,12 @@ impl WorkspaceEngine {
             self.emit(
                 "collaboration:status",
                 "sync",
-                serde_json::json!({
-                    "objectId":op.object_id,"generation":generation,"status":"Synced"
-                }),
+                serde_json::to_value(crate::sync::collaboration::CollaborationStatusEvent {
+                    object_id: op.object_id.clone(),
+                    generation: generation.clone(),
+                    status: crate::sync::collaboration::CollaborationStatus::Synced,
+                })
+                .map_err(|_| invalid("sync_serialize_failed"))?,
             );
         }
         Ok(())
@@ -713,16 +1085,22 @@ impl WorkspaceEngine {
         validate_change(&change)?;
         let _lock = self.write_lock("sync_apply")?;
         let mut journal = self.sync_journal()?;
-        if journal.access_policy.as_ref().is_some_and(|policy| {
-            policy.objects.iter().any(|object| {
-                object.object_id == op.object_id
-                    && object
-                        .document
-                        .as_ref()
-                        .is_some_and(|document| document.mode == crate::sync::DocumentMode::Text)
-            })
-        }) {
-            return Err(invalid("collaboration_transaction_required"));
+        let document = Self::sync_document_descriptor(&journal, &op.object_id);
+        match document {
+            Some(document) if document.mode == DocumentMode::Text => {
+                return Err(invalid("collaboration_transaction_required"));
+            }
+            Some(document)
+                if op.version != 2
+                    || op.kind != Some(OperationKind::File)
+                    || op.generation.as_deref() != Some(&document.generation) =>
+            {
+                return Err(invalid("collaboration_stale_generation"));
+            }
+            None if op.version == 2 || op.generation.is_some() || op.kind.is_some() => {
+                return Err(invalid("collaboration_document_required"));
+            }
+            _ => {}
         }
         let digest = markdown::revision(
             &serde_json::to_vec(op).map_err(|_| invalid("sync_serialize_failed"))?,
@@ -1180,6 +1558,20 @@ impl WorkspaceEngine {
                 accepted_revisions: None,
                 blob: None,
             })?;
+        }
+        if let Some(activation) = &journal.activation {
+            if activation.workspace_id != journal.workspace_id {
+                return Err(invalid("sync_invalid_journal"));
+            }
+            activation.digest()?;
+        }
+        for (object_id, activation) in &journal.activations {
+            if activation.workspace_id != journal.workspace_id
+                || activation.checkpoint.payload.object_id != *object_id
+            {
+                return Err(invalid("sync_invalid_journal"));
+            }
+            activation.digest()?;
         }
         Ok(journal)
     }

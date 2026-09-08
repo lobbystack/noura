@@ -38,6 +38,7 @@ struct AppState {
     sync_cancel: tokio::sync::Notify,
     sync_wake: tokio::sync::Notify,
     sync_status: Mutex<Option<(PathBuf, local_core::sync::WorkspaceSyncStatus)>>,
+    sync_realtime: Mutex<Option<sync_commands::RealtimeHandle>>,
 }
 
 impl AppState {
@@ -52,6 +53,7 @@ impl AppState {
             sync_cancel: tokio::sync::Notify::new(),
             sync_wake: tokio::sync::Notify::new(),
             sync_status: Mutex::new(None),
+            sync_realtime: Mutex::new(None),
         }
     }
 
@@ -569,23 +571,60 @@ fn objects_get(state: State<AppState>, id: String) -> Result<WorkspaceObject, Co
     })
 }
 #[tauri::command]
-fn objects_create(
-    state: State<AppState>,
+async fn objects_create(
+    state: State<'_, AppState>,
     input: CreateObjectInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    with_engine(&state, "objects_create", |engine| {
-        engine.create_object(input)
-    })
+    let engine = state
+        .engine
+        .lock()
+        .map_err(|_| unavailable("objects_create"))?
+        .clone()
+        .ok_or_else(|| unavailable("objects_create"))?;
+    if engine.sync_configuration()?.is_none() {
+        return engine.create_object(input);
+    }
+    let connection = state
+        .sync_account
+        .lock()
+        .await
+        .connection(&local_core::sync::OsSyncCredentials)?
+        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
+    local_core::sync::WorkspaceSyncCoordinator::collaboration_create_object(
+        &engine,
+        &connection,
+        &local_core::sync::OsSyncCredentials,
+        input,
+    )
 }
 #[tauri::command]
-fn objects_update(
-    state: State<AppState>,
+async fn objects_update(
+    state: State<'_, AppState>,
     id: String,
     patch: ObjectPatch,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    with_engine(&state, "objects_update", |engine| {
-        engine.update_object(&id, patch)
-    })
+    let engine = state
+        .engine
+        .lock()
+        .map_err(|_| unavailable("objects_update"))?
+        .clone()
+        .ok_or_else(|| unavailable("objects_update"))?;
+    if !engine.collaboration_object_is_active(&id)? {
+        return engine.update_object(&id, patch);
+    }
+    let connection = state
+        .sync_account
+        .lock()
+        .await
+        .connection(&local_core::sync::OsSyncCredentials)?
+        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
+    local_core::sync::WorkspaceSyncCoordinator::collaboration_update_object(
+        &engine,
+        &connection,
+        &local_core::sync::OsSyncCredentials,
+        &id,
+        patch,
+    )
 }
 
 #[tauri::command]
@@ -823,6 +862,36 @@ const MIME_BY_EXTENSION: &[(&str, &str)] = &[
 const MAX_ASSET_BYTES: i64 = 20 * 1024 * 1024;
 
 #[tauri::command]
+fn files_read_pdf(
+    state: State<AppState>,
+    relative_path: String,
+) -> Result<tauri::ipc::Response, CoreError> {
+    with_engine(&state, "files_read_pdf", |engine| {
+        let pdf = engine.read_pdf(&relative_path)?;
+        let header = serde_json::to_vec(&serde_json::json!({
+            "relativePath": pdf.relative_path, "revision": pdf.revision,
+        }))
+        .map_err(|_| {
+            CoreError::validation(
+                "pdf_response_invalid",
+                "Could not prepare PDF preview",
+                "files_read_pdf",
+            )
+        })?;
+        let mut output = Vec::with_capacity(4 + header.len() + pdf.bytes.len());
+        output.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        output.extend_from_slice(&header);
+        output.extend_from_slice(&pdf.bytes);
+        Ok(tauri::ipc::Response::new(output))
+    })
+}
+
+#[tauri::command]
+fn files_open_pdf_link(url: String) -> Result<(), CoreError> {
+    os_files::open_http_link(&url)
+}
+
+#[tauri::command]
 fn files_read_local_asset(
     state: State<AppState>,
     input: AssetInput,
@@ -880,22 +949,61 @@ fn base64_encode(bytes: &[u8]) -> String {
     output
 }
 #[tauri::command]
-fn objects_move(
-    state: State<AppState>,
+async fn objects_move(
+    state: State<'_, AppState>,
     input: MoveInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    with_engine(&state, "objects_move", |engine| {
-        engine.move_object(&input.id, &input.relative_path, &input.expected_revision)
-    })
+    let engine = state
+        .engine
+        .lock()
+        .map_err(|_| unavailable("objects_move"))?
+        .clone()
+        .ok_or_else(|| unavailable("objects_move"))?;
+    if !engine.collaboration_object_is_active(&input.id)? {
+        return engine.move_object(&input.id, &input.relative_path, &input.expected_revision);
+    }
+    let connection = state
+        .sync_account
+        .lock()
+        .await
+        .connection(&local_core::sync::OsSyncCredentials)?
+        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
+    local_core::sync::WorkspaceSyncCoordinator::collaboration_move_object(
+        &engine,
+        &connection,
+        &local_core::sync::OsSyncCredentials,
+        &input.id,
+        &input.relative_path,
+        &input.expected_revision,
+    )
 }
 #[tauri::command]
-fn objects_delete(
-    state: State<AppState>,
+async fn objects_delete(
+    state: State<'_, AppState>,
     input: DeleteInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    with_engine(&state, "objects_delete", |engine| {
-        engine.delete_object(&input.id, &input.expected_revision)
-    })
+    let engine = state
+        .engine
+        .lock()
+        .map_err(|_| unavailable("objects_delete"))?
+        .clone()
+        .ok_or_else(|| unavailable("objects_delete"))?;
+    if !engine.collaboration_object_is_active(&input.id)? {
+        return engine.delete_object(&input.id, &input.expected_revision);
+    }
+    let connection = state
+        .sync_account
+        .lock()
+        .await
+        .connection(&local_core::sync::OsSyncCredentials)?
+        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
+    local_core::sync::WorkspaceSyncCoordinator::collaboration_delete_object(
+        &engine,
+        &connection,
+        &local_core::sync::OsSyncCredentials,
+        &input.id,
+        &input.expected_revision,
+    )
 }
 #[tauri::command]
 fn objects_adopt(
@@ -1187,6 +1295,7 @@ pub fn run() {
             sync_commands::collaboration_submit_updates,
             sync_commands::collaboration_close,
             sync_commands::collaboration_flush,
+            sync_commands::collaboration_set_presence,
             sync_commands::sync_workspace_status,
             sync_commands::sync_workspace_devices,
             sync_commands::sync_workspace_conflicts,
@@ -1250,6 +1359,8 @@ pub fn run() {
             raw_markdown_reconcile,
             raw_markdown_resolve,
             files_read_local_asset,
+            files_read_pdf,
+            files_open_pdf_link,
             files_resolve_markdown_link,
             objects_move,
             objects_delete,

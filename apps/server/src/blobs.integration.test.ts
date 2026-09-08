@@ -106,6 +106,15 @@ describe.skipIf(!process.env.NOURA_TEST_DATABASE_URL)(
 				expect(new Uint8Array(await download.arrayBuffer())).toEqual(
 					new Uint8Array(bytes.subarray(1048570, 1048601)),
 				);
+				await store.db`UPDATE noura_objects SET epoch=2 WHERE workspace_id=${workspace} AND id=${object}`;
+				expect(
+					(
+						await app.request(`${path}/${id}/content`, {
+							headers: { ...auth, Range: 'bytes=0-10' },
+						})
+					).status,
+				).toBe(404);
+				await store.db`UPDATE noura_objects SET epoch=1 WHERE workspace_id=${workspace} AND id=${object}`;
 				const readDevice = fixture(
 					`d_${crypto.randomUUID()}`,
 					workspace,

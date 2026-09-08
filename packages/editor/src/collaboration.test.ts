@@ -17,6 +17,8 @@ function fixture() {
 		sessionId: 'session',
 		revision: 'r0',
 		readOnly: false,
+		role: 'writer' as const,
+		status: 'Synced' as const,
 		update: encodeCollaborationUpdate(Y.encodeStateAsUpdate(doc)),
 	};
 	const batches: CollaborationBatch[] = [];

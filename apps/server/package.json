@@ -13,6 +13,7 @@
 		"lint": "prettier --check src scripts --ignore-path ../../.prettierignore",
 		"test": "bun test src",
 		"test:integration": "bun src/integration.ts",
+		"test:collaboration-load": "bun scripts/collaboration-load-probe.ts",
 		"test:restore": "bun scripts/restore-rehearsal.ts"
 	},
 	"dependencies": {

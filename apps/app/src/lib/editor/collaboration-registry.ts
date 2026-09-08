@@ -13,10 +13,10 @@ export interface NativeCollaborationClient {
 		submitUpdates(input: CollaborationBatch): Promise<{ revision: string }>;
 		flush(input: { sessionId: string }): Promise<void>;
 		close(input: { sessionId: string }): Promise<void>;
-		setPresence?(input: {
+		setPresence(input: {
 			sessionId: string;
-			anchor: string | null;
-			head: string | null;
+			anchor: string;
+			head: string;
 		}): Promise<void>;
 	};
 	events: {
@@ -146,15 +146,14 @@ export class CollaborationRegistry {
 				submit: (batch) => this.client.collaboration.submitUpdates(batch),
 				flush: () => this.client.collaboration.flush({ sessionId }),
 				close: () => this.client.collaboration.close({ sessionId }),
-				setPresence: this.client.collaboration.setPresence
-					? async (value) => {
-							await this.client.collaboration.setPresence?.({
-								sessionId,
-								anchor: value?.anchor ?? null,
-								head: value?.head ?? null,
-							});
-						}
-					: undefined,
+				setPresence: async (value) => {
+					if (!value) return;
+					await this.client.collaboration.setPresence({
+						sessionId,
+						anchor: value.anchor,
+						head: value.head,
+					});
+				},
 				subscribe: (listener) => {
 					handler = listener;
 					return unlisten;

@@ -9,6 +9,7 @@ import {
 } from '@noura/ai';
 import type {
 	CollaborationOpenInput,
+	CollaborationPresenceInput,
 	CollaborationSession,
 	CollaborationSubmitInput,
 	CollaborationReceipt,
@@ -252,7 +253,15 @@ export interface KanbanService {
 	}): Promise<MutationResult<Task>>;
 }
 
+export interface PdfRead {
+	relativePath: string;
+	revision: string;
+	bytes: Uint8Array;
+}
+
 export interface FileService {
+	readPdf(input: { relativePath: string }): Promise<PdfRead>;
+	openPdfLink(url: string): Promise<void>;
 	list(): Promise<WorkspaceEntry[]>;
 	listNonManagedMarkdown(): Promise<UnmanagedFile[]>;
 	readRawMarkdown(input: { relativePath: string }): Promise<RawMarkdownRead>;
@@ -307,6 +316,7 @@ export interface NouraClient {
 		): Promise<CollaborationReceipt>;
 		flush(input: { sessionId: string }): Promise<void>;
 		close(input: { sessionId: string }): Promise<void>;
+		setPresence(input: CollaborationPresenceInput): Promise<void>;
 	};
 	sync: {
 		workspaceStatus(): Promise<WorkspaceSyncStatus>;
@@ -525,6 +535,8 @@ export function createNouraClient(
 				transport.request('collaboration_close', {
 					sessionId: input.sessionId,
 				}),
+			setPresence: (input) =>
+				transport.request('collaboration_set_presence', { input }),
 		},
 		sync: {
 			workspaceStatus: () => transport.request('sync_workspace_status'),
@@ -593,6 +605,8 @@ export function createNouraClient(
 			removeEmpty: (input) => transport.request('folders_remove', { input }),
 		},
 		files: {
+			readPdf: (input) => transport.request('files_read_pdf', input),
+			openPdfLink: (url) => transport.request('files_open_pdf_link', { url }),
 			list: () => transport.request('files_list'),
 			listNonManagedMarkdown: () =>
 				transport.request('files_list_non_managed_markdown'),

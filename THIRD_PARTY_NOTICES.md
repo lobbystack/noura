@@ -79,3 +79,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## PDF.js and PDF rendering assets
+
+PDF.js 6.3.289, Copyright Mozilla Foundation and contributors, is licensed under Apache-2.0. The complete license ships at `pdfjs/LICENSE`. Adobe CMaps, PDFium/Foxit fonts, and the PDFium JBIG2 decoder use BSD-3-Clause; OpenJPEG uses BSD-2-Clause; qcms uses MIT; ICC profiles use CC0-1.0. Their complete notices ship alongside their assets in `pdfjs/cmaps`, `pdfjs/standard_fonts`, `pdfjs/wasm`, and `pdfjs/iccs`.
+
+Liberation Sans 2.1.5, digitized data Copyright 2010 Google Corporation and Copyright 2012 Red Hat, Inc., uses SIL Open Font License 1.1. Unmodified fonts and the complete license ship in `pdfjs/standard_fonts`; the source license is also retained in `apps/app/vendor/pdf-fonts/LICENSE`. The older GPL Liberation files from the PDF.js package are excluded from the application bundle. See `docs/provenance/pdfjs.md` for exact sources and revisions.

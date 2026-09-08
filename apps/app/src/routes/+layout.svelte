@@ -1,5 +1,7 @@
 <script lang="ts">
 	import '../app.css';
+	import TabsBar from '$lib/components/tabs-bar.svelte';
+	import { tabsStore } from '$lib/tabs.svelte';
 	import AppRail from '$lib/components/app-rail.svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import WorkspaceSwitcher from '$lib/components/workspace-switcher.svelte';
@@ -31,6 +33,10 @@
 	let { children } = $props<{ children: Snippet }>();
 
 	let allowedNavigation: string | null = null;
+	$effect(() => {
+		const id = workspace.state?.workspaceId;
+		tabsStore.setWorkspace(id);
+	});
 
 	beforeNavigate((navigation) => {
 		const destination = navigation.to?.url;
@@ -136,6 +142,7 @@
 				<AppSidebar />
 			{/if}
 			<main class="flex min-w-0 flex-1 flex-col">
+				<TabsBar />
 				{@render children()}
 			</main>
 			<CommandPalette />

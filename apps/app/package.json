@@ -14,6 +14,7 @@
 		"@noura/editor": "workspace:*",
 		"@noura/workspace": "workspace:*",
 		"@tauri-apps/api": "^2",
+		"pdfjs-dist": "6.3.289",
 		"svelte": "^5"
 	},
 	"devDependencies": {

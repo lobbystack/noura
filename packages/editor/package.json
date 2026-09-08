@@ -14,6 +14,7 @@
 		"test": "bun test"
 	},
 	"dependencies": {
+		"@noura/shared": "workspace:*",
 		"@codemirror/commands": "^6.8.1",
 		"@codemirror/lang-markdown": "^6.3.2",
 		"@codemirror/language": "^6.11.0",

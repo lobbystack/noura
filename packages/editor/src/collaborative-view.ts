@@ -4,6 +4,7 @@ import {
 	StateEffect,
 	StateField,
 	type Range,
+	type Extension,
 } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, keymap } from '@codemirror/view';
 import { markdown } from '@codemirror/lang-markdown';
@@ -80,6 +81,7 @@ export function createCollaborativeView(
 	parent: HTMLElement,
 	session: CollaborationSession,
 	language: 'markdown' | 'text' = 'text',
+	extensions: Extension[] = [],
 ) {
 	const permissions = new Compartment();
 	const presence = StateField.define({
@@ -96,6 +98,7 @@ export function createCollaborativeView(
 		state: EditorState.create({
 			doc: session.text.toString(),
 			extensions: [
+				...extensions,
 				yCollab(session.text, null, { undoManager: session.undoManager }),
 				keymap.of(yUndoManagerKeymap),
 				permissions.of([

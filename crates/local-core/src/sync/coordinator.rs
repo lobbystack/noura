@@ -70,6 +70,44 @@ pub struct WorkspaceSyncStatus {
     pub conflicts: u32,
     pub error_code: Option<String>,
     pub last_success: Option<String>,
+    pub transition: Option<WorkspaceSyncTransitionStatus>,
+    pub activation: Option<WorkspaceSyncActivationStatus>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSyncActivationStatus {
+    pub activation_id: String,
+    pub object_id: String,
+    pub path: Option<String>,
+    pub installed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSyncTransitionStatus {
+    pub transition_id: String,
+    pub phase: WorkspaceSyncTransitionPhase,
+    pub objects: Vec<WorkspaceSyncTransitionObject>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSyncTransitionObject {
+    pub object_id: String,
+    pub path: Option<String>,
+    pub installed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSyncTransitionPhase {
+    Prepare,
+    Stage,
+    ResolveCommit,
+    Install,
+    Rebase,
+    Complete,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -227,6 +265,16 @@ impl WorkspaceSyncCoordinator {
         let device = DeviceKeys::load(store, &connection.device_id)?;
         Self::check_connection(&config, connection, &device)?;
         let transport = connection.transport(store)?;
+        if let Some(transition) = engine.sync_pending_transition()? {
+            super::approvals::finish_access_transition(
+                engine,
+                &transport,
+                &device,
+                &config,
+                &transition,
+            )
+            .await?;
+        }
         let mut access = transport.access_state(&engine.manifest().id).await?;
         if access.revision() != engine.sync_access_revision()? {
             transport.refresh_access_policies(engine, &config).await?;
@@ -238,12 +286,26 @@ impl WorkspaceSyncCoordinator {
             .receive_keys(engine, &device, &mut secrets)
             .await?;
         let role = access.authorize_writers(engine, &device, &config, &mut secrets)?;
-        transport.receive_checkpoints(engine, &secrets).await?;
+        transport
+            .receive_activations(engine, &device, &mut secrets)
+            .await?;
+        transport
+            .receive_checkpoints(engine, &device, &secrets)
+            .await?;
         if role == WorkspaceRole::Viewer {
             return transport.synchronize_readonly(engine, &secrets, wait).await;
         }
+        // Reach the relay's durable operation boundary before deriving a new object's
+        // checkpoint. An activation never snapshots stale visible content.
+        transport
+            .synchronize_readonly(engine, &secrets, false)
+            .await?;
         engine.sync_capture_workspace(&device, &mut secrets)?;
-        if config.approved_recipients.len() > 1 {
+        if config.approved_recipients.len() > 1
+            && !transport
+                .activate_pending_objects(engine, &device, &config, &secrets, &access)
+                .await?
+        {
             transport.prepare_objects(engine).await?;
             transport
                 .share_approved_keys(engine, &device, &config, &secrets)
@@ -314,6 +376,114 @@ impl WorkspaceSyncCoordinator {
             secrets.authorized_object_writers,
         ) = super::approvals::policy_authorizations(&policy, &config);
         engine.collaboration_submit(input, &device, &secrets)
+    }
+
+    pub fn collaboration_update_object(
+        engine: &WorkspaceEngine,
+        connection: &DeviceConnection,
+        store: &impl SyncCredentials,
+        id: &str,
+        patch: crate::ObjectPatch,
+    ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        let config = engine
+            .sync_configuration()?
+            .ok_or_else(|| invalid("sync_not_enabled"))?;
+        let device = DeviceKeys::load(store, &connection.device_id)?;
+        Self::check_connection(&config, connection, &device)?;
+        let policy = engine
+            .sync_access_policy()?
+            .ok_or_else(|| invalid("collaboration_checkpoint_required"))?;
+        let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
+        (
+            secrets.authorized_workspace_writers,
+            secrets.authorized_object_writers,
+        ) = super::approvals::policy_authorizations(&policy, &config);
+        engine.collaboration_update_object(id, patch, &device, &secrets)
+    }
+
+    pub fn collaboration_create_object(
+        engine: &WorkspaceEngine,
+        connection: &DeviceConnection,
+        store: &impl SyncCredentials,
+        input: crate::CreateObjectInput,
+    ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        let config = engine
+            .sync_configuration()?
+            .ok_or_else(|| invalid("sync_not_enabled"))?;
+        let device = DeviceKeys::load(store, &connection.device_id)?;
+        Self::check_connection(&config, connection, &device)?;
+        let policy = engine
+            .sync_access_policy()?
+            .ok_or_else(|| invalid("collaboration_checkpoint_required"))?;
+        let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
+        (
+            secrets.authorized_workspace_writers,
+            secrets.authorized_object_writers,
+        ) = super::approvals::policy_authorizations(&policy, &config);
+        if !secrets
+            .authorized_workspace_writers
+            .contains(device.device_id())
+        {
+            return Err(invalid("sync_writer_not_authorized"));
+        }
+        let mut result = engine.create_object(input)?;
+        if engine
+            .sync_capture_path(&result.value.relative_path, &device, &mut secrets)
+            .is_err()
+        {
+            result.warnings.push(crate::CoreWarning {
+                code: "collaboration_capture_pending".into(),
+                message: "The object is saved locally and will be prepared for sharing on the next synchronization pass".into(),
+            });
+        }
+        Ok(result)
+    }
+
+    pub fn collaboration_move_object(
+        engine: &WorkspaceEngine,
+        connection: &DeviceConnection,
+        store: &impl SyncCredentials,
+        id: &str,
+        destination: &str,
+        expected_revision: &str,
+    ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        let config = engine
+            .sync_configuration()?
+            .ok_or_else(|| invalid("sync_not_enabled"))?;
+        let device = DeviceKeys::load(store, &connection.device_id)?;
+        Self::check_connection(&config, connection, &device)?;
+        let policy = engine
+            .sync_access_policy()?
+            .ok_or_else(|| invalid("collaboration_checkpoint_required"))?;
+        let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
+        (
+            secrets.authorized_workspace_writers,
+            secrets.authorized_object_writers,
+        ) = super::approvals::policy_authorizations(&policy, &config);
+        engine.collaboration_move_object(id, destination, expected_revision, &device, &secrets)
+    }
+
+    pub fn collaboration_delete_object(
+        engine: &WorkspaceEngine,
+        connection: &DeviceConnection,
+        store: &impl SyncCredentials,
+        id: &str,
+        expected_revision: &str,
+    ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        let config = engine
+            .sync_configuration()?
+            .ok_or_else(|| invalid("sync_not_enabled"))?;
+        let device = DeviceKeys::load(store, &connection.device_id)?;
+        Self::check_connection(&config, connection, &device)?;
+        let policy = engine
+            .sync_access_policy()?
+            .ok_or_else(|| invalid("collaboration_checkpoint_required"))?;
+        let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
+        (
+            secrets.authorized_workspace_writers,
+            secrets.authorized_object_writers,
+        ) = super::approvals::policy_authorizations(&policy, &config);
+        engine.collaboration_delete_object(id, expected_revision, &device, &secrets)
     }
 }
 

@@ -24,6 +24,10 @@ ignore = [
   "RUSTSEC-2025-0081",
   "RUSTSEC-2025-0098",
   "RUSTSEC-2025-0100",
+  # yrs 0.26.0 enables `small-client` for Yjs interoperability and currently
+  # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
+  # not a reported vulnerability; decoder isolation remains a release gate.
+  "RUSTSEC-2026-0215",
 ]
 
 [bans]

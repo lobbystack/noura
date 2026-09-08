@@ -20,6 +20,19 @@ import {
 	type EncryptedCheckpoint,
 } from './checkpoints';
 import { SyncStore } from './store';
+import {
+	capabilitySigningBytes,
+	capabilityDigest,
+	putWorkspaceCapability,
+	type WorkspaceCapability,
+} from './capabilities';
+import {
+	activationSigningBytes,
+	commitObjectActivation,
+	readObjectActivation,
+	stageObjectActivation,
+} from './activations';
+import type { ObjectActivation } from '../../../packages/shared/src/generated/ObjectActivation';
 
 async function setup() {
 	const store = new SyncStore(process.env.NOURA_TEST_DATABASE_URL!);
@@ -33,12 +46,28 @@ async function setup() {
 	};
 	await store.db`INSERT INTO noura_devices(id,account_id,public_key) VALUES(${actor.deviceId},${actor.accountId},${actor.publicKey})`;
 	await store.createWorkspace(actor, `workspace_${id}`);
+	const capability: WorkspaceCapability = {
+		version: 1,
+		workspaceId: `workspace_${id}`,
+		collaborationVersion: 1,
+		minimumClientVersion: 1,
+		minimumRelayVersion: 1,
+		deviceId: actor.deviceId,
+		signature: '',
+	};
+	capability.signature = sign(
+		null,
+		capabilitySigningBytes(capability),
+		owner.keys.privateKey,
+	).toString('base64');
+	await putWorkspaceCapability(store, actor, capability);
 	await store.createObject(actor, `workspace_${id}`, 'object');
 	function transition(
 		coveredSequence = '0',
 		epoch = 2,
 		revision = '1',
 		previousPolicyDigest: string | null = null,
+		blobs: AccessTransition['blobs'] = [],
 	): AccessTransition {
 		const envelope = {
 			deviceId: actor.deviceId,
@@ -94,11 +123,12 @@ async function setup() {
 			owner.keys.privateKey,
 		).toString('base64');
 		const result: AccessTransition = {
-			version: 1,
+			version: blobs.length ? 2 : 1,
 			transitionId: crypto.randomUUID(),
 			coveredSequence,
 			policy,
 			checkpoints: [checkpoint],
+			...(blobs.length ? { blobs } : {}),
 			signature: '',
 		};
 		result.signature = sign(
@@ -108,7 +138,7 @@ async function setup() {
 		).toString('base64');
 		return accessTransition(result);
 	}
-	return { store, actor, owner, transition };
+	return { store, actor, owner, transition, capability };
 }
 
 describe.skipIf(!process.env.NOURA_TEST_DATABASE_URL)(
@@ -230,6 +260,18 @@ describe.skipIf(!process.env.NOURA_TEST_DATABASE_URL)(
 				};
 				const base = `/v1/workspaces/${value.policy.workspaceId}`;
 				const disabled = createApp(store, { origin: 'http://localhost:1900' });
+				const disabledCapabilities = await (
+					await disabled.request('/v1/capabilities', { headers })
+				).json();
+				expect(disabledCapabilities.liveText).toEqual([]);
+				expect(disabledCapabilities.objectActivations).toEqual([]);
+				expect(
+					(
+						await disabled.request(`${base}/collaboration-capability`, {
+							headers,
+						})
+					).status,
+				).toBe(404);
 				expect(
 					(
 						await disabled.request(`${base}/transitions`, {
@@ -243,6 +285,14 @@ describe.skipIf(!process.env.NOURA_TEST_DATABASE_URL)(
 					origin: 'http://localhost:1900',
 					checkpointTransitions: true,
 				});
+				expect(
+					(await (await app.request('/v1/capabilities', { headers })).json())
+						.liveText,
+				).toEqual([1]);
+				expect(
+					(await app.request(`${base}/collaboration-capability`, { headers }))
+						.status,
+				).toBe(200);
 				expect(
 					(
 						await app.request(`${base}/transitions`, {
@@ -269,6 +319,64 @@ describe.skipIf(!process.env.NOURA_TEST_DATABASE_URL)(
 						await app.request(`${base}/objects/object/checkpoint`, { headers })
 					).json(),
 				).toEqual(value.checkpoints[0]);
+
+				const paused = createApp(store, {
+					origin: 'http://localhost:1900',
+					checkpointTransitions: true,
+					collaborationRollout: false,
+				});
+				const pausedCapabilities = await (
+					await paused.request('/v1/capabilities', { headers })
+				).json();
+				expect(pausedCapabilities.liveText).toEqual([1]);
+				expect(pausedCapabilities.objectActivations).toEqual([1]);
+				expect(
+					await (
+						await paused.request(`${base}/objects/object/checkpoint`, {
+							headers,
+						})
+					).json(),
+				).toEqual(value.checkpoints[0]);
+				const blocked = await paused.request(
+					`${base}/collaboration-capability`,
+					{ method: 'PUT', headers, body: '{}' },
+				);
+				expect(blocked.status).toBe(409);
+				expect((await blocked.json()).error.code).toBe(
+					'sync.collaboration_rollout_disabled',
+				);
+			} finally {
+				await store.close();
+			}
+		});
+
+		test('a transition cannot commit until every bound next-epoch blob is durable', async () => {
+			const { store, actor, owner, transition } = await setup();
+			try {
+				const value = transition('0', 2, '1', null, [
+					{
+						objectId: 'object',
+						epoch: 2,
+						ciphertextDigest: 'a'.repeat(64),
+						ciphertextSize: 1024,
+					},
+				]);
+				value.signature = sign(
+					null,
+					transitionSigningBytes(value),
+					owner.keys.privateKey,
+				).toString('base64');
+				await stageTransition(store, actor, accessTransition(value));
+				await expect(
+					setAccess(store, actor, value.policy, value),
+				).rejects.toThrow('sync.transition_blob_incomplete');
+				const status = await readTransition(
+					store,
+					actor,
+					value.policy.workspaceId,
+					value.transitionId,
+				);
+				expect(status.committed).toBe(false);
 			} finally {
 				await store.close();
 			}
@@ -302,8 +410,72 @@ describe.skipIf(!process.env.NOURA_TEST_DATABASE_URL)(
 					setAccess(store, actor, next.policy, next),
 				).rejects.toThrow('sync.key_rotation_required');
 				await expect(setAccess(store, actor, next.policy)).rejects.toThrow(
-					'sync.key_rotation_required',
+					'sync.access_transition_required',
 				);
+			} finally {
+				await store.close();
+			}
+		});
+
+		test('a newly checkpointed member receives no pre-invitation operation history', async () => {
+			const { store, actor, owner, transition } = await setup();
+			try {
+				const workspace = `workspace_${actor.deviceId.slice('owner_'.length)}`;
+				await store.push(actor, workspace, [owner.make()]);
+				const first = transition('1');
+				await stageTransition(store, actor, first);
+				await setAccess(store, actor, first.policy, first);
+
+				const readerId = `reader_${crypto.randomUUID()}`;
+				const reader = fixture(readerId, workspace, 'object');
+				const readerActor = {
+					deviceId: readerId,
+					accountId: readerId,
+					publicKey: reader.publicKey,
+				};
+				await store.db`INSERT INTO noura_devices(id,account_id,public_key) VALUES(${readerId},${readerId},${reader.publicKey})`;
+				const next = transition('1', 3, '2', accessDigest(first.policy));
+				next.policy.members.push({ accountId: readerId, role: 'viewer' });
+				next.policy.members.sort((a, b) =>
+					a.accountId.localeCompare(b.accountId),
+				);
+				const wrappedKey = randomBytes(80).toString('base64');
+				next.policy.objects[0]!.envelopes.push({
+					deviceId: readerId,
+					wrappedKey,
+					signature: sign(
+						null,
+						keySigningBytes(workspace, 'object', 3, actor.deviceId, {
+							deviceId: readerId,
+							wrappedKey,
+						}),
+						owner.keys.privateKey,
+					).toString('base64'),
+				});
+				next.policy.objects[0]!.envelopes.sort((a, b) =>
+					a.deviceId.localeCompare(b.deviceId),
+				);
+				next.policy.signature = sign(
+					null,
+					accessSigningBytes(next.policy),
+					owner.keys.privateKey,
+				).toString('base64');
+				next.signature = sign(
+					null,
+					transitionSigningBytes(next),
+					owner.keys.privateKey,
+				).toString('base64');
+				await stageTransition(store, actor, accessTransition(next));
+				await setAccess(store, actor, next.policy, next);
+
+				const initial = await store.pull(readerActor, workspace, '0');
+				expect(initial.operations).toHaveLength(0);
+				expect(initial.cursor).toBe('1');
+				await store.push(actor, workspace, [owner.make(undefined, 3, '2')]);
+				const future = await store.pull(readerActor, workspace, '0');
+				expect(
+					future.operations.map((operation) => operation.sequence),
+				).toEqual(['2']);
 			} finally {
 				await store.close();
 			}
@@ -331,6 +503,126 @@ describe.skipIf(!process.env.NOURA_TEST_DATABASE_URL)(
 						)
 					).committed,
 				).toBe(false);
+			} finally {
+				await store.close();
+			}
+		});
+		test('object activation is invisible until an idempotent atomic commit', async () => {
+			const { store, actor, owner, transition, capability } = await setup();
+			try {
+				const access = transition();
+				access.policy.version = 2;
+				access.policy.objects[0]!.document = {
+					generation: access.checkpoints[0]!.generation,
+					mode: 'text',
+				};
+				access.policy.signature = sign(
+					null,
+					accessSigningBytes(access.policy),
+					owner.keys.privateKey,
+				).toString('base64');
+				access.signature = sign(
+					null,
+					transitionSigningBytes(access),
+					owner.keys.privateKey,
+				).toString('base64');
+				await stageTransition(store, actor, accessTransition(access));
+				await setAccess(store, actor, access.policy, access);
+
+				const objectId = `created_${crypto.randomUUID()}`;
+				const generation = crypto.randomUUID();
+				const payload = owner.make(undefined, 1, '1');
+				payload.objectId = objectId;
+				payload.signature = sign(
+					null,
+					signingBytes(payload),
+					owner.keys.privateKey,
+				).toString('base64');
+				const checkpoint: EncryptedCheckpoint = {
+					version: 1,
+					generation,
+					coveredSequence: '0',
+					payload,
+					signature: '',
+				};
+				checkpoint.signature = sign(
+					null,
+					checkpointSigningBytes(checkpoint),
+					owner.keys.privateKey,
+				).toString('base64');
+				const unsignedEnvelope = {
+					deviceId: actor.deviceId,
+					wrappedKey: randomBytes(80).toString('base64'),
+				};
+				const envelope = {
+					...unsignedEnvelope,
+					signature: sign(
+						null,
+						keySigningBytes(
+							access.policy.workspaceId,
+							objectId,
+							1,
+							actor.deviceId,
+							unsignedEnvelope,
+						),
+						owner.keys.privateKey,
+					).toString('base64'),
+				};
+				const activation: ObjectActivation = {
+					version: 1,
+					activationId: crypto.randomUUID(),
+					workspaceId: access.policy.workspaceId,
+					policyRevision: '1',
+					coveredSequence: '0',
+					capabilityDigest: capabilityDigest(capability),
+					deviceId: actor.deviceId,
+					document: { generation, mode: 'text' },
+					envelopes: [envelope],
+					checkpoint,
+					signature: '',
+				};
+				activation.signature = sign(
+					null,
+					activationSigningBytes(activation),
+					owner.keys.privateKey,
+				).toString('base64');
+
+				const staged = await stageObjectActivation(store, actor, activation);
+				expect(staged.committed).toBe(false);
+				expect(await stageObjectActivation(store, actor, activation)).toEqual(
+					staged,
+				);
+				await expect(
+					store.createObject(actor, activation.workspaceId, objectId),
+				).rejects.toThrow('sync.object_activation_required');
+				await commitObjectActivation(
+					store,
+					actor,
+					activation.workspaceId,
+					activation.activationId,
+				);
+				expect(
+					(
+						await readObjectActivation(
+							store,
+							actor,
+							activation.workspaceId,
+							activation.activationId,
+						)
+					).committed,
+				).toBe(true);
+				expect(
+					await store.createObject(actor, activation.workspaceId, objectId),
+				).toBe(1);
+				await commitObjectActivation(
+					store,
+					actor,
+					activation.workspaceId,
+					activation.activationId,
+				);
+				const [stored] =
+					await store.db`SELECT checkpoint FROM noura_activation_checkpoints WHERE workspace_id=${activation.workspaceId} AND object_id=${objectId}`;
+				expect(stored!.checkpoint).toEqual(checkpoint);
 			} finally {
 				await store.close();
 			}

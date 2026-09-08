@@ -1,0 +1,43 @@
+name: Collaboration soak
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collaboration-soak
+  cancel-in-progress: false
+
+jobs:
+  realtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: noura_test
+          POSTGRES_PASSWORD: test_only
+          POSTGRES_DB: noura_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U noura_test -d noura_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      NOURA_TEST_DATABASE_URL: postgres://noura_test:test_only@localhost:5432/noura_test
+      NOURA_SOAK_SECONDS: '3600'
+      NOURA_LOAD_CLIENTS: '100'
+      NOURA_LOAD_WRITERS: '20'
+      NOURA_LOAD_RTT_MS: '100'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: '1.3.14' }
+      - run: bun install --frozen-lockfile
+      - run: bun run --filter @noura/server check
+      - name: One-hour realtime collaboration soak
+        run: bun run --filter @noura/server test:collaboration-load

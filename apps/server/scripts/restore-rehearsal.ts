@@ -15,6 +15,25 @@ import { BlobService } from '../src/blobs';
 import { digest, signingBytes } from '../src/protocol';
 import { SyncStore } from '../src/store';
 import { testS3Client } from '../src/test-storage';
+import {
+	accessDigest,
+	accessSigningBytes,
+	keySigningBytes,
+	setAccess,
+	type AccessPolicy,
+} from '../src/access';
+import {
+	capabilitySigningBytes,
+	putWorkspaceCapability,
+	type WorkspaceCapability,
+} from '../src/capabilities';
+import {
+	checkpointSigningBytes,
+	stageTransition,
+	transitionSigningBytes,
+	type AccessTransition,
+	type EncryptedCheckpoint,
+} from '../src/checkpoints';
 
 const adminUrl = process.env.NOURA_TEST_DATABASE_URL;
 if (!adminUrl)
@@ -121,21 +140,6 @@ try {
 		}
 		return response;
 	}
-	for (const bytes of [completed, partial]) {
-		const response = await app.request(path, {
-			method: 'POST',
-			headers: { ...headers, 'Content-Type': 'application/json' },
-			body: JSON.stringify({ id: hash(bytes), size: bytes.length, epoch: 1 }),
-		});
-		assert.equal(response.status, 201);
-	}
-	assert.equal(
-		(await patch(hash(completed), 0, completed)).headers.get(
-			'Noura-Blob-Complete',
-		),
-		'true',
-	);
-	await patch(hash(partial), 0, partial.subarray(0, 65537));
 	const body = {
 		version: 1 as const,
 		workspaceId: workspace,
@@ -154,7 +158,157 @@ try {
 		),
 	};
 	await source.push(actor, workspace, [operation]);
+	const capability: WorkspaceCapability = {
+		version: 1,
+		workspaceId: workspace,
+		collaborationVersion: 1,
+		minimumClientVersion: 1,
+		minimumRelayVersion: 1,
+		deviceId: device,
+		signature: '',
+	};
+	capability.signature = sign(
+		null,
+		capabilitySigningBytes(capability),
+		keys.privateKey,
+	).toString('base64');
+	await putWorkspaceCapability(source, actor, capability);
+	const transition = (
+		revision: string,
+		epoch: number,
+		previousPolicyDigest: string | null,
+		blobs: AccessTransition['blobs'] = [],
+	): AccessTransition => {
+		const generation = `generation_${revision}_${suffix}`;
+		const envelope = {
+			deviceId: device,
+			wrappedKey: randomBytes(80).toString('base64'),
+			signature: '',
+		};
+		envelope.signature = sign(
+			null,
+			keySigningBytes(workspace, object, epoch, device, envelope),
+			keys.privateKey,
+		).toString('base64');
+		const policy: AccessPolicy = {
+			version: 2,
+			workspaceId: workspace,
+			revision,
+			previousPolicyDigest,
+			deviceId: device,
+			members: [{ accountId: actor.accountId, role: 'owner' }],
+			objects: [
+				{
+					objectId: object,
+					epoch,
+					grants: [],
+					envelopes: [envelope],
+					document: { generation, mode: 'text' },
+				},
+			],
+			signature: '',
+		};
+		policy.signature = sign(
+			null,
+			accessSigningBytes(policy),
+			keys.privateKey,
+		).toString('base64');
+		const payloadBody = {
+			version: 1 as const,
+			workspaceId: workspace,
+			objectId: object,
+			deviceId: device,
+			operationId: `checkpoint_${revision}_${suffix}`,
+			epoch,
+			policyRevision: revision,
+			nonce: randomBytes(12).toString('base64'),
+			ciphertext: randomBytes(64).toString('base64'),
+		};
+		const checkpoint: EncryptedCheckpoint = {
+			version: 1,
+			generation,
+			coveredSequence: '1',
+			payload: {
+				...payloadBody,
+				signature: sign(
+					null,
+					signingBytes(payloadBody),
+					keys.privateKey,
+				).toString('base64'),
+			},
+			signature: '',
+		};
+		checkpoint.signature = sign(
+			null,
+			checkpointSigningBytes(checkpoint),
+			keys.privateKey,
+		).toString('base64');
+		const value: AccessTransition = {
+			version: blobs.length ? 2 : 1,
+			transitionId: `transition_${revision}_${suffix}`,
+			coveredSequence: '1',
+			policy,
+			checkpoints: [checkpoint],
+			...(blobs.length ? { blobs } : {}),
+			signature: '',
+		};
+		value.signature = sign(
+			null,
+			transitionSigningBytes(value),
+			keys.privateKey,
+		).toString('base64');
+		return value;
+	};
+	const committedTransition = transition('1', 2, null);
+	await stageTransition(source, actor, committedTransition);
+	await setAccess(
+		source,
+		actor,
+		committedTransition.policy,
+		committedTransition,
+	);
+	for (const bytes of [completed, partial]) {
+		assert.equal(
+			(
+				await app.request(path, {
+					method: 'POST',
+					headers: { ...headers, 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						id: hash(bytes),
+						size: bytes.length,
+						epoch: 2,
+					}),
+				})
+			).status,
+			201,
+		);
+	}
+	assert.equal(
+		(await patch(hash(completed), 0, completed)).headers.get(
+			'Noura-Blob-Complete',
+		),
+		'true',
+	);
+	await patch(hash(partial), 0, partial.subarray(0, 65537));
+	const stagedTransition = transition(
+		'2',
+		3,
+		accessDigest(committedTransition.policy),
+		[
+			{
+				objectId: object,
+				epoch: 3,
+				ciphertextDigest: 'a'.repeat(64),
+				ciphertextSize: 1024,
+			},
+		],
+	);
+	await stageTransition(source, actor, stagedTransition);
 	const before = await source.pull(actor, workspace, '0');
+	const transitionRows =
+		await source.db`SELECT id,digest,body,committed FROM noura_transitions WHERE workspace_id=${workspace} ORDER BY id`;
+	const checkpointRows =
+		await source.db`SELECT object_id,epoch,generation,checkpoint FROM noura_checkpoints WHERE workspace_id=${workspace}`;
 	const [quota] =
 		await source.db`SELECT used_bytes FROM noura_workspaces WHERE id=${workspace}`;
 	const [completedRow] =
@@ -210,6 +364,17 @@ try {
 	});
 	const restoredActor = await restored.authenticate(token);
 	assert.deepEqual(await restored.pull(restoredActor, workspace, '0'), before);
+	assert.deepEqual(
+		await restored.db`SELECT id,digest,body,committed FROM noura_transitions WHERE workspace_id=${workspace} ORDER BY id`,
+		transitionRows,
+	);
+	assert.deepEqual(
+		await restored.db`SELECT object_id,epoch,generation,checkpoint FROM noura_checkpoints WHERE workspace_id=${workspace}`,
+		checkpointRows,
+	);
+	assert.equal(transitionRows.filter((row) => row.committed).length, 1);
+	assert.equal(transitionRows.filter((row) => !row.committed).length, 1);
+	assert.equal(checkpointRows.length, 1);
 	const [restoredQuota] =
 		await restored.db`SELECT used_bytes FROM noura_workspaces WHERE id=${workspace}`;
 	assert.equal(restoredQuota!.used_bytes, quota!.used_bytes);
@@ -239,7 +404,7 @@ try {
 		'1',
 	]);
 	console.log(
-		`Restore drill passed (${s3 ? 'S3 plus local staging' : 'local storage'}): sessions, signed operations, cursors, quotas, completed ciphertext, and resumed partial uploads.`,
+		`Restore drill passed (${s3 ? 'S3 plus local staging' : 'local storage'}): sessions, signed operations, cursors, quotas, completed ciphertext, resumed partial uploads, staged/committed transitions, checkpoint generations, and blob manifests.`,
 	);
 } finally {
 	const outcomes = await Promise.allSettled([

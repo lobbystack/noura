@@ -13,6 +13,8 @@ mod index;
 mod markdown;
 mod model;
 mod path;
+mod pdf;
+pub use pdf::PdfRead;
 pub mod sync;
 mod watcher;
 mod web_access;

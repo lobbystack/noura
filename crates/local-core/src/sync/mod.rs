@@ -2,16 +2,22 @@
 
 mod access;
 mod account;
+mod activation;
 mod approvals;
 pub(crate) mod blobs;
 mod checkpoints;
 pub mod collaboration;
 mod conflicts;
-pub use checkpoints::{AccessTransition, CheckpointContent, EncryptedCheckpoint};
+pub use checkpoints::{
+    AccessTransition, CheckpointBlobManifest, CheckpointContent, EncryptedCheckpoint,
+};
+mod capability;
+pub use capability::WorkspaceCapability;
 mod coordinator;
 mod crypto;
 pub(crate) use crypto::decode;
 mod keys;
+mod presence;
 mod recovery;
 mod signin;
 mod transport;
@@ -20,19 +26,26 @@ pub use access::{
     ObjectRole, PolicyEnvelope, WorkspaceRole,
 };
 pub use account::{SyncAccount, SyncAccountPoll, SyncAccountService};
+pub use activation::ObjectActivation;
 pub use approvals::{
     SyncDevice, SyncInvitation, SyncInvitationLink, SyncInvitationRole, SyncInvitationStatus,
     device_fingerprint,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 pub use blobs::EncryptedBlob;
+pub use collaboration::CollaborationConflictReview;
 pub use conflicts::{ResolveSyncConflict, SyncConflict, SyncResolutionChoice};
 pub use coordinator::{
-    RemoteSyncWorkspace, WorkspaceSyncConfig, WorkspaceSyncCoordinator, WorkspaceSyncPhase,
-    WorkspaceSyncStatus,
+    RemoteSyncWorkspace, WorkspaceSyncActivationStatus, WorkspaceSyncConfig,
+    WorkspaceSyncCoordinator, WorkspaceSyncPhase, WorkspaceSyncStatus,
+    WorkspaceSyncTransitionObject, WorkspaceSyncTransitionPhase, WorkspaceSyncTransitionStatus,
 };
 pub use crypto::{EncryptedOperation, ObjectKey, OperationKind, SigningIdentity};
 pub use keys::{DeviceKeys, KeyEnvelope, OsSyncCredentials, SyncCredentials};
+pub use presence::{
+    CollaborationPresenceEvent, CollaborationPresenceInput, CollaborationPresenceMember,
+    EncryptedPresence, PresenceContext, PresenceSelection,
+};
 use serde::{Deserialize, Serialize};
 pub use signin::{DeviceConnection, DeviceSignIn, DeviceSignInInfo, DeviceSignInStatus};
 pub use transport::{HttpSyncTransport, SyncPass, SyncSecrets};

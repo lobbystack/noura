@@ -4,6 +4,7 @@ import { createApp } from './app';
 import { SyncStore } from './store';
 import { BlobService } from './blobs';
 import { fileURLToPath } from 'node:url';
+import { websocket } from 'hono/bun';
 
 const settings = config();
 const store = new SyncStore(settings.databaseUrl);
@@ -62,6 +63,13 @@ const server = Bun.serve({
 	fetch: app.fetch,
 	maxRequestBodySize: 2 * 1024 * 1024,
 	idleTimeout: 30,
+	websocket: {
+		...websocket,
+		maxPayloadLength: 16 * 1024,
+		backpressureLimit: 1024 * 1024,
+		closeOnBackpressureLimit: true,
+		idleTimeout: 35,
+	},
 });
 console.info(`Noura sync listening on port ${server.port}`);
 let stopping = false;

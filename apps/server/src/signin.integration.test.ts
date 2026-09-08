@@ -38,7 +38,7 @@ describe.skipIf(
 		);
 		let child: ReturnType<typeof Bun.spawn> | undefined;
 		try {
-			await store.db.begin(async (tx) => {
+			await store.transaction(async (tx) => {
 				await tx`SELECT pg_advisory_xact_lock(192837466)`;
 				await (await getMigrations(identity.auth.options)).runMigrations();
 			});

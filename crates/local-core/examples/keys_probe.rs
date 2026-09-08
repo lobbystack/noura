@@ -29,6 +29,10 @@ impl SyncCredentials for Memory {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--noura-crdt-worker") {
+        local_core::sync::collaboration::run_worker_stdio()?;
+        return Ok(());
+    }
     let mut lines = std::io::stdin().lock().lines();
     let input: serde_json::Value = serde_json::from_str(&lines.next().ok_or("input missing")??)?;
     let store = Memory::default();
@@ -380,7 +384,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &owner_connection,
         &store,
         &recovery_path,
-    )?;
+    )
+    .map_err(|error| format!("export recovery kit: {error:?}"))?;
     let mut member_replicas = Vec::new();
     for (device, label) in [(&editor, "editor"), (&viewer, "viewer")] {
         let connection = DeviceConnection {
@@ -484,7 +489,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &clean_store,
         &recovery_path,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("initial recovery import: {error:?}"))?;
     assert!(!recovered.sync_status()?.enabled);
     assert_eq!(
         std::fs::read(recovered.root().join("private-attachment.bin"))?,
@@ -505,7 +511,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &clean_store,
         &recovery_path,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("recovery conflict import: {error:?}"))?;
     assert_eq!(
         std::fs::read(recovered.root().join("editor-created.txt"))?,
         b"external edit after recovery"
@@ -542,22 +549,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         reader.device_id(),
         &fingerprint,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("approve invited device: {error:?}"))?;
     let invitations =
         WorkspaceSyncCoordinator::invitations(&owner_replica, &owner_connection, &store).await?;
     let invitation = invitations
         .iter()
         .find(|item| item.id == invitation_id)
         .ok_or("invitation not returned")?;
-    assert_eq!(invitation.status, SyncInvitationStatus::Accepted);
-    WorkspaceSyncCoordinator::finalize_invitation(
-        &owner_replica,
-        &owner_connection,
-        &store,
-        invitation_id,
-    )
-    .await
-    .map_err(|error| format!("finalize invitation: {error:?}"))?;
+    assert_eq!(invitation.status, SyncInvitationStatus::Completed);
     let invitations =
         WorkspaceSyncCoordinator::invitations(&owner_replica, &owner_connection, &store).await?;
     assert_eq!(

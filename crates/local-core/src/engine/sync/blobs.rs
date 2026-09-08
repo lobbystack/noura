@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::io::{Read, Seek};
 
 use super::*;
@@ -22,6 +23,40 @@ impl WorkspaceEngine {
         if create {
             sync_parent(&path, "sync_blob")?;
         }
+        Ok(file)
+    }
+
+    pub(crate) fn sync_transition_blob_file(
+        &self,
+        manifest: &crate::sync::CheckpointBlobManifest,
+    ) -> Result<File> {
+        let path = self.sync_path(&format!(".noura/sync/blobs/{}", manifest.ciphertext_digest))?;
+        let mut file = File::open(path).map_err(|_| invalid("sync_blob_read_failed"))?;
+        let mut hash = Sha256::new();
+        let mut size = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|_| invalid("sync_blob_read_failed"))?;
+            if read == 0 {
+                break;
+            }
+            size = size
+                .checked_add(read as u64)
+                .ok_or_else(|| invalid("sync_blob_too_large"))?;
+            if size > manifest.ciphertext_size {
+                return Err(invalid("sync_blob_length_mismatch"));
+            }
+            hash.update(&buffer[..read]);
+        }
+        if size != manifest.ciphertext_size
+            || format!("{:x}", hash.finalize()) != manifest.ciphertext_digest
+        {
+            return Err(invalid("sync_blob_digest_mismatch"));
+        }
+        file.rewind()
+            .map_err(|_| invalid("sync_blob_read_failed"))?;
         Ok(file)
     }
 
@@ -169,14 +204,33 @@ impl WorkspaceEngine {
         let plaintext = zeroize::Zeroizing::new(
             serde_json::to_vec(&change).map_err(|_| invalid("sync_serialize_failed"))?,
         );
-        let operation = device.signer().seal_at_revision(
-            key,
-            &journal.workspace_id,
-            &object,
-            device.device_id(),
-            (epoch, &journal.access_revision),
-            &plaintext,
-        )?;
+        let document = Self::sync_document_descriptor(&journal, &object);
+        let operation = match document {
+            Some(document) if document.mode == crate::sync::DocumentMode::Attachment => {
+                device.signer().seal_for_document(
+                    key,
+                    &journal.workspace_id,
+                    &object,
+                    device.device_id(),
+                    (
+                        epoch,
+                        &journal.access_revision,
+                        &document.generation,
+                        crate::sync::OperationKind::File,
+                    ),
+                    &plaintext,
+                )?
+            }
+            Some(_) => return Err(invalid("collaboration_transaction_required")),
+            None => device.signer().seal_at_revision(
+                key,
+                &journal.workspace_id,
+                &object,
+                device.device_id(),
+                (epoch, &journal.access_revision),
+                &plaintext,
+            )?,
+        };
         journal.outbox.push(operation);
         journal.objects.insert(
             object,

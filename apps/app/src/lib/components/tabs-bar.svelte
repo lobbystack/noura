@@ -1,10 +1,25 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { cn } from '$lib/utils.js';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import X from 'phosphor-svelte/lib/X';
 	import PushPin from 'phosphor-svelte/lib/PushPin';
 
+	function activate(id: string) {
+		tabsStore.setActive(id);
+		const tab = tabsStore.active;
+		if (!tab) {
+			void goto('/notes');
+			return;
+		}
+		const href =
+			tab.href ??
+			(tab.objectId.startsWith('raw:')
+				? `/notes?raw=${encodeURIComponent(tab.objectId.slice(4))}`
+				: `/${tab.objectType === 'task' ? 'tasks' : tab.objectType === 'project' ? 'projects' : 'notes'}?selected=${encodeURIComponent(tab.objectId)}`);
+		void goto(href);
+	}
 	let { onClose }: { onClose?: (id: string) => void } = $props();
 </script>
 
@@ -27,7 +42,7 @@
 				{/if}
 				<button
 					class="max-w-40 truncate"
-					onclick={() => tabsStore.setActive(tab.id)}
+					onclick={() => activate(tab.id)}
 					ondblclick={() => tabsStore.pin(tab.id)}
 				>
 					{tab.title}
@@ -39,6 +54,7 @@
 								<button
 									{...props}
 									class="hidden size-4 items-center justify-center rounded-sm text-muted-foreground/70 hover:text-foreground group-hover:flex"
+									aria-label={`Pin ${tab.title}`}
 									onclick={() => tabsStore.pin(tab.id)}
 								>
 									<PushPin />
@@ -49,9 +65,12 @@
 					</Tooltip.Root>
 				{/if}
 				<button
+					aria-label={`Close ${tab.title}`}
 					class="size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground/50 hover:text-foreground"
 					onclick={() => {
+						const wasActive = tabsStore.activeId === tab.id;
 						tabsStore.close(tab.id);
+						if (wasActive) activate(tabsStore.activeId ?? '');
 						onClose?.(tab.id);
 					}}
 				>

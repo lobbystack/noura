@@ -3,14 +3,26 @@ import {
 	readTransition,
 	stageTransition,
 } from './checkpoints';
+import {
+	commitObjectActivation,
+	objectActivation,
+	readObjectActivation,
+	stageObjectActivation,
+} from './activations';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
 import { serveStatic } from 'hono/bun';
+import { upgradeWebSocket } from 'hono/bun';
 import { join } from 'node:path';
 import { randomBytes, createPublicKey, verify } from 'node:crypto';
 import type { AccountAuth } from './auth';
 import { accessPolicy, setAccess } from './access';
+import {
+	putWorkspaceCapability,
+	readWorkspaceCapability,
+	workspaceCapability,
+} from './capabilities';
 import { storeOwnKey } from './keys';
 import {
 	acceptInvitation,
@@ -36,6 +48,13 @@ import {
 	SyncError,
 } from './protocol';
 import { SyncStore, type Actor } from './store';
+import {
+	MAX_REALTIME_BYTES,
+	MAX_REALTIME_MESSAGES,
+	RealtimeQueue,
+	encryptedPresence,
+	verifyPresence,
+} from './realtime';
 
 type Env = { Variables: { actor: Actor } };
 export function createApp(
@@ -45,10 +64,20 @@ export function createApp(
 		auth?: AccountAuth;
 		webRoot?: string;
 		blobs?: BlobService;
-		/** Experimental protocol; desktop checkpoint recovery is not yet integrated. */
+		/** Experimental protocol; production remains disabled until release acceptance passes. */
 		checkpointTransitions?: boolean;
+		/** Admit new workspace capabilities. Existing capability-bound protocol state remains serviceable when false. */
+		collaborationRollout?: boolean;
+		/** Experimental realtime delivery; production remains disabled until release acceptance passes. */
+		realtime?: boolean;
+		/** Local diagnostics hook; HTTP responses remain bounded and redact internal details. */
+		onInternalError?: (error: unknown) => void;
 	},
 ) {
+	const collaborationRollout = Boolean(
+		options.checkpointTransitions &&
+		(options.collaborationRollout ?? options.checkpointTransitions),
+	);
 	const app = new Hono<Env>();
 	app.use('*', secureHeaders());
 	app.use(
@@ -73,6 +102,11 @@ export function createApp(
 			return c.json({ error: { code: 'sync.invalid_json' } }, 400);
 		if ('code' in error && error.code === '23505')
 			return c.json({ error: { code: 'sync.already_exists' } }, 409);
+		try {
+			options.onInternalError?.(error);
+		} catch {
+			// Diagnostics must never replace the bounded public error response.
+		}
 		return c.json({ error: { code: 'sync.internal_error' } }, 500);
 	});
 	app.get('/health', (c) => c.json({ status: 'ok', protocol: 1 }));
@@ -94,7 +128,7 @@ export function createApp(
 			const session = await auth.api.getSession({ headers: c.req.raw.headers });
 			if (!session) throw new SyncError('sync.unauthorized', 401);
 			const challenge = randomBytes(32).toString('base64url');
-			await store.db.begin(async (tx) => {
+			await store.transaction(async (tx) => {
 				await tx`SELECT pg_advisory_xact_lock(hashtextextended(${session.user.id},0))`;
 				await tx`DELETE FROM noura_device_challenges WHERE account_id=${session.user.id} OR expires_at<=now()`;
 				await tx`INSERT INTO noura_device_challenges(token_hash,account_id,expires_at) VALUES(${digest(challenge)},${session.user.id},now()+interval '5 minutes')`;
@@ -141,7 +175,7 @@ export function createApp(
 			if (!verify(null, challenge, key, proof))
 				throw new SyncError('sync.invalid_signature', 403);
 			const token = randomBytes(32).toString('base64url');
-			await store.db.begin(async (tx) => {
+			await store.transaction(async (tx) => {
 				const [valid] =
 					await tx`DELETE FROM noura_device_challenges WHERE token_hash=${digest(nonce)} AND account_id=${session.user.id} AND expires_at>now() RETURNING token_hash`;
 				if (!valid) throw new SyncError('sync.invalid_challenge', 403);
@@ -251,11 +285,16 @@ export function createApp(
 	});
 	app.delete('/v1/devices/:device', async (c) => {
 		const device = identifier(c.req.param('device'));
-		await store.db.begin(async (tx) => {
+		await store.transaction(async (tx) => {
 			const [row] =
 				await tx`UPDATE noura_devices SET revoked=true WHERE id=${device} AND account_id=${c.get('actor').accountId} RETURNING id`;
 			if (!row) throw new SyncError('sync.not_found', 404);
 			await tx`DELETE FROM noura_sessions WHERE device_id=${device}`;
+			const workspaces =
+				await tx`SELECT workspace_id FROM noura_members WHERE account_id=${c.get('actor').accountId}
+				 UNION SELECT workspace_id FROM noura_grants WHERE account_id=${c.get('actor').accountId}`;
+			for (const workspace of workspaces)
+				await tx`SELECT pg_notify('noura_sync',${workspace.workspace_id})`;
 		});
 		return c.body(null, 204);
 	});
@@ -352,10 +391,259 @@ export function createApp(
 			protocol: 1,
 			checkpoints: options.checkpointTransitions ? [1] : [],
 			accessTransitions: options.checkpointTransitions ? [1] : [],
-			liveText: [],
+			objectActivations: options.checkpointTransitions ? [1] : [],
+			realtimeNotifications: options.realtime ? [1] : [],
+			presence: options.realtime ? [1] : [],
+			liveText: options.checkpointTransitions ? [1] : [],
 		}),
 	);
+	if (options.realtime) {
+		app.get(
+			'/v1/workspaces/:workspace/realtime',
+			upgradeWebSocket(async (c) => {
+				const workspace = identifier(c.req.param('workspace'));
+				const authorization = c.req.header('Authorization')!;
+				const token = authorization.slice(7);
+				const initialActor = c.get('actor');
+				await store.authorizeRealtimeWorkspace(initialActor, workspace);
+				const sessionId = crypto.randomUUID();
+				const controller = new AbortController();
+				let presenceWatch: { close(): void } | undefined;
+				let changeWatch: { close(): void } | undefined;
+				let queue: RealtimeQueue | undefined;
+				let flushScheduled = false;
+				let lastSequence = 0;
+				let messageQueue = Promise.resolve();
+				let pendingPresenceMessages = 0;
+				let pendingPresenceBytes = 0;
+				let changePending = false;
+				let changeAgain = false;
+				const enqueue = (key: string, value: unknown) => {
+					queue?.enqueue(key, value);
+					if (flushScheduled) return;
+					flushScheduled = true;
+					queueMicrotask(() => {
+						flushScheduled = false;
+						queue?.flush();
+					});
+				};
+				return {
+					onOpen: (_event, socket) => {
+						queue = new RealtimeQueue(
+							(value) => {
+								const raw = socket.raw as
+									{ send(value: string): number } | undefined;
+								if (!raw || raw.send(value) <= 0)
+									socket.close(1013, 'realtime backpressure');
+							},
+							() => socket.close(1013, 'realtime queue limit'),
+						);
+						enqueue('hello', {
+							type: 'hello',
+							workspaceId: workspace,
+							sessionId,
+							expiresIn: 30,
+						});
+						void store
+							.watchPresence(workspace, controller.signal, (payload) => {
+								let parsed: unknown;
+								try {
+									parsed = JSON.parse(payload);
+								} catch {
+									return;
+								}
+								const record = parsed as {
+									type?: unknown;
+									presence?: { deviceId?: unknown; sessionId?: unknown };
+									deviceId?: unknown;
+									sessionId?: unknown;
+								};
+								const device =
+									record.type === 'presence'
+										? record.presence?.deviceId
+										: record.deviceId;
+								const session =
+									record.type === 'presence'
+										? record.presence?.sessionId
+										: record.sessionId;
+								if (typeof device === 'string' && typeof session === 'string')
+									enqueue(`presence:${device}:${session}`, parsed);
+							})
+							.then((watch) => {
+								presenceWatch = watch;
+							})
+							.catch(() => socket.close(1011, 'presence unavailable'));
+						void store
+							.watchChanges(workspace, controller.signal, () => {
+								changeAgain = true;
+								if (changePending) return;
+								changePending = true;
+								void (async () => {
+									try {
+										while (changeAgain && !controller.signal.aborted) {
+											changeAgain = false;
+											const actor = await store.authenticate(token);
+											await store.authorizeRealtimeWorkspace(actor, workspace);
+											enqueue('changed', {
+												type: 'changed',
+												workspaceId: workspace,
+											});
+										}
+									} catch {
+										socket.close(4403, 'authorization changed');
+									} finally {
+										changePending = false;
+									}
+								})();
+							})
+							.then((watch) => {
+								changeWatch = watch;
+							})
+							.catch(() => socket.close(1011, 'notifications unavailable'));
+					},
+					onMessage: (event, socket) => {
+						const messageBytes =
+							typeof event.data === 'string'
+								? Buffer.byteLength(event.data)
+								: 0;
+						if (
+							pendingPresenceMessages >= MAX_REALTIME_MESSAGES ||
+							pendingPresenceBytes + messageBytes > MAX_REALTIME_BYTES
+						) {
+							socket.close(1013, 'realtime queue limit');
+							return;
+						}
+						pendingPresenceMessages += 1;
+						pendingPresenceBytes += messageBytes;
+						messageQueue = messageQueue
+							.then(async () => {
+								try {
+									if (
+										typeof event.data !== 'string' ||
+										event.data.length > 16_384
+									)
+										throw new SyncError('sync.invalid_presence');
+									const message = record(JSON.parse(event.data));
+									if (
+										Object.keys(message).length !== 2 ||
+										message.type !== 'presence'
+									)
+										throw new SyncError('sync.invalid_presence');
+									const value = encryptedPresence(message.presence);
+									const actor = await store.authenticate(token);
+									if (
+										value.workspaceId !== workspace ||
+										value.deviceId !== actor.deviceId ||
+										value.sessionId !== sessionId ||
+										value.sequence <= lastSequence
+									)
+										throw new SyncError('sync.invalid_presence', 403);
+									verifyPresence(value, actor.publicKey);
+									await store.collaborationRateLimit(actor, 'presence');
+									await store.publishPresence(actor, value);
+									lastSequence = value.sequence;
+								} catch (error) {
+									const code =
+										error instanceof SyncError
+											? error.code
+											: 'sync.invalid_presence';
+									socket.send(JSON.stringify({ type: 'error', code }));
+									if (error instanceof SyncError && error.status === 429)
+										return;
+									socket.close(4403, 'invalid presence');
+								}
+							})
+							.finally(() => {
+								pendingPresenceMessages -= 1;
+								pendingPresenceBytes -= messageBytes;
+							});
+					},
+					onClose: () => {
+						controller.abort();
+						presenceWatch?.close();
+						changeWatch?.close();
+						queue = undefined;
+						// Serialize departure after every accepted or already-queued message so a
+						// slow database round trip cannot resurrect presence after disconnect.
+						void messageQueue
+							.catch(() => {})
+							.then(() =>
+								store
+									.publishPresenceDeparture(
+										workspace,
+										initialActor.deviceId,
+										sessionId,
+									)
+									.catch(() => {}),
+							);
+					},
+				};
+			}),
+		);
+	}
 	if (options.checkpointTransitions) {
+		app.get('/v1/workspaces/:workspace/activations', async (c) => {
+			const workspace = identifier(c.req.param('workspace'));
+			return c.json(
+				await store.withWorkspace(
+					c.get('actor'),
+					workspace,
+					async (tx, _state, role) => {
+						if (!role) throw new SyncError('sync.forbidden', 403);
+						const rows =
+							await tx`SELECT a.body FROM noura_object_activations a JOIN noura_objects o ON o.workspace_id=a.workspace_id AND o.id=a.object_id AND o.epoch=1 WHERE a.workspace_id=${workspace} AND a.committed ORDER BY a.object_id COLLATE "C" LIMIT 1001`;
+						if (rows.length > 1000)
+							throw new SyncError('sync.activation_limit', 413);
+						return { activations: rows.map((row) => row.body) };
+					},
+				),
+			);
+		});
+		app.post('/v1/workspaces/:workspace/activations', async (c) => {
+			const value = objectActivation(await c.req.json());
+			if (value.workspaceId !== identifier(c.req.param('workspace')))
+				throw new SyncError('sync.identity_mismatch', 403);
+			return c.json(await stageObjectActivation(store, c.get('actor'), value));
+		});
+		app.get('/v1/workspaces/:workspace/activations/:activation', async (c) =>
+			c.json(
+				await readObjectActivation(
+					store,
+					c.get('actor'),
+					identifier(c.req.param('workspace')),
+					identifier(c.req.param('activation')),
+				),
+			),
+		);
+		app.post(
+			'/v1/workspaces/:workspace/activations/:activation/commit',
+			async (c) =>
+				c.json(
+					await commitObjectActivation(
+						store,
+						c.get('actor'),
+						identifier(c.req.param('workspace')),
+						identifier(c.req.param('activation')),
+					),
+				),
+		);
+		app.get('/v1/workspaces/:workspace/collaboration-capability', async (c) =>
+			c.json(
+				await readWorkspaceCapability(
+					store,
+					c.get('actor'),
+					identifier(c.req.param('workspace')),
+				),
+			),
+		);
+		app.put('/v1/workspaces/:workspace/collaboration-capability', async (c) => {
+			if (!collaborationRollout)
+				throw new SyncError('sync.collaboration_rollout_disabled', 409);
+			const value = workspaceCapability(await c.req.json());
+			if (value.workspaceId !== identifier(c.req.param('workspace')))
+				throw new SyncError('sync.identity_mismatch', 403);
+			return c.json(await putWorkspaceCapability(store, c.get('actor'), value));
+		});
 		app.post('/v1/workspaces/:workspace/transitions', async (c) => {
 			const value = accessTransition(await c.req.json());
 			if (value.policy.workspaceId !== identifier(c.req.param('workspace')))
@@ -401,8 +689,15 @@ export function createApp(
 							const [grant] =
 								await tx`SELECT 1 FROM noura_grants WHERE workspace_id=${workspace} AND object_id=${object} AND account_id=${c.get('actor').accountId}`;
 							if (!role && !grant) throw new SyncError('sync.forbidden', 403);
-							const [row] =
-								await tx`SELECT c.checkpoint FROM noura_checkpoints c JOIN noura_objects o ON o.workspace_id=c.workspace_id AND o.id=c.object_id AND o.epoch=c.epoch WHERE c.workspace_id=${workspace} AND c.object_id=${object}`;
+							const [row] = await tx`
+								SELECT c.checkpoint FROM noura_checkpoints c
+								JOIN noura_objects o ON o.workspace_id=c.workspace_id AND o.id=c.object_id AND o.epoch=c.epoch
+								WHERE c.workspace_id=${workspace} AND c.object_id=${object}
+								UNION ALL
+								SELECT c.checkpoint FROM noura_activation_checkpoints c
+								JOIN noura_objects o ON o.workspace_id=c.workspace_id AND o.id=c.object_id AND o.epoch=c.epoch
+								WHERE c.workspace_id=${workspace} AND c.object_id=${object}
+								LIMIT 2`;
 							if (!row) throw new SyncError('sync.not_found', 404);
 							return row.checkpoint;
 						},
@@ -481,7 +776,7 @@ export function createApp(
 					const members =
 						await tx`SELECT account_id AS "accountId",role FROM noura_members WHERE workspace_id=${workspace} ORDER BY account_id COLLATE "C" LIMIT 1001`;
 					const objects =
-						await tx`SELECT id AS "objectId",epoch::text FROM noura_objects WHERE workspace_id=${workspace} ORDER BY id COLLATE "C" LIMIT 1001`;
+						await tx`SELECT id AS "objectId",epoch::text,generation,document_mode AS "documentMode" FROM noura_objects WHERE workspace_id=${workspace} ORDER BY id COLLATE "C" LIMIT 1001`;
 					const envelopes =
 						await tx`SELECT object_id AS "objectId",epoch::text,device_id AS "deviceId",wrapped_key AS "wrappedKey",signing_device AS "signingDevice",signature FROM noura_key_envelopes k WHERE workspace_id=${workspace} AND epoch=(SELECT epoch FROM noura_objects o WHERE o.workspace_id=k.workspace_id AND o.id=k.object_id) ORDER BY object_id COLLATE "C",epoch,device_id COLLATE "C" LIMIT 10001`;
 					const devices =

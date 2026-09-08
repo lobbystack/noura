@@ -1,10 +1,15 @@
 # Noura sync service (development)
 
 An original Bun/Hono/PostgreSQL service for signed encrypted operations. This
-is the server foundation, **not the complete Noura collaboration release**.
-Desktop sign-in, background file sync, owner replica joining, device approval,
-and same-path conflict resolution are connected. Team collaboration and the
-remaining release gates below are still under implementation.
+is the server foundation and an experimental collaboration implementation,
+**not a production Noura collaboration release**. Production startup deliberately
+withholds collaboration capabilities until the remaining release gates below
+pass.
+
+Once enabled, rollout admission and protocol continuity are separate. Setting
+`collaborationRollout: false` while retaining `checkpointTransitions: true`
+blocks new workspace capabilities while continuing to serve existing checkpoints,
+transitions, live-text generations, and capability-bound object activations.
 
 ## Implemented
 
@@ -30,6 +35,15 @@ remaining release gates below are still under implementation.
 - Native background capture and restart, pause/resume, owner replica joining,
   verified device approval, encrypted key backup before upload, and explicit
   local/remote resolution of same-path conflicts without overwriting later edits.
+- Owner-signed workspace capabilities, automatic invitation activation, atomic
+  checkpoint/key rotations, isolated fresh-recipient history, and resumable
+  transition-bound checkpoint blobs.
+- Writer-authorized object activation plus native create, update, move, delete,
+  external-change, MCP, managed metadata/body, and plain-text collaboration paths.
+- Yjs/Yrs text generations with acknowledged baselines, durable drafts, restart
+  recovery, generation rebase/review, and an isolated bounded native decoder worker.
+- Authenticated realtime notifications and encrypted transient presence, with
+  durable HTTP pull/acknowledgment remaining authoritative.
 
 ## Run locally
 
@@ -120,8 +134,9 @@ An idle client can add `wait=25&accessRevision=<last-seen-revision>` to its pull
 The server subscribes before reading, waits at most 25 seconds if caught up, and
 then rechecks the session and permissions. Notifications carry only workspace
 IDs; all returned operations still pass the normal authorization filter. At most
-1000 concurrent waiters are retained per process. This is file-change delivery,
-not a collaborative text protocol.
+1000 concurrent waiters are retained per process. This long-poll path is an
+authoritative fallback for the experimental native collaboration client;
+WebSocket notifications only prompt durable pulls.
 
 ## Verification
 
@@ -174,6 +189,46 @@ p50 42 ms, p95 54 ms, and maximum 56 ms, measured from each HTTP upload start.
 This is one synthetic burst on loopback. It does not establish WAN performance,
 CRDT convergence, collaborative editor latency, or sustained-load behavior.
 
+## Realtime collaboration load and soak probe
+
+With `NOURA_TEST_DATABASE_URL` set to a disposable PostgreSQL database, run:
+
+```sh
+bun run test:collaboration-load
+NOURA_SOAK_SECONDS=3600 bun run test:collaboration-load
+```
+
+The default run connects 100 authenticated WebSockets, submits one concurrent
+version-two text operation from each of 20 writers, simulates 100 ms RTT, and
+requires every client to retrieve every operation through the authoritative HTTP
+pull. It fails at one-second p95, unexpected or duplicate delivery, incomplete
+fanout, subscription leakage, or more than 256 MiB RSS growth after connection
+warmup. A five-second authoritative recovery pull covers a notification that was
+not processed and the final report exposes the recovery count. The soak form
+repeats the burst once per second for one hour while keeping latency storage
+fixed-size. `NOURA_LOAD_CLIENTS`, `NOURA_LOAD_WRITERS`,
+`NOURA_LOAD_RTT_MS`, `NOURA_LOAD_INTERVAL_MS`, and
+`NOURA_MAX_RSS_GROWTH_MIB` override the bounded defaults. Setting
+`NOURA_LOAD_FORCE_RECONNECT_BATCH=1` closes one socket after the first committed
+burst and verifies recovery through an authoritative pull before reconnect; the
+ordinary server CI gate enables this fault. It also sets
+`NOURA_LOAD_FORCE_RECOVERY_BATCH=1` to suppress one different client's first-batch
+notification and prove the five-second recovery pull closes that gap.
+
+A local smoke run completed five batches and 10,000 deliveries with 100 clients,
+20 writers, 100 ms simulated RTT, p95 202 ms, and 35.6 MiB RSS growth. This
+exercises the real WebSocket invalidation and signed operation/pull path, but it
+does not replace multi-process native CRDT application or cross-platform desktop
+acceptance.
+
+The corrected one-hour local soak completed 3,596 batches and 7,192,000 exact
+deliveries with the same 100 clients, 20 writers, and 100 ms simulated RTT. It
+measured p50 172 ms, p95 204 ms, maximum 1.129 s, and 44.7 MiB RSS growth, with
+zero reconnects, zero recovery pulls, and no leaked subscriptions. A separate
+forced-fault run closed one socket and suppressed another client's notification;
+both recovered through authoritative pulls (`reconnects: 1`, `recoveryPulls: 1`)
+while p95 remained 211 ms.
+
 ## Offline restore rehearsal
 
 `bun run test:restore` creates two uniquely named disposable databases using
@@ -184,7 +239,8 @@ PostgreSQL 16 `pg_dump` and `pg_restore` on PATH, or their directory in
 The drill waits for all synthetic requests to complete and closes the only
 writer before dumping PostgreSQL and copying the local blob directory. It
 restores both into fresh locations and verifies sessions, signed operations,
-cursors, quotas, complete ciphertext, and continuation of a partial upload.
+cursors, quotas, complete ciphertext, continuation of a partial upload, staged
+and committed transitions, checkpoints, generations, and blob manifests.
 The original blob directory is removed before verification. Temporary databases
 and files are removed afterwards. This drill has passed locally and is included
 in server CI; CI execution remains to be verified on GitHub.
@@ -207,12 +263,13 @@ blob backups while writes are active.
 
 ## Remaining release requirements
 
-Recovery re-invitation and epoch-rotation workflows; existing-member permission-management UI;
-folder sharing; move/identity conflict resolution;
-attachment conflict resolution and storage garbage collection; snapshot compaction;
-live Yjs/Yrs integration; subscriptions/presence; desktop public publishing;
-production backup/restore rehearsal; collaborative load/soak tests; cross-platform desktop
-tests; and external security review remain unfinished. The internal
+Existing-member permission-management UI, folder sharing, attachment conflict
+resolution and storage garbage collection, snapshot compaction, desktop public
+publishing, and production backup/restore rehearsal remain unfinished or outside
+this collaboration milestone. Release still requires the full desktop flow on
+macOS, Windows/UTM, and Linux; a 20-editor/100 ms RTT latency measurement; the
+Windows worker capability confinement and crash-durability fault tests; and an
+independent security review. The internal
 [implementation review](../../docs/security/sync-review-2026-09-05.md) records
 verified corrections and outstanding platform issues. Backend access and public-link
 APIs are executable, but do not yet form a complete user-facing sharing workflow.
@@ -220,8 +277,10 @@ APIs are executable, but do not yet form a complete user-facing sharing workflow
 Workspace invitation creation, browser acceptance, desktop fingerprint approval,
 signed membership activation, and pending-invitation revocation are implemented.
 Acceptance does not grant membership until the owner signs the policy and wraps
-the object keys for approved recipients. This does not yet provide existing-member
-role changes, member removal with epoch rotation, or folder sharing.
+the object keys for approved recipients. The native coordinator rotates every
+checkpoint-enrolled object when effective recipient devices change. A user-facing
+flow for arbitrary existing-member role changes/removal and folder sharing is
+still absent.
 
 ## Attachment storage
 

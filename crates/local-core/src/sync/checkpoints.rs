@@ -38,13 +38,28 @@ pub struct CheckpointContent {
 #[ts(export)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessTransition {
-    #[ts(type = "1")]
+    #[ts(type = "1 | 2")]
     pub version: u8,
     pub transition_id: String,
     pub covered_sequence: String,
     pub policy: AccessPolicy,
     pub checkpoints: Vec<EncryptedCheckpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blobs: Vec<CheckpointBlobManifest>,
     pub signature: String,
+}
+
+/// Public ciphertext metadata bound to a transition. It reveals no key, path, or plaintext.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckpointBlobManifest {
+    pub object_id: String,
+    #[ts(type = "number")]
+    pub epoch: u64,
+    pub ciphertext_digest: String,
+    #[ts(type = "number")]
+    pub ciphertext_size: u64,
 }
 
 impl CheckpointContent {
@@ -110,6 +125,42 @@ impl EncryptedCheckpoint {
         Ok(result)
     }
 
+    /// Seal a checkpoint for a not-yet-published object activation. The outer signed
+    /// activation binds the current policy and workspace capability.
+    pub fn seal_activation(
+        device: &DeviceKeys,
+        key: &ObjectKey,
+        workspace_id: &str,
+        policy_revision: &str,
+        covered_sequence: &str,
+        content: &CheckpointContent,
+    ) -> Result<Self> {
+        content.validate()?;
+        identifier(workspace_id)?;
+        super::transport::parse_cursor(policy_revision)?;
+        super::transport::parse_cursor(covered_sequence)?;
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(content).map_err(|_| invalid("sync_serialize_failed"))?,
+        );
+        let payload = device.signer().seal_at_revision(
+            key,
+            workspace_id,
+            &content.object_id,
+            device.device_id(),
+            (1, policy_revision),
+            &plaintext,
+        )?;
+        let mut result = Self {
+            version: 1,
+            generation: content.generation.clone(),
+            covered_sequence: covered_sequence.into(),
+            payload,
+            signature: String::new(),
+        };
+        result.signature = device.signer().sign_bytes(&result.signing_bytes()?);
+        Ok(result)
+    }
+
     pub fn verify(&self, public_key: &str) -> Result<()> {
         if self.version != 1 {
             return Err(invalid("sync_invalid_checkpoint"));
@@ -153,15 +204,29 @@ impl AccessTransition {
         device: &DeviceKeys,
         policy: AccessPolicy,
         covered_sequence: String,
+        checkpoints: Vec<EncryptedCheckpoint>,
+    ) -> Result<Self> {
+        Self::sign_with_blobs(device, policy, covered_sequence, checkpoints, Vec::new())
+    }
+
+    pub fn sign_with_blobs(
+        device: &DeviceKeys,
+        policy: AccessPolicy,
+        covered_sequence: String,
         mut checkpoints: Vec<EncryptedCheckpoint>,
+        mut blobs: Vec<CheckpointBlobManifest>,
     ) -> Result<Self> {
         checkpoints.sort_by(|a, b| a.payload.object_id.cmp(&b.payload.object_id));
+        blobs.sort_by(|a, b| {
+            (&a.object_id, &a.ciphertext_digest).cmp(&(&b.object_id, &b.ciphertext_digest))
+        });
         let mut result = Self {
-            version: 1,
+            version: if blobs.is_empty() { 1 } else { 2 },
             transition_id: uuid::Uuid::new_v4().to_string(),
             covered_sequence,
             policy,
             checkpoints,
+            blobs,
             signature: String::new(),
         };
         result.validate(&device.signer().public_key())?;
@@ -172,7 +237,11 @@ impl AccessTransition {
         identifier(&self.transition_id)?;
         super::transport::parse_cursor(&self.covered_sequence)?;
         self.policy.verify(public_key)?;
-        if self.version != 1 || self.checkpoints.len() > 1000 {
+        if !matches!(self.version, 1 | 2)
+            || (self.version == 1 && !self.blobs.is_empty())
+            || self.checkpoints.len() > 1000
+            || self.blobs.len() > 1000
+        {
             return Err(invalid("sync_invalid_transition"));
         }
         let mut previous = "";
@@ -197,6 +266,32 @@ impl AccessTransition {
             }
             previous = &op.object_id;
         }
+        let mut previous_blob: Option<(&str, &str)> = None;
+        for blob in &self.blobs {
+            identifier(&blob.object_id)?;
+            let current = (blob.object_id.as_str(), blob.ciphertext_digest.as_str());
+            if previous_blob.is_some_and(|previous| previous >= current)
+                || blob.ciphertext_size == 0
+                || blob.ciphertext_size > super::blobs::MAX_BLOB_BYTES
+                || blob.ciphertext_digest.len() != 64
+                || !blob
+                    .ciphertext_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || !self
+                    .policy
+                    .objects
+                    .iter()
+                    .any(|object| object.object_id == blob.object_id && object.epoch == blob.epoch)
+                || !self
+                    .checkpoints
+                    .iter()
+                    .any(|checkpoint| checkpoint.payload.object_id == blob.object_id)
+            {
+                return Err(invalid("sync_invalid_transition_blob"));
+            }
+            previous_blob = Some(current);
+        }
         Ok(())
     }
     pub fn verify(&self, public_key: &str) -> Result<()> {
@@ -209,15 +304,39 @@ impl AccessTransition {
             .iter()
             .map(EncryptedCheckpoint::digest)
             .collect::<Result<_>>()?;
-        serde_json::to_vec(&(
-            "noura.sync.transition",
-            self.version,
-            &self.transition_id,
-            &self.covered_sequence,
-            self.policy.digest()?,
-            digests,
-        ))
-        .map_err(|_| invalid("sync_serialize_failed"))
+        let value = if self.version == 1 {
+            serde_json::json!([
+                "noura.sync.transition",
+                self.version,
+                &self.transition_id,
+                &self.covered_sequence,
+                self.policy.digest()?,
+                digests,
+            ])
+        } else {
+            let blobs: Vec<_> = self
+                .blobs
+                .iter()
+                .map(|blob| {
+                    serde_json::json!([
+                        &blob.object_id,
+                        blob.epoch,
+                        &blob.ciphertext_digest,
+                        blob.ciphertext_size
+                    ])
+                })
+                .collect();
+            serde_json::json!([
+                "noura.sync.transition",
+                self.version,
+                &self.transition_id,
+                &self.covered_sequence,
+                self.policy.digest()?,
+                digests,
+                blobs,
+            ])
+        };
+        serde_json::to_vec(&value).map_err(|_| invalid("sync_serialize_failed"))
     }
     pub fn digest(&self) -> Result<String> {
         signed_digest(&self.signing_bytes()?, &self.signature)
@@ -333,6 +452,32 @@ mod tests {
         engine
             .sync_prepare_transition(&transition, &public_key)
             .unwrap();
+        engine
+            .sync_advance_transition(&transition.transition_id, "stage")
+            .unwrap();
+        engine
+            .sync_advance_transition(&transition.transition_id, "resolve_commit")
+            .unwrap();
+        engine
+            .sync_advance_transition(&transition.transition_id, "install")
+            .unwrap();
+        // A network retry replays orchestration from the beginning without regressing state.
+        engine
+            .sync_advance_transition(&transition.transition_id, "stage")
+            .unwrap();
+        engine
+            .sync_advance_transition(&transition.transition_id, "resolve_commit")
+            .unwrap();
+        engine
+            .sync_advance_transition(&transition.transition_id, "install")
+            .unwrap();
+        let status = engine.sync_status().unwrap().transition.unwrap();
+        assert_eq!(status.transition_id, transition.transition_id);
+        assert!(matches!(
+            status.phase,
+            crate::sync::WorkspaceSyncTransitionPhase::Install
+        ));
+        assert!(status.objects.is_empty());
         drop(engine);
         let reopened = WorkspaceEngine::open_with_app_data(&root, &app).unwrap();
         reopened.rebuild_index().unwrap();

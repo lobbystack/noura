@@ -1,3 +1,4 @@
+import { isPdfTarget } from './pdf-target';
 import { syntaxTree } from '@codemirror/language';
 import type { Decoration, DecorationSet, WidgetType } from '@codemirror/view';
 import { RangeSet, type EditorState } from '@codemirror/state';
@@ -153,6 +154,33 @@ export function buildDecorations(
 					const line = state.doc.lineAt(node.from);
 					addLine(line.from, 'cm-md-quote-line');
 					return;
+				}
+				if (node.name === 'Image' || node.name === 'Link') {
+					const raw = state.sliceDoc(node.from, node.to);
+					const match = raw.match(/^(!)?\[([^\]]*)\]\(([^)]*)\)$/);
+					const target = match?.[3]?.replace(/^<|>$/g, '') ?? '';
+					if (match && isPdfTarget(target)) {
+						const line = state.doc.lineAt(node.from);
+						const block = Boolean(match[1]) && line.text.trim() === raw;
+						const widget = widgets.link(
+							target,
+							match[2] || target,
+							block,
+							node.from,
+							node.to,
+						);
+						if (
+							widget &&
+							(state.readOnly || !selectionTouches(state, node.from, node.to))
+						) {
+							addReplace(
+								block ? line.from : node.from,
+								block ? line.to : node.to,
+								{ widget, block },
+							);
+						}
+						return false;
+					}
 				}
 				if (node.name === 'Image') {
 					const inner = state.sliceDoc(node.from, node.to);
@@ -338,10 +366,11 @@ function decorateObsidianSyntax(
 			const end = start + match[0].length;
 			if (inCode(start, end)) continue;
 			const [target = '', alias] = (match[2] ?? '').split('|', 2);
-			const embed = Boolean(match[1]);
+			const requestedEmbed = Boolean(match[1]);
 			const standalone = line.text.trim() === match[0];
+			const embed = requestedEmbed && (!isPdfTarget(target) || standalone);
 			const widget = widgets.link(target, alias ?? target, embed, start, end);
-			if (widget && !selectionTouches(state, start, end)) {
+			if (widget && (state.readOnly || !selectionTouches(state, start, end))) {
 				addReplace(
 					embed && standalone ? line.from : start,
 					embed && standalone ? line.to : end,

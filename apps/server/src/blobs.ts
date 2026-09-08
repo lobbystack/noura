@@ -6,6 +6,9 @@ import { access, lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type postgres from 'postgres';
 import { identifier, record, SyncError } from './protocol';
+import { accessTransition, type AccessTransition } from './checkpoints';
+import { objectActivation } from './activations';
+import type { ObjectActivation } from '../../../packages/shared/src/generated/ObjectActivation';
 import type { Actor, SyncStore } from './store';
 
 const MAX_BLOB = 1024 * 1024 * 1024;
@@ -74,6 +77,64 @@ export class BlobService {
 		if (!entry) throw new SyncError('sync.not_found', 404);
 		return Number(entry.epoch);
 	}
+	private async authorizeStaged(
+		tx: Tx,
+		actor: Actor,
+		workspace: string,
+		object: string,
+		transitionId: string,
+		epoch: number,
+		id: string,
+		size: number,
+		role: string | undefined,
+	) {
+		if (!['owner', 'admin'].includes(role ?? ''))
+			throw new SyncError('sync.forbidden', 403);
+		const [row] =
+			await tx`SELECT device_id,body,committed FROM noura_transitions WHERE workspace_id=${workspace} AND id=${transitionId}`;
+		if (!row || row.device_id !== actor.deviceId || row.committed)
+			throw new SyncError('sync.transition_not_staged', 409);
+		const transition: AccessTransition = accessTransition(row.body);
+		if (
+			!transition.blobs?.some(
+				(blob) =>
+					blob.objectId === object &&
+					blob.epoch === epoch &&
+					blob.ciphertextDigest === id &&
+					blob.ciphertextSize === size,
+			)
+		)
+			throw new SyncError('sync.invalid_transition_blob');
+	}
+	private async authorizeActivationStaged(
+		tx: Tx,
+		actor: Actor,
+		workspace: string,
+		object: string,
+		activationId: string,
+		epoch: number,
+		id: string,
+		size: number,
+		role: string | undefined,
+	) {
+		if (!role || role === 'viewer') throw new SyncError('sync.forbidden', 403);
+		const [row] =
+			await tx`SELECT device_id,body,committed FROM noura_object_activations WHERE workspace_id=${workspace} AND id=${activationId}`;
+		if (!row || row.device_id !== actor.deviceId || row.committed)
+			throw new SyncError('sync.activation_not_staged', 409);
+		const activation: ObjectActivation = objectActivation(row.body);
+		if (
+			activation.checkpoint.payload.objectId !== object ||
+			!activation.blobs?.some(
+				(blob) =>
+					blob.objectId === object &&
+					blob.epoch === epoch &&
+					blob.ciphertextDigest === id &&
+					blob.ciphertextSize === size,
+			)
+		)
+			throw new SyncError('sync.invalid_object_activation_blob');
+	}
 	private tus(tx: Tx, row: postgres.Row) {
 		const upload = row.upload_id as string;
 		const configstore = {
@@ -114,8 +175,13 @@ export class BlobService {
 		identifier(workspace);
 		identifier(object);
 		const body = record(input);
+		const fields = Object.keys(body).sort().join(',');
 		if (
-			Object.keys(body).sort().join(',') !== 'epoch,id,size' ||
+			![
+				'epoch,id,size',
+				'epoch,id,size,transitionId',
+				'activationId,epoch,id,size',
+			].includes(fields) ||
 			typeof body.id !== 'string' ||
 			!/^[0-9a-f]{64}$/.test(body.id) ||
 			!Number.isSafeInteger(body.epoch) ||
@@ -128,22 +194,57 @@ export class BlobService {
 		const id = body.id;
 		const size = body.size as number;
 		const epoch = body.epoch as number;
+		const transitionId =
+			body.transitionId === undefined
+				? undefined
+				: identifier(body.transitionId);
+		const activationId =
+			body.activationId === undefined
+				? undefined
+				: identifier(body.activationId);
 		return this.store.withWorkspace(
 			actor,
 			workspace,
 			async (tx, state, role) => {
-				if (
+				if (transitionId) {
+					await this.authorizeStaged(
+						tx,
+						actor,
+						workspace,
+						object,
+						transitionId,
+						epoch,
+						id,
+						size,
+						role,
+					);
+				} else if (activationId) {
+					await this.authorizeActivationStaged(
+						tx,
+						actor,
+						workspace,
+						object,
+						activationId,
+						epoch,
+						id,
+						size,
+						role,
+					);
+				} else if (
 					(await this.authorize(tx, actor, workspace, object, role, true)) !==
 					epoch
-				)
+				) {
 					throw new SyncError('sync.stale_epoch', 409);
+				}
 				const [existing] =
 					await tx`SELECT * FROM noura_blobs WHERE workspace_id=${workspace} AND object_id=${object} AND id=${id}`;
 				if (existing) {
 					if (
 						Number(existing.size) !== size ||
 						Number(existing.epoch) !== epoch ||
-						existing.device_id !== actor.deviceId
+						existing.device_id !== actor.deviceId ||
+						(existing.transition_id ?? undefined) !== transitionId ||
+						(existing.activation_id ?? undefined) !== activationId
 					)
 						throw new SyncError('sync.blob_changed', 409);
 					return {
@@ -159,7 +260,7 @@ export class BlobService {
 					throw new SyncError('sync.quota_exceeded', 413);
 				const upload = randomBytes(16).toString('hex');
 				const [row] =
-					await tx`INSERT INTO noura_blobs(workspace_id,object_id,id,epoch,size,upload_id,device_id) VALUES(${workspace},${object},${id},${epoch},${size},${upload},${actor.deviceId}) RETURNING *`;
+					await tx`INSERT INTO noura_blobs(workspace_id,object_id,id,epoch,size,upload_id,device_id,transition_id,activation_id) VALUES(${workspace},${object},${id},${epoch},${size},${upload},${actor.deviceId},${transitionId ?? null},${activationId ?? null}) RETURNING *`;
 				await tx`UPDATE noura_workspaces SET used_bytes=used_bytes+${size} WHERE id=${workspace}`;
 				const response = await this.tus(tx, row!).handleWeb(
 					new Request('http://localhost/uploads', {
@@ -202,17 +303,46 @@ export class BlobService {
 			actor,
 			workspace,
 			async (tx, _state, role) => {
-				const epoch = await this.authorize(
-					tx,
-					actor,
-					workspace,
-					object,
-					role,
-					true,
-				);
 				const [row] =
 					await tx`SELECT * FROM noura_blobs WHERE workspace_id=${workspace} AND object_id=${object} AND id=${id}`;
 				if (!row) throw new SyncError('sync.not_found', 404);
+				let epoch: number;
+				if (row.transition_id) {
+					await this.authorizeStaged(
+						tx,
+						actor,
+						workspace,
+						object,
+						row.transition_id,
+						Number(row.epoch),
+						id,
+						Number(row.size),
+						role,
+					);
+					epoch = Number(row.epoch);
+				} else if (row.activation_id) {
+					await this.authorizeActivationStaged(
+						tx,
+						actor,
+						workspace,
+						object,
+						row.activation_id,
+						Number(row.epoch),
+						id,
+						Number(row.size),
+						role,
+					);
+					epoch = Number(row.epoch);
+				} else {
+					epoch = await this.authorize(
+						tx,
+						actor,
+						workspace,
+						object,
+						role,
+						true,
+					);
+				}
 				if (row.device_id !== actor.deviceId)
 					throw new SyncError('sync.forbidden', 403);
 				if (row.complete) {
@@ -291,11 +421,6 @@ export class BlobService {
 			actor,
 			workspace,
 			async (tx, _state, role) => {
-				if (
-					(await this.authorize(tx, actor, workspace, object, role, true)) !==
-					finish.epoch
-				)
-					throw new SyncError('sync.stale_epoch', 409);
 				const [row] =
 					await tx`SELECT * FROM noura_blobs WHERE workspace_id=${workspace} AND object_id=${object} AND id=${id}`;
 				if (
@@ -305,6 +430,36 @@ export class BlobService {
 					Number(row.size) !== finish.size
 				)
 					throw new SyncError('sync.blob_changed', 409);
+				if (row.transition_id) {
+					await this.authorizeStaged(
+						tx,
+						actor,
+						workspace,
+						object,
+						row.transition_id,
+						finish.epoch,
+						id,
+						finish.size,
+						role,
+					);
+				} else if (row.activation_id) {
+					await this.authorizeActivationStaged(
+						tx,
+						actor,
+						workspace,
+						object,
+						row.activation_id,
+						finish.epoch,
+						id,
+						finish.size,
+						role,
+					);
+				} else if (
+					(await this.authorize(tx, actor, workspace, object, role, true)) !==
+					finish.epoch
+				) {
+					throw new SyncError('sync.stale_epoch', 409);
+				}
 				if (valid) {
 					await tx`UPDATE noura_blobs SET complete=true,storage=${this.s3 ? 's3' : 'local'} WHERE upload_id=${finish.upload}`;
 				} else {
@@ -329,9 +484,16 @@ export class BlobService {
 			actor,
 			workspace,
 			async (tx, _state, role) => {
-				await this.authorize(tx, actor, workspace, object, role, false);
+				const epoch = await this.authorize(
+					tx,
+					actor,
+					workspace,
+					object,
+					role,
+					false,
+				);
 				const [row] =
-					await tx`SELECT * FROM noura_blobs WHERE workspace_id=${workspace} AND object_id=${object} AND id=${id} AND complete`;
+					await tx`SELECT b.* FROM noura_blobs b LEFT JOIN noura_transitions t ON t.workspace_id=b.workspace_id AND t.id=b.transition_id LEFT JOIN noura_object_activations a ON a.workspace_id=b.workspace_id AND a.id=b.activation_id WHERE b.workspace_id=${workspace} AND b.object_id=${object} AND b.id=${id} AND b.epoch=${epoch} AND b.complete AND (b.transition_id IS NULL OR t.committed) AND (b.activation_id IS NULL OR a.committed)`;
 				if (!row) throw new SyncError('sync.not_found', 404);
 				const match = range?.match(/^bytes=(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$/);
 				if (!match) throw new SyncError('sync.invalid_blob_range', 416);

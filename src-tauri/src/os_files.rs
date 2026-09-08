@@ -59,3 +59,31 @@ pub fn open_in_terminal(engine: &WorkspaceEngine, id: &str) -> Result<(), CoreEr
         ))
     }
 }
+
+/// Open an explicitly clicked PDF link through the OS browser boundary.
+pub fn open_http_link(value: &str) -> Result<(), CoreError> {
+    let url = tauri::Url::parse(value)
+        .map_err(|_| CoreError::validation("invalid_link", "Invalid web link", "pdf_open_link"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(CoreError::validation(
+            "invalid_link",
+            "Only HTTP and HTTPS links can be opened",
+            "pdf_open_link",
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    let result = Command::new("/usr/bin/open").arg(url.as_str()).spawn();
+    #[cfg(target_os = "linux")]
+    let result = Command::new("xdg-open").arg(url.as_str()).spawn();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url.as_str()])
+        .spawn();
+    result
+        .map(|_| ())
+        .map_err(|error| CoreError::io(error, "pdf_open_link", None))
+}

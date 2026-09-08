@@ -252,6 +252,12 @@ pub enum MarkdownLinkTarget {
     Markdown {
         document: RawMarkdownRead,
     },
+    Pdf {
+        #[serde(rename = "relativePath")]
+        #[ts(rename = "relativePath")]
+        relative_path: String,
+        page: Option<u32>,
+    },
     Asset {
         #[ts(rename = "relativePath")]
         relative_path: String,
@@ -308,6 +314,15 @@ struct WorkspaceScan {
     seen: std::collections::HashSet<String>,
 }
 
+struct CollaborationPresenceCacheEntry {
+    object_id: String,
+    generation: String,
+    session_id: String,
+    sequence: u64,
+    expires_at: std::time::Instant,
+    member: crate::sync::CollaborationPresenceMember,
+}
+
 mod sync;
 
 pub struct WorkspaceEngine {
@@ -320,7 +335,10 @@ pub struct WorkspaceEngine {
     watcher: WatchCoordinator,
     self_writes: Mutex<HashMap<String, String>>,
     chat_mutation_fault: Mutex<Option<ChatMutationFault>>,
+    #[cfg(test)]
+    collaboration_mutation_fault: Mutex<Option<u8>>,
     collaboration_sessions: Mutex<HashMap<String, (String, String, bool)>>,
+    collaboration_presence: Mutex<HashMap<String, CollaborationPresenceCacheEntry>>,
 }
 
 impl WorkspaceEngine {
@@ -452,7 +470,10 @@ impl WorkspaceEngine {
             watcher,
             self_writes: Mutex::new(HashMap::new()),
             chat_mutation_fault: Mutex::new(None),
+            #[cfg(test)]
+            collaboration_mutation_fault: Mutex::new(None),
             collaboration_sessions: Mutex::new(HashMap::new()),
+            collaboration_presence: Mutex::new(HashMap::new()),
         };
         engine.recover_pending_chat_mutations()?;
         engine.reconcile()?;
@@ -1309,6 +1330,10 @@ impl WorkspaceEngine {
 
     /// Read one non-Markdown file (image or other asset) for inline preview.
     /// Workspace containment is validated; total size is capped by the caller.
+    pub fn read_pdf(&self, relative_path: &str) -> Result<crate::PdfRead> {
+        crate::pdf::read(&self.root, relative_path)
+    }
+
     pub fn read_local_asset(
         &self,
         source_relative_path: &str,
@@ -1369,6 +1394,18 @@ impl WorkspaceEngine {
             return self
                 .read_raw_markdown(&relative)
                 .map(|document| MarkdownLinkTarget::Markdown { document });
+        }
+        if relative.to_ascii_lowercase().ends_with(".pdf") {
+            return Ok(MarkdownLinkTarget::Pdf {
+                relative_path: relative,
+                page: target
+                    .split('|')
+                    .next()
+                    .and_then(|value| value.split_once('#'))
+                    .and_then(|(_, fragment)| fragment.strip_prefix("page="))
+                    .and_then(|page| page.parse::<u32>().ok())
+                    .filter(|page| *page > 0),
+            });
         }
         Ok(MarkdownLinkTarget::Asset {
             relative_path: relative,
@@ -3752,6 +3789,12 @@ fn resolve_markdown_target(
             "markdown_target_resolve",
         ));
     }
+    let decoded = crate::pdf::decode_target(target);
+    let target = match &decoded {
+        Ok(decoded) if decoded.to_ascii_lowercase().ends_with(".pdf") => decoded.as_str(),
+        Err(error) if target.to_ascii_lowercase().ends_with(".pdf") => return Err(error.clone()),
+        _ => target,
+    };
     let source = crate::path::validate_relative(source_relative_path, "markdown_target_resolve")?;
     let parent = source.parent().unwrap_or_else(|| Path::new(""));
     let joined = parent.join(target);

@@ -28,7 +28,7 @@ try {
 	await store.db`INSERT INTO noura_devices(id,account_id,public_key) VALUES(${owner.deviceId},${owner.accountId},${publicKey})`;
 	await store.createWorkspace(owner, workspace);
 	await store.createObject(owner, workspace, 'object');
-	await store.db.begin(async (tx) => {
+	await store.transaction(async (tx) => {
 		for (const client of clients) {
 			await tx`INSERT INTO noura_devices(id,account_id,public_key) VALUES(${client.device},${client.device},${publicKey})`;
 			await tx`INSERT INTO noura_sessions(token_hash,device_id,expires_at) VALUES(${digest(client.token)},${client.device},now()+interval '1 hour')`;

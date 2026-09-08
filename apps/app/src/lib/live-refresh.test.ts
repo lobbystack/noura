@@ -157,6 +157,17 @@ describe('isLiveRefreshEvent', () => {
 			isLiveRefreshEvent({ ...event, type: 'workspace:closed' }, 'workspace-a'),
 		).toBe(false);
 	});
+
+	test('invalidates projections for every canonical object lifecycle mutation', () => {
+		for (const type of [
+			'object:created',
+			'object:updated',
+			'object:moved',
+			'object:deleted',
+		]) {
+			expect(isLiveRefreshEvent(coreEvent(type), 'workspace-a')).toBe(true);
+		}
+	});
 });
 
 function coreEvent(

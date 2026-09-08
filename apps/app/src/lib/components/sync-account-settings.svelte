@@ -47,6 +47,7 @@
 	let invitationsRoot = $state<string | null>(null);
 	let invitationsAccount = $state('');
 	let invitationsBusy = $state(false);
+	let activatingInvitation = $state<string | null>(null);
 	let invitationsError = $state('');
 	let invitationRole = $state<SyncInvitationRole>('editor');
 	let newInvitation = $state<SyncInvitationLink | null>(null);
@@ -281,6 +282,13 @@
 		)
 			return;
 		invitationsBusy = true;
+		if (
+			invitation.devices.every(
+				(candidate) =>
+					candidate.approved || candidate.deviceId === device.deviceId,
+			)
+		)
+			activatingInvitation = invitation.id;
 		invitationsError = '';
 		try {
 			const client = getNouraClient().sync;
@@ -306,7 +314,10 @@
 			)
 				invitationsError = message(cause);
 		} finally {
-			if (!disposed) invitationsBusy = false;
+			if (!disposed) {
+				invitationsBusy = false;
+				activatingInvitation = null;
+			}
 		}
 	}
 	function invitationReady(invitation: SyncInvitation) {
@@ -316,7 +327,7 @@
 			invitation.devices.every((device) => device.approved)
 		);
 	}
-	async function finalizeInvitation(invitation: SyncInvitation) {
+	async function retryInvitationActivation(invitation: SyncInvitation) {
 		const root = workspace.state?.rootPath;
 		const ownId = account?.deviceId;
 		if (
@@ -328,6 +339,7 @@
 		)
 			return;
 		invitationsBusy = true;
+		activatingInvitation = invitation.id;
 		invitationsError = '';
 		try {
 			const client = getNouraClient().sync;
@@ -349,7 +361,10 @@
 			)
 				invitationsError = message(cause);
 		} finally {
-			if (!disposed) invitationsBusy = false;
+			if (!disposed) {
+				invitationsBusy = false;
+				activatingInvitation = null;
+			}
 		}
 	}
 	async function revokeInvitation(invitation: SyncInvitation) {
@@ -403,6 +418,17 @@
 		idle: 'Waiting for changes',
 		syncing: 'Syncing',
 		error: 'Needs attention',
+	};
+	const transitionPhaseLabels: Record<
+		NonNullable<WorkspaceSyncStatus['transition']>['phase'],
+		string
+	> = {
+		prepare: 'Preparing local recovery records',
+		stage: 'Staging signed access change',
+		resolve_commit: 'Verifying relay transaction',
+		install: 'Installing fresh checkpoints',
+		rebase: 'Rebasing retained local drafts',
+		complete: 'Access preparation complete',
 	};
 	async function refreshWorkspaceStatus() {
 		const root = workspace.state?.rootPath;
@@ -488,6 +514,22 @@
 					'The device details changed. Refresh the list and compare the full fingerprint again.',
 				sync_key_rotation_required:
 					'Access cannot change until the workspace keys are rotated.',
+				sync_access_transition_unavailable:
+					'Encrypted collaboration activation is not enabled on this sync server yet. No workspace keys were shared.',
+				sync_incompatible_collaboration_capability:
+					'This app or sync server is not compatible with the workspace collaboration capability.',
+				sync_activation_stale:
+					'The workspace changed while preparing a collaborative object. Sync will rebuild it against the current access policy.',
+				sync_activation_commit_uncertain:
+					'The server may have committed a collaborative object. Keep sync enabled so this device can verify and finish installing it.',
+				sync_activation_blob_incomplete:
+					'The encrypted attachment is not fully staged yet. Sync will resume the upload without discarding local bytes.',
+				sync_collaboration_capability_changed:
+					'The signed workspace collaboration capability changed. Verify the workspace owner before continuing.',
+				collaboration_attachment_transition_required:
+					'This workspace contains a file that must remain in attachment mode. Access was not changed.',
+				collaboration_needs_review:
+					'A local draft or external file change needs review before access preparation can finish.',
 				sync_rate_limited:
 					'The server request limit was reached. Wait a minute, then try again.',
 			};
@@ -884,6 +926,43 @@
 						<p class="text-xs text-muted-foreground">
 							{syncStatus.pending} pending · {syncStatus.conflicts} conflicts
 						</p>
+						{#if syncStatus.transition}
+							<div class="flex flex-col gap-2" aria-live="polite">
+								<p class="text-xs font-medium">
+									{transitionPhaseLabels[syncStatus.transition.phase]}
+								</p>
+								<ul class="flex flex-col gap-1">
+									{#each syncStatus.transition.objects as object (object.objectId)}
+										<li class="flex items-center justify-between gap-2 text-xs">
+											<span class="truncate font-mono"
+												>{object.path ?? object.objectId}</span
+											>
+											<Badge variant="secondary"
+												>{object.installed ? 'Installed' : 'Pending'}</Badge
+											>
+										</li>
+									{/each}
+								</ul>
+							</div>
+						{/if}
+						{#if syncStatus.activation}
+							<div class="flex flex-col gap-2" aria-live="polite">
+								<p class="text-xs font-medium">
+									Preparing collaborative object
+								</p>
+								<div class="flex items-center justify-between gap-2 text-xs">
+									<span class="truncate font-mono"
+										>{syncStatus.activation.path ??
+											syncStatus.activation.objectId}</span
+									>
+									<Badge variant="secondary"
+										>{syncStatus.activation.installed
+											? 'Installed'
+											: 'Pending'}</Badge
+									>
+								</div>
+							</div>
+						{/if}
 						{#if syncStatus.conflicts > 0}<p
 								class="text-xs text-muted-foreground"
 							>
@@ -1045,8 +1124,8 @@
 					</h3>
 					<p class="text-xs text-muted-foreground">
 						Workspace owners can invite another account. After acceptance,
-						compare the device fingerprints with the recipient before granting
-						access.
+						compare every device fingerprint. Approving the final fingerprint
+						automatically rotates keys and prepares fresh encrypted checkpoints.
 					</p>
 					<Field.Field>
 						<Field.FieldLabel for="invitation-role"
@@ -1164,14 +1243,23 @@
 												The recipient must connect a desktop device before you
 												can grant access.
 											</p>{/if}
-										<Button
-											disabled={invitationsBusy ||
-												busy ||
-												importingRecovery ||
-												!invitationReady(invitation)}
-											onclick={() => finalizeInvitation(invitation)}
-											>Grant workspace access</Button
-										>
+										{#if invitationReady(invitation)}
+											<Badge variant="secondary">
+												{activatingInvitation === invitation.id
+													? 'Preparing encrypted access…'
+													: 'Fingerprints approved'}
+											</Badge>
+											{#if activatingInvitation !== invitation.id}
+												<Button
+													variant="outline"
+													disabled={invitationsBusy ||
+														busy ||
+														importingRecovery}
+													onclick={() => retryInvitationActivation(invitation)}
+													>Retry access preparation</Button
+												>
+											{/if}
+										{/if}
 									{/if}
 									{#if invitation.status === 'pending' || invitation.status === 'accepted'}<Button
 											variant="outline"

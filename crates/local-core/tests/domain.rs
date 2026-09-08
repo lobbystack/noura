@@ -1794,3 +1794,59 @@ fn manifest_read_reflects_external_edits_to_workspace_yaml() {
         .unwrap();
     assert_eq!(engine.read_manifest().unwrap().name, "Renamed");
 }
+
+#[test]
+fn pdf_links_resolve_page_fragments_and_encoded_names_without_managing_files() {
+    let (root, _data, engine) = engine();
+    std::fs::create_dir(root.path().join("course")).unwrap();
+    std::fs::write(
+        root.path().join("course/lecture notes.pdf"),
+        b"%PDF-1.7\nfixture",
+    )
+    .unwrap();
+    for (target, expected) in [
+        ("lecture%20notes.pdf#page=7", Some(7)),
+        ("lecture notes.pdf#page=0", None),
+        ("lecture notes.pdf#page=oops|Read", None),
+    ] {
+        let resolved = engine
+            .resolve_markdown_link("course/note.md", target)
+            .unwrap();
+        match resolved {
+            MarkdownLinkTarget::Pdf {
+                relative_path,
+                page,
+            } => {
+                assert_eq!(relative_path, "course/lecture notes.pdf");
+                assert_eq!(page, expected);
+            }
+            _ => panic!("expected PDF target"),
+        }
+    }
+    assert!(
+        engine
+            .resolve_markdown_link("course/note.md", "../../outside.pdf")
+            .is_err()
+    );
+    assert!(
+        engine
+            .resolve_markdown_link("course/note.md", "%2e%2e/%2e%2e/outside.pdf")
+            .is_err()
+    );
+    let first = engine.read_pdf("course/lecture notes.pdf").unwrap();
+    engine.rebuild_index().unwrap();
+    assert_eq!(
+        first.bytes,
+        engine.read_pdf("course/lecture notes.pdf").unwrap().bytes
+    );
+    std::fs::rename(
+        root.path().join("course/lecture notes.pdf"),
+        root.path().join("course/moved.pdf"),
+    )
+    .unwrap();
+    assert!(engine.read_pdf("course/lecture notes.pdf").is_err());
+    assert_eq!(
+        first.bytes,
+        engine.read_pdf("course/moved.pdf").unwrap().bytes
+    );
+}

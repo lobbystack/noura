@@ -130,7 +130,7 @@ export async function acceptInvitation(
 ) {
 	if (!/^[A-Za-z0-9_-]{43}$/.test(token))
 		throw new SyncError('sync.invitation_unavailable', 404);
-	return store.db.begin(async (tx) => {
+	return store.transaction(async (tx) => {
 		const [row] = await tx`SELECT * FROM noura_invitations
 		 WHERE token_hash=${digest(token)} FOR UPDATE`;
 		if (

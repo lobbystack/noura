@@ -165,3 +165,17 @@ describe('creation path helpers', () => {
 		);
 	});
 });
+
+test('PDF files open in the PDF route even before indexing', () => {
+	expect(
+		treeTargetFor({
+			name: 'Lecture.PDF',
+			relativePath: 'course/Lecture.PDF',
+			kind: 'file',
+			parseStatus: null,
+			objectId: null,
+			objectType: null,
+			children: [],
+		}),
+	).toEqual({ route: '/pdf', query: { path: 'course/Lecture.PDF' } });
+});

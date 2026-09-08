@@ -20,6 +20,8 @@ test('two views share updates, local undo excludes native edits, presence render
 			sessionId: 's',
 			revision: 'r',
 			readOnly: false,
+			role: 'writer',
+			status: 'Synced',
 			update: encodeCollaborationUpdate(Y.encodeStateAsUpdate(doc)),
 		},
 		{
@@ -69,5 +71,53 @@ test('two views share updates, local undo excludes native edits, presence render
 	first.destroy();
 	second.destroy();
 	await session.close();
+	parent.remove();
+});
+
+test('PDF preview hooks preserve collaborative text and shared undo', async () => {
+	if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+	const { createPdfPreviewExtensions } = await import('./factory');
+	const source = 'Introduction\n\n[Lecture](lecture.pdf#page=7)\n';
+	const doc = new Y.Doc();
+	doc.getText('content').insert(0, source);
+	const session = new CollaborationSession(
+		{
+			objectId: 'pdf-note',
+			generation: '1',
+			sessionId: 'pdf-session',
+			revision: 'r',
+			readOnly: false,
+			role: 'writer',
+			status: 'Synced',
+			update: encodeCollaborationUpdate(Y.encodeStateAsUpdate(doc)),
+		},
+		{
+			subscribe: () => () => {},
+			submit: async () => ({ revision: 'r2' }),
+		},
+	);
+	const parent = document.createElement('div');
+	document.body.append(parent);
+	const view = createCollaborativeView(
+		parent,
+		session,
+		'markdown',
+		createPdfPreviewExtensions({
+			resolveLink: async () => ({
+				kind: 'pdf',
+				relativePath: 'lecture.pdf',
+				page: 7,
+			}),
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	expect(parent.querySelector('.cm-pdf-preview')).not.toBeNull();
+	expect(session.text.toString()).toBe(source);
+	view.dispatch({ changes: { from: 0, insert: 'A' } });
+	session.undoManager.undo();
+	expect(view.state.doc.toString()).toBe(source);
+	view.destroy();
+	await session.close();
+	doc.destroy();
 	parent.remove();
 });

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { markdownAssets } from '$lib/pdf/markdown';
 	import { browser } from '$app/environment';
 	import { fromAction } from 'svelte/attachments';
 	import type {
@@ -6,7 +7,6 @@
 		LiveMarkdownEditor,
 		MarkdownFormat,
 	} from '@noura/editor/types';
-	import { getNouraClient } from '$lib/state.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
@@ -84,37 +84,7 @@
 					ytext: document.ytext,
 					collaborative: !readOnly,
 					readOnly,
-					resolveImage: sourceRelativePath
-						? (target) =>
-								getNouraClient()
-									.files.readLocalAsset({ sourceRelativePath, target })
-									.then((asset) => asset.dataUrl)
-									.catch(() => null)
-						: undefined,
-					resolveLink: sourceRelativePath
-						? async (target) => {
-								const resolved =
-									await getNouraClient().files.resolveMarkdownLink({
-										sourceRelativePath,
-										target,
-									});
-								if (resolved.kind === 'managed') {
-									return {
-										kind: 'managed' as const,
-										label: resolved.object.title,
-										preview: resolved.object.body,
-									};
-								}
-								if (resolved.kind === 'markdown') {
-									return {
-										kind: 'markdown' as const,
-										label: target,
-										preview: resolved.document.body,
-									};
-								}
-								return resolved;
-							}
-						: undefined,
+					...markdownAssets(sourceRelativePath),
 					onChange: () => onedit?.(handle.doc()),
 					onSelectionChange: (next) => {
 						selection = next;

@@ -46,6 +46,33 @@ describe.skipIf(!url)('PostgreSQL encrypted operation service', () => {
 			await store.db`SELECT count FROM noura_rate_limits WHERE account_id=${limited.accountId}`;
 		expect(row!.count).toBe(1);
 	});
+	test('reserved transactions survive pool pressure and roll back atomically', async () => {
+		const prefix = `transaction_${crypto.randomUUID()}`;
+		const ids = Array.from({ length: 200 }, (_, index) => `${prefix}_${index}`);
+		await Promise.all(
+			ids.map((id) =>
+				store.transaction(async (tx) => {
+					await tx`INSERT INTO noura_rate_limits(account_id,window_start,count) VALUES(${id},0,1)`;
+					const [row] =
+						await tx`SELECT count FROM noura_rate_limits WHERE account_id=${id}`;
+					expect(row!.count).toBe(1);
+				}),
+			),
+		);
+		const [committed] =
+			await store.db`SELECT count(*)::int AS count FROM noura_rate_limits WHERE account_id=ANY(${ids})`;
+		expect(committed!.count).toBe(200);
+		const rolledBack = `${prefix}_rollback`;
+		await expect(
+			store.transaction(async (tx) => {
+				await tx`INSERT INTO noura_rate_limits(account_id,window_start,count) VALUES(${rolledBack},0,1)`;
+				throw new Error('intentional rollback');
+			}),
+		).rejects.toThrow('intentional rollback');
+		const [missing] =
+			await store.db`SELECT count(*)::int AS count FROM noura_rate_limits WHERE account_id=${rolledBack}`;
+		expect(missing!.count).toBe(0);
+	});
 	function request(path: string, body?: unknown, auth = token) {
 		return app.request(path, {
 			method: body === undefined ? 'GET' : 'POST',

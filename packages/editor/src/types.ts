@@ -34,10 +34,17 @@ export interface LiveMarkdownOptions {
 	readOnly?: boolean;
 	resolveImage?: (src: string) => string | null | Promise<string | null>;
 	resolveLink?: (target: string) => Promise<{
-		kind: 'managed' | 'markdown' | 'asset' | 'unresolved';
+		kind: 'managed' | 'markdown' | 'asset' | 'pdf' | 'unresolved';
+		relativePath?: string;
+		page?: number | null;
 		label?: string;
 		preview?: string;
 	}>;
+	openPdf?: (target: { relativePath: string; page?: number | null }) => void;
+	mountPdfEmbed?: (
+		container: HTMLElement,
+		target: { relativePath: string; page?: number | null },
+	) => () => void;
 	onChange?: (view: EditorView) => void;
 	onSelectionChange?: (selection: EditorSelectionState) => void;
 }

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS noura_members (
  role text NOT NULL CHECK(role IN ('owner','admin','editor','viewer')),
  PRIMARY KEY(workspace_id, account_id)
 );
+ALTER TABLE noura_members ADD COLUMN IF NOT EXISTS history_after bigint NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS noura_objects (
  workspace_id text REFERENCES noura_workspaces(id), id text NOT NULL,
  epoch bigint NOT NULL DEFAULT 1,
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS noura_grants (
  PRIMARY KEY(workspace_id, object_id, account_id),
  FOREIGN KEY(workspace_id, object_id) REFERENCES noura_objects(workspace_id,id)
 );
+ALTER TABLE noura_grants ADD COLUMN IF NOT EXISTS history_after bigint NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS noura_operations (
  workspace_id text NOT NULL, operation_id text NOT NULL, object_id text NOT NULL,
  device_id text NOT NULL REFERENCES noura_devices(id), sequence bigint NOT NULL,
@@ -77,6 +79,18 @@ CREATE TABLE IF NOT EXISTS noura_transitions (
  body jsonb NOT NULL, payload_bytes integer NOT NULL, committed boolean NOT NULL DEFAULT false,
  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(workspace_id,id)
 );
+CREATE TABLE IF NOT EXISTS noura_object_activations (
+ workspace_id text NOT NULL REFERENCES noura_workspaces(id), id text NOT NULL,
+ object_id text NOT NULL, device_id text NOT NULL REFERENCES noura_devices(id),
+ digest text NOT NULL, body jsonb NOT NULL, payload_bytes integer NOT NULL,
+ committed boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(workspace_id,id)
+);
+CREATE TABLE IF NOT EXISTS noura_workspace_capabilities (
+ workspace_id text PRIMARY KEY REFERENCES noura_workspaces(id),
+ device_id text NOT NULL REFERENCES noura_devices(id), capability jsonb NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS noura_checkpoints (
  workspace_id text NOT NULL, object_id text NOT NULL, epoch bigint NOT NULL,
  transition_id text NOT NULL, generation text NOT NULL, covered_sequence bigint NOT NULL,
@@ -84,6 +98,14 @@ CREATE TABLE IF NOT EXISTS noura_checkpoints (
  PRIMARY KEY(workspace_id,object_id,epoch),
  FOREIGN KEY(workspace_id,object_id) REFERENCES noura_objects(workspace_id,id),
  FOREIGN KEY(workspace_id,transition_id) REFERENCES noura_transitions(workspace_id,id)
+);
+CREATE TABLE IF NOT EXISTS noura_activation_checkpoints (
+ workspace_id text NOT NULL, object_id text NOT NULL, activation_id text NOT NULL,
+ epoch bigint NOT NULL, generation text NOT NULL, covered_sequence bigint NOT NULL,
+ checkpoint jsonb NOT NULL,
+ PRIMARY KEY(workspace_id,object_id,epoch),
+ FOREIGN KEY(workspace_id,object_id) REFERENCES noura_objects(workspace_id,id),
+ FOREIGN KEY(workspace_id,activation_id) REFERENCES noura_object_activations(workspace_id,id)
 );
 CREATE TABLE IF NOT EXISTS noura_public_links (
  id text PRIMARY KEY, token_hash text NOT NULL UNIQUE,
@@ -113,8 +135,13 @@ CREATE TABLE IF NOT EXISTS noura_blobs (
  upload_id text NOT NULL UNIQUE, device_id text NOT NULL REFERENCES noura_devices(id),
  tus_info jsonb, complete boolean NOT NULL DEFAULT false, failed boolean NOT NULL DEFAULT false,
  storage text NOT NULL DEFAULT 'local' CHECK(storage IN ('local','s3')),
+ transition_id text, activation_id text,
  created_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(workspace_id,object_id,id),
- FOREIGN KEY(workspace_id,object_id) REFERENCES noura_objects(workspace_id,id)
+ CHECK(transition_id IS NULL OR activation_id IS NULL)
 );
+ALTER TABLE noura_blobs ADD COLUMN IF NOT EXISTS transition_id text;
+ALTER TABLE noura_blobs ADD COLUMN IF NOT EXISTS activation_id text;
+ALTER TABLE noura_blobs DROP CONSTRAINT IF EXISTS noura_blobs_workspace_id_object_id_fkey;
+ALTER TABLE noura_object_activations DROP CONSTRAINT IF EXISTS noura_object_activations_workspace_id_object_id_key;
 `;
