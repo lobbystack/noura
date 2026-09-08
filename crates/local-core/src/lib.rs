@@ -14,7 +14,7 @@ mod markdown;
 mod model;
 mod path;
 mod pdf;
-pub use pdf::PdfRead;
+pub use pdf::{PdfInfo, PdfRangeInput};
 pub mod sync;
 mod watcher;
 mod web_access;

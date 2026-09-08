@@ -479,17 +479,28 @@ describe('typed client', () => {
 test('PDF reads and external clicks use the public file service', async () => {
 	const data = {
 		relativePath: 'lecture.pdf',
-		revision: 'r1',
-		bytes: new Uint8Array([37, 80, 68, 70]),
+		workspaceId: 'w1',
+		version: 'v1',
+		length: 10,
 	};
-	const core = transport({ files_read_pdf: data });
+	const bytes = new Uint8Array([37, 80, 68, 70]);
+	const input = { ...data, offset: 0, length: 4 };
+	const core = transport({
+		files_inspect_pdf: data,
+		files_read_pdf_range: bytes,
+	});
 	const client = createNouraClient(core);
-	expect(await client.files.readPdf({ relativePath: 'lecture.pdf' })).toBe(
-		data,
-	);
+	expect(
+		await client.files.inspectPdf({ relativePath: data.relativePath }),
+	).toBe(data);
+	expect(await client.files.readPdfRange(input)).toBe(bytes);
 	await client.files.openPdfLink('https://example.com');
 	expect((core as CoreTransport & { calls: unknown[] }).calls).toEqual([
-		{ command: 'files_read_pdf', payload: { relativePath: 'lecture.pdf' } },
+		{
+			command: 'files_inspect_pdf',
+			payload: { relativePath: data.relativePath },
+		},
+		{ command: 'files_read_pdf_range', payload: { input } },
 		{ command: 'files_open_pdf_link', payload: { url: 'https://example.com' } },
 	]);
 });

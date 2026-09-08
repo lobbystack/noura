@@ -44,21 +44,35 @@
 		return untrack(() => {
 			const client = getNouraClient();
 			let disposed = false;
-			let revision: string | undefined;
+			let version: string | undefined;
 			let position = { ...initialPosition };
 			let controller: AbortController | undefined;
 			let refreshSequence = 0;
+			const fail = (cause: unknown) => {
+				controller?.abort();
+				handle = null;
+				version = undefined;
+				loading = false;
+				passwordSubmit = null;
+				error =
+					cause &&
+					typeof cause === 'object' &&
+					'message' in cause &&
+					typeof cause.message === 'string'
+						? cause.message
+						: 'The PDF could not be opened. It may have moved or been deleted.';
+			};
 			const refresh = async () => {
 				const sequence = ++refreshSequence;
 				try {
-					const data = await client.files.readPdf({ relativePath: path });
+					const data = await client.files.inspectPdf({ relativePath: path });
 					if (
 						disposed ||
 						sequence !== refreshSequence ||
 						workspace.state?.workspaceId !== workspaceId
 					)
 						return;
-					if (revision === data.revision) return;
+					if (version === data.version) return;
 					controller?.abort();
 					controller = new AbortController();
 					const signal = controller.signal;
@@ -70,6 +84,10 @@
 					const { mountPdf } = await import('$lib/pdf/runtime');
 					if (disposed || signal.aborted) return;
 					const mounted = await mountPdf(node, data, {
+						readRange: (input) => client.files.readPdfRange(input),
+						onfailure: (cause) => {
+							if (!disposed && !signal.aborted) fail(cause);
+						},
 						position,
 						signal,
 						onstatus: (next) => {
@@ -89,23 +107,12 @@
 						return;
 					}
 					handle = mounted;
-					revision = data.revision;
+					version = data.version;
 					loading = false;
 					passwordSubmit = null;
 				} catch (cause) {
 					if (disposed || sequence !== refreshSequence) return;
-					controller?.abort();
-					handle = null;
-					revision = undefined;
-					loading = false;
-					passwordSubmit = null;
-					error =
-						cause &&
-						typeof cause === 'object' &&
-						'message' in cause &&
-						typeof cause.message === 'string'
-							? cause.message
-							: 'The PDF could not be opened. It may have moved or been deleted.';
+					fail(cause);
 				}
 			};
 			const projection = new LiveProjection({
@@ -116,7 +123,7 @@
 				visibilitySource: document,
 			});
 			retry = () => {
-				revision = undefined;
+				version = undefined;
 				void refresh();
 			};
 			void projection.start().catch(() => {

@@ -862,27 +862,22 @@ const MIME_BY_EXTENSION: &[(&str, &str)] = &[
 const MAX_ASSET_BYTES: i64 = 20 * 1024 * 1024;
 
 #[tauri::command]
-fn files_read_pdf(
+fn files_inspect_pdf(
     state: State<AppState>,
     relative_path: String,
+) -> Result<local_core::PdfInfo, CoreError> {
+    with_engine(&state, "files_inspect_pdf", |engine| {
+        engine.inspect_pdf(&relative_path)
+    })
+}
+
+#[tauri::command]
+fn files_read_pdf_range(
+    state: State<AppState>,
+    input: local_core::PdfRangeInput,
 ) -> Result<tauri::ipc::Response, CoreError> {
-    with_engine(&state, "files_read_pdf", |engine| {
-        let pdf = engine.read_pdf(&relative_path)?;
-        let header = serde_json::to_vec(&serde_json::json!({
-            "relativePath": pdf.relative_path, "revision": pdf.revision,
-        }))
-        .map_err(|_| {
-            CoreError::validation(
-                "pdf_response_invalid",
-                "Could not prepare PDF preview",
-                "files_read_pdf",
-            )
-        })?;
-        let mut output = Vec::with_capacity(4 + header.len() + pdf.bytes.len());
-        output.extend_from_slice(&(header.len() as u32).to_le_bytes());
-        output.extend_from_slice(&header);
-        output.extend_from_slice(&pdf.bytes);
-        Ok(tauri::ipc::Response::new(output))
+    with_engine(&state, "files_read_pdf_range", |engine| {
+        engine.read_pdf_range(&input).map(tauri::ipc::Response::new)
     })
 }
 
@@ -1359,7 +1354,8 @@ pub fn run() {
             raw_markdown_reconcile,
             raw_markdown_resolve,
             files_read_local_asset,
-            files_read_pdf,
+            files_inspect_pdf,
+            files_read_pdf_range,
             files_open_pdf_link,
             files_resolve_markdown_link,
             objects_move,

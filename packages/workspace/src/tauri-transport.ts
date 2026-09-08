@@ -10,12 +10,11 @@ export function createTauriTransport(): CoreTransport {
 			command: string,
 			payload: Record<string, unknown> = {},
 		) => {
-			if (command === 'files_read_pdf') {
+			if (command === 'files_read_pdf_range') {
 				const buffer = await invoke<ArrayBuffer | number[]>(command, payload);
 				return decodePdfResponse(
-					buffer instanceof ArrayBuffer
-						? buffer
-						: new Uint8Array(buffer).buffer,
+					buffer,
+					(payload.input as { length: number }).length,
 				) as T;
 			}
 			return invoke<T>(command, payload);

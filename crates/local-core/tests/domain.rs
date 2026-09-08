@@ -1833,20 +1833,40 @@ fn pdf_links_resolve_page_fragments_and_encoded_names_without_managing_files() {
             .resolve_markdown_link("course/note.md", "%2e%2e/%2e%2e/outside.pdf")
             .is_err()
     );
-    let first = engine.read_pdf("course/lecture notes.pdf").unwrap();
+    let read = |engine: &WorkspaceEngine, info: &local_core::PdfInfo| {
+        engine
+            .read_pdf_range(&local_core::PdfRangeInput {
+                relative_path: info.relative_path.clone(),
+                workspace_id: info.workspace_id.clone(),
+                version: info.version.clone(),
+                offset: 0,
+                length: info.length,
+            })
+            .unwrap()
+    };
+    let first = engine.inspect_pdf("course/lecture notes.pdf").unwrap();
+    let bytes = read(&engine, &first);
     engine.rebuild_index().unwrap();
     assert_eq!(
-        first.bytes,
-        engine.read_pdf("course/lecture notes.pdf").unwrap().bytes
+        first.version,
+        engine
+            .inspect_pdf("course/lecture notes.pdf")
+            .unwrap()
+            .version
     );
+    assert_eq!(bytes, read(&engine, &first));
     std::fs::rename(
         root.path().join("course/lecture notes.pdf"),
         root.path().join("course/moved.pdf"),
     )
     .unwrap();
-    assert!(engine.read_pdf("course/lecture notes.pdf").is_err());
+    assert!(engine.inspect_pdf("course/lecture notes.pdf").is_err());
     assert_eq!(
-        first.bytes,
-        engine.read_pdf("course/moved.pdf").unwrap().bytes
+        bytes,
+        read(&engine, &engine.inspect_pdf("course/moved.pdf").unwrap())
+    );
+    assert_eq!(
+        first.length,
+        engine.inspect_pdf("course/moved.pdf").unwrap().length
     );
 }

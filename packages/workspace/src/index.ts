@@ -8,6 +8,8 @@ import {
 	type AiToolDefinition,
 } from '@noura/ai';
 import type {
+	PdfInfo,
+	PdfRangeInput,
 	CollaborationOpenInput,
 	CollaborationPresenceInput,
 	CollaborationSession,
@@ -253,14 +255,9 @@ export interface KanbanService {
 	}): Promise<MutationResult<Task>>;
 }
 
-export interface PdfRead {
-	relativePath: string;
-	revision: string;
-	bytes: Uint8Array;
-}
-
 export interface FileService {
-	readPdf(input: { relativePath: string }): Promise<PdfRead>;
+	inspectPdf(input: { relativePath: string }): Promise<PdfInfo>;
+	readPdfRange(input: PdfRangeInput): Promise<Uint8Array>;
 	openPdfLink(url: string): Promise<void>;
 	list(): Promise<WorkspaceEntry[]>;
 	listNonManagedMarkdown(): Promise<UnmanagedFile[]>;
@@ -605,7 +602,9 @@ export function createNouraClient(
 			removeEmpty: (input) => transport.request('folders_remove', { input }),
 		},
 		files: {
-			readPdf: (input) => transport.request('files_read_pdf', input),
+			inspectPdf: (input) => transport.request('files_inspect_pdf', input),
+			readPdfRange: (input) =>
+				transport.request('files_read_pdf_range', { input }),
 			openPdfLink: (url) => transport.request('files_open_pdf_link', { url }),
 			list: () => transport.request('files_list'),
 			listNonManagedMarkdown: () =>

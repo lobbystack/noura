@@ -265,3 +265,6 @@ export type { CollaborationOpenInput } from './generated/CollaborationOpenInput'
 export type { CollaborationSession } from './generated/CollaborationSession';
 export type { CollaborationSubmitInput } from './generated/CollaborationSubmitInput';
 export type { CollaborationReceipt } from './generated/CollaborationReceipt';
+
+export type { PdfInfo } from './generated/PdfInfo';
+export type { PdfRangeInput } from './generated/PdfRangeInput';

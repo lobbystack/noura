@@ -1330,8 +1330,12 @@ impl WorkspaceEngine {
 
     /// Read one non-Markdown file (image or other asset) for inline preview.
     /// Workspace containment is validated; total size is capped by the caller.
-    pub fn read_pdf(&self, relative_path: &str) -> Result<crate::PdfRead> {
-        crate::pdf::read(&self.root, relative_path)
+    pub fn inspect_pdf(&self, relative_path: &str) -> Result<crate::PdfInfo> {
+        crate::pdf::inspect(&self.root, &self.manifest().id, relative_path)
+    }
+
+    pub fn read_pdf_range(&self, input: &crate::PdfRangeInput) -> Result<Vec<u8>> {
+        crate::pdf::read_range(&self.root, &self.manifest().id, input)
     }
 
     pub fn read_local_asset(

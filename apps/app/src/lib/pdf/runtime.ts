@@ -2,7 +2,8 @@ import * as pdfjs from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { base } from '$app/paths';
 import { normalizePdfPage, type PdfPosition } from './navigation';
-import type { PdfRead } from '@noura/workspace';
+import type { PdfInfo, PdfRangeInput } from '@noura/workspace';
+import { PdfRangeReader, PDF_CHUNK_SIZE } from './range-reader';
 import type {
 	PDFViewer,
 	EventBus,
@@ -26,9 +27,11 @@ export interface PdfHandle {
 
 export async function mountPdf(
 	host: HTMLDivElement,
-	data: PdfRead,
+	data: PdfInfo,
 	options: {
 		position: PdfPosition;
+		readRange: (input: PdfRangeInput) => Promise<Uint8Array>;
+		onfailure: (error: unknown) => void;
 		signal: AbortSignal;
 		onstatus: (status: PdfStatus) => void;
 		onpassword: (submit: (password: string) => void, wrong: boolean) => void;
@@ -89,8 +92,6 @@ export async function mountPdf(
 	links.setViewer(viewer);
 	let matches = '';
 	let destroyed = false;
-	let documentReady = false;
-	const pageRequests = new Set<Promise<pdfjs.PDFPageProxy>>();
 	const publish = () => {
 		if (!destroyed)
 			options.onstatus({
@@ -119,8 +120,42 @@ export async function mountPdf(
 			publish();
 		}
 	});
+	let rejectRange: (error: unknown) => void = () => {};
+	const rangeFailure = new Promise<never>((_, reject) => {
+		rejectRange = reject;
+	});
+	// Also observe failures after the initial document promise has resolved.
+	void rangeFailure.catch(() => {});
+	class NativeRangeTransport extends pdfjs.PDFDataRangeTransport {
+		reader = new PdfRangeReader(
+			data,
+			options.readRange,
+			(begin, bytes) => this.onDataRange(begin, bytes),
+			(error) => {
+				rejectRange(error);
+				cleanup();
+				options.onfailure(error);
+			},
+		);
+		constructor() {
+			super(data.length, null, true);
+		}
+		override requestDataRange(begin: number, end: number) {
+			this.reader.request(begin, end);
+		}
+		override abort() {
+			this.reader.abort();
+		}
+	}
+	const range = new NativeRangeTransport();
+	// Owning the worker lets cancellation release it even when the abstract
+	// range transport has an outstanding read (it has no error callback).
+	const worker = new pdfjs.PDFWorker();
 	const task = pdfjs.getDocument({
-		data: data.bytes,
+		worker,
+		range,
+		rangeChunkSize: PDF_CHUNK_SIZE,
+		disableStream: true,
 		cMapUrl: `${assets}cmaps/`,
 		cMapPacked: true,
 		standardFontDataUrl: `${assets}standard_fonts/`,
@@ -148,38 +183,32 @@ export async function mountPdf(
 		destroyed = true;
 		observer.disconnect();
 		if (viewer.renderingQueue) viewer.renderingQueue.renderView = () => false;
-		const release = () => {
-			// PDF.js accepts null to clear the viewer; its published types omit it.
-			(viewer.setDocument as (document: pdfjs.PDFDocumentProxy | null) => void)(
-				null,
-			);
-			links.setDocument(null);
-			(find.setDocument as (document: pdfjs.PDFDocumentProxy | null) => void)(
-				null,
-			);
-			return task.destroy();
-		};
-		// Settle issued page requests before removing their page views. Eager
-		// page initialization is disabled so hidden documents start no new work.
-		if (documentReady) void Promise.allSettled([...pageRequests]).then(release);
-		else void release();
+		rejectRange(new DOMException('Aborted', 'AbortError'));
+		range.abort();
+		void task.destroy().catch(() => {});
+		worker.destroy();
+		// Clearing the viewer removes its listeners, page views and canvases.
+		// PDF.js accepts null here; its published types omit it.
+		(viewer.setDocument as (document: pdfjs.PDFDocumentProxy | null) => void)(
+			null,
+		);
+		links.setDocument(null);
+		(find.setDocument as (document: pdfjs.PDFDocumentProxy | null) => void)(
+			null,
+		);
 		container.remove();
 		options.signal.removeEventListener('abort', cleanup);
 	};
 	options.signal.addEventListener('abort', cleanup, { once: true });
 	try {
-		const doc = await task.promise;
-		documentReady = true;
+		const doc = await Promise.race([task.promise, rangeFailure]);
 		const getPage = doc.getPage.bind(doc);
-		doc.getPage = (number) => {
-			const pending = getPage(number);
-			pageRequests.add(pending);
-			void pending.then(
-				() => pageRequests.delete(pending),
-				() => pageRequests.delete(pending),
-			);
-			return pending;
-		};
+		doc.getPage = (number) =>
+			getPage(number).then((page) => {
+				// A queued success must not update page views after teardown.
+				if (destroyed) throw new DOMException('Aborted', 'AbortError');
+				return page;
+			});
 		if (destroyed) throw new DOMException('Aborted', 'AbortError');
 		const initialized = new Promise<void>((resolve, reject) => {
 			const abort = () => reject(new DOMException('Aborted', 'AbortError'));
@@ -195,7 +224,7 @@ export async function mountPdf(
 		});
 		links.setDocument(doc);
 		viewer.setDocument(doc);
-		await initialized;
+		await Promise.race([initialized, rangeFailure]);
 		if (destroyed) throw new DOMException('Aborted', 'AbortError');
 		viewer.currentScaleValue = options.position.scale;
 		viewer.scrollPageIntoView({
