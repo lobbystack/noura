@@ -193,7 +193,7 @@
 								<div class="flex items-center gap-2">
 									<span class="truncate font-medium">{result.title}</span>
 									{#if result.objectType}
-										<Badge variant="outline" class="text-[10px] capitalize"
+										<Badge variant="outline" class="text-xs capitalize"
 											>{result.objectType}</Badge
 										>
 									{/if}

@@ -205,7 +205,7 @@ pub fn validate_file_change(change: &FileChange) -> Result<()> {
                     .unwrap_or_default()
                     .to_ascii_lowercase()
                     .as_str(),
-                ".noura" | ".git" | "node_modules" | "target" | "workspace.yaml"
+                ".noura" | ".git" | "node_modules" | "target"
             )
         {
             return Err(invalid("sync_unsafe_path"));

@@ -75,7 +75,7 @@
 		<div
 			class="sticky top-10 z-10 grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))] border-b border-border/60 bg-background"
 		>
-			<div class="px-2 py-2 text-right text-[11px] text-muted-foreground">
+			<div class="px-2 py-2 text-right text-xs text-muted-foreground">
 				all-day
 			</div>
 			{#each days as day (isoDay(day.date))}
@@ -99,7 +99,7 @@
 			<div class="relative" style:height={`${24 * HOUR_HEIGHT}px`}>
 				{#each HOURS as hour (hour)}
 					<span
-						class="absolute right-2 text-[11px] tabular-nums text-muted-foreground"
+						class="absolute right-2 text-xs tabular-nums text-muted-foreground"
 						style:top={`${hour * HOUR_HEIGHT + 4}px`}
 					>
 						{hourLabel(hour)}
@@ -129,7 +129,7 @@
 							<span class="w-full truncate text-xs font-medium">
 								{segment.entry.title}
 							</span>
-							<span class="w-full truncate text-[11px] font-normal opacity-70">
+							<span class="w-full truncate text-xs font-normal opacity-70">
 								{timeRange(segment)}
 							</span>
 						</Button>

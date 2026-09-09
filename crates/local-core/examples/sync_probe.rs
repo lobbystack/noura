@@ -2,7 +2,7 @@
 use std::io::Read;
 
 use local_core::{
-    WorkspaceEngine,
+    WORKSPACE_MANIFEST_PATH, WorkspaceEngine,
     sync::{HttpSyncTransport, ObjectKey, SigningIdentity, SyncSecrets},
 };
 use serde::Deserialize;
@@ -55,10 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut peers = Vec::new();
     for n in [2, 3] {
         let path = dir.path().join(format!("peer{n}"));
-        std::fs::create_dir_all(&path)?;
+        std::fs::create_dir_all(path.join(".noura"))?;
         std::fs::copy(
-            first.root().join("workspace.yaml"),
-            path.join("workspace.yaml"),
+            first.root().join(WORKSPACE_MANIFEST_PATH),
+            path.join(WORKSPACE_MANIFEST_PATH),
         )?;
         let peer = WorkspaceEngine::open_with_app_data(&path, dir.path().join(format!("app{n}")))?;
         let pass = transport.synchronize(&peer, &secrets).await?;

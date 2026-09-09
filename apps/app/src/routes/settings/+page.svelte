@@ -283,7 +283,7 @@
 		<section>
 			<h2 class="text-sm font-medium">Plugins</h2>
 			<p class="mt-1 text-xs text-muted-foreground">
-				Every change rewrites workspace.yaml in your folder
+				Every change rewrites .noura/workspace.yaml
 			</p>
 			<Separator class="my-4" />
 			{#if workspace.isIdle}
@@ -316,8 +316,7 @@
 								</div>
 								<div class="mt-1 flex flex-wrap gap-1">
 									{#each active?.capabilities ?? [] as capability (capability)}
-										<Badge variant="outline" class="text-[10px]"
-											>{capability}</Badge
+										<Badge variant="outline" class="text-xs">{capability}</Badge
 										>
 									{/each}
 								</div>

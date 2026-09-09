@@ -27,6 +27,14 @@
 		},
 		{
 			"input": {
+				"version": 1,
+				"path": "workspace.yaml",
+				"content": ""
+			},
+			"canonical": "{\"version\":1,\"path\":\"workspace.yaml\",\"previousPath\":null,\"baseRevision\":null,\"content\":\"\"}"
+		},
+		{
+			"input": {
 				"version": 2,
 				"path": "resolved.md",
 				"previousPath": null,
@@ -153,10 +161,6 @@
 		},
 		{
 			"version": 1,
-			"path": "WORKSPACE.YAML"
-		},
-		{
-			"version": 1,
 			"path": "Node_Modules/package/index.js"
 		},
 		{
@@ -168,10 +172,6 @@
 			"path": "safe.md",
 			"previousPath": ".NOURA/private.md",
 			"content": ""
-		},
-		{
-			"version": 1,
-			"path": "workspace.yaml"
 		},
 		{
 			"version": 1,

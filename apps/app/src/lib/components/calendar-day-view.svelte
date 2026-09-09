@@ -104,14 +104,14 @@
 <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_20rem]">
 	<section class="flex min-w-0 flex-col">
 		<div class="shrink-0 border-b border-border/60 px-5 py-3">
-			<h2 class="text-xl font-semibold tracking-tight">{heading}</h2>
+			<h2 class="text-base font-semibold tracking-tight">{heading}</h2>
 			<p class="text-sm text-muted-foreground">{weekday}</p>
 		</div>
 
 		<div
 			class="grid shrink-0 grid-cols-[4rem_minmax(0,1fr)] border-b border-border/60"
 		>
-			<div class="px-2 py-2 text-right text-[11px] text-muted-foreground">
+			<div class="px-2 py-2 text-right text-xs text-muted-foreground">
 				all-day
 			</div>
 			<div class="flex min-h-12 flex-col gap-1 border-l border-border/60 p-1">
@@ -134,7 +134,7 @@
 				<div class="relative" style:height={`${24 * HOUR_HEIGHT}px`}>
 					{#each HOURS as hour (hour)}
 						<span
-							class="absolute right-2 text-[11px] tabular-nums text-muted-foreground"
+							class="absolute right-2 text-xs tabular-nums text-muted-foreground"
 							style:top={`${hour * HOUR_HEIGHT + 4}px`}
 						>
 							{hourLabel(hour)}
@@ -163,7 +163,7 @@
 							<span class="w-full truncate text-xs font-medium">
 								{segment.entry.title}
 							</span>
-							<span class="w-full truncate text-[11px] font-normal opacity-70">
+							<span class="w-full truncate text-xs font-normal opacity-70">
 								{timeRange(segment)}
 							</span>
 						</Button>

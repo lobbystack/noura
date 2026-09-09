@@ -64,5 +64,11 @@
 			</Avatar.Root>
 		{/each}
 	</div>
-	<div class="min-h-0 flex-1 overflow-auto" {@attach attachEditor}></div>
+	<div
+		class={[
+			'min-h-0 flex-1 overflow-auto',
+			language === 'markdown' && 'live-md',
+		]}
+		{@attach attachEditor}
+	></div>
 </div>

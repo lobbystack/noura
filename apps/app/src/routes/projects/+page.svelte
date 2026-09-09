@@ -365,7 +365,7 @@
 		{:else}
 			<header class="flex min-h-16 items-center gap-3 px-6">
 				<div class="min-w-0 flex-1">
-					<h1 class="truncate text-lg font-semibold">{selected.title}</h1>
+					<h1 class="truncate text-base font-semibold">{selected.title}</h1>
 					<p class="truncate text-xs text-muted-foreground">
 						{selected.relativePath}
 					</p>

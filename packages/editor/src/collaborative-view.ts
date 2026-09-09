@@ -26,7 +26,7 @@ class CursorLabel extends WidgetType {
 		const cursor = document.createElement('span');
 		cursor.style.borderLeft = `2px solid ${this.color}`;
 		cursor.style.color = this.color;
-		cursor.style.fontSize = '0.7em';
+		cursor.style.fontSize = 'var(--text-xs)';
 		cursor.textContent = this.name;
 		cursor.setAttribute('aria-label', `${this.name}'s cursor`);
 		return cursor;

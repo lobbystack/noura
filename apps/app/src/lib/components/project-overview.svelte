@@ -241,7 +241,7 @@
 			oninput={() => coordinator?.noteEdit(draft())}
 			onblur={() => void coordinator?.flush()}
 			aria-label="Project title"
-			class="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none"
+			class="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none"
 		/><Select.Root
 			type="single"
 			value={String(properties.status ?? 'planned')}

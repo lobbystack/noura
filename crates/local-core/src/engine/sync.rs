@@ -595,9 +595,6 @@ impl WorkspaceEngine {
             let portable = relative.replace('\\', "/");
             #[cfg(windows)]
             let relative = portable.as_str();
-            if relative.eq_ignore_ascii_case("workspace.yaml") {
-                continue;
-            }
             self.sync_file_path(relative)?;
             paths.push(relative.to_string());
         }
@@ -1586,7 +1583,7 @@ impl WorkspaceEngine {
             .canonicalize()
             .map_err(|error| CoreError::io(error, "sync", Some(relative)))?;
         // Resolve filesystem aliases (including Windows short names), not only textual prefixes.
-        for reserved in [".noura", ".git", "node_modules", "target", "workspace.yaml"] {
+        for reserved in [".noura", ".git", "node_modules", "target"] {
             let protected = self.root.join(reserved);
             if protected.exists() {
                 let protected = protected
@@ -1980,8 +1977,8 @@ mod tests {
             "sync_unsafe_path"
         );
         assert_eq!(
-            engine.sync_file_path("workspace.yaml").unwrap_err().code,
-            "sync_unsafe_path"
+            engine.sync_file_path("workspace.yaml").unwrap(),
+            engine.root.join("workspace.yaml")
         );
     }
 
@@ -2152,7 +2149,6 @@ mod tests {
             "C:/file",
             "a/../b",
             "a//b",
-            "workspace.yaml",
         ] {
             let op = seal(&engine, &signer, &key, &change(path, Some(b"bad"), None));
             assert!(

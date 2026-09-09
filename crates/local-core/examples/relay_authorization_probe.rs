@@ -9,7 +9,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use local_core::{Result, WorkspaceEngine, sync::*};
+use local_core::{Result, WORKSPACE_MANIFEST_PATH, WorkspaceEngine, sync::*};
 use zeroize::Zeroizing;
 
 #[derive(Default)]
@@ -130,10 +130,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         })?,
     )?;
     let target_path = directory.path().join("target");
-    std::fs::create_dir(&target_path)?;
+    std::fs::create_dir_all(target_path.join(".noura"))?;
     std::fs::copy(
-        source.root().join("workspace.yaml"),
-        target_path.join("workspace.yaml"),
+        source.root().join(WORKSPACE_MANIFEST_PATH),
+        target_path.join(WORKSPACE_MANIFEST_PATH),
     )?;
     let target = WorkspaceEngine::open_with_app_data(&target_path, directory.path().join("app2"))?;
     target.sync_accept_access_policy("0", None, &policy)?;

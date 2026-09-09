@@ -124,143 +124,149 @@
 	}
 </script>
 
-{#if showToolbar && !readOnly}
-	<div class="flex min-h-11 items-center gap-1 overflow-x-auto px-5 py-1.5">
-		<Select.Root
-			type="single"
-			value={blockStyle}
-			onValueChange={(next) => next && format(next as MarkdownFormat)}
-		>
-			<Select.Trigger size="sm" class="w-28" aria-label="Paragraph style"
-				>{blockStyleLabel}</Select.Trigger
+<div class="flex h-full min-h-0 flex-1 flex-col">
+	{#if showToolbar && !readOnly}
+		<div class="flex min-h-11 items-center gap-1 overflow-x-auto px-5 py-1.5">
+			<Select.Root
+				type="single"
+				value={blockStyle}
+				onValueChange={(next) => next && format(next as MarkdownFormat)}
 			>
-			<Select.Content>
-				<Select.Group>
-					{#each blockStyles as option (option.value)}
-						<Select.Item value={option.value} label={option.label}
-							>{option.label}</Select.Item
-						>
-					{/each}
-				</Select.Group>
-			</Select.Content>
-		</Select.Root>
-		<Separator orientation="vertical" class="mx-1 h-5" />
-		<ToggleGroup.Root type="multiple" size="sm" aria-label="Inline formatting">
-			<ToggleGroup.Item
-				value="bold"
-				onclick={() => format('bold')}
-				aria-label="Bold"><TextB /></ToggleGroup.Item
+				<Select.Trigger size="sm" class="w-28" aria-label="Paragraph style"
+					>{blockStyleLabel}</Select.Trigger
+				>
+				<Select.Content>
+					<Select.Group>
+						{#each blockStyles as option (option.value)}
+							<Select.Item value={option.value} label={option.label}
+								>{option.label}</Select.Item
+							>
+						{/each}
+					</Select.Group>
+				</Select.Content>
+			</Select.Root>
+			<Separator orientation="vertical" class="mx-1 h-5" />
+			<ToggleGroup.Root
+				type="multiple"
+				size="sm"
+				aria-label="Inline formatting"
 			>
-			<ToggleGroup.Item
-				value="italic"
-				onclick={() => format('italic')}
-				aria-label="Italic"><TextItalic /></ToggleGroup.Item
-			>
-			<ToggleGroup.Item
-				value="underline"
-				onclick={() => format('underline')}
-				aria-label="Underline"><TextUnderline /></ToggleGroup.Item
-			>
-			<ToggleGroup.Item
-				value="strike"
-				onclick={() => format('strikethrough')}
-				aria-label="Strikethrough"><TextStrikethrough /></ToggleGroup.Item
-			>
-		</ToggleGroup.Root>
-		<Separator orientation="vertical" class="mx-1 h-5" />
-		{#each [{ command: 'link', label: 'Link', icon: LinkSimple }, { command: 'blockQuote', label: 'Quote', icon: Quotes }, { command: 'code', label: 'Inline code', icon: Code }, { command: 'bulletList', label: 'Bulleted list', icon: ListBullets }, { command: 'numberedList', label: 'Numbered list', icon: ListNumbers }, { command: 'checkList', label: 'Checklist', icon: Checks }] as action (action.command)}
-			<Tooltip.Root>
-				<Tooltip.Trigger>
-					{#snippet child({ props })}
-						<Button
-							{...props}
-							variant="ghost"
-							size="icon-sm"
-							onclick={() => format(action.command as MarkdownFormat)}
-							aria-label={action.label}><action.icon /></Button
-						>
-					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content>{action.label}</Tooltip.Content>
-			</Tooltip.Root>
-		{/each}
-		<Separator orientation="vertical" class="mx-1 h-5" />
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			onclick={() => editor?.undo()}
-			aria-label="Undo"><ArrowCounterClockwise /></Button
-		>
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			onclick={() => editor?.redo()}
-			aria-label="Redo"><ArrowClockwise /></Button
-		>
-	</div>
-	<Separator />
-{/if}
-
-<div class="relative min-h-0 flex-1">
-	{#if mountFailed}
-		<textarea
-			class="live-md min-h-full w-full resize-none bg-transparent text-base outline-none"
-			aria-label={label}
-			readonly={readOnly}
-			{value}
-			oninput={(event) => onedit?.(event.currentTarget.value)}></textarea>
-	{:else}
-		<div
-			class="live-md min-h-full text-base"
-			role="textbox"
-			aria-label={label}
-			aria-readonly={readOnly}
-			{@attach fromAction(mountEditor, () => value)}
-		></div>
-	{/if}
-	{#if popoverOpen && selection?.anchor}
-		<Popover.Root open={popoverOpen}>
-			<Popover.Trigger
-				aria-label="Selection formatting"
-				class="fixed size-px opacity-0"
-				style="left: {selection.anchor.left}px; top: {selection.anchor.top}px"
-			/>
-			<Popover.Content
-				side="top"
-				class="w-auto flex-row gap-1 p-1"
-				onpointerdown={(event) => event.preventDefault()}
-			>
-				<Button
-					variant="ghost"
-					size="icon-sm"
+				<ToggleGroup.Item
+					value="bold"
 					onclick={() => format('bold')}
-					aria-label="Bold selection"><TextB /></Button
+					aria-label="Bold"><TextB /></ToggleGroup.Item
 				>
-				<Button
-					variant="ghost"
-					size="icon-sm"
+				<ToggleGroup.Item
+					value="italic"
 					onclick={() => format('italic')}
-					aria-label="Italic selection"><TextItalic /></Button
+					aria-label="Italic"><TextItalic /></ToggleGroup.Item
 				>
-				<Button
-					variant="ghost"
-					size="icon-sm"
+				<ToggleGroup.Item
+					value="underline"
 					onclick={() => format('underline')}
-					aria-label="Underline selection"><TextUnderline /></Button
+					aria-label="Underline"><TextUnderline /></ToggleGroup.Item
 				>
-				<Button
-					variant="ghost"
-					size="icon-sm"
+				<ToggleGroup.Item
+					value="strike"
 					onclick={() => format('strikethrough')}
-					aria-label="Strike selection"><TextStrikethrough /></Button
+					aria-label="Strikethrough"><TextStrikethrough /></ToggleGroup.Item
 				>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					onclick={() => format('link')}
-					aria-label="Link selection"><LinkSimple /></Button
-				>
-			</Popover.Content>
-		</Popover.Root>
+			</ToggleGroup.Root>
+			<Separator orientation="vertical" class="mx-1 h-5" />
+			{#each [{ command: 'link', label: 'Link', icon: LinkSimple }, { command: 'blockQuote', label: 'Quote', icon: Quotes }, { command: 'code', label: 'Inline code', icon: Code }, { command: 'bulletList', label: 'Bulleted list', icon: ListBullets }, { command: 'numberedList', label: 'Numbered list', icon: ListNumbers }, { command: 'checkList', label: 'Checklist', icon: Checks }] as action (action.command)}
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<Button
+								{...props}
+								variant="ghost"
+								size="icon-sm"
+								onclick={() => format(action.command as MarkdownFormat)}
+								aria-label={action.label}><action.icon /></Button
+							>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content>{action.label}</Tooltip.Content>
+				</Tooltip.Root>
+			{/each}
+			<Separator orientation="vertical" class="mx-1 h-5" />
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				onclick={() => editor?.undo()}
+				aria-label="Undo"><ArrowCounterClockwise /></Button
+			>
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				onclick={() => editor?.redo()}
+				aria-label="Redo"><ArrowClockwise /></Button
+			>
+		</div>
+		<Separator />
 	{/if}
+
+	<div class="relative min-h-0 flex-1 overflow-auto">
+		{#if mountFailed}
+			<textarea
+				class="live-md h-full w-full resize-none bg-transparent outline-none"
+				aria-label={label}
+				readonly={readOnly}
+				{value}
+				oninput={(event) => onedit?.(event.currentTarget.value)}></textarea>
+		{:else}
+			<div
+				class="live-md h-full"
+				role="textbox"
+				aria-label={label}
+				aria-readonly={readOnly}
+				{@attach fromAction(mountEditor, () => value)}
+			></div>
+		{/if}
+		{#if popoverOpen && selection?.anchor}
+			<Popover.Root open={popoverOpen}>
+				<Popover.Trigger
+					aria-label="Selection formatting"
+					class="fixed size-px opacity-0"
+					style="left: {selection.anchor.left}px; top: {selection.anchor.top}px"
+				/>
+				<Popover.Content
+					side="top"
+					class="w-auto flex-row gap-1 p-1"
+					onpointerdown={(event) => event.preventDefault()}
+				>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						onclick={() => format('bold')}
+						aria-label="Bold selection"><TextB /></Button
+					>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						onclick={() => format('italic')}
+						aria-label="Italic selection"><TextItalic /></Button
+					>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						onclick={() => format('underline')}
+						aria-label="Underline selection"><TextUnderline /></Button
+					>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						onclick={() => format('strikethrough')}
+						aria-label="Strike selection"><TextStrikethrough /></Button
+					>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						onclick={() => format('link')}
+						aria-label="Link selection"><LinkSimple /></Button
+					>
+				</Popover.Content>
+			</Popover.Root>
+		{/if}
+	</div>
 </div>

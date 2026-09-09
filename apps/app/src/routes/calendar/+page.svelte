@@ -297,7 +297,7 @@
 		<div class="grid grid-cols-7 border-b border-border/60 bg-muted/40">
 			{#each ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as day (day)}
 				<div
-					class="px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+					class="px-2 py-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground"
 				>
 					{day}
 				</div>
@@ -318,14 +318,14 @@
 					<div class="mt-1 flex flex-col gap-0.5">
 						{#each cell.entries.slice(0, 3) as entry (entry.sourceId + entry.property)}
 							<button
-								class="w-full truncate rounded px-1.5 py-0.5 text-left text-[11px] hover:bg-muted"
+								class="w-full truncate rounded px-1.5 py-0.5 text-left text-xs hover:bg-muted"
 								title={entry.title}
 								onclick={() => openEntry(entry)}
 							>
 								{#if entry.sourceType}
 									<Badge
 										variant="outline"
-										class="mr-1 px-0.5 text-[9px] leading-none"
+										class="mr-1 px-0.5 text-xs leading-none"
 									>
 										{entry.sourceType}
 									</Badge>
@@ -334,7 +334,7 @@
 							</button>
 						{/each}
 						{#if cell.entries.length > 3}
-							<span class="px-1.5 text-[10px] text-muted-foreground">
+							<span class="px-1.5 text-xs text-muted-foreground">
 								+{cell.entries.length - 3} more
 							</span>
 						{/if}

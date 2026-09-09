@@ -7,8 +7,8 @@ use local_core::{
     FinishChatAssistantInput, FinishChatToolCallInput, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
     MarkdownLinkTarget, ObjectPatch, ParseStatus, ParsedMarkdown, RawConflictResolveInput,
-    RawSaveInput, RawSaveResult, RenameChatInput, SearchInput, WorkspaceEngine, WorkspaceEntryKind,
-    WorkspaceManifest, new_object_id, parse_markdown,
+    RawSaveInput, RawSaveResult, RenameChatInput, SearchInput, WORKSPACE_MANIFEST_PATH,
+    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id, parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -1171,7 +1171,7 @@ fn workspace_entries_apply_manifest_ignores_and_reserved_paths() {
         WorkspaceEngine::create_with_app_data(workspace.path(), "Visibility", app_data.path())
             .unwrap();
     drop(engine);
-    let manifest_path = workspace.path().join("workspace.yaml");
+    let manifest_path = workspace.path().join(WORKSPACE_MANIFEST_PATH);
     let mut manifest: WorkspaceManifest =
         serde_yaml_ng::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
     manifest.ignore = vec!["ignored/".into()];
@@ -1748,7 +1748,7 @@ fn manifest_update_rewrites_enabled_plugins_durably_and_in_memory() {
     assert_ne!(updated.updated, before.updated);
     assert_eq!(updated.id, before.id);
 
-    let on_disk = std::fs::read_to_string(workspace.path().join("workspace.yaml")).unwrap();
+    let on_disk = std::fs::read_to_string(workspace.path().join(WORKSPACE_MANIFEST_PATH)).unwrap();
     assert!(on_disk.contains("enabled_plugins:"));
     assert!(on_disk.contains("- notes"));
     assert_eq!(
@@ -1793,12 +1793,12 @@ fn manifest_update_rejects_invalid_fields_and_leaves_no_op_patches_untouched() {
 }
 
 #[test]
-fn manifest_read_reflects_external_edits_to_workspace_yaml() {
+fn manifest_read_reflects_external_edits_to_workspace_manifest() {
     let (workspace, _app_data, engine) = engine();
-    let bytes = std::fs::read_to_string(workspace.path().join("workspace.yaml")).unwrap();
+    let bytes = std::fs::read_to_string(workspace.path().join(WORKSPACE_MANIFEST_PATH)).unwrap();
     assert!(bytes.contains("name: Domain tests"));
     std::fs::write(
-        workspace.path().join("workspace.yaml"),
+        workspace.path().join(WORKSPACE_MANIFEST_PATH),
         bytes.replace("name: Domain tests", "name: External name"),
     )
     .unwrap();

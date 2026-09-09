@@ -9,14 +9,23 @@
 	import XCircleIcon from 'phosphor-svelte/lib/XCircle';
 	import InfoIcon from 'phosphor-svelte/lib/Info';
 	import WarningIcon from 'phosphor-svelte/lib/Warning';
+	import { cn } from '$lib/utils.js';
 
-	let { ...restProps }: SonnerProps = $props();
+	let { toastOptions, ...restProps }: SonnerProps = $props();
 </script>
 
 <Sonner
 	theme={mode.current}
 	class="toaster group"
 	style="--normal-bg: var(--color-popover); --normal-text: var(--color-popover-foreground); --normal-border: var(--color-border);"
+	toastOptions={{
+		...toastOptions,
+		style: `${toastOptions?.style ?? ''}; font-size: var(--text-sm);`,
+		descriptionClass: cn(
+			'text-xs text-popover-foreground!',
+			toastOptions?.descriptionClass,
+		),
+	}}
 	{...restProps}
 >
 	{#snippet loadingIcon()}

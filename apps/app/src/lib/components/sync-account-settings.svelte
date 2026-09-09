@@ -1344,7 +1344,7 @@
 				Approve this code in your browser to connect the device:
 			</p>
 			<p
-				class="rounded-xl border p-4 text-center font-mono text-xl tracking-widest"
+				class="rounded-xl border p-4 text-center font-mono text-base tracking-widest"
 				aria-label="Device sign-in code"
 			>
 				{request.userCode}

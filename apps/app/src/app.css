@@ -7,6 +7,12 @@
 
 :root {
 	--app-titlebar-height: 2rem;
+	/* Editorial type is intentionally separate from the three-size UI scale. */
+	--content-text-size: 1rem;
+	--content-heading-4-size: 1.125rem;
+	--content-heading-3-size: 1.25rem;
+	--content-heading-2-size: 1.5rem;
+	--content-heading-1-size: 2rem;
 	--background: oklch(1 0 0);
 	--foreground: oklch(0.145 0 0);
 	--card: oklch(1 0 0);
@@ -78,6 +84,13 @@
 @theme inline {
 	--font-sans: 'Public Sans Variable', sans-serif;
 	--font-heading: 'Public Sans Variable', sans-serif;
+	/* Noura's complete UI type scale: supporting, body, and title. */
+	--text-xs: 0.75rem;
+	--text-xs--line-height: 1rem;
+	--text-sm: 0.875rem;
+	--text-sm--line-height: 1.25rem;
+	--text-base: 1rem;
+	--text-base--line-height: 1.5rem;
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -130,7 +143,10 @@
 	}
 }
 
-/* Live Preview (CodeMirror) — boundaries only; typography lives in the theme. */
+/* Live Preview (CodeMirror) — editorial typography, separate from UI chrome. */
+.live-md {
+	font-size: var(--content-text-size);
+}
 .live-md .cm-editor {
 	background: transparent;
 	height: 100%;
@@ -141,30 +157,33 @@
 }
 .live-md .cm-content {
 	caret-color: var(--foreground);
-	padding: 0.5rem 0;
+	padding: 0.5rem 1.5rem;
 }
 .live-md .cm-line {
-	padding: 0.1rem 0.25rem;
+	padding: 0.1rem 0;
 }
 .live-md .cm-md-h1 {
-	font-size: 2rem;
+	font-size: var(--content-heading-1-size);
 	font-weight: 600;
-	line-height: 1.3;
+	line-height: 1.2;
 	padding: 0.6rem 0 0.2rem;
 }
 .live-md .cm-md-h2 {
-	font-size: 1.6rem;
+	font-size: var(--content-heading-2-size);
 	font-weight: 600;
+	line-height: 1.25;
 	padding: 0.5rem 0 0.2rem;
 }
 .live-md .cm-md-h3 {
-	font-size: 1.3rem;
+	font-size: var(--content-heading-3-size);
 	font-weight: 600;
+	line-height: 1.3;
 	padding: 0.4rem 0 0.2rem;
 }
 .live-md .cm-md-h4 {
-	font-size: 1.1rem;
+	font-size: var(--content-heading-4-size);
 	font-weight: 600;
+	line-height: 1.4;
 }
 .live-md .cm-md-strong {
 	font-weight: 700;
@@ -227,14 +246,14 @@
 	border-radius: 0.5rem;
 	color: var(--muted-foreground);
 	display: inline-block;
-	font-size: 0.8rem;
+	font-size: var(--text-xs);
 	padding: 0.6rem 1rem;
 }
 .live-md .cm-md-image-load {
 	border: 1px solid var(--border);
 	border-radius: 0.5rem;
 	color: var(--muted-foreground);
-	font-size: 0.8rem;
+	font-size: var(--text-xs);
 	padding: 0.6rem 1rem;
 }
 .live-md .cm-md-table {

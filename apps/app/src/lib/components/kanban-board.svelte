@@ -208,12 +208,11 @@
 					class="flex items-center justify-between border-b border-border/60 px-3 py-2.5"
 				>
 					<h3
-						class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+						class="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
 					>
 						{columnLabel(group.id)}
 					</h3>
-					<span class="text-[11px] text-muted-foreground"
-						>{group.items.length}</span
+					<span class="text-xs text-muted-foreground">{group.items.length}</span
 					>
 				</header>
 				<div
@@ -243,12 +242,12 @@
 								{#if task.properties?.due || task.properties?.project}
 									<span class="mt-1 flex items-center gap-1.5">
 										{#if task.properties?.project}
-											<Badge variant="secondary" class="text-[10px]"
+											<Badge variant="secondary" class="text-xs"
 												>{task.properties.project}</Badge
 											>
 										{/if}
 										{#if task.properties?.due}
-											<span class="text-[10px] text-muted-foreground"
+											<span class="text-xs text-muted-foreground"
 												>{task.properties.due}</span
 											>
 										{/if}

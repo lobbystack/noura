@@ -98,7 +98,7 @@
 	>
 		{#if hasAnySection || issues.length > 0}
 			<header>
-				<h2 class="text-lg font-semibold tracking-tight">
+				<h2 class="text-base font-semibold tracking-tight">
 					{daypartGreeting(new Date())}
 				</h2>
 				<p class="mt-1 text-sm text-muted-foreground">

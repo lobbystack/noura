@@ -5,7 +5,6 @@ const reserved = new Set([
 	'.git',
 	'node_modules',
 	'target',
-	'workspace.yaml',
 ]);
 const portablePath = z
 	.string()

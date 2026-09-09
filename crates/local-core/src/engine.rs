@@ -18,10 +18,11 @@ use crate::{
     ChatMessageKind, ChatMessageStatus, ChatRead, ChatRetention, CoreError, CoreEvent, CoreWarning,
     CreateChatInput, ErrorCategory, FinishChatAssistantInput, FinishChatToolCallInput, IndexStatus,
     IndexStore, MutationResult, ParseStatus, ParsedMarkdown, RenameChatInput, Result, SearchInput,
-    SearchResult, UnmanagedFile, WatchCoordinator, WorkspaceEntry, WorkspaceEntryKind,
-    WorkspaceManifest, WorkspaceObject, WorkspacePhase, WorkspaceState, index::CalendarEntry,
-    markdown, new_object_id, now_rfc3339, parse_chat, parse_chat_message, path::resolve_for_write,
-    serialize_chat, serialize_chat_message, valid_object_id, valid_object_type, validate_retention,
+    SearchResult, UnmanagedFile, WORKSPACE_MANIFEST_PATH, WatchCoordinator, WorkspaceEntry,
+    WorkspaceEntryKind, WorkspaceManifest, WorkspaceObject, WorkspacePhase, WorkspaceState,
+    index::CalendarEntry, markdown, new_object_id, now_rfc3339, parse_chat, parse_chat_message,
+    path::resolve_for_write, serialize_chat, serialize_chat_message, valid_object_id,
+    valid_object_type, validate_retention,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -295,7 +296,7 @@ struct ChatMutationFault {
     remaining: usize,
 }
 
-/// Patch for selected `workspace.yaml` fields. Omitted fields keep their
+/// Patch for selected `.noura/workspace.yaml` fields. Omitted fields keep their
 /// current value; the manifest `updated` timestamp always refreshes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -377,7 +378,7 @@ impl WorkspaceEngine {
         let canonical = root
             .canonicalize()
             .map_err(|error| CoreError::io(error, "workspace_create", root.to_str()))?;
-        if canonical.join("workspace.yaml").exists() {
+        if canonical.join(WORKSPACE_MANIFEST_PATH).exists() {
             return Err(CoreError::new(
                 "workspace_exists",
                 ErrorCategory::Conflict,
@@ -415,13 +416,14 @@ impl WorkspaceEngine {
             CoreError::new(
                 "manifest_serialize_failed",
                 ErrorCategory::Parse,
-                "workspace.yaml could not be serialized",
+                ".noura/workspace.yaml could not be serialized",
                 "workspace_create",
             )
         })?;
+        resolve_for_write(&canonical, WORKSPACE_MANIFEST_PATH, "workspace_create")?;
         atomic_write(
             &canonical,
-            Path::new("workspace.yaml"),
+            Path::new(WORKSPACE_MANIFEST_PATH),
             bytes.as_bytes(),
             "workspace_create",
         )?;
@@ -432,7 +434,7 @@ impl WorkspaceEngine {
     }
 
     /// Opens a workspace, initializing Noura metadata when an existing
-    /// directory has no `workspace.yaml`. A saved identity can be supplied
+    /// directory has no `.noura/workspace.yaml`. A saved identity can be supplied
     /// when repairing a previously registered workspace.
     pub fn open_or_initialize(
         root: impl AsRef<Path>,
@@ -464,9 +466,11 @@ impl WorkspaceEngine {
             .canonicalize()
             .map_err(|error| CoreError::io(error, "workspace_open", root.as_ref().to_str()))?;
         if root
-            .join("workspace.yaml")
+            .join(WORKSPACE_MANIFEST_PATH)
             .try_exists()
-            .map_err(|error| CoreError::io(error, "workspace_open", Some("workspace.yaml")))?
+            .map_err(|error| {
+                CoreError::io(error, "workspace_open", Some(WORKSPACE_MANIFEST_PATH))
+            })?
         {
             return Self::open_with_app_data(root, app_data);
         }
@@ -493,8 +497,10 @@ impl WorkspaceEngine {
             .as_ref()
             .canonicalize()
             .map_err(|error| CoreError::io(error, "workspace_open", root.as_ref().to_str()))?;
-        let manifest_bytes = std::fs::read(root.join("workspace.yaml"))
-            .map_err(|error| CoreError::io(error, "workspace_open", Some("workspace.yaml")))?;
+        let manifest_bytes =
+            std::fs::read(root.join(WORKSPACE_MANIFEST_PATH)).map_err(|error| {
+                CoreError::io(error, "workspace_open", Some(WORKSPACE_MANIFEST_PATH))
+            })?;
         let manifest = parse_workspace_manifest(&manifest_bytes, "workspace_open")?;
         let local_dir = app_data.as_ref().join("workspaces").join(&manifest.id);
         std::fs::create_dir_all(&local_dir)
@@ -581,7 +587,7 @@ impl WorkspaceEngine {
         }
     }
 
-    /// Canonical `workspace.yaml` contents, freshly read from disk. The file
+    /// Canonical `.noura/workspace.yaml` contents, freshly read from disk. The file
     /// wins over the in-memory snapshot, which only exists to avoid re-reading
     /// the manifest on every write.
     pub fn read_manifest(&self) -> Result<WorkspaceManifest> {
@@ -645,7 +651,7 @@ impl WorkspaceEngine {
             return Err(CoreError::new(
                 "manifest_conflict",
                 ErrorCategory::Conflict,
-                "workspace.yaml changed on disk since it was last read",
+                ".noura/workspace.yaml changed on disk since it was last read",
                 "manifest_update",
             ));
         }
@@ -664,13 +670,13 @@ impl WorkspaceEngine {
             CoreError::new(
                 "manifest_serialize_failed",
                 ErrorCategory::Parse,
-                "workspace.yaml could not be serialized",
+                ".noura/workspace.yaml could not be serialized",
                 "manifest_update",
             )
         })?;
         atomic_write_checked(
             &self.root,
-            Path::new("workspace.yaml"),
+            Path::new(WORKSPACE_MANIFEST_PATH),
             bytes.as_bytes(),
             Some(&markdown::revision(&current_bytes)),
             "manifest_update",
@@ -679,7 +685,7 @@ impl WorkspaceEngine {
         // resurface this engine's own atomic manifest write as external.
         if let Ok(mut journal) = self.self_writes.lock() {
             journal.insert(
-                "workspace.yaml".to_owned(),
+                WORKSPACE_MANIFEST_PATH.to_owned(),
                 markdown::revision(bytes.as_bytes()),
             );
         }
@@ -699,8 +705,8 @@ impl WorkspaceEngine {
     }
 
     fn read_manifest_bytes(&self) -> Result<Vec<u8>> {
-        std::fs::read(self.root.join("workspace.yaml"))
-            .map_err(|error| CoreError::io(error, "manifest_read", Some("workspace.yaml")))
+        std::fs::read(self.root.join(WORKSPACE_MANIFEST_PATH))
+            .map_err(|error| CoreError::io(error, "manifest_read", Some(WORKSPACE_MANIFEST_PATH)))
     }
 
     /// Read one plugin-local cache value. The state lives in the disposable
@@ -856,7 +862,7 @@ impl WorkspaceEngine {
 
     fn process_external_changes(&self, paths: Vec<PathBuf>) -> Result<Vec<String>> {
         // The manifest sits outside the indexed workspace (it is never a
-        // workspace object), so watcher events for `workspace.yaml` are
+        // workspace object), so watcher events for `.noura/workspace.yaml` are
         // reconciled directly against the in-memory snapshot instead of
         // `file:changed`. This must run before the ignore set is compiled:
         // an external edit to `ignore` scopes the very scan below.
@@ -913,14 +919,14 @@ impl WorkspaceEngine {
         Ok(external)
     }
 
-    /// Applies watcher events for `workspace.yaml`: journal-suppress the
+    /// Applies watcher events for `.noura/workspace.yaml`: journal-suppress the
     /// engine's own atomic write, then adopt any external change. The
     /// journal guard is released before the adopt so it cannot interleave
     /// with the write lock taken by `manifest_update`.
     fn sync_external_manifest(&self, paths: &[PathBuf]) -> Result<()> {
         let touched = paths.iter().any(|path| {
             path.strip_prefix(&self.root)
-                .is_ok_and(|relative| relative == Path::new("workspace.yaml"))
+                .is_ok_and(|relative| relative == Path::new(WORKSPACE_MANIFEST_PATH))
         });
         if !touched {
             return Ok(());
@@ -929,9 +935,9 @@ impl WorkspaceEngine {
             .self_writes
             .lock()
             .map_err(|_| lock_error("watcher_poll"))?
-            .remove("workspace.yaml");
+            .remove(WORKSPACE_MANIFEST_PATH);
         if let Some(expected) = journaled {
-            let unchanged = std::fs::read(self.root.join("workspace.yaml"))
+            let unchanged = std::fs::read(self.root.join(WORKSPACE_MANIFEST_PATH))
                 .ok()
                 .is_some_and(|bytes| markdown::revision(&bytes) == expected);
             if unchanged {
@@ -3618,8 +3624,7 @@ fn is_visible_workspace_path(
     if relative.as_os_str().is_empty() {
         return true;
     }
-    if relative == Path::new("workspace.yaml")
-        || relative.starts_with(".noura")
+    if relative.starts_with(".noura")
         || relative.starts_with(".git")
         || relative.starts_with("node_modules")
         || relative.starts_with("target")
@@ -4133,7 +4138,7 @@ fn parse_workspace_manifest(bytes: &[u8], operation: &str) -> Result<WorkspaceMa
         CoreError::new(
             "invalid_workspace_manifest",
             ErrorCategory::Parse,
-            "workspace.yaml is invalid",
+            ".noura/workspace.yaml is invalid",
             operation,
         )
     })?;
@@ -4821,15 +4826,33 @@ mod tests {
     fn create_does_not_overwrite_an_existing_manifest() {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
-        std::fs::write(workspace.path().join("workspace.yaml"), "sentinel").unwrap();
+        std::fs::create_dir(workspace.path().join(".noura")).unwrap();
+        std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "sentinel").unwrap();
         let error =
             WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
                 .err()
                 .unwrap();
         assert_eq!(error.code, "workspace_exists");
         assert_eq!(
-            std::fs::read_to_string(workspace.path().join("workspace.yaml")).unwrap(),
+            std::fs::read_to_string(workspace.path().join(WORKSPACE_MANIFEST_PATH)).unwrap(),
             "sentinel"
+        );
+    }
+
+    #[test]
+    fn create_treats_root_workspace_yaml_as_an_ordinary_file() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        std::fs::write(workspace.path().join("workspace.yaml"), "user content").unwrap();
+
+        WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path()).unwrap();
+
+        assert_eq!(
+            (
+                std::fs::read_to_string(workspace.path().join("workspace.yaml")).unwrap(),
+                workspace.path().join(WORKSPACE_MANIFEST_PATH).is_file(),
+            ),
+            ("user content".to_owned(), true)
         );
     }
 
@@ -4853,6 +4876,7 @@ mod tests {
             "# Existing\n"
         );
         assert!(workspace.path().join(".noura/trash").is_dir());
+        assert!(workspace.path().join(WORKSPACE_MANIFEST_PATH).is_file());
     }
 
     #[test]
@@ -4906,7 +4930,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(error.code, "invalid_workspace_id");
-        assert!(!workspace.path().join("workspace.yaml").exists());
+        assert!(!workspace.path().join(WORKSPACE_MANIFEST_PATH).exists());
     }
 
     #[test]
@@ -4936,7 +4960,7 @@ mod tests {
             WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
                 .unwrap();
         drop(engine);
-        let manifest_path = workspace.path().join("workspace.yaml");
+        let manifest_path = workspace.path().join(WORKSPACE_MANIFEST_PATH);
         let manifest = std::fs::read_to_string(&manifest_path)
             .unwrap()
             .replace("ignore: []", "ignore:\n- ignored/**");
@@ -4980,7 +5004,8 @@ mod tests {
     fn invalid_workspace_id_is_rejected_before_creating_local_state() {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
-        std::fs::write(workspace.path().join("workspace.yaml"), "id: ../../outside\nformat_version: 1\nname: Bad\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: []\nignore: []\n").unwrap();
+        std::fs::create_dir(workspace.path().join(".noura")).unwrap();
+        std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "id: ../../outside\nformat_version: 1\nname: Bad\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: []\nignore: []\n").unwrap();
         let error = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path())
             .err()
             .unwrap();
@@ -5118,7 +5143,7 @@ mod tests {
         let engine =
             WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
                 .unwrap();
-        let manifest_path = engine.root().join("workspace.yaml");
+        let manifest_path = engine.root().join(WORKSPACE_MANIFEST_PATH);
         let mut events = engine.subscribe();
         let external = std::fs::read_to_string(&manifest_path)
             .unwrap()
@@ -5173,7 +5198,7 @@ mod tests {
             })
             .unwrap();
 
-        let manifest_path = engine.root().join("workspace.yaml");
+        let manifest_path = engine.root().join(WORKSPACE_MANIFEST_PATH);
         let changes = engine
             .process_external_changes(vec![manifest_path])
             .unwrap();
@@ -5197,7 +5222,7 @@ mod tests {
         let engine =
             WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
                 .unwrap();
-        let manifest_path = engine.root().join("workspace.yaml");
+        let manifest_path = engine.root().join(WORKSPACE_MANIFEST_PATH);
         let before = engine.manifest();
         let mut events = engine.subscribe();
         std::fs::write(&manifest_path, "not: [valid, manifest").unwrap();
@@ -5232,7 +5257,7 @@ mod tests {
                 properties: BTreeMap::new(),
             })
             .unwrap();
-        let manifest_path = engine.root().join("workspace.yaml");
+        let manifest_path = engine.root().join(WORKSPACE_MANIFEST_PATH);
         let external = std::fs::read_to_string(&manifest_path)
             .unwrap()
             .replace("ignore: []", "ignore:\n- scope/**");

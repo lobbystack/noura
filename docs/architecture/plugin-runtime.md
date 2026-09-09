@@ -6,7 +6,7 @@ The plugin platform layers the workspace on one kernel: `packages/plugin-sdk` de
 apps/app state
    │
 PluginRuntime (packages/workspace)
-   │  syncWithManifest(): reads workspace.yaml on disk
+   │  syncWithManifest(): reads .noura/workspace.yaml on disk
 PluginHost (packages/plugin-sdk)
    │  activate / deactivate, capability guards
 PluginContext ── capability-gated facade over NouraClient
@@ -14,10 +14,10 @@ PluginContext ── capability-gated facade over NouraClient
 
 ## Activation lifecycle
 
-- Similar to any other file, `workspace.yaml` is authoritative. The runtime never caches plugin state; `syncWithManifest` re-reads the manifest and reconciles the active set.
+- Similar to any other file, `.noura/workspace.yaml` is authoritative. The runtime never caches plugin state; `syncWithManifest` re-reads the manifest and reconciles the active set.
 - A plugin activates only when its manifest id appears in `enabled_plugins`. Unknown ids in the manifest are ignored, so a workspace carrying ecosystem plugins opens on older builds.
 - Plugin definitions may implement `deactivate(context)`. The host passes the same context instance the plugin saw during activation, so handlers and disposers captured then stay valid. Deactivation runs commands unregistering, AI tool/context removal, and event unsubscription through the disposers the capabilities already return.
-- The desktop app re-syncs on startup, after `workspace:ready`, after `workspace:manifest-updated`, and on `file:changed`. The engine observes external edits to `workspace.yaml` through its watcher: the atomic-write journal suppresses the engine's own writes, and a genuine external change adopts the file into the engine snapshot and emits `workspace:manifest-updated` with source `external`, so plugin state follows the file even while the app is open. The Settings panel writes `enabled_plugins` through the engine's `manifest_update` (atomic, revision-checked against `updated`), so live deactivation and activation run through the same durable file mutation. Closing a workspace deactivates every plugin instead of leaving commands registered against a workspace that is gone. Navigation and route guards derive from the reconciled state: modules that are off genuinely simplify the workspace.
+- The desktop app re-syncs on startup, after `workspace:ready`, after `workspace:manifest-updated`, and on `file:changed`. The engine observes external edits to `.noura/workspace.yaml` through its watcher: the atomic-write journal suppresses the engine's own writes, and a genuine external change adopts the file into the engine snapshot and emits `workspace:manifest-updated` with source `external`, so plugin state follows the file even while the app is open. The Settings panel writes `enabled_plugins` through the engine's `manifest_update` (atomic, revision-checked against `updated`), so live deactivation and activation run through the same durable file mutation. Closing a workspace deactivates every plugin instead of leaving commands registered against a workspace that is gone. Navigation and route guards derive from the reconciled state: modules that are off genuinely simplify the workspace.
 
 ## Capabilities
 

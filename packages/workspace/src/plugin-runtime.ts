@@ -38,13 +38,13 @@ export function createPluginHostServices(
 export interface PluginSyncResult {
 	activated: Array<string>;
 	deactivated: Array<string>;
-	/** Verbatim from workspace.yaml; may include unknown future plugin ids. */
+	/** Verbatim from .noura/workspace.yaml; may include unknown future plugin ids. */
 	enabledPluginIds: Array<string>;
 }
 
 /**
  * Keeps the set of active plugins aligned with `enabled_plugins` in
- * workspace.yaml. Unknown manifest ids are tolerated and ignored so
+ * .noura/workspace.yaml. Unknown manifest ids are tolerated and ignored so
  * ecosystem plugins cannot break older builds, and a durable file
  * edit drives the runtime: the manifest on disk is authoritative.
  */

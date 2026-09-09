@@ -521,7 +521,7 @@
 				onblur={() => void flushNow()}
 				aria-label="Note title"
 				placeholder="Untitled"
-				class="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none placeholder:text-muted-foreground"
+				class="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none placeholder:text-muted-foreground"
 			/>
 		</header>
 		<Separator />

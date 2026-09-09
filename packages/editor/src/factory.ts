@@ -518,13 +518,33 @@ export function createLiveMarkdownEditor(
 			}
 		}),
 		EditorView.theme({
-			'&': { backgroundColor: 'transparent', height: '100%' },
+			'&': {
+				backgroundColor: 'transparent',
+				height: '100%',
+				fontSize: 'var(--content-text-size, 1rem)',
+			},
 			'.cm-scroller': { fontFamily: 'inherit', lineHeight: '1.75' },
 			'.cm-content': { caretColor: 'var(--foreground)' },
 			'.cm-md-heading': { fontWeight: '600' },
-			'.cm-md-h1': { fontSize: '2rem', padding: '0.6rem 0' },
-			'.cm-md-h2': { fontSize: '1.6rem', padding: '0.5rem 0' },
-			'.cm-md-h3': { fontSize: '1.3rem', padding: '0.4rem 0' },
+			'.cm-md-h1': {
+				fontSize: 'var(--content-heading-1-size, 2rem)',
+				lineHeight: '1.2',
+				padding: '0.6rem 0',
+			},
+			'.cm-md-h2': {
+				fontSize: 'var(--content-heading-2-size, 1.5rem)',
+				lineHeight: '1.25',
+				padding: '0.5rem 0',
+			},
+			'.cm-md-h3': {
+				fontSize: 'var(--content-heading-3-size, 1.25rem)',
+				lineHeight: '1.3',
+				padding: '0.4rem 0',
+			},
+			'.cm-md-h4': {
+				fontSize: 'var(--content-heading-4-size, 1.125rem)',
+				lineHeight: '1.4',
+			},
 			'.cm-md-strong': { fontWeight: '700' },
 			'.cm-md-emphasis': { fontStyle: 'italic' },
 			'.cm-md-strike': { textDecoration: 'line-through' },

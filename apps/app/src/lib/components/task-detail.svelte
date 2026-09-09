@@ -282,7 +282,7 @@
 			onblur={() => void coordinator?.flush()}
 			aria-label="Task title"
 			placeholder="Task title"
-			class="min-w-0 flex-1 bg-transparent text-lg font-semibold outline-none placeholder:text-muted-foreground"
+			class="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none placeholder:text-muted-foreground"
 		/>
 	</header>
 	<Separator />

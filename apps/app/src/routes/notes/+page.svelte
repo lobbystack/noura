@@ -233,7 +233,7 @@
 		{/if}
 	</div>
 
-	<div class="min-h-0 flex-1">
+	<div class="flex min-h-0 flex-1 flex-col">
 		{#key selected?.id ?? `raw:${selectedRaw?.relativePath ?? ''}`}
 			{#if selectedRaw}
 				<RawMarkdownEditor file={selectedRaw} onmanaged={handleManaged} />

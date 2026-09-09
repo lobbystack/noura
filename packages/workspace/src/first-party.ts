@@ -8,7 +8,7 @@ import tasks from '@noura/plugin-tasks';
 /**
  * The whole activation path belongs to `PluginRuntime.syncWithManifest`:
  * every plugin, including these bundled domains, is driven by
- * `enabled_plugins` in workspace.yaml.
+ * `enabled_plugins` in .noura/workspace.yaml.
  */
 export const firstPartyPlugins = [
 	ai,

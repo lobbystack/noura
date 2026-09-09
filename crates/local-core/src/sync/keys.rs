@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use super::{ObjectKey, SigningIdentity, crypto::decode, identifier, invalid};
-use crate::{CoreError, ErrorCategory, Result};
+use crate::{CoreError, ErrorCategory, Result, WORKSPACE_MANIFEST_PATH};
 
 /// Native credential-store boundary, replaceable by an in-memory implementation in tests.
 pub trait SyncCredentials {
@@ -312,7 +312,7 @@ impl DeviceKeys {
             || destination.starts_with(&root)
             || parent
                 .ancestors()
-                .any(|path| path.join("workspace.yaml").exists())
+                .any(|path| path.join(WORKSPACE_MANIFEST_PATH).exists())
         {
             return Err(invalid("sync_recovery_in_workspace"));
         }
@@ -540,7 +540,12 @@ mod tests {
         );
         let other_workspace = dir.path().join("other-workspace");
         std::fs::create_dir(&other_workspace).unwrap();
-        std::fs::write(other_workspace.join("workspace.yaml"), b"id: another").unwrap();
+        std::fs::create_dir(other_workspace.join(".noura")).unwrap();
+        std::fs::write(
+            other_workspace.join(WORKSPACE_MANIFEST_PATH),
+            b"id: another",
+        )
+        .unwrap();
         assert!(
             owner
                 .export_recovery_identity(&other_workspace.join("secret.txt"), &workspace)

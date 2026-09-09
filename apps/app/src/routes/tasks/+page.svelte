@@ -183,7 +183,7 @@
 												/><span>{task.properties.due}</span>{/if}
 											{#if task.properties?.priority && task.properties.priority !== 'medium'}<Badge
 													variant="secondary"
-													class="text-[10px] uppercase"
+													class="text-xs uppercase"
 													>{task.properties.priority}</Badge
 												>{/if}
 										</div>

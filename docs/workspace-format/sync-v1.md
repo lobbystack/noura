@@ -28,7 +28,7 @@ the source of a move; it cannot equal `path` or accompany a deletion.
 Paths are portable relative paths of at most 4096 UTF-8 bytes. Absolute paths,
 traversal, empty components, control characters, Windows reserved names and
 characters, trailing dots/spaces, and reserved root entries are rejected. The
-reserved roots are `.noura`, `.git`, `node_modules`, `target`, and `workspace.yaml`.
+reserved roots are `.noura`, `.git`, `node_modules`, and `target`.
 Their ASCII case variants are also reserved on every platform.
 Device-name validation includes the superscript-digit COM/LPT aliases described
 in [Microsoft's filename rules](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file)

@@ -113,7 +113,7 @@
 						>
 							File & history
 						</h4>
-						<Badge variant="outline" class="gap-1 text-[10px]">
+						<Badge variant="outline" class="gap-1 text-xs">
 							<FileCode data-icon="inline-start" />
 							Markdown
 						</Badge>
@@ -148,12 +148,12 @@
 						<div class="pt-1">
 							<p class="mb-1.5 text-xs font-medium text-muted-foreground">
 								Source
-								<span class="ml-1 text-[10px] font-normal opacity-70"
+								<span class="ml-1 text-xs font-normal opacity-70"
 									>read-only · canonical Markdown</span
 								>
 							</p>
 							<pre
-								class="max-h-40 overflow-auto rounded-md bg-muted p-2 font-mono text-[11px] leading-relaxed"><code
+								class="max-h-40 overflow-auto rounded-md bg-muted p-2 font-mono text-xs leading-relaxed"><code
 									>{source}</code
 								></pre>
 						</div>

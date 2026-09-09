@@ -351,7 +351,7 @@
 <div class="flex min-h-0 flex-1 flex-col">
 	<header class="flex min-h-16 items-center px-6">
 		<div class="min-w-0">
-			<h1 class="truncate text-lg font-semibold">{file.title}</h1>
+			<h1 class="truncate text-base font-semibold">{file.title}</h1>
 			<p class="truncate text-xs text-muted-foreground">{file.relativePath}</p>
 		</div>
 	</header>

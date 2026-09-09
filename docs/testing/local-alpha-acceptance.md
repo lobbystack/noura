@@ -28,7 +28,7 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
    bun run tauri dev
    ```
 
-4. Create a disposable workspace. Keep `workspace.yaml` open so its workspace identifier (ID) and enabled plugins remain visible.
+4. Create a disposable workspace. Keep `.noura/workspace.yaml` open so its workspace identifier (ID) and enabled plugins remain visible.
 
 ## Verify canonical content
 
@@ -73,7 +73,7 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
 1. In Settings, choose **Rebuild index**. Confirm the button stays disabled while running and a success toast appears. Confirm every projection refreshes.
 2. Record each object's ID, path, body, and dated properties.
 3. Quit Noura.
-4. Find the workspace's local index by matching the ID from `workspace.yaml`:
+4. Find the workspace's local index by matching the ID from `.noura/workspace.yaml`:
 
    ```sh
    find "$HOME/Library/Application Support" -path "*/workspaces/*/index.sqlite" -print

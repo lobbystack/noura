@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::*;
-use crate::{Result, WorkspaceEngine};
+use crate::{Result, WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
 
 const MAX_KIT: u64 = 8 * 1024 * 1024;
 
@@ -301,7 +301,7 @@ fn write_backup(destination: &Path, workspace: &Path, bytes: &[u8]) -> Result<()
     if parent.starts_with(&root)
         || parent
             .ancestors()
-            .any(|path| path.join("workspace.yaml").exists())
+            .any(|path| path.join(WORKSPACE_MANIFEST_PATH).exists())
     {
         return Err(invalid("sync_recovery_in_workspace"));
     }

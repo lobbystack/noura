@@ -74,7 +74,7 @@
 	// The engine broadcasts workspace:ready before the host event bridge
 	// subscribes, so create/open flows would miss it. Reconcile plugins from
 	// the reactive workspace state on every settle (ready, idle, failed) so
-	// toggles and navigation always match workspace.yaml.
+	// toggles and navigation always match .noura/workspace.yaml.
 	$effect(() => {
 		if (!browser) return;
 		const phase = workspace.state?.phase;

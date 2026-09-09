@@ -25,7 +25,7 @@ Startup and reconciliation replay pending intents when the files match recorded 
 
 The watcher coalesces native paths and treats each event as a hint. It suppresses an application write when the observed bytes match the write journal. Other paths trigger a filesystem scan, index transaction, and typed event. Duplicate events and editor replacement files do not assign identity to a path.
 
-`workspace.yaml` remains outside the object index. Its watcher adopts the on-disk manifest behind the `manifest_update` write lock. The update journals its atomic write like other write sites. The watcher emits `workspace:manifest-updated`, so runtimes reread the file while the app is open.
+`.noura/workspace.yaml` remains outside the object index. Keeping the manifest under Noura's hidden metadata directory leaves the workspace root entirely for user content. The watcher adopts the on-disk manifest behind the `manifest_update` write lock. The update journals its atomic write like other write sites. The watcher emits `workspace:manifest-updated`, so runtimes reread the file while the app is open.
 
 An invalid partial manifest edit keeps the last valid snapshot. A later filesystem event retries the read.
 
@@ -47,4 +47,4 @@ Calendar results sort by start, title, source ID, and property.
 
 Plugins and user interface code cannot access `IndexStore`. They use generic object, search, Calendar, event, command, and local-storage capabilities. First-party domains validate values before the engine serializes frontmatter.
 
-The [plugin runtime](plugin-runtime.md) activates first-party domains and enforces capabilities. It also reconciles active plugins with `workspace.yaml`. `plugin_state` IDs in the disposable index hold cache state only. Durable plugin data stays in workspace files.
+The [plugin runtime](plugin-runtime.md) activates first-party domains and enforces capabilities. It also reconciles active plugins with `.noura/workspace.yaml`. `plugin_state` IDs in the disposable index hold cache state only. Durable plugin data stays in workspace files.

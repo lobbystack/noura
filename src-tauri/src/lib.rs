@@ -1640,7 +1640,8 @@ mod workspace_restore_tests {
         let fixture = Fixture::new();
         let last = fixture.create("last");
         let expected = last.workspace_id.clone();
-        std::fs::remove_file(Path::new(&last.path).join("workspace.yaml")).unwrap();
+        std::fs::remove_file(Path::new(&last.path).join(local_core::WORKSPACE_MANIFEST_PATH))
+            .unwrap();
         std::fs::remove_dir_all(Path::new(&last.path).join(".noura")).unwrap();
 
         let engine = restore_last_workspace(std::slice::from_ref(&last), |workspace| {

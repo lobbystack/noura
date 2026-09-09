@@ -11,7 +11,7 @@ function errorMessage(error: unknown) {
 }
 
 /**
- * Keeps the UI reflecting workspace.yaml: which first-party plugins are
+ * Keeps the UI reflecting .noura/workspace.yaml: which first-party plugins are
  * enabled, which the runtime currently has active, and how to toggle them.
  * The manifest file is authoritative; this store only projects it.
  */
