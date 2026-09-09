@@ -6,7 +6,7 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-	--app-titlebar-height: 2rem;
+	--app-titlebar-height: 2.25rem;
 	/* Editorial type is intentionally separate from the three-size UI scale. */
 	--content-text-size: 1rem;
 	--content-heading-4-size: 1.125rem;

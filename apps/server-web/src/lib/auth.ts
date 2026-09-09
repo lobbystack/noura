@@ -50,15 +50,57 @@ export async function sendMagicLink(
 	code: string,
 	invite = '',
 ): Promise<void> {
-	const callbackURL = new URL(
-		userCode(code) ? devicePath(code) : invitationPath(invite) || '/account',
-		window.location.origin,
-	).href;
+	const callbackURL = accountCallbackURL(code, invite);
 	const result = await client().signIn.magicLink({
 		email: email.trim(),
 		callbackURL,
 	});
 	checked(result.error);
+}
+function accountCallbackURL(code: string, invite = ''): string {
+	return new URL(
+		userCode(code) ? devicePath(code) : invitationPath(invite) || '/account',
+		window.location.origin,
+	).href;
+}
+async function signupRequest<T>(path: string, body: object): Promise<T> {
+	const response = await fetch(`/api/auth/passkey-sign-up/${path}`, {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	const value = (await response.json()) as T & {
+		message?: string;
+		error?: { message?: string };
+	};
+	if (!response.ok)
+		throw new Error(
+			value.message || value.error?.message || 'Passkey signup could not be completed.',
+		);
+	return value;
+}
+export async function signUpPasskey(
+	email: string,
+	code: string,
+	invite = '',
+): Promise<void> {
+	const { context } = await signupRequest<{ context: string }>('start', {
+		email: email.trim(),
+		callbackURL: accountCallbackURL(code, invite),
+	});
+	const result = await client().passkey.addPasskey({
+		name: 'Noura account',
+		authenticatorAttachment: 'platform',
+		context,
+	});
+	checked(result?.error);
+	if (!result.data?.credentialID)
+		throw new Error('The browser did not return the new passkey.');
+	await signupRequest('complete', {
+		context,
+		credentialID: result.data.credentialID,
+	});
 }
 export async function signInPasskey(): Promise<void> {
 	const result = await client().signIn.passkey();

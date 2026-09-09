@@ -244,17 +244,6 @@
 			</dl>
 		{:else if selected === 'about'}
 			<div class="flex flex-col gap-6">
-				<div class="flex items-center gap-4">
-					<div
-						class="flex size-12 items-center justify-center rounded-2xl bg-secondary font-semibold"
-						aria-hidden="true"
-					>
-						N
-					</div>
-					<div>
-						<p class="font-semibold">Noura</p>
-					</div>
-				</div>
 				<dl class="flex flex-col divide-y divide-border">
 					<div class="flex justify-between py-4">
 						<dt>Version</dt>

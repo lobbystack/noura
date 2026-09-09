@@ -25,7 +25,8 @@
 
 {#if tabsStore.tabs.length > 0}
 	<div
-		class="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border bg-muted/40 px-2"
+		class="fixed top-0 right-0 left-[17.5rem] z-20 flex h-(--app-titlebar-height) min-w-0 items-center gap-0.5 overflow-x-auto border-b border-sidebar-border bg-sidebar px-2"
+		data-tauri-drag-region
 	>
 		{#each tabsStore.tabs as tab (tab.id)}
 			{@const isActive = tabsStore.activeId === tab.id}

@@ -10,6 +10,7 @@ const url = process.env.NOURA_TEST_DATABASE_URL;
 describe.skipIf(!url)('account to device enrollment', () => {
 	const suffix = crypto.randomUUID();
 	const email = `test-${suffix}@example.invalid`;
+	const passkeyEmail = `passkey-${suffix}@example.invalid`;
 	const origin = 'http://localhost:1900';
 	let delivered = '';
 	const identity = createAuth(
@@ -21,7 +22,7 @@ describe.skipIf(!url)('account to device enrollment', () => {
 			authSecret: 'test-only-secret-that-is-at-least-32-characters',
 			smtpUrl: 'smtp://localhost:1025',
 			mailFrom: 'noura@example.invalid',
-			allowedEmails: new Set([email]),
+			allowedEmails: new Set([email, passkeyEmail]),
 		},
 		async (_email, link) => {
 			delivered = link;
@@ -39,6 +40,34 @@ describe.skipIf(!url)('account to device enrollment', () => {
 	afterAll(async () => {
 		await identity.close();
 		await store.close();
+	});
+	test('passkey signup starts a registration ceremony instead of authentication', async () => {
+		const start = await app.request('/api/auth/passkey-sign-up/start', {
+			method: 'POST',
+			headers: { Origin: origin, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				email: passkeyEmail,
+				callbackURL: `${origin}/account`,
+			}),
+		});
+		expect(start.status).toBe(200);
+		const { context } = (await start.json()) as { context: string };
+		expect(context).toHaveLength(32);
+		const registration = await app.request(
+			`/api/auth/passkey/generate-register-options?authenticatorAttachment=platform&context=${encodeURIComponent(context)}`,
+			{ headers: { Origin: origin } },
+		);
+		expect(registration.status).toBe(200);
+		const options = (await registration.json()) as {
+			rp: { id: string; name: string };
+			user: { name: string };
+			authenticatorSelection: { authenticatorAttachment?: string };
+		};
+		expect(options.rp).toEqual({ id: 'localhost', name: 'Noura' });
+		expect(options.user.name).toBe(passkeyEmail);
+		expect(options.authenticatorSelection.authenticatorAttachment).toBe(
+			'platform',
+		);
 	});
 	test('email login, fresh key proof, session renewal, replay rejection and revocation', async () => {
 		const login = await app.request('/api/auth/sign-in/magic-link', {

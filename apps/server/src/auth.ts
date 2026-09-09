@@ -4,6 +4,12 @@ import { passkey } from '@better-auth/passkey';
 import { Pool } from 'pg';
 import nodemailer from 'nodemailer';
 import type { Config } from './config';
+import {
+	magicLinkPendingIdentifier,
+	passkeySignup,
+	requireVerifiedPasskeyUser,
+	resolvePasskeySignupUser,
+} from './passkey-signup';
 
 export function createAuth(
 	config: Config,
@@ -11,6 +17,18 @@ export function createAuth(
 ) {
 	const pool = new Pool({ connectionString: config.databaseUrl, max: 5 });
 	const mail = nodemailer.createTransport(config.smtpUrl);
+	const sendMail = async (email: string, subject: string, text: string) => {
+		await mail.sendMail({ from: config.mailFrom, to: email, subject, text });
+	};
+	const sendLink = async (
+		email: string,
+		url: string,
+		subject: string,
+		message: string,
+	) => {
+		if (deliver) return deliver(email, url);
+		await sendMail(email, subject, `${message}\n\n${url}`);
+	};
 	const auth = betterAuth({
 		database: pool,
 		secret: config.authSecret,
@@ -42,22 +60,60 @@ export function createAuth(
 				rpID: new URL(config.origin).hostname,
 				rpName: 'Noura',
 				origin: config.origin,
+				registration: {
+					requireSession: false,
+					resolveUser: ({ ctx, context }) =>
+						resolvePasskeySignupUser(ctx, context),
+				},
+				authentication: {
+					afterVerification: ({ ctx }) => requireVerifiedPasskeyUser(ctx),
+				},
+			}),
+			passkeySignup({
+				origin: config.origin,
+				allowedEmails: config.allowedEmails,
+				sendActivation: (email, url) =>
+					sendLink(
+						email,
+						url,
+						'Verify your Noura account',
+						'Finish creating your Noura account using this link. It expires in 10 minutes.',
+					),
 			}),
 			magicLink({
 				storeToken: 'hashed',
 				expiresIn: 600,
-				sendMagicLink: async ({ email, url }) => {
-					if (!config.allowedEmails.has(email.toLowerCase())) return;
-					if (deliver) {
-						await deliver(email, url);
-						return;
+				sendMagicLink: async ({ email, url }, ctx) => {
+					const normalizedEmail = email.toLowerCase();
+					if (!config.allowedEmails.has(normalizedEmail) || !ctx) return;
+					const existing =
+						await ctx.context.internalAdapter.findUserByEmail(normalizedEmail);
+					if (existing && !existing.user.emailVerified) {
+						const passkeys = await ctx.context.adapter.findMany({
+							model: 'passkey',
+							where: [{ field: 'userId', value: existing.user.id }],
+							limit: 1,
+						});
+						if (passkeys.length) return;
 					}
-					await mail.sendMail({
-						from: config.mailFrom,
-						to: email,
-						subject: 'Sign in to Noura',
-						text: `Sign in to Noura using this link. It expires in 10 minutes.\n\n${url}`,
+					const marker = magicLinkPendingIdentifier(normalizedEmail);
+					await ctx.context.internalAdapter.deleteVerificationByIdentifier(marker);
+					await ctx.context.internalAdapter.createVerificationValue({
+						identifier: marker,
+						value: normalizedEmail,
+						expiresAt: new Date(Date.now() + 600_000),
 					});
+					try {
+						await sendLink(
+							email,
+							url,
+							'Sign in to Noura',
+							'Sign in to Noura using this link. It expires in 10 minutes.',
+						);
+					} catch (error) {
+						await ctx.context.internalAdapter.deleteVerificationByIdentifier(marker);
+						throw error;
+					}
 				},
 			}),
 		],

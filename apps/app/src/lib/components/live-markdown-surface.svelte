@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { markdownAssets } from '$lib/pdf/markdown';
+	import { createPointerSelectionTracker } from '$lib/editor/pointer-selection';
 	import { browser } from '$app/environment';
 	import { fromAction } from 'svelte/attachments';
 	import type {
@@ -46,9 +47,11 @@
 
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
 	let selection = $state.raw<EditorSelectionState | null>(null);
+	let selectingWithPointer = $state(false);
 	let mountFailed = $state(false);
 	let popoverOpen = $derived(
 		!readOnly &&
+			!selectingWithPointer &&
 			(selection?.hasFocus ?? false) &&
 			!(selection?.composing ?? false) &&
 			(selection?.to ?? 0) > (selection?.from ?? 0) &&
@@ -80,6 +83,9 @@
 			.then(({ createLiveMarkdownDocument, createLiveMarkdownEditor }) => {
 				if (disposed) return;
 				const document = createLiveMarkdownDocument('markdown', latestValue);
+				const pointerSelection = createPointerSelectionTracker(
+					(active) => (selectingWithPointer = active),
+				);
 				const handle = createLiveMarkdownEditor(node, {
 					ytext: document.ytext,
 					collaborative: !readOnly,
@@ -90,9 +96,49 @@
 						selection = next;
 					},
 				});
+				const content = handle.view.contentDOM;
+				content.addEventListener(
+					'pointerdown',
+					pointerSelection.pointerDown,
+					true,
+				);
+				window.addEventListener(
+					'pointermove',
+					pointerSelection.pointerMove,
+					true,
+				);
+				window.addEventListener('pointerup', pointerSelection.pointerUp, true);
+				window.addEventListener(
+					'pointercancel',
+					pointerSelection.pointerCancel,
+					true,
+				);
+				window.addEventListener('blur', pointerSelection.cancel);
 				editor = handle;
 				onready?.(handle);
 				cleanup = () => {
+					content.removeEventListener(
+						'pointerdown',
+						pointerSelection.pointerDown,
+						true,
+					);
+					window.removeEventListener(
+						'pointermove',
+						pointerSelection.pointerMove,
+						true,
+					);
+					window.removeEventListener(
+						'pointerup',
+						pointerSelection.pointerUp,
+						true,
+					);
+					window.removeEventListener(
+						'pointercancel',
+						pointerSelection.pointerCancel,
+						true,
+					);
+					window.removeEventListener('blur', pointerSelection.cancel);
+					pointerSelection.cancel();
 					handle.destroy();
 					document.destroy();
 				};
@@ -224,7 +270,7 @@
 			></div>
 		{/if}
 		{#if popoverOpen && selection?.anchor}
-			<Popover.Root open={popoverOpen}>
+			<Popover.Root bind:open={() => popoverOpen, () => undefined}>
 				<Popover.Trigger
 					aria-label="Selection formatting"
 					class="fixed size-px opacity-0"
@@ -232,6 +278,8 @@
 				/>
 				<Popover.Content
 					side="top"
+					trapFocus={false}
+					onOpenAutoFocus={(event) => event.preventDefault()}
 					class="w-auto flex-row gap-1 p-1"
 					onpointerdown={(event) => event.preventDefault()}
 				>

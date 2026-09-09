@@ -6,6 +6,7 @@
 	import {
 		session,
 		sendMagicLink,
+		signUpPasskey,
 		signInPasskey,
 		addPasskey,
 		signOut,
@@ -77,7 +78,7 @@
 	>
 {:else}
 	<p class="text-muted-foreground">
-		Use your email or a passkey to connect your desktop.
+		Create an account with a passkey, or sign in to connect your desktop.
 	</p>
 	<form
 		onsubmit={(event) => {
@@ -99,8 +100,16 @@
 					bind:value={email}
 					disabled={busy}
 				/></Field.Field
-			><Button type="submit" disabled={busy}
-				>{busy ? 'Please wait…' : 'Email me a sign-in link'}</Button
+			><Button
+				type="button"
+				disabled={busy}
+				onclick={() =>
+					run(async () => {
+						await signUpPasskey(email, code, invite);
+						notice = 'Passkey created. Check your email to finish creating your account.';
+					})}>{busy ? 'Please wait…' : 'Create account with a passkey'}</Button
+			><Button type="submit" variant="outline" disabled={busy}
+				>Email me a sign-in link</Button
 			></Field.Group
 		>
 	</form>
@@ -113,7 +122,7 @@
 				account = await session();
 				if (account && code) location.assign(devicePath(code));
 				else if (account && invite) location.assign(invite);
-			})}>Sign in with a passkey</Button
+			})}>Use an existing passkey</Button
 	>
 {/if}
 {#if notice}<p role="status" class="text-sm">{notice}</p>{/if}
