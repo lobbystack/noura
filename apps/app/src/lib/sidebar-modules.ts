@@ -18,6 +18,7 @@ export interface SidebarModule {
 }
 
 export const SIDEBAR_MODULES: readonly SidebarModule[] = [
+	{ id: 'projects', pluginId: 'projects', routes: ['/projects'] },
 	{ id: 'tasks-views', pluginId: 'tasks', routes: ['/tasks'] },
 	{ id: 'file-browser', pluginId: 'folders', routes: ['/notes', '/pdf'] },
 ];

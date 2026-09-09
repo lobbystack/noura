@@ -1,4 +1,9 @@
-use std::{io::Write, path::Path};
+use std::{
+    collections::HashMap,
+    io::Write,
+    path::Path,
+    sync::{LazyLock, Mutex},
+};
 
 use age::secrecy::ExposeSecret;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -26,26 +31,109 @@ fn sync_keychain_service() -> &'static str {
         .unwrap_or("org.noura.sync")
 }
 
-impl SyncCredentials for OsSyncCredentials {
-    fn read_optional(&self, reference: &str) -> Result<Option<Zeroizing<String>>> {
-        match keyring::Entry::new(sync_keychain_service(), reference)
-            .and_then(|entry| entry.get_password())
-        {
-            Ok(value) => Ok(Some(Zeroizing::new(value))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(credential_error()),
+// Credentials stay native and zeroizing. Serialize the first lookup as well as
+// writes, so concurrent editor opens and the sync loop cannot prompt together.
+static SESSION_CREDENTIALS: LazyLock<SessionCredentials<KeychainCredentials>> =
+    LazyLock::new(|| SessionCredentials::new(KeychainCredentials));
+
+struct SessionCredentials<S> {
+    store: S,
+    values: Mutex<HashMap<String, Result<Option<Zeroizing<String>>>>>,
+}
+
+impl<S> SessionCredentials<S> {
+    fn new(store: S) -> Self {
+        Self {
+            store,
+            values: Mutex::new(HashMap::new()),
         }
     }
+}
+
+impl<S: SyncCredentials> SyncCredentials for SessionCredentials<S> {
+    fn read_optional(&self, reference: &str) -> Result<Option<Zeroizing<String>>> {
+        let mut values = self.values.lock().map_err(|_| credential_error())?;
+        // Cache absence and access failures too: passive navigation must not
+        // repeatedly retry a denied Keychain prompt. A successful explicit write
+        // refreshes the entry; otherwise access is retried on the next launch.
+        values
+            .entry(reference.to_owned())
+            .or_insert_with(|| self.store.read_optional(reference))
+            .clone()
+    }
     fn read(&self, reference: &str) -> Result<Zeroizing<String>> {
-        keyring::Entry::new(sync_keychain_service(), reference)
-            .and_then(|entry| entry.get_password())
-            .map(Zeroizing::new)
-            .map_err(|_| credential_error())
+        self.read_optional(reference)?.ok_or_else(credential_error)
     }
     fn write(&self, reference: &str, value: &str) -> Result<()> {
-        keyring::Entry::new(sync_keychain_service(), reference)
-            .and_then(|entry| entry.set_password(value))
-            .map_err(|_| credential_error())
+        let mut values = self.values.lock().map_err(|_| credential_error())?;
+        let result = self.store.write(reference, value);
+        // Publish only after Keychain confirms the write. Invalidate any old
+        // cached value on failure rather than exposing an unconfirmed secret.
+        values.insert(
+            reference.to_owned(),
+            result
+                .clone()
+                .map(|()| Some(Zeroizing::new(value.to_owned()))),
+        );
+        result
+    }
+}
+
+impl SyncCredentials for OsSyncCredentials {
+    fn read_optional(&self, reference: &str) -> Result<Option<Zeroizing<String>>> {
+        SESSION_CREDENTIALS.read_optional(reference)
+    }
+    fn read(&self, reference: &str) -> Result<Zeroizing<String>> {
+        SESSION_CREDENTIALS.read(reference)
+    }
+    fn write(&self, reference: &str, value: &str) -> Result<()> {
+        SESSION_CREDENTIALS.write(reference, value)
+    }
+}
+
+struct KeychainCredentials;
+
+// The legacy macOS keychain backend can display authorization UI even during
+// background reads. Serialize this process-wide setting and restore its prior
+// value; refusal remains a credential error, never permission to bypass Keychain.
+fn without_keychain_prompt<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    #[cfg(target_os = "macos")]
+    let _guard = {
+        use security_framework::os::macos::keychain::SecKeychain;
+        static INTERACTION: Mutex<()> = Mutex::new(());
+        let lock = INTERACTION.lock().map_err(|_| credential_error())?;
+        let interaction =
+            if SecKeychain::user_interaction_allowed().map_err(|_| credential_error())? {
+                Some(SecKeychain::disable_user_interaction().map_err(|_| credential_error())?)
+            } else {
+                None
+            };
+        (interaction, lock)
+    };
+    operation()
+}
+
+impl SyncCredentials for KeychainCredentials {
+    fn read_optional(&self, reference: &str) -> Result<Option<Zeroizing<String>>> {
+        without_keychain_prompt(|| {
+            match keyring::Entry::new(sync_keychain_service(), reference)
+                .and_then(|entry| entry.get_password())
+            {
+                Ok(value) => Ok(Some(Zeroizing::new(value))),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(_) => Err(credential_error()),
+            }
+        })
+    }
+    fn read(&self, reference: &str) -> Result<Zeroizing<String>> {
+        self.read_optional(reference)?.ok_or_else(credential_error)
+    }
+    fn write(&self, reference: &str, value: &str) -> Result<()> {
+        without_keychain_prompt(|| {
+            keyring::Entry::new(sync_keychain_service(), reference)
+                .and_then(|entry| entry.set_password(value))
+                .map_err(|_| credential_error())
+        })
     }
 }
 
@@ -495,6 +583,120 @@ mod tests {
                 std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
                 0o600
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Store {
+        reads: AtomicUsize,
+        denied: AtomicBool,
+        value: Mutex<Option<Zeroizing<String>>>,
+    }
+    impl SyncCredentials for Store {
+        fn read(&self, reference: &str) -> Result<Zeroizing<String>> {
+            self.read_optional(reference)?.ok_or_else(credential_error)
+        }
+        fn read_optional(&self, _: &str) -> Result<Option<Zeroizing<String>>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.denied.load(Ordering::SeqCst) {
+                return Err(credential_error());
+            }
+            Ok(self.value.lock().unwrap().clone())
+        }
+        fn write(&self, _: &str, value: &str) -> Result<()> {
+            if self.denied.load(Ordering::SeqCst) {
+                return Err(credential_error());
+            }
+            *self.value.lock().unwrap() = Some(Zeroizing::new(value.to_owned()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn concurrent_navigation_reads_keychain_only_once() {
+        let cache = SessionCredentials::new(Store::default());
+        *cache.store.value.lock().unwrap() = Some(Zeroizing::new("secret".into()));
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| assert_eq!(&*cache.read("device").unwrap(), "secret"));
+            }
+        });
+        assert_eq!(cache.store.reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn denied_requests_do_not_prompt_again_on_every_read() {
+        let cache = SessionCredentials::new(Store::default());
+        cache.store.denied.store(true, Ordering::SeqCst);
+        for _ in 0..10 {
+            assert_eq!(
+                cache.read("device").unwrap_err().code,
+                "sync_credentials_unavailable"
+            );
+        }
+        assert_eq!(cache.store.reads.load(Ordering::SeqCst), 1);
+        cache.store.denied.store(false, Ordering::SeqCst);
+        cache.write("device", "new secret").unwrap();
+        assert_eq!(&*cache.read("device").unwrap(), "new secret");
+    }
+
+    #[test]
+    fn absence_is_cached_and_sign_in_and_sign_out_refresh_the_cache() {
+        let cache = SessionCredentials::new(Store::default());
+        for _ in 0..10 {
+            assert!(cache.read_optional("connection").unwrap().is_none());
+        }
+        assert_eq!(cache.store.reads.load(Ordering::SeqCst), 1);
+        cache.write("connection", "connected").unwrap();
+        assert_eq!(&*cache.read("connection").unwrap(), "connected");
+        assert_eq!(
+            &**cache.store.value.lock().unwrap().as_ref().unwrap(),
+            "connected"
+        );
+        cache.write("connection", "null").unwrap();
+        assert_eq!(&*cache.read("connection").unwrap(), "null");
+    }
+
+    #[test]
+    fn failed_writes_never_publish_the_new_secret() {
+        let cache = SessionCredentials::new(Store::default());
+        cache.write("device", "old secret").unwrap();
+        cache.store.denied.store(true, Ordering::SeqCst);
+        assert!(cache.write("device", "unconfirmed secret").is_err());
+        assert!(cache.read("device").is_err());
+        assert_eq!(
+            &**cache.store.value.lock().unwrap().as_ref().unwrap(),
+            "old secret"
+        );
+        assert_eq!(cache.store.reads.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod noninteractive_keychain_tests {
+    use super::*;
+    use security_framework::os::macos::keychain::SecKeychain;
+
+    #[test]
+    fn operations_disable_prompts_and_restore_state_after_success_and_failure() {
+        let original = SecKeychain::user_interaction_allowed().unwrap();
+        for fail in [false, true] {
+            let result = without_keychain_prompt(|| {
+                assert!(!SecKeychain::user_interaction_allowed().unwrap());
+                if fail {
+                    Err(credential_error())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), original);
         }
     }
 }

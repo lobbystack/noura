@@ -2,6 +2,7 @@
 	import { workspace } from '$lib/state.svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { toast } from 'svelte-sonner';
 	import CaretDown from 'phosphor-svelte/lib/CaretDown';
 	import Check from 'phosphor-svelte/lib/Check';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
@@ -14,10 +15,15 @@
 		if (open) void workspace.refreshRecents();
 	}
 
-	function switchWorkspace(path: string) {
+	async function switchWorkspace(path: string, name: string) {
 		if (workspace.isLoading) return;
 		menuOpen = false;
-		void workspace.open(path);
+		if (await workspace.open(path)) return;
+		toast.error(`Could not open “${name}”`, {
+			description:
+				workspace.error ??
+				'The folder may no longer be available or may not be a Noura workspace.',
+		});
 	}
 </script>
 
@@ -27,8 +33,8 @@
 			<Button
 				{...props}
 				variant="ghost"
-				size="sm"
-				class="max-w-64 text-foreground"
+				size="xs"
+				class="max-w-48 text-foreground"
 				aria-label="Switch workspace. Current workspace: {workspace.name}"
 			>
 				<FolderOpen data-icon="inline-start" />
@@ -46,7 +52,7 @@
 				<DropdownMenu.Item
 					disabled={active || workspace.isLoading}
 					textValue={recent.name}
-					onSelect={() => switchWorkspace(recent.path)}
+					onSelect={() => switchWorkspace(recent.path, recent.name)}
 				>
 					<FolderOpen />
 					<span class="flex min-w-0 flex-1 flex-col gap-0.5">

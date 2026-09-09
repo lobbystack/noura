@@ -6,7 +6,7 @@
 
 use std::{
     collections::{HashMap, hash_map::Entry},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -330,6 +330,48 @@ fn load_recent(app: &AppHandle) -> Vec<RecentWorkspace> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
 }
+
+fn recent_workspace_at_path<'a>(
+    recent: &'a [RecentWorkspace],
+    path: &str,
+) -> Option<&'a RecentWorkspace> {
+    let requested = Path::new(path).canonicalize().ok()?;
+    recent.iter().find(|workspace| {
+        Path::new(&workspace.path)
+            .canonicalize()
+            .is_ok_and(|candidate| candidate == requested)
+    })
+}
+
+fn workspace_name_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Workspace")
+        .to_owned()
+}
+
+// The path locates the last workspace; its manifest ID establishes identity.
+// Do not silently open an older entry or a different workspace at a reused path.
+fn restore_last_workspace(
+    recent: &[RecentWorkspace],
+    open: impl FnOnce(&RecentWorkspace) -> Result<WorkspaceEngine, CoreError>,
+) -> Result<Option<WorkspaceEngine>, CoreError> {
+    let Some(last) = recent.first() else {
+        return Ok(None);
+    };
+    let engine = open(last)?;
+    if engine.manifest().id != last.workspace_id {
+        return Err(CoreError::validation(
+            "workspace_identity_changed",
+            "The last workspace is no longer at its saved location",
+            "workspace_restore",
+        ));
+    }
+    Ok(Some(engine))
+}
+
 fn save_recent(app: &AppHandle, workspace: &WorkspaceEngine) -> Result<(), CoreError> {
     let path = recent_path(app)?;
     if let Some(parent) = path.parent() {
@@ -385,7 +427,20 @@ fn workspace_open(
     state: State<AppState>,
     input: OpenWorkspaceInput,
 ) -> Result<WorkspaceState, CoreError> {
-    let engine = WorkspaceEngine::open(&input.path)?;
+    let recent = load_recent(&app);
+    let registered = recent_workspace_at_path(&recent, &input.path);
+    let name = registered
+        .map(|workspace| workspace.name.clone())
+        .unwrap_or_else(|| workspace_name_from_path(&input.path));
+    let workspace_id = registered.map(|workspace| workspace.workspace_id.as_str());
+    let engine = WorkspaceEngine::open_or_initialize(&input.path, &name, workspace_id)?;
+    if workspace_id.is_some_and(|workspace_id| workspace_id != engine.manifest().id) {
+        return Err(CoreError::validation(
+            "workspace_identity_changed",
+            "The selected workspace is no longer at its saved location",
+            "workspace_open",
+        ));
+    }
     let value = engine.state();
     save_recent(&app, &engine)?;
     let engine = Arc::new(engine);
@@ -1265,6 +1320,30 @@ pub fn run() {
                 )
             })?;
             app.manage(AppState::new(root));
+            // Restore before the frontend asks for workspace_state, avoiding a
+            // chooser flash or a late restore replacing a user's selection.
+            match restore_last_workspace(&load_recent(app.handle()), |workspace| {
+                WorkspaceEngine::open_or_initialize(
+                    &workspace.path,
+                    &workspace.name,
+                    Some(&workspace.workspace_id),
+                )
+            }) {
+                Ok(Some(engine)) => {
+                    let engine = Arc::new(engine);
+                    *app.state::<AppState>()
+                        .engine
+                        .lock()
+                        .map_err(|_| unavailable("workspace_restore"))? = Some(engine.clone());
+                    forward_events(app.handle().clone(), engine);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    // An unavailable disk or invalid workspace must not prevent
+                    // launch. The ordinary chooser remains available to recover.
+                    eprintln!("Last workspace could not be restored: {}", error.code);
+                }
+            }
             sync_commands::start(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1480,5 +1559,108 @@ mod runtime_spike_tests {
 
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod workspace_restore_tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            Self(std::env::temp_dir().join(format!("noura-restore-{}", uuid::Uuid::new_v4())))
+        }
+        fn create(&self, name: &str) -> RecentWorkspace {
+            let path = self.0.join(name);
+            let engine =
+                WorkspaceEngine::create_with_app_data(&path, name, self.0.join("cache")).unwrap();
+            RecentWorkspace {
+                path: path.to_str().unwrap().into(),
+                name: name.into(),
+                workspace_id: engine.manifest().id,
+            }
+        }
+        fn open(&self, path: &str) -> Result<WorkspaceEngine, CoreError> {
+            WorkspaceEngine::open_with_app_data(path, self.0.join("cache"))
+        }
+        fn open_or_initialize(
+            &self,
+            workspace: &RecentWorkspace,
+        ) -> Result<WorkspaceEngine, CoreError> {
+            WorkspaceEngine::open_or_initialize_with_app_data(
+                &workspace.path,
+                &workspace.name,
+                Some(&workspace.workspace_id),
+                self.0.join("cache"),
+            )
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn startup_reopens_the_most_recent_workspace() {
+        let fixture = Fixture::new();
+        let older = fixture.create("older");
+        let last = fixture.create("last");
+        let expected = last.workspace_id.clone();
+        let engine =
+            restore_last_workspace(&[last, older], |workspace| fixture.open(&workspace.path))
+                .unwrap()
+                .unwrap();
+        assert_eq!(engine.manifest().id, expected);
+    }
+    #[test]
+    fn first_launch_does_not_attempt_to_open_a_workspace() {
+        assert!(
+            restore_last_workspace(&[], |_| panic!("no workspace to open"))
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn missing_last_workspace_does_not_open_an_older_one_or_recreate_it() {
+        let fixture = Fixture::new();
+        let older = fixture.create("older");
+        let last = fixture.create("last");
+        std::fs::remove_dir_all(&last.path).unwrap();
+        let path = PathBuf::from(&last.path);
+        assert!(
+            restore_last_workspace(&[last, older], |workspace| fixture.open(&workspace.path))
+                .is_err()
+        );
+        assert!(!path.exists());
+    }
+    #[test]
+    fn missing_manifest_is_recreated_with_saved_identity() {
+        let fixture = Fixture::new();
+        let last = fixture.create("last");
+        let expected = last.workspace_id.clone();
+        std::fs::remove_file(Path::new(&last.path).join("workspace.yaml")).unwrap();
+        std::fs::remove_dir_all(Path::new(&last.path).join(".noura")).unwrap();
+
+        let engine = restore_last_workspace(std::slice::from_ref(&last), |workspace| {
+            fixture.open_or_initialize(workspace)
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(engine.manifest().id, expected);
+        assert!(Path::new(&last.path).join(".noura/trash").is_dir());
+    }
+    #[test]
+    fn reused_path_does_not_restore_a_different_workspace() {
+        let fixture = Fixture::new();
+        let mut last = fixture.create("last");
+        last.workspace_id = "different-workspace".into();
+        let Err(error) = restore_last_workspace(&[last], |workspace| fixture.open(&workspace.path))
+        else {
+            panic!("identity mismatch must be rejected")
+        };
+        assert_eq!(error.code, "workspace_identity_changed");
     }
 }

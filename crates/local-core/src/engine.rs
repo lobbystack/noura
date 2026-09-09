@@ -410,6 +410,7 @@ impl WorkspaceEngine {
             ],
             ignore: Vec::new(),
         };
+        validate_manifest(&manifest, "workspace_create")?;
         let bytes = serde_yaml_ng::to_string(&manifest).map_err(|_| {
             CoreError::new(
                 "manifest_serialize_failed",
@@ -428,6 +429,48 @@ impl WorkspaceEngine {
         std::fs::create_dir_all(&trash)
             .map_err(|error| CoreError::io(error, "workspace_create", canonical.to_str()))?;
         Self::open_with_app_data(canonical, app_data)
+    }
+
+    /// Opens a workspace, initializing Noura metadata when an existing
+    /// directory has no `workspace.yaml`. A saved identity can be supplied
+    /// when repairing a previously registered workspace.
+    pub fn open_or_initialize(
+        root: impl AsRef<Path>,
+        name: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<Self> {
+        let app_data = directories::ProjectDirs::from("org", "noura", "Noura")
+            .ok_or_else(|| {
+                CoreError::new(
+                    "app_data_unavailable",
+                    ErrorCategory::Filesystem,
+                    "The operating system application-data directory is unavailable",
+                    "workspace_open",
+                )
+            })?
+            .data_local_dir()
+            .to_owned();
+        Self::open_or_initialize_with_app_data(root, name, workspace_id, app_data)
+    }
+
+    pub fn open_or_initialize_with_app_data(
+        root: impl AsRef<Path>,
+        name: &str,
+        workspace_id: Option<&str>,
+        app_data: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let root = root
+            .as_ref()
+            .canonicalize()
+            .map_err(|error| CoreError::io(error, "workspace_open", root.as_ref().to_str()))?;
+        if root
+            .join("workspace.yaml")
+            .try_exists()
+            .map_err(|error| CoreError::io(error, "workspace_open", Some("workspace.yaml")))?
+        {
+            return Self::open_with_app_data(root, app_data);
+        }
+        Self::create_with_identity(root, name, app_data, workspace_id)
     }
 
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -2369,6 +2412,14 @@ impl WorkspaceEngine {
                 continue;
             }
             let relative_path = normalized_relative_path(&self.root, entry.path(), "files_list")?;
+            // Dot-prefixed paths are normal workspace files, but are hidden from
+            // the user-facing file browser (including their descendants).
+            if relative_path
+                .split('/')
+                .any(|component| component.starts_with('.'))
+            {
+                continue;
+            }
             let name = entry
                 .file_name()
                 .to_str()
@@ -4780,6 +4831,82 @@ mod tests {
             std::fs::read_to_string(workspace.path().join("workspace.yaml")).unwrap(),
             "sentinel"
         );
+    }
+
+    #[test]
+    fn open_or_initialize_adds_metadata_to_an_existing_folder() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        std::fs::write(workspace.path().join("existing.md"), "# Existing\n").unwrap();
+
+        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
+            workspace.path(),
+            "Existing notes",
+            None,
+            app_data.path(),
+        )
+        .unwrap();
+
+        assert_eq!(engine.manifest().name, "Existing notes");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("existing.md")).unwrap(),
+            "# Existing\n"
+        );
+        assert!(workspace.path().join(".noura/trash").is_dir());
+    }
+
+    #[test]
+    fn open_or_initialize_does_not_create_a_missing_folder() {
+        let parent = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let workspace = parent.path().join("missing");
+
+        let error = WorkspaceEngine::open_or_initialize_with_app_data(
+            &workspace,
+            "Missing",
+            None,
+            app_data.path(),
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(error.operation, "workspace_open");
+        assert!(!workspace.exists());
+    }
+
+    #[test]
+    fn open_or_initialize_reuses_a_saved_workspace_identity() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let workspace_id = "workspace_01j00000000000000000000000";
+
+        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
+            workspace.path(),
+            "Recovered",
+            Some(workspace_id),
+            app_data.path(),
+        )
+        .unwrap();
+
+        assert_eq!(engine.manifest().id, workspace_id);
+    }
+
+    #[test]
+    fn open_or_initialize_rejects_an_invalid_saved_identity_before_writing() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+
+        let error = WorkspaceEngine::open_or_initialize_with_app_data(
+            workspace.path(),
+            "Recovered",
+            Some("../../outside"),
+            app_data.path(),
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(error.code, "invalid_workspace_id");
+        assert!(!workspace.path().join("workspace.yaml").exists());
     }
 
     #[test]

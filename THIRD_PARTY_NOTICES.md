@@ -85,3 +85,30 @@ SOFTWARE.
 PDF.js 6.3.289, Copyright Mozilla Foundation and contributors, is licensed under Apache-2.0. The complete license ships at `pdfjs/LICENSE`. Adobe CMaps, PDFium/Foxit fonts, and the PDFium JBIG2 decoder use BSD-3-Clause; OpenJPEG uses BSD-2-Clause; qcms uses MIT; ICC profiles use CC0-1.0. Their complete notices ship alongside their assets in `pdfjs/cmaps`, `pdfjs/standard_fonts`, `pdfjs/wasm`, and `pdfjs/iccs`.
 
 Liberation Sans 2.1.5, digitized data Copyright 2010 Google Corporation and Copyright 2012 Red Hat, Inc., uses SIL Open Font License 1.1. Unmodified fonts and the complete license ship in `pdfjs/standard_fonts`; the source license is also retained in `apps/app/vendor/pdf-fonts/LICENSE`. The older GPL Liberation files from the PDF.js package are excluded from the application bundle. See `docs/provenance/pdfjs.md` for exact sources and revisions.
+
+## security-framework 3.7.0 (macOS Keychain interaction)
+
+Native credential access uses the MIT option of the MIT/Apache-2.0 licensed
+`security-framework` dependency from https://github.com/kornelski/rust-security-framework.
+The version and checksum are pinned in Cargo.lock. No implementation source was copied.
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Steven Fackler
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

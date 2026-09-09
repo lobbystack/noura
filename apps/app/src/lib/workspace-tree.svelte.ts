@@ -17,9 +17,11 @@ class WorkspaceTreeStore {
 
 	#projection: LiveProjection | undefined;
 	#refreshSequence = 0;
+	#workspaceId: string | null | undefined;
 
-	async start(): Promise<void> {
+	async start(workspaceId: string | null | undefined): Promise<void> {
 		if (!browser) return;
+		this.#workspaceChanged(workspaceId);
 		this.#projection ??= new LiveProjection({
 			refresh: () => this.refresh(),
 			subscribe: (handler) => getNouraClient().events.subscribe(handler),
@@ -50,6 +52,20 @@ class WorkspaceTreeStore {
 		} finally {
 			if (sequence === this.#refreshSequence) this.loading = false;
 		}
+	}
+
+	/** Clear an outdated projection before reading the newly active workspace. */
+	#workspaceChanged(workspaceId: string | null | undefined): void {
+		if (workspaceId === this.#workspaceId) return;
+		this.#workspaceId = workspaceId;
+		this.#refreshSequence += 1;
+		this.tree = [];
+		this.expanded.clear();
+		if (workspaceId === null || workspaceId === undefined) {
+			this.loading = false;
+			return;
+		}
+		this.loading = true;
 	}
 
 	toggle(path: string) {

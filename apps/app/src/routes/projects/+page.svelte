@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { getRouteSidebar } from '$lib/route-sidebar.svelte';
+	const routeSidebar = getRouteSidebar();
+	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { afterNavigate, replaceState } from '$app/navigation';
@@ -285,58 +288,74 @@
 	});
 </script>
 
-<div class="flex min-h-0 flex-1">
-	<aside
-		class="flex w-72 shrink-0 flex-col border-r border-border bg-background"
-	>
-		<header class="flex min-h-16 items-center justify-between px-4">
-			<div>
-				<h1 class="text-lg font-semibold">Projects</h1>
-				<p class="text-xs text-muted-foreground">{summaries.length} projects</p>
-			</div>
-			<Button
-				size="icon-sm"
-				onclick={() => void create()}
-				aria-label="New project"><Plus /></Button
-			>
-		</header>
-		<Separator />
-		{#if loading}<div class="flex flex-col gap-1 p-2">
-				{#each [0, 1, 2] as item (item)}<Skeleton class="h-14 w-full" />{/each}
-			</div>
-		{:else if summaries.length === 0}<EmptyState
-				icon={FolderOpen}
-				title="No projects"
-				description="Organize work with projects."
-				actionLabel="New project"
-				onAction={create}
-			/>
-		{:else}<nav
-				class="min-h-0 flex-1 overflow-y-auto p-2"
-				aria-label="Projects"
-			>
-				{#each summaries as summary (summary.project.id)}<button
-						class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-muted/50 {selectedId ===
-						summary.project.id
-							? 'bg-muted'
-							: ''}"
-						onclick={() => void select(summary.project)}
-						><div class="min-w-0 flex-1">
-							<span class="block truncate text-sm font-medium"
-								>{summary.project.title}</span
-							><span class="text-xs text-muted-foreground"
-								>{summary.taskCount} task{summary.taskCount === 1
-									? ''
-									: 's'}</span
-							>
-						</div>
-						<Badge variant={statusVariant(summary.project.properties.status)}
-							>{String(summary.project.properties.status ?? 'planned')}</Badge
-						></button
-					>{/each}
-			</nav>{/if}
-	</aside>
+{#snippet projectSidebar()}
+	<Sidebar.SidebarGroup>
+		<Sidebar.SidebarGroupLabel
+			>Projects <span class="ml-2 font-normal">{summaries.length}</span
+			></Sidebar.SidebarGroupLabel
+		>
+		<Sidebar.SidebarGroupAction
+			onclick={() => void create()}
+			aria-label="New project"
+			title="New project"><Plus /></Sidebar.SidebarGroupAction
+		>
+		<Sidebar.SidebarGroupContent>
+			{#if loading}
+				<div class="flex flex-col gap-1">
+					{#each [0, 1, 2] as item (item)}<Skeleton
+							class="h-12 w-full"
+						/>{/each}
+				</div>
+			{:else if summaries.length === 0}
+				<EmptyState
+					icon={FolderOpen}
+					title="No projects"
+					description="Organize work with projects."
+					actionLabel="New project"
+					onAction={create}
+				/>
+			{:else}
+				<nav aria-label="Projects">
+					<Sidebar.SidebarMenu>
+						{#each summaries as summary (summary.project.id)}
+							<Sidebar.SidebarMenuItem>
+								<Sidebar.SidebarMenuButton
+									size="lg"
+									isActive={selectedId === summary.project.id}
+									onclick={() => void select(summary.project)}
+									title={summary.project.title}
+								>
+									<div class="min-w-0 flex-1">
+										<span class="block truncate text-xs font-medium"
+											>{summary.project.title}</span
+										>
+										<span class="text-xs text-muted-foreground"
+											>{summary.taskCount} task{summary.taskCount === 1
+												? ''
+												: 's'}</span
+										>
+									</div>
+									<Badge
+										class="max-w-20 shrink-0 truncate"
+										variant={statusVariant(summary.project.properties.status)}
+										>{String(
+											summary.project.properties.status ?? 'planned',
+										)}</Badge
+									>
+								</Sidebar.SidebarMenuButton>
+							</Sidebar.SidebarMenuItem>
+						{/each}
+					</Sidebar.SidebarMenu>
+				</nav>
+			{/if}
+		</Sidebar.SidebarGroupContent>
+	</Sidebar.SidebarGroup>
+{/snippet}
 
+<div
+	class="flex min-h-0 flex-1"
+	{@attach () => routeSidebar.mount(projectSidebar)}
+>
 	<main class="flex min-w-0 flex-1 flex-col">
 		{#if !selected}<EmptyState
 				icon={FolderOpen}

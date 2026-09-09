@@ -116,19 +116,20 @@ class WorkspaceStore {
 		}
 	}
 
-	async open(path: string) {
+	async open(path: string): Promise<boolean> {
 		const requestSequence = ++this.#requestSequence;
 		this.loadingState = true;
 		this.errorMessage = null;
 		try {
 			const data = await getNouraClient().workspaces.open({ path });
-			if (requestSequence === this.#requestSequence) {
-				this.data = data;
-				await this.refreshRecents();
-			}
+			if (requestSequence !== this.#requestSequence) return false;
+			this.data = data;
+			await this.refreshRecents();
+			return true;
 		} catch (error) {
 			if (requestSequence === this.#requestSequence)
 				this.errorMessage = errorMessage(error);
+			return false;
 		} finally {
 			if (requestSequence === this.#requestSequence) this.loadingState = false;
 		}

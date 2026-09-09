@@ -1,5 +1,7 @@
 <script lang="ts">
 	import '../app.css';
+	import { RouteSidebar, setRouteSidebar } from '$lib/route-sidebar.svelte';
+	setRouteSidebar(new RouteSidebar());
 	import TabsBar from '$lib/components/tabs-bar.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import AppRail from '$lib/components/app-rail.svelte';
@@ -125,7 +127,7 @@
 
 <div class="flex h-svh min-h-0 flex-col overflow-hidden">
 	<header
-		class="flex h-12 shrink-0 items-center border-b border-border/60 bg-background"
+		class="flex h-(--app-titlebar-height) shrink-0 items-center border-b border-border/60 bg-background"
 		data-tauri-drag-region
 	>
 		<div class="w-[4.75rem] shrink-0" data-tauri-drag-region></div>

@@ -3,6 +3,8 @@
 	import { plugins } from '$lib/plugins.svelte';
 	import { sidebarModuleFor } from '$lib/sidebar-modules';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import { getRouteSidebar } from '$lib/route-sidebar.svelte';
+	const routeSidebar = getRouteSidebar();
 	import TasksViews from '$lib/components/sidebar/tasks-views.svelte';
 	import FileBrowser from '$lib/components/sidebar/file-browser.svelte';
 
@@ -24,12 +26,11 @@
 
 <Sidebar.Sidebar
 	class="md:start-14"
-	style="top: 3rem; height: calc(100svh - 3rem);"
+	style="top: var(--app-titlebar-height); height: calc(100svh - var(--app-titlebar-height));"
 	collapsible="offcanvas"
 >
 	<Sidebar.SidebarContent>
-		{#if Section}
-			<Section />
-		{/if}
+		{#if Section}<Section
+			/>{:else if activeModule?.id === 'projects'}{@render routeSidebar.content?.()}{/if}
 	</Sidebar.SidebarContent>
 </Sidebar.Sidebar>

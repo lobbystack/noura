@@ -1,15 +1,15 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
-	import { onMount } from 'svelte';
 	import { workspaceTree } from '$lib/workspace-tree.svelte';
+	import { workspace } from '$lib/state.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import TreeNode from '$lib/components/tree-node.svelte';
-
-	onMount(() => {
-		if (browser) void workspaceTree.start();
-	});
+	import WorkspaceTreeRefresh from './workspace-tree-refresh.svelte';
 </script>
+
+{#key workspace.state?.workspaceId}
+	<WorkspaceTreeRefresh workspaceId={workspace.state?.workspaceId} />
+{/key}
 
 <Sidebar.SidebarGroup class="h-full">
 	<Sidebar.SidebarGroupLabel>Workspace files</Sidebar.SidebarGroupLabel>

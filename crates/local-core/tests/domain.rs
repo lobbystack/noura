@@ -1194,6 +1194,24 @@ fn workspace_entries_apply_manifest_ignores_and_reserved_paths() {
 }
 
 #[test]
+fn workspace_entries_hide_dot_prefixed_paths() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join(".DS_Store"), "metadata").unwrap();
+    std::fs::create_dir_all(workspace.path().join(".metadata")).unwrap();
+    std::fs::write(workspace.path().join(".metadata/preferences.json"), "{}").unwrap();
+    std::fs::write(workspace.path().join("visible.txt"), "visible").unwrap();
+
+    let paths = engine
+        .list_workspace_entries()
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.relative_path)
+        .collect::<Vec<_>>();
+
+    assert_eq!(paths, vec!["visible.txt"]);
+}
+
+#[test]
 fn external_move_preserves_managed_identity_in_workspace_entries() {
     let (workspace, _app_data, engine) = engine();
     let note = engine
