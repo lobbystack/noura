@@ -1,5 +1,9 @@
 <script lang="ts">
 	import '../app.css';
+	import { ModeWatcher } from 'mode-watcher';
+	import { SettingsDialog, setSettingsDialog } from '$lib/settings.svelte';
+	import SettingsModal from '$lib/components/settings/settings-dialog.svelte';
+	setSettingsDialog(new SettingsDialog());
 	import { RouteSidebar, setRouteSidebar } from '$lib/route-sidebar.svelte';
 	setRouteSidebar(new RouteSidebar());
 	import TabsBar from '$lib/components/tabs-bar.svelte';
@@ -121,17 +125,25 @@
 	});
 </script>
 
+<ModeWatcher />
+
 <svelte:head>
 	<title>{workspace.name}</title>
 </svelte:head>
 
 <div class="flex h-svh min-h-0 flex-col overflow-hidden">
 	<header
-		class="flex h-(--app-titlebar-height) shrink-0 items-center border-b border-border/60 bg-background"
+		class="flex h-(--app-titlebar-height) shrink-0 items-center border-b border-sidebar-border bg-sidebar"
 		data-tauri-drag-region
 	>
-		<div class="w-[4.75rem] shrink-0" data-tauri-drag-region></div>
-		<WorkspaceSwitcher />
+		{#if !showSidebar}
+			<div
+				class="ml-14 flex h-full w-56 shrink-0 items-center pr-2 pl-6"
+				data-tauri-drag-region
+			>
+				<WorkspaceSwitcher />
+			</div>
+		{/if}
 	</header>
 
 	{#if browser && workspace.isReady}
@@ -174,4 +186,5 @@
 	{/if}
 </div>
 
+<SettingsModal />
 <Toaster />

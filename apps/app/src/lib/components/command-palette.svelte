@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { getSettingsDialog } from '$lib/settings.svelte';
+	const settings = getSettingsDialog();
 	import { goto } from '$app/navigation';
 	import { onDestroy } from 'svelte';
 	import { toast } from 'svelte-sonner';
@@ -119,7 +121,8 @@
 
 	async function openRoute(route: string) {
 		commandPalette.close();
-		await goto(route);
+		if (route === '/settings') settings.show();
+		else await goto(route);
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -133,6 +136,11 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <Command.Dialog
+	contentProps={{
+		onCloseAutoFocus: (event) => {
+			if (settings.open) event.preventDefault();
+		},
+	}}
 	bind:open={commandPalette.open}
 	shouldFilter={false}
 	title="Search and commands"
@@ -159,6 +167,10 @@
 			</Command.Group>
 		{:else}
 			<Command.Group heading="Actions">
+				{#if 'settings'.includes(query.trim().toLowerCase())}<Command.Item
+						value="action:settings"
+						onSelect={() => void openRoute('/settings')}>Settings</Command.Item
+					>{/if}
 				{#if plugins.isEnabled('notes')}
 					<Command.Item
 						value="action:new-note"

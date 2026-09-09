@@ -7,6 +7,7 @@
 	const routeSidebar = getRouteSidebar();
 	import TasksViews from '$lib/components/sidebar/tasks-views.svelte';
 	import FileBrowser from '$lib/components/sidebar/file-browser.svelte';
+	import WorkspaceSwitcher from '$lib/components/workspace-switcher.svelte';
 
 	const SECTION_COMPONENTS: Record<
 		string,
@@ -24,11 +25,13 @@
 	);
 </script>
 
-<Sidebar.Sidebar
-	class="md:start-14"
-	style="top: var(--app-titlebar-height); height: calc(100svh - var(--app-titlebar-height));"
-	collapsible="offcanvas"
->
+<Sidebar.Sidebar class="md:start-14" collapsible="offcanvas">
+	<Sidebar.SidebarHeader
+		class="h-(--app-titlebar-height) shrink-0 justify-center border-b border-sidebar-border pr-2 pl-6 py-0"
+		data-tauri-drag-region
+	>
+		<WorkspaceSwitcher />
+	</Sidebar.SidebarHeader>
 	<Sidebar.SidebarContent>
 		{#if Section}<Section
 			/>{:else if activeModule?.id === 'projects'}{@render routeSidebar.content?.()}{/if}

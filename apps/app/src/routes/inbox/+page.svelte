@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { getSettingsDialog } from '$lib/settings.svelte';
+	const settings = getSettingsDialog();
 	import { browser } from '$app/environment';
 	import { toast } from 'svelte-sonner';
 	import { dashboard, daypartGreeting, dueLabel } from '$lib/dashboard.svelte';
@@ -297,7 +299,7 @@
 					<Empty.Title>Turn on your first modules to get started</Empty.Title>
 				</Empty.Header>
 				<Empty.Content>
-					<Button href="/settings" variant="outline" size="sm">
+					<Button onclick={() => settings.show()} variant="outline" size="sm">
 						Open settings
 					</Button>
 				</Empty.Content>

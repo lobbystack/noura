@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { getSettingsDialog } from '$lib/settings.svelte';
+	const settings = getSettingsDialog();
 	import { aiChats } from '$lib/ai/chat-store.svelte';
 	import { messageLabel } from '$lib/ai/chat-projection';
 	import MarkdownPreview from '$lib/components/markdown-preview.svelte';
@@ -186,7 +187,7 @@
 					</Empty.Description>
 				</Empty.Header>
 				<Empty.Content>
-					<Button onclick={() => goto('/settings')}>Open AI settings</Button>
+					<Button onclick={() => settings.show()}>Manage plugins</Button>
 				</Empty.Content>
 			</Empty.Root>
 		{:else if !aiChats.read}

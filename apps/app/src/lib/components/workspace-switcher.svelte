@@ -1,9 +1,11 @@
 <script lang="ts">
+	import { getSettingsDialog } from '$lib/settings.svelte';
+	import GearSix from 'phosphor-svelte/lib/GearSix';
+	const settings = getSettingsDialog();
 	import { workspace } from '$lib/state.svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { toast } from 'svelte-sonner';
-	import CaretDown from 'phosphor-svelte/lib/CaretDown';
 	import Check from 'phosphor-svelte/lib/Check';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
 	import Plus from 'phosphor-svelte/lib/Plus';
@@ -33,18 +35,23 @@
 			<Button
 				{...props}
 				variant="ghost"
-				size="xs"
-				class="max-w-48 text-foreground"
+				size="sm"
+				class="w-full min-w-0 justify-start"
 				aria-label="Switch workspace. Current workspace: {workspace.name}"
 			>
 				<FolderOpen data-icon="inline-start" />
-				<span class="truncate">{workspace.name}</span>
-				<CaretDown data-icon="inline-end" weight="bold" />
+				<span class="min-w-0 flex-1 truncate text-left">{workspace.name}</span>
 			</Button>
 		{/snippet}
 	</DropdownMenu.Trigger>
 
-	<DropdownMenu.Content class="w-80" align="start">
+	<DropdownMenu.Content
+		class="w-80"
+		align="start"
+		onCloseAutoFocus={(event) => {
+			if (settings.open) event.preventDefault();
+		}}
+	>
 		<DropdownMenu.Label>Workspaces</DropdownMenu.Label>
 		<DropdownMenu.Group>
 			{#each workspace.recents as recent (recent.workspaceId)}
@@ -68,6 +75,17 @@
 			{/each}
 		</DropdownMenu.Group>
 
+		<DropdownMenu.Separator />
+		<DropdownMenu.Group
+			><DropdownMenu.Item
+				onSelect={() => {
+					menuOpen = false;
+					settings.show();
+				}}
+				><GearSix />Settings<DropdownMenu.Shortcut>⌘,</DropdownMenu.Shortcut
+				></DropdownMenu.Item
+			></DropdownMenu.Group
+		>
 		<DropdownMenu.Separator />
 		<DropdownMenu.Group>
 			<DropdownMenu.Item

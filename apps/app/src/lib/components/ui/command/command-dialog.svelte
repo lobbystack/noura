@@ -16,12 +16,14 @@
 		description = 'Search for a command to run...',
 		showCloseButton = false,
 		portalProps,
+		contentProps,
 		children,
 		class: className,
 		...restProps
 	}: WithoutChildrenOrChild<DialogPrimitive.RootProps> &
 		WithoutChildrenOrChild<CommandPrimitive.RootProps> & {
 			portalProps?: DialogPrimitive.PortalProps;
+			contentProps?: WithoutChildrenOrChild<DialogPrimitive.ContentProps>;
 			children: Snippet;
 			title?: string;
 			description?: string;
@@ -36,6 +38,7 @@
 		<Dialog.Description>{description}</Dialog.Description>
 	</Dialog.Header>
 	<Dialog.Content
+		{...contentProps}
 		class={cn(
 			'rounded-3xl! p-0 top-1/3 translate-y-0 overflow-hidden p-0',
 			className,

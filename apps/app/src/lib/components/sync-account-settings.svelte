@@ -16,9 +16,11 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Checkbox } from '$lib/components/ui/checkbox/index.js';
-	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Field from '$lib/components/ui/field/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
+
+	let { section = 'account' }: { section?: 'account' | 'sync' | 'people' } =
+		$props();
 
 	let account = $state<SyncAccount | null>(null);
 	let request = $state<DeviceSignInInfo | null>(null);
@@ -779,342 +781,371 @@
 	}
 </script>
 
-<section aria-labelledby="sync-account-heading">
-	<h2 id="sync-account-heading" class="text-sm font-medium">Server account</h2>
-	<p class="mt-1 text-xs text-muted-foreground">
-		Connect this device to a Noura server and choose whether to synchronize the
-		open workspace.
-	</p>
-	<Separator class="my-4" />
+<section
+	aria-label={section === 'account'
+		? 'Server account'
+		: section === 'sync'
+			? 'Workspace synchronization'
+			: 'Workspace access'}
+>
 	<div class="flex flex-col gap-4">
 		{#if loading}<p role="status" class="text-sm text-muted-foreground">
 				Checking this device’s account…
 			</p>
 		{:else if account}
-			<div class="flex flex-wrap items-center justify-between gap-3">
-				<p class="break-all text-sm">{account.origin}</p>
-				<Badge variant="secondary">Account connected</Badge>
-			</div>
-			<p class="break-all text-xs text-muted-foreground">
-				Device ID: {account.deviceId}
-			</p>
-			<div class="flex flex-col gap-1">
-				<p class="text-xs font-medium">This device’s fingerprint</p>
-				<p class="break-all font-mono text-xs select-text">
-					{account.fingerprint}
-				</p>
-			</div>
-			<p class="text-xs text-muted-foreground">
-				Credentials stay in your operating system’s credential store. Your local
-				workspace remains available when disconnected.
-			</p>
-			<div class="flex flex-col gap-3" aria-labelledby="join-workspace-heading">
-				<h3 id="join-workspace-heading" class="text-sm font-medium">
-					Join a workspace
-				</h3>
-				<p class="text-xs text-muted-foreground">
-					Create a local copy of a workspace you belong to on this server. The
-					server provides workspace IDs and your role, not readable names.
-				</p>
-				<div>
-					<Button
-						variant="outline"
-						disabled={busy || remoteBusy || joining || importingRecovery}
-						onclick={loadRemoteWorkspaces}
-						>{remoteBusy ? 'Loading workspaces…' : 'Load my workspaces'}</Button
-					>
+			{#if section === 'account'}
+				<div class="flex flex-wrap items-center justify-between gap-3">
+					<p class="break-all text-sm">{account.origin}</p>
+					<Badge variant="secondary">Account connected</Badge>
 				</div>
-				{#if remoteAccount === account.deviceId}
-					{#if remoteWorkspaces.length > 0}
-						<form
-							onsubmit={(event) => {
-								event.preventDefault();
-								void joinRemoteWorkspace();
-							}}
-						>
-							<Field.FieldGroup>
-								<Field.Field
-									><Field.FieldLabel for="remote-workspace-id"
-										>Workspace ID</Field.FieldLabel
-									>
-									<Select.Root
-										type="single"
-										bind:value={selectedRemote}
-										disabled={joining || remoteBusy || importingRecovery}
-									>
-										<Select.Trigger id="remote-workspace-id" class="w-full"
-											><span class="truncate"
-												>{selectedMembership
-													? `${selectedMembership.id} · ${selectedMembership.role}`
-													: 'Choose a workspace'}</span
-											></Select.Trigger
-										>
-										<Select.Content
-											><Select.Group
-												>{#each remoteWorkspaces as remote (remote.id)}<Select.Item
-														value={remote.id}
-														label={`${remote.id} · ${remote.role}`}
-														>{remote.id} · {remote.role}</Select.Item
-													>{/each}</Select.Group
-											></Select.Content
-										>
-									</Select.Root>
-								</Field.Field>
-								{#if selectedRemote}<p
-										class="break-all text-xs text-muted-foreground"
-									>
-										Selected ID: {selectedRemote}
-										Role: {selectedMembership?.role}
-									</p>{/if}
-								{#if selectedMembership?.role === 'viewer'}<p
-										class="text-xs text-muted-foreground"
-									>
-										As a viewer, this device downloads shared updates. Edits you
-										make locally stay on this device and are not uploaded.
-									</p>{/if}
-								<Field.Field
-									><Field.FieldLabel for="joined-workspace-name"
-										>Local display name</Field.FieldLabel
-									><Input
-										id="joined-workspace-name"
-										bind:value={localName}
-										required
-										disabled={joining || remoteBusy || importingRecovery}
-										autocomplete="off"
-									/></Field.Field
-								>
-								<div>
-									<Button
-										type="submit"
-										disabled={busy ||
-											joining ||
-											importingRecovery ||
-											remoteBusy ||
-											!selectedRemote ||
-											!localName.trim()}
-										>{joining
-											? 'Joining workspace…'
-											: 'Choose empty folder and join'}</Button
-									>
-								</div>
-							</Field.FieldGroup>
-						</form>
-					{:else if !remoteBusy}<p class="text-xs text-muted-foreground">
-							No workspaces available to this account were returned.
-						</p>{/if}
-				{/if}
-				{#if joinError}<p role="alert" class="text-sm text-destructive">
-						{joinError}
-					</p>{/if}
-				{#if joinNotice}<p role="status" class="text-sm">{joinNotice}</p>{/if}
-			</div>
-			<div class="flex flex-col gap-3" aria-labelledby="workspace-sync-heading">
-				<h3 id="workspace-sync-heading" class="text-sm font-medium">
-					Workspace synchronization
-				</h3>
-				{#if !workspace.state?.rootPath}
-					<p class="text-xs text-muted-foreground">
-						Open a workspace to manage synchronization.
+				<p class="break-all text-xs text-muted-foreground">
+					Device ID: {account.deviceId}
+				</p>
+				<div class="flex flex-col gap-1">
+					<p class="text-xs font-medium">This device’s fingerprint</p>
+					<p class="break-all font-mono text-xs select-text">
+						{account.fingerprint}
 					</p>
-				{:else if statusRoot !== workspace.state.rootPath}
-					<p role="status" class="text-xs text-muted-foreground">
-						Checking this workspace’s synchronization status…
-					</p>
-				{:else}
-					{#if syncStatus}
-						<p role="status" class="text-sm">{phaseLabels[syncStatus.phase]}</p>
-						<p class="text-xs text-muted-foreground">
-							{syncStatus.pending} pending · {syncStatus.conflicts} conflicts
-						</p>
-						{#if syncStatus.transition}
-							<div class="flex flex-col gap-2" aria-live="polite">
-								<p class="text-xs font-medium">
-									{transitionPhaseLabels[syncStatus.transition.phase]}
-								</p>
-								<ul class="flex flex-col gap-1">
-									{#each syncStatus.transition.objects as object (object.objectId)}
-										<li class="flex items-center justify-between gap-2 text-xs">
-											<span class="truncate font-mono"
-												>{object.path ?? object.objectId}</span
-											>
-											<Badge variant="secondary"
-												>{object.installed ? 'Installed' : 'Pending'}</Badge
-											>
-										</li>
-									{/each}
-								</ul>
-							</div>
-						{/if}
-						{#if syncStatus.activation}
-							<div class="flex flex-col gap-2" aria-live="polite">
-								<p class="text-xs font-medium">
-									Preparing collaborative object
-								</p>
-								<div class="flex items-center justify-between gap-2 text-xs">
-									<span class="truncate font-mono"
-										>{syncStatus.activation.path ??
-											syncStatus.activation.objectId}</span
-									>
-									<Badge variant="secondary"
-										>{syncStatus.activation.installed
-											? 'Installed'
-											: 'Pending'}</Badge
-									>
-								</div>
-							</div>
-						{/if}
-						{#if syncStatus.conflicts > 0}<p
-								class="text-xs text-muted-foreground"
-							>
-								Conflicting versions are preserved. Review them before resolving
-								the differences.
-							</p>{/if}
-						{#key workspace.state.rootPath + ':' + account.deviceId}
-							<SyncConflictReview
-								disabled={busy || syncChanging || joining || importingRecovery}
-								onresolved={(status) => {
-									syncStatus = status;
-									statusRoot = workspace.state?.rootPath ?? null;
-									statusGeneration += 1;
-									syncError = '';
-								}}
-							/>
-						{/key}
-						{#if syncStatus.errorCode}<p
-								role="alert"
-								class="break-all text-sm text-destructive"
-							>
-								{syncErrorMessages[syncStatus.errorCode] ??
-									`Synchronization error: ${syncStatus.errorCode}`}
-							</p>{/if}
-						{#if syncStatus.lastSuccess}<p
-								class="text-xs text-muted-foreground"
-							>
-								Last successful sync: {new Date(
-									syncStatus.lastSuccess,
-								).toLocaleString()}
-							</p>{/if}
-						<div>
-							{#if syncStatus.phase === 'disabled'}<Button
-									disabled={busy ||
-										syncChanging ||
-										joining ||
-										importingRecovery}
-									onclick={() => changeWorkspaceSync('enable')}
-									>{syncChanging
-										? 'Enabling…'
-										: 'Enable workspace sync'}</Button
-								>
-							{:else if syncStatus.phase === 'paused'}<Button
-									disabled={busy ||
-										syncChanging ||
-										joining ||
-										importingRecovery}
-									onclick={() => changeWorkspaceSync('resume')}
-									>{syncChanging ? 'Resuming…' : 'Resume sync'}</Button
-								>
-							{:else}<Button
-									variant="outline"
-									disabled={busy ||
-										syncChanging ||
-										joining ||
-										importingRecovery}
-									onclick={() => changeWorkspaceSync('pause')}
-									>{syncChanging ? 'Pausing…' : 'Pause sync'}</Button
-								>{/if}
-						</div>
-					{/if}
-					{#if syncError}<p role="alert" class="text-sm text-destructive">
-							{syncError}
-						</p>{/if}
-				{/if}
-			</div>
-			{#if workspace.state?.rootPath && statusRoot === workspace.state.rootPath && syncConfigured}
-				<div class="flex flex-col gap-3" aria-labelledby="sync-devices-heading">
-					<h3 id="sync-devices-heading" class="text-sm font-medium">
-						Workspace devices
+				</div>
+				<p class="text-xs text-muted-foreground">
+					Credentials stay in your operating system’s credential store. Your
+					local workspace remains available when disconnected.
+				</p>
+				<div
+					class="flex flex-col gap-3"
+					aria-labelledby="join-workspace-heading"
+				>
+					<h3 id="join-workspace-heading" class="text-sm font-medium">
+						Join a workspace
 					</h3>
 					<p class="text-xs text-muted-foreground">
-						Compare each fingerprint with the fingerprint shown on the actual
-						other device. The server’s device list alone does not establish
-						trust. Both devices must approve each other to exchange keys.
+						Create a local copy of a workspace you belong to on this server. The
+						server provides workspace IDs and your role, not readable names.
 					</p>
 					<div>
 						<Button
 							variant="outline"
-							disabled={busy ||
-								syncChanging ||
-								devicesBusy ||
-								joining ||
-								importingRecovery}
-							onclick={reviewDevices}
-							>{devicesBusy ? 'Updating devices…' : 'Review devices'}</Button
+							disabled={busy || remoteBusy || joining || importingRecovery}
+							onclick={loadRemoteWorkspaces}
+							>{remoteBusy
+								? 'Loading workspaces…'
+								: 'Load my workspaces'}</Button
 						>
 					</div>
-					{#if devicesRoot === workspace.state.rootPath && devicesAccount === account.deviceId}
-						{#if devicesError}<p role="alert" class="text-sm text-destructive">
-								{devicesError}
-							</p>{/if}
-						{#if devices.length > 0}
-							<ul class="flex flex-col gap-3">
-								{#each devices as device (device.deviceId)}
-									<li class="flex flex-col gap-3 rounded-xl border p-4">
-										<div
-											class="flex flex-wrap items-center justify-between gap-2"
-										>
-											<p class="break-all text-xs">Device: {device.deviceId}</p>
-											{#if device.deviceId === account.deviceId}<Badge
-													variant="secondary">This device</Badge
-												>{:else if device.approved}<Badge variant="secondary"
-													>Approved</Badge
-												>{/if}
-										</div>
-										<p class="break-all font-mono text-xs select-text">
-											{device.fingerprint}
-										</p>
-										{#if device.deviceId !== account.deviceId && !device.approved}
-											<Field.FieldGroup
-												><Field.Field orientation="horizontal">
-													<Checkbox
-														id={`verify-device-${device.deviceId}`}
-														checked={verified[device.deviceId] ===
-															device.fingerprint}
-														onCheckedChange={(checked) => {
-															verified[device.deviceId] = checked
-																? device.fingerprint
-																: '';
-														}}
-														disabled={devicesBusy || busy || importingRecovery}
-													/>
-													<Field.FieldLabel
-														for={`verify-device-${device.deviceId}`}
-														>I compared the full fingerprint on the other device
-														and it matches.</Field.FieldLabel
-													>
-												</Field.Field></Field.FieldGroup
-											>
-											<div>
-												<Button
-													disabled={devicesBusy ||
-														busy ||
-														verified[device.deviceId] !== device.fingerprint}
-													onclick={() => approveDevice(device)}
-													>Approve device</Button
-												>
-											</div>
-										{/if}
-									</li>
-								{/each}
-							</ul>
-						{:else if !devicesError && !devicesBusy}<p
-								class="text-xs text-muted-foreground"
+					{#if remoteAccount === account.deviceId}
+						{#if remoteWorkspaces.length > 0}
+							<form
+								onsubmit={(event) => {
+									event.preventDefault();
+									void joinRemoteWorkspace();
+								}}
 							>
-								No workspace devices were returned.
+								<Field.FieldGroup>
+									<Field.Field
+										><Field.FieldLabel for="remote-workspace-id"
+											>Workspace ID</Field.FieldLabel
+										>
+										<Select.Root
+											type="single"
+											bind:value={selectedRemote}
+											disabled={joining || remoteBusy || importingRecovery}
+										>
+											<Select.Trigger id="remote-workspace-id" class="w-full"
+												><span class="truncate"
+													>{selectedMembership
+														? `${selectedMembership.id} · ${selectedMembership.role}`
+														: 'Choose a workspace'}</span
+												></Select.Trigger
+											>
+											<Select.Content
+												><Select.Group
+													>{#each remoteWorkspaces as remote (remote.id)}<Select.Item
+															value={remote.id}
+															label={`${remote.id} · ${remote.role}`}
+															>{remote.id} · {remote.role}</Select.Item
+														>{/each}</Select.Group
+												></Select.Content
+											>
+										</Select.Root>
+									</Field.Field>
+									{#if selectedRemote}<p
+											class="break-all text-xs text-muted-foreground"
+										>
+											Selected ID: {selectedRemote}
+											Role: {selectedMembership?.role}
+										</p>{/if}
+									{#if selectedMembership?.role === 'viewer'}<p
+											class="text-xs text-muted-foreground"
+										>
+											As a viewer, this device downloads shared updates. Edits
+											you make locally stay on this device and are not uploaded.
+										</p>{/if}
+									<Field.Field
+										><Field.FieldLabel for="joined-workspace-name"
+											>Local display name</Field.FieldLabel
+										><Input
+											id="joined-workspace-name"
+											bind:value={localName}
+											required
+											disabled={joining || remoteBusy || importingRecovery}
+											autocomplete="off"
+										/></Field.Field
+									>
+									<div>
+										<Button
+											type="submit"
+											disabled={busy ||
+												joining ||
+												importingRecovery ||
+												remoteBusy ||
+												!selectedRemote ||
+												!localName.trim()}
+											>{joining
+												? 'Joining workspace…'
+												: 'Choose empty folder and join'}</Button
+										>
+									</div>
+								</Field.FieldGroup>
+							</form>
+						{:else if !remoteBusy}<p class="text-xs text-muted-foreground">
+								No workspaces available to this account were returned.
+							</p>{/if}
+					{/if}
+					{#if joinError}<p role="alert" class="text-sm text-destructive">
+							{joinError}
+						</p>{/if}
+					{#if joinNotice}<p role="status" class="text-sm">{joinNotice}</p>{/if}
+				</div>
+			{/if}
+			{#if section === 'sync'}
+				<div
+					class="flex flex-col gap-3"
+					aria-labelledby="workspace-sync-heading"
+				>
+					<h3 id="workspace-sync-heading" class="text-sm font-medium">
+						Workspace synchronization
+					</h3>
+					{#if !workspace.state?.rootPath}
+						<p class="text-xs text-muted-foreground">
+							Open a workspace to manage synchronization.
+						</p>
+					{:else if statusRoot !== workspace.state.rootPath}
+						<p role="status" class="text-xs text-muted-foreground">
+							Checking this workspace’s synchronization status…
+						</p>
+					{:else}
+						{#if syncStatus}
+							<p role="status" class="text-sm">
+								{phaseLabels[syncStatus.phase]}
+							</p>
+							<p class="text-xs text-muted-foreground">
+								{syncStatus.pending} pending · {syncStatus.conflicts} conflicts
+							</p>
+							{#if syncStatus.transition}
+								<div class="flex flex-col gap-2" aria-live="polite">
+									<p class="text-xs font-medium">
+										{transitionPhaseLabels[syncStatus.transition.phase]}
+									</p>
+									<ul class="flex flex-col gap-1">
+										{#each syncStatus.transition.objects as object (object.objectId)}
+											<li
+												class="flex items-center justify-between gap-2 text-xs"
+											>
+												<span class="truncate font-mono"
+													>{object.path ?? object.objectId}</span
+												>
+												<Badge variant="secondary"
+													>{object.installed ? 'Installed' : 'Pending'}</Badge
+												>
+											</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+							{#if syncStatus.activation}
+								<div class="flex flex-col gap-2" aria-live="polite">
+									<p class="text-xs font-medium">
+										Preparing collaborative object
+									</p>
+									<div class="flex items-center justify-between gap-2 text-xs">
+										<span class="truncate font-mono"
+											>{syncStatus.activation.path ??
+												syncStatus.activation.objectId}</span
+										>
+										<Badge variant="secondary"
+											>{syncStatus.activation.installed
+												? 'Installed'
+												: 'Pending'}</Badge
+										>
+									</div>
+								</div>
+							{/if}
+							{#if syncStatus.conflicts > 0}<p
+									class="text-xs text-muted-foreground"
+								>
+									Conflicting versions are preserved. Review them before
+									resolving the differences.
+								</p>{/if}
+							{#key workspace.state.rootPath + ':' + account.deviceId}
+								<SyncConflictReview
+									disabled={busy ||
+										syncChanging ||
+										joining ||
+										importingRecovery}
+									onresolved={(status) => {
+										syncStatus = status;
+										statusRoot = workspace.state?.rootPath ?? null;
+										statusGeneration += 1;
+										syncError = '';
+									}}
+								/>
+							{/key}
+							{#if syncStatus.errorCode}<p
+									role="alert"
+									class="break-all text-sm text-destructive"
+								>
+									{syncErrorMessages[syncStatus.errorCode] ??
+										`Synchronization error: ${syncStatus.errorCode}`}
+								</p>{/if}
+							{#if syncStatus.lastSuccess}<p
+									class="text-xs text-muted-foreground"
+								>
+									Last successful sync: {new Date(
+										syncStatus.lastSuccess,
+									).toLocaleString()}
+								</p>{/if}
+							<div>
+								{#if syncStatus.phase === 'disabled'}<Button
+										disabled={busy ||
+											syncChanging ||
+											joining ||
+											importingRecovery}
+										onclick={() => changeWorkspaceSync('enable')}
+										>{syncChanging
+											? 'Enabling…'
+											: 'Enable workspace sync'}</Button
+									>
+								{:else if syncStatus.phase === 'paused'}<Button
+										disabled={busy ||
+											syncChanging ||
+											joining ||
+											importingRecovery}
+										onclick={() => changeWorkspaceSync('resume')}
+										>{syncChanging ? 'Resuming…' : 'Resume sync'}</Button
+									>
+								{:else}<Button
+										variant="outline"
+										disabled={busy ||
+											syncChanging ||
+											joining ||
+											importingRecovery}
+										onclick={() => changeWorkspaceSync('pause')}
+										>{syncChanging ? 'Pausing…' : 'Pause sync'}</Button
+									>{/if}
+							</div>
+						{/if}
+						{#if syncError}<p role="alert" class="text-sm text-destructive">
+								{syncError}
 							</p>{/if}
 					{/if}
 				</div>
+				{#if workspace.state?.rootPath && statusRoot === workspace.state.rootPath && syncConfigured}
+					<div
+						class="flex flex-col gap-3"
+						aria-labelledby="sync-devices-heading"
+					>
+						<h3 id="sync-devices-heading" class="text-sm font-medium">
+							Workspace devices
+						</h3>
+						<p class="text-xs text-muted-foreground">
+							Compare each fingerprint with the fingerprint shown on the actual
+							other device. The server’s device list alone does not establish
+							trust. Both devices must approve each other to exchange keys.
+						</p>
+						<div>
+							<Button
+								variant="outline"
+								disabled={busy ||
+									syncChanging ||
+									devicesBusy ||
+									joining ||
+									importingRecovery}
+								onclick={reviewDevices}
+								>{devicesBusy ? 'Updating devices…' : 'Review devices'}</Button
+							>
+						</div>
+						{#if devicesRoot === workspace.state.rootPath && devicesAccount === account.deviceId}
+							{#if devicesError}<p
+									role="alert"
+									class="text-sm text-destructive"
+								>
+									{devicesError}
+								</p>{/if}
+							{#if devices.length > 0}
+								<ul class="flex flex-col gap-3">
+									{#each devices as device (device.deviceId)}
+										<li class="flex flex-col gap-3 rounded-xl border p-4">
+											<div
+												class="flex flex-wrap items-center justify-between gap-2"
+											>
+												<p class="break-all text-xs">
+													Device: {device.deviceId}
+												</p>
+												{#if device.deviceId === account.deviceId}<Badge
+														variant="secondary">This device</Badge
+													>{:else if device.approved}<Badge variant="secondary"
+														>Approved</Badge
+													>{/if}
+											</div>
+											<p class="break-all font-mono text-xs select-text">
+												{device.fingerprint}
+											</p>
+											{#if device.deviceId !== account.deviceId && !device.approved}
+												<Field.FieldGroup
+													><Field.Field orientation="horizontal">
+														<Checkbox
+															id={`verify-device-${device.deviceId}`}
+															checked={verified[device.deviceId] ===
+																device.fingerprint}
+															onCheckedChange={(checked) => {
+																verified[device.deviceId] = checked
+																	? device.fingerprint
+																	: '';
+															}}
+															disabled={devicesBusy ||
+																busy ||
+																importingRecovery}
+														/>
+														<Field.FieldLabel
+															for={`verify-device-${device.deviceId}`}
+															>I compared the full fingerprint on the other
+															device and it matches.</Field.FieldLabel
+														>
+													</Field.Field></Field.FieldGroup
+												>
+												<div>
+													<Button
+														disabled={devicesBusy ||
+															busy ||
+															verified[device.deviceId] !== device.fingerprint}
+														onclick={() => approveDevice(device)}
+														>Approve device</Button
+													>
+												</div>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{:else if !devicesError && !devicesBusy}<p
+									class="text-xs text-muted-foreground"
+								>
+									No workspace devices were returned.
+								</p>{/if}
+						{/if}
+					</div>
+				{/if}
 			{/if}
-			{#if workspace.state?.rootPath && statusRoot === workspace.state.rootPath && syncConfigured}
+			{#if section === 'people' && workspace.state?.rootPath && statusRoot === workspace.state.rootPath && syncConfigured}
 				<div
 					class="flex flex-col gap-3"
 					aria-labelledby="sync-invitations-heading"
@@ -1279,66 +1310,76 @@
 						</p>{/if}
 				</div>
 			{/if}
-			<div class="flex flex-col gap-2">
-				<div class="flex flex-wrap gap-2">
+			{#if section === 'people' && !syncConfigured}
+				<p class="text-sm text-muted-foreground">
+					Enable workspace sync in Sync &amp; devices to manage invitations and
+					access.
+				</p>
+			{/if}
+			{#if section === 'sync'}
+				<div class="flex flex-col gap-2">
+					<div class="flex flex-wrap gap-2">
+						<Button
+							variant="outline"
+							disabled={busy ||
+								exportingRecovery ||
+								importingRecovery ||
+								joining ||
+								syncChanging ||
+								!workspace.state?.rootPath ||
+								statusRoot !== workspace.state.rootPath ||
+								!syncConfigured}
+							onclick={exportRecoveryKit}
+							>{exportingRecovery
+								? 'Saving recovery kit…'
+								: 'Export recovery kit'}</Button
+						>
+						<Button
+							variant="outline"
+							disabled={busy ||
+								exportingRecovery ||
+								importingRecovery ||
+								joining ||
+								syncChanging ||
+								!workspace.state?.rootPath ||
+								statusRoot !== workspace.state.rootPath ||
+								!syncConfigured}
+							onclick={importRecoveryKit}
+							>{importingRecovery
+								? 'Importing recovery kit…'
+								: 'Import recovery kit'}</Button
+						>
+					</div>
+					<p class="text-xs text-muted-foreground">
+						The recovery kit is a secret file. Store it securely outside your
+						workspace. To import, sign in and join or open the matching
+						workspace first. Import restores workspace keys and files, and
+						leaves sync paused for device verification.
+					</p>
+					{#if !workspace.state?.rootPath || statusRoot !== workspace.state.rootPath || !syncConfigured}<p
+							class="text-xs text-muted-foreground"
+						>
+							Open a workspace configured for synchronization to use recovery
+							kits.
+						</p>{/if}
+				</div>
+			{/if}
+			{#if section === 'account'}
+				<div>
 					<Button
 						variant="outline"
 						disabled={busy ||
 							exportingRecovery ||
 							importingRecovery ||
-							joining ||
 							syncChanging ||
-							!workspace.state?.rootPath ||
-							statusRoot !== workspace.state.rootPath ||
-							!syncConfigured}
-						onclick={exportRecoveryKit}
-						>{exportingRecovery
-							? 'Saving recovery kit…'
-							: 'Export recovery kit'}</Button
-					>
-					<Button
-						variant="outline"
-						disabled={busy ||
-							exportingRecovery ||
-							importingRecovery ||
+							devicesBusy ||
 							joining ||
-							syncChanging ||
-							!workspace.state?.rootPath ||
-							statusRoot !== workspace.state.rootPath ||
-							!syncConfigured}
-						onclick={importRecoveryKit}
-						>{importingRecovery
-							? 'Importing recovery kit…'
-							: 'Import recovery kit'}</Button
+							remoteBusy}
+						onclick={disconnect}
+						>{busy ? 'Disconnecting…' : 'Disconnect this device'}</Button
 					>
 				</div>
-				<p class="text-xs text-muted-foreground">
-					The recovery kit is a secret file. Store it securely outside your
-					workspace. To import, sign in and join or open the matching workspace
-					first. Import restores workspace keys and files, and leaves sync
-					paused for device verification.
-				</p>
-				{#if !workspace.state?.rootPath || statusRoot !== workspace.state.rootPath || !syncConfigured}<p
-						class="text-xs text-muted-foreground"
-					>
-						Open a workspace configured for synchronization to use recovery
-						kits.
-					</p>{/if}
-			</div>
-			<div>
-				<Button
-					variant="outline"
-					disabled={busy ||
-						exportingRecovery ||
-						importingRecovery ||
-						syncChanging ||
-						devicesBusy ||
-						joining ||
-						remoteBusy}
-					onclick={disconnect}
-					>{busy ? 'Disconnecting…' : 'Disconnect this device'}</Button
-				>
-			</div>
+			{/if}
 		{:else if request}
 			<p class="text-sm">
 				Approve this code in your browser to connect the device:

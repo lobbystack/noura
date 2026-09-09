@@ -1,6 +1,14 @@
 import { browser } from '$app/environment';
 import { isCoreError, type PluginManifest } from '@noura/workspace';
-import { getNouraClient, getPluginRuntime } from './state.svelte';
+import {
+	movePlugin,
+	normalizePluginOrder,
+	SIDEBAR_PLUGIN_IDS,
+	type NavigationId,
+} from './plugin-order';
+import { getNouraClient, getPluginRuntime, workspace } from './state.svelte';
+
+const PLUGIN_ORDER_STORAGE_PREFIX = 'noura.plugin-order.v1:';
 
 function errorMessage(error: unknown) {
 	if (error instanceof Error) return error.message;
@@ -18,6 +26,7 @@ function errorMessage(error: unknown) {
 class PluginStore {
 	activeManifests = $state<PluginManifest[]>([]);
 	enabledIds = $state<Array<string>>([]);
+	pluginOrder = $state<NavigationId[]>(normalizePluginOrder());
 	lastError = $state<string | null>(null);
 	/** True once the first sync for a workspace context has settled. */
 	synced = $state(false);
@@ -25,10 +34,21 @@ class PluginStore {
 	#initialized = false;
 	#syncChain: Promise<void> = Promise.resolve();
 	#unlisten: (() => void) | undefined;
+	#orderWorkspaceId: string | null = null;
 
 	get activeIds(): Array<string> {
 		return this.enabledIds.filter((id) =>
 			this.activeManifests.some((manifest) => manifest.id === id),
+		);
+	}
+
+	get orderedPluginIds(): NavigationId[] {
+		return this.pluginOrder;
+	}
+
+	get orderedSidebarPluginIds(): NavigationId[] {
+		return this.pluginOrder.filter((id) =>
+			(SIDEBAR_PLUGIN_IDS as readonly string[]).includes(id),
 		);
 	}
 
@@ -79,6 +99,7 @@ class PluginStore {
 			const runtime = getPluginRuntime();
 			this.activeManifests = [...runtime.host.activeManifests()];
 			this.enabledIds = result.enabledPluginIds;
+			this.#loadPluginOrder(workspace.state?.workspaceId ?? null);
 			this.lastError = null;
 		} catch (error) {
 			if (isCoreError(error) && error.code === 'workspace_not_open') {
@@ -89,12 +110,50 @@ class PluginStore {
 				await getPluginRuntime().deactivateAll();
 				this.activeManifests = [];
 				this.enabledIds = [];
+				this.#loadPluginOrder(null);
 				this.lastError = null;
 				return;
 			}
 			this.lastError = errorMessage(error);
 		} finally {
 			this.synced = true;
+		}
+	}
+
+	move(pluginId: string, targetPluginId: string, after: boolean) {
+		const next = movePlugin(this.pluginOrder, pluginId, targetPluginId, after);
+		if (next.every((id, index) => id === this.pluginOrder[index])) return;
+		this.pluginOrder = next;
+		if (browser && this.#orderWorkspaceId) {
+			try {
+				localStorage.setItem(
+					`${PLUGIN_ORDER_STORAGE_PREFIX}${this.#orderWorkspaceId}`,
+					JSON.stringify(next),
+				);
+			} catch {
+				// Reordering still works for this session when browser storage is unavailable.
+			}
+		}
+	}
+
+	#loadPluginOrder(workspaceId: string | null) {
+		if (workspaceId === this.#orderWorkspaceId) return;
+		this.#orderWorkspaceId = workspaceId;
+		if (!browser || !workspaceId) {
+			this.pluginOrder = normalizePluginOrder();
+			return;
+		}
+
+		try {
+			const saved = JSON.parse(
+				localStorage.getItem(`${PLUGIN_ORDER_STORAGE_PREFIX}${workspaceId}`) ??
+					'null',
+			);
+			this.pluginOrder = normalizePluginOrder(
+				Array.isArray(saved) ? saved : null,
+			);
+		} catch {
+			this.pluginOrder = normalizePluginOrder();
 		}
 	}
 
