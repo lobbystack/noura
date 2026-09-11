@@ -384,7 +384,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let info = fixture(root.path());
         let error = read_range_with(root.path(), "workspace", &input(&info, 0, 5), || {
-            std::fs::write(root.path().join("sample.pdf"), b"%PDF-1.7\nchanged").unwrap();
+            // Flush the write so Windows updates the size metadata before the
+            // verifier reopens the file; without it NTFS can serve a cached size.
+            let mut replaced = std::fs::File::create(root.path().join("sample.pdf")).unwrap();
+            replaced.write_all(b"%PDF-1.7\nchanged").unwrap();
+            replaced.sync_all().unwrap();
         })
         .unwrap_err();
         assert_eq!(error.code, "pdf_changed");
