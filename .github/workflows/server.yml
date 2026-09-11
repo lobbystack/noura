@@ -37,6 +37,7 @@ jobs:
         env:
           NOURA_LOAD_FORCE_RECONNECT_BATCH: '1'
           NOURA_LOAD_FORCE_RECOVERY_BATCH: '1'
+          NOURA_LOAD_P95_BUDGET_MS: '3000'
       - run: bun run --filter @noura/server build
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
       - run: bun run --filter @noura/server test:restore

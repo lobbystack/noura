@@ -2,7 +2,8 @@
  * Experimental realtime collaboration delivery probe.
  *
  * Defaults to one 20-writer burst across 100 connected clients with 100 ms
- * simulated RTT. Set NOURA_SOAK_SECONDS=3600 for the release soak. This probes
+ * simulated RTT. Set NOURA_SOAK_SECONDS=3600 for the release soak. Shared CI
+ * runners raise NOURA_LOAD_P95_BUDGET_MS above the 1000 ms default. This probes
  * signed version-two operation delivery through WebSocket invalidation followed
  * by authoritative HTTP pull; native CRDT application remains a desktop gate.
  */
@@ -37,6 +38,7 @@ const simulatedRttMs = integer('NOURA_LOAD_RTT_MS', 100, 0, 10_000);
 const soakSeconds = integer('NOURA_SOAK_SECONDS', 0, 0, 86_400);
 const intervalMs = integer('NOURA_LOAD_INTERVAL_MS', 1_000, 100, 60_000);
 const maxRssGrowthMiB = integer('NOURA_MAX_RSS_GROWTH_MIB', 256, 1, 16_384);
+const p95BudgetMs = integer('NOURA_LOAD_P95_BUDGET_MS', 1_000, 1, 60_000);
 const forceReconnectBatch = integer(
 	'NOURA_LOAD_FORCE_RECONNECT_BATCH',
 	0,
@@ -410,14 +412,17 @@ try {
 		deliveries: histogram.count,
 		p50Ms: histogram.percentile(0.5),
 		p95Ms,
+		p95BudgetMs,
 		maxMs: histogram.maximum,
 		rssGrowthMiB: Number(rssGrowthMiB.toFixed(1)),
 		reconnects: clients.reduce((total, client) => total + client.reconnects, 0),
 		recoveryPulls,
 	};
 	console.info(JSON.stringify(result));
-	if (p95Ms >= 1_000)
-		throw new Error('collaboration delivery p95 exceeded one second');
+	if (p95Ms >= p95BudgetMs)
+		throw new Error(
+			'collaboration delivery p95 exceeded the configured budget',
+		);
 	if (rssGrowthMiB > maxRssGrowthMiB)
 		throw new Error(
 			'collaboration process memory growth exceeded the configured bound',

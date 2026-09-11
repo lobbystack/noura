@@ -826,7 +826,9 @@ fn restrict_worker_capabilities() -> std::io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn restrict_worker_capabilities() -> std::io::Result<()> {
+    #[cfg(target_arch = "x86_64")]
     const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
+    #[cfg(target_arch = "aarch64")]
     const AUDIT_ARCH_AARCH64: u32 = 0xc000_00b7;
     const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
     const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
