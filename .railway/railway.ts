@@ -8,9 +8,7 @@ import {
 	volume,
 } from 'railway/iac';
 
-export default defineRailway((ctx) => {
-	const production = ctx.isEnvironment('production');
-
+export default defineRailway(() => {
 	const db = postgres('Postgres');
 
 	const blobs = volume('server-blobs', { sizeMB: 1024 });
@@ -49,7 +47,6 @@ export default defineRailway((ctx) => {
 			BLOB_ROOT: '/data/blobs',
 			RAILWAY_RUN_UID: '0',
 		},
-		domains: production ? [{ domain: 'sync.noura.app', port: 1900 }] : [],
 		volumeMounts: {
 			'/data/blobs': blobs,
 		},
