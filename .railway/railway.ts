@@ -11,7 +11,10 @@ import {
 export default defineRailway(() => {
 	const db = postgres('Postgres');
 
-	const blobs = volume('server-blobs', { sizeMB: 1024 });
+	const blobs = volume('server-blobs', {
+		region: 'us-east4-eqdc4a',
+		sizeMB: 1024,
+	});
 
 	const server = service('server', {
 		source: github('lobbystack/noura', { branch: 'main' }),
