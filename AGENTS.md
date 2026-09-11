@@ -28,7 +28,7 @@ A durable mutation succeeds only after the canonical file operation completes du
 - Use Tauri 2 for the desktop and mobile shell.
 - Keep native and local-core work in Rust.
 - Use shadcn-svelte with preset `b2ZtALO3cm` for UI primitives. Do not replace the preset or introduce a competing component system without explicit approval.
-- When working with shadcn-svelte, use the [$shadcn-svelte](/home/user/Coding/noura/.agents/skills/shadcn-svelte/SKILL.md) skill.
+- When working with shadcn-svelte, use the [$shadcn-svelte](.agents/skills/shadcn-svelte/SKILL.md) skill.
 - Do not add npm, pnpm, Yarn, Nx, or Turborepo to the repository without a demonstrated need and explicit approval. Do not introduce another JavaScript lockfile.
 - Format Rust with `cargo fmt` and lint it with Clippy.
 
@@ -105,7 +105,7 @@ Keep architectural responsibilities separated:
 - Do not modify core architecture during UI work unless you identify and document a blocker.
 - Do not implement cloud, collaboration, meeting, or calling features unless the task includes them.
 
-Internal plans and product notes belong in the Noura-Internal repository. Public workspace-format, contributor, provenance, and security documents belong here.
+Internal plans and product notes belong in the private Noura-Internal workspace, not this public repository. Public workspace-format, contributor, provenance, and security documents belong here.
 
 ## Security Principles
 

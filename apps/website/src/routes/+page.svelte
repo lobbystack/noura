@@ -66,7 +66,7 @@
 </script>
 
 <svelte:head>
-	<title>Noura — The open workspace for humans and AI</title>
+	<title>Noura: the open workspace for humans and AI</title>
 	<meta
 		name="description"
 		content="A free, open-source, local-first workspace where ordinary files remain the durable source of truth. Built for notes, tasks, projects, plugins, and authorized AI."
@@ -74,7 +74,7 @@
 	<link rel="canonical" href={siteConfig.marketingUrl} />
 	<meta
 		property="og:title"
-		content="Noura — The open workspace for humans and AI"
+		content="Noura: the open workspace for humans and AI"
 	/>
 	<meta
 		property="og:description"

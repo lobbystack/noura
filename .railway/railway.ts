@@ -42,7 +42,7 @@ export default defineRailway(() => {
 			AUTH_SECRET: preserve(),
 			RESEND_API_KEY: preserve(),
 			MAIL_FROM: 'Noura <noreply@noura.app>',
-			ALLOWED_EMAILS: 'redacted@example.invalid',
+			ALLOWED_EMAILS: preserve(),
 			PUBLIC_ORIGIN: 'https://sync.noura.app',
 			PORT: '1900',
 			HOST: '0.0.0.0',

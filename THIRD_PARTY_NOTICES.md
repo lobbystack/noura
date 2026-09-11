@@ -4,6 +4,8 @@ Noura uses third-party dependencies under their respective licenses. The lockfil
 
 The repository includes Apollo GraphQL's unmodified `rust-best-practices` agent skill under the MIT license. See `docs/provenance/apollo-rust-best-practices.md` for its pinned source and verification record.
 
+The repository also includes the unmodified `shadcn-svelte` agent skill under the MIT license. See `docs/provenance/shadcn-svelte-skill.md` for its source record.
+
 The Noura server build generates `apps/server/dist/THIRD_PARTY_NOTICES.md` from
 the packages actually present in the Bun server and browser bundles and includes
 it in the Docker image. The release build also inventories extracted CSS and
@@ -115,8 +117,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Marketing website source record
 
-- Source: local predecessor workspace at
-  `/home/user/Coding/predecessor/apps/website`
+- Source: a local predecessor workspace's `apps/website` (not a public repository)
 - Repository URL: unavailable; the local predecessor snapshot has no Git metadata
 - Exact revision: content-addressed local snapshot (no commit was available)
 - Source hashes:

@@ -271,10 +271,8 @@ publishing, and production backup/restore rehearsal remain unfinished or outside
 this collaboration milestone. Release still requires the full desktop flow on
 macOS, Windows/UTM, and Linux; a 20-editor/100 ms RTT latency measurement; the
 Windows worker capability confinement and crash-durability fault tests; and an
-independent security review. The internal
-[implementation review](../../docs/security/sync-review-2026-09-05.md) records
-verified corrections and outstanding platform issues. Backend access and public-link
-APIs are executable, but do not yet form a complete user-facing sharing workflow.
+independent security review. Backend access and public-link APIs are executable,
+but do not yet form a complete user-facing sharing workflow.
 
 Workspace invitation creation, browser acceptance, desktop fingerprint approval,
 signed membership activation, and pending-invitation revocation are implemented.

@@ -13,6 +13,13 @@ The repository contains the desktop Local Alpha with:
 - Full-text search
 - Index recovery from canonical workspace files
 
+The repository also contains:
+
+- `apps/server` and `apps/server-web`: an experimental encrypted sync service, not a production release. See [`apps/server/README.md`](apps/server/README.md).
+- `apps/website`: the marketing site.
+
+See [`docs/architecture/`](docs/architecture/) for design notes and [`docs/workspace-format/`](docs/workspace-format/) for the workspace format.
+
 ## Development
 
 Install Bun and Rust 1.91 or newer, then run:
@@ -38,3 +45,7 @@ server is running.
 ## Storage contract
 
 Workspace files are canonical. Paths identify current locations, while frontmatter IDs identify managed objects. Noura can rebuild a deleted local index without losing durable workspace data. See the [workspace format](docs/workspace-format/v1.md) for details.
+
+## Security
+
+Report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
