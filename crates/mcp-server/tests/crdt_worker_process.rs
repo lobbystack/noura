@@ -22,16 +22,13 @@ fn host_executable_runs_the_bounded_crdt_worker_before_mcp_startup() {
     {
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
-        return;
     }
     #[cfg(not(target_os = "windows"))]
-    assert!(output.status.success());
-    #[cfg(not(target_os = "windows"))]
-    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    #[cfg(not(target_os = "windows"))]
-    assert_eq!(reply["response"]["result"], "snapshot");
-    #[cfg(not(target_os = "windows"))]
-    assert_eq!(reply["response"]["snapshot"]["text"], "isolated 😀");
-    #[cfg(not(target_os = "windows"))]
-    assert!(reply["errorCode"].is_null());
+    {
+        assert!(output.status.success());
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["response"]["result"], "snapshot");
+        assert_eq!(reply["response"]["snapshot"]["text"], "isolated 😀");
+        assert!(reply["errorCode"].is_null());
+    }
 }
