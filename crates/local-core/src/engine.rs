@@ -877,6 +877,11 @@ impl WorkspaceEngine {
             let Ok(relative) = path.strip_prefix(&self.root) else {
                 continue;
             };
+            if relative.as_os_str().is_empty() {
+                // The watcher can report the workspace root itself, which is not
+                // an object and must never surface as an external change.
+                continue;
+            }
             if !is_visible_workspace_path(relative, path.is_dir(), &ignores) {
                 continue;
             }
