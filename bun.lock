@@ -92,6 +92,23 @@
         "vite": "latest",
       },
     },
+    "apps/website": {
+      "name": "@noura/website",
+      "version": "0.0.1",
+      "dependencies": {
+        "@fontsource/dm-serif-display": "^5.3.0",
+      },
+      "devDependencies": {
+        "@fontsource-variable/manrope": "^5.2.8",
+        "@sveltejs/adapter-static": "^3.0.10",
+        "@sveltejs/kit": "^2.63.0",
+        "@sveltejs/vite-plugin-svelte": "^7.1.2",
+        "svelte": "^5.56.1",
+        "svelte-check": "^4.6.0",
+        "typescript": "^5.9.3",
+        "vite": "^8.0.16",
+      },
+    },
     "packages/ai": {
       "name": "@noura/ai",
       "version": "0.1.0",
@@ -391,7 +408,11 @@
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.12", "", {}, "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww=="],
 
+    "@fontsource-variable/manrope": ["@fontsource-variable/manrope@5.3.0", "", {}, "sha512-6D5dgokHsWDDMtmXHznKa0hK229NN+1a4BLPmUCLqcO1Pw5EEhWY5RFt0AcXnVRAljFFPfRtLkJePQj6LSsV6g=="],
+
     "@fontsource-variable/public-sans": ["@fontsource-variable/public-sans@5.3.0", "", {}, "sha512-AVfkmAt50BMXWpOO21FAntiJFKGX6xTc2dSL8dxtDteONe9IuRXJWGbs0EbG955vAMCq23ENeuopuW87cGWDSQ=="],
+
+    "@fontsource/dm-serif-display": ["@fontsource/dm-serif-display@5.3.0", "", {}, "sha512-ecRclUcYeto9fB7ghkB36H4MtUoaUYFjjornWYYeLCMHzaWEDPk2kIWgZOq0mKBNRxclRSieKcFeLonlMYDTKg=="],
 
     "@gar/promise-retry": ["@gar/promise-retry@1.0.3", "", {}, "sha512-GmzA9ckNokPypTg10pgpeHNQe7ph+iIKKmhKu3Ob9ANkswreCx7R3cKmY781K8QK3AqVL3xVh9A42JvIAbkkSA=="],
 
@@ -504,6 +525,8 @@
     "@noura/server-web": ["@noura/server-web@workspace:apps/server-web"],
 
     "@noura/shared": ["@noura/shared@workspace:packages/shared"],
+
+    "@noura/website": ["@noura/website@workspace:apps/website"],
 
     "@noura/workspace": ["@noura/workspace@workspace:packages/workspace"],
 

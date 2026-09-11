@@ -10,6 +10,9 @@
 		"plugins/*"
 	],
 	"scripts": {
+		"dev:website": "bun run --cwd apps/website dev",
+		"build:website": "bun run --cwd apps/website build",
+		"check:website": "bun run --cwd apps/website check",
 		"build": "bun run --filter '*' build",
 		"check": "bun run --filter '*' check",
 		"test": "bun test && cargo test --workspace",

@@ -25,6 +25,16 @@ bun run test
 
 Run the desktop development host with `bun run tauri dev` after installing the Tauri platform prerequisites.
 
+Run the marketing website from the repository root:
+
+```sh
+bun run dev:website
+```
+
+The marketing site runs at `http://127.0.0.1:5174`. Its embedded product demo
+uses the application development server at `http://127.0.0.1:5173` when that
+server is running.
+
 ## Storage contract
 
 Workspace files are canonical. Paths identify current locations, while frontmatter IDs identify managed objects. Noura can rebuild a deleted local index without losing durable workspace data. See the [workspace format](docs/workspace-format/v1.md) for details.

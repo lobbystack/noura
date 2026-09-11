@@ -112,3 +112,51 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Marketing website source record
+
+- Source: local predecessor workspace at
+  `/home/user/Coding/predecessor/apps/website`
+- Repository URL: unavailable; the local predecessor snapshot has no Git metadata
+- Exact revision: content-addressed local snapshot (no commit was available)
+- Source hashes:
+  - `src/routes/+page.svelte`: `a6f6365a332b21c1df383851113bf4d78560d0652d0702e29e39cf3cb0ec12b2`
+  - `src/lib/components/ShaderBackground.svelte`: `c576bbce69daafa62ed4bccf1fe535d441220192cc8eb9d4f1d1f34cd1f83e28`
+- Source paths: `apps/website/`
+- License: MIT, as declared by the predecessor workspace
+- Destination: `apps/website/`
+- Modifications: integrated into the Bun workspace; rewrote product, storage,
+  privacy, platform, and AI claims for the current Noura architecture; retained
+  the layout, responsive styling, and WebGL shader treatment
+- Notice obligation: retain the predecessor MIT notice below
+- Review: source and license inspected by the migration assistant; migration requested by Raphael on 2026-09-11
+- Migration date: 2026-09-11
+
+The copied source came from a local predecessor of Noura, not directly from an
+external donor repository. The predecessor directory does not contain `.git`,
+so a commit identifier cannot be recovered. The hashes above pin the exact
+material reviewed for this migration.
+
+### Predecessor license notice
+
+MIT License
+
+Copyright (c) 2018 Johannes Millan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

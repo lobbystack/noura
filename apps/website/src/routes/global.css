@@ -1,0 +1,65 @@
+@import '@fontsource-variable/manrope';
+@import '@fontsource/dm-serif-display/400-italic.css';
+
+:root {
+	font-family: 'Manrope Variable', sans-serif;
+	font-synthesis: none;
+	color: #121214;
+	background: #ffffff;
+	--ink: #0f0f10;
+	--chalk: #f6f7f4;
+	--lavender: #9391fe;
+	--lavender-light: #e5e5ff;
+	--mist: #f4f2ff;
+	--line: #e9e8ed;
+}
+
+html {
+	scroll-behavior: smooth;
+	background: #fff;
+}
+
+body {
+	margin: 0;
+	min-width: 320px;
+	background: #fff;
+	color: #121214;
+	font-size: 15px;
+	line-height: 1.5;
+}
+
+button,
+a {
+	font: inherit;
+}
+
+a {
+	color: inherit;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+::selection {
+	background: #c5c4ff;
+	color: #0f0f10;
+}
+
+:focus-visible {
+	outline: 2px solid var(--lavender);
+	outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}
