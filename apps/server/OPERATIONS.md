@@ -5,6 +5,8 @@ viewer, and a generated dependency-notice file. It runs as the unprivileged
 `bun` user. Put HTTPS termination in front of it and configure `PUBLIC_ORIGIN`
 to the exact external origin. Allowlisted email, mail delivery (`SMTP_URL` or
 `RESEND_API_KEY`), and passkey origin configuration must agree with that origin.
+Set `TRUSTED_IP_HEADER` to the header your reverse proxy overwrites with the
+client address; authentication rate limiting keys on it.
 
 ## Startup and health
 

@@ -48,6 +48,14 @@ export function createAuth(
 		baseURL: config.origin,
 		trustedOrigins: [config.origin],
 		emailAndPassword: { enabled: false },
+		// Set TRUSTED_IP_HEADER to the header your reverse proxy overwrites with
+		// the client address. Railway sets x-real-ip; single-hop proxies usually
+		// set x-forwarded-for.
+		advanced: {
+			ipAddress: {
+				ipAddressHeaders: [config.trustedIpHeader ?? 'x-forwarded-for'],
+			},
+		},
 		rateLimit: { enabled: true, storage: 'database', window: 60, max: 30 },
 		session: { expiresIn: 60 * 60 * 24 * 7, cookieCache: { enabled: false } },
 		databaseHooks: {

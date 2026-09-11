@@ -44,6 +44,7 @@ export default defineRailway(() => {
 			MAIL_FROM: 'Noura <noreply@noura.app>',
 			ALLOWED_EMAILS: preserve(),
 			PUBLIC_ORIGIN: 'https://sync.noura.app',
+			TRUSTED_IP_HEADER: 'x-real-ip',
 			PORT: '1900',
 			HOST: '0.0.0.0',
 			BLOB_ROOT: '/data/blobs',

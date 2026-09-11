@@ -6,6 +6,7 @@ export interface Config {
 	authSecret: string;
 	smtpUrl?: string | undefined;
 	resendApiKey?: string | undefined;
+	trustedIpHeader?: string | undefined;
 	mailFrom: string;
 	allowedEmails: Set<string>;
 }
@@ -46,6 +47,7 @@ export function config(
 		authSecret,
 		smtpUrl,
 		resendApiKey,
+		trustedIpHeader: env.TRUSTED_IP_HEADER?.trim() || undefined,
 		mailFrom: required('MAIL_FROM'),
 		allowedEmails: new Set(
 			(env.ALLOWED_EMAILS ?? '')
