@@ -5293,6 +5293,10 @@ mod tests {
             std::fs::read(f.directory.path().join("workspace/note.md")).unwrap(),
             "\u{feff}A😀 changed\r\nsecond\r\n".as_bytes()
         );
+        // A restart closes the first engine before reopening the workspace;
+        // Windows refuses to replace an index.sqlite that another handle holds.
+        drop(session);
+        drop(f.engine);
         let reopened = WorkspaceEngine::open_with_app_data(
             f.directory.path().join("workspace"),
             f.directory.path().join("app"),
