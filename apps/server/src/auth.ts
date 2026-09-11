@@ -4,6 +4,7 @@ import { passkey } from '@better-auth/passkey';
 import { Pool } from 'pg';
 import nodemailer from 'nodemailer';
 import type { Config } from './config';
+import { sendWithResend } from './mail';
 import {
 	magicLinkPendingIdentifier,
 	passkeySignup,
@@ -16,8 +17,20 @@ export function createAuth(
 	deliver?: (email: string, url: string) => Promise<void>,
 ) {
 	const pool = new Pool({ connectionString: config.databaseUrl, max: 5 });
-	const mail = nodemailer.createTransport(config.smtpUrl);
+	const mail = config.smtpUrl
+		? nodemailer.createTransport(config.smtpUrl)
+		: undefined;
 	const sendMail = async (email: string, subject: string, text: string) => {
+		if (config.resendApiKey) {
+			await sendWithResend(config.resendApiKey, {
+				from: config.mailFrom,
+				to: email,
+				subject,
+				text,
+			});
+			return;
+		}
+		if (!mail) throw new Error('No mail transport configured');
 		await mail.sendMail({ from: config.mailFrom, to: email, subject, text });
 	};
 	const sendLink = async (
@@ -97,7 +110,9 @@ export function createAuth(
 						if (passkeys.length) return;
 					}
 					const marker = magicLinkPendingIdentifier(normalizedEmail);
-					await ctx.context.internalAdapter.deleteVerificationByIdentifier(marker);
+					await ctx.context.internalAdapter.deleteVerificationByIdentifier(
+						marker,
+					);
 					await ctx.context.internalAdapter.createVerificationValue({
 						identifier: marker,
 						value: normalizedEmail,
@@ -111,7 +126,9 @@ export function createAuth(
 							'Sign in to Noura using this link. It expires in 10 minutes.',
 						);
 					} catch (error) {
-						await ctx.context.internalAdapter.deleteVerificationByIdentifier(marker);
+						await ctx.context.internalAdapter.deleteVerificationByIdentifier(
+							marker,
+						);
 						throw error;
 					}
 				},
@@ -121,7 +138,7 @@ export function createAuth(
 	return {
 		auth,
 		close: async () => {
-			mail.close();
+			mail?.close();
 			await pool.end();
 		},
 	};

@@ -4,7 +4,8 @@ export interface Config {
 	port: number;
 	host: string;
 	authSecret: string;
-	smtpUrl: string;
+	smtpUrl?: string | undefined;
+	resendApiKey?: string | undefined;
 	mailFrom: string;
 	allowedEmails: Set<string>;
 }
@@ -33,13 +34,18 @@ export function config(
 	const port = Number(env.PORT ?? 1900);
 	if (!Number.isInteger(port) || port < 1 || port > 65535)
 		throw new Error('Invalid PORT');
+	const smtpUrl = env.SMTP_URL;
+	const resendApiKey = env.RESEND_API_KEY;
+	if (!smtpUrl && !resendApiKey)
+		throw new Error('Missing SMTP_URL or RESEND_API_KEY');
 	return {
 		databaseUrl: required('DATABASE_URL'),
 		origin: origin.origin,
 		port,
 		host: env.HOST ?? '127.0.0.1',
 		authSecret,
-		smtpUrl: required('SMTP_URL'),
+		smtpUrl,
+		resendApiKey,
 		mailFrom: required('MAIL_FROM'),
 		allowedEmails: new Set(
 			(env.ALLOWED_EMAILS ?? '')

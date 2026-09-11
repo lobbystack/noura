@@ -3,17 +3,18 @@
 The Docker image contains the Bun service, migrations, account pages, public
 viewer, and a generated dependency-notice file. It runs as the unprivileged
 `bun` user. Put HTTPS termination in front of it and configure `PUBLIC_ORIGIN`
-to the exact external origin. Allowlisted email, SMTP, and passkey origin
-configuration must agree with that origin.
+to the exact external origin. Allowlisted email, mail delivery (`SMTP_URL` or
+`RESEND_API_KEY`), and passkey origin configuration must agree with that origin.
 
 ## Startup and health
 
 Run `bun migrate.js` from the image before starting `bun main.js`. The supplied
 Compose file separates migration from the service and waits for PostgreSQL.
 `/health` checks process liveness; `/ready` also checks database/schema readiness.
-Neither endpoint establishes that SMTP delivery or passkey registration works.
+Neither endpoint establishes that mail delivery or passkey registration works.
 
-Keep `AUTH_SECRET`, SMTP credentials, and database credentials in the operator's
+Keep `AUTH_SECRET`, mail delivery credentials, and database credentials in the
+operator's
 secret store. The database stores session hashes and encrypted workspace
 operations. It still contains account and authorization metadata, so restrict
 database access and protect backups. The server never possesses workspace

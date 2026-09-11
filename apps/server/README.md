@@ -48,8 +48,10 @@ transitions, live-text generations, and capability-bound object activations.
 ## Run locally
 
 From this directory, copy `.env.example` to `.env`. Set the database connection,
-a random `AUTH_SECRET`, your SMTP service, sender address, and `ALLOWED_EMAILS`.
-An empty allowlist admits nobody. No messages are printed to logs in lieu of SMTP.
+a random `AUTH_SECRET`, account email delivery, sender address, and
+`ALLOWED_EMAILS`. Choose one delivery path: `SMTP_URL` or `RESEND_API_KEY`.
+An empty allowlist admits nobody. No messages are printed to logs in lieu of a
+mail transport.
 
 ```sh
 bun install
