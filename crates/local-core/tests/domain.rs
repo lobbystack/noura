@@ -1067,10 +1067,22 @@ fn reconciliation_repairs_an_external_save() {
 #[test]
 fn watcher_poll_accepts_an_empty_batch_and_keeps_the_workspace_usable() {
     let (_workspace, _app_data, engine) = engine();
-    let changes = engine
-        .poll_external_changes(Duration::from_millis(25))
-        .unwrap();
-    assert!(changes.is_empty());
+    // Workspace creation can leave inotify events queued on Linux, so drain
+    // until the watcher reports an idle batch. The bound still fails the test
+    // when a path keeps surfacing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let changes = engine
+            .poll_external_changes(Duration::from_millis(25))
+            .unwrap();
+        if changes.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "watcher never reported an idle batch: {changes:?}"
+        );
+    }
     assert_eq!(engine.state().phase, local_core::WorkspacePhase::Ready);
 }
 
