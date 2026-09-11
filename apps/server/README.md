@@ -320,3 +320,30 @@ and downloads content while leaving synchronization paused. Tests recover files
 and attachments with a clean credential store that lacks the original device's
 signing key, and preserve external edits on retry. Re-invitation after membership
 revocation and the key-rotation UI remain release work.
+
+## Desktop login during development
+
+Desktop debug builds use `http://localhost:1900` for Noura Sync. Run this
+server with the account web assets available, apply its migrations, and configure
+`ALLOWED_EMAILS` and local email delivery as described above. **Log in** opens the
+system browser; **Sign up** opens account creation with the same pending device
+request. After authentication, compare the device code and approve the desktop.
+The website opens Noura again, where **Enable sync** authorizes synchronization
+of the current workspace. Logging in alone does not upload workspace files.
+
+Set `NOURA_SYNC_ORIGIN` when building the desktop to use another service:
+
+```sh
+NOURA_SYNC_ORIGIN=http://localhost:1909 bun run tauri build --debug --bundles app
+```
+
+Release builds have no implicit service address. Supply `NOURA_SYNC_ORIGIN` for
+managed sync; custom servers remain available under **Use a self-hosted server…**.
+HTTPS is required except for loopback development addresses.
+
+The `noura://auth/complete` return link only focuses Noura and refreshes its native
+sign-in flow. It carries no credentials and cannot authorize sync. If the browser
+blocks automatic opening, use **Return to Noura**. On macOS, test with the generated
+`.app` bundle: URL-scheme registration is part of the bundle, not plain `tauri dev`.
+Closing settings does not cancel login; cancelling explicitly, expiration, or
+quitting the application ends a pending attempt.

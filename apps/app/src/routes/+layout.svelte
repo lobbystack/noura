@@ -3,7 +3,8 @@
 	import { ModeWatcher } from 'mode-watcher';
 	import { SettingsDialog, setSettingsDialog } from '$lib/settings.svelte';
 	import SettingsModal from '$lib/components/settings/settings-dialog.svelte';
-	setSettingsDialog(new SettingsDialog());
+	const settingsDialog = new SettingsDialog();
+	setSettingsDialog(settingsDialog);
 	import { RouteSidebar, setRouteSidebar } from '$lib/route-sidebar.svelte';
 	setRouteSidebar(new RouteSidebar());
 	import TabsBar from '$lib/components/tabs-bar.svelte';
@@ -12,7 +13,7 @@
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import WorkspaceSwitcher from '$lib/components/workspace-switcher.svelte';
 	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
-	import { workspace } from '$lib/state.svelte';
+	import { workspace, getNouraClient } from '$lib/state.svelte';
 	import { aiChats } from '$lib/ai/chat-store.svelte';
 	import { sidebarModuleFor } from '$lib/sidebar-modules';
 	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
@@ -104,6 +105,15 @@
 	);
 
 	onMount(() => {
+		let returnCount = 0;
+		const signIn = getNouraClient().sync.signIn;
+		const unsubscribeSignIn = signIn.subscribe((value) => {
+			if (value.returnCount > returnCount) {
+				returnCount = value.returnCount;
+				settingsDialog.showSync();
+			}
+		});
+		void signIn.initialize();
 		let disposed = false;
 		let unlistenClose: (() => void) | undefined;
 		if (browser) {
@@ -120,6 +130,7 @@
 		}
 		return () => {
 			disposed = true;
+			unsubscribeSignIn();
 			unlistenClose?.();
 		};
 	});

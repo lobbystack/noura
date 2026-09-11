@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { tick, type Component } from 'svelte';
+	import { getSettingsDialog } from '$lib/settings.svelte';
+	const settings = getSettingsDialog();
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { cn } from '$lib/utils';
@@ -50,7 +52,7 @@
 				{
 					id: 'account',
 					label: 'Account',
-					description: 'Connect this device to a Noura server.',
+					description: 'Manage your Noura account and this device.',
 					icon: UserCircle,
 				},
 				{
@@ -114,7 +116,10 @@
 			],
 		},
 	];
-	let selected = $state<Section>('plugins');
+	let selected = $derived.by<Section>(() => {
+		settings.requestId;
+		return settings.requestedSection ?? 'plugins';
+	});
 	let query = $state('');
 	let mobileContent = $state(true);
 	let content: HTMLDivElement;

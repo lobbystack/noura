@@ -25,6 +25,8 @@
 	let account = $state<SyncAccount | null>(null);
 	let request = $state<DeviceSignInInfo | null>(null);
 	let origin = $state('');
+	let selfHosted = $state(false);
+	let configuredOrigin = $state<string | null>(null);
 	let loading = $state(true);
 	let busy = $state(false);
 	let opening = $state(false);
@@ -489,10 +491,7 @@
 		}
 	}
 
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let generation = 0;
 	let disposed = false;
-	let expiresAt = 0;
 	function message(cause: unknown): string {
 		if (
 			cause &&
@@ -547,127 +546,37 @@
 		return 'The account request could not be completed. Please try again.';
 	}
 	onMount(() => {
+		const signIn = getNouraClient().sync.signIn;
+		const unsubscribe = signIn.subscribe((value) => {
+			account = value.account;
+			request = value.request;
+			loading = value.loading;
+			busy = value.busy;
+			error = value.error;
+			notice = value.notice;
+			configuredOrigin = value.origin;
+		});
+		void signIn.initialize();
 		void refreshWorkspaceStatus();
-		void getNouraClient()
-			.sync.account()
-			.then((value) => {
-				if (!disposed) {
-					account = value;
-					origin = value?.origin ?? '';
-				}
-			})
-			.catch((cause) => {
-				if (!disposed) error = message(cause);
-			})
-			.finally(() => {
-				if (!disposed) loading = false;
-			});
 		return () => {
 			disposed = true;
-			generation += 1;
-			clearTimeout(timer);
+			unsubscribe();
 			clearTimeout(statusTimer);
-			if (request || busy)
-				void getNouraClient()
-					.sync.cancelSignIn()
-					.catch(() => {});
 		};
 	});
-	async function poll(attempt: number) {
-		if (disposed || generation !== attempt) return;
-		if (Date.now() >= expiresAt) {
-			await cancel('The sign-in code expired. Start again to get a new code.');
-			return;
-		}
-		try {
-			const result = await getNouraClient().sync.pollSignIn();
-			if (disposed || generation !== attempt) return;
-			if (result.status === 'connected') {
-				account = result.account;
-				request = null;
-				notice =
-					'Account connected. You can manage synchronization for the open workspace below.';
-				return;
-			}
-			const delay = Number.isFinite(result.retryAfter)
-				? Math.max(1, result.retryAfter) * 1000
-				: 5000;
-			timer = setTimeout(
-				() => void poll(attempt),
-				Math.min(delay, Math.max(0, expiresAt - Date.now())),
-			);
-		} catch (cause) {
-			if (disposed || generation !== attempt) return;
-			error = message(cause);
-			request = null;
-			busy = true;
-			try {
-				await getNouraClient().sync.cancelSignIn();
-			} catch {
-				/* The public polling error remains visible. */
-			} finally {
-				if (!disposed) busy = false;
-			}
-		}
-	}
-	async function begin() {
-		busy = true;
-		error = '';
-		notice = '';
-		const attempt = ++generation;
-		try {
-			const value = await getNouraClient().sync.beginSignIn(origin.trim());
-			if (disposed || generation !== attempt) {
-				await getNouraClient().sync.cancelSignIn();
-				return;
-			}
-			request = value;
-			const lifetime = Number.isFinite(value.expiresIn)
-				? Math.min(900, Math.max(0, value.expiresIn))
-				: 0;
-			expiresAt = Date.now() + lifetime * 1000;
-			timer = setTimeout(
-				() => void poll(attempt),
-				Math.min(5000, lifetime * 1000),
-			);
-		} catch (cause) {
-			if (!disposed) error = message(cause);
-		} finally {
-			if (!disposed) busy = false;
-		}
+	async function begin(signUp = false) {
+		await getNouraClient().sync.signIn.begin(
+			selfHosted ? origin.trim() : undefined,
+			signUp,
+		);
 	}
 	async function openBrowser() {
 		opening = true;
-		error = '';
-		try {
-			await getNouraClient().sync.openSignInBrowser();
-		} catch (cause) {
-			if (!disposed) error = message(cause);
-		} finally {
-			if (!disposed) opening = false;
-		}
+		await getNouraClient().sync.signIn.openBrowser();
+		opening = false;
 	}
-	async function cancel(reason = '') {
-		generation += 1;
-		clearTimeout(timer);
-		busy = true;
-		error = '';
-		notice = '';
-		try {
-			await getNouraClient().sync.cancelSignIn();
-			const current = await getNouraClient().sync.account();
-			if (!disposed) {
-				account = current;
-				request = null;
-				notice = current
-					? 'Account connected. You can manage synchronization for the open workspace below.'
-					: reason || 'Sign-in cancelled.';
-			}
-		} catch (cause) {
-			if (!disposed) error = message(cause);
-		} finally {
-			if (!disposed) busy = false;
-		}
+	async function cancel() {
+		await getNouraClient().sync.signIn.cancel();
 	}
 	async function exportRecoveryKit() {
 		const root = workspace.state?.rootPath;
@@ -752,6 +661,7 @@
 		notice = '';
 		try {
 			await getNouraClient().sync.disconnect();
+			await getNouraClient().sync.signIn.refresh();
 			if (!disposed) {
 				account = null;
 				devices = [];
@@ -783,7 +693,7 @@
 
 <section
 	aria-label={section === 'account'
-		? 'Server account'
+		? 'Noura account'
 		: section === 'sync'
 			? 'Workspace synchronization'
 			: 'Workspace access'}
@@ -1021,9 +931,7 @@
 											joining ||
 											importingRecovery}
 										onclick={() => changeWorkspaceSync('enable')}
-										>{syncChanging
-											? 'Enabling…'
-											: 'Enable workspace sync'}</Button
+										>{syncChanging ? 'Enabling…' : 'Enable sync'}</Button
 									>
 								{:else if syncStatus.phase === 'paused'}<Button
 										disabled={busy ||
@@ -1392,7 +1300,7 @@
 			</p>
 			<div class="flex flex-wrap gap-2">
 				<Button disabled={busy || opening} onclick={openBrowser}
-					>{opening ? 'Opening…' : 'Open sign-in in browser'}</Button
+					>{opening ? 'Opening…' : 'Open browser again'}</Button
 				><Button variant="outline" disabled={busy} onclick={() => cancel()}
 					>Cancel sign-in</Button
 				>
@@ -1403,39 +1311,63 @@
 			</p>
 			<p class="break-all text-xs select-text">{request.verificationUri}</p>
 			<p role="status" class="text-xs text-muted-foreground">
-				Waiting for your approval. Keep Settings open until sign-in finishes.
+				Waiting for your approval. You can close Settings while you sign in.
 			</p>
 		{:else}
-			<form
-				onsubmit={(event) => {
-					event.preventDefault();
-					void begin();
-				}}
-			>
+			<p class="text-sm text-muted-foreground">
+				An account is only needed for Noura Sync. Your local workspace works
+				without one.
+			</p>
+			<div class="flex flex-wrap gap-2">
+				<Button
+					disabled={busy ||
+						(!selfHosted && !configuredOrigin) ||
+						(selfHosted && !origin.trim())}
+					onclick={() => begin()}>Log in</Button
+				>
+				<Button
+					variant="outline"
+					disabled={busy ||
+						(!selfHosted && !configuredOrigin) ||
+						(selfHosted && !origin.trim())}
+					onclick={() => begin(true)}>Sign up</Button
+				>
+			</div>
+			{#if !configuredOrigin && !selfHosted}
+				<p class="text-sm text-muted-foreground">
+					Noura Sync is not configured for this build. Use a self-hosted server
+					to connect.
+				</p>
+			{/if}
+			<div>
+				<Button
+					variant="link"
+					disabled={busy}
+					onclick={() => {
+						selfHosted = !selfHosted;
+					}}>Use a self-hosted server…</Button
+				>
+			</div>
+			{#if selfHosted}
 				<Field.FieldGroup>
-					<Field.Field
-						><Field.FieldLabel for="sync-server-origin"
+					<Field.Field>
+						<Field.FieldLabel for="sync-server-origin"
 							>Server address</Field.FieldLabel
-						><Input
+						>
+						<Input
 							id="sync-server-origin"
 							type="url"
 							placeholder="https://…"
 							autocomplete="off"
-							required
 							bind:value={origin}
 							disabled={busy}
-						/><Field.FieldDescription
-							>Use the server address supplied by your operator, or your
-							self-hosted server.</Field.FieldDescription
-						></Field.Field
-					>
-					<div>
-						<Button type="submit" disabled={busy}
-							>{busy ? 'Starting sign-in…' : 'Sign in to server'}</Button
+						/>
+						<Field.FieldDescription
+							>Enter the address of your Noura server.</Field.FieldDescription
 						>
-					</div>
+					</Field.Field>
 				</Field.FieldGroup>
-			</form>
+			{/if}
 		{/if}
 		{#if notice}<p role="status" class="text-xs text-muted-foreground">
 				{notice}

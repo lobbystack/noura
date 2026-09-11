@@ -62,6 +62,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let engine =
                     WorkspaceEngine::create_with_app_data(&root, "Desktop sync", &app_data)?;
                 std::fs::write(root.join("external.txt"), b"canonical external edit")?;
+                assert!(transport.workspaces().await?.is_empty());
+                let mut unavailable = connection.clone();
+                unavailable.origin = "http://127.0.0.1:1".into();
+                assert!(
+                    WorkspaceSyncCoordinator::enable(&engine, &unavailable, &store)
+                        .await
+                        .is_err()
+                );
+                assert!(!engine.sync_status()?.enabled);
                 WorkspaceSyncCoordinator::enable(&engine, &connection, &store).await?;
                 // Lost creation responses are safe to retry without changing ownership.
                 WorkspaceSyncCoordinator::enable(&engine, &connection, &store).await?;

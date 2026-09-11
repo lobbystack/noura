@@ -1,3 +1,5 @@
+import { createSyncSignIn } from './sync-signin';
+export type { SignInProgress, SyncServiceConfiguration } from './sync-signin';
 import { readable, type Readable } from 'svelte/store';
 import { nextKanbanOrder, projectKanban } from '@noura/plugin-tasks';
 import {
@@ -92,6 +94,7 @@ export {
 } from '@noura/plugin-sdk';
 
 export interface CoreTransport {
+	subscribeSyncReturn?(handler: () => void): Promise<() => void>;
 	request<T>(command: string, payload?: Record<string, unknown>): Promise<T>;
 	stream?<T>(
 		command: string,
@@ -344,7 +347,8 @@ export interface NouraClient {
 		pauseWorkspace(): Promise<WorkspaceSyncStatus>;
 		resumeWorkspace(): Promise<WorkspaceSyncStatus>;
 		account(): Promise<SyncAccount | null>;
-		beginSignIn(origin: string): Promise<DeviceSignInInfo>;
+		signIn: ReturnType<typeof createSyncSignIn>;
+		beginSignIn(origin?: string): Promise<DeviceSignInInfo>;
 		openSignInBrowser(): Promise<void>;
 		exportRecoveryIdentity(): Promise<boolean>;
 		importRecoveryKit(): Promise<boolean>;
@@ -571,6 +575,7 @@ export function createNouraClient(
 			pauseWorkspace: () => transport.request('sync_workspace_pause'),
 			resumeWorkspace: () => transport.request('sync_workspace_resume'),
 			account: () => transport.request('sync_account_current'),
+			signIn: createSyncSignIn(transport),
 			beginSignIn: (origin) =>
 				transport.request('sync_account_begin', { origin }),
 			openSignInBrowser: () => transport.request('sync_account_open_browser'),

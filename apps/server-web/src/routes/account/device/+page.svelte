@@ -19,6 +19,7 @@
 	let review = $state<DeviceReview | null>(null);
 	let error = $state('');
 	let result = $state('');
+	let approved = $state(false);
 	async function run(action: () => Promise<void>) {
 		busy = true;
 		error = '';
@@ -40,6 +41,8 @@
 		if (!review) return;
 		await decideDevice(review.user_code, decision);
 		review = null;
+		approved = decision === 'approve';
+		if (approved) location.assign('noura://auth/complete');
 		result =
 			decision === 'approve'
 				? 'Desktop sign-in approved. Return to Noura desktop to finish connecting.'
@@ -66,6 +69,8 @@
 		>Sign in to review this device</Button
 	>
 {:else if result}<p role="status">{result}</p>
+	{#if approved}<Button href="noura://auth/complete">Return to Noura</Button
+		>{/if}
 {:else if review}
 	<p class="break-all text-sm text-muted-foreground">
 		Signing in as {account.email}

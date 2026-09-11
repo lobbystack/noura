@@ -25,10 +25,12 @@ use local_core::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Channel};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::DialogExt;
 mod sync_commands;
 
 struct AppState {
+    sync_auth_return: std::sync::atomic::AtomicBool,
     engine: Mutex<Option<Arc<WorkspaceEngine>>>,
     ai: Mutex<Option<Arc<AiFoundation>>>,
     ai_data_root: PathBuf,
@@ -48,6 +50,7 @@ impl AppState {
             ai: Mutex::new(None),
             ai_data_root,
             runtime_spike: Arc::new(PiRuntimeSpikeRegistry::default()),
+            sync_auth_return: std::sync::atomic::AtomicBool::new(false),
             sync_account: tokio::sync::Mutex::new(local_core::sync::SyncAccountService::default()),
             sync_gate: tokio::sync::Mutex::new(()),
             sync_cancel: tokio::sync::Notify::new(),
@@ -1309,7 +1312,15 @@ fn object_open_terminal(state: State<AppState>, input: ShowInFolderInput) -> Res
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        for uri in args {
+            sync_commands::handle_auth_return(app, &uri);
+        }
+    }));
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let root = app.path().app_local_data_dir().map_err(|_| {
@@ -1320,6 +1331,19 @@ pub fn run() {
                 )
             })?;
             app.manage(AppState::new(root));
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for uri in event.urls() {
+                    sync_commands::handle_auth_return(&handle, uri.as_str());
+                }
+            });
+            if let Some(urls) = app.deep_link().get_current()? {
+                for uri in urls {
+                    sync_commands::handle_auth_return(app.handle(), uri.as_str());
+                }
+            }
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            app.deep_link().register_all()?;
             // Restore before the frontend asks for workspace_state, avoiding a
             // chooser flash or a late restore replacing a user's selection.
             match restore_last_workspace(&load_recent(app.handle()), |workspace| {
@@ -1385,6 +1409,8 @@ pub fn run() {
             sync_commands::sync_workspace_enable,
             sync_commands::sync_workspace_pause,
             sync_commands::sync_workspace_resume,
+            sync_commands::sync_service_configuration,
+            sync_commands::sync_account_take_return,
             sync_commands::sync_account_current,
             sync_commands::sync_account_export_recovery,
             sync_commands::sync_account_import_recovery,

@@ -28,6 +28,21 @@ export function createTauriTransport(): CoreTransport {
 			channel.onmessage = handler;
 			await invoke(command, { ...payload, channel });
 		},
+		async subscribeSyncReturn(handler) {
+			const deliver = async () => {
+				if (await invoke<boolean>('sync_account_take_return')) handler();
+			};
+			const unlisten = await listen('noura://auth-return', () => {
+				void deliver().catch(() => {});
+			});
+			try {
+				await deliver();
+			} catch (cause) {
+				unlisten();
+				throw cause;
+			}
+			return unlisten;
+		},
 		async subscribe(handler) {
 			const unlisten: UnlistenFn = await listen<CoreEvent>(
 				'noura://core-event',

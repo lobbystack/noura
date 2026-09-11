@@ -15,6 +15,7 @@
 		invitationPath,
 		type Account,
 	} from '$account/auth';
+	let signup = $state(false);
 	let account = $state<Account | null>(null);
 	let loading = $state(true);
 	let busy = $state(false);
@@ -40,11 +41,13 @@
 	}
 	onMount(() => {
 		const query = new URLSearchParams(location.search);
+		signup = query.get('mode') === 'signup';
 		code = userCode(query.get('user_code'));
 		invite = invitationPath(query.get('invite'));
 		void run(async () => {
 			account = await session();
-			if (account && invite) location.assign(invite);
+			if (account && code) location.assign(devicePath(code));
+			else if (account && invite) location.assign(invite);
 		}).finally(() => {
 			loading = false;
 		});
@@ -52,7 +55,11 @@
 </script>
 
 <h1 class="text-2xl font-semibold">
-	{account ? 'Your account' : 'Sign in to Noura'}
+	{account
+		? 'Your account'
+		: signup
+			? 'Create your Noura account'
+			: 'Log in to Noura'}
 </h1>
 {#if loading}<p role="status">Checking your session…</p>
 {:else if account}
@@ -106,7 +113,8 @@
 				onclick={() =>
 					run(async () => {
 						await signUpPasskey(email, code, invite);
-						notice = 'Passkey created. Check your email to finish creating your account.';
+						notice =
+							'Passkey created. Check your email to finish creating your account.';
 					})}>{busy ? 'Please wait…' : 'Create account with a passkey'}</Button
 			><Button type="submit" variant="outline" disabled={busy}
 				>Email me a sign-in link</Button
@@ -121,6 +129,7 @@
 				await signInPasskey();
 				account = await session();
 				if (account && code) location.assign(devicePath(code));
+				else if (account && code) location.assign(devicePath(code));
 				else if (account && invite) location.assign(invite);
 			})}>Use an existing passkey</Button
 	>

@@ -923,8 +923,15 @@ pub async fn sync_account_import_recovery(
 }
 
 #[tauri::command]
-pub async fn sync_account_open_browser(state: State<'_, AppState>) -> Result<(), CoreError> {
-    let uri = state.sync_account.lock().await.verification_uri()?;
+pub async fn sync_account_open_browser(
+    state: State<'_, AppState>,
+    sign_up: Option<bool>,
+) -> Result<(), CoreError> {
+    let mut uri = state.sync_account.lock().await.verification_uri()?;
+    if sign_up.unwrap_or(false) {
+        uri = uri.replacen("/account/device?", "/account?", 1);
+        uri.push_str("&mode=signup");
+    }
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(target_os = "macos")]
         let result = std::process::Command::new("/usr/bin/open")
@@ -971,8 +978,17 @@ pub async fn sync_account_current(
 #[tauri::command]
 pub async fn sync_account_begin(
     state: State<'_, AppState>,
-    origin: String,
+    origin: Option<String>,
 ) -> Result<DeviceSignInInfo, CoreError> {
+    let origin = origin
+        .or_else(|| service_origin(option_env!("NOURA_SYNC_ORIGIN"), cfg!(debug_assertions)))
+        .ok_or_else(|| {
+            CoreError::validation(
+                "sync_service_not_configured",
+                "Noura Sync is not configured for this build",
+                "sync_signin",
+            )
+        })?;
     state
         .sync_account
         .lock()
@@ -1144,5 +1160,83 @@ mod tests {
         );
         assert!(realtime_url("ftp://sync.example", "workspace").is_err());
         assert!(realtime_url("https://sync.example", "../workspace").is_err());
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct SyncServiceConfiguration {
+    origin: Option<String>,
+}
+
+fn service_origin(configured: Option<&str>, development: bool) -> Option<String> {
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| development.then(|| "http://localhost:1900".to_owned()))
+}
+
+#[tauri::command]
+pub fn sync_service_configuration() -> SyncServiceConfiguration {
+    SyncServiceConfiguration {
+        origin: service_origin(option_env!("NOURA_SYNC_ORIGIN"), cfg!(debug_assertions)),
+    }
+}
+
+#[tauri::command]
+pub fn sync_account_take_return(state: State<'_, AppState>) -> bool {
+    state
+        .sync_auth_return
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+pub(crate) fn handle_auth_return(app: &AppHandle, uri: &str) {
+    // This link conveys no authorization. The pending native device flow is authoritative.
+    if !is_auth_return(uri) {
+        return;
+    }
+    app.state::<AppState>()
+        .sync_auth_return
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    let _ = tauri::Emitter::emit(app, "noura://auth-return", ());
+}
+
+fn is_auth_return(uri: &str) -> bool {
+    uri == "noura://auth/complete"
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    #[test]
+    fn return_link_only_accepts_the_fixed_route() {
+        assert!(is_auth_return("noura://auth/complete"));
+        for uri in [
+            "noura://auth/complete?token=secret",
+            "noura://auth/complete#x",
+            "noura://auth/other",
+            "https://auth/complete",
+            "noura://evil/complete",
+            "noura://auth/complete/",
+        ] {
+            assert!(!is_auth_return(uri));
+        }
+    }
+    #[test]
+    fn release_has_no_implicit_service() {
+        assert_eq!(service_origin(None, false), None);
+        assert_eq!(
+            service_origin(None, true).as_deref(),
+            Some("http://localhost:1900")
+        );
+        assert_eq!(
+            service_origin(Some("https://sync.example"), false).as_deref(),
+            Some("https://sync.example")
+        );
     }
 }

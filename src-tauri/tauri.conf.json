@@ -17,12 +17,25 @@
 				"height": 720,
 				"titleBarStyle": "Overlay",
 				"hiddenTitle": true,
-				"trafficLightPosition": { "x": 12, "y": 18 }
+				"trafficLightPosition": {
+					"x": 12,
+					"y": 18
+				}
 			}
 		],
 		"security": {
 			"csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; img-src 'self' data: blob:; font-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'"
 		}
 	},
-	"bundle": { "active": true, "targets": "all" }
+	"bundle": {
+		"active": true,
+		"targets": "all"
+	},
+	"plugins": {
+		"deep-link": {
+			"desktop": {
+				"schemes": ["noura"]
+			}
+		}
+	}
 }
