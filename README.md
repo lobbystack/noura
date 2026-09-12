@@ -15,7 +15,7 @@ The repository contains the desktop Local Alpha with:
 
 The repository also contains:
 
-- `apps/server` and `apps/server-web`: an experimental encrypted sync service, not a production release. See [`apps/server/README.md`](apps/server/README.md).
+- `apps/server`: an experimental encrypted sync service serving the unified `apps/app` browser build, not a production release. Account, device approval, invitation, and encrypted share pages work independently of native workspace initialization. Browser workspaces remain unavailable. See [`apps/server/README.md`](apps/server/README.md).
 - `apps/website`: the marketing site.
 
 See [`docs/architecture/`](docs/architecture/) for design notes and [`docs/workspace-format/`](docs/workspace-format/) for the workspace format.

@@ -2,11 +2,25 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 import { pdfAssets } from './pdf-assets.js';
+import { browserLicenseInputs } from './browser-license-inputs.js';
 
 export default defineConfig({
-	plugins: [pdfAssets(), tailwindcss(), sveltekit()],
+	// Only expose the target, not the rest of the build environment.
+	define: {
+		'import.meta.env.NOURA_TAURI_PLATFORM': JSON.stringify(
+			process.env.TAURI_ENV_PLATFORM ?? '',
+		),
+	},
+	plugins: [pdfAssets(), tailwindcss(), sveltekit(), browserLicenseInputs()],
 	clearScreen: false,
-	server: { strictPort: true },
+	server: {
+		strictPort: true,
+		proxy: {
+			'/api': 'http://127.0.0.1:1900',
+			'/public': 'http://127.0.0.1:1900',
+			'/v1': 'http://127.0.0.1:1900',
+		},
+	},
 	ssr: { noExternal: ['@noura/ai'] },
 	build: {
 		rolldownOptions: {

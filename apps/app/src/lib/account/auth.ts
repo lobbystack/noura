@@ -57,11 +57,17 @@ export async function sendMagicLink(
 	});
 	checked(result.error);
 }
+export function accountCallbackPath(code: string, invite = ''): string {
+	if (userCode(code)) return devicePath(code);
+	// The account form retains a validated path, while URL query input is a token.
+	const token = invite.startsWith('/invite/')
+		? invite.slice('/invite/'.length)
+		: invite;
+	return invitationPath(token) || '/account';
+}
 function accountCallbackURL(code: string, invite = ''): string {
-	return new URL(
-		userCode(code) ? devicePath(code) : invitationPath(invite) || '/account',
-		window.location.origin,
-	).href;
+	return new URL(accountCallbackPath(code, invite), window.location.origin)
+		.href;
 }
 async function signupRequest<T>(path: string, body: object): Promise<T> {
 	const response = await fetch(`/api/auth/passkey-sign-up/${path}`, {
@@ -76,7 +82,9 @@ async function signupRequest<T>(path: string, body: object): Promise<T> {
 	};
 	if (!response.ok)
 		throw new Error(
-			value.message || value.error?.message || 'Passkey signup could not be completed.',
+			value.message ||
+				value.error?.message ||
+				'Passkey signup could not be completed.',
 		);
 	return value;
 }

@@ -1,5 +1,11 @@
 # Third-Party Notices
 
+The unified hosted app includes `@tauri-apps/api` under its MIT option. Its
+copyright and license text are in
+[`apps/server/licenses/tauri-api-2.11.1.txt`](apps/server/licenses/tauri-api-2.11.1.txt)
+and are included in generated release notices. See
+[`docs/provenance/tauri-api-license.md`](docs/provenance/tauri-api-license.md).
+
 Noura uses third-party dependencies under their respective licenses. The lockfiles and automated license report provide the dependency inventory.
 
 The repository includes Apollo GraphQL's unmodified `rust-best-practices` agent skill under the MIT license. See `docs/provenance/apollo-rust-best-practices.md` for its pinned source and verification record.

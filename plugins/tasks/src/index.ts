@@ -91,6 +91,7 @@ export default definePlugin({
 			'workspace.events',
 			'ai.tools',
 		],
+		platforms: ['desktop'],
 	},
 	activate(context) {
 		const disposers: Array<() => void> = [];

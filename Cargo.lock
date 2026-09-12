@@ -3287,6 +3287,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "workspace-format",
  "yrs",
  "zeroize",
 ]
@@ -6575,7 +6576,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
 dependencies = [
  "rand 0.9.5",
- "serde",
  "web-time",
 ]
 
@@ -7538,6 +7538,30 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-format"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "thiserror 2.0.20",
+ "ts-rs",
+ "ulid",
+]
+
+[[package]]
+name = "workspace-format-wasm"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "workspace-format",
+]
 
 [[package]]
 name = "writeable"

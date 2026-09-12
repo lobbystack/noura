@@ -62,6 +62,26 @@ bun run start
 To include the account pages and public viewer, run `bun run build:release`, then
 `bun dist/main.js`. Docker packages this combined release automatically.
 
+The browser UI is built from `apps/app`. Its `(account)` route group contains
+`/account`, `/account/device`, `/invite/[token]`, and `/share/[token]`, outside
+the `(workspace)` layout and its native initialization. Browser workspace routes
+currently display **Workspace unavailable**; this consolidation does not add
+browser file storage or workspace editing.
+
+`build:release` creates `apps/app/build-hosted`, verifies CSP hashes and the
+account routes' static import boundary, generates bundled dependency notices,
+and copies the app to `dist/public`. Native builds continue to use
+`apps/app/build` and Tauri's CSP. Do not substitute a native build for the hosted
+build: the hosted build preserves the restrictive account/share CSP.
+
+The server serves only explicit SPA destinations and asset prefixes. Missing API
+endpoints, missing assets, unknown paths, and non-GET page requests do not fall
+back to HTML. Auth callback paths and the server's `PUBLIC_ORIGIN` are unchanged.
+For frontend development, `bun run --cwd ../app dev` proxies `/api`, `/public`,
+and `/v1` to loopback port 1900. Configure the server's `PUBLIC_ORIGIN` to match
+the frontend origin when using that proxy; test secure cookies and passkeys on
+the same-origin combined release before deployment.
+
 Use `/health` for liveness and `/ready` for database/schema readiness. Production
 requires an HTTPS `PUBLIC_ORIGIN`; plain HTTP is allowed only for loopback.
 

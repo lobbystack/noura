@@ -59,7 +59,7 @@
 	});
 </script>
 
-<h1 class="text-2xl font-semibold">Connect Noura desktop</h1>
+<h1 class="text-base font-semibold">Connect Noura desktop</h1>
 <p class="text-muted-foreground">
 	Only approve if you started signing in from Noura desktop. Compare this code
 	with the code on your device.
@@ -76,7 +76,7 @@
 		Signing in as {account.email}
 	</p>
 	<p
-		class="rounded-xl border p-4 text-center font-mono text-2xl tracking-widest"
+		class="rounded-xl border p-4 text-center font-mono text-base tracking-widest"
 		aria-label="Device code"
 	>
 		{review.user_code}

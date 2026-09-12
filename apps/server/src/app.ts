@@ -12,9 +12,8 @@ import {
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
-import { serveStatic } from 'hono/bun';
+import { createBrowserApp } from './web';
 import { upgradeWebSocket } from 'hono/bun';
-import { join } from 'node:path';
 import { randomBytes, createPublicKey, verify } from 'node:crypto';
 import type { AccountAuth } from './auth';
 import { accessPolicy, setAccess } from './access';
@@ -802,21 +801,7 @@ export function createApp(
 			),
 		);
 	});
-	if (options.webRoot) {
-		app.get('/_app/*', serveStatic({ root: options.webRoot }));
-		const index = async (c: import('hono').Context<Env>) => {
-			c.header('Referrer-Policy', 'no-referrer');
-			c.header('Content-Security-Policy', "frame-ancestors 'none'");
-			const file = Bun.file(join(options.webRoot!, 'index.html'));
-			if (!(await file.exists()))
-				return c.json({ error: { code: 'server.web_unavailable' } }, 503);
-			return c.html(await file.text());
-		};
-		app.get('/account', index);
-		app.get('/account/device', index);
-		app.get('/invite/:token', index);
-		app.get('/share/:token', index);
-	}
+	if (options.webRoot) app.route('/', createBrowserApp(options.webRoot));
 	app.get('/public/:token', async (c) =>
 		c.json(await readPublicLink(store, c.req.param('token'))),
 	);

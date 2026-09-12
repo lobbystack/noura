@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/local-core", "crates/mcp-server", "src-tauri"]
+members = [
+    "crates/local-core",
+    "crates/mcp-server",
+    "crates/workspace-format",
+    "crates/workspace-format-wasm",
+    "src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -44,8 +50,10 @@ tokio-tungstenite = { version = "=0.30.0", default-features = false, features = 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 ts-rs = { version = "11", features = ["serde-compat"] }
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "1", default-features = false }
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
 libc = "0.2"
 windows-sys = "0.61.2"
+wasm-bindgen = "0.2.127"
+js-sys = "0.3.104"

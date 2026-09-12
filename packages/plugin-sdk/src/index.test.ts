@@ -3,6 +3,7 @@ import {
 	definePlugin,
 	PluginHost,
 	requireCapability,
+	supportsPlatform,
 	type PluginHostServices,
 } from './index';
 import { AiRegistry } from '@noura/ai';
@@ -21,6 +22,62 @@ test('plugin manifests enforce declared capabilities', () => {
 		requireCapability(plugin.manifest, 'workspace.storage'),
 	).toThrow();
 });
+
+test('platform metadata gates activation while legacy manifests remain portable', async () => {
+	let desktopActivated = false;
+	const desktopOnly = definePlugin({
+		manifest: {
+			id: 'desktop-only',
+			name: 'Desktop only',
+			version: '1.0.0',
+			capabilities: [],
+			platforms: ['desktop'],
+		},
+		activate() {
+			desktopActivated = true;
+		},
+	});
+	expect(supportsPlatform(desktopOnly.manifest, 'desktop')).toBe(true);
+	expect(supportsPlatform(desktopOnly.manifest, 'web')).toBe(false);
+	expect(() =>
+		definePlugin({
+			manifest: {
+				id: 'no-platforms',
+				name: 'No platforms',
+				version: '1.0.0',
+				capabilities: [],
+				platforms: [],
+			},
+			activate() {},
+		}),
+	).toThrow();
+
+	const webHost = new PluginHost({} as PluginHostServices, {
+		platform: 'web',
+	});
+	await expect(webHost.activate(desktopOnly)).rejects.toThrow(
+		'does not support web',
+	);
+	expect(desktopActivated).toBe(false);
+	expect(webHost.isActive('desktop-only')).toBe(false);
+
+	let activated = false;
+	await webHost.activate(
+		definePlugin({
+			manifest: {
+				id: 'legacy',
+				name: 'Legacy',
+				version: '1.0.0',
+				capabilities: [],
+			},
+			activate() {
+				activated = true;
+			},
+		}),
+	);
+	expect(activated).toBe(true);
+});
+
 test('plugin host denies undeclared object access', async () => {
 	const services: PluginHostServices = {
 		files: {

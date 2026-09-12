@@ -7,7 +7,8 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Separator } from '$lib/components/ui/separator';
-	import * as Empty from '$lib/components/ui/empty';
+	import PluginPlatforms from './plugin-platforms.svelte';
+	import { platformLabels } from '$lib/platform';
 	import Sparkle from 'phosphor-svelte/lib/Sparkle';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
@@ -67,7 +68,7 @@
 		}),
 	);
 	const manifest = $derived(
-		plugins.activeManifests.find((plugin) => plugin.id === selectedId),
+		plugins.catalog.find((plugin) => plugin.id === selectedId),
 	);
 
 	onMount(() => {
@@ -91,107 +92,131 @@
 	}
 </script>
 
-{#if !workspace.isReady}
-	<Empty.Root
-		><Empty.Header
-			><Empty.Title>Open a workspace</Empty.Title><Empty.Description
-				>Open a workspace to manage plugins.</Empty.Description
-			></Empty.Header
-		></Empty.Root
+<p class="mb-4 text-sm text-muted-foreground">
+	Current platform: {plugins.platform
+		? platformLabels[plugins.platform]
+		: 'Unknown native platform'}.
+	{#if plugins.platform === 'web'}Local workspaces are not available in the
+		browser.{:else if !workspace.isReady}Open a workspace to manage plugins.{/if}
+</p>
+{#if error || plugins.lastError}<p
+		role="alert"
+		class="text-sm text-destructive"
 	>
-{:else}
-	{#if error || plugins.lastError}<p
-			role="alert"
-			class="text-sm text-destructive"
-		>
-			{error || plugins.lastError}
-		</p>{/if}
-	{#if !plugins.synced}<p role="status" class="text-sm text-muted-foreground">
-			Loading plugins…
+		{error || plugins.lastError}
+	</p>{/if}
+{#if !plugins.synced}<p role="status" class="text-sm text-muted-foreground">
+		Loading plugins…
+	</p>
+{/if}
+{#if selected}
+	<div class="flex flex-col gap-6">
+		<div>
+			<Button
+				variant="ghost"
+				size="sm"
+				onclick={() => {
+					selectedId = null;
+				}}><ArrowLeft data-icon="inline-start" />Plugins</Button
+			>
+		</div>
+		<div class="flex items-start gap-4">
+			<div class="flex size-11 shrink-0 items-center justify-center">
+				<selected.icon class="size-5" />
+			</div>
+			<div class="flex min-w-0 flex-1 flex-col gap-1">
+				<h2 class="text-base font-semibold">{selected.name}</h2>
+				<p class="text-sm text-muted-foreground">{selected.description}</p>
+				<PluginPlatforms {manifest} />
+			</div>
+			<Switch
+				aria-label="Enable {selected.name}"
+				checked={plugins.enabledIds.includes(selected.id)}
+				aria-describedby="selected-plugin-availability"
+				disabled={toggling !== '' || !!plugins.unavailableReason(selected.id)}
+				onCheckedChange={(enabled) => setEnabled(selected.id, enabled)}
+			/>
+		</div>
+		<p id="selected-plugin-availability" class="text-xs text-muted-foreground">
+			{plugins.unavailableReason(selected.id) ??
+				(plugins.isEnabled(selected.id)
+					? 'Active on this device.'
+					: 'Disabled.')}
+			{#if plugins.enabledIds.includes(selected.id) && !plugins.isSupported(selected.id)}Enabled
+				in workspace preferences, but inactive on this device.{/if}
+			{manifest ? ` · Version ${manifest.version}` : ''}
 		</p>
-	{:else if selected}
-		<div class="flex flex-col gap-6">
-			<div>
-				<Button
-					variant="ghost"
-					size="sm"
-					onclick={() => {
-						selectedId = null;
-					}}><ArrowLeft data-icon="inline-start" />Plugins</Button
-				>
-			</div>
-			<div class="flex items-start gap-4">
-				<div class="flex size-11 shrink-0 items-center justify-center">
-					<selected.icon class="size-5" />
-				</div>
-				<div class="flex min-w-0 flex-1 flex-col gap-1">
-					<h2 class="text-base font-semibold">{selected.name}</h2>
-					<p class="text-sm text-muted-foreground">{selected.description}</p>
-				</div>
-				<Switch
-					aria-label="Enable {selected.name}"
-					checked={plugins.enabledIds.includes(selected.id)}
-					disabled={toggling !== ''}
-					onCheckedChange={(enabled) => setEnabled(selected.id, enabled)}
-				/>
-			</div>
-			<p class="text-xs text-muted-foreground">
-				{plugins.enabledIds.includes(selected.id)
-					? 'Enabled'
-					: 'Disabled'}{manifest ? ` · Version ${manifest.version}` : ''}
+		<Separator />
+		{#if plugins.unavailableReason(selected.id)}
+			<p class="text-sm text-muted-foreground">
+				Plugin actions and configuration are unavailable here. Workspace
+				preferences are unchanged.
 			</p>
-			<Separator />
-			{#if selected.id === 'ai'}
-				<AiSettings />
-			{:else}
-				<p class="text-sm text-muted-foreground">No additional settings.</p>
-			{/if}
-			{#if manifest?.capabilities.length}
-				<details class="text-sm">
-					<summary class="cursor-pointer text-muted-foreground"
-						>Plugin capabilities</summary
+		{:else if selected.id === 'ai'}
+			<AiSettings />
+		{:else}
+			<p class="text-sm text-muted-foreground">No additional settings.</p>
+		{/if}
+		{#if manifest?.capabilities.length}
+			<details class="text-sm">
+				<summary class="cursor-pointer text-muted-foreground"
+					>Plugin capabilities</summary
+				>
+				<div class="flex flex-wrap gap-2 pt-3">
+					{#each manifest.capabilities as capability (capability)}<Badge
+							variant="outline">{capability}</Badge
+						>{/each}
+				</div>
+			</details>
+		{/if}
+	</div>
+{:else}
+	<div class="flex flex-col">
+		<div class="flex flex-col divide-y divide-border" role="list">
+			{#each orderedCatalog as plugin (plugin.id)}
+				{@const reason = plugins.unavailableReason(plugin.id)}
+				<div role="listitem" class="flex items-center gap-4 py-4">
+					<button
+						type="button"
+						class="group flex min-w-0 flex-1 items-center gap-4 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						onclick={() => {
+							selectedId = plugin.id;
+						}}
+						aria-label="{plugin.name} settings"
 					>
-					<div class="flex flex-wrap gap-2 pt-3">
-						{#each manifest.capabilities as capability (capability)}<Badge
-								variant="outline">{capability}</Badge
-							>{/each}
-					</div>
-				</details>
-			{/if}
-		</div>
-	{:else}
-		<div class="flex flex-col">
-			<div class="flex flex-col divide-y divide-border" role="list">
-				{#each orderedCatalog as plugin (plugin.id)}
-					<div role="listitem" class="flex items-center gap-4 py-4">
-						<button
-							type="button"
-							class="group flex min-w-0 flex-1 items-center gap-4 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-							onclick={() => {
-								selectedId = plugin.id;
-							}}
-							aria-label="{plugin.name} settings"
+						<span class="flex size-10 shrink-0 items-center justify-center"
+							><plugin.icon class="size-5 text-muted-foreground" /></span
 						>
-							<span class="flex size-10 shrink-0 items-center justify-center"
-								><plugin.icon class="size-5 text-muted-foreground" /></span
-							>
-							<span class="flex min-w-0 flex-1 flex-col gap-1"
-								><span class="font-medium">{plugin.name}</span><span
-									class="text-sm leading-relaxed text-muted-foreground"
-									>{plugin.description}</span
-								></span
-							>
-							<CaretRight class="size-4 shrink-0 text-muted-foreground" />
-						</button>
-						<Switch
-							aria-label="Enable {plugin.name}"
-							checked={plugins.enabledIds.includes(plugin.id)}
-							disabled={toggling !== ''}
-							onCheckedChange={(enabled) => setEnabled(plugin.id, enabled)}
-						/>
-					</div>
-				{/each}
-			</div>
+						<span class="flex min-w-0 flex-1 flex-col gap-1"
+							><span class="font-medium">{plugin.name}</span><span
+								class="text-sm leading-relaxed text-muted-foreground"
+								>{plugin.description}</span
+							><PluginPlatforms
+								manifest={plugins.catalog.find(
+									(manifest) => manifest.id === plugin.id,
+								)}
+							/>
+							<span
+								id="plugin-availability-{plugin.id}"
+								class="text-xs text-muted-foreground"
+								>{reason ??
+									(plugins.isEnabled(plugin.id)
+										? 'Active on this device.'
+										: 'Disabled.')}{#if plugins.enabledIds.includes(plugin.id) && !plugins.isSupported(plugin.id)}
+									Enabled in workspace preferences, but inactive on this device.{/if}</span
+							></span
+						>
+						<CaretRight class="size-4 shrink-0 text-muted-foreground" />
+					</button>
+					<Switch
+						aria-label="Enable {plugin.name}"
+						checked={plugins.enabledIds.includes(plugin.id)}
+						aria-describedby="plugin-availability-{plugin.id}"
+						disabled={toggling !== '' || !!reason}
+						onCheckedChange={(enabled) => setEnabled(plugin.id, enabled)}
+					/>
+				</div>
+			{/each}
 		</div>
-	{/if}
+	</div>
 {/if}

@@ -412,14 +412,7 @@ impl WorkspaceEngine {
             ignore: Vec::new(),
         };
         validate_manifest(&manifest, "workspace_create")?;
-        let bytes = serde_yaml_ng::to_string(&manifest).map_err(|_| {
-            CoreError::new(
-                "manifest_serialize_failed",
-                ErrorCategory::Parse,
-                ".noura/workspace.yaml could not be serialized",
-                "workspace_create",
-            )
-        })?;
+        let bytes = serialize_workspace_manifest(&manifest, "workspace_create")?;
         resolve_for_write(&canonical, WORKSPACE_MANIFEST_PATH, "workspace_create")?;
         atomic_write(
             &canonical,
@@ -666,14 +659,7 @@ impl WorkspaceEngine {
         }
         manifest.updated = now_rfc3339();
         validate_manifest(&manifest, "manifest_update")?;
-        let bytes = serde_yaml_ng::to_string(&manifest).map_err(|_| {
-            CoreError::new(
-                "manifest_serialize_failed",
-                ErrorCategory::Parse,
-                ".noura/workspace.yaml could not be serialized",
-                "manifest_update",
-            )
-        })?;
+        let bytes = serialize_workspace_manifest(&manifest, "manifest_update")?;
         atomic_write_checked(
             &self.root,
             Path::new(WORKSPACE_MANIFEST_PATH),
@@ -4083,25 +4069,64 @@ fn check_revision(bytes: &[u8], expected: &str, operation: &str) -> Result<()> {
     Ok(())
 }
 fn validate_manifest(manifest: &WorkspaceManifest, operation: &str) -> Result<()> {
-    if !valid_object_id(&manifest.id, "workspace") {
-        return Err(CoreError::validation(
+    workspace_format::validate_workspace_manifest(manifest)
+        .map_err(|error| map_format_error(error, operation))?;
+    compile_workspace_ignores(Path::new("."), &manifest.ignore)?;
+    Ok(())
+}
+
+fn serialize_workspace_manifest(manifest: &WorkspaceManifest, operation: &str) -> Result<String> {
+    workspace_format::serialize_workspace_manifest(manifest)
+        .map_err(|error| map_format_error(error, operation))
+}
+
+fn map_format_error(error: workspace_format::FormatError, operation: &str) -> CoreError {
+    match error {
+        workspace_format::FormatError::InvalidObjectId => CoreError::new(
+            "invalid_object_id",
+            ErrorCategory::Identity,
+            "The stable ID does not match the object type",
+            operation,
+        ),
+        workspace_format::FormatError::ObjectSerialization => CoreError::new(
+            "serialize_failed",
+            ErrorCategory::Parse,
+            "Frontmatter could not be serialized",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidManifest => CoreError::new(
+            "invalid_workspace_manifest",
+            ErrorCategory::Parse,
+            ".noura/workspace.yaml is invalid",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidWorkspaceId => CoreError::validation(
             "invalid_workspace_id",
             "The workspace ID must be a lowercase stable workspace ID",
             operation,
-        ));
-    }
-    if manifest.name.trim().is_empty() {
-        return Err(CoreError::validation(
+        ),
+        workspace_format::FormatError::WorkspaceNameRequired => CoreError::validation(
             "workspace_name_required",
             "A workspace name is required",
             operation,
-        ));
+        ),
+        workspace_format::FormatError::InvalidPluginId => CoreError::validation(
+            "invalid_plugin_id",
+            "Plugin identifiers use lowercase letters, digits, and hyphens",
+            operation,
+        ),
+        workspace_format::FormatError::UnsupportedWorkspaceVersion => CoreError::validation(
+            "unsupported_workspace_version",
+            "This workspace format version is not supported",
+            operation,
+        ),
+        workspace_format::FormatError::ManifestSerialization => CoreError::new(
+            "manifest_serialize_failed",
+            ErrorCategory::Parse,
+            ".noura/workspace.yaml could not be serialized",
+            operation,
+        ),
     }
-    for id in &manifest.enabled_plugins {
-        validate_plugin_id(id, operation)?;
-    }
-    compile_workspace_ignores(Path::new("."), &manifest.ignore)?;
-    Ok(())
 }
 
 /// Plugin identifiers match the plugin-sdk manifest pattern: a lowercase
@@ -4139,27 +4164,19 @@ fn validate_plugin_key(value: &str, operation: &str) -> Result<()> {
 }
 
 fn parse_workspace_manifest(bytes: &[u8], operation: &str) -> Result<WorkspaceManifest> {
-    let mut manifest: WorkspaceManifest = serde_yaml_ng::from_slice(bytes).map_err(|_| {
-        CoreError::new(
-            "invalid_workspace_manifest",
-            ErrorCategory::Parse,
-            ".noura/workspace.yaml is invalid",
-            operation,
-        )
-    })?;
+    let mut manifest = workspace_format::decode_workspace_manifest(bytes)
+        .map_err(|error| map_format_error(error, operation))?;
     validate_manifest(&manifest, operation)?;
     if manifest.format_version != 1 {
-        return Err(CoreError::validation(
-            "unsupported_workspace_version",
-            "This workspace format version is not supported",
+        return Err(map_format_error(
+            workspace_format::FormatError::UnsupportedWorkspaceVersion,
             operation,
         ));
     }
     // `enabled_plugins` is deduplicated with insignificant order in the
     // format; readers canonicalize so consumers never observe a raw hand
     // edit's duplicates, matching the writer's normalization.
-    manifest.enabled_plugins.sort();
-    manifest.enabled_plugins.dedup();
+    workspace_format::normalize_workspace_manifest(&mut manifest);
     Ok(manifest)
 }
 

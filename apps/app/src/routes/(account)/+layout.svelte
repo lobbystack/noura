@@ -1,6 +1,6 @@
 <script lang="ts">
-	import '../app.css';
-	let { children } = $props();
+	import type { Snippet } from 'svelte';
+	let { children } = $props<{ children: Snippet }>();
 </script>
 
 <svelte:head
@@ -12,7 +12,7 @@
 <main
 	class="mx-auto flex min-h-screen w-full max-w-lg flex-col justify-center gap-8 px-6 py-12"
 >
-	<a href="/account" class="text-xl font-semibold tracking-tight">Noura</a>
+	<a href="/account" class="text-base font-semibold tracking-tight">Noura</a>
 	<section
 		class="flex flex-col gap-6 rounded-2xl border bg-card p-6 text-card-foreground"
 	>

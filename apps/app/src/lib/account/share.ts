@@ -1,4 +1,4 @@
-import type { EncryptedOperation } from '../../../../packages/shared/src/sync';
+import type { EncryptedOperation } from '../../../../../packages/shared/src/sync';
 
 const maximum = 1024 * 1024;
 const utf8 = new TextEncoder();

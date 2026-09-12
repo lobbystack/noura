@@ -54,7 +54,7 @@
 	});
 </script>
 
-<h1 class="text-2xl font-semibold">
+<h1 class="text-base font-semibold">
 	{account
 		? 'Your account'
 		: signup
@@ -129,7 +129,6 @@
 				await signInPasskey();
 				account = await session();
 				if (account && code) location.assign(devicePath(code));
-				else if (account && code) location.assign(devicePath(code));
 				else if (account && invite) location.assign(invite);
 			})}>Use an existing passkey</Button
 	>

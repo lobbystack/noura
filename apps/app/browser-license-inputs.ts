@@ -1,15 +1,26 @@
-import { sveltekit } from '@sveltejs/kit/vite';
-import tailwindcss from '@tailwindcss/vite';
-import { defineConfig, type Plugin } from 'vite';
+import type { Plugin } from 'vite';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
-function browserLicenseInputs(): Plugin {
+export function browserLicenseInputs(): Plugin {
 	return {
 		name: 'noura-browser-license-inputs',
 		apply: 'build',
 		generateBundle(_options, bundle) {
 			if (this.environment.name !== 'client') return;
+			const chunks = Object.values(bundle).flatMap((entry) =>
+				entry.type === 'chunk'
+					? [
+							{
+								file: entry.fileName,
+								imports: entry.imports,
+								modules: Object.entries(entry.modules)
+									.filter(([, module]) => module.renderedLength > 0)
+									.map(([id]) => id),
+							},
+						]
+					: [],
+			);
 			const rendered = new Set(
 				Object.values(bundle).flatMap((entry) =>
 					entry.type === 'chunk'
@@ -28,9 +39,14 @@ function browserLicenseInputs(): Plugin {
 			const directory = new URL('./.svelte-kit/', import.meta.url);
 			mkdirSync(directory, { recursive: true });
 			writeFileSync(
-				new URL('client-inputs.json', directory),
+				new URL(
+					process.env.NOURA_HOSTED_BUILD === '1'
+						? 'hosted-client-inputs.json'
+						: 'client-inputs.json',
+					directory,
+				),
 				JSON.stringify(
-					{ version: 1, inputs: [...new Set(inputs)].sort() },
+					{ version: 1, inputs: [...new Set(inputs)].sort(), chunks },
 					null,
 					2,
 				) + '\n',
@@ -38,7 +54,3 @@ function browserLicenseInputs(): Plugin {
 		},
 	};
 }
-export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), browserLicenseInputs()],
-	server: { proxy: { '/api': 'http://127.0.0.1:1900' } },
-});

@@ -23,9 +23,11 @@ export default defineRailway(() => {
 			dockerfilePath: 'apps/server/Dockerfile',
 			watchPatterns: [
 				'apps/server/**',
-				'apps/server-web/**',
 				'apps/app/**',
 				'packages/**',
+				'plugins/**',
+				'tsconfig.base.json',
+				'.dockerignore',
 				'bun.lock',
 				'package.json',
 				'.railway/**',

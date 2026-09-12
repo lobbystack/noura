@@ -38,6 +38,6 @@ pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object};
 pub use model::*;
 pub use watcher::WatchCoordinator;
 pub use web_access::*;
-
-/// Canonical workspace-relative location of Noura's durable manifest.
-pub const WORKSPACE_MANIFEST_PATH: &str = ".noura/workspace.yaml";
+pub use workspace_format::{
+    WORKSPACE_MANIFEST_PATH, WorkspaceManifest, WorkspaceObject, valid_object_id, valid_object_type,
+};

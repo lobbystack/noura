@@ -37,9 +37,10 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
-ulid.workspace = true
+ulid = { workspace = true, features = ["std"] }
 uuid.workspace = true
 url.workspace = true
+workspace-format = { path = "../workspace-format" }
 
 [dev-dependencies]
 tempfile.workspace = true

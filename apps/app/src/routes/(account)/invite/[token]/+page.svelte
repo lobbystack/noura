@@ -55,7 +55,7 @@
 
 <svelte:head><title>Workspace invitation · Noura</title></svelte:head>
 
-<h1 class="text-2xl font-semibold">Workspace invitation</h1>
+<h1 class="text-base font-semibold">Workspace invitation</h1>
 {#if loading}
 	<p role="status">Checking this invitation…</p>
 {:else if invitation}

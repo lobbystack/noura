@@ -82,7 +82,7 @@
 <p class="text-sm text-muted-foreground">Shared with you · Read only</p>
 {#if error}<p role="alert">{error}</p>
 {:else if payload}
-	<h1 class="break-words text-2xl font-semibold">
+	<h1 class="shared-title break-words font-semibold">
 		{payload.title || 'Untitled'}
 	</h1>
 	<p class="text-xs text-muted-foreground">
@@ -106,8 +106,12 @@
 {:else if !loaded}<p role="status">Opening encrypted share…</p>{/if}
 
 <style>
+	.shared-title {
+		font-size: var(--content-heading-1-size);
+	}
 	.shared-markdown {
 		overflow-wrap: anywhere;
+		font-size: var(--content-text-size);
 		line-height: 1.7;
 	}
 	.shared-markdown :global(p),
@@ -126,10 +130,16 @@
 		margin-block: 1.5rem 0.5rem;
 	}
 	.shared-markdown :global(h1) {
-		font-size: 1.5rem;
+		font-size: var(--content-heading-1-size);
 	}
 	.shared-markdown :global(h2) {
-		font-size: 1.25rem;
+		font-size: var(--content-heading-2-size);
+	}
+	.shared-markdown :global(h3) {
+		font-size: var(--content-heading-3-size);
+	}
+	.shared-markdown :global(h4) {
+		font-size: var(--content-heading-4-size);
 	}
 	.shared-markdown :global(a) {
 		text-decoration: underline;

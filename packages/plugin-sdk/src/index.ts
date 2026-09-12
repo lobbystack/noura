@@ -28,13 +28,17 @@ export const capabilitySchema = z.enum([
 	'ai.context',
 	'ai.instructions',
 ]);
+export const pluginPlatformSchema = z.enum(['desktop', 'mobile', 'web']);
 export const pluginManifestSchema = z.object({
 	id: z.string().regex(/^[a-z][a-z0-9-]*$/),
 	name: z.string().min(1),
 	version: z.string(),
 	capabilities: z.array(capabilitySchema),
+	/** Omitted by pre-platform manifests, which remain compatible everywhere. */
+	platforms: z.array(pluginPlatformSchema).min(1).optional(),
 });
 export type PluginCapability = z.infer<typeof capabilitySchema>;
+export type PluginPlatform = z.infer<typeof pluginPlatformSchema>;
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
 export type { AiContextProvider, AiInstructionProvider, AiToolDefinition };
 export interface PluginContext {
@@ -131,6 +135,19 @@ export function requireCapability(
 		throw new Error(`Plugin ${manifest.id} does not declare ${capability}`);
 }
 
+/** A manifest predating platform declarations remains portable by default. */
+export function supportsPlatform(
+	manifest: PluginManifest,
+	platform: PluginPlatform,
+): boolean {
+	return manifest.platforms?.includes(platform) ?? true;
+}
+
+export interface PluginHostOptions {
+	/** The adapter platform that is activating plugins. Defaults to desktop. */
+	platform?: PluginPlatform;
+}
+
 export class PluginHost {
 	#active = new Map<string, PluginDefinition>();
 	#contexts = new Map<string, PluginContext>();
@@ -141,13 +158,20 @@ export class PluginHost {
 	 */
 	#disposers = new Map<string, Set<() => boolean>>();
 	private readonly services: PluginHostServices;
-	constructor(services: PluginHostServices) {
+	readonly platform: PluginPlatform;
+	constructor(services: PluginHostServices, options: PluginHostOptions = {}) {
 		this.services = services;
+		this.platform = options.platform ?? 'desktop';
 	}
 	async activate(definition: PluginDefinition) {
 		if (this.#active.has(definition.manifest.id))
 			throw new Error(`Plugin already active: ${definition.manifest.id}`);
 		pluginManifestSchema.parse(definition.manifest);
+		if (!supportsPlatform(definition.manifest, this.platform)) {
+			throw new Error(
+				`Plugin ${definition.manifest.id} does not support ${this.platform}`,
+			);
+		}
 		this.#disposers.set(definition.manifest.id, new Set());
 		const context = this.contextFor(definition.manifest);
 		try {

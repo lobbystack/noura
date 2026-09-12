@@ -96,6 +96,7 @@ export default definePlugin({
 			'ai.context',
 			'ai.tools',
 		],
+		platforms: ['desktop'],
 	},
 	activate(context) {
 		const dispose = context.ai.registerContextProvider(
