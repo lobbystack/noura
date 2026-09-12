@@ -1207,10 +1207,6 @@ impl WorkspaceEngine {
     /// snapshots every displaced version before replacing bytes atomically.
     pub fn save_managed_draft(&self, input: ManagedDraftInput) -> Result<ManagedDraftResult> {
         let canonical = self.read_canonical_workspace_object(&input.id, "managed_draft_save")?;
-        if std::env::var("NOURA_DEBUG_MERGE").is_ok() {
-            eprintln!("canonical body: {:?}", canonical.body);
-            eprintln!("base body: {:?}", input.base_body);
-        }
         let unchanged = canonical.revision == input.base_revision
             && canonical.title == input.base_title
             && canonical.body == input.base_body
@@ -3922,7 +3918,9 @@ fn write_snapshot(
             "history_snapshot",
         )
     })?;
-    let destination = resolve_for_write(root, relative, operation)?;
+    // This helper always writes the internal history directory, so it validates
+    // against the internal operation even when the caller is a user-facing one.
+    let destination = resolve_for_write(root, relative, "history_snapshot")?;
     if destination.exists() {
         return Ok(());
     }

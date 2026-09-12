@@ -2,6 +2,20 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::{CoreError, Result};
 
+/// Internal operations are the only callers allowed to name reserved
+/// directories. User- and plugin-facing mutations must stay out of them.
+fn may_use_internal_paths(operation: &str) -> bool {
+    matches!(
+        operation,
+        "workspace_create"
+            | "trash_write"
+            | "chat_mutation_recover"
+            | "chat_expire"
+            | "history_snapshot"
+            | "sync"
+    )
+}
+
 pub fn validate_relative(path: &str, operation: &str) -> Result<PathBuf> {
     if path.is_empty() {
         return Err(CoreError::validation(
@@ -26,7 +40,7 @@ pub fn validate_relative(path: &str, operation: &str) -> Result<PathBuf> {
                 operation,
             ));
         }
-        if operation.contains("object")
+        if !may_use_internal_paths(operation)
             && index == 0
             && matches!(
                 component.as_os_str().to_str(),
@@ -35,7 +49,7 @@ pub fn validate_relative(path: &str, operation: &str) -> Result<PathBuf> {
         {
             return Err(CoreError::validation(
                 "reserved_path",
-                "Managed objects cannot be stored in an internal or generated directory",
+                "Files cannot be stored in an internal or generated directory",
                 operation,
             ));
         }
@@ -109,5 +123,46 @@ mod tests {
             "reserved_path"
         );
         assert!(validate_relative("notes/note.md", "object_create").is_ok());
+    }
+
+    #[test]
+    fn user_facing_mutations_reject_reserved_directories() {
+        for operation in [
+            "folder_create",
+            "folder_move",
+            "folder_remove",
+            "raw_markdown_save",
+            "managed_draft_save",
+            "collaboration_move",
+        ] {
+            for path in [
+                ".noura/note.md",
+                ".git/config",
+                "node_modules/pkg/index.md",
+                "target/debug/note.md",
+            ] {
+                assert_eq!(
+                    validate_relative(path, operation).unwrap_err().code,
+                    "reserved_path",
+                    "{operation} {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn internal_operations_may_write_reserved_directories() {
+        for (operation, path) in [
+            ("workspace_create", ".noura/workspace.yaml"),
+            ("trash_write", ".noura/trash/note.md"),
+            ("chat_mutation_recover", ".noura/chat-mutations"),
+            ("history_snapshot", ".noura/history/note/revision-local.md"),
+            ("sync", ".noura/sync/state.json"),
+        ] {
+            assert!(
+                validate_relative(path, operation).is_ok(),
+                "{operation} {path}"
+            );
+        }
     }
 }

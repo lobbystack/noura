@@ -20,6 +20,27 @@ Search escapes tokens before building an FTS expression. The UI receives text sn
 
 Provider settings contain opaque credential references. The OS credential store holds secret values. Noura does not write secrets to workspace files, SQLite, frontend storage, logs, or snapshots.
 
+## Known limitations
+
+- **Relay completeness.** Managed sync is end-to-end encrypted: a relay only ever
+  sees ciphertext, and every operation is signature-verified against a trusted
+  device key. A malicious or compromised relay can still omit operations or
+  advance a client's pull cursor, because the client accepts the server's
+  monotonic cursor without a cryptographic completeness commitment. This is an
+  availability and integrity limit, not a confidentiality one; closing it
+  requires a protocol-level commitment and a larger review.
+- **Local symlink races.** Mutation paths reject symlink components and validate
+  the destination before writing, but a concurrent process could replace a parent
+  directory between validation and the write. The threat model excludes malware
+  running under the same operating-system account. PDF reads close this window by
+  opening each path component relative to an already-open directory with
+  `NOFOLLOW`.
+- **Plugin isolation.** Community plugins do not run. The host validates and
+  freezes every manifest, snapshots it at activation, and enforces declared
+  capabilities at each context call. Admitted plugin code would still execute in
+  the application WebView, so a real sandbox remains a prerequisite for
+  third-party loading.
+
 ## Deferred risks
 
 The Initial MVP does not load community plugins, serve remote MCP transports, synchronize data, or expose accounts. Those features require separate authorization, sandboxing, network, and encryption reviews before implementation.

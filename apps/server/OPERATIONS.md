@@ -1,8 +1,12 @@
 # Operating the development server
 
 The Docker image contains the Bun service, migrations, account pages, public
-viewer, and a generated dependency-notice file. It runs as the unprivileged
-`bun` user. Put HTTPS termination in front of it and configure `PUBLIC_ORIGIN`
+viewer, and a generated dependency-notice file. Compose starts it as the
+unprivileged `bun` user. Railway mounts volumes as root, so on Railway set
+`RAILWAY_RUN_UID=0`: the image entrypoint then starts as root only long enough to
+take ownership of the mounted `BLOB_ROOT`, and drops to `bun` before the service
+process starts. The long-running server never runs as root. Put HTTPS termination
+in front of it and configure `PUBLIC_ORIGIN`
 to the exact external origin. Allowlisted email, mail delivery (`SMTP_URL` or
 `RESEND_API_KEY`), and passkey origin configuration must agree with that origin.
 Set `TRUSTED_IP_HEADER` to the header your reverse proxy overwrites with the
