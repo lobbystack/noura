@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
 	AiRegistry,
+	browserPluginCapabilities,
 	CommandRegistry,
 	createNouraClient,
 	type CoreTransport,
@@ -10,7 +11,10 @@ import type { PluginContext, PluginDefinition } from '@noura/plugin-sdk';
 
 function harness(initialEnabled: Array<string>) {
 	const store = new Map<string, unknown>();
-	const state = { enabled: initialEnabled };
+	const state = {
+		enabled: initialEnabled,
+		updated: '2026-09-01T00:00:00Z',
+	};
 	const cleanupCalls: Array<string> = [];
 	const calls: Array<{ command: string; payload?: Record<string, unknown> }> =
 		[];
@@ -23,7 +27,7 @@ function harness(initialEnabled: Array<string>) {
 					format_version: 1,
 					name: 'Test',
 					created: '2026-08-01T00:00:00Z',
-					updated: '2026-09-01T00:00:00Z',
+					updated: state.updated,
 					enabled_plugins: state.enabled,
 					ignore: [],
 				} as T;
@@ -32,6 +36,32 @@ function harness(initialEnabled: Array<string>) {
 				const { pluginId, key } = payload as Record<string, string>;
 				const value = store.get(`${pluginId}:${key}`);
 				return (value === undefined ? null : value) as T;
+			}
+			if (command === 'manifest_update') {
+				const input = payload?.input as {
+					enabledPlugins: string[] | null;
+					expectedUpdated: string | null;
+				};
+				if (
+					input.expectedUpdated !== null &&
+					input.expectedUpdated !== state.updated
+				)
+					throw {
+						code: 'manifest_conflict',
+						category: 'conflict',
+						operation: 'manifest_update',
+					};
+				if (input.enabledPlugins !== null) state.enabled = input.enabledPlugins;
+				state.updated = '2026-09-01T00:00:01Z';
+				return {
+					id: 'workspace_01',
+					format_version: 1,
+					name: 'Test',
+					created: '2026-08-01T00:00:00Z',
+					updated: state.updated,
+					enabled_plugins: state.enabled,
+					ignore: [],
+				} as T;
 			}
 			if (command === 'plugin_state_set') {
 				const { pluginId, key, value } = payload as Record<string, string>;
@@ -105,6 +135,34 @@ describe('plugin runtime', () => {
 		expect(result.enabledPluginIds).toEqual(['notes', 'crm-future']);
 	});
 
+	test('web activates only the supported note, task, and project contracts without AI', async () => {
+		const { aiRegistry, client } = harness([
+			'notes',
+			'tasks',
+			'projects',
+			'ai',
+			'folders',
+			'calendar',
+		]);
+		const runtime = new PluginRuntime(client, {
+			platform: 'web',
+			supportedCapabilities: browserPluginCapabilities,
+		});
+		const result = await runtime.syncWithManifest();
+		expect(result.activated).toEqual(['notes', 'tasks', 'projects']);
+		expect(result.unavailablePluginIds).toEqual(['ai', 'folders', 'calendar']);
+		expect(
+			runtime.host.activeManifests().map((manifest) => manifest.id),
+		).toEqual(['notes', 'tasks', 'projects']);
+		expect(await client.commands.list()).toEqual([
+			{ id: 'notes.create', title: 'Create note' },
+			{ id: 'tasks.create', title: 'Create task' },
+			{ id: 'tasks.complete', title: 'Complete task' },
+			{ id: 'projects.create', title: 'Create project' },
+		]);
+		expect(aiRegistry.toolEntries()).toEqual([]);
+	});
+
 	test('deactivates and re-activates live as the file manifest changes', async () => {
 		const { runtime, state } = harness(['notes', 'tasks']);
 		await runtime.syncWithManifest();
@@ -120,6 +178,17 @@ describe('plugin runtime', () => {
 		expect(
 			runtime.host.activeManifests().map((manifest) => manifest.id),
 		).toEqual(['notes', 'tasks', 'projects']);
+	});
+
+	test('persists a disabled plugin preference and deactivates it from the manifest', async () => {
+		const { runtime, state } = harness(['notes', 'tasks']);
+		await runtime.syncWithManifest();
+		const preference = await runtime.registry.read();
+		const result = await runtime.setEnabled('tasks', false, preference.updated);
+		expect(state.enabled).toEqual(['notes']);
+		expect(result.deactivated).toEqual(['tasks']);
+		expect(result.enabledPluginIds).toEqual(['notes']);
+		expect(runtime.host.isActive('tasks')).toBe(false);
 	});
 
 	test('plugin storage is namespaced by plugin id and deactivation cleans up', async () => {
@@ -247,6 +316,7 @@ describe('first-party plugin dogfood', () => {
 			'notes.create',
 			'tasks.create',
 			'tasks.complete',
+			'projects.create',
 		]);
 	});
 
@@ -343,7 +413,8 @@ describe('first-party plugin dogfood', () => {
 				input: {
 					type: 'project',
 					title: 'AI project',
-					properties: { status: 'planned' },
+					body: undefined,
+					properties: {},
 				},
 			},
 		});

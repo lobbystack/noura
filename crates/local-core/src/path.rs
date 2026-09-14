@@ -1,8 +1,13 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::{CoreError, Result};
+use workspace_format::{ManagedObjectPathError, validate_managed_object_path};
 
 pub fn validate_relative(path: &str, operation: &str) -> Result<PathBuf> {
+    if operation.contains("object") {
+        validate_managed_object_path(path)
+            .map_err(|error| managed_object_path_error(error, operation))?;
+    }
     if path.is_empty() {
         return Err(CoreError::validation(
             "empty_path",
@@ -18,7 +23,7 @@ pub fn validate_relative(path: &str, operation: &str) -> Result<PathBuf> {
             operation,
         ));
     }
-    for (index, component) in value.components().enumerate() {
+    for component in value.components() {
         if !matches!(component, Component::Normal(_)) {
             return Err(CoreError::validation(
                 "unsafe_path",
@@ -26,30 +31,36 @@ pub fn validate_relative(path: &str, operation: &str) -> Result<PathBuf> {
                 operation,
             ));
         }
-        if operation.contains("object")
-            && index == 0
-            && matches!(
-                component.as_os_str().to_str(),
-                Some(".noura" | ".git" | "node_modules" | "target")
-            )
-        {
-            return Err(CoreError::validation(
-                "reserved_path",
-                "Managed objects cannot be stored in an internal or generated directory",
-                operation,
-            ));
-        }
     }
-    if operation.contains("object")
-        && value.extension().and_then(|value| value.to_str()) != Some("md")
-    {
-        return Err(CoreError::validation(
+    Ok(value.to_owned())
+}
+
+fn managed_object_path_error(error: ManagedObjectPathError, operation: &str) -> CoreError {
+    match error {
+        ManagedObjectPathError::Empty => {
+            CoreError::validation("empty_path", "A relative path is required", operation)
+        }
+        ManagedObjectPathError::Absolute => CoreError::validation(
+            "absolute_path",
+            "Absolute paths are not accepted",
+            operation,
+        ),
+        ManagedObjectPathError::Unsafe => CoreError::validation(
+            "unsafe_path",
+            "Path traversal and special path components are not accepted",
+            operation,
+        ),
+        ManagedObjectPathError::Reserved => CoreError::validation(
+            "reserved_path",
+            "Managed objects cannot be stored in an internal or generated directory",
+            operation,
+        ),
+        ManagedObjectPathError::UnsupportedExtension => CoreError::validation(
             "unsupported_extension",
             "Managed objects must use the .md extension",
             operation,
-        ));
+        ),
     }
-    Ok(value.to_owned())
 }
 
 pub fn resolve_for_write(root: &Path, relative: &str, operation: &str) -> Result<PathBuf> {

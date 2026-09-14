@@ -1,0 +1,14 @@
+{
+	"name": "@noura/sync-key-envelope",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc",
+		"lint": "prettier --check src"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

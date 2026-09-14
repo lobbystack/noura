@@ -28,14 +28,12 @@ export default definePlugin({
 		id: 'notes',
 		name: 'Notes',
 		version: '0.1.0',
-		capabilities: [
-			'workspace.objects',
-			'workspace.search',
-			'workspace.commands',
-			'workspace.events',
-			'ai.tools',
-		],
-		platforms: ['desktop'],
+		capabilities: ['workspace.objects', 'workspace.commands', 'ai.tools'],
+		platforms: ['desktop', 'web'],
+		activationCapabilities: {
+			desktop: ['workspace.objects', 'workspace.commands', 'ai.tools'],
+			web: ['workspace.objects', 'workspace.commands'],
+		},
 	},
 	activate(context) {
 		const disposers: Array<() => void> = [];
@@ -48,23 +46,25 @@ export default definePlugin({
 				},
 			}),
 		);
-		disposers.push(
-			context.ai.registerTool({
-				name: 'notes.create',
-				description: 'Create a Markdown note in the workspace.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						title: { type: 'string', minLength: 1 },
-						body: { type: 'string' },
+		if (context.platform !== 'web') {
+			disposers.push(
+				context.ai.registerTool({
+					name: 'notes.create',
+					description: 'Create a Markdown note in the workspace.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							title: { type: 'string', minLength: 1 },
+							body: { type: 'string' },
+						},
+						required: ['title'],
+						additionalProperties: false,
 					},
-					required: ['title'],
-					additionalProperties: false,
-				},
-				risk: 'high',
-				execute: (input) => createNote(context, input),
-			}),
-		);
+					risk: 'high',
+					execute: (input) => createNote(context, input),
+				}),
+			);
+		}
 		commandDisposers.set(context, disposers);
 	},
 	deactivate(context) {

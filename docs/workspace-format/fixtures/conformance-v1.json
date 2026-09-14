@@ -130,6 +130,90 @@
 			"value": "note_01J00000000000000000000000"
 		}
 	],
+	"task_properties": [
+		{
+			"name": "canonical task values with unknown metadata",
+			"valid": true,
+			"value": {
+				"status": "in-progress",
+				"priority": "high",
+				"due": "2026-09-15",
+				"custom": "kept"
+			}
+		},
+		{
+			"name": "task defaults are valid",
+			"valid": true,
+			"value": {}
+		},
+		{
+			"name": "offset task due is valid",
+			"valid": true,
+			"value": { "due": "2026-09-15T09:30:00+02:00" }
+		},
+		{
+			"name": "non-string due remains portable metadata",
+			"valid": true,
+			"value": { "due": null }
+		},
+		{
+			"name": "unsupported task status",
+			"valid": false,
+			"value": { "status": "later" }
+		},
+		{
+			"name": "task status must be a string",
+			"valid": false,
+			"value": { "status": true }
+		},
+		{
+			"name": "unsupported task priority",
+			"valid": false,
+			"value": { "priority": "eventually" }
+		},
+		{
+			"name": "task priority must be a string",
+			"valid": false,
+			"value": { "priority": 1 }
+		},
+		{
+			"name": "task due must be a civil date or offset timestamp",
+			"valid": false,
+			"value": { "due": "tomorrow" }
+		},
+		{
+			"name": "task due must be a real civil date",
+			"valid": false,
+			"value": { "due": "2026-02-30" }
+		},
+		{
+			"name": "task project references use stable IDs",
+			"valid": false,
+			"value": { "project": "project_not-an-id" }
+		}
+	],
+	"project_properties": [
+		{
+			"name": "canonical project values with unknown metadata",
+			"valid": true,
+			"value": { "status": "active", "custom": "kept" }
+		},
+		{
+			"name": "project defaults are valid",
+			"valid": true,
+			"value": {}
+		},
+		{
+			"name": "unsupported project status",
+			"valid": false,
+			"value": { "status": "later" }
+		},
+		{
+			"name": "project status must be a string",
+			"valid": false,
+			"value": { "status": true }
+		}
+	],
 	"chat": [
 		{
 			"name": "canonical chat frontmatter",

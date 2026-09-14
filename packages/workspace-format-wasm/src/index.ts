@@ -38,8 +38,14 @@ export type WorkspaceFormatErrorCode =
 	| 'invalid_workspace_id'
 	| 'workspace_name_required'
 	| 'invalid_plugin_id'
+	| 'invalid_ignore_pattern'
 	| 'unsupported_workspace_version'
 	| 'manifest_serialization_failed'
+	| 'title_required'
+	| 'invalid_timestamp'
+	| 'invalid_field'
+	| 'invalid_date'
+	| 'invalid_project_id'
 	| 'internal_error';
 
 const errorMessages: Record<WorkspaceFormatErrorCode, string> = {
@@ -52,10 +58,16 @@ const errorMessages: Record<WorkspaceFormatErrorCode, string> = {
 	workspace_name_required: 'A workspace name is required',
 	invalid_plugin_id:
 		'Plugin identifiers use lowercase letters, digits, and hyphens',
+	invalid_ignore_pattern: 'Workspace ignore patterns must not be empty',
 	unsupported_workspace_version:
 		'This workspace format version is not supported',
 	manifest_serialization_failed:
 		'.noura/workspace.yaml could not be serialized',
+	title_required: 'A title is required',
+	invalid_timestamp: 'A timestamp must be an RFC 3339 instant',
+	invalid_field: 'Task metadata is invalid',
+	invalid_date: 'due must use YYYY-MM-DD or RFC 3339 with an explicit offset',
+	invalid_project_id: 'Task project references use a stable project ID',
 	internal_error: 'The workspace format operation could not be completed',
 };
 
@@ -73,6 +85,19 @@ type RawWorkspaceFormatBindings = {
 	serialize_workspace_manifest(manifest: WorkspaceManifest): string;
 	content_revision(bytes: Uint8Array): string;
 	is_valid_object_id(id: string, objectType: string): boolean;
+	is_valid_managed_object_path(path: string): boolean;
+	create_workspace_manifest(name: string, now: string): unknown;
+	update_workspace_manifest(
+		manifest: WorkspaceManifest,
+		input: ManifestUpdateInput,
+		now: string,
+	): unknown;
+	create_note(input: CreateNoteInput): unknown;
+	update_note(note: WorkspaceObject, input: UpdateNoteInput): unknown;
+	create_task(input: CreateTaskInput): unknown;
+	update_task(task: WorkspaceObject, input: UpdateTaskInput): unknown;
+	create_project(input: CreateProjectInput): unknown;
+	update_project(project: WorkspaceObject, input: UpdateProjectInput): unknown;
 };
 
 type RawWorkspaceFormatModule = RawWorkspaceFormatBindings & {
@@ -88,6 +113,49 @@ export type WorkspaceFormat = {
 	serializeWorkspaceManifest(manifest: WorkspaceManifest): string;
 	contentRevision(bytes: Uint8Array): string;
 	isValidObjectId(id: string, objectType: string): boolean;
+	isValidManagedObjectPath(path: string): boolean;
+	createWorkspaceManifest(name: string, now: string): WorkspaceManifest;
+	updateWorkspaceManifest(
+		manifest: WorkspaceManifest,
+		input: ManifestUpdateInput,
+		now: string,
+	): WorkspaceManifest;
+	createNote(input: CreateNoteInput): WorkspaceObject;
+	updateNote(note: WorkspaceObject, input: UpdateNoteInput): WorkspaceObject;
+	createTask(input: CreateTaskInput): WorkspaceObject;
+	updateTask(task: WorkspaceObject, input: UpdateTaskInput): WorkspaceObject;
+	createProject(input: CreateProjectInput): WorkspaceObject;
+	updateProject(
+		project: WorkspaceObject,
+		input: UpdateProjectInput,
+	): WorkspaceObject;
+};
+
+export type CreateNoteInput = {
+	title: string;
+	body?: string;
+	relativePath?: string | null;
+	properties?: Record<string, unknown>;
+	now: string;
+};
+
+export type UpdateNoteInput = {
+	title?: string;
+	body?: string;
+	properties?: Record<string, unknown>;
+	removeProperties?: string[];
+	now: string;
+};
+
+export type CreateTaskInput = CreateNoteInput;
+export type UpdateTaskInput = UpdateNoteInput;
+export type CreateProjectInput = CreateNoteInput;
+export type UpdateProjectInput = UpdateNoteInput;
+
+export type ManifestUpdateInput = {
+	name?: string | null;
+	enabledPlugins?: string[] | null;
+	ignore?: string[] | null;
 };
 
 function asFormatError(error: unknown): WorkspaceFormatError {
@@ -128,6 +196,34 @@ function createWorkspaceFormat(
 		contentRevision: (bytes) => call(() => bindings.content_revision(bytes)),
 		isValidObjectId: (id, objectType) =>
 			call(() => bindings.is_valid_object_id(id, objectType)),
+		isValidManagedObjectPath: (path) =>
+			call(() => bindings.is_valid_managed_object_path(path)),
+		createWorkspaceManifest: (name, now) =>
+			call(
+				() =>
+					bindings.create_workspace_manifest(name, now) as WorkspaceManifest,
+			),
+		updateWorkspaceManifest: (manifest, input, now) =>
+			call(
+				() =>
+					bindings.update_workspace_manifest(
+						manifest,
+						input,
+						now,
+					) as WorkspaceManifest,
+			),
+		createNote: (input) =>
+			call(() => bindings.create_note(input) as WorkspaceObject),
+		updateNote: (note, input) =>
+			call(() => bindings.update_note(note, input) as WorkspaceObject),
+		createTask: (input) =>
+			call(() => bindings.create_task(input) as WorkspaceObject),
+		updateTask: (task, input) =>
+			call(() => bindings.update_task(task, input) as WorkspaceObject),
+		createProject: (input) =>
+			call(() => bindings.create_project(input) as WorkspaceObject),
+		updateProject: (project, input) =>
+			call(() => bindings.update_project(project, input) as WorkspaceObject),
 	};
 }
 

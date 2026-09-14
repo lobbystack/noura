@@ -16,6 +16,7 @@
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 	import Warning from 'phosphor-svelte/lib/Warning';
+	import PropertyChoice from '$lib/components/property-choice.svelte';
 
 	let {
 		task,
@@ -287,36 +288,22 @@
 	</header>
 	<Separator />
 	<div class="flex flex-wrap items-center gap-3 px-6 py-3 text-sm">
-		<Select.Root
-			type="single"
+		<PropertyChoice
+			label="Status"
+			options={statuses}
+			size="sm"
+			class="w-36"
 			value={String(properties.status ?? 'todo')}
-			onValueChange={(value) => value && editProperty('status', value)}
-			><Select.Trigger size="sm" class="w-36" aria-label="Status"
-				>{String(properties.status ?? 'todo')}</Select.Trigger
-			><Select.Content
-				><Select.Group
-					>{#each statuses as status (status)}<Select.Item
-							value={status}
-							label={status}>{status}</Select.Item
-						>{/each}</Select.Group
-				></Select.Content
-			></Select.Root
-		>
-		<Select.Root
-			type="single"
+			onchange={(value) => value && editProperty('status', value)}
+		/>
+		<PropertyChoice
+			label="Priority"
+			options={priorities}
+			size="sm"
+			class="w-32"
 			value={String(properties.priority ?? 'medium')}
-			onValueChange={(value) => value && editProperty('priority', value)}
-			><Select.Trigger size="sm" class="w-32" aria-label="Priority"
-				>{String(properties.priority ?? 'medium')}</Select.Trigger
-			><Select.Content
-				><Select.Group
-					>{#each priorities as priority (priority)}<Select.Item
-							value={priority}
-							label={priority}>{priority}</Select.Item
-						>{/each}</Select.Group
-				></Select.Content
-			></Select.Root
-		>
+			onchange={(value) => value && editProperty('priority', value)}
+		/>
 		<label class="flex items-center gap-2 text-xs text-muted-foreground"
 			><span>Due</span><input
 				type="date"

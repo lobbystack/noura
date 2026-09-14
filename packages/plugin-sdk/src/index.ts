@@ -29,6 +29,13 @@ export const capabilitySchema = z.enum([
 	'ai.instructions',
 ]);
 export const pluginPlatformSchema = z.enum(['desktop', 'mobile', 'web']);
+const platformActivationCapabilitiesSchema = z
+	.object({
+		desktop: z.array(capabilitySchema).optional(),
+		mobile: z.array(capabilitySchema).optional(),
+		web: z.array(capabilitySchema).optional(),
+	})
+	.strict();
 export const pluginManifestSchema = z.object({
 	id: z.string().regex(/^[a-z][a-z0-9-]*$/),
 	name: z.string().min(1),
@@ -36,12 +43,16 @@ export const pluginManifestSchema = z.object({
 	capabilities: z.array(capabilitySchema),
 	/** Omitted by pre-platform manifests, which remain compatible everywhere. */
 	platforms: z.array(pluginPlatformSchema).min(1).optional(),
+	/** Capabilities needed for activation on each platform. */
+	activationCapabilities: platformActivationCapabilitiesSchema.optional(),
 });
 export type PluginCapability = z.infer<typeof capabilitySchema>;
 export type PluginPlatform = z.infer<typeof pluginPlatformSchema>;
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
 export type { AiContextProvider, AiInstructionProvider, AiToolDefinition };
 export interface PluginContext {
+	/** The host platform for this activation. */
+	platform: PluginPlatform;
 	files: {
 		list(): Promise<WorkspaceEntry[]>;
 		listNonManagedMarkdown(): Promise<UnmanagedFile[]>;
@@ -143,9 +154,44 @@ export function supportsPlatform(
 	return manifest.platforms?.includes(platform) ?? true;
 }
 
+/**
+ * Older manifests activate against every declared capability. New manifests
+ * may omit services that are intentionally unavailable on a platform.
+ */
+export function activationCapabilities(
+	manifest: PluginManifest,
+	platform: PluginPlatform,
+): PluginCapability[] {
+	return manifest.activationCapabilities?.[platform] ?? manifest.capabilities;
+}
+
 export interface PluginHostOptions {
 	/** The adapter platform that is activating plugins. Defaults to desktop. */
 	platform?: PluginPlatform;
+	/**
+	 * Capability services implemented by this host. Omit for a full host, such
+	 * as the desktop client. A partial host rejects activation before plugin
+	 * code receives an unavailable service.
+	 */
+	supportedCapabilities?: Iterable<PluginCapability>;
+}
+
+export class PluginRuntimeError extends Error {
+	readonly category = 'validation';
+	readonly retryable = false;
+	constructor(
+		readonly code:
+			| 'plugin_already_active'
+			| 'plugin_platform_unsupported'
+			| 'plugin_capability_unsupported'
+			| 'plugin_capability_not_declared',
+		message: string,
+		readonly operation: 'plugin_activate' | 'plugin_capability',
+		readonly details: Record<string, unknown>,
+	) {
+		super(message);
+		this.name = 'PluginRuntimeError';
+	}
 }
 
 export class PluginHost {
@@ -158,20 +204,65 @@ export class PluginHost {
 	 */
 	#disposers = new Map<string, Set<() => boolean>>();
 	private readonly services: PluginHostServices;
+	private readonly supportedCapabilities: ReadonlySet<PluginCapability> | null;
 	readonly platform: PluginPlatform;
 	constructor(services: PluginHostServices, options: PluginHostOptions = {}) {
 		this.services = services;
 		this.platform = options.platform ?? 'desktop';
+		this.supportedCapabilities = options.supportedCapabilities
+			? new Set(options.supportedCapabilities)
+			: null;
+	}
+	activationError(definition: PluginDefinition): PluginRuntimeError | null {
+		pluginManifestSchema.parse(definition.manifest);
+		if (!supportsPlatform(definition.manifest, this.platform)) {
+			return new PluginRuntimeError(
+				'plugin_platform_unsupported',
+				`Plugin ${definition.manifest.id} does not support ${this.platform}`,
+				'plugin_activate',
+				{ pluginId: definition.manifest.id, platform: this.platform },
+			);
+		}
+		for (const capability of activationCapabilities(
+			definition.manifest,
+			this.platform,
+		)) {
+			if (!definition.manifest.capabilities.includes(capability)) {
+				return new PluginRuntimeError(
+					'plugin_capability_not_declared',
+					`Plugin ${definition.manifest.id} activates with undeclared ${capability}`,
+					'plugin_activate',
+					{ pluginId: definition.manifest.id, capability },
+				);
+			}
+			if (
+				this.supportedCapabilities &&
+				!this.supportedCapabilities.has(capability)
+			) {
+				return new PluginRuntimeError(
+					'plugin_capability_unsupported',
+					`Plugin ${definition.manifest.id} requires unavailable ${capability}`,
+					'plugin_activate',
+					{
+						pluginId: definition.manifest.id,
+						capability,
+						platform: this.platform,
+					},
+				);
+			}
+		}
+		return null;
 	}
 	async activate(definition: PluginDefinition) {
 		if (this.#active.has(definition.manifest.id))
-			throw new Error(`Plugin already active: ${definition.manifest.id}`);
-		pluginManifestSchema.parse(definition.manifest);
-		if (!supportsPlatform(definition.manifest, this.platform)) {
-			throw new Error(
-				`Plugin ${definition.manifest.id} does not support ${this.platform}`,
+			throw new PluginRuntimeError(
+				'plugin_already_active',
+				`Plugin already active: ${definition.manifest.id}`,
+				'plugin_activate',
+				{ pluginId: definition.manifest.id },
 			);
-		}
+		const activationError = this.activationError(definition);
+		if (activationError) throw activationError;
 		this.#disposers.set(definition.manifest.id, new Set());
 		const context = this.contextFor(definition.manifest);
 		try {
@@ -203,9 +294,29 @@ export class PluginHost {
 		return [...this.#active.values()].map((plugin) => plugin.manifest);
 	}
 	private contextFor(manifest: PluginManifest): PluginContext {
-		const guard = (capability: PluginCapability) =>
-			requireCapability(manifest, capability);
+		const guard = (capability: PluginCapability) => {
+			if (!manifest.capabilities.includes(capability)) {
+				throw new PluginRuntimeError(
+					'plugin_capability_not_declared',
+					`Plugin ${manifest.id} does not declare ${capability}`,
+					'plugin_capability',
+					{ pluginId: manifest.id, capability },
+				);
+			}
+			if (
+				this.supportedCapabilities &&
+				!this.supportedCapabilities.has(capability)
+			) {
+				throw new PluginRuntimeError(
+					'plugin_capability_unsupported',
+					`Plugin ${manifest.id} cannot use unavailable ${capability}`,
+					'plugin_capability',
+					{ pluginId: manifest.id, capability, platform: this.platform },
+				);
+			}
+		};
 		return {
+			platform: this.platform,
 			files: {
 				list: () => {
 					guard('workspace.files');

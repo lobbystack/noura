@@ -44,11 +44,16 @@ describe('app plugin runtime', () => {
 			const { runtime, calls, state } = harness(platform, enabled);
 			expect(runtime.host.platform).toBe(platform);
 			expect(await runtime.syncWithManifest()).toEqual({
-				activated: [],
+				activated: platform === 'web' ? ['notes', 'tasks', 'projects'] : [],
 				deactivated: [],
+				unavailablePluginIds: firstPartyPlugins
+					.filter((plugin) => !plugin.manifest.platforms?.includes(platform))
+					.map((plugin) => plugin.manifest.id),
 				enabledPluginIds: enabled,
 			});
-			expect(runtime.host.activeManifests()).toEqual([]);
+			expect(runtime.host.activeManifests().map((plugin) => plugin.id)).toEqual(
+				platform === 'web' ? ['notes', 'tasks', 'projects'] : [],
+			);
 			expect(state.enabled).toEqual(enabled);
 			expect(calls).toEqual(['manifest_read']);
 		});
@@ -72,8 +77,12 @@ describe('app plugin runtime', () => {
 		expect(runtime.host.activeManifests()).toEqual([]);
 	});
 
-	test('the entire first-party catalog advertises desktop only', () => {
+	test('only notes, tasks and projects advertise web support', () => {
 		for (const plugin of firstPartyPlugins)
-			expect(plugin.manifest.platforms).toEqual(['desktop']);
+			expect(plugin.manifest.platforms).toEqual(
+				['notes', 'tasks', 'projects'].includes(plugin.manifest.id)
+					? ['desktop', 'web']
+					: ['desktop'],
+			);
 	});
 });

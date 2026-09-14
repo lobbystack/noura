@@ -25,10 +25,11 @@ Resumable uploads use `@tus/server`, `@tus/file-store`, and `@tus/utils`
 upstream commit; see `docs/provenance/tus-utils-license.md`.
 
 The browser viewer uses Marked (MIT), DOMPurify (the Apache-2.0 option of its
-dual license), and Public Sans (OFL-1.1). Native encryption uses age, aes-gcm,
-ed25519-dalek, and zeroize under their permissive Cargo-declared license options.
-These are dependencies, not copied donor implementations. The pinned Cargo and
-Bun lockfiles remain the complete dependency inventories.
+dual license), and Public Sans (OFL-1.1). Native and portable encryption use age,
+aes-gcm, ed25519-dalek, x25519-dalek (BSD-3-Clause), hkdf (MIT/Apache-2.0), and
+zeroize under their permissive Cargo-declared license options. These are
+dependencies, not copied donor implementations. The pinned Cargo and Bun
+lockfiles remain the complete dependency inventories.
 
 Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, MIT `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`, MIT `Tauri`, MIT `Svelte`, MIT `Tiptap`, and CC0-1.0 `fractional-indexing`. Release packaging must include the complete lockfile-derived license report and any license texts required by the selected distribution format.
 

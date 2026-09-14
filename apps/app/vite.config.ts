@@ -3,15 +3,23 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 import { pdfAssets } from './pdf-assets.js';
 import { browserLicenseInputs } from './browser-license-inputs.js';
+import { workspaceWasmAssets } from './workspace-wasm-assets.js';
 
 export default defineConfig({
+	worker: { format: 'es' },
 	// Only expose the target, not the rest of the build environment.
 	define: {
 		'import.meta.env.NOURA_TAURI_PLATFORM': JSON.stringify(
 			process.env.TAURI_ENV_PLATFORM ?? '',
 		),
 	},
-	plugins: [pdfAssets(), tailwindcss(), sveltekit(), browserLicenseInputs()],
+	plugins: [
+		workspaceWasmAssets(),
+		pdfAssets(),
+		tailwindcss(),
+		sveltekit(),
+		browserLicenseInputs(),
+	],
 	clearScreen: false,
 	server: {
 		strictPort: true,
@@ -23,6 +31,7 @@ export default defineConfig({
 	},
 	ssr: { noExternal: ['@noura/ai'] },
 	build: {
+		assetsInlineLimit: 0,
 		rolldownOptions: {
 			output: {
 				codeSplitting: {

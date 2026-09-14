@@ -5586,6 +5586,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-key-envelope"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hkdf",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7544,9 +7560,11 @@ name = "workspace-format"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "jiff",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "slug",
  "thiserror 2.0.20",
  "ts-rs",
  "ulid",
@@ -7559,6 +7577,7 @@ dependencies = [
  "js-sys",
  "serde",
  "serde_json",
+ "ulid",
  "wasm-bindgen",
  "workspace-format",
 ]

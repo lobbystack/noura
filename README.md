@@ -22,7 +22,16 @@ See [`docs/architecture/`](docs/architecture/) for design notes and [`docs/works
 
 ## Development
 
-Install Bun and Rust 1.91 or newer, then run:
+Install Bun and Rust 1.91 or newer. The browser workspace build also requires
+the Rust Wasm target and the wasm-bindgen CLI version that matches the Rust
+dependency:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.127 --locked
+```
+
+Then run:
 
 ```sh
 bun install

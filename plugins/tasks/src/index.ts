@@ -84,14 +84,12 @@ export default definePlugin({
 		id: 'tasks',
 		name: 'Tasks',
 		version: '0.1.0',
-		capabilities: [
-			'workspace.objects',
-			'workspace.search',
-			'workspace.commands',
-			'workspace.events',
-			'ai.tools',
-		],
-		platforms: ['desktop'],
+		capabilities: ['workspace.objects', 'workspace.commands', 'ai.tools'],
+		platforms: ['desktop', 'web'],
+		activationCapabilities: {
+			desktop: ['workspace.objects', 'workspace.commands', 'ai.tools'],
+			web: ['workspace.objects', 'workspace.commands'],
+		},
 	},
 	activate(context) {
 		const disposers: Array<() => void> = [];
@@ -113,41 +111,43 @@ export default definePlugin({
 				},
 			}),
 		);
-		disposers.push(
-			context.ai.registerTool({
-				name: 'tasks.create',
-				description: 'Create a task in the workspace.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						title: { type: 'string', minLength: 1 },
-						properties: { type: 'object' },
+		if (context.platform !== 'web') {
+			disposers.push(
+				context.ai.registerTool({
+					name: 'tasks.create',
+					description: 'Create a task in the workspace.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							title: { type: 'string', minLength: 1 },
+							properties: { type: 'object' },
+						},
+						required: ['title'],
+						additionalProperties: false,
 					},
-					required: ['title'],
-					additionalProperties: false,
-				},
-				risk: 'high',
-				execute: (input) => createTask(context, input),
-			}),
-		);
-		disposers.push(
-			context.ai.registerTool({
-				name: 'tasks.complete',
-				description:
-					'Mark a task complete using its current expected revision.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						id: { type: 'string', minLength: 1 },
-						expectedRevision: { type: 'string', minLength: 1 },
+					risk: 'high',
+					execute: (input) => createTask(context, input),
+				}),
+			);
+			disposers.push(
+				context.ai.registerTool({
+					name: 'tasks.complete',
+					description:
+						'Mark a task complete using its current expected revision.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							id: { type: 'string', minLength: 1 },
+							expectedRevision: { type: 'string', minLength: 1 },
+						},
+						required: ['id', 'expectedRevision'],
+						additionalProperties: false,
 					},
-					required: ['id', 'expectedRevision'],
-					additionalProperties: false,
-				},
-				risk: 'high',
-				execute: (input) => completeTask(context, input),
-			}),
-		);
+					risk: 'high',
+					execute: (input) => completeTask(context, input),
+				}),
+			);
+		}
 		commandDisposers.set(context, disposers);
 	},
 	deactivate(context) {

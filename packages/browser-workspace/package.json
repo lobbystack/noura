@@ -1,0 +1,25 @@
+{
+	"name": "@noura/browser-workspace",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./worker": "./src/worker-entry.ts"
+	},
+	"scripts": {
+		"check": "tsc --noEmit",
+		"build": "tsc --noEmit",
+		"lint": "prettier --check src package.json",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@noura/browser-storage": "workspace:*",
+		"@noura/shared": "workspace:*",
+		"@noura/workspace": "workspace:*",
+		"@noura/workspace-format-wasm": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5.9.3"
+	}
+}

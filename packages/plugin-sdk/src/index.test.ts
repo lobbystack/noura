@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
 	definePlugin,
 	PluginHost,
+	PluginRuntimeError,
 	requireCapability,
 	supportsPlatform,
 	type PluginHostServices,
@@ -76,6 +77,45 @@ test('platform metadata gates activation while legacy manifests remain portable'
 		}),
 	);
 	expect(activated).toBe(true);
+});
+
+test('partial hosts reject unavailable activation capabilities before plugin code runs', async () => {
+	let activated = false;
+	const host = new PluginHost({} as PluginHostServices, {
+		platform: 'web',
+		supportedCapabilities: ['workspace.objects'],
+	});
+	await expect(
+		host.activate(
+			definePlugin({
+				manifest: {
+					id: 'requires-commands',
+					name: 'Requires commands',
+					version: '1.0.0',
+					capabilities: ['workspace.objects', 'workspace.commands'],
+					platforms: ['web'],
+					activationCapabilities: {
+						web: ['workspace.objects', 'workspace.commands'],
+					},
+				},
+				activate() {
+					activated = true;
+				},
+			}),
+		),
+	).rejects.toMatchObject({
+		code: 'plugin_capability_unsupported',
+		category: 'validation',
+		operation: 'plugin_activate',
+	});
+	expect(activated).toBe(false);
+	const error = new PluginRuntimeError(
+		'plugin_capability_unsupported',
+		'Unavailable',
+		'plugin_activate',
+		{},
+	);
+	expect(error.retryable).toBe(false);
 });
 
 test('plugin host denies undeclared object access', async () => {

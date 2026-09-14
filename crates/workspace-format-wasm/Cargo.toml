@@ -13,4 +13,5 @@ js-sys.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen.workspace = true
+ulid.workspace = true
 workspace-format = { path = "../workspace-format" }

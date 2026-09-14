@@ -7,9 +7,11 @@ rust-version.workspace = true
 
 [dependencies]
 blake3.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 ulid.workspace = true
+slug.workspace = true
