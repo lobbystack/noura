@@ -3278,6 +3278,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.10.9",
  "slug",
+ "sync-key-envelope",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -3288,6 +3289,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "workspace-format",
+ "x25519-dalek",
  "yrs",
  "zeroize",
 ]
@@ -5591,6 +5593,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "blake3",
  "ed25519-dalek",
  "hkdf",
  "serde",

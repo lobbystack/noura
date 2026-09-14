@@ -5,11 +5,30 @@ import {
 	type AccessTransition,
 } from './checkpoints';
 import { createHash, createPublicKey, verify } from 'node:crypto';
+import { browserKeySigningBytes } from './browser';
 import { base64, cursor, identifier, record, SyncError } from './protocol';
 import type { SyncStore, Actor } from './store';
 
-import type { AccessPolicy } from '../../../packages/shared/src/generated/AccessPolicy';
-export type { AccessPolicy };
+import type { AccessPolicy as GeneratedAccessPolicy } from '../../../packages/shared/src/generated/AccessPolicy';
+import type { PolicyEnvelope } from '../../../packages/shared/src/generated/PolicyEnvelope';
+
+/** A policy envelope extended with the optional browser construction fields. */
+export type AccessPolicyEnvelope = PolicyEnvelope & {
+	construction?: 'age' | 'web';
+	recipientPublicKey?: string;
+	ephemeralPublicKey?: string;
+	salt?: string;
+	nonce?: string;
+};
+
+/** Access policy with envelopes widened to carry browser construction fields. */
+export type AccessPolicy = Omit<GeneratedAccessPolicy, 'objects'> & {
+	objects: Array<
+		Omit<GeneratedAccessPolicy['objects'][number], 'envelopes'> & {
+			envelopes: AccessPolicyEnvelope[];
+		}
+	>;
+};
 
 function exact(value: unknown, fields: string[]) {
 	const body = record(value);
@@ -32,6 +51,60 @@ function sorted<T>(
 		if (key(values[i - 1]!) >= key(values[i]!))
 			throw new SyncError('sync.policy_order');
 	return values;
+}
+
+/**
+ * Parse one policy envelope. Absent `construction` means `age`; `construction:
+ * "web"` additionally requires the four browser byte fields. Unknown
+ * constructions and mixed or missing fields are rejected.
+ */
+function policyEnvelope(input: unknown): AccessPolicyEnvelope {
+	const raw = record(input);
+	const construction = raw.construction ?? 'age';
+	if (construction !== 'age' && construction !== 'web')
+		throw new SyncError('sync.invalid_policy');
+	if (construction === 'web') {
+		const envelope = exact(raw, [
+			'deviceId',
+			'wrappedKey',
+			'signature',
+			'construction',
+			'recipientPublicKey',
+			'ephemeralPublicKey',
+			'salt',
+			'nonce',
+		]);
+		base64(envelope.wrappedKey, 16, 4096);
+		base64(envelope.recipientPublicKey, 32);
+		base64(envelope.ephemeralPublicKey, 32);
+		base64(envelope.salt, 32);
+		base64(envelope.nonce, 12);
+		base64(envelope.signature, 64);
+		return {
+			deviceId: identifier(envelope.deviceId),
+			wrappedKey: envelope.wrappedKey as string,
+			signature: envelope.signature as string,
+			construction: 'web',
+			recipientPublicKey: envelope.recipientPublicKey as string,
+			ephemeralPublicKey: envelope.ephemeralPublicKey as string,
+			salt: envelope.salt as string,
+			nonce: envelope.nonce as string,
+		};
+	}
+	const envelope = exact(
+		raw,
+		raw.construction === undefined
+			? ['deviceId', 'wrappedKey', 'signature']
+			: ['deviceId', 'wrappedKey', 'signature', 'construction'],
+	);
+	base64(envelope.wrappedKey, 60, 4096);
+	base64(envelope.signature, 64);
+	return {
+		deviceId: identifier(envelope.deviceId),
+		wrappedKey: envelope.wrappedKey as string,
+		signature: envelope.signature as string,
+		construction: 'age',
+	};
 }
 
 export function accessPolicy(input: unknown): AccessPolicy {
@@ -110,24 +183,10 @@ export function accessPolicy(input: unknown): AccessPolicy {
 						};
 					},
 				),
-				envelopes: sorted(
+				envelopes: sorted<AccessPolicyEnvelope>(
 					value.envelopes,
-					(v: { deviceId: string; wrappedKey: string; signature: string }) =>
-						v.deviceId,
-					(input) => {
-						const envelope = exact(input, [
-							'deviceId',
-							'wrappedKey',
-							'signature',
-						]);
-						base64(envelope.wrappedKey, 60, 4096);
-						base64(envelope.signature, 64);
-						return {
-							deviceId: identifier(envelope.deviceId),
-							wrappedKey: envelope.wrappedKey as string,
-							signature: envelope.signature as string,
-						};
-					},
+					(v) => v.deviceId,
+					policyEnvelope,
 				),
 			};
 		},
@@ -159,11 +218,20 @@ export function accessSigningBytes(policy: Omit<AccessPolicy, 'signature'>) {
 				object.objectId,
 				object.epoch,
 				object.grants.map((grant) => [grant.accountId, grant.role]),
-				object.envelopes.map((envelope) => [
-					envelope.deviceId,
-					envelope.wrappedKey,
-					envelope.signature,
-				]),
+				object.envelopes.map((envelope) =>
+					envelope.construction === 'web'
+						? [
+								envelope.deviceId,
+								envelope.wrappedKey,
+								envelope.signature,
+								'web',
+								envelope.recipientPublicKey,
+								envelope.ephemeralPublicKey,
+								envelope.salt,
+								envelope.nonce,
+							]
+						: [envelope.deviceId, envelope.wrappedKey, envelope.signature],
+				),
 				...(policy.version === 2
 					? [[object.document!.generation, object.document!.mode]]
 					: []),
@@ -194,20 +262,28 @@ export function verifyAccess(policy: AccessPolicy, publicKey: string) {
 		throw new SyncError('sync.invalid_signature', 403);
 	for (const object of policy.objects)
 		for (const envelope of object.envelopes) {
-			if (
-				!verify(
-					null,
-					keySigningBytes(
-						policy.workspaceId,
-						object.objectId,
-						object.epoch,
-						policy.deviceId,
-						envelope,
-					),
-					key,
-					base64(envelope.signature, 64),
-				)
-			)
+			const message =
+				envelope.construction === 'web'
+					? browserKeySigningBytes({
+							workspaceId: policy.workspaceId,
+							objectId: object.objectId,
+							epoch: object.epoch,
+							signingDevice: policy.deviceId,
+							deviceId: envelope.deviceId,
+							recipientPublicKey: envelope.recipientPublicKey!,
+							ephemeralPublicKey: envelope.ephemeralPublicKey!,
+							salt: envelope.salt!,
+							nonce: envelope.nonce!,
+							wrappedKey: envelope.wrappedKey,
+						})
+					: keySigningBytes(
+							policy.workspaceId,
+							object.objectId,
+							object.epoch,
+							policy.deviceId,
+							envelope,
+						);
+			if (!verify(null, message, key, base64(envelope.signature, 64)))
 				throw new SyncError('sync.invalid_signature', 403);
 		}
 }
@@ -332,7 +408,7 @@ export async function setAccess(
 					[...policy.members, ...next.grants].map((value) => value.accountId),
 				);
 				const oldEnvelopes =
-					await tx`SELECT device_id,wrapped_key FROM noura_key_envelopes WHERE workspace_id=${workspace} AND object_id=${object.id} AND epoch=${object.epoch}`;
+					await tx`SELECT device_id,wrapped_key,construction FROM noura_key_envelopes WHERE workspace_id=${workspace} AND object_id=${object.id} AND epoch=${object.epoch}`;
 				const [checkpointState] =
 					await tx`SELECT 1 FROM noura_checkpoints WHERE workspace_id=${workspace} AND object_id=${object.id} LIMIT 1`;
 				const changesReaders =
@@ -400,11 +476,13 @@ export async function setAccess(
 					if (
 						next.epoch === Number(object.epoch) &&
 						existing &&
-						existing.wrapped_key !== envelope.wrappedKey
+						(existing.wrapped_key !== envelope.wrappedKey ||
+							(existing.construction ?? 'age') !==
+								(envelope.construction ?? 'age'))
 					)
 						throw new SyncError('sync.key_epoch_immutable', 409);
-					await tx`INSERT INTO noura_key_envelopes(workspace_id,object_id,epoch,device_id,wrapped_key,signing_device,signature)
-				 VALUES(${workspace},${object.id},${next.epoch},${envelope.deviceId},${envelope.wrappedKey},${actor.deviceId},${envelope.signature}) ON CONFLICT DO NOTHING`;
+					await tx`INSERT INTO noura_key_envelopes(workspace_id,object_id,epoch,device_id,wrapped_key,signing_device,signature,construction,recipient_public_key,ephemeral_public_key,salt,nonce)
+				 VALUES(${workspace},${object.id},${next.epoch},${envelope.deviceId},${envelope.wrappedKey},${actor.deviceId},${envelope.signature},${envelope.construction ?? 'age'},${envelope.recipientPublicKey ?? null},${envelope.ephemeralPublicKey ?? null},${envelope.salt ?? null},${envelope.nonce ?? null}) ON CONFLICT DO NOTHING`;
 				}
 				await tx`UPDATE noura_objects SET epoch=${next.epoch},generation=${next.document?.generation ?? null},document_mode=${next.document?.mode ?? null} WHERE workspace_id=${workspace} AND id=${object.id}`;
 				if (next.epoch !== Number(object.epoch))

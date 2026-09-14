@@ -377,15 +377,12 @@ impl HttpSyncTransport {
                 .iter()
                 .find(|envelope| envelope.device_id == device.device_id())
                 .ok_or_else(|| invalid("sync_key_required"))?;
-            let key_envelope = super::KeyEnvelope {
-                workspace_id: workspace.clone(),
-                object_id: object_id.clone(),
-                epoch: 1,
-                device_id: envelope.device_id.clone(),
-                wrapped_key: envelope.wrapped_key.clone(),
-                signing_device: activation.device_id.clone(),
-                signature: envelope.signature.clone(),
-            };
+            // Object activation still parses only the three-field native envelope.
+            if envelope.is_web() {
+                return Err(invalid("sync_browser_activation_unsupported"));
+            }
+            let key_envelope =
+                envelope.to_key_envelope(&workspace, &object_id, 1, &activation.device_id)?;
             engine.sync_store_key(&key_envelope, device, signer)?;
             let key = device.unwrap_key(&key_envelope, signer)?;
             if let Some(existing) = secrets.objects.get(&(object_id.clone(), 1)) {
@@ -674,6 +671,16 @@ impl HttpSyncTransport {
             signing_device: String,
             signature: String,
             signing_public_key: String,
+            #[serde(default)]
+            construction: super::KeyConstruction,
+            #[serde(default)]
+            recipient_public_key: Option<String>,
+            #[serde(default)]
+            ephemeral_public_key: Option<String>,
+            #[serde(default)]
+            salt: Option<String>,
+            #[serde(default)]
+            nonce: Option<String>,
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -725,6 +732,11 @@ impl HttpSyncTransport {
                     wrapped_key: row.wrapped_key,
                     signing_device: row.signing_device,
                     signature: row.signature,
+                    construction: row.construction,
+                    recipient_public_key: row.recipient_public_key,
+                    ephemeral_public_key: row.ephemeral_public_key,
+                    salt: row.salt,
+                    nonce: row.nonce,
                 };
                 let key = device.unwrap_key(&envelope, trusted)?;
                 if let Some(existing) = secrets.objects.get(&(row.object_id.clone(), epoch)) {
@@ -953,9 +965,14 @@ impl HttpSyncTransport {
                     .encryption_recipient
                     .as_ref()
                     .ok_or_else(|| invalid("sync_device_upgrade_required"))?;
-                recipient
-                    .parse::<age::x25519::Recipient>()
-                    .map_err(|_| invalid("sync_invalid_recipient"))?;
+                if recipient.starts_with(sync_key_envelope::RECIPIENT_PREFIX) {
+                    sync_key_envelope::decode_recipient(recipient)
+                        .map_err(|_| invalid("sync_invalid_recipient"))?;
+                } else {
+                    recipient
+                        .parse::<age::x25519::Recipient>()
+                        .map_err(|_| invalid("sync_invalid_recipient"))?;
+                }
                 if invitation.account_id.as_ref() != Some(&device.account_id) {
                     return Err(invalid("sync_invalid_invitation"));
                 }

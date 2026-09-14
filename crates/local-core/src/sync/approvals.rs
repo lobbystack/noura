@@ -67,7 +67,16 @@ pub fn device_fingerprint(
 ) -> Result<String> {
     identifier(device)?;
     identifier(account)?;
-    super::crypto::decode(public_key, 32, 32)?;
+    let public: [u8; 32] = super::crypto::decode(public_key, 32, 32)?
+        .try_into()
+        .map_err(|_| invalid("sync_invalid_key"))?;
+    if recipient.starts_with(sync_key_envelope::RECIPIENT_PREFIX) {
+        sync_key_envelope::decode_recipient(recipient)
+            .map_err(|_| invalid("sync_invalid_recipient"))?;
+        return Ok(sync_key_envelope::device_fingerprint(
+            device, account, public, recipient,
+        ));
+    }
     recipient
         .parse::<age::x25519::Recipient>()
         .map_err(|_| invalid("sync_invalid_recipient"))?;
@@ -132,6 +141,36 @@ struct StoredEnvelope {
     wrapped_key: String,
     signing_device: String,
     signature: String,
+    #[serde(default)]
+    construction: KeyConstruction,
+    #[serde(default)]
+    recipient_public_key: Option<String>,
+    #[serde(default)]
+    ephemeral_public_key: Option<String>,
+    #[serde(default)]
+    salt: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
+}
+
+impl StoredEnvelope {
+    /// Reconstruct the discriminated envelope for this workspace and epoch.
+    fn to_key_envelope(&self, workspace: &str, object: &str, epoch: u64) -> KeyEnvelope {
+        KeyEnvelope {
+            workspace_id: workspace.into(),
+            object_id: object.into(),
+            epoch,
+            device_id: self.device_id.clone(),
+            wrapped_key: self.wrapped_key.clone(),
+            signing_device: self.signing_device.clone(),
+            signature: self.signature.clone(),
+            construction: self.construction,
+            recipient_public_key: self.recipient_public_key.clone(),
+            ephemeral_public_key: self.ephemeral_public_key.clone(),
+            salt: self.salt.clone(),
+            nonce: self.nonce.clone(),
+        }
+    }
 }
 
 impl WorkspaceSyncCoordinator {
@@ -545,15 +584,12 @@ pub(crate) async fn finish_access_transition(
             .find(|envelope| envelope.device_id == device.device_id())
             .ok_or_else(|| invalid("sync_key_required"))?;
         engine.sync_store_key(
-            &KeyEnvelope {
-                workspace_id: transition.policy.workspace_id.clone(),
-                object_id: object.object_id.clone(),
-                epoch: object.epoch,
-                device_id: envelope.device_id.clone(),
-                wrapped_key: envelope.wrapped_key.clone(),
-                signing_device: transition.policy.device_id.clone(),
-                signature: envelope.signature.clone(),
-            },
+            &envelope.to_key_envelope(
+                &transition.policy.workspace_id,
+                &object.object_id,
+                object.epoch,
+                &transition.policy.device_id,
+            )?,
             device,
             &public,
         )?;
@@ -1014,6 +1050,10 @@ impl HttpSyncTransport {
                 .encryption_recipient
                 .as_ref()
                 .ok_or_else(|| invalid("sync_device_upgrade_required"))?;
+            // Object activation still carries only the three-field native envelope.
+            if age.starts_with(sync_key_envelope::RECIPIENT_PREFIX) {
+                return Err(invalid("sync_browser_activation_unsupported"));
+            }
             let expected_age = if recipient.device_id == device.device_id() {
                 device.recipient()
             } else {
@@ -1214,15 +1254,7 @@ impl HttpSyncTransport {
                         && entry.device_id == recipient.device_id
                 });
                 let envelope = if let Some(existing) = existing {
-                    let envelope = KeyEnvelope {
-                        workspace_id: workspace.clone(),
-                        object_id: object.object_id.clone(),
-                        epoch,
-                        device_id: existing.device_id.clone(),
-                        wrapped_key: existing.wrapped_key.clone(),
-                        signing_device: existing.signing_device.clone(),
-                        signature: existing.signature.clone(),
-                    };
+                    let envelope = existing.to_key_envelope(&workspace, &object.object_id, epoch);
                     let signer = config
                         .trusted_devices
                         .get(&envelope.signing_device)
@@ -1287,5 +1319,137 @@ impl HttpSyncTransport {
         self.set_access(&policy, &device.signer().public_key())
             .await?;
         engine.sync_accept_access_policy(&state.revision, previous_digest.as_deref(), &policy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::RefCell, collections::BTreeMap};
+    use zeroize::Zeroizing;
+
+    #[derive(Default)]
+    struct Memory(RefCell<BTreeMap<String, Zeroizing<String>>>);
+    impl SyncCredentials for Memory {
+        fn read(&self, reference: &str) -> Result<Zeroizing<String>> {
+            self.0
+                .borrow()
+                .get(reference)
+                .cloned()
+                .ok_or_else(|| invalid("test_missing"))
+        }
+        fn write(&self, reference: &str, value: &str) -> Result<()> {
+            self.0
+                .borrow_mut()
+                .insert(reference.into(), Zeroizing::new(value.into()));
+            Ok(())
+        }
+    }
+
+    fn remote(device: &DeviceKeys, account: &str, recipient: String) -> RemoteDevice {
+        RemoteDevice {
+            device_id: device.device_id().into(),
+            account_id: account.into(),
+            public_key: device.signer().public_key(),
+            encryption_recipient: Some(recipient),
+        }
+    }
+
+    #[test]
+    fn browser_device_fingerprint_matches_the_shared_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/workspace-format/fixtures/browser-device-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["fingerprint"]["domain"], "noura.device.card.web");
+        let vector = &fixture["fingerprint"]["vectors"][0];
+        assert_eq!(
+            device_fingerprint(
+                vector["device_id"].as_str().unwrap(),
+                vector["account_id"].as_str().unwrap(),
+                vector["signing_public"].as_str().unwrap(),
+                vector["recipient"].as_str().unwrap(),
+            )
+            .unwrap(),
+            vector["expected_hex"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn mixed_age_and_browser_cards_approve_and_reject_changed_browser_cards() {
+        let store = Memory::default();
+        let own = DeviceKeys::create(&store).unwrap();
+        let browser = DeviceKeys::create_browser(&store).unwrap();
+        let native = DeviceKeys::create(&store).unwrap();
+        let mut config = WorkspaceSyncConfig {
+            version: 1,
+            workspace_id: "workspace".into(),
+            origin: "https://sync.example.com".into(),
+            device_id: own.device_id().into(),
+            enabled: true,
+            trusted_devices: BTreeMap::from([(own.device_id().into(), own.signer().public_key())]),
+            approved_recipients: BTreeMap::from([(own.device_id().into(), own.recipient())]),
+            approved_accounts: BTreeMap::from([(own.device_id().into(), "account".into())]),
+        };
+        let browser_card = sync_device(
+            remote(&browser, "account", browser.recipient()),
+            &config,
+            &own,
+        )
+        .unwrap();
+        assert!(!browser_card.approved);
+        assert_ne!(
+            browser_card.fingerprint,
+            device_fingerprint(
+                browser.device_id(),
+                "account",
+                &browser.signer().public_key(),
+                &native.recipient(),
+            )
+            .unwrap()
+        );
+        approve_device_card(&mut config, browser_card.clone()).unwrap();
+        let native_card = sync_device(
+            remote(&native, "account", native.recipient()),
+            &config,
+            &own,
+        )
+        .unwrap();
+        approve_device_card(&mut config, native_card).unwrap();
+        assert_eq!(
+            config.approved_recipients.get(browser.device_id()),
+            Some(&browser.recipient())
+        );
+        assert_eq!(
+            config.approved_recipients.get(native.device_id()),
+            Some(&native.recipient())
+        );
+        assert!(
+            browser
+                .recipient()
+                .starts_with(sync_key_envelope::RECIPIENT_PREFIX)
+        );
+        assert!(
+            !native
+                .recipient()
+                .starts_with(sync_key_envelope::RECIPIENT_PREFIX)
+        );
+
+        let replacement = DeviceKeys::create_browser(&store).unwrap();
+        let changed = sync_device(
+            remote(&browser, "account", replacement.recipient()),
+            &config,
+            &own,
+        )
+        .unwrap();
+        assert_ne!(changed.fingerprint, browser_card.fingerprint);
+        assert_eq!(
+            approve_device_card(&mut config, changed).unwrap_err().code,
+            "sync_device_changed"
+        );
+        assert_eq!(
+            config.approved_recipients.get(browser.device_id()),
+            Some(&browser.recipient())
+        );
     }
 }

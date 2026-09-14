@@ -41,7 +41,7 @@ pub use coordinator::{
     WorkspaceSyncTransitionObject, WorkspaceSyncTransitionPhase, WorkspaceSyncTransitionStatus,
 };
 pub use crypto::{EncryptedOperation, ObjectKey, OperationKind, SigningIdentity};
-pub use keys::{DeviceKeys, KeyEnvelope, OsSyncCredentials, SyncCredentials};
+pub use keys::{DeviceKeys, KeyConstruction, KeyEnvelope, OsSyncCredentials, SyncCredentials};
 pub use presence::{
     CollaborationPresenceEvent, CollaborationPresenceInput, CollaborationPresenceMember,
     EncryptedPresence, PresenceContext, PresenceSelection,

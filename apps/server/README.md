@@ -32,6 +32,10 @@ transitions, live-text generations, and capability-bound object activations.
   keys and the pinned signer travel in the URL fragment, never the HTTP request.
 - Native AES-GCM/Ed25519 file transport, age key wrapping, encrypted key-envelope
   persistence, a file-backed crash-replay journal, and conflict preservation.
+- Server-side browser device support: `x25519:` recipient enrollment verified
+  with the `noura.device.enroll.web` proof, signed `noura.sync.key.web` envelope
+  storage, browser envelope verification in key upload and signed access
+  policies, and construction-aware key delivery. No browser client exists yet.
 - Native background capture and restart, pause/resume, owner replica joining,
   verified device approval, encrypted key backup before upload, and explicit
   local/remote resolution of same-path conflicts without overwriting later edits.
@@ -115,6 +119,22 @@ recipient with `{encryptionRecipient}` included. Their v2 proof signs
 `["noura.device.enroll.v2",serverOrigin,accountId,deviceId,publicKeyBase64,encryptionRecipient,challenge]`.
 The temporary account bearer session is exchanged for a Noura device session
 inside native code and then signed out.
+
+Browser devices enroll an `x25519:` recipient (the prefix plus standard padded
+base64 of a 32-byte X25519 public key). Their proof signs
+`["noura.device.enroll.web",1,serverOrigin,accountId,deviceId,publicKeyBase64,encryptionRecipient,challenge]`.
+An unusable recipient returns `sync.invalid_recipient`; a bad proof returns
+`sync.invalid_signature`. The recipient string is stored unchanged and grants no
+content key.
+
+Key upload accepts an optional envelope `construction`. An absent discriminator
+or `"age"` is the existing native seven-field record signed over
+`["noura.sync.key",1,workspaceId,objectId,epoch,signingDevice,deviceId,wrappedKey]`.
+`"web"` adds `recipientPublicKey`, `ephemeralPublicKey`, `salt`, and `nonce`,
+signed over the `noura.sync.key.web` version 1 tuple, and must wrap to the
+recipient device's enrolled `x25519:` key. `noura_key_envelopes` stores
+`construction` (default `'age'`) plus the four nullable browser columns, and key
+delivery and `access-state` return them for every envelope.
 
 All remaining `/v1` routes require `Authorization: Bearer <token>`:
 

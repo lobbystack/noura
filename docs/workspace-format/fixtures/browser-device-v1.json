@@ -1,0 +1,76 @@
+{
+  "enrollment": {
+    "domain": "noura.device.enroll.web",
+    "vectors": [
+      {
+        "account_id": "account_owner",
+        "challenge": "challenge_browser_device_1",
+        "device_id": "device_browser",
+        "expected_base64": "Bf2d0nAGECoOK0i9+n4SJ6cII8uC6pylJyNody/bsW0Wpwx6GU+xY/GGPg9sfx4TJzOfimeSAdpZyiiY7fn2Cw==",
+        "expected_hex": "05fd9dd27006102a0e2b48bdfa7e1227a70823cb82ea9ca5272368772fdbb16d16a70c7a194fb163f1863e0f6c7f1e1327339f8a679201da59ca2898edf9f60b",
+        "name": "browser-device-enroll",
+        "origin": "https://app.noura.example",
+        "recipient": "x25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+      }
+    ],
+    "version": 1
+  },
+  "fingerprint": {
+    "domain": "noura.device.card.web",
+    "vectors": [
+      {
+        "account_id": "account_owner",
+        "device_id": "device_browser",
+        "expected_hex": "981952d2679b8017a5e61c404bb37cab1b27a62ad89e0bb4715c431c3e0a91e3",
+        "name": "browser-device-card",
+        "recipient": "x25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      }
+    ],
+    "version": 1
+  },
+  "recipient_prefix": "x25519:",
+  "recipients": {
+    "invalid": [
+      {
+        "expected_error": "sync_invalid_recipient",
+        "name": "missing_prefix",
+        "recipient": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+      },
+      {
+        "expected_error": "sync_invalid_recipient",
+        "name": "wrong_base64",
+        "recipient": "x25519:not-base64!!"
+      },
+      {
+        "expected_error": "sync_invalid_recipient",
+        "name": "short_31_bytes",
+        "recipient": "x25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw=="
+      },
+      {
+        "expected_error": "sync_invalid_recipient",
+        "name": "long_33_bytes",
+        "recipient": "x25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH"
+      },
+      {
+        "expected_error": "sync_invalid_recipient",
+        "name": "age_form",
+        "recipient": "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      }
+    ],
+    "valid": [
+      {
+        "name": "raw-recipient-zero",
+        "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "recipient": "x25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      {
+        "name": "raw-recipient-seeded",
+        "public_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        "recipient": "x25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+      }
+    ]
+  }
+}

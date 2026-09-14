@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
 use super::{
-    CheckpointBlobManifest, DeviceKeys, DocumentDescriptor, EncryptedCheckpoint, KeyEnvelope,
-    PolicyEnvelope, WorkspaceCapability, crypto::decode, identifier, invalid,
+    CheckpointBlobManifest, DeviceKeys, DocumentDescriptor, EncryptedCheckpoint, PolicyEnvelope,
+    WorkspaceCapability, crypto::decode, identifier, invalid,
 };
 use crate::Result;
 
@@ -99,16 +99,13 @@ impl ObjectActivation {
             if envelope.device_id.as_str() <= previous {
                 return Err(invalid("sync_invalid_object_activation"));
             }
-            KeyEnvelope {
-                workspace_id: self.workspace_id.clone(),
-                object_id: operation.object_id.clone(),
-                epoch: 1,
-                device_id: envelope.device_id.clone(),
-                wrapped_key: envelope.wrapped_key.clone(),
-                signing_device: self.device_id.clone(),
-                signature: envelope.signature.clone(),
+            // Object activation still parses only the three-field native envelope.
+            if envelope.is_web() {
+                return Err(invalid("sync_browser_activation_unsupported"));
             }
-            .verify(public_key)?;
+            envelope
+                .to_key_envelope(&self.workspace_id, &operation.object_id, 1, &self.device_id)?
+                .verify(public_key)?;
             previous = &envelope.device_id;
         }
         for blob in &self.blobs {
@@ -293,6 +290,29 @@ mod tests {
                 .unwrap_err()
                 .code,
             "sync_invalid_object_activation"
+        );
+
+        // Object activation still parses only the three-field native envelope.
+        let browser_envelope = PolicyEnvelope::from(
+            device
+                .wrap_key(
+                    "workspace",
+                    "object",
+                    1,
+                    "device_browser",
+                    &sync_key_envelope::encode_recipient([0x07_u8; 32]),
+                    &ObjectKey::generate(),
+                )
+                .unwrap(),
+        );
+        let mut browser_activation = activation.clone();
+        browser_activation.envelopes = vec![browser_envelope];
+        assert_eq!(
+            browser_activation
+                .verify(&device.signer().public_key())
+                .unwrap_err()
+                .code,
+            "sync_browser_activation_unsupported"
         );
     }
 }

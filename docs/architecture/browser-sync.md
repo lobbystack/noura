@@ -28,10 +28,55 @@ work as part of an unrelated task.
 needs new envelope handling" is implemented in `crates/sync-key-envelope`
 (native/portable Rust) and `packages/sync-key-envelope` (browser WebCrypto),
 conforming to the shared fixture
-`docs/workspace-format/fixtures/browser-key-v1.json`. This is a format and
-fixture foundation only. No enrollment, key delivery, revocation, key storage,
-or synchronization is implemented, and the hosted browser client still cannot
-open a synced workspace.
+`docs/workspace-format/fixtures/browser-key-v1.json`. The browser device
+recipient encoding, device fingerprint, and enrollment proof are also implemented
+in both languages and conform to
+`docs/workspace-format/fixtures/browser-device-v1.json`.
+
+**Partially implemented server.** `apps/server` now accepts `x25519:` browser
+recipients during device enrollment and verifies the `noura.device.enroll.web`
+proof, stores browser `noura.sync.key.web` envelopes alongside native `age`
+envelopes, verifies browser envelope signatures on key upload and access
+policies, and returns the construction and browser fields from key delivery and
+access-state. The server's `POST`/`GET /v1/workspaces/:workspace/operations`
+push/pull routes and the `noura.sync.payload`/`noura.sync.operation` tuples were
+already the shared native protocol; the browser client now speaks them at the
+library level. The hosted browser client does not exist yet, so a browser still
+cannot open a synced workspace, and browser revocation/epoch-rotation wiring,
+browser recovery kits, local replica reconciliation, outbox/conflict handling,
+and UI wiring are not implemented.
+
+**Implemented native client support.** `crates/local-core` now depends on
+`crates/sync-key-envelope` and treats a browser device as a first-class remote
+recipient: it recognizes the `x25519:` `encryptionRecipient`, renders the
+`noura.device.card.web` fingerprint, wraps object keys to a browser recipient
+with `sync-key-envelope::wrap_key` (supplying the ephemeral secret, salt, and
+nonce from the OS random source), verifies and unwraps browser-authored
+`noura.sync.key.web` envelopes against locally pinned signer keys before
+decryption, and reads and produces the extended `construction` plus browser
+fields from key delivery, access-state, and signed access policies. Native `age`
+envelopes, the seven-field wire shape, and the existing public types keep their
+prior behavior. The local `KeyEnvelope` and `PolicyEnvelope` gained an explicit
+`construction` discriminator and the four optional browser byte fields, and an
+installed app can also run as a `x25519:` browser recipient device itself.
+
+**Implemented browser client foundation.** `packages/browser-sync`
+(`@noura/browser-sync`) implements the browser-side custody, enrollment, and
+key-delivery foundation described under "Browser client foundation" below. It
+generates an Ed25519 signing key and an X25519 recipient key with WebCrypto,
+derives a passphrase key-encryption key with PBKDF2-SHA256 (random 32-byte salt,
+at least 310,000 iterations, 32-byte output), and persists the signing seed, the
+X25519 secret, and the device bearer token only as an AES-256-GCM-wrapped
+`WrappedKeyBundle` behind an injectable `KeyStore` (in-memory for tests,
+IndexedDB/OPFS for the host). It requests a device challenge, signs and submits
+the `noura.device.enroll.web` proof, and pulls and verifies `noura.sync.key.web`
+envelopes against caller-pinned signer keys before unwrapping with the recipient
+secret. It also seals and opens `EncryptedOperation` envelopes and speaks the
+push/pull operation transport at the library level, conforming to the shared
+`operation-v1.json` fixture. The hosted browser still has no local replica
+reconciliation, no outbox or conflict handling, no revocation lock state, no
+recovery kit, and no UI wiring, so it still cannot open or synchronize a
+workspace end to end.
 
 ## Locked invariants this proposal must satisfy
 
@@ -80,6 +125,8 @@ The browser must speak the same protocol as the native client
   `["noura.sync.key",1,workspaceId,objectId,epoch,signingDevice,recipientDevice,wrappedKey]`.
 - **Device fingerprint.** The lowercase BLAKE3 digest of
   `["noura.device.card",1,deviceId,accountId,signingPublicKey,ageRecipient]`.
+  The browser variant uses the domain `noura.device.card.web` and a raw X25519
+  recipient instead of an `age` recipient.
 - **Epoch and policy revision.** `epoch` is a positive safe integer;
   `policyRevision`, server sequences, and policy revisions are canonical
   nonnegative decimal strings within signed 64-bit range.
@@ -127,8 +174,257 @@ is considered implemented, consistent with `AGENTS.md`.
 
 **Implemented.** The version 1 envelope (`noura.sync.key.web`) exists in
 `crates/sync-key-envelope` and `packages/sync-key-envelope`, and both languages
-run `docs/workspace-format/fixtures/browser-key-v1.json`. The fingerprint
-extension for a raw X25519 recipient (follow-up 3 below) is still a proposal.
+run `docs/workspace-format/fixtures/browser-key-v1.json`.
+
+**Implemented.** The browser device recipient, device fingerprint, and
+enrollment proof are implemented in both languages, and both run
+`docs/workspace-format/fixtures/browser-device-v1.json`. `encode_recipient` /
+`encodeRecipient` produce, and `decode_recipient` / `decodeRecipient` accept
+only, the exact form below; every other form returns the public error code
+`sync_invalid_recipient`.
+
+- **Recipient encoding.** A browser device recipient is the ASCII prefix
+  `x25519:` followed by standard (padded) base64 of the raw 32-byte X25519 public
+  key, for example `x25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=`.
+  Decoding requires the prefix and exactly 32 decoded bytes. This is the browser
+  counterpart to an `age` Bech32 recipient and is a distinct form, not a variant
+  of `age1...`.
+- **Device fingerprint.** The browser fingerprint is lowercase hexadecimal
+  BLAKE3 over the canonical JSON tuple
+  `["noura.device.card.web",1,deviceId,accountId,base64(signingPublicKey),recipient]`.
+  It differs from the native `["noura.device.card",1,...]` tuple only in the
+  domain string and the raw X25519 recipient representation.
+- **Enrollment proof.** The browser signs the canonical JSON tuple
+  `["noura.device.enroll.web",1,origin,accountId,deviceId,base64(publicKey),recipient,challenge]`
+  with its Ed25519 device key. `enrollment_proof` / `enrollmentProof` return the
+  raw signature bytes, and the server verifies them against the device's
+  submitted public key. This mirrors `noura.device.enroll.v2` while adding the
+  versioned browser domain and the raw X25519 recipient.
+
+The native `device_fingerprint` now renders the browser variant, and
+`crates/local-core` both consumes and produces the extended key-envelope fields;
+see "Native client support" below. The `apps/server` enrollment, key-storage, and
+key-delivery paths accept browser recipients and browser envelopes; see
+"Server-side support" below.
+
+## Server-side support
+
+The encrypted sync service now understands the browser recipient and envelope
+formats. It remains zero-knowledge: it verifies signatures, validates
+authorization, and stores ciphertext fields, but never unwraps a key and never
+sees workspace plaintext.
+
+### Device enrollment
+
+`POST /v1/devices` accepts `encryptionRecipient` in one of three forms:
+
+- Absent: the existing `noura.device.enroll` version 1 proof, unchanged.
+- An `age1...` Bech32 recipient: the existing `noura.device.enroll.v2` proof,
+  unchanged.
+- A browser `x25519:` recipient (prefix plus standard padded base64 of exactly
+  32 raw bytes): the `noura.device.enroll.web` version 1 proof
+  `["noura.device.enroll.web",1,origin,accountId,deviceId,base64(publicKey),recipient,challenge]`.
+
+The recipient is stored byte-for-byte unchanged in
+`noura_devices.encryption_recipient`. An unusable recipient returns
+`sync.invalid_recipient`; a proof that does not verify against the submitted
+Ed25519 key returns `sync.invalid_signature`. Single-use challenge consumption,
+the seven-day session rotation, and the revoked-device re-enrollment refusal are
+unchanged.
+
+### Key envelopes and storage
+
+`PUT /v1/keys/self` and `PUT /v1/keys/share` accept an optional `construction`
+discriminator:
+
+- Absent, or `"age"`: the existing native seven-field record and the
+  `noura.sync.key` signing tuple, unchanged.
+- `"web"`: the native routing fields plus `recipientPublicKey`,
+  `ephemeralPublicKey`, `salt`, and `nonce`, signed over the
+  `noura.sync.key.web` version 1 tuple
+  `["noura.sync.key.web",1,workspaceId,objectId,epoch,signingDevice,deviceId,recipientPublicKey,ephemeralPublicKey,salt,nonce,wrappedKey]`.
+
+Browser envelopes must wrap to the recipient device's enrolled recipient: the
+device's stored `x25519:` recipient and the envelope's `recipient_public_key`
+must decode to the same 32 bytes, or the upload returns
+`sync.invalid_recipient`. Signer authorization, current-epoch enforcement,
+idempotent retries, change detection, and the checkpoint key-rotation refusal
+are unchanged for both constructions.
+
+`noura_key_envelopes` gains `construction` (`text NOT NULL DEFAULT 'age'`) and
+nullable `recipient_public_key`, `ephemeral_public_key`, `salt`, and `nonce`
+columns through idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements.
+`SyncStore.ready()` selects the new columns, so a migrated database reports
+ready and an unmigrated one fails the readiness probe. `GET
+/v1/workspaces/:workspace/keys` and `GET /v1/workspaces/:workspace/access-state`
+return `construction` and the browser fields for every envelope, with the native
+`signingPublicKey` join, pagination, and access filtering unchanged.
+
+### Access policies
+
+`objects[].envelopes[]` in a signed access policy accepts a browser entry with
+`construction: "web"` and the same four browser fields; a missing discriminator
+means `age`. The policy parser validates every base64 length, rejects unknown
+constructions and mixed or missing fields, verifies the browser envelope against
+the signing device over the `noura.sync.key.web` tuple, and persists the
+construction fields. For browser entries the policy signing tuple additionally
+binds `"web"` and the four browser fields, so the policy signature and its
+`previousPolicyDigest` chain cover them. Revision continuity, object coverage,
+writer authorization, epoch rules, and the native `age` tuples are unchanged.
+Browser recipients are accepted as active approved devices anywhere an `age`
+recipient is.
+
+### Native client support
+
+`crates/local-core` (`sync::keys`, `sync::approvals`, `sync::access`,
+`sync::transport`) implements the native side of the browser device contract:
+
+- **Recognition and fingerprint.** `device_fingerprint` accepts an `x25519:`
+  recipient, validates it with `sync_key_envelope::decode_recipient`, and
+  returns the `noura.device.card.web` digest. An `age` recipient keeps the
+  `noura.device.card` digest. Approval, invitation, recovery-configuration, and
+  access-state paths all compare the same fingerprint, so a changed browser card
+  is rejected with the existing `sync_device_changed` error.
+- **Wrapping.** `DeviceKeys::wrap_key` branches on the recipient. A native `age`
+  recipient keeps the existing `age` path; an `x25519:` recipient decodes with
+  `sync_key_envelope::decode_recipient` and wraps with
+  `sync_key_envelope::wrap_key`, drawing the ephemeral secret, HKDF salt, and
+  AES-GCM nonce from the OS random source. The result is the discriminated
+  `KeyEnvelope` with `construction: "web"` and the four browser fields.
+- **Verification and unwrap.** `KeyEnvelope::verify` verifies browser envelopes
+  with `sync_key_envelope::verify_envelope` over the `noura.sync.key.web` v1
+  tuple; `DeviceKeys::unwrap_key` verifies against the locally pinned signer and
+  only then calls `sync_key_envelope::unwrap_key`. `receive_keys` parses the
+  server's extended rows into this type before verifying and unwrapping, exactly
+  as it does for `age`.
+- **Access policies.** The local `PolicyEnvelope` carries the same
+  `construction` discriminator and browser fields. `AccessPolicy` signing and
+  verification bind the eight-element browser envelope tuple
+  `[deviceId, wrappedKey, signature, "web", recipientPublicKey,
+ephemeralPublicKey, salt, nonce]` for web entries and the unchanged
+  three-element tuple for `age`, preserving revision, chain, coverage, and epoch
+  rules.
+- **Persistence.** A `KeyEnvelope` round-trips both constructions through serde;
+  `age` still serializes as the seven-field object. Browser secret material stays
+  in the zeroizing native credential record, and `DeviceKeys::create_browser`
+  adds a native process that can hold a `x25519:` recipient identity.
+
+### Remaining limitations
+
+- The browser client foundation exists in `packages/browser-sync` (device custody,
+  passphrase unlock, enrollment, pinned key delivery, operation seal/open, and the
+  push/pull transport), but there is no local replica reconciliation, no outbox or
+  conflict handling, no revocation-driven lock state, no recovery kit, and no UI
+  wiring, so the hosted browser still cannot open or synchronize a workspace end
+  to end.
+- Browser key envelopes are delivered to clients, but clients must still verify
+  them locally against pinned signer keys. The server is not a trust source.
+- Revocation and epoch rotation reuse the signed access-policy path, which now
+  accepts web envelopes; the native coordinator now wraps rotated keys for
+  approved browser recipients, but no browser UI enforces a revoked locked state.
+- Collaboration-v2 object activation (`noura.sync.object-activation`) still
+  parses only the three-field native envelope. The native activation paths
+  (`ObjectActivation::sign`/`verify`, `receive_activations`, and
+  `activate_pending_objects`) reject a browser recipient with the structured
+  `sync_browser_activation_unsupported` error instead of mis-verifying it;
+  activating a new object for a browser recipient is not implemented.
+- The policy-level `noura.sync.access` tuple extension for browser entries is now
+  signed and verified by the native Rust client against the server contract, but
+  no shared Rust/TypeScript conformance fixture covers it yet.
+- The browser recovery-kit format remains a proposal. Native recovery kits and
+  recovery identities are `age`-only; a browser recipient returns
+  `sync_browser_recovery_unsupported` rather than emitting an unusable kit.
+
+## Browser client foundation
+
+`packages/browser-sync` (`@noura/browser-sync`) is the first browser-side client
+code. It is a transport-neutral library that uses `globalThis.crypto.subtle` and
+an injected `fetch`; it performs no UI work and holds no global state. It is a
+foundation, not a working browser workspace: operation sealing/opening and the
+push/pull transport are implemented, but local replica reconciliation, outbox and
+conflict handling, revocation lock state, recovery kits, and UI wiring are not.
+
+### Identity and at-rest custody
+
+- `createDeviceIdentity` generates an Ed25519 signing key and an X25519 recipient
+  key with WebCrypto and returns an opaque `WrappedKeyBundle`.
+- `sealBundle` / `openBundle` derive an AES-256-GCM key-encryption key from a user
+  passphrase with PBKDF2-SHA256 (random 32-byte salt, a default and enforced
+  minimum of 310,000 iterations, 32-byte output), encrypt the exported signing
+  seed, the X25519 secret, and the device bearer token under a random 12-byte
+  nonce, and bind the bundle metadata as AES-GCM additional authenticated data.
+- `unlockDeviceIdentity` / `loadDeviceIdentity` return in-memory key material; the
+  unwrapped secret is never written back to storage. The `KeyStore` interface
+  (`read`/`write`/`delete`) lets the host supply IndexedDB or OPFS;
+  `createMemoryKeyStore` is provided for tests.
+- **PBKDF2 fallback choice.** WebAuthn PRF is the preferred unlock factor, but PRF
+  availability remains uneven across browsers, platforms, and authenticators. This
+  foundation implements and documents the passphrase fallback and deliberately
+  does not implement PRF. A wrong passphrase or a tampered bundle fails AES-GCM
+  authentication and is reported as `browser_sync_passphrase_rejected`.
+- No unwrapped secret is persisted. This package does not claim reliable memory
+  zeroization; it clears only the references it owns.
+
+### Enrollment
+
+- `requestDeviceChallenge` calls `POST /v1/device-challenges` with
+  `credentials: 'include'` and returns `{challenge, accountId, expiresIn}`.
+- `enrollBrowserDevice` signs the exact `noura.device.enroll.web` version 1 tuple
+  with the device signing key via `enrollmentProof`, posts
+  `{challenge, deviceId, publicKey, proof, encryptionRecipient}` to
+  `POST /v1/devices`, and returns the device bearer token. `publicKey` is the raw
+  32-byte Ed25519 public key as standard base64, matching the server. The token is
+  secret and is persisted only by re-sealing the identity.
+
+### Key delivery
+
+- `receiveKeys` paginates `GET /v1/workspaces/:workspace/keys` with
+  `afterObject`/`afterEpoch`, sends the bearer token, and for each web envelope
+  checks the recipient against the device's X25519 key, resolves the signer in a
+  caller-pinned map, verifies with `verifyEnvelope`, and only then unwraps with
+  `unwrapKey`. An unpinned signer or a recipient mismatch rejects the call with a
+  structured error; `age`-construction envelopes are returned as
+  `unsupported_envelope` markers rather than mis-decrypted.
+- Errors are a stable `BrowserSyncError` code set. The library never logs secrets
+  and does not claim reliable memory zeroization.
+
+### Operation sync
+
+**Implemented at the library level.** `packages/browser-sync` reproduces the
+version 1 and version 2 `EncryptedOperation` cryptography byte-for-byte:
+
+- `sealOperation` encrypts plaintext with AES-256-GCM using the workspace object
+  key directly, authenticating the versioned tuple
+  `["noura.sync.payload",version,workspaceId,objectId,deviceId,operationId,epoch,policyRevision]`
+  and, for version 2, `generation` then `kind`. It then signs the envelope with
+  the device Ed25519 key over
+  `["noura.sync.operation",version,workspaceId,objectId,deviceId,operationId,epoch,policyRevision,nonce,ciphertext]`
+  plus `generation` and `kind` for version 2. It emits canonical standard base64
+  and camelCase wire fields.
+- `openOperation` validates the envelope, verifies the signature against a
+  caller-pinned signer **before** decrypting, then opens it with the object key
+  and the same associated data. An unpinned, tampered, wrong-key, or
+  wrong-version envelope returns a structured `BrowserSyncError`.
+- `BrowserSyncTransport`, `pushOperations`, `pullOperations`,
+  `listWorkspaces`, and `accessState` speak the native wire contract:
+  `POST /v1/workspaces/:workspace/operations` with `{operations}` returns
+  `{sequences}`; `GET /v1/workspaces/:workspace/operations?after=<cursor>`
+  (optional `accessRevision` and `wait=25`) returns
+  `{accessRevision, operations, cursor, hasMore}`. Bearer-token auth is sent on
+  every request, and cursors and sequences remain canonical decimal strings so a
+  server bigint is never rounded through a JS number.
+- **Conformance.** `crates/local-core/src/sync/crypto.rs` contains an ignored
+  `regenerate_operation_fixture` test that writes
+  `docs/workspace-format/fixtures/operation-v1.json`, plus a normal test that
+  reproduces the fixture's version 1 and version 2 operations, verifies and opens
+  them, and asserts tamper rejection. `packages/browser-sync` runs the same
+  fixture and asserts byte-identical signature and ciphertext, so Rust and
+  TypeScript accept and reject the same vectors.
+
+Remaining browser operation work is the local replica and orchestration layer,
+not cryptography: pulling and applying operations to a replica, an outbox for
+unacknowledged pushes, conflict detection and resolution, and revocation-driven
+lock state.
 
 ## Threat model: installed app versus hosted web client
 
@@ -314,9 +610,11 @@ client to a locked state on next load.
    passphrase (fallback). The wrapped bundle is stored in origin storage; the
    operation envelope and access policy bindings use the public keys only.
 3. **Register the device.** The browser requests a device challenge from the
-   server and submits a signed possession proof binding origin, account,
-   `deviceId`, signing public key, X25519 recipient, and challenge. This
-   extends `noura.device.enroll.v2` with a browser-specific domain and a raw
+   server and submits the signed possession proof implemented by
+   `enrollment_proof` / `enrollmentProof`, binding origin, account,
+   `deviceId`, signing public key, X25519 recipient, and challenge in the
+   `noura.device.enroll.web` version 1 tuple. This extends
+   `noura.device.enroll.v2` with a browser-specific domain and a raw
    X25519 recipient representation. Registration alone grants no content key.
 4. **Approve the device.** An owner or admin on a trusted device compares the
    device fingerprint (`noura.device.card`, with the browser recipient form) and
@@ -404,8 +702,11 @@ that plainly in the client UI.
 
 ## Out of scope and explicitly not claimed
 
-- Browser workspace synchronization is not implemented by this change, and this
-  document does not authorize implementing it as part of unrelated work.
+- Browser workspace synchronization is not implemented end to end. The operation
+  cryptography and push/pull transport exist at the library level, but no local
+  replica, outbox, conflict handling, revocation lock state, recovery kit, or UI
+  is implemented, and this document does not authorize implementing those as part
+  of unrelated work.
 - The hosted web client is not claimed to be as secure as the installed app.
   Whoever serves future JavaScript can access unlocked content.
 - Non-extractable keys are not claimed to prevent exfiltration; they prevent
@@ -422,8 +723,10 @@ that plainly in the client UI.
 - Protection from malicious browser extensions, shared browser profiles, or
   same-account malware is not claimed.
 - OPFS and IndexedDB are not claimed to be durable backups.
-- The browser recovery-kit and browser key-envelope formats are proposals, not
-  finalized formats, until shared Rust and TypeScript conformance fixtures exist.
+- The browser recovery-kit format remains a proposal, not a finalized format,
+  until shared Rust and TypeScript conformance fixtures exist. The browser
+  key-envelope, recipient, device fingerprint, enrollment-proof, and operation
+  formats are implemented against those fixtures.
 - This document does not relax the locked invariants. Where an optional design
   would violate one, the design is wrong, not the invariant.
 
@@ -435,12 +738,35 @@ that plainly in the client UI.
    `noura.sync.key.web` version 1 in `crates/sync-key-envelope` and
    `packages/sync-key-envelope`, with the shared fixture
    `docs/workspace-format/fixtures/browser-key-v1.json`.
-3. Specify the browser device fingerprint form and update
-   `device_fingerprint` handling for a raw X25519 recipient.
+3. ~~Specify the browser device fingerprint form and update
+   `device_fingerprint` handling for a raw X25519 recipient.~~ **Implemented.**
+   The `noura.device.card.web` fingerprint, the `x25519:` recipient encoding, and
+   the `noura.device.enroll.web` proof are implemented in
+   `crates/sync-key-envelope` and `packages/sync-key-envelope`, with the shared
+   fixture `docs/workspace-format/fixtures/browser-device-v1.json`. The
+   `apps/server` enrollment path accepts the browser recipient and verifies the
+   browser proof, and the native `device_fingerprint` in
+   `crates/local-core/src/sync/approvals.rs` now renders the browser fingerprint,
+   with a conformance test against the shared fixture vector.
 4. Specify PRF salts and HKDF `info` strings, and define the passphrase fallback
-   parameters and minimums.
+   parameters and minimums. **Passphrase fallback implemented.**
+   `packages/browser-sync` derives the key-encryption key with PBKDF2-SHA256
+   (32-byte random salt, a minimum of 310,000 iterations, 32-byte output) and
+   wraps the device material with AES-256-GCM. PRF salts and the PRF unlock path
+   remain unspecified.
 5. Extend the server enrollment and key-delivery paths for browser devices,
-   including revocation and epoch rotation.
+   including revocation and epoch rotation. **Partially implemented.**
+   `apps/server` now accepts browser enrollment, verifies and stores
+   `noura.sync.key.web` envelopes, returns them from key delivery and
+   access-state, and accepts web envelopes in signed access policies. The native
+   `crates/local-core` client now recognizes browser recipients, computes their
+   fingerprint, wraps rotated keys to them, verifies and unwraps their envelopes,
+   and signs and verifies the browser access-policy tuple. The browser client
+   foundation in `packages/browser-sync` now performs enrollment, pinned key
+   delivery, operation seal/open, and the push/pull transport, conforming to the
+   shared `operation-v1.json` fixture. Still open: local replica reconciliation,
+   outbox and conflict handling, revocation-driven client lock state, browser
+   object activation, browser recovery kits, and UI wiring.
 6. Define the browser recovery-kit format and its conformance fixtures.
 7. Add a browser-specific section to `docs/security/threat-model.md` once the
    design is approved.

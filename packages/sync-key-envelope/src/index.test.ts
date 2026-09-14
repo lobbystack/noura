@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
+import deviceFixture from '../../../docs/workspace-format/fixtures/browser-device-v1.json';
 import fixture from '../../../docs/workspace-format/fixtures/browser-key-v1.json';
 import {
+	decodeRecipient,
+	deviceFingerprint,
+	encodeRecipient,
+	enrollmentProof,
 	KeyEnvelopeError,
 	KeyEnvelopeErrorCode,
 	unwrapKey,
@@ -106,6 +111,136 @@ describe('browser-key-v1 fixtures', () => {
 			expect(Object.values(KeyEnvelopeErrorCode)).toContain(
 				vector.expected_error,
 			);
+		});
+	}
+});
+
+interface RecipientVector {
+	name: string;
+	public_key: string;
+	recipient: string;
+}
+
+interface InvalidRecipientVector {
+	name: string;
+	recipient: string;
+	expected_error: KeyEnvelopeErrorCode;
+}
+
+interface FingerprintVector {
+	name: string;
+	device_id: string;
+	account_id: string;
+	signing_public: string;
+	recipient: string;
+	expected_hex: string;
+}
+
+interface EnrollmentVector {
+	name: string;
+	origin: string;
+	account_id: string;
+	device_id: string;
+	signing_secret: string;
+	signing_public: string;
+	recipient: string;
+	challenge: string;
+	expected_base64: string;
+	expected_hex: string;
+}
+
+interface DeviceFixtures {
+	recipient_prefix: string;
+	recipients: {
+		valid: RecipientVector[];
+		invalid: InvalidRecipientVector[];
+	};
+	fingerprint: {
+		domain: string;
+		version: number;
+		vectors: FingerprintVector[];
+	};
+	enrollment: {
+		domain: string;
+		version: number;
+		vectors: EnrollmentVector[];
+	};
+}
+
+const deviceFixtures = deviceFixture as unknown as DeviceFixtures;
+
+function encodeBase64(value: Uint8Array): string {
+	let binary = '';
+	for (const byte of value) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+function bytesToHex(value: Uint8Array): string {
+	return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join(
+		'',
+	);
+}
+
+describe('browser-device-v1 fixtures', () => {
+	test('fixture metadata matches exported constants', async () => {
+		const { RECIPIENT_PREFIX, DEVICE_FINGERPRINT_DOMAIN, ENROLLMENT_DOMAIN } =
+			await import('./index');
+		expect(deviceFixtures.recipient_prefix).toBe(RECIPIENT_PREFIX);
+		expect(deviceFixtures.fingerprint.domain).toBe(DEVICE_FINGERPRINT_DOMAIN);
+		expect(deviceFixtures.fingerprint.version).toBe(1);
+		expect(deviceFixtures.enrollment.domain).toBe(ENROLLMENT_DOMAIN);
+		expect(deviceFixtures.enrollment.version).toBe(1);
+	});
+
+	for (const vector of deviceFixtures.recipients.valid) {
+		test(`recipient: ${vector.name}`, () => {
+			const publicKey = decodeBase64(vector.public_key);
+			expect(encodeRecipient(publicKey)).toBe(vector.recipient);
+			expect(Array.from(decodeRecipient(vector.recipient))).toEqual(
+				Array.from(publicKey),
+			);
+		});
+	}
+
+	for (const vector of deviceFixtures.recipients.invalid) {
+		test(`invalid recipient: ${vector.name}`, () => {
+			let error: unknown;
+			try {
+				decodeRecipient(vector.recipient);
+			} catch (caught) {
+				error = caught;
+			}
+			expect(error).toBeInstanceOf(KeyEnvelopeError);
+			expect((error as KeyEnvelopeError).code).toBe(vector.expected_error);
+		});
+	}
+
+	for (const vector of deviceFixtures.fingerprint.vectors) {
+		test(`fingerprint: ${vector.name}`, () => {
+			expect(
+				deviceFingerprint(
+					vector.device_id,
+					vector.account_id,
+					decodeBase64(vector.signing_public),
+					vector.recipient,
+				),
+			).toBe(vector.expected_hex);
+		});
+	}
+
+	for (const vector of deviceFixtures.enrollment.vectors) {
+		test(`enrollment proof: ${vector.name}`, async () => {
+			const proof = await enrollmentProof({
+				origin: vector.origin,
+				account_id: vector.account_id,
+				device_id: vector.device_id,
+				signing_secret: vector.signing_secret,
+				signing_public: vector.signing_public,
+				recipient: vector.recipient,
+				challenge: vector.challenge,
+			});
+			expect(encodeBase64(proof)).toBe(vector.expected_base64);
+			expect(bytesToHex(proof)).toBe(vector.expected_hex);
 		});
 	}
 });

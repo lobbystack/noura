@@ -8,6 +8,9 @@
 		"build": "tsc",
 		"lint": "prettier --check src"
 	},
+	"dependencies": {
+		"@noble/hashes": "^2.4.0"
+	},
 	"devDependencies": {
 		"typescript": "^5.9.3"
 	}

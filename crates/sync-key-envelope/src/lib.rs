@@ -36,6 +36,15 @@ pub const INFO: &[u8] = b"noura.sync.key.web.v1";
 /// Domain string binding the wrapped object-key plaintext.
 pub const OBJECT_KEY_DOMAIN: &str = "noura.sync.object-key";
 
+/// Prefix identifying a raw 32-byte X25519 browser device recipient.
+pub const RECIPIENT_PREFIX: &str = "x25519:";
+
+/// Domain string separating browser device fingerprints from native ones.
+pub const FINGERPRINT_DOMAIN: &str = "noura.device.card.web";
+
+/// Domain string binding the browser device enrollment proof.
+pub const ENROLLMENT_DOMAIN: &str = "noura.device.enroll.web";
+
 /// Largest accepted positive safe integer epoch (`2^53 - 1`).
 pub const MAX_EPOCH: u64 = 9_007_199_254_740_991;
 
@@ -76,6 +85,9 @@ pub enum KeyEnvelopeError {
     /// The decrypted plaintext does not describe the envelope's object key.
     #[error("The wrapped object key is invalid")]
     InvalidWrappedKey,
+    /// A browser device recipient is not a canonical `x25519:` public key.
+    #[error("The browser device recipient is invalid")]
+    InvalidRecipient,
 }
 
 impl KeyEnvelopeError {
@@ -91,6 +103,7 @@ impl KeyEnvelopeError {
             Self::InvalidKey => "sync_invalid_key",
             Self::WrapFailed => "sync_key_wrap_failed",
             Self::InvalidWrappedKey => "sync_invalid_wrapped_key",
+            Self::InvalidRecipient => "sync_invalid_recipient",
         }
     }
 }
@@ -337,6 +350,99 @@ pub fn unwrap_key(
     Ok(Zeroizing::new(key))
 }
 
+/// Encode a raw X25519 public key as a browser device recipient string.
+///
+/// The encoding is `x25519:` followed by standard (padded) base64 of the
+/// 32-byte public key. It is the browser counterpart to an `age` recipient and
+/// is bound into the browser device fingerprint.
+pub fn encode_recipient(public: [u8; 32]) -> String {
+    format!("{RECIPIENT_PREFIX}{}", STANDARD.encode(public))
+}
+
+/// Decode a browser device recipient string into its raw X25519 public key.
+///
+/// Only `x25519:` followed by canonical standard base64 of exactly 32 bytes is
+/// accepted. Every other form (a missing prefix, an `age1` recipient, a
+/// non-canonical encoding, or the wrong decoded length) is rejected with
+/// [`KeyEnvelopeError::InvalidRecipient`].
+pub fn decode_recipient(recipient: &str) -> Result<[u8; 32]> {
+    let encoded = recipient
+        .strip_prefix(RECIPIENT_PREFIX)
+        .ok_or(KeyEnvelopeError::InvalidRecipient)?;
+    let bytes = decode_fixed(encoded, 32).map_err(|_| KeyEnvelopeError::InvalidRecipient)?;
+    bytes
+        .try_into()
+        .map_err(|_| KeyEnvelopeError::InvalidRecipient)
+}
+
+/// Compute the browser device fingerprint for a raw X25519 recipient.
+///
+/// The fingerprint is lowercase hexadecimal BLAKE3 over the canonical JSON tuple
+/// `[FINGERPRINT_DOMAIN, 1, device_id, account_id, base64(signing_public),
+/// recipient]`. It mirrors the native `noura.device.card` fingerprint, differing
+/// only in the domain string and the raw X25519 recipient representation. The
+/// recipient is bound as given; call [`decode_recipient`] first when it must be
+/// validated.
+pub fn device_fingerprint(
+    device_id: &str,
+    account_id: &str,
+    signing_public: [u8; 32],
+    recipient: &str,
+) -> String {
+    let bytes = canonical_tuple(&(
+        FINGERPRINT_DOMAIN,
+        1_u8,
+        device_id,
+        account_id,
+        STANDARD.encode(signing_public),
+        recipient,
+    ));
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
+/// Sign the browser device enrollment tuple and return the raw signature.
+///
+/// The signed message is the canonical JSON tuple
+/// `[ENROLLMENT_DOMAIN, 1, origin, account_id, device_id,
+/// base64(signing_public), recipient, challenge]`. `signing_secret` is the
+/// 32-byte Ed25519 seed and `signing_public` is its verifying key, included so
+/// the server can bind the public key exactly as native enrollment does. The
+/// recipient is bound as given; call [`decode_recipient`] first when it must be
+/// validated.
+pub fn enrollment_proof(
+    signing_secret: [u8; 32],
+    origin: &str,
+    account_id: &str,
+    device_id: &str,
+    signing_public: [u8; 32],
+    recipient: &str,
+    challenge: &str,
+) -> Vec<u8> {
+    let signing_secret = Zeroizing::new(signing_secret);
+    let bytes = canonical_tuple(&(
+        ENROLLMENT_DOMAIN,
+        1_u8,
+        origin,
+        account_id,
+        device_id,
+        STANDARD.encode(signing_public),
+        recipient,
+        challenge,
+    ));
+    SigningKey::from_bytes(&signing_secret)
+        .sign(&bytes)
+        .to_bytes()
+        .to_vec()
+}
+
+/// Serialize a canonical JSON tuple of strings and small integers.
+///
+/// Every value in the device tuples is a string or a small integer, which
+/// `serde_json` always serializes, so this cannot fail in practice.
+fn canonical_tuple<T: Serialize>(values: &T) -> Vec<u8> {
+    serde_json::to_vec(values).expect("canonical JSON tuple of strings and integers cannot fail")
+}
+
 /// Derive the AES-256-GCM key with HKDF-SHA256 over the ECDH shared secret.
 fn derive_key(salt: &[u8; 32], shared: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
     let hkdf = hkdf::Hkdf::<Sha256>::new(Some(salt), shared);
@@ -381,6 +487,9 @@ mod tests {
 
     const FIXTURE: &str =
         include_str!("../../../docs/workspace-format/fixtures/browser-key-v1.json");
+
+    const DEVICE_FIXTURE: &str =
+        include_str!("../../../docs/workspace-format/fixtures/browser-device-v1.json");
 
     #[derive(Deserialize)]
     struct Fixtures {
@@ -497,6 +606,256 @@ mod tests {
             };
             assert_eq!(error.code(), vector.expected_error, "{}", vector.name);
         }
+    }
+
+    #[derive(Deserialize)]
+    struct DeviceFixtures {
+        recipient_prefix: String,
+        recipients: RecipientsSection,
+        fingerprint: FingerprintSection,
+        enrollment: EnrollmentSection,
+    }
+
+    #[derive(Deserialize)]
+    struct RecipientsSection {
+        valid: Vec<RecipientVector>,
+        invalid: Vec<InvalidRecipientVector>,
+    }
+
+    #[derive(Deserialize)]
+    struct RecipientVector {
+        name: String,
+        public_key: String,
+        recipient: String,
+    }
+
+    #[derive(Deserialize)]
+    struct InvalidRecipientVector {
+        name: String,
+        recipient: String,
+        expected_error: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FingerprintSection {
+        domain: String,
+        version: u8,
+        vectors: Vec<FingerprintVector>,
+    }
+
+    #[derive(Deserialize)]
+    struct FingerprintVector {
+        name: String,
+        device_id: String,
+        account_id: String,
+        signing_public: String,
+        recipient: String,
+        expected_hex: String,
+    }
+
+    #[derive(Deserialize)]
+    struct EnrollmentSection {
+        domain: String,
+        version: u8,
+        vectors: Vec<EnrollmentVector>,
+    }
+
+    #[derive(Deserialize)]
+    struct EnrollmentVector {
+        name: String,
+        origin: String,
+        account_id: String,
+        device_id: String,
+        signing_secret: String,
+        signing_public: String,
+        recipient: String,
+        challenge: String,
+        expected_base64: String,
+        expected_hex: String,
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn browser_device_fixtures_match_recipient_fingerprint_and_enrollment() {
+        let fixtures: DeviceFixtures = serde_json::from_str(DEVICE_FIXTURE).unwrap();
+        assert_eq!(fixtures.recipient_prefix, RECIPIENT_PREFIX);
+        assert_eq!(fixtures.fingerprint.domain, FINGERPRINT_DOMAIN);
+        assert_eq!(fixtures.fingerprint.version, 1);
+        assert_eq!(fixtures.enrollment.domain, ENROLLMENT_DOMAIN);
+        assert_eq!(fixtures.enrollment.version, 1);
+        assert!(!fixtures.recipients.valid.is_empty());
+        assert!(!fixtures.recipients.invalid.is_empty());
+        assert!(!fixtures.fingerprint.vectors.is_empty());
+        assert!(!fixtures.enrollment.vectors.is_empty());
+
+        for vector in &fixtures.recipients.valid {
+            let public = array::<32>(&vector.public_key);
+            assert_eq!(
+                encode_recipient(public),
+                vector.recipient,
+                "{}",
+                vector.name
+            );
+            assert_eq!(
+                decode_recipient(&vector.recipient).unwrap(),
+                public,
+                "{}",
+                vector.name
+            );
+        }
+
+        for vector in &fixtures.recipients.invalid {
+            assert_eq!(
+                decode_recipient(&vector.recipient).unwrap_err().code(),
+                vector.expected_error,
+                "{}",
+                vector.name
+            );
+        }
+
+        for vector in &fixtures.fingerprint.vectors {
+            assert_eq!(
+                device_fingerprint(
+                    &vector.device_id,
+                    &vector.account_id,
+                    array::<32>(&vector.signing_public),
+                    &vector.recipient,
+                ),
+                vector.expected_hex,
+                "{}",
+                vector.name
+            );
+        }
+
+        for vector in &fixtures.enrollment.vectors {
+            let proof = enrollment_proof(
+                array::<32>(&vector.signing_secret),
+                &vector.origin,
+                &vector.account_id,
+                &vector.device_id,
+                array::<32>(&vector.signing_public),
+                &vector.recipient,
+                &vector.challenge,
+            );
+            assert_eq!(
+                STANDARD.encode(&proof),
+                vector.expected_base64,
+                "{}",
+                vector.name
+            );
+            assert_eq!(hex(&proof), vector.expected_hex, "{}", vector.name);
+        }
+    }
+
+    #[test]
+    #[ignore = "regenerates docs/workspace-format/fixtures/browser-device-v1.json"]
+    fn regenerate_browser_device_fixture() {
+        let signing_secret = [0x01_u8; 32];
+        let signing_public = SigningKey::from_bytes(&signing_secret)
+            .verifying_key()
+            .to_bytes();
+        let recipient_public = [0x07_u8; 32];
+        let zero_recipient_public = [0x00_u8; 32];
+        let recipient = encode_recipient(recipient_public);
+        let device_id = "device_browser";
+        let account_id = "account_owner";
+        let origin = "https://app.noura.example";
+        let challenge = "challenge_browser_device_1";
+
+        let fingerprint = device_fingerprint(device_id, account_id, signing_public, &recipient);
+        let proof = enrollment_proof(
+            signing_secret,
+            origin,
+            account_id,
+            device_id,
+            signing_public,
+            &recipient,
+            challenge,
+        );
+
+        let document = json!({
+            "recipient_prefix": RECIPIENT_PREFIX,
+            "recipients": {
+                "valid": [
+                    {
+                        "name": "raw-recipient-zero",
+                        "public_key": STANDARD.encode(zero_recipient_public),
+                        "recipient": encode_recipient(zero_recipient_public),
+                    },
+                    {
+                        "name": "raw-recipient-seeded",
+                        "public_key": STANDARD.encode(recipient_public),
+                        "recipient": recipient,
+                    },
+                ],
+                "invalid": [
+                    {
+                        "name": "missing_prefix",
+                        "recipient": STANDARD.encode(recipient_public),
+                        "expected_error": KeyEnvelopeError::InvalidRecipient.code(),
+                    },
+                    {
+                        "name": "wrong_base64",
+                        "recipient": "x25519:not-base64!!",
+                        "expected_error": KeyEnvelopeError::InvalidRecipient.code(),
+                    },
+                    {
+                        "name": "short_31_bytes",
+                        "recipient": format!("x25519:{}", STANDARD.encode([0x07_u8; 31])),
+                        "expected_error": KeyEnvelopeError::InvalidRecipient.code(),
+                    },
+                    {
+                        "name": "long_33_bytes",
+                        "recipient": format!("x25519:{}", STANDARD.encode([0x07_u8; 33])),
+                        "expected_error": KeyEnvelopeError::InvalidRecipient.code(),
+                    },
+                    {
+                        "name": "age_form",
+                        "recipient": format!("age1{}", "q".repeat(58)),
+                        "expected_error": KeyEnvelopeError::InvalidRecipient.code(),
+                    },
+                ],
+            },
+            "fingerprint": {
+                "domain": FINGERPRINT_DOMAIN,
+                "version": 1,
+                "vectors": [{
+                    "name": "browser-device-card",
+                    "device_id": device_id,
+                    "account_id": account_id,
+                    "signing_public": STANDARD.encode(signing_public),
+                    "recipient": recipient,
+                    "expected_hex": fingerprint,
+                }],
+            },
+            "enrollment": {
+                "domain": ENROLLMENT_DOMAIN,
+                "version": 1,
+                "vectors": [{
+                    "name": "browser-device-enroll",
+                    "origin": origin,
+                    "account_id": account_id,
+                    "device_id": device_id,
+                    "signing_secret": STANDARD.encode(signing_secret),
+                    "signing_public": STANDARD.encode(signing_public),
+                    "recipient": recipient,
+                    "challenge": challenge,
+                    "expected_base64": STANDARD.encode(&proof),
+                    "expected_hex": hex(&proof),
+                }],
+            },
+        });
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/workspace-format/fixtures/browser-device-v1.json");
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&document).unwrap()),
+        )
+        .unwrap();
     }
 
     fn resign(envelope: &mut WebKeyEnvelope, signing_secret: &[u8; 32]) {

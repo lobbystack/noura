@@ -127,7 +127,7 @@ impl WorkspaceSyncCoordinator {
         let mut kit = RecoveryKit {
             version: 1,
             config,
-            identity: device.recovery_secret().to_string(),
+            identity: device.recovery_secret()?.to_string(),
             envelopes,
             signature: String::new(),
         };

@@ -2,7 +2,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{DeviceKeys, KeyEnvelope, crypto::decode, identifier, invalid};
+use super::{DeviceKeys, KeyConstruction, KeyEnvelope, crypto::decode, identifier, invalid};
 use crate::Result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -46,6 +46,21 @@ pub struct PolicyEnvelope {
     pub device_id: String,
     pub wrapped_key: String,
     pub signature: String,
+    #[ts(inline)]
+    #[serde(default, skip_serializing_if = "KeyConstruction::is_age")]
+    pub construction: KeyConstruction,
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_public_key: Option<String>,
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_public_key: Option<String>,
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salt: Option<String>,
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -99,7 +114,51 @@ impl From<KeyEnvelope> for PolicyEnvelope {
             device_id: value.device_id,
             wrapped_key: value.wrapped_key,
             signature: value.signature,
+            construction: value.construction,
+            recipient_public_key: value.recipient_public_key,
+            ephemeral_public_key: value.ephemeral_public_key,
+            salt: value.salt,
+            nonce: value.nonce,
         }
+    }
+}
+
+impl PolicyEnvelope {
+    /// Rebuild the discriminated envelope for policy signature verification or unwrap.
+    pub(crate) fn to_key_envelope(
+        &self,
+        workspace_id: &str,
+        object_id: &str,
+        epoch: u64,
+        signing_device: &str,
+    ) -> Result<KeyEnvelope> {
+        if self.construction == KeyConstruction::Web
+            && (self.recipient_public_key.is_none()
+                || self.ephemeral_public_key.is_none()
+                || self.salt.is_none()
+                || self.nonce.is_none())
+        {
+            return Err(invalid("sync_invalid_key_envelope"));
+        }
+        Ok(KeyEnvelope {
+            workspace_id: workspace_id.into(),
+            object_id: object_id.into(),
+            epoch,
+            device_id: self.device_id.clone(),
+            wrapped_key: self.wrapped_key.clone(),
+            signing_device: signing_device.into(),
+            signature: self.signature.clone(),
+            construction: self.construction,
+            recipient_public_key: self.recipient_public_key.clone(),
+            ephemeral_public_key: self.ephemeral_public_key.clone(),
+            salt: self.salt.clone(),
+            nonce: self.nonce.clone(),
+        })
+    }
+
+    /// True when this envelope uses the browser `noura.sync.key.web` construction.
+    pub(crate) fn is_web(&self) -> bool {
+        self.construction == KeyConstruction::Web
     }
 }
 
@@ -215,16 +274,14 @@ impl AccessPolicy {
             ordered(object.grants.iter().map(|v| v.account_id.as_str()))?;
             ordered(object.envelopes.iter().map(|v| v.device_id.as_str()))?;
             for envelope in &object.envelopes {
-                KeyEnvelope {
-                    workspace_id: self.workspace_id.clone(),
-                    object_id: object.object_id.clone(),
-                    epoch: object.epoch,
-                    device_id: envelope.device_id.clone(),
-                    wrapped_key: envelope.wrapped_key.clone(),
-                    signing_device: self.device_id.clone(),
-                    signature: envelope.signature.clone(),
-                }
-                .verify(trusted_signer)?;
+                envelope
+                    .to_key_envelope(
+                        &self.workspace_id,
+                        &object.object_id,
+                        object.epoch,
+                        &self.device_id,
+                    )?
+                    .verify(trusted_signer)?;
             }
         }
         Ok(())
@@ -244,7 +301,22 @@ impl AccessPolicy {
                 let envelopes: Vec<_> = v
                     .envelopes
                     .iter()
-                    .map(|e| (&e.device_id, &e.wrapped_key, &e.signature))
+                    .map(|e| {
+                        if e.is_web() {
+                            serde_json::json!([
+                                &e.device_id,
+                                &e.wrapped_key,
+                                &e.signature,
+                                "web",
+                                e.recipient_public_key.as_deref(),
+                                e.ephemeral_public_key.as_deref(),
+                                e.salt.as_deref(),
+                                e.nonce.as_deref(),
+                            ])
+                        } else {
+                            serde_json::json!([&e.device_id, &e.wrapped_key, &e.signature])
+                        }
+                    })
                     .collect();
                 if self.version == 2 {
                     serde_json::json!([
@@ -283,4 +355,79 @@ fn ordered<'a>(values: impl Iterator<Item = &'a str>) -> Result<()> {
         previous = Some(value);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::{ObjectKey, SyncCredentials};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use std::{cell::RefCell, collections::BTreeMap};
+    use zeroize::Zeroizing;
+
+    #[derive(Default)]
+    struct Memory(RefCell<BTreeMap<String, Zeroizing<String>>>);
+    impl SyncCredentials for Memory {
+        fn read(&self, reference: &str) -> Result<Zeroizing<String>> {
+            self.0
+                .borrow()
+                .get(reference)
+                .cloned()
+                .ok_or_else(|| invalid("test_missing"))
+        }
+        fn write(&self, reference: &str, value: &str) -> Result<()> {
+            self.0
+                .borrow_mut()
+                .insert(reference.into(), Zeroizing::new(value.into()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn browser_policy_envelopes_verify_and_bind_the_web_signing_tuple() {
+        let store = Memory::default();
+        let device = DeviceKeys::create_browser(&store).unwrap();
+        let envelope = PolicyEnvelope::from(
+            device
+                .wrap_key(
+                    "workspace",
+                    "object",
+                    1,
+                    device.device_id(),
+                    &device.recipient(),
+                    &ObjectKey::generate(),
+                )
+                .unwrap(),
+        );
+        assert!(envelope.is_web());
+        let policy = AccessPolicy::sign(
+            "workspace",
+            "1",
+            None,
+            &device,
+            vec![AccessMember {
+                account_id: "account".into(),
+                role: WorkspaceRole::Owner,
+            }],
+            vec![AccessObject {
+                document: None,
+                object_id: "object".into(),
+                epoch: 1,
+                grants: vec![],
+                envelopes: vec![envelope.clone()],
+            }],
+        )
+        .unwrap();
+        policy.verify(&device.signer().public_key()).unwrap();
+
+        // The web envelope's browser fields are covered by the policy signing tuple,
+        // so the age and web tuples remain distinct.
+        let base = policy.signing_bytes().unwrap();
+        let mut changed = envelope;
+        changed.salt = Some(STANDARD.encode([0x03_u8; 32]));
+        let mut tampered = policy;
+        tampered.objects[0].envelopes[0] = changed;
+        assert_ne!(tampered.signing_bytes().unwrap(), base);
+        assert!(tampered.verify(&device.signer().public_key()).is_err());
+    }
 }

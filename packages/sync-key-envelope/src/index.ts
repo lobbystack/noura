@@ -13,6 +13,8 @@
  * does not claim reliable memory erasure.
  */
 
+import { blake3 } from '@noble/hashes/blake3.js';
+
 /** Domain string separating browser key envelopes from other signed objects. */
 export const DOMAIN = 'noura.sync.key.web';
 
@@ -24,6 +26,15 @@ export const INFO = new TextEncoder().encode('noura.sync.key.web.v1');
 
 /** Domain string binding the wrapped object-key plaintext. */
 export const OBJECT_KEY_DOMAIN = 'noura.sync.object-key';
+
+/** Prefix identifying a raw 32-byte X25519 browser device recipient. */
+export const RECIPIENT_PREFIX = 'x25519:';
+
+/** Domain string separating browser device fingerprints from native ones. */
+export const DEVICE_FINGERPRINT_DOMAIN = 'noura.device.card.web';
+
+/** Domain string binding the browser device enrollment proof. */
+export const ENROLLMENT_DOMAIN = 'noura.device.enroll.web';
 
 /** Largest accepted positive safe integer epoch (`2^53 - 1`). */
 export const MAX_EPOCH = 9007199254740991;
@@ -53,6 +64,7 @@ export const KeyEnvelopeErrorCode = {
 	InvalidKey: 'sync_invalid_key',
 	WrapFailed: 'sync_key_wrap_failed',
 	InvalidWrappedKey: 'sync_invalid_wrapped_key',
+	InvalidRecipient: 'sync_invalid_recipient',
 } as const;
 
 /** Union of the stable browser key envelope error codes. */
@@ -127,6 +139,24 @@ export interface WebKeyWrapInputs {
 	nonce: string;
 }
 
+/** Caller-supplied inputs for {@link enrollmentProof}. */
+export interface WebEnrollmentProofInputs {
+	/** Browser origin the proof is bound to. */
+	origin: string;
+	/** Account identifier the device enrolls under. */
+	account_id: string;
+	/** Device identifier being enrolled. */
+	device_id: string;
+	/** Base64 Ed25519 signing seed (32 bytes). */
+	signing_secret: string;
+	/** Base64 Ed25519 signing public key (32 bytes). */
+	signing_public: string;
+	/** Browser device recipient string. */
+	recipient: string;
+	/** Server-issued device challenge. */
+	challenge: string;
+}
+
 const utf8 = new TextEncoder();
 
 const X25519_PKCS8_PREFIX = Uint8Array.from([
@@ -158,7 +188,7 @@ function canonicalTuple(values: (string | number)[]): Bytes {
 	}
 }
 
-function encodeBase64(bytes: Bytes): string {
+function encodeBase64(bytes: Uint8Array): string {
 	let binary = '';
 	for (let index = 0; index < bytes.length; index += 1) {
 		binary += String.fromCharCode(bytes[index]!);
@@ -585,4 +615,111 @@ export async function unwrapKey(
 		return fail(KeyEnvelopeErrorCode.InvalidWrappedKey);
 	}
 	return decodeBase64Fixed(encoded, 32);
+}
+
+/** Render bytes as lowercase hexadecimal. */
+function bytesToHex(bytes: Uint8Array): string {
+	let output = '';
+	for (const byte of bytes) {
+		output += byte.toString(16).padStart(2, '0');
+	}
+	return output;
+}
+
+/**
+ * Encode a raw X25519 public key as a browser device recipient string.
+ *
+ * The encoding is `x25519:` followed by standard (padded) base64 of the 32-byte
+ * public key. It is the browser counterpart to an `age` recipient and is bound
+ * into the browser device fingerprint.
+ */
+export function encodeRecipient(publicKey: Uint8Array): string {
+	return `${RECIPIENT_PREFIX}${encodeBase64(publicKey)}`;
+}
+
+/**
+ * Decode a browser device recipient string into its raw X25519 public key.
+ *
+ * Only `x25519:` followed by canonical standard base64 of exactly 32 bytes is
+ * accepted. Every other form (a missing prefix, an `age1` recipient, a
+ * non-canonical encoding, or the wrong decoded length) is rejected with
+ * {@link KeyEnvelopeErrorCode.InvalidRecipient}.
+ */
+export function decodeRecipient(recipient: string): Bytes {
+	if (!recipient.startsWith(RECIPIENT_PREFIX)) {
+		return fail(KeyEnvelopeErrorCode.InvalidRecipient);
+	}
+	const encoded = recipient.slice(RECIPIENT_PREFIX.length);
+	if (encoded.length !== 44) {
+		return fail(KeyEnvelopeErrorCode.InvalidRecipient);
+	}
+	let binary: string;
+	try {
+		binary = atob(encoded);
+	} catch {
+		return fail(KeyEnvelopeErrorCode.InvalidRecipient);
+	}
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index += 1) {
+		bytes[index] = binary.charCodeAt(index);
+	}
+	if (bytes.length !== 32 || encodeBase64(bytes) !== encoded) {
+		return fail(KeyEnvelopeErrorCode.InvalidRecipient);
+	}
+	return bytes;
+}
+
+/**
+ * Compute the browser device fingerprint for a raw X25519 recipient.
+ *
+ * The fingerprint is lowercase hexadecimal BLAKE3 over the canonical JSON tuple
+ * `[DEVICE_FINGERPRINT_DOMAIN, 1, deviceId, accountId, base64(signingPublic),
+ * recipient]`. It mirrors the native `noura.device.card` fingerprint, differing
+ * only in the domain string and the raw X25519 recipient representation. The
+ * recipient is bound as given; call {@link decodeRecipient} first when it must
+ * be validated.
+ */
+export function deviceFingerprint(
+	deviceId: string,
+	accountId: string,
+	signingPublic: Uint8Array,
+	recipient: string,
+): string {
+	const bytes = canonicalTuple([
+		DEVICE_FINGERPRINT_DOMAIN,
+		1,
+		deviceId,
+		accountId,
+		encodeBase64(signingPublic),
+		recipient,
+	]);
+	return bytesToHex(blake3(bytes));
+}
+
+/**
+ * Sign the browser device enrollment tuple and return the raw signature.
+ *
+ * The signed message is the canonical JSON tuple
+ * `[ENROLLMENT_DOMAIN, 1, origin, accountId, deviceId, base64(signingPublic),
+ * recipient, challenge]`. `signing_secret` is the Ed25519 signing seed and
+ * `signing_public` its verifying key, included so the server can bind the public
+ * key exactly as native enrollment does. The recipient is bound as given; call
+ * {@link decodeRecipient} first when it must be validated.
+ */
+export async function enrollmentProof(
+	inputs: WebEnrollmentProofInputs,
+): Promise<Bytes> {
+	const signingSecret = decodeBase64Fixed(inputs.signing_secret, 32);
+	const signingPublic = decodeBase64Fixed(inputs.signing_public, 32);
+	const message = canonicalTuple([
+		ENROLLMENT_DOMAIN,
+		1,
+		inputs.origin,
+		inputs.account_id,
+		inputs.device_id,
+		encodeBase64(signingPublic),
+		inputs.recipient,
+		inputs.challenge,
+	]);
+	return ed25519Sign(signingSecret, message);
 }
