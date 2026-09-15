@@ -8,7 +8,11 @@ import {
 import { firstPartyPlugins } from './first-party';
 import type { NouraClient } from './client';
 
-/** The browser worker implements only these plugin-facing services. */
+/**
+ * The browser worker implements only these plugin-facing services. Notes,
+ * tasks, projects, and the read-only calendar view activate with a subset of
+ * these; `ai.*` and `workspace.files` are never available in the browser.
+ */
 export const browserPluginCapabilities: readonly PluginCapability[] = [
 	'workspace.objects',
 	'workspace.commands',

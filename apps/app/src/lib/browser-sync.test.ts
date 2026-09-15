@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import type { EncryptedOperation, SequencedOperation } from '@noura/shared';
 import {
+	accessDigest,
+	accessSigningBytes,
 	createDeviceIdentity,
 	createFileChangeCodec,
 	createMemoryKeyStore,
@@ -8,9 +10,12 @@ import {
 	encodeBase64,
 	encodeRecipient,
 	unlockDeviceIdentity,
+	unwrapKey,
 	wrapKey,
+	type AccessPolicy,
 	type DeviceIdentity,
 	type FetchLike,
+	type WebKeyEnvelope,
 } from '@noura/browser-sync';
 import type { BrowserWorkspaceFiles } from '@noura/browser-workspace';
 import {
@@ -26,6 +31,7 @@ import {
 	createMemoryBindingStore,
 	createSameOriginFetch,
 	runBrowserSyncReconcile,
+	type BrowserSyncBindingRecord,
 	type BrowserSyncWorkspaceBinding,
 } from './browser-sync';
 
@@ -671,8 +677,13 @@ interface SyncServerState {
 	createdWorkspaces: string[];
 	createdObjects: string[];
 	policies: Array<{
+		revision?: string;
 		objects?: Array<{ objectId: string; envelopes: unknown[] }>;
 	}>;
+	/** Latest committed signed access policy, returned from access-state. */
+	policy: AccessPolicy | null;
+	/** Workspace access revision as a canonical decimal string. */
+	accessRevision: string;
 	devices: Array<Record<string, unknown>>;
 	keys: Array<{ workspaceId: string; envelope: Record<string, unknown> }>;
 	operations: Array<{
@@ -689,6 +700,8 @@ function createSyncServerState(): SyncServerState {
 		createdWorkspaces: [],
 		createdObjects: [],
 		policies: [],
+		policy: null,
+		accessRevision: '0',
 		devices: [],
 		keys: [],
 		operations: [],
@@ -730,17 +743,29 @@ function recordingSyncFetch(
 		}
 		const accessMatch = pathname.match(/^\/v1\/workspaces\/([^/]+)\/access$/);
 		if (accessMatch && method === 'PUT') {
-			state.policies.push(JSON.parse(String(init?.body ?? '{}')));
+			const policy = JSON.parse(String(init?.body ?? '{}')) as AccessPolicy;
+			const next = BigInt(policy.revision);
+			const current = BigInt(state.accessRevision);
+			if (next === current) {
+				if (state.policy && state.policy.signature === policy.signature)
+					return json({ ok: true });
+				return json({ error: { code: 'sync.policy_revision_changed' } }, 409);
+			}
+			if (next !== current + 1n)
+				return json({ error: { code: 'sync.policy_revision_changed' } }, 409);
+			state.policies.push(policy);
+			state.policy = policy;
+			state.accessRevision = policy.revision;
 			return json({ ok: true });
 		}
 		if (pathname.endsWith('/access-state') && method === 'GET') {
 			return json({
-				revision: '1',
+				revision: state.accessRevision,
 				members: [{ accountId: 'acct_one', role: 'owner' }],
 				objects: [],
 				envelopes: [],
 				devices: state.devices,
-				policy: null,
+				policy: state.policy,
 			});
 		}
 		const keysMatch = pathname.match(/^\/v1\/workspaces\/([^/]+)\/keys$/);
@@ -825,6 +850,61 @@ async function deliveredKeyFor(input: {
 			construction: 'web',
 		},
 	});
+}
+
+function envelopeFor(
+	record: BrowserSyncBindingRecord,
+	objectId: string,
+): WebKeyEnvelope {
+	const bound = record.objects[objectId];
+	if (!bound) throw new Error(`no bound object ${objectId}`);
+	return {
+		workspace_id: record.workspaceId,
+		object_id: objectId,
+		epoch: bound.epoch,
+		signing_device: bound.key.deviceId,
+		device_id: bound.key.deviceId,
+		recipient_public_key: bound.key.recipientPublicKey,
+		ephemeral_public_key: bound.key.ephemeralPublicKey,
+		salt: bound.key.salt,
+		nonce: bound.key.nonce,
+		wrapped_key: bound.key.wrappedKey,
+		signature: bound.key.signature,
+	};
+}
+
+function accessDigestVector(): AccessPolicy {
+	const signature = encodeBase64(
+		Uint8Array.from({ length: 64 }, (_, index) => index),
+	);
+	return {
+		version: 1,
+		workspaceId: 'ws_vector',
+		revision: '7',
+		previousPolicyDigest: null,
+		deviceId: 'device_vector',
+		members: [{ accountId: 'account_vector', role: 'owner' }],
+		objects: [
+			{
+				objectId: 'object_vector',
+				epoch: 2,
+				grants: [],
+				envelopes: [
+					{
+						deviceId: 'device_vector',
+						wrappedKey: encodeBase64(new Uint8Array([1, 2, 3, 4])),
+						signature,
+						construction: 'web',
+						recipientPublicKey: encodeBase64(new Uint8Array(32)),
+						ephemeralPublicKey: encodeBase64(new Uint8Array(32)),
+						salt: encodeBase64(new Uint8Array(32)),
+						nonce: encodeBase64(new Uint8Array(12)),
+					},
+				],
+			},
+		],
+		signature,
+	};
 }
 
 async function bootstrapPerObject(options: {
@@ -1184,6 +1264,282 @@ describe('browser sync per-object binding', () => {
 			new TextDecoder().decode((await files.read('notes/a.md'))?.bytes),
 		).toBe('# A remote\n');
 	});
+
+	test('provisions a managed object created after bootstrap into a new policy', async () => {
+		const state = createSyncServerState();
+		const bindingStore = createMemoryBindingStore();
+		const cards = [{ id: 'note_a', path: 'notes/a.md' }];
+		const files = workspaceFiles(
+			{ 'notes/a.md': encoder.encode('# A\n') },
+			cards,
+		);
+		const { controller } = await bootstrapPerObject({
+			files,
+			bindingStore,
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		expect(state.policies).toHaveLength(1);
+		expect(state.accessRevision).toBe('1');
+
+		cards.push({ id: 'note_b', path: 'notes/b.md' });
+		await files.write({
+			path: 'notes/b.md',
+			bytes: encoder.encode('# B\n'),
+			expectedRevision: null,
+		});
+
+		const outcome = await controller.syncNow();
+		if (outcome.status !== 'synced') throw new Error(JSON.stringify(outcome));
+		expect(state.createdObjects).toHaveLength(2);
+		expect(state.policies).toHaveLength(2);
+		expect(state.policies[1]?.revision).toBe('2');
+		expect(state.policies[1]?.objects).toHaveLength(2);
+		for (const object of state.policies[1]?.objects ?? []) {
+			expect(object.envelopes).toHaveLength(1);
+		}
+		expect(state.accessRevision).toBe('2');
+
+		const updated = await bindingStore.read();
+		expect(Object.keys(updated?.objects ?? {})).toHaveLength(2);
+		expect(state.pushes.flat().length).toBeGreaterThan(0);
+	});
+
+	test('wraps an existing object key to a newly active browser device', async () => {
+		const state = createSyncServerState();
+		const bindingStore = createMemoryBindingStore();
+		const files = workspaceFiles({ 'notes/a.md': encoder.encode('# A\n') }, [
+			{ id: 'note_a', path: 'notes/a.md' },
+		]);
+		const { controller, keyStore, record } = await bootstrapPerObject({
+			files,
+			bindingStore,
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		const bundle = await keyStore.read(DEFAULT_BROWSER_SYNC_BUNDLE_ID);
+		if (!bundle) throw new Error('no stored bundle');
+		const identity = await unlockDeviceIdentity(bundle, PASSPHRASE);
+
+		const remote = await unlockDeviceIdentity(
+			await createDeviceIdentity({ passphrase: PASSPHRASE }),
+			PASSPHRASE,
+		);
+		state.devices = [
+			{
+				deviceId: remote.deviceId,
+				accountId: 'acct_one',
+				publicKey: encodeBase64(remote.signingPublic),
+				encryptionRecipient: encodeRecipient(remote.x25519Public),
+			},
+		];
+
+		const outcome = await controller.syncNow();
+		if (outcome.status !== 'synced') throw new Error(JSON.stringify(outcome));
+		expect(state.policies).toHaveLength(2);
+		expect(state.policies[1]?.revision).toBe('2');
+		const object = state.policies[1]?.objects?.[0];
+		expect(object?.objectId).toBe(record.objectId);
+		expect(object?.envelopes).toHaveLength(2);
+
+		const remoteEnvelope = object?.envelopes.find(
+			(entry) => (entry as { deviceId: string }).deviceId === remote.deviceId,
+		) as {
+			deviceId: string;
+			wrappedKey: string;
+			signature: string;
+			recipientPublicKey: string;
+			ephemeralPublicKey: string;
+			salt: string;
+			nonce: string;
+		};
+		expect(remoteEnvelope).toBeDefined();
+
+		const original = await unwrapKey(
+			envelopeFor(record, record.objectId),
+			identity.x25519Secret,
+			identity.signingPublic,
+		);
+		const delivered = await unwrapKey(
+			{
+				workspace_id: record.workspaceId,
+				object_id: object!.objectId,
+				epoch: 1,
+				signing_device: identity.deviceId,
+				device_id: remoteEnvelope.deviceId,
+				recipient_public_key: remoteEnvelope.recipientPublicKey,
+				ephemeral_public_key: remoteEnvelope.ephemeralPublicKey,
+				salt: remoteEnvelope.salt,
+				nonce: remoteEnvelope.nonce,
+				wrapped_key: remoteEnvelope.wrappedKey,
+				signature: remoteEnvelope.signature,
+			},
+			remote.x25519Secret,
+			identity.signingPublic,
+		);
+		expect(encodeBase64(delivered)).toBe(encodeBase64(original));
+	});
+
+	test('does not upload a policy when nothing changed', async () => {
+		const state = createSyncServerState();
+		const bindingStore = createMemoryBindingStore();
+		const files = workspaceFiles({ 'notes/a.md': encoder.encode('# A\n') }, [
+			{ id: 'note_a', path: 'notes/a.md' },
+		]);
+		const { controller } = await bootstrapPerObject({
+			files,
+			bindingStore,
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		expect(state.policies).toHaveLength(1);
+
+		const outcome = await controller.syncNow();
+		expect(outcome.status).toBe('synced');
+		expect(state.policies).toHaveLength(1);
+		expect(state.accessRevision).toBe('1');
+	});
+
+	test('does not provision new objects while a native device is active', async () => {
+		const state = createSyncServerState();
+		const bindingStore = createMemoryBindingStore();
+		const cards = [{ id: 'note_a', path: 'notes/a.md' }];
+		const files = workspaceFiles(
+			{ 'notes/a.md': encoder.encode('# A\n') },
+			cards,
+		);
+		const { controller } = await bootstrapPerObject({
+			files,
+			bindingStore,
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		state.devices = [
+			{
+				deviceId: 'native_device',
+				accountId: 'acct_one',
+				publicKey: encodeBase64(new Uint8Array(32)),
+				encryptionRecipient: 'age1nativeexample',
+			},
+		];
+		cards.push({ id: 'note_b', path: 'notes/b.md' });
+		await files.write({
+			path: 'notes/b.md',
+			bytes: encoder.encode('# B\n'),
+			expectedRevision: null,
+		});
+
+		const outcome = await controller.syncNow();
+		expect(outcome.status).toBe('synced');
+		if (outcome.status === 'synced') expect(outcome.skippedUnmanaged).toBe(1);
+		expect(state.createdObjects).toHaveLength(1);
+		expect(state.policies).toHaveLength(1);
+	});
+
+	test('re-reads access-state and retries once on a policy revision conflict', async () => {
+		const state = createSyncServerState();
+		const bindingStore = createMemoryBindingStore();
+		const cards = [{ id: 'note_a', path: 'notes/a.md' }];
+		const files = workspaceFiles(
+			{ 'notes/a.md': encoder.encode('# A\n') },
+			cards,
+		);
+		const base = recordingSyncFetch(state);
+		let failNextAccessPut = false;
+		let conflictCount = 0;
+		const fetchImpl: FetchLike = async (input, init) => {
+			const pathname = new URL(requestUrl(input), ORIGIN).pathname;
+			if (
+				failNextAccessPut &&
+				init?.method === 'PUT' &&
+				/^\/v1\/workspaces\/[^/]+\/access$/.test(pathname)
+			) {
+				failNextAccessPut = false;
+				conflictCount += 1;
+				return json({ error: { code: 'sync.policy_revision_changed' } }, 409);
+			}
+			return base(input, init);
+		};
+		const { controller } = await bootstrapPerObject({
+			files,
+			bindingStore,
+			stateStore: createMemorySyncStateStore(),
+			fetch: fetchImpl,
+		});
+
+		cards.push({ id: 'note_b', path: 'notes/b.md' });
+		await files.write({
+			path: 'notes/b.md',
+			bytes: encoder.encode('# B\n'),
+			expectedRevision: null,
+		});
+		failNextAccessPut = true;
+
+		const outcome = await controller.syncNow();
+		if (outcome.status !== 'synced') throw new Error(JSON.stringify(outcome));
+		expect(conflictCount).toBe(1);
+		expect(state.policies).toHaveLength(2);
+		expect(state.policies[1]?.revision).toBe('2');
+		expect(state.accessRevision).toBe('2');
+	});
+
+	test('re-wraps and persists a delivered key that differs from the stored one', async () => {
+		const state = createSyncServerState();
+		const bindingStore = createMemoryBindingStore();
+		const files = workspaceFiles({ 'notes/a.md': encoder.encode('# A\n') }, [
+			{ id: 'note_a', path: 'notes/a.md' },
+		]);
+		const { controller, keyStore, record } = await bootstrapPerObject({
+			files,
+			bindingStore,
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		const bundle = await keyStore.read(DEFAULT_BROWSER_SYNC_BUNDLE_ID);
+		if (!bundle) throw new Error('no stored bundle');
+		const identity = await unlockDeviceIdentity(bundle, PASSPHRASE);
+		const before = await bindingStore.read();
+		expect(before).not.toBeNull();
+
+		const deliveredKey = randomBytes(32);
+		await deliveredKeyFor({
+			state,
+			workspaceId: record.workspaceId,
+			objectId: record.objectId,
+			epoch: 1,
+			identity,
+			key: deliveredKey,
+		});
+
+		const outcome = await controller.syncNow();
+		expect(outcome.status).toBe('synced');
+		const after = await bindingStore.read();
+		expect(after?.objects[record.objectId]?.key.wrappedKey).not.toBe(
+			before?.objects[record.objectId]?.key.wrappedKey,
+		);
+
+		const persisted = await unwrapKey(
+			envelopeFor(after!, record.objectId),
+			identity.x25519Secret,
+			identity.signingPublic,
+		);
+		expect(encodeBase64(persisted)).toBe(encodeBase64(deliveredKey));
+		expect(JSON.stringify(after)).not.toContain(encodeBase64(deliveredKey));
+	});
+
+	test('accessDigest matches a known vector', async () => {
+		const policy = accessDigestVector();
+		const expected =
+			'a2c775ffe6e89e9b24953d68ea36ace6a77d106740b66d01de9338a65b67a7d9';
+		expect(await accessDigest(policy)).toHaveLength(64);
+		const { createHash } = await import('node:crypto');
+		const independent = createHash('sha256')
+			.update(Buffer.from(accessSigningBytes(policy)))
+			.update(Buffer.from(policy.signature, 'base64'))
+			.digest('hex');
+		expect(await accessDigest(policy)).toBe(independent);
+		expect(await accessDigest(policy)).toBe(expected);
+	});
 });
 
 describe('browser sync per-object binding migration and moves', () => {
@@ -1264,5 +1620,149 @@ describe('browser sync per-object binding migration and moves', () => {
 		for (const operation of pushed) {
 			expect(operation.objectId).toBe(record.objectId);
 		}
+	});
+});
+
+describe('browser recovery kit controller wiring', () => {
+	const OTHER_PASSPHRASE = 'definitely not the passphrase';
+
+	test('export requires unlocked custody and a loaded binding', async () => {
+		const unavailable = await createBrowserSyncController({ keyStore: null });
+		const unavailableResult = await unavailable.exportRecoveryKit(PASSPHRASE);
+		expect(unavailableResult.ok).toBe(false);
+		if (!unavailableResult.ok)
+			expect(unavailableResult.code).toBe('unavailable');
+
+		const controller = await createBrowserSyncController({
+			keyStore: createMemoryKeyStore(),
+			origin: ORIGIN,
+			fetch: enrollingFetch(),
+			bindingStore: createMemoryBindingStore(),
+			stateStore: createMemorySyncStateStore(),
+		});
+		const locked = await controller.exportRecoveryKit(PASSPHRASE);
+		expect(locked.ok).toBe(false);
+		if (!locked.ok) expect(locked.code).toBe('locked');
+
+		const emptyPassphrase = await controller.exportRecoveryKit('');
+		expect(emptyPassphrase.ok).toBe(false);
+		if (!emptyPassphrase.ok)
+			expect(emptyPassphrase.code).toBe('invalid_passphrase');
+
+		await controller.enroll({ passphrase: PASSPHRASE });
+		const noBinding = await controller.exportRecoveryKit(PASSPHRASE);
+		expect(noBinding.ok).toBe(false);
+		if (!noBinding.ok) expect(noBinding.code).toBe('not_configured');
+	});
+
+	test('import restores a usable binding on another browser without a trusted device', async () => {
+		const state = createSyncServerState();
+		const files = workspaceFiles({ 'notes/a.md': encoder.encode('# A\n') }, [
+			{ id: 'note_a', path: 'notes/a.md' },
+		]);
+		const source = await bootstrapPerObject({
+			files,
+			bindingStore: createMemoryBindingStore(),
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		const exported = await source.controller.exportRecoveryKit(PASSPHRASE);
+		expect(exported.ok).toBe(true);
+		if (!exported.ok) throw new Error(exported.message);
+
+		const targetKeyStore = createMemoryKeyStore();
+		const targetBindingStore = createMemoryBindingStore();
+		const targetStateStore = createMemorySyncStateStore();
+		const target = await createBrowserSyncController({
+			keyStore: targetKeyStore,
+			origin: ORIGIN,
+			fetch: recordingSyncFetch(state),
+			bindingStore: targetBindingStore,
+			stateStore: targetStateStore,
+		});
+
+		const imported = await target.importRecoveryKit(
+			exported.value,
+			PASSPHRASE,
+			'workspace_restored',
+		);
+		expect(imported.ok).toBe(true);
+		if (!imported.ok) throw new Error(imported.message);
+		expect(imported.value.configured).toBe(true);
+		expect(imported.value.workspaceId).toBe(source.record.workspaceId);
+
+		const stored = await targetBindingStore.read();
+		expect(stored?.localWorkspaceId).toBe('workspace_restored');
+		expect(stored?.workspaceId).toBe(source.record.workspaceId);
+		expect(stored?.objects[source.record.objectId]?.key.wrappedKey).toBe(
+			source.record.objects[source.record.objectId]?.key.wrappedKey,
+		);
+
+		const unlocked = await target.unlock({ passphrase: PASSPHRASE });
+		expect(unlocked.ok).toBe(true);
+		target.setWorkspaceFiles(files);
+		const bound = await target.bindWorkspace({
+			workspaceId: 'workspace_restored',
+			workspaceFiles: files,
+		});
+		expect(bound.ok).toBe(true);
+		if (bound.ok) expect(bound.value.configured).toBe(true);
+	});
+
+	test('import rejects a wrong passphrase and writes nothing', async () => {
+		const state = createSyncServerState();
+		const files = workspaceFiles({ 'notes/a.md': encoder.encode('# A\n') }, [
+			{ id: 'note_a', path: 'notes/a.md' },
+		]);
+		const source = await bootstrapPerObject({
+			files,
+			bindingStore: createMemoryBindingStore(),
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		const exported = await source.controller.exportRecoveryKit(PASSPHRASE);
+		if (!exported.ok) throw new Error(exported.message);
+
+		const targetKeyStore = createMemoryKeyStore();
+		const targetBindingStore = createMemoryBindingStore();
+		const target = await createBrowserSyncController({
+			keyStore: targetKeyStore,
+			origin: ORIGIN,
+			fetch: recordingSyncFetch(state),
+			bindingStore: targetBindingStore,
+			stateStore: createMemorySyncStateStore(),
+		});
+
+		const imported = await target.importRecoveryKit(
+			exported.value,
+			OTHER_PASSPHRASE,
+			'workspace_restored',
+		);
+		expect(imported.ok).toBe(false);
+		if (!imported.ok) expect(imported.code).toBe('passphrase_rejected');
+		expect(
+			await targetKeyStore.read(DEFAULT_BROWSER_SYNC_BUNDLE_ID),
+		).toBeUndefined();
+		expect(await targetBindingStore.read()).toBeNull();
+	});
+
+	test('the exported kit contains no plaintext key material', async () => {
+		const state = createSyncServerState();
+		const files = workspaceFiles({ 'notes/a.md': encoder.encode('# A\n') }, [
+			{ id: 'note_a', path: 'notes/a.md' },
+		]);
+		const { controller } = await bootstrapPerObject({
+			files,
+			bindingStore: createMemoryBindingStore(),
+			stateStore: createMemorySyncStateStore(),
+			fetch: recordingSyncFetch(state),
+		});
+		const exported = await controller.exportRecoveryKit(PASSPHRASE);
+		if (!exported.ok) throw new Error(exported.message);
+
+		const serialized = JSON.stringify(exported.value);
+		expect(serialized).not.toContain(PASSPHRASE);
+		expect(serialized).not.toContain('signingSeed');
+		expect(serialized).not.toContain('x25519Secret');
 	});
 });

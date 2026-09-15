@@ -12,7 +12,13 @@
 	import * as Select from '$lib/components/ui/select';
 	import PropertyChoice from '$lib/components/property-choice.svelte';
 	import { startBrowserWorkspace } from '$lib/browser-workspace';
-	import { createBrowserPluginModel } from '$lib/browser-plugins';
+	import {
+		browserRoutePlugin,
+		browserRouteSupported,
+		createBrowserPluginModel,
+	} from '$lib/browser-plugins';
+	import { upcomingCalendarEntries } from '@noura/plugin-calendar';
+	import BrowserCalendarView from './browser-calendar-view.svelte';
 	import type { PluginSettingsModel } from '$lib/plugin-settings-model';
 	import PluginSettingsPanel from './settings/plugin-settings-panel.svelte';
 	import BrowserSyncSettings from './browser-sync-settings.svelte';
@@ -32,12 +38,9 @@
 	let pluginModel: ReturnType<typeof createBrowserPluginModel> | undefined;
 	let plugins = $state.raw<PluginSettingsModel | null>(null);
 	const settingsRoute = $derived(page.url.pathname === '/settings');
-	const routePlugin = $derived(
-		['/', '/inbox'].includes(page.url.pathname)
-			? 'notes'
-			: page.url.pathname.slice(1),
-	);
+	const routePlugin = $derived(browserRoutePlugin(page.url.pathname));
 	const routeAllowed = $derived(!!plugins?.isEnabled(routePlugin));
+	const calendarRoute = $derived(page.url.pathname === '/calendar');
 	let ready = $state(false);
 	let busy = $state(false);
 	let error = $state('');
@@ -106,10 +109,12 @@
 					note.properties.status === statusFilter),
 		),
 	);
-	const supportedRoute = $derived(
-		['/', '/notes', '/inbox', '/tasks', '/projects'].includes(
-			page.url.pathname,
-		),
+	const supportedRoute = $derived(browserRouteSupported(page.url.pathname));
+	/** Read-only derived calendar view over the loaded tasks and projects. */
+	const calendarEntries = $derived(
+		calendarRoute && plugins?.isEnabled('calendar')
+			? upcomingCalendarEntries([...tasks, ...projects], new Date(), 30)
+			: [],
 	);
 	function draftKey(path: string) {
 		return ['/', '/inbox', '/notes'].includes(path) ? '/notes' : path;
@@ -223,15 +228,18 @@
 		workspace = await runtime!.client.workspaces.current();
 		workspaces = await runtime!.client.workspaces.listRecent();
 		await pluginModel!.sync();
+		const calendarEnabled = !!plugins?.isEnabled('calendar');
 		notes = plugins?.isEnabled('notes')
 			? await runtime!.client.notes.list()
 			: [];
-		tasks = plugins?.isEnabled('tasks')
-			? await runtime!.client.tasks.list()
-			: [];
-		projects = plugins?.isEnabled('projects')
-			? await runtime!.client.projects.list()
-			: [];
+		tasks =
+			plugins?.isEnabled('tasks') || calendarEnabled
+				? await runtime!.client.tasks.list()
+				: [];
+		projects =
+			plugins?.isEnabled('projects') || calendarEnabled
+				? await runtime!.client.projects.list()
+				: [];
 		summaries =
 			plugins?.isEnabled('projects') && plugins?.isEnabled('tasks')
 				? await runtime!.client.projects.listSummaries()
@@ -614,6 +622,8 @@
 				Your drafts have not been discarded.
 				<a href="/settings">Open plugin settings</a>.
 			</p>
+		{:else if calendarRoute && workspace?.phase === 'ready'}
+			<BrowserCalendarView entries={calendarEntries} />
 		{:else if workspace?.phase === 'ready'}
 			<div class="grid gap-6 md:grid-cols-[16rem_1fr]">
 				<aside

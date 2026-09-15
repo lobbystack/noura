@@ -236,6 +236,25 @@ function validateBundleMetadata(
 }
 
 /**
+ * True when `value` is a structurally valid wrapped bundle.
+ *
+ * This reuses the same validation {@link openBundle} applies before decryption:
+ * the format version, key-derivation function, iteration floor, required string
+ * fields, and identifier shape. It performs no cryptography and never opens the
+ * bundle, so it is safe for import paths that have no passphrase for the inner
+ * bundle.
+ */
+export function isWrappedKeyBundle(value: unknown): value is WrappedKeyBundle {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	try {
+		validateBundleMetadata(value as Record<string, unknown>);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Wrap raw device key material and a bearer token into an opaque bundle.
  *
  * The signing seed, X25519 secret, and token are serialized as canonical JSON,

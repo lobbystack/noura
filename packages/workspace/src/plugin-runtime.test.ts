@@ -135,7 +135,7 @@ describe('plugin runtime', () => {
 		expect(result.enabledPluginIds).toEqual(['notes', 'crm-future']);
 	});
 
-	test('web activates only the supported note, task, and project contracts without AI', async () => {
+	test('web activates the supported note, task, project, and calendar contracts without AI', async () => {
 		const { aiRegistry, client } = harness([
 			'notes',
 			'tasks',
@@ -149,11 +149,16 @@ describe('plugin runtime', () => {
 			supportedCapabilities: browserPluginCapabilities,
 		});
 		const result = await runtime.syncWithManifest();
-		expect(result.activated).toEqual(['notes', 'tasks', 'projects']);
-		expect(result.unavailablePluginIds).toEqual(['ai', 'folders', 'calendar']);
+		expect(result.activated).toEqual([
+			'notes',
+			'tasks',
+			'calendar',
+			'projects',
+		]);
+		expect(result.unavailablePluginIds).toEqual(['ai', 'folders']);
 		expect(
 			runtime.host.activeManifests().map((manifest) => manifest.id),
-		).toEqual(['notes', 'tasks', 'projects']);
+		).toEqual(['notes', 'tasks', 'calendar', 'projects']);
 		expect(await client.commands.list()).toEqual([
 			{ id: 'notes.create', title: 'Create note' },
 			{ id: 'tasks.create', title: 'Create task' },
@@ -161,6 +166,41 @@ describe('plugin runtime', () => {
 			{ id: 'projects.create', title: 'Create project' },
 		]);
 		expect(aiRegistry.toolEntries()).toEqual([]);
+		// The calendar plugin is active on web but contributes no AI context.
+		expect(aiRegistry.contextProviders()).toEqual([]);
+	});
+
+	test('the web runtime rejects a calendar AI-capability attempt', async () => {
+		const { client } = harness(['calendar']);
+		const runtime = new PluginRuntime(client, {
+			platform: 'web',
+			supportedCapabilities: browserPluginCapabilities,
+		});
+		await expect(
+			runtime.host.activate({
+				manifest: {
+					id: 'calendar',
+					name: 'Calendar',
+					version: '0.1.0',
+					capabilities: [
+						'workspace.objects',
+						'workspace.events',
+						'ai.context',
+						'ai.tools',
+					],
+					platforms: ['desktop', 'web'],
+					activationCapabilities: {
+						web: ['workspace.objects', 'workspace.events'],
+					},
+				},
+				activate(context) {
+					context.ai.registerContextProvider({
+						id: 'calendar.upcoming-week',
+						provide: async () => [],
+					});
+				},
+			}),
+		).rejects.toThrow('cannot use unavailable ai.context');
 	});
 
 	test('deactivates and re-activates live as the file manifest changes', async () => {

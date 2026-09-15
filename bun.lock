@@ -26,6 +26,7 @@
         "@noura/browser-sync-engine": "workspace:*",
         "@noura/browser-workspace": "workspace:*",
         "@noura/editor": "workspace:*",
+        "@noura/plugin-calendar": "workspace:*",
         "@noura/plugin-sdk": "workspace:*",
         "@noura/shared": "workspace:*",
         "@noura/workspace": "workspace:*",

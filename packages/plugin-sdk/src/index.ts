@@ -53,6 +53,15 @@ export type { AiContextProvider, AiInstructionProvider, AiToolDefinition };
 export interface PluginContext {
 	/** The host platform for this activation. */
 	platform: PluginPlatform;
+	/**
+	 * Capabilities this activation actually holds: manifest-declared,
+	 * activated on this platform, and implemented by the host. A plugin uses
+	 * this to register optional contributions conditionally instead of
+	 * catching the capability guard's errors.
+	 */
+	capabilities: ReadonlySet<PluginCapability>;
+	/** Whether `capability` is held by this activation. */
+	hasCapability(capability: PluginCapability): boolean;
 	files: {
 		list(): Promise<WorkspaceEntry[]>;
 		listNonManagedMarkdown(): Promise<UnmanagedFile[]>;
@@ -294,6 +303,14 @@ export class PluginHost {
 		return [...this.#active.values()].map((plugin) => plugin.manifest);
 	}
 	private contextFor(manifest: PluginManifest): PluginContext {
+		const granted = new Set(
+			activationCapabilities(manifest, this.platform).filter(
+				(capability) =>
+					manifest.capabilities.includes(capability) &&
+					(this.supportedCapabilities === null ||
+						this.supportedCapabilities.has(capability)),
+			),
+		);
 		const guard = (capability: PluginCapability) => {
 			if (!manifest.capabilities.includes(capability)) {
 				throw new PluginRuntimeError(
@@ -317,6 +334,8 @@ export class PluginHost {
 		};
 		return {
 			platform: this.platform,
+			capabilities: granted,
+			hasCapability: (capability) => granted.has(capability),
 			files: {
 				list: () => {
 					guard('workspace.files');

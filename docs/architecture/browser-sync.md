@@ -42,9 +42,10 @@ access-state. The server's `POST`/`GET /v1/workspaces/:workspace/operations`
 push/pull routes and the `noura.sync.payload`/`noura.sync.operation` tuples were
 already the shared native protocol; the browser client now speaks them at the
 library level. The hosted browser client does not exist yet, so a browser still
-cannot open a synced workspace, and browser revocation/epoch-rotation wiring,
-browser recovery kits, local replica reconciliation, outbox/conflict handling,
-and UI wiring are not implemented.
+cannot open a synced workspace, and browser revocation/epoch-rotation wiring and
+UI wiring are not implemented. Local replica reconciliation, outbox/conflict
+handling, and a browser-specific recovery kit exist at the library level (see
+"Browser client foundation").
 
 **Implemented native client support.** `crates/local-core` now depends on
 `crates/sync-key-envelope` and treats a browser device as a first-class remote
@@ -77,9 +78,10 @@ push/pull operation transport at the library level, conforming to the shared
 file-change encoding and decoding against the shared `sync-v1.json` fixture and a
 `FileChangeCodec` bridge that seals a file change into an `EncryptedOperation`
 and verifies and opens one back to its change, workspace, object, and epoch. The
-hosted browser still has no local replica reconciliation, no outbox or conflict
-handling, no revocation lock state, no recovery kit, and no UI wiring, so it
-still cannot open or synchronize a workspace end to end.
+hosted browser still has no revocation lock state and no UI wiring, so it still
+cannot open or synchronize a workspace end to end; local replica reconciliation,
+outbox/conflict handling, and a browser-specific recovery kit exist at the
+library level.
 
 **Implemented browser replica engine.** `packages/browser-sync-engine`
 (`@noura/browser-sync-engine`) implements the local replica reconciliation layer
@@ -104,9 +106,11 @@ workspace, and `createWorkspaceStorageAdapter` is the concrete
 bridge over the workspace worker, bootstraps one remote object and wrapped key
 per managed local object, refreshes delivered keys before reconcile, records and
 resolves conflicts, and persists only wrapped keys and locally approved signer
-keys. Key-rotation application, recovery kits, and device-management UI are
-still outstanding, so the hosted browser still cannot synchronize a workspace
-end to end without a trusted device to approve and deliver keys.
+keys. Key-rotation application, native recovery-kit interoperability, and
+device-management UI are still outstanding, so the hosted browser still cannot
+synchronize a workspace end to end without a trusted device to approve and
+deliver keys; the browser-specific recovery kit now exists in
+`packages/browser-sync`.
 
 ## Locked invariants this proposal must satisfy
 
@@ -356,11 +360,15 @@ ephemeralPublicKey, salt, nonce]` for web entries and the unchanged
   pull and application, conflict recording and resolution, state migration,
   snapshot diffing, and revocation lock state). The `apps/app` controller now
   wires the worker's `objects_list`, per-object keys, pinned key delivery, device
-  approval, binding auto-restore, and conflict resolution over those packages,
-  but there is still no key-rotation application, no recovery kit, and no
-  device-management UI, so the hosted browser still cannot synchronize a
-  workspace end to end without a trusted device approving it and delivering
-  keys.
+  approval, binding auto-restore, conflict resolution, post-bootstrap object
+  provisioning, new-device envelope wrapping, and durable re-wrapping of
+  delivered keys over those packages, but epoch rotation for a revoked reader,
+  native recovery-kit interoperability, and the device-management UI are still
+  absent, so the hosted browser still cannot synchronize a workspace end to end
+  without a trusted device approving it and delivering keys. A browser-specific
+  recovery kit now exists in `packages/browser-sync` and the controller, so a
+  device's wrapped bundle and binding can be re-imported on another browser
+  without a trusted device.
 - Browser key envelopes are delivered to clients, but clients must still verify
   them locally against pinned signer keys. The server is not a trust source.
 - Revocation and epoch rotation reuse the signed access-policy path, which now
@@ -375,18 +383,27 @@ ephemeralPublicKey, salt, nonce]` for web entries and the unchanged
 - The policy-level `noura.sync.access` tuple extension for browser entries is now
   signed and verified by the native Rust client against the server contract, but
   no shared Rust/TypeScript conformance fixture covers it yet.
-- The browser recovery-kit format remains a proposal. Native recovery kits and
-  recovery identities are `age`-only; a browser recipient returns
-  `sync_browser_recovery_unsupported` rather than emitting an unusable kit.
+- **Implemented (browser-specific).** The browser recovery kit
+  (`noura.browser-recovery-kit` version 1) is implemented in
+  `packages/browser-sync` and wired into the `apps/app` controller. It encrypts a
+  device's wrapped key bundle and durable binding under a passphrase-derived
+  AES-256-GCM key and restores the **same** device identity and binding on
+  another browser without a trusted device. It is not the signed native
+  `noura.sync.recovery` object: native recovery kits and recovery identities are
+  `age`-only, a browser recipient still returns
+  `sync_browser_recovery_unsupported`, and `noura.sync.recovery`
+  interoperability with this browser format remains a proposal that needs its
+  own shared Rust and TypeScript conformance fixtures.
 
 ## Browser client foundation
 
 `packages/browser-sync` (`@noura/browser-sync`) is the first browser-side client
 code. It is a transport-neutral library that uses `globalThis.crypto.subtle` and
 an injected `fetch`; it performs no UI work and holds no global state. It is a
-foundation, not a working browser workspace: operation sealing/opening and the
-push/pull transport are implemented, but local replica reconciliation, outbox and
-conflict handling, revocation lock state, recovery kits, and UI wiring are not.
+foundation, not a working browser workspace: operation sealing/opening, the
+push/pull transport, and the browser-specific recovery kit are implemented here,
+while local replica reconciliation, outbox and conflict handling, and revocation
+lock state live in `packages/browser-sync-engine`. UI wiring is not implemented.
 
 ### Identity and at-rest custody
 
@@ -408,6 +425,54 @@ conflict handling, revocation lock state, recovery kits, and UI wiring are not.
   authentication and is reported as `browser_sync_passphrase_rejected`.
 - No unwrapped secret is persisted. This package does not claim reliable memory
   zeroization; it clears only the references it owns.
+
+### Recovery kit
+
+**Implemented (browser-specific).** A browser recovery kit restores the same
+browser device identity and its durable binding on another browser without a
+trusted device to approve or deliver keys. It is defined and implemented in
+`packages/browser-sync` and wired into the `apps/app` controller.
+
+- `exportRecoveryKit({ bundle, binding, passphrase, kdf? })` serializes
+  `{ bundle, binding }` as canonical JSON and encrypts it with AES-256-GCM under
+  a PBKDF2-SHA256 key-encryption key. It draws a random 32-byte salt and 12-byte
+  nonce, binds the format and version as AES-GCM additional authenticated data,
+  and refuses an empty passphrase, an unsupported key-derivation function, an
+  invalid bundle or binding, or an iteration count below the 310,000 minimum. The
+  returned `RecoveryKitFile` carries only non-secret metadata and ciphertext.
+- `importRecoveryKit(file, passphrase)` validates the format, version, key
+  derivation, base64 fields, decoded lengths, and the recovered bundle and
+  binding shapes before returning them. An unknown format or version is rejected,
+  never guessed; oversized input is rejected before decryption; and a wrong
+  passphrase or tampered ciphertext fails AES-GCM authentication and returns a
+  structured `browser_sync_passphrase_rejected` error.
+- The kit is **full credential material**: it carries the passphrase-wrapped
+  Ed25519 seed, X25519 secret, and bearer token plus the binding's self-wrapped
+  object keys. It is encrypted and user-held and is never written to origin
+  storage in plaintext. It restores the **same** device identity, not a new
+  device, and it does not bypass server authorization or owner approval.
+- In `apps/app`, `BrowserSyncController.exportRecoveryKit(passphrase)` requires
+  unlocked custody and a loaded binding and never returns plaintext.
+  `BrowserSyncController.importRecoveryKit(file, passphrase, localWorkspaceId)`
+  decrypts the kit, stores the recovered wrapped bundle as-is under its bundle id
+  through the existing `KeyStore` (the device passphrase is not known, so it
+  cannot be re-sealed), writes the binding under `localWorkspaceId`, caches it,
+  and leaves the controller locked until the user unlocks the recovered device
+  with its original passphrase.
+
+This is a **browser-specific format**, not the signed native
+`noura.sync.recovery` object. Interoperating the two remains a proposal; see
+"Remaining limitations".
+
+**Divergence from native recovery semantics.** The locked invariant that a
+recovery kit "never restores an old signing identity or session" describes the
+native signed `noura.sync.recovery` object. This browser-specific kit
+deliberately restores the same device's at-rest custody: it is a portable copy of
+a credential the user already holds, not a newly issued recovery identity. It
+grants no content access the device did not already have, does not bypass owner
+approval because it re-establishes an already-approved device under its existing
+bundle, and cannot override server authorization, which is checked on every
+request.
 
 ### Enrollment
 
@@ -625,7 +690,29 @@ object:
   never sealed under a different object.
 - Before reconcile the controller calls `receiveKeys` with the pinned signer set
   (this device plus locally approved devices) and merges delivered keys over the
-  local self-wrapped ones. A delivery failure keeps the local keys.
+  local self-wrapped ones. A delivery failure keeps the local keys. A delivered
+  key that differs from the stored self-wrapped key is re-wrapped to this device
+  with `wrapKey` and persisted in the durable binding, so a later sync can seal
+  under it even if the server is unreachable. Only the wrapped envelope is ever
+  persisted; the plaintext key stays in tab memory.
+- Before reconcile the controller also provisions managed objects created after
+  bootstrap. It lists the workspace's managed objects, finds local object ids the
+  binding does not yet cover (matched by stable local object id, falling back to
+  path), and for each creates a remote object, generates a fresh 32-byte key,
+  wraps it to every active browser-capable device, and adds the self envelope to
+  the binding. It also wraps an existing bound object's key to any newly active
+  browser device that is missing an envelope for that object, skipping an object
+  whose key is not available locally. It rebuilds the full signed access policy
+  from the current one returned by `access-state` (preserving members, grants,
+  documents, and existing envelopes), advances the revision by one canonical
+  decimal step, chains `previousPolicyDigest` through `accessDigest` (the SHA-256
+  of the canonical signing bytes concatenated with the decoded signature), signs,
+  and uploads. A no-op never uploads a policy; a `sync.policy_revision_changed`
+  conflict re-reads access-state once and retries; the updated binding and
+  revision are persisted only after a successful upload. When a native `age`
+  device is active, a browser cannot wrap a new object's key to it, so a new
+  object is left unprovisioned and its files stay unmanaged rather than
+  uploading an incomplete policy; existing objects keep syncing.
 - The controller exposes `bindWorkspace`, and `syncNow`/`workspaceSummary`
   accept an optional `workspaceId`; when no binding is in memory they load the
   durable record for that workspace instead of reporting `not_configured` for a
@@ -650,9 +737,17 @@ unguarded calls so a user-chosen remote conflict resolution can overwrite or
 delete local bytes, while guarded calls still pass their expected revision
 through unchanged.
 
-Key-rotation application, recovery kits, and the device-management UI remain
-outstanding; the controller surface exists but the hosted UI does not yet drive
-approval, key rotation, or recovery.
+Provisioning a remote object for a managed object created after bootstrap and
+wrapping an existing object key to a newly active browser device are now
+implemented in the controller, together with persisting re-wrapped delivered
+keys. Epoch rotation for a revoked reader, removal of a revoked device's
+envelope, native recovery-kit interoperability, and the device-management UI
+remain outstanding; the controller surface exists and now exposes recovery-kit
+export and import, but the hosted UI does not yet drive approval, epoch rotation,
+or recovery. Adding an object or a reader envelope to a
+collaboration-v2 workspace still requires a signed transition that this
+controller does not produce, so the server rejects such a policy upload and the
+error is surfaced rather than hidden.
 
 ## Threat model: installed app versus hosted web client
 
@@ -888,19 +983,26 @@ hold its keys locally; a second device then needs enrollment or a recovery kit.
    must re-enroll.
 2. **New browser with a trusted device available.** Use the enrollment flow. The
    trusted device approves the new device and delivers keys.
-3. **New browser without a trusted device.** Import the user-held recovery kit.
-   The kit is unlocked with its passphrase, object keys are unwrapped and rewrapped
-   to the new device key, and the workspace remains paused until device approval
-   and any required epoch rotation complete. The kit cannot bypass server
-   authorization; a revoked membership still requires re-invitation.
-4. **Installed app kit as a trust source.** A native-exported kit can seed a
-   browser import, but the browser variant must re-encrypt under a browser KEK
-   and must never persist the exporting device's raw `age` recovery identity.
-   Adding a browser recovery-kit format is a **Proposal** and requires its own
-   conformance fixtures.
-5. **Never restored.** Recovery never restores an old signing identity, device
-   session, or server trust. Newly encountered signers still require explicit
-   device approval.
+3. **New browser without a trusted device (browser-specific kit).** Import the
+   user-held `noura.browser-recovery-kit`. The kit restores the **same** device
+   identity — the wrapped Ed25519 signing seed, X25519 recipient secret, and
+   device bearer token — together with its durable binding, so the object keys
+   the device already held become usable on the new browser without a new
+   approval or a key rewrapped to a new device. The kit cannot bypass server
+   authorization: a revoked or expired device token is refused by the server, and
+   a revoked membership still requires re-invitation. Server-side authorization
+   remains authoritative over any imported credential.
+4. **Installed app kit as a trust source.** Native-exported kits remain the
+   signed `noura.sync.recovery` object, which is `age`-only; a browser recipient
+   still returns `sync_browser_recovery_unsupported`. The browser
+   `noura.browser-recovery-kit` format is implemented, but interoperating the two
+   is a **Proposal** that requires its own shared conformance fixtures.
+5. **Never restored by native recovery.** Native recovery never restores an old
+   signing identity, device session, or server trust. The browser-specific kit
+   instead restores the same device's wrapped custody rather than issuing a new
+   identity; it is full credential material and must be encrypted and user-held,
+   and it is not a substitute for device approval or server authorization. Newly
+   encountered signers still require explicit device approval.
 
 ## Browser storage durability and eviction
 
@@ -941,11 +1043,12 @@ that plainly in the client UI.
   replica engine and its durable file-system state store exist in
   `packages/browser-sync-engine`, and the `apps/app` controller now wires the
   worker's managed-object list, per-object keys, pinned key delivery, device
-  approval, binding auto-restore, and conflict resolution. It cannot open a
-  synchronized workspace without a trusted device approving this browser and
-  delivering keys, and key-rotation application, recovery kits, and the
-  device-management UI are not implemented. This document does not authorize
-  implementing those as part of unrelated work.
+  approval, binding auto-restore, conflict resolution, and the browser-specific
+  recovery kit. It cannot open a synchronized workspace without a trusted device
+  approving this browser and delivering keys, and key-rotation application,
+  native recovery-kit interoperability, and the device-management UI are not
+  implemented. This document does not authorize implementing those as part of
+  unrelated work.
 - The hosted web client is not claimed to be as secure as the installed app.
   Whoever serves future JavaScript can access unlocked content.
 - Non-extractable keys are not claimed to prevent exfiltration; they prevent
@@ -962,10 +1065,11 @@ that plainly in the client UI.
 - Protection from malicious browser extensions, shared browser profiles, or
   same-account malware is not claimed.
 - OPFS and IndexedDB are not claimed to be durable backups.
-- The browser recovery-kit format remains a proposal, not a finalized format,
-  until shared Rust and TypeScript conformance fixtures exist. The browser
-  key-envelope, recipient, device fingerprint, enrollment-proof, and operation
-  formats are implemented against those fixtures.
+- The browser-specific recovery kit (`noura.browser-recovery-kit` version 1) is
+  implemented, but native `noura.sync.recovery` interoperability remains a
+  proposal until shared Rust and TypeScript conformance fixtures exist. The
+  browser key-envelope, recipient, device fingerprint, enrollment-proof, and
+  operation formats are implemented against those fixtures.
 - This document does not relax the locked invariants. Where an optional design
   would violate one, the design is wrong, not the invariant.
 
@@ -1013,11 +1117,18 @@ that plainly in the client UI.
    `BrowserWorkspaceStorage` that derives its path list from `rebuild()`. The
    `apps/app` controller now wires the worker's managed-object list, per-object
    objects and keys, pinned key delivery, locally verified device approval,
-   binding auto-restore, and conflict resolution, and supplies a storage adapter
-   that preserves the engine's unguarded force-apply and force-delete. Still
-   open:
-   key-rotation application, browser object activation, browser recovery kits,
-   and device-management UI wiring.
+   binding auto-restore, conflict resolution, post-bootstrap object
+   provisioning, new-device envelope wrapping, and durable re-wrapping of
+   delivered keys, and supplies a storage adapter that preserves the engine's
+   unguarded force-apply and force-delete. Still open:
+   epoch rotation for a revoked reader, browser object activation, native
+   recovery-kit interoperability, and device-management UI wiring.
 6. Define the browser recovery-kit format and its conformance fixtures.
+   **Implemented (browser-specific).** The `noura.browser-recovery-kit` version 1
+   format and its `exportRecoveryKit`/`importRecoveryKit` implementation live in
+   `packages/browser-sync`, with in-memory round-trip, wrong-passphrase, tamper,
+   unknown format/version, oversize, and no-plaintext tests and controller wiring
+   tests in `apps/app`. Native `noura.sync.recovery` interoperability and shared
+   Rust/TypeScript conformance fixtures remain to be defined.
 7. Add a browser-specific section to `docs/security/threat-model.md` once the
    design is approved.

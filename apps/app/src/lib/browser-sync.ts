@@ -23,22 +23,28 @@
  *   persists a durable binding outside canonical workspace files. A durable
  *   binding is reused instead of creating a second remote workspace.
  * - `syncNow` reconciles through the worker-backed local replica once a binding
- *   exists; without one it returns a typed `not_configured` result. Nothing is
- *   faked: the local replica is the workspace worker, reached through the raw
- *   canonical file operations, and no result is reported without an actual
- *   reconcile.
+ *   exists; without one it returns a typed `not_configured` result. Before
+ *   reconcile it provisions a remote object and key for every managed object the
+ *   binding does not yet cover, wraps an existing object key to any newly active
+ *   browser device that lacks an envelope, and uploads one rebuilt signed access
+ *   policy. Nothing is faked: the local replica is the workspace worker, reached
+ *   through the raw canonical file operations, and no result is reported without
+ *   an actual reconcile.
  * - The unwrapped object key lives only in tab memory. The binding stores a
  *   `noura.sync.key.web` envelope wrapped to this browser device, never a
- *   plaintext object key.
+ *   plaintext object key. A delivered key that differs from the stored one is
+ *   re-wrapped to this device and persisted the same way.
  * - The remote speaks the same bearer-token transport as the native client, and
  *   only same-origin requests are permitted.
  */
 
 import {
+	accessDigest,
 	accessState,
 	BrowserSyncError,
 	BrowserSyncErrorCode,
 	BrowserSyncTransport,
+	bytesEqual,
 	createDeviceIdentity,
 	createFileChangeCodec,
 	decodeBase64,
@@ -47,6 +53,9 @@ import {
 	encodeBase64,
 	ensureResponseOk,
 	enrollBrowserDevice,
+	exportRecoveryKit as buildRecoveryKit,
+	importRecoveryKit as openRecoveryKit,
+	isBrowserSyncBindingRecord,
 	isIdentifier,
 	randomBytes,
 	randomIdentifier,
@@ -60,9 +69,15 @@ import {
 	wrapKey,
 	type AccessPolicy,
 	type AccessPolicyEnvelope,
+	type AccessPolicyObject,
+	type AccessState,
+	type BrowserSyncBindingRecord,
+	type BrowserSyncBoundKey,
+	type BrowserSyncBoundObject,
 	type DeviceIdentity,
 	type FetchLike,
 	type KeyStore,
+	type RecoveryKitFile,
 	type WebKeyEnvelope,
 	type WrappedKeyBundle,
 } from '@noura/browser-sync';
@@ -110,53 +125,15 @@ export function isSyncablePath(path: string): boolean {
 }
 
 /**
- * Wrapped object-key material persisted in the binding record.
- *
- * The object key itself is never written to origin storage in plaintext. This is
- * the `noura.sync.key.web` envelope bound to the browser's own device, so it can
- * be unwrapped only after the device bundle is unlocked.
+ * The binding record types are owned by `@noura/browser-sync` so the recovery
+ * kit and the storage path validate the same shape. They are re-exported here
+ * for existing consumers of this module.
  */
-export interface BrowserSyncBoundKey {
-	deviceId: string;
-	wrappedKey: string;
-	signature: string;
-	construction: 'web';
-	recipientPublicKey: string;
-	ephemeralPublicKey: string;
-	salt: string;
-	nonce: string;
-}
-
-/** One remote sync object bound to this browser workspace. */
-export interface BrowserSyncBoundObject {
-	/** Canonical-path anchor for the object at bind time. */
-	path: string;
-	/** Stable local object ID, used to follow a move to a new path. */
-	localObjectId?: string;
-	/** Positive safe-integer object key epoch. */
-	epoch: number;
-	/** Canonical access-policy revision the object was bound at. */
-	policyRevision: string;
-	/** Self-wrapped object key; never plaintext. */
-	key: BrowserSyncBoundKey;
-}
-
-/** Durable browser sync binding record. Contains no unwrapped key material. */
-export interface BrowserSyncBindingRecord {
-	version: 1;
-	/** Stable ID of the local browser workspace this binding belongs to. */
-	localWorkspaceId: string;
-	/** Remote workspace identifier. */
-	workspaceId: string;
-	/** Access-policy revision last persisted. */
-	revision: string;
-	/** Primary sync object carrying this workspace's file changes. */
-	objectId: string;
-	/** Object bindings by object id. */
-	objects: Record<string, BrowserSyncBoundObject>;
-	/** Pinned signer public keys by device id, base64. */
-	pinnedSigners: Record<string, string>;
-}
+export type {
+	BrowserSyncBindingRecord,
+	BrowserSyncBoundKey,
+	BrowserSyncBoundObject,
+} from '@noura/browser-sync';
 
 /** Durable store for one workspace's binding record, outside canonical files. */
 export interface BrowserSyncBindingStore {
@@ -199,63 +176,6 @@ export function createMemoryBindingStore(
 	};
 }
 
-function isBindingRecord(value: unknown): value is BrowserSyncBindingRecord {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-	const record = value as Record<string, unknown>;
-	if (
-		record.version !== 1 ||
-		typeof record.localWorkspaceId !== 'string' ||
-		typeof record.workspaceId !== 'string' ||
-		typeof record.revision !== 'string' ||
-		typeof record.objectId !== 'string' ||
-		!record.objects ||
-		typeof record.objects !== 'object' ||
-		Array.isArray(record.objects) ||
-		!record.pinnedSigners ||
-		typeof record.pinnedSigners !== 'object' ||
-		Array.isArray(record.pinnedSigners)
-	)
-		return false;
-	const objects = record.objects as Record<string, unknown>;
-	for (const bound of Object.values(objects)) {
-		if (!bound || typeof bound !== 'object' || Array.isArray(bound))
-			return false;
-		const value = bound as Record<string, unknown>;
-		if (
-			typeof value.path !== 'string' ||
-			(value.localObjectId !== undefined &&
-				typeof value.localObjectId !== 'string') ||
-			!Number.isSafeInteger(value.epoch) ||
-			(value.epoch as number) < 1 ||
-			typeof value.policyRevision !== 'string' ||
-			!value.key ||
-			typeof value.key !== 'object' ||
-			Array.isArray(value.key)
-		)
-			return false;
-		const key = value.key as Record<string, unknown>;
-		if (
-			typeof key.deviceId !== 'string' ||
-			typeof key.wrappedKey !== 'string' ||
-			typeof key.signature !== 'string' ||
-			key.construction !== 'web' ||
-			typeof key.recipientPublicKey !== 'string' ||
-			typeof key.ephemeralPublicKey !== 'string' ||
-			typeof key.salt !== 'string' ||
-			typeof key.nonce !== 'string'
-		)
-			return false;
-	}
-	if (
-		!(record.objectId in objects) ||
-		!Object.values(record.pinnedSigners).every(
-			(value) => typeof value === 'string',
-		)
-	)
-		return false;
-	return true;
-}
-
 function parseBindingRecord(text: string): BrowserSyncBindingRecord {
 	let value: unknown;
 	try {
@@ -266,13 +186,175 @@ function parseBindingRecord(text: string): BrowserSyncBindingRecord {
 			'The stored browser sync binding was not valid JSON',
 		);
 	}
-	if (!isBindingRecord(value)) {
+	if (!isBrowserSyncBindingRecord(value)) {
 		throw new BrowserSyncError(
 			BrowserSyncErrorCode.InvalidBundle,
 			'The stored browser sync binding had an unexpected shape',
 		);
 	}
 	return value;
+}
+
+/**
+ * Compare two identifiers by Unicode code unit.
+ *
+ * Identifiers use the ASCII base64url alphabet, so code-unit order equals the
+ * server's `COLLATE "C"` byte order. `localeCompare` is deliberately avoided:
+ * it is locale-sensitive and would not match the server's ordering.
+ */
+function compareIdentifiers(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** True when access-state lists an active device with a non-browser recipient. */
+function hasNativeActiveDevice(state: AccessState): boolean {
+	for (const raw of state.devices) {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+		const recipient = (raw as Record<string, unknown>).encryptionRecipient;
+		if (
+			typeof recipient === 'string' &&
+			recipient.length > 0 &&
+			!recipient.startsWith('x25519:')
+		)
+			return true;
+	}
+	return false;
+}
+
+/**
+ * Parse the server's latest signed access policy from an access-state response.
+ *
+ * Returns `null` when no policy exists yet. A present policy must match the
+ * browser's {@link AccessPolicy} shape closely enough that rebuilding and
+ * re-signing it preserves the server's member, grant, document, and envelope
+ * fields; an unexpected shape returns `null` so provisioning is skipped rather
+ * than fabricating a policy.
+ */
+function parseAccessPolicy(value: unknown): AccessPolicy | null {
+	if (value === null || value === undefined) return null;
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+	const policy = value as Record<string, unknown>;
+	const version = policy.version;
+	if (version !== 1 && version !== 2) return null;
+	if (
+		typeof policy.workspaceId !== 'string' ||
+		typeof policy.revision !== 'string' ||
+		(policy.previousPolicyDigest !== null &&
+			typeof policy.previousPolicyDigest !== 'string') ||
+		typeof policy.deviceId !== 'string' ||
+		typeof policy.signature !== 'string' ||
+		!Array.isArray(policy.members) ||
+		!Array.isArray(policy.objects)
+	)
+		return null;
+	const members: AccessPolicy['members'] = [];
+	for (const raw of policy.members) {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+		const member = raw as Record<string, unknown>;
+		if (
+			typeof member.accountId !== 'string' ||
+			(member.role !== 'owner' &&
+				member.role !== 'admin' &&
+				member.role !== 'editor' &&
+				member.role !== 'viewer')
+		)
+			return null;
+		members.push({
+			accountId: member.accountId,
+			role: member.role as AccessPolicy['members'][number]['role'],
+		});
+	}
+	const objects: AccessPolicyObject[] = [];
+	for (const raw of policy.objects) {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+		const object = raw as Record<string, unknown>;
+		if (
+			typeof object.objectId !== 'string' ||
+			!Number.isSafeInteger(object.epoch) ||
+			(object.epoch as number) < 1 ||
+			!Array.isArray(object.grants) ||
+			!Array.isArray(object.envelopes)
+		)
+			return null;
+		const grants: AccessPolicyObject['grants'] = [];
+		for (const rawGrant of object.grants) {
+			if (!rawGrant || typeof rawGrant !== 'object' || Array.isArray(rawGrant))
+				return null;
+			const grant = rawGrant as Record<string, unknown>;
+			if (
+				typeof grant.accountId !== 'string' ||
+				(grant.role !== 'editor' && grant.role !== 'viewer')
+			)
+				return null;
+			grants.push({
+				accountId: grant.accountId,
+				role: grant.role as AccessPolicyObject['grants'][number]['role'],
+			});
+		}
+		const envelopes: AccessPolicyEnvelope[] = [];
+		for (const rawEnvelope of object.envelopes) {
+			if (
+				!rawEnvelope ||
+				typeof rawEnvelope !== 'object' ||
+				Array.isArray(rawEnvelope)
+			)
+				return null;
+			const envelope = rawEnvelope as Record<string, unknown>;
+			if (
+				typeof envelope.deviceId !== 'string' ||
+				typeof envelope.wrappedKey !== 'string' ||
+				typeof envelope.signature !== 'string'
+			)
+				return null;
+			const parsed: AccessPolicyEnvelope = {
+				deviceId: envelope.deviceId,
+				wrappedKey: envelope.wrappedKey,
+				signature: envelope.signature,
+			};
+			if (envelope.construction === 'web' || envelope.construction === 'age')
+				parsed.construction = envelope.construction;
+			if (typeof envelope.recipientPublicKey === 'string')
+				parsed.recipientPublicKey = envelope.recipientPublicKey;
+			if (typeof envelope.ephemeralPublicKey === 'string')
+				parsed.ephemeralPublicKey = envelope.ephemeralPublicKey;
+			if (typeof envelope.salt === 'string') parsed.salt = envelope.salt;
+			if (typeof envelope.nonce === 'string') parsed.nonce = envelope.nonce;
+			envelopes.push(parsed);
+		}
+		let document: AccessPolicyObject['document'];
+		if (
+			object.document &&
+			typeof object.document === 'object' &&
+			!Array.isArray(object.document)
+		) {
+			const descriptor = object.document as Record<string, unknown>;
+			if (
+				typeof descriptor.generation === 'string' &&
+				(descriptor.mode === 'text' || descriptor.mode === 'attachment')
+			)
+				document = {
+					generation: descriptor.generation,
+					mode: descriptor.mode,
+				};
+		}
+		objects.push({
+			objectId: object.objectId,
+			epoch: object.epoch as number,
+			grants,
+			envelopes,
+			...(document === undefined ? {} : { document }),
+		});
+	}
+	return {
+		version,
+		workspaceId: policy.workspaceId,
+		revision: policy.revision,
+		previousPolicyDigest: policy.previousPolicyDigest as string | null,
+		deviceId: policy.deviceId,
+		members,
+		objects,
+		signature: policy.signature,
+	};
 }
 
 /** Controller custody and availability state. */
@@ -1146,7 +1228,35 @@ async function putRemoteAccessPolicy(input: {
 			body: JSON.stringify(input.policy),
 		},
 	);
-	ensureResponseOk(response);
+	if (response.ok) return;
+	let serverCode: string | undefined;
+	try {
+		const body = (await response.json()) as {
+			error?: { code?: unknown };
+		} | null;
+		if (body && typeof body === 'object' && body.error) {
+			const code = body.error.code;
+			if (typeof code === 'string') serverCode = code;
+		}
+	} catch {
+		// A non-JSON error body carries no structured code; fall through.
+	}
+	const options = {
+		status: response.status,
+		...(serverCode === undefined ? {} : { cause: { serverCode } }),
+	};
+	if (response.status === 401 || response.status === 403) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.Unauthorized,
+			serverCode ?? 'request was not authorized',
+			options,
+		);
+	}
+	throw new BrowserSyncError(
+		BrowserSyncErrorCode.RequestFailed,
+		serverCode ?? `request failed with status ${response.status}`,
+		options,
+	);
 }
 
 /** Convert a self-wrapped key envelope into the persisted binding shape. */
@@ -1164,6 +1274,37 @@ function toBoundKey(
 		salt: envelope.salt,
 		nonce: envelope.nonce,
 	};
+}
+
+/** Convert a wrapped key envelope into the signed access-policy shape. */
+function toPolicyEnvelope(
+	envelope: WebKeyEnvelope,
+	deviceId: string,
+): AccessPolicyEnvelope {
+	return {
+		deviceId,
+		wrappedKey: envelope.wrapped_key,
+		signature: envelope.signature,
+		construction: 'web',
+		recipientPublicKey: envelope.recipient_public_key,
+		ephemeralPublicKey: envelope.ephemeral_public_key,
+		salt: envelope.salt,
+		nonce: envelope.nonce,
+	};
+}
+
+/**
+ * True when a policy upload was rejected because the workspace access revision
+ * moved under us. The server reports this as `sync.policy_revision_changed`
+ * (409); the caller should re-read access-state once and retry.
+ */
+function isPolicyRevisionChanged(error: unknown): boolean {
+	return (
+		error instanceof BrowserSyncError &&
+		error.status === 409 &&
+		(error.cause as { serverCode?: unknown } | undefined)?.serverCode ===
+			'sync.policy_revision_changed'
+	);
 }
 
 /** Convert a persisted binding entry back into a verifiable key envelope. */
@@ -1390,6 +1531,140 @@ export class BrowserSyncController {
 		workspaceFiles?: BrowserWorkspaceFiles | null;
 	}): Promise<BrowserSyncResult<BrowserSyncWorkspaceSummary>> {
 		return this.enableSync({ ...input, create: false });
+	}
+
+	/**
+	 * Export this device's wrapped bundle and durable binding as an encrypted,
+	 * user-held recovery kit.
+	 *
+	 * Requires unlocked custody and a loaded binding. The returned kit is
+	 * AES-256-GCM ciphertext under a passphrase-derived key; no plaintext key
+	 * material is ever returned. A kit restores this same device identity on
+	 * another browser, not a new device.
+	 */
+	async exportRecoveryKit(
+		passphrase: string,
+	): Promise<BrowserSyncResult<RecoveryKitFile>> {
+		if (!this.#keyStore) {
+			return failure(
+				'unavailable',
+				'This browser cannot store wrapped device keys securely (OPFS is unavailable).',
+			);
+		}
+		if (!passphrase) {
+			return failure(
+				'invalid_passphrase',
+				'Enter a passphrase to protect the recovery kit.',
+			);
+		}
+		if (!this.#identity || !this.#bundle) {
+			return failure(
+				'locked',
+				'Unlock this browser device before exporting a recovery kit.',
+			);
+		}
+		try {
+			const record = this.#record ?? (await this.#loadRecord());
+			if (!record) {
+				return failure(
+					'not_configured',
+					'No browser sync binding is loaded, so there is nothing to include in a recovery kit.',
+				);
+			}
+			const kit = await buildRecoveryKit({
+				bundle: this.#bundle,
+				binding: record,
+				passphrase,
+			});
+			return ok(kit);
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('custody_failed', this.#error);
+		}
+	}
+
+	/**
+	 * Restore a device's wrapped bundle and binding from an encrypted recovery
+	 * kit on another browser.
+	 *
+	 * The recovered bundle is sealed with the original device passphrase, which
+	 * this browser does not hold, so it is stored as-is under its own bundle id
+	 * and the controller stays locked until the user unlocks it with that
+	 * passphrase. The binding is re-keyed to `localWorkspaceId` and persisted, so
+	 * a later unlock builds the same usable binding. Requires an available key
+	 * store; a wrong passphrase or tampered kit is rejected before any write.
+	 */
+	async importRecoveryKit(
+		file: unknown,
+		passphrase: string,
+		localWorkspaceId: string,
+	): Promise<BrowserSyncResult<BrowserSyncWorkspaceSummary>> {
+		if (!this.#keyStore) {
+			return failure(
+				'unavailable',
+				'This browser cannot store wrapped device keys securely (OPFS is unavailable).',
+			);
+		}
+		if (!passphrase) {
+			return failure(
+				'invalid_passphrase',
+				'Enter the recovery kit passphrase.',
+			);
+		}
+		if (!isIdentifier(localWorkspaceId)) {
+			return failure(
+				'not_configured',
+				'This browser workspace has an invalid local id.',
+			);
+		}
+		let recovered: {
+			bundle: WrappedKeyBundle;
+			binding: BrowserSyncBindingRecord;
+		};
+		try {
+			recovered = await openRecoveryKit(file, passphrase);
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure(
+				error instanceof BrowserSyncError &&
+					error.code === BrowserSyncErrorCode.PassphraseRejected
+					? 'passphrase_rejected'
+					: 'custody_failed',
+				this.#error,
+			);
+		}
+		const { bundle, binding } = recovered;
+		if (!isIdentifier(binding.workspaceId)) {
+			return failure(
+				'not_configured',
+				'The recovery kit binding had a malformed workspace id.',
+			);
+		}
+		const store = await this.#resolveBindingStore(localWorkspaceId);
+		if (!store) {
+			return failure(
+				'unavailable',
+				'This browser cannot persist a durable sync binding (OPFS is unavailable).',
+			);
+		}
+		try {
+			await this.#keyStore.write(bundle.id, bundle);
+			const next: BrowserSyncBindingRecord = {
+				...binding,
+				localWorkspaceId,
+			};
+			await store.write(next);
+			this.#bundle = bundle;
+			this.#identity = null;
+			this.#localWorkspaceId = localWorkspaceId;
+			this.#record = next;
+			this.#binding = null;
+			this.#error = null;
+			return ok(await this.workspaceSummary({ workspaceId: localWorkspaceId }));
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('custody_failed', this.#error);
+		}
 	}
 
 	async #bootstrapBinding(
@@ -1874,19 +2149,298 @@ export class BrowserSyncController {
 		return live;
 	}
 
+	/** Wrap one object key to a specific device recipient. */
+	async #wrapToDevice(input: {
+		workspaceId: string;
+		objectId: string;
+		epoch: number;
+		identity: DeviceIdentity;
+		objectKey: Uint8Array;
+		device: { deviceId: string; recipient: string };
+	}): Promise<WebKeyEnvelope> {
+		return wrapKey({
+			workspace_id: input.workspaceId,
+			object_id: input.objectId,
+			epoch: input.epoch,
+			signing_device: input.identity.deviceId,
+			device_id: input.device.deviceId,
+			signing_secret: encodeBase64(input.identity.signingSeed),
+			recipient_public: encodeBase64(decodeRecipient(input.device.recipient)),
+			object_key: encodeBase64(input.objectKey),
+			ephemeral_secret: encodeBase64(randomBytes(32)),
+			salt: encodeBase64(randomBytes(32)),
+			nonce: encodeBase64(randomBytes(12)),
+		});
+	}
+
+	/**
+	 * Rebuild the signed access policy from the current one.
+	 *
+	 * Existing object entries, grants, documents, and envelopes are preserved.
+	 * A key is wrapped to an active device that lacks an envelope for an existing
+	 * object only when that key is available locally; otherwise the object is
+	 * skipped without failing. Every new object is wrapped to every active device.
+	 * Returns `null` when nothing changed, so the caller never uploads a no-op
+	 * policy.
+	 */
+	async #buildProvisionedPolicy(input: {
+		workspaceId: string;
+		current: AccessPolicy;
+		record: BrowserSyncBindingRecord;
+		devices: Array<{ deviceId: string; recipient: string }>;
+		planned: Array<{
+			card: BrowserWorkspaceObjectCard;
+			objectId: string;
+			objectKey: Uint8Array;
+			epoch: number;
+		}>;
+		identity: DeviceIdentity;
+	}): Promise<{
+		policy: AccessPolicy;
+		recordObjects: Record<string, BrowserSyncBoundObject>;
+	} | null> {
+		const revision = (BigInt(input.current.revision) + 1n).toString();
+		const recordObjects: Record<string, BrowserSyncBoundObject> = {};
+		for (const [objectId, bound] of Object.entries(input.record.objects)) {
+			recordObjects[objectId] = { ...bound, key: { ...bound.key } };
+		}
+		const objects: AccessPolicyObject[] = [];
+		let changed = false;
+
+		for (const currentObject of input.current.objects) {
+			const envelopes = currentObject.envelopes.map((envelope) => ({
+				...envelope,
+			}));
+			const present = new Set(envelopes.map((envelope) => envelope.deviceId));
+			const bound = input.record.objects[currentObject.objectId];
+			if (bound) {
+				for (const device of input.devices) {
+					if (present.has(device.deviceId)) continue;
+					let objectKey: Uint8Array;
+					try {
+						objectKey = await unwrapBoundKey(
+							input.record,
+							currentObject.objectId,
+							bound,
+							input.identity,
+						);
+					} catch {
+						// The key is not available locally; skip without failing.
+						continue;
+					}
+					const envelope = await this.#wrapToDevice({
+						workspaceId: input.workspaceId,
+						objectId: currentObject.objectId,
+						epoch: currentObject.epoch,
+						identity: input.identity,
+						objectKey,
+						device,
+					});
+					envelopes.push(toPolicyEnvelope(envelope, device.deviceId));
+					present.add(device.deviceId);
+					changed = true;
+				}
+			}
+			envelopes.sort((left, right) =>
+				compareIdentifiers(left.deviceId, right.deviceId),
+			);
+			objects.push({ ...currentObject, envelopes });
+		}
+
+		for (const entry of input.planned) {
+			const boundEnvelopes: BrowserSyncBoundKey[] = [];
+			const envelopes: AccessPolicyEnvelope[] = [];
+			for (const device of input.devices) {
+				const envelope = await this.#wrapToDevice({
+					workspaceId: input.workspaceId,
+					objectId: entry.objectId,
+					epoch: entry.epoch,
+					identity: input.identity,
+					objectKey: entry.objectKey,
+					device,
+				});
+				envelopes.push(toPolicyEnvelope(envelope, device.deviceId));
+				boundEnvelopes.push(toBoundKey(envelope, device.deviceId));
+			}
+			const self = boundEnvelopes.find(
+				(envelope) => envelope.deviceId === input.identity.deviceId,
+			);
+			if (!self)
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.InvalidIdentity,
+					'The active device set did not include this browser device, so no object key could be wrapped to it.',
+				);
+			recordObjects[entry.objectId] = {
+				path: entry.card.path,
+				localObjectId: entry.card.id,
+				epoch: entry.epoch,
+				policyRevision: revision,
+				key: self,
+			};
+			envelopes.sort((left, right) =>
+				compareIdentifiers(left.deviceId, right.deviceId),
+			);
+			objects.push({
+				objectId: entry.objectId,
+				epoch: entry.epoch,
+				grants: [],
+				envelopes,
+			});
+			changed = true;
+		}
+
+		if (!changed) return null;
+
+		objects.sort((left, right) =>
+			compareIdentifiers(left.objectId, right.objectId),
+		);
+		const members = [...input.current.members]
+			.sort((left, right) =>
+				compareIdentifiers(left.accountId, right.accountId),
+			)
+			.map((member) => ({ ...member }));
+		const draft: Omit<AccessPolicy, 'signature'> = {
+			version: input.current.version,
+			workspaceId: input.current.workspaceId,
+			revision,
+			previousPolicyDigest: await accessDigest(input.current),
+			deviceId: input.identity.deviceId,
+			members,
+			objects,
+		};
+		const policy = await signAccessPolicy(draft, input.identity);
+		return { policy, recordObjects };
+	}
+
+	/**
+	 * Provision remote objects for managed objects created after bootstrap and
+	 * wrap existing object keys to newly active browser devices.
+	 *
+	 * Runs from {@link syncNow}. A managed object with no bound remote object gets
+	 * a new object, a fresh 32-byte key wrapped to every active browser device, and
+	 * an entry in a rebuilt access policy. An active browser device missing an
+	 * envelope for an existing bound object gets that key wrapped to it. A no-op
+	 * never uploads a policy; a revision conflict re-reads access-state once and
+	 * retries; any other failure surfaces. The updated binding and revision are
+	 * persisted only after the policy upload succeeds.
+	 */
+	async #provisionObjects(
+		binding: BrowserSyncWorkspaceBinding,
+		identity: DeviceIdentity,
+	): Promise<void> {
+		const files = this.#workspaceFiles;
+		if (!files || !this.#origin || !identity.token) return;
+		const record = this.#record;
+		if (!record || record.workspaceId !== binding.workspaceId) return;
+
+		let cards: BrowserWorkspaceObjectCard[];
+		try {
+			cards = await files.listObjects();
+		} catch {
+			return;
+		}
+		const knownLocalIds = new Set<string>();
+		const knownPaths = new Set<string>();
+		for (const bound of Object.values(record.objects)) {
+			if (bound.localObjectId) knownLocalIds.add(bound.localObjectId);
+			knownPaths.add(bound.path);
+		}
+		const planned = cards
+			.filter(
+				(card) => !knownLocalIds.has(card.id) && !knownPaths.has(card.path),
+			)
+			.map((card) => ({
+				card,
+				objectId: `obj_${randomIdentifier()}`,
+				objectKey: randomBytes(32),
+				epoch: 0,
+			}));
+
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const state = await accessState({
+				origin: this.#origin,
+				token: identity.token,
+				workspaceId: binding.workspaceId,
+				fetch: this.#fetch,
+			});
+			const current = parseAccessPolicy(state.policy);
+			if (!current) return;
+			// A browser cannot wrap a new object key to a native `age` recipient. If a
+			// native device is active, a browser-authored policy cannot cover a new
+			// object, so leave it unprovisioned rather than upload an incomplete
+			// policy. Existing objects keep syncing; the new files stay unmanaged.
+			if (planned.length > 0 && hasNativeActiveDevice(state)) return;
+			const devices = await this.#activeWebDevices(
+				binding.workspaceId,
+				identity,
+				{ state, browserOnly: true },
+			);
+			if (attempt === 0) {
+				for (const entry of planned) {
+					entry.epoch = await createRemoteObject({
+						origin: this.#origin,
+						token: identity.token,
+						fetch: this.#fetch,
+						workspaceId: binding.workspaceId,
+						objectId: entry.objectId,
+					});
+				}
+			}
+			const built = await this.#buildProvisionedPolicy({
+				workspaceId: binding.workspaceId,
+				current,
+				record,
+				devices,
+				planned,
+				identity,
+			});
+			if (!built) return;
+			try {
+				await putRemoteAccessPolicy({
+					origin: this.#origin,
+					token: identity.token,
+					fetch: this.#fetch,
+					workspaceId: binding.workspaceId,
+					policy: built.policy,
+				});
+			} catch (error) {
+				if (attempt === 0 && isPolicyRevisionChanged(error)) continue;
+				throw error;
+			}
+			const store = await this.#resolveBindingStore(record.localWorkspaceId);
+			if (!store) return;
+			const next: BrowserSyncBindingRecord = {
+				...record,
+				revision: built.policy.revision,
+				objects: built.recordObjects,
+			};
+			await store.write(next);
+			this.#record = next;
+			const rebuilt = await this.#buildBinding(next, identity, files);
+			if (rebuilt) this.#binding = rebuilt;
+			return;
+		}
+	}
+
 	/**
 	 * Pull keys wrapped to this device and merge them over the locally wrapped
 	 * ones. A delivery failure is not fatal: the local self-wrapped keys stay in
 	 * place, and the server is never a trust source, so nothing from a failed
 	 * delivery is applied.
+	 *
+	 * A delivered key that differs from the stored self-wrapped key is re-wrapped
+	 * to this device and persisted in the durable binding, so a later sync still
+	 * has the key when the server is unreachable. Only the wrapped envelope is
+	 * ever persisted; the plaintext key stays in tab memory.
 	 */
 	async #refreshObjectKeys(
 		binding: BrowserSyncWorkspaceBinding,
 		identity: DeviceIdentity,
 	): Promise<Map<string, Uint8Array>> {
 		const keys = new Map(binding.objectKeys);
+		let delivered: Awaited<ReturnType<typeof receiveKeys>>;
 		try {
-			const delivered = await receiveKeys({
+			delivered = await receiveKeys({
 				origin: this.#origin,
 				token: identity.token,
 				workspaceId: binding.workspaceId,
@@ -1895,9 +2449,50 @@ export class BrowserSyncController {
 				pinnedSigners: binding.pinnedSigners,
 				fetch: this.#fetch,
 			});
-			for (const [objectId, key] of delivered.keys) keys.set(objectId, key);
 		} catch {
 			// Keep the locally wrapped keys; delivery is only a refresh.
+			return keys;
+		}
+		for (const [objectId, key] of delivered.keys) keys.set(objectId, key);
+
+		const record = this.#record;
+		if (!record) return keys;
+		const store = await this.#resolveBindingStore(record.localWorkspaceId);
+		if (!store) return keys;
+
+		const nextObjects = { ...record.objects };
+		let changed = false;
+		for (const [objectId, key] of delivered.keys) {
+			const bound = record.objects[objectId];
+			if (!bound) continue;
+			let stored: Uint8Array | undefined;
+			try {
+				stored = await unwrapBoundKey(record, objectId, bound, identity);
+			} catch {
+				stored = undefined;
+			}
+			if (stored && bytesEqual(stored, key)) continue;
+			const envelope = await this.#wrapToDevice({
+				workspaceId: record.workspaceId,
+				objectId,
+				epoch: bound.epoch,
+				identity,
+				objectKey: key,
+				device: { deviceId: identity.deviceId, recipient: identity.recipient },
+			});
+			nextObjects[objectId] = {
+				...bound,
+				key: toBoundKey(envelope, identity.deviceId),
+			};
+			changed = true;
+		}
+		if (changed) {
+			const next: BrowserSyncBindingRecord = {
+				...record,
+				objects: nextObjects,
+			};
+			await store.write(next);
+			this.#record = next;
 		}
 		return keys;
 	}
@@ -2026,6 +2621,8 @@ export class BrowserSyncController {
 			};
 		}
 		try {
+			await this.#provisionObjects(binding, identity);
+			binding = this.#binding ?? binding;
 			const objects = await this.#liveObjects(binding);
 			const objectKeys = await this.#refreshObjectKeys(binding, identity);
 			binding = { ...binding, objects, objectKeys };
@@ -2092,17 +2689,25 @@ export class BrowserSyncController {
 	 * requires an envelope for every active device. A non-browser device therefore
 	 * blocks browser-first bootstrap: that device must create the workspace and
 	 * deliver keys to this browser instead.
+	 *
+	 * During key provisioning the caller passes `browserOnly: true`, which skips a
+	 * native recipient instead of failing, because an already-active native device
+	 * already holds an envelope for every existing object. A missing envelope for
+	 * an existing object is only ever wrapped to a browser device.
 	 */
 	async #activeWebDevices(
 		workspaceId: string,
 		identity: DeviceIdentity,
+		options: { state?: AccessState; browserOnly?: boolean } = {},
 	): Promise<Array<{ deviceId: string; recipient: string }>> {
-		const state = await accessState({
-			origin: this.#origin,
-			token: identity.token,
-			workspaceId,
-			fetch: this.#fetch,
-		});
+		const state =
+			options.state ??
+			(await accessState({
+				origin: this.#origin,
+				token: identity.token,
+				workspaceId,
+				fetch: this.#fetch,
+			}));
 		const devices: Array<{ deviceId: string; recipient: string }> = [];
 		for (const raw of state.devices) {
 			if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
@@ -2115,11 +2720,13 @@ export class BrowserSyncController {
 				recipient.length === 0
 			)
 				continue;
-			if (!recipient.startsWith('x25519:'))
+			if (!recipient.startsWith('x25519:')) {
+				if (options.browserOnly) continue;
 				throw new BrowserSyncError(
 					BrowserSyncErrorCode.IncompatibleRecipient,
 					'Another device on this account cannot receive browser key envelopes. Create the workspace from that device and have it deliver keys to this browser.',
 				);
+			}
 			devices.push({ deviceId, recipient });
 		}
 		if (!devices.some((device) => device.deviceId === identity.deviceId))

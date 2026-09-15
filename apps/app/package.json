@@ -23,6 +23,7 @@
 		"@noura/browser-storage": "workspace:*",
 		"@noura/workspace-format-wasm": "workspace:*",
 		"@noura/editor": "workspace:*",
+		"@noura/plugin-calendar": "workspace:*",
 		"@noura/plugin-sdk": "workspace:*",
 		"@noura/shared": "workspace:*",
 		"@noura/workspace": "workspace:*",

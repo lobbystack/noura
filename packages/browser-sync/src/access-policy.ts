@@ -104,6 +104,28 @@ export function accessSigningBytes(
 	return new TextEncoder().encode(JSON.stringify(tuple));
 }
 
+/**
+ * SHA-256 digest of a signed access policy, as lowercase hex.
+ *
+ * This mirrors the server's `accessDigest` byte-for-byte: the canonical signing
+ * bytes concatenated with the raw decoded signature. A policy chains to its
+ * predecessor through `previousPolicyDigest`, so the digest must cover both the
+ * signed content and the signature.
+ */
+export async function accessDigest(policy: AccessPolicy): Promise<string> {
+	const signingBytes = accessSigningBytes(policy);
+	const signature = decodeBase64(policy.signature);
+	const combined = new Uint8Array(signingBytes.length + signature.length);
+	combined.set(signingBytes, 0);
+	combined.set(signature, signingBytes.length);
+	const digest = await globalThis.crypto.subtle.digest('SHA-256', combined);
+	let hex = '';
+	for (const byte of new Uint8Array(digest)) {
+		hex += byte.toString(16).padStart(2, '0');
+	}
+	return hex;
+}
+
 /** Sign an access policy with the device signing key. */
 export async function signAccessPolicy(
 	policy: Omit<AccessPolicy, 'signature'>,

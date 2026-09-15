@@ -6,7 +6,11 @@ import {
 	firstPartyPlugins,
 	type CoreTransport,
 } from '@noura/workspace/browser';
-import { createBrowserPluginModel } from './browser-plugins';
+import {
+	browserRoutePlugin,
+	browserRouteSupported,
+	createBrowserPluginModel,
+} from './browser-plugins';
 
 function harness(failure: 'none' | 'activation' | 'rollback' = 'none') {
 	let enabled = ['notes'];
@@ -83,17 +87,32 @@ function harness(failure: 'none' | 'activation' | 'rollback' = 'none') {
 	};
 }
 
+test('browser routes map to their gating plugin and include calendar', () => {
+	expect(browserRouteSupported('/calendar')).toBe(true);
+	expect(browserRouteSupported('/notes')).toBe(true);
+	expect(browserRouteSupported('/search')).toBe(false);
+	expect(browserRoutePlugin('/calendar')).toBe('calendar');
+	expect(browserRoutePlugin('/')).toBe('notes');
+	expect(browserRoutePlugin('/inbox')).toBe('notes');
+});
+
 test('active projection, scoped cleanup, unsupported preferences and disposal', async () => {
 	const h = harness();
 	await h.model.init();
 	expect(h.model.snapshot().isEnabled('notes')).toBe(true);
-	expect(h.model.snapshot().isSupported('calendar')).toBe(false);
+	expect(h.model.snapshot().isSupported('calendar')).toBe(true);
+	expect(h.model.snapshot().isEnabled(browserRoutePlugin('/calendar'))).toBe(
+		false,
+	);
 	await h.model.snapshot().setEnabled('tasks', true);
 	expect(h.model.snapshot().isEnabled('tasks')).toBe(true);
 	h.external();
 	await h.model.sync();
 	expect(h.model.snapshot().enabledIds).toContain('calendar');
-	expect(h.model.snapshot().isEnabled('calendar')).toBe(false);
+	expect(h.model.snapshot().isEnabled('calendar')).toBe(true);
+	expect(h.model.snapshot().isEnabled(browserRoutePlugin('/calendar'))).toBe(
+		true,
+	);
 	expect(h.model.snapshot().isEnabled('tasks')).toBe(false);
 	await h.model.scope(async () => {
 		expect(h.runtime.host.activeManifests()).toEqual([]);

@@ -44,7 +44,8 @@ describe('app plugin runtime', () => {
 			const { runtime, calls, state } = harness(platform, enabled);
 			expect(runtime.host.platform).toBe(platform);
 			expect(await runtime.syncWithManifest()).toEqual({
-				activated: platform === 'web' ? ['notes', 'tasks', 'projects'] : [],
+				activated:
+					platform === 'web' ? ['notes', 'tasks', 'calendar', 'projects'] : [],
 				deactivated: [],
 				unavailablePluginIds: firstPartyPlugins
 					.filter((plugin) => !plugin.manifest.platforms?.includes(platform))
@@ -52,7 +53,7 @@ describe('app plugin runtime', () => {
 				enabledPluginIds: enabled,
 			});
 			expect(runtime.host.activeManifests().map((plugin) => plugin.id)).toEqual(
-				platform === 'web' ? ['notes', 'tasks', 'projects'] : [],
+				platform === 'web' ? ['notes', 'tasks', 'calendar', 'projects'] : [],
 			);
 			expect(state.enabled).toEqual(enabled);
 			expect(calls).toEqual(['manifest_read']);
@@ -77,10 +78,10 @@ describe('app plugin runtime', () => {
 		expect(runtime.host.activeManifests()).toEqual([]);
 	});
 
-	test('only notes, tasks and projects advertise web support', () => {
+	test('only notes, tasks, calendar and projects advertise web support', () => {
 		for (const plugin of firstPartyPlugins)
 			expect(plugin.manifest.platforms).toEqual(
-				['notes', 'tasks', 'projects'].includes(plugin.manifest.id)
+				['notes', 'tasks', 'calendar', 'projects'].includes(plugin.manifest.id)
 					? ['desktop', 'web']
 					: ['desktop'],
 			);

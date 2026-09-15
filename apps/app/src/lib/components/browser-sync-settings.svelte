@@ -6,6 +6,7 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import * as Field from '$lib/components/ui/field';
 	import type { BrowserWorkspaceFiles } from '@noura/browser-workspace';
+	import type { RecoveryKitFile } from '@noura/browser-sync';
 	import {
 		getBrowserSyncController,
 		type BrowserSyncConflictDetail,
@@ -48,6 +49,12 @@
 	let verified = $state<Record<string, string>>({});
 	let conflictBusy = $state<string | null>(null);
 	let conflictError = $state('');
+	let kitPassphrase = $state('');
+	let importPassphrase = $state('');
+	let kitFile = $state<File | null>(null);
+	let kitAction = $state<'export' | 'import' | null>(null);
+	let kitError = $state('');
+	let kitNotice = $state('');
 
 	const statusLabels: Record<BrowserSyncStatus, string> = {
 		unavailable: 'Unavailable in this browser',
@@ -95,6 +102,17 @@
 	);
 
 	const conflicts = $derived(summary?.conflictDetails ?? []);
+
+	// Recovery kits need unlocked custody; the key bundle must be readable.
+	const custodyActive = $derived(
+		status === 'unlocked' || status === 'enrolled',
+	);
+	const kitBusy = $derived(kitAction !== null);
+	const canExportKit = $derived(custodyActive && !!kitPassphrase && !kitBusy);
+	// A workspace id is required to re-key the recovered binding on import.
+	const canImportKit = $derived(
+		!!workspaceId && !!kitFile && !!importPassphrase && !kitBusy,
+	);
 
 	async function restoreBinding() {
 		const value = controller;
@@ -337,6 +355,132 @@
 		})();
 	}
 
+	function kitMessage(code: string, message: string): string {
+		if (code === 'passphrase_rejected')
+			return 'That passphrase did not decrypt this recovery kit.';
+		return message || 'The recovery kit operation failed.';
+	}
+
+	/** Build a safe download name for an exported kit. */
+	function recoveryKitFilename(): string {
+		const label = (deviceId ?? workspaceId ?? 'browser')
+			.replace(/[^a-zA-Z0-9_-]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 64);
+		return `noura-recovery-kit-${label || 'browser'}.noura-recovery-kit.json`;
+	}
+
+	/** Download an exported kit and release the object URL once consumed. */
+	function downloadRecoveryKit(kit: RecoveryKitFile): void {
+		const blob = new Blob([JSON.stringify(kit)], {
+			type: 'application/json',
+		});
+		const url = URL.createObjectURL(blob);
+		const anchor = document.createElement('a');
+		anchor.href = url;
+		anchor.download = recoveryKitFilename();
+		anchor.hidden = true;
+		document.body.append(anchor);
+		try {
+			anchor.click();
+		} finally {
+			anchor.remove();
+			// Give the browser time to start the download before revoking.
+			setTimeout(() => URL.revokeObjectURL(url), 60_000);
+		}
+	}
+
+	function exportKit() {
+		const value = controller;
+		if (!value || kitBusy || !kitPassphrase) return;
+		void (async () => {
+			kitAction = 'export';
+			kitError = '';
+			kitNotice = '';
+			try {
+				const result = await value.exportRecoveryKit(kitPassphrase);
+				if (!result.ok) {
+					kitError = kitMessage(result.code, result.message);
+					return;
+				}
+				downloadRecoveryKit(result.value);
+				kitPassphrase = '';
+				kitNotice =
+					'Recovery kit downloaded. It contains this browser’s device credentials; store it in an encrypted, private location. This browser kit is not the native Noura recovery format.';
+			} catch (cause) {
+				kitError =
+					cause instanceof Error
+						? cause.message
+						: 'The recovery kit could not be exported.';
+			} finally {
+				kitAction = null;
+			}
+		})();
+	}
+
+	function chooseRecoveryKit(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		kitFile = input.files?.[0] ?? null;
+		// Clear the native value so the same file can be re-selected later.
+		input.value = '';
+		kitError = '';
+		kitNotice = '';
+	}
+
+	function importKit() {
+		const value = controller;
+		if (!value || kitBusy) return;
+		if (!workspaceId) {
+			kitError = 'Open a browser workspace before importing a recovery kit.';
+			return;
+		}
+		const file = kitFile;
+		if (!file) {
+			kitError = 'Choose a recovery kit file to import.';
+			return;
+		}
+		if (!importPassphrase) {
+			kitError = 'Enter the recovery kit passphrase.';
+			return;
+		}
+		void (async () => {
+			kitAction = 'import';
+			kitError = '';
+			kitNotice = '';
+			try {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(await file.text());
+				} catch {
+					kitError =
+						'That file is not valid JSON. Choose the .noura-recovery-kit.json file you exported.';
+					return;
+				}
+				const result = await value.importRecoveryKit(
+					parsed,
+					importPassphrase,
+					workspaceId,
+				);
+				if (!result.ok) {
+					kitError = kitMessage(result.code, result.message);
+					return;
+				}
+				importPassphrase = '';
+				kitFile = null;
+				kitNotice =
+					'Recovery kit imported. This browser now holds the kit’s device identity and stays locked until you unlock it with that device’s passphrase.';
+				await refresh();
+			} catch (cause) {
+				kitError =
+					cause instanceof Error
+						? cause.message
+						: 'The recovery kit could not be imported.';
+			} finally {
+				kitAction = null;
+			}
+		})();
+	}
+
 	onMount(() => {
 		if (!canUseBrowserSync) return;
 		let disposed = false;
@@ -499,6 +643,137 @@
 					encrypted; store them securely.
 				</p>
 			</div>
+
+			{#if status === 'locked' || custodyActive || kitNotice || kitError}
+				<div
+					class="flex flex-col gap-3"
+					aria-labelledby="browser-sync-recovery-heading"
+				>
+					<h4 id="browser-sync-recovery-heading" class="text-sm font-medium">
+						Recovery kit
+					</h4>
+					{#if custodyActive}
+						<p class="text-xs text-muted-foreground">
+							A recovery kit is an encrypted copy of this browser’s device
+							credentials. It restores the same device identity, so it can
+							restore sync access on another browser. Treat it as a secret:
+							store it only in an encrypted, private location. This browser kit
+							format is not interchangeable with the native Noura recovery
+							format.
+						</p>
+
+						<div class="flex flex-col gap-3 rounded-xl border p-4">
+							<h5 class="text-xs font-medium">Export a recovery kit</h5>
+							<Field.Field>
+								<Field.Label for="browser-sync-recovery-kit-passphrase"
+									>Recovery kit passphrase</Field.Label
+								>
+								<Input
+									id="browser-sync-recovery-kit-passphrase"
+									type="password"
+									autocomplete="new-password"
+									bind:value={kitPassphrase}
+									disabled={kitBusy}
+									aria-describedby="browser-sync-recovery-kit-passphrase-help"
+								/>
+								<p
+									id="browser-sync-recovery-kit-passphrase-help"
+									class="text-xs text-muted-foreground"
+								>
+									This passphrase encrypts the kit. It is not stored, and you
+									need it to restore the kit later.
+								</p>
+							</Field.Field>
+							<div>
+								<Button
+									type="button"
+									variant="outline"
+									disabled={!canExportKit}
+									onclick={exportKit}
+									>{kitAction === 'export'
+										? 'Exporting…'
+										: 'Export recovery kit'}</Button
+								>
+							</div>
+						</div>
+					{/if}
+
+					<div class="flex flex-col gap-3 rounded-xl border p-4">
+						<h5 class="text-xs font-medium">Import a recovery kit</h5>
+						<p class="text-xs text-muted-foreground">
+							Importing restores the kit’s device credentials on this browser,
+							including on a fresh browser where this device was never enrolled.
+							Open a browser workspace first so the recovered binding has a
+							local workspace to attach to.
+						</p>
+						<Field.Field>
+							<Field.Label for="browser-sync-recovery-kit-file"
+								>Recovery kit file</Field.Label
+							>
+							<Input
+								id="browser-sync-recovery-kit-file"
+								type="file"
+								accept=".noura-recovery-kit.json,application/json"
+								disabled={kitBusy}
+								onchange={chooseRecoveryKit}
+								aria-describedby="browser-sync-recovery-kit-file-help"
+							/>
+							<p
+								id="browser-sync-recovery-kit-file-help"
+								class="text-xs text-muted-foreground"
+							>
+								{#if kitFile}
+									Selected {kitFile.name}.
+								{:else}
+									Choose the JSON recovery kit file exported from another
+									browser.
+								{/if}
+							</p>
+						</Field.Field>
+						<Field.Field>
+							<Field.Label for="browser-sync-recovery-kit-import-passphrase"
+								>Recovery kit passphrase</Field.Label
+							>
+							<Input
+								id="browser-sync-recovery-kit-import-passphrase"
+								type="password"
+								autocomplete="current-password"
+								bind:value={importPassphrase}
+								disabled={kitBusy || !workspaceId}
+								aria-describedby="browser-sync-recovery-kit-import-help"
+							/>
+							<p
+								id="browser-sync-recovery-kit-import-help"
+								class="text-xs text-muted-foreground"
+							>
+								{#if workspaceId}
+									The passphrase that was set when the kit was exported.
+								{:else}
+									Import is disabled because no browser workspace is open; a
+									workspace id is required to re-key the binding.
+								{/if}
+							</p>
+						</Field.Field>
+						<div>
+							<Button
+								type="button"
+								variant="outline"
+								disabled={!canImportKit}
+								onclick={importKit}
+								>{kitAction === 'import'
+									? 'Importing…'
+									: 'Import recovery kit'}</Button
+							>
+						</div>
+					</div>
+					{#if kitNotice}
+						<p role="status" class="text-sm">{kitNotice}</p>
+					{/if}
+					{#if kitError}
+						<p role="alert" class="text-sm text-destructive">{kitError}</p>
+					{/if}
+				</div>
+			{/if}
 
 			{#if canReviewDevices}
 				<div

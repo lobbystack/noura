@@ -14,10 +14,14 @@
  * - Encrypted operation sealing and opening plus the push/pull HTTP transport
  *   ({@link sealOperation}, {@link openOperation}, {@link BrowserSyncTransport}).
  *
+ * - A user-held, passphrase-encrypted recovery kit that restores a device's
+ *   wrapped bundle and binding on another browser ({@link exportRecoveryKit},
+ *   {@link importRecoveryKit}).
+ *
  * Managed sync remains end-to-end encrypted. This package never sends workspace
  * plaintext, never logs secrets, and never claims reliable memory zeroization.
  * Local replica reconciliation, outbox/conflict handling, revocation lock state,
- * recovery kits, and UI wiring are not implemented here; see
+ * and UI wiring are not implemented here; see
  * `docs/architecture/browser-sync.md`.
  */
 
@@ -25,12 +29,14 @@ export * from './errors';
 export * from './crypto';
 export * from './http';
 export * from './identity';
+export * from './binding';
 export * from './enrollment';
 export * from './keys';
 export * from './operations';
 export * from './file-change';
 export * from './codec';
 export * from './access-policy';
+export * from './recovery-kit';
 
 export {
 	AGE_DEVICE_FINGERPRINT_DOMAIN,

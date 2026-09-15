@@ -202,9 +202,9 @@ function decodeBase64(value: string): Uint8Array {
 export function createBrowserWorkspaceClient(worker: BrowserWorkerEndpoint): {
 	client: NouraClient;
 	/**
-	 * Capability-limited plugin runtime. It can activate notes, tasks, and
-	 * projects only; it never grants browser plugins AI, file, search, or cache
-	 * services.
+	 * Capability-limited plugin runtime. It can activate notes, tasks,
+	 * projects, and the read-only calendar view; it never grants browser
+	 * plugins AI, file, search, or cache services.
 	 */
 	plugins: PluginRuntime;
 	transport: CoreTransport & { dispose(): void };

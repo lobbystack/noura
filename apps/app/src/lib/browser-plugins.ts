@@ -11,6 +11,28 @@ function message(cause: unknown): string {
 		: String(cause);
 }
 
+/** Routes the browser shell can render, mapped to the plugin that owns them. */
+export const BROWSER_ROUTE_PLUGINS = {
+	'/': 'notes',
+	'/inbox': 'notes',
+	'/notes': 'notes',
+	'/tasks': 'tasks',
+	'/projects': 'projects',
+	'/calendar': 'calendar',
+} as const;
+
+/** Whether the browser shell has a surface for `pathname`. */
+export function browserRouteSupported(pathname: string): boolean {
+	return pathname in BROWSER_ROUTE_PLUGINS;
+}
+
+/** The plugin whose enabled state gates `pathname`. */
+export function browserRoutePlugin(pathname: string): string {
+	return pathname === '/' || pathname === '/inbox'
+		? 'notes'
+		: pathname.slice(1);
+}
+
 /** UI projection only. Canonical preferences and activation belong to the shared runtime. */
 export function createBrowserPluginModel(
 	client: NouraClient,

@@ -78,12 +78,7 @@ const contextProvider: (
 	},
 });
 
-interface RegisteredProvider {
-	dispose: () => void;
-	disposeTool: () => boolean;
-}
-
-const registrations = new WeakMap<object, RegisteredProvider>();
+const registrations = new WeakMap<object, Array<() => void>>();
 
 export default definePlugin({
 	manifest: {
@@ -96,19 +91,41 @@ export default definePlugin({
 			'ai.context',
 			'ai.tools',
 		],
-		platforms: ['desktop'],
+		platforms: ['desktop', 'web'],
+		activationCapabilities: {
+			desktop: [
+				'workspace.objects',
+				'workspace.events',
+				'ai.context',
+				'ai.tools',
+			],
+			// Browser workspaces expose the calendar as a read-only derived
+			// view over tasks and projects. They grant no AI capabilities, so
+			// activation must not require them.
+			web: ['workspace.objects', 'workspace.events'],
+		},
 	},
 	activate(context) {
-		const dispose = context.ai.registerContextProvider(
-			contextProvider(() => context.objects.list()),
-		);
-		const disposeTool = context.ai.registerTool(calendarTool(context));
-		registrations.set(context, { dispose, disposeTool });
+		const disposers: Array<() => void> = [];
+		// AI is optional. The calendar view works without it; only register
+		// AI contributions when the host actually granted those capabilities
+		// instead of relying on the guard rejecting an activation.
+		if (context.hasCapability('ai.context')) {
+			disposers.push(
+				context.ai.registerContextProvider(
+					contextProvider(() => context.objects.list()),
+				),
+			);
+		}
+		if (context.hasCapability('ai.tools')) {
+			disposers.push(context.ai.registerTool(calendarTool(context)));
+		}
+		registrations.set(context, disposers);
 	},
 	deactivate(context) {
-		const registration = registrations.get(context);
-		registration?.dispose();
-		registration?.disposeTool();
+		for (const dispose of registrations.get(context)?.splice(0) ?? []) {
+			dispose();
+		}
 		registrations.delete(context);
 	},
 });

@@ -118,6 +118,56 @@ test('partial hosts reject unavailable activation capabilities before plugin cod
 	expect(error.retryable).toBe(false);
 });
 
+test('a context reports only the capabilities the activation actually holds', async () => {
+	const seen: {
+		capabilities?: ReadonlySet<string>;
+		held?: Array<boolean>;
+	} = {};
+	const full = new PluginHost({} as PluginHostServices);
+	await full.activate({
+		manifest: {
+			id: 'grants',
+			name: 'Grants',
+			version: '1.0.0',
+			capabilities: ['workspace.objects', 'ai.context'],
+		},
+		activate(context) {
+			seen.capabilities = context.capabilities;
+			seen.held = [
+				context.hasCapability('workspace.objects'),
+				context.hasCapability('ai.context'),
+				context.hasCapability('workspace.files'),
+			];
+		},
+	});
+	expect([...seen.capabilities!]).toEqual(['workspace.objects', 'ai.context']);
+	expect(seen.held).toEqual([true, true, false]);
+
+	const partial = new PluginHost({} as PluginHostServices, {
+		platform: 'web',
+		supportedCapabilities: ['workspace.objects'],
+	});
+	await partial.activate({
+		manifest: {
+			id: 'partial-grants',
+			name: 'Partial grants',
+			version: '1.0.0',
+			capabilities: ['workspace.objects', 'ai.context'],
+			platforms: ['web'],
+			activationCapabilities: { web: ['workspace.objects'] },
+		},
+		activate(context) {
+			seen.capabilities = context.capabilities;
+			seen.held = [
+				context.hasCapability('workspace.objects'),
+				context.hasCapability('ai.context'),
+			];
+		},
+	});
+	expect([...seen.capabilities!]).toEqual(['workspace.objects']);
+	expect(seen.held).toEqual([true, false]);
+});
+
 test('plugin host denies undeclared object access', async () => {
 	const services: PluginHostServices = {
 		files: {
