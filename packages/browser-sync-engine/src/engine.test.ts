@@ -13,12 +13,14 @@ import {
 	createEmptySyncState,
 	MemorySyncStorage,
 	memoryRevision,
+	SYNC_STATE_VERSION,
 	type BrowserSyncEngineOptions,
 	type BrowserSyncRemote,
 	type BrowserWorkspaceStorageLike,
 	type FileChange,
 	type FileChangeCodec,
 	type SyncState,
+	type SyncStateMigration,
 	type SyncStateStore,
 } from './index';
 
@@ -519,6 +521,230 @@ describe('reconcile', () => {
 	});
 });
 
+describe('conflict resolution', () => {
+	async function reconcileConflict(
+		remoteChange: FileChange,
+	): Promise<ReturnType<typeof createHarness>> {
+		const harness = createHarness();
+		await harness.storage.write({
+			path: 'file.md',
+			bytes: bytes('local'),
+			expectedRevision: null,
+		});
+		harness.remote.pages = [page([remoteChange], '7')];
+		await harness.engine.reconcile();
+		return harness;
+	}
+
+	test('records the encrypted operation and object identity on the conflict', async () => {
+		const harness = await reconcileConflict(
+			change('file.md', 'remote', { baseRevision: 'deadbeef' }),
+		);
+
+		const conflict = harness.persisted().conflicts[0]!;
+		expect(conflict.operationId).toBe(
+			harness.persisted().conflicts[0]!.operation.operationId,
+		);
+		expect(conflict.objectId).toBe('object');
+		expect(conflict.operation.objectId).toBe('object');
+		expect(conflict.operation.ciphertext).toBeTruthy();
+	});
+
+	test('resolve remote force-applies the stored operation and clears the conflict', async () => {
+		const harness = await reconcileConflict(
+			change('file.md', 'remote', { baseRevision: 'deadbeef' }),
+		);
+		const operationId = harness.persisted().conflicts[0]!.operationId;
+
+		const result = await harness.engine.resolveConflict(operationId, 'remote');
+
+		expect(result.resolved.operationId).toBe(operationId);
+		expect(result.remaining).toEqual([]);
+		expect(decoder.decode((await harness.storage.read('file.md'))!.bytes)).toBe(
+			'remote',
+		);
+		expect(harness.persisted().conflicts).toEqual([]);
+		expect(harness.persisted().knownPaths).toContain('file.md');
+	});
+
+	test('resolve remote force-applies a deletion despite a revision mismatch', async () => {
+		const harness = createHarness();
+		await harness.storage.write({
+			path: 'file.md',
+			bytes: bytes('local'),
+			expectedRevision: null,
+		});
+		harness.remote.pages = [
+			page([change('file.md', null, { baseRevision: 'deadbeef' })], '9'),
+		];
+		await harness.engine.reconcile();
+		const operationId = harness.persisted().conflicts[0]!.operationId;
+
+		await harness.engine.resolveConflict(operationId, 'remote');
+
+		expect(await harness.storage.read('file.md')).toBeNull();
+		expect(harness.persisted().knownPaths).not.toContain('file.md');
+	});
+
+	test('resolve remote force-applies a move over an occupied destination', async () => {
+		const harness = createHarness();
+		await harness.storage.write({
+			path: 'source.md',
+			bytes: bytes('moving'),
+			expectedRevision: null,
+		});
+		await harness.storage.write({
+			path: 'destination.md',
+			bytes: bytes('existing'),
+			expectedRevision: null,
+		});
+		harness.remote.pages = [
+			page(
+				[change('destination.md', 'moving', { previousPath: 'source.md' })],
+				'3',
+			),
+		];
+		await harness.engine.reconcile();
+		const operationId = harness.persisted().conflicts[0]!.operationId;
+
+		await harness.engine.resolveConflict(operationId, 'remote');
+
+		expect(await harness.storage.read('source.md')).toBeNull();
+		expect(
+			decoder.decode((await harness.storage.read('destination.md'))!.bytes),
+		).toBe('moving');
+		expect(harness.persisted().knownPaths).toContain('destination.md');
+		expect(harness.persisted().knownPaths).not.toContain('source.md');
+	});
+
+	test('resolve local enqueues the local bytes as a replacement operation', async () => {
+		const harness = await reconcileConflict(
+			change('file.md', 'remote', { baseRevision: 'deadbeef' }),
+		);
+		const operationId = harness.persisted().conflicts[0]!.operationId;
+		const before = harness.persisted().outbox.length;
+
+		const result = await harness.engine.resolveConflict(operationId, 'local');
+
+		expect(result.remaining).toEqual([]);
+		const state = harness.persisted();
+		expect(state.conflicts).toEqual([]);
+		expect(state.outbox).toHaveLength(before + 1);
+		const replacement = state.outbox[state.outbox.length - 1]!;
+		const opened = openCanonical(replacement);
+		expect(opened.path).toBe('file.md');
+		expect(opened.baseRevision).toBe('deadbeef');
+		expect(decoder.decode(opened.content!)).toBe('local');
+		expect(harness.remote.batches).toHaveLength(0);
+	});
+
+	test('resolve local enqueues a deletion when the path no longer exists', async () => {
+		const harness = await reconcileConflict(
+			change('file.md', 'remote', { baseRevision: 'deadbeef' }),
+		);
+		const operationId = harness.persisted().conflicts[0]!.operationId;
+		const local = await harness.storage.read('file.md');
+		await harness.storage.delete({
+			path: 'file.md',
+			expectedRevision: local!.revision,
+		});
+
+		await harness.engine.resolveConflict(operationId, 'local');
+
+		const state = harness.persisted();
+		const replacement = state.outbox[state.outbox.length - 1]!;
+		const opened = openCanonical(replacement);
+		expect(opened.path).toBe('file.md');
+		expect(opened.content).toBeNull();
+	});
+
+	test('a repeated pull of the same operation does not duplicate the conflict', async () => {
+		const harness = createHarness();
+		await harness.storage.write({
+			path: 'file.md',
+			bytes: bytes('local'),
+			expectedRevision: null,
+		});
+		const shared = encodeFileChange(
+			change('file.md', 'remote', { baseRevision: 'deadbeef' }),
+		);
+		harness.remote.pages = [
+			{
+				accessRevision: '7',
+				cursor: '7',
+				hasMore: false,
+				operations: [{ ...shared, sequence: '1' }],
+			},
+			{
+				accessRevision: '8',
+				cursor: '8',
+				hasMore: false,
+				operations: [{ ...shared, sequence: '2' }],
+			},
+		];
+
+		const first = await harness.engine.reconcile();
+		const second = await harness.engine.reconcile();
+
+		expect(first.conflicts).toHaveLength(1);
+		expect(second.conflicts).toHaveLength(0);
+		expect(harness.persisted().conflicts).toHaveLength(1);
+		expect(harness.persisted().cursor).toBe('8');
+	});
+
+	test('an unknown operation id is rejected without touching storage', async () => {
+		const harness = createHarness();
+
+		await expect(
+			harness.engine.resolveConflict('missing_operation', 'remote'),
+		).rejects.toMatchObject({
+			code: BrowserSyncEngineErrorCode.ConflictNotFound,
+		});
+	});
+
+	test('upgrades legacy durable state and reports it without crashing', async () => {
+		const migrations: SyncStateMigration[] = [];
+		const legacy = {
+			cursor: '3',
+			pushedRevisions: {},
+			knownPaths: [],
+			outbox: [],
+			conflicts: [
+				{
+					operationId: 'legacy_operation',
+					path: 'a.md',
+					reason: 'revision_mismatch',
+					expectedRevision: null,
+					currentRevision: null,
+					previousPath: null,
+					detectedAt: 1,
+				},
+			],
+		};
+		const store: SyncStateStore = {
+			async read() {
+				return legacy as unknown as SyncState;
+			},
+			async write() {},
+		};
+		const engine = new BrowserSyncEngine({
+			storage: new MemorySyncStorage(),
+			remote: new FakeRemote(),
+			codec: createFakeCodec(),
+			state: store,
+			now: () => 1,
+			onStateMigration: (migration) => migrations.push(migration),
+		});
+
+		const result = await engine.reconcile();
+
+		expect(result.conflicts).toEqual([]);
+		expect(migrations).toEqual([
+			{ fromVersion: 1, toVersion: SYNC_STATE_VERSION, droppedConflicts: 1 },
+		]);
+	});
+});
+
 describe('snapshotLocalChanges', () => {
 	test('detects added, changed, and deleted paths and ignores unchanged', async () => {
 		const storage = new MemorySyncStorage();
@@ -538,6 +764,7 @@ describe('snapshotLocalChanges', () => {
 			expectedRevision: null,
 		});
 		const state: SyncState = {
+			version: SYNC_STATE_VERSION,
 			cursor: '5',
 			pushedRevisions: {
 				'keep.md': keep.revision,

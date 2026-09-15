@@ -102,15 +102,25 @@ export type SyncConflictReason =
 	| 'invalid_move'
 	| 'storage_rejected';
 
-/** A durable record of one remote operation that could not be applied. */
+/**
+ * A durable record of one remote operation that could not be applied.
+ *
+ * The encrypted `operation` and its `objectId` are retained so the conflict can
+ * be retried later through the codec without re-pulling. Nothing here is
+ * plaintext: `operation` is exactly the ciphertext envelope the remote served.
+ */
 export interface SyncConflict {
 	operationId: string;
+	/** Envelope object identity, recovered from the operation when it was pulled. */
+	objectId: string;
 	path: string;
 	reason: SyncConflictReason;
 	expectedRevision: string | null;
 	currentRevision: string | null;
 	previousPath: string | null;
 	detectedAt: number;
+	/** The encrypted remote operation, kept so remote resolution can retry it. */
+	operation: EncryptedOperation;
 }
 
 /**
@@ -119,14 +129,35 @@ export interface SyncConflict {
  * `pushedRevisions` maps each synchronized path to its last known content
  * revision; `knownPaths` is the set of synchronized present paths. Together
  * they are the baseline {@link BrowserSyncEngine.snapshotLocalChanges} diffs
- * the local replica against. `outbox` preserves operation order.
+ * the local replica against. `outbox` preserves operation order. `version` is
+ * the durable state schema version, used to migrate older persisted states.
  */
 export interface SyncState {
+	version: number;
 	cursor: string;
 	pushedRevisions: Record<string, string>;
 	knownPaths: string[];
 	outbox: EncryptedOperation[];
 	conflicts: SyncConflict[];
+}
+
+/** The `SyncState` schema version written by this package. */
+export const SYNC_STATE_VERSION = 2;
+
+/** Reported when an older durable state is read and normalized. */
+export interface SyncStateMigration {
+	/** Schema version detected on disk; `1` when the field was absent. */
+	fromVersion: number;
+	/** Schema version after normalization. */
+	toVersion: number;
+	/** Unresolvable legacy conflict records that were dropped. */
+	droppedConflicts: number;
+}
+
+/** Options for {@link validateSyncState}. */
+export interface ValidateSyncStateOptions {
+	/** Called once when legacy state is migrated or unreadable conflicts are dropped. */
+	onMigration?: (migration: SyncStateMigration) => void;
 }
 
 /** Durable state boundary. Must survive reloads; never a disposable cache. */
@@ -147,6 +178,17 @@ export interface ReconcileResult {
 	cursor: string;
 	/** Whether the remote reported more operations after the final page. */
 	hasMore: boolean;
+}
+
+/** Which side wins when resolving a recorded conflict. */
+export type SyncConflictResolution = 'local' | 'remote';
+
+/** Summary returned by {@link BrowserSyncEngine.resolveConflict}. */
+export interface ResolveConflictResult {
+	/** The conflict record that was resolved and removed. */
+	resolved: SyncConflict;
+	/** Conflicts that remain after resolution, in durable order. */
+	remaining: SyncConflict[];
 }
 
 /** Engine lifecycle phase. A locked engine refuses further reconciliation. */

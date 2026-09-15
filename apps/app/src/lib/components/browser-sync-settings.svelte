@@ -3,11 +3,14 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import * as Field from '$lib/components/ui/field';
 	import type { BrowserWorkspaceFiles } from '@noura/browser-workspace';
 	import {
 		getBrowserSyncController,
+		type BrowserSyncConflictDetail,
 		type BrowserSyncController,
+		type BrowserSyncDeviceCard,
 		type BrowserSyncStatus,
 		type BrowserSyncWorkspaceSummary,
 		type SyncNowOutcome,
@@ -37,6 +40,14 @@
 	let error = $state('');
 	let notice = $state('');
 	let reconcile = $state('');
+	let skippedUnmanaged = $state(0);
+	let devices = $state<BrowserSyncDeviceCard[]>([]);
+	let devicesLoaded = $state(false);
+	let devicesBusy = $state(false);
+	let devicesError = $state('');
+	let verified = $state<Record<string, string>>({});
+	let conflictBusy = $state<string | null>(null);
+	let conflictError = $state('');
 
 	const statusLabels: Record<BrowserSyncStatus, string> = {
 		unavailable: 'Unavailable in this browser',
@@ -54,7 +65,11 @@
 
 	function syncMessage(outcome: SyncNowOutcome): string {
 		if (outcome.status === 'synced') {
-			return `Sync complete. Pushed ${outcome.pushed}, applied ${outcome.applied}, ${outcome.conflicts} conflict(s). Cursor ${outcome.cursor}.`;
+			const skipped =
+				outcome.skippedUnmanaged > 0
+					? ` Skipped ${outcome.skippedUnmanaged} file(s) with no owning object.`
+					: '';
+			return `Sync complete. Pushed ${outcome.pushed}, applied ${outcome.applied}, ${outcome.conflicts} conflict(s). Cursor ${outcome.cursor}.${skipped}`;
 		}
 		return outcome.message;
 	}
@@ -72,6 +87,14 @@
 	const canEnable = $derived(
 		status === 'enrolled' && !!workspaceId && !!workspaceFiles,
 	);
+
+	// Device review needs an unlocked device and an existing durable binding.
+	const canReviewDevices = $derived(
+		(status === 'unlocked' || status === 'enrolled') &&
+			summary?.configured === true,
+	);
+
+	const conflicts = $derived(summary?.conflictDetails ?? []);
 
 	async function restoreBinding() {
 		const value = controller;
@@ -138,6 +161,13 @@
 		passphrase = '';
 		error = '';
 		notice = 'Browser device locked. Key material was dropped from this tab.';
+		reconcile = '';
+		skippedUnmanaged = 0;
+		devices = [];
+		devicesLoaded = false;
+		devicesError = '';
+		verified = {};
+		conflictError = '';
 		void refresh();
 	}
 
@@ -146,6 +176,8 @@
 		if (!value || busy) return;
 		void run(async () => {
 			const outcome = await value.syncNow();
+			skippedUnmanaged =
+				outcome.status === 'synced' ? outcome.skippedUnmanaged : 0;
 			reconcile = syncMessage(outcome);
 			if (outcome.status === 'synced') {
 				notice = reconcile;
@@ -167,6 +199,142 @@
 			notice =
 				'Encrypted sync is enabled for this browser workspace. Run “Sync now” to reconcile.';
 		});
+	}
+
+	function workspaceScope(): { workspaceId?: string } {
+		return workspaceId ? { workspaceId } : {};
+	}
+
+	async function loadDevices(): Promise<void> {
+		const value = controller;
+		if (!value) return;
+		const result = await value.listWorkspaceDevices(workspaceScope());
+		if (!result.ok) {
+			devices = [];
+			devicesError = friendly(result.code, result.message);
+			return;
+		}
+		devices = result.value;
+		// Drop verifications for cards that are gone or whose fingerprint changed.
+		const stillVerified: Record<string, string> = {};
+		for (const device of devices) {
+			if (verified[device.deviceId] === device.fingerprint) {
+				stillVerified[device.deviceId] = device.fingerprint;
+			}
+		}
+		verified = stillVerified;
+	}
+
+	function checkDevices() {
+		const value = controller;
+		if (!value || devicesBusy) return;
+		void (async () => {
+			devicesBusy = true;
+			devicesError = '';
+			try {
+				await loadDevices();
+			} catch (cause) {
+				devices = [];
+				devicesError =
+					cause instanceof Error
+						? cause.message
+						: 'The workspace device list could not be loaded.';
+			} finally {
+				devicesLoaded = true;
+				devicesBusy = false;
+			}
+		})();
+	}
+
+	function approve(device: BrowserSyncDeviceCard) {
+		const value = controller;
+		if (!value || devicesBusy) return;
+		void (async () => {
+			devicesBusy = true;
+			devicesError = '';
+			notice = '';
+			try {
+				// Pass the fingerprint exactly as it was displayed and verified.
+				const result = await value.approveDevice(
+					device.deviceId,
+					device.fingerprint,
+				);
+				if (!result.ok) {
+					devicesError = friendly(result.code, result.message);
+					return;
+				}
+				await loadDevices();
+				notice = `Approved ${device.deviceId}. Its signing key is now pinned on this browser.`;
+			} catch (cause) {
+				devicesError =
+					cause instanceof Error
+						? cause.message
+						: 'Approving the device failed.';
+			} finally {
+				devicesBusy = false;
+			}
+		})();
+	}
+
+	function revoke(device: BrowserSyncDeviceCard) {
+		const value = controller;
+		if (!value || devicesBusy) return;
+		void (async () => {
+			devicesBusy = true;
+			devicesError = '';
+			notice = '';
+			try {
+				const result = await value.revokeDeviceApproval(device.deviceId);
+				if (!result.ok) {
+					devicesError = friendly(result.code, result.message);
+					return;
+				}
+				await loadDevices();
+				notice = result.value
+					? `Removed the local approval for ${device.deviceId}.`
+					: `${device.deviceId} was not approved on this browser.`;
+			} catch (cause) {
+				devicesError =
+					cause instanceof Error
+						? cause.message
+						: 'Revoking the device approval failed.';
+			} finally {
+				devicesBusy = false;
+			}
+		})();
+	}
+
+	function resolveConflictChoice(
+		conflict: BrowserSyncConflictDetail,
+		choice: 'local' | 'remote',
+	) {
+		const value = controller;
+		if (!value || conflictBusy) return;
+		void (async () => {
+			conflictBusy = conflict.operationId;
+			conflictError = '';
+			notice = '';
+			try {
+				const result = await value.resolveConflict(
+					conflict.operationId,
+					choice,
+				);
+				if (!result.ok) {
+					conflictError = friendly(result.code, result.message);
+					return;
+				}
+				await refresh();
+				const kept = choice === 'local' ? 'local' : 'remote';
+				notice = `Kept the ${kept} version of ${conflict.path}. ${result.value.remaining} conflict(s) remain.`;
+			} catch (cause) {
+				conflictError =
+					cause instanceof Error
+						? cause.message
+						: 'Resolving the conflict failed.';
+			} finally {
+				conflictBusy = null;
+			}
+		})();
 	}
 
 	onMount(() => {
@@ -317,6 +485,13 @@
 				{#if reconcile}
 					<p role="status" class="text-xs text-muted-foreground">{reconcile}</p>
 				{/if}
+				{#if skippedUnmanaged > 0}
+					<p role="status" class="text-xs text-muted-foreground">
+						{skippedUnmanaged} file(s) have no workspace object id, so they are not
+						synchronized yet. Give each file a managed note, task, or project object
+						before it can sync.
+					</p>
+				{/if}
 				<p id="browser-sync-durability" class="text-xs text-muted-foreground">
 					Browser storage is a disposable replica, not a backup. Clearing site
 					data or browser eviction can erase this workspace and its sync state.
@@ -324,6 +499,161 @@
 					encrypted; store them securely.
 				</p>
 			</div>
+
+			{#if canReviewDevices}
+				<div
+					class="flex flex-col gap-3"
+					aria-labelledby="browser-sync-devices-heading"
+				>
+					<h4 id="browser-sync-devices-heading" class="text-sm font-medium">
+						Workspace devices
+					</h4>
+					<p class="text-xs text-muted-foreground">
+						Approving a device pins its signing key on this browser. After that,
+						only this browser plus the devices you approved here are trusted to
+						sign workspace changes. Compare the full fingerprint with the other
+						device before approving. Revoking removes only the local approval.
+					</p>
+					<div>
+						<Button
+							variant="outline"
+							disabled={busy || devicesBusy}
+							onclick={checkDevices}
+							>{devicesBusy && !devicesLoaded
+								? 'Checking devices…'
+								: 'Check workspace devices'}</Button
+						>
+					</div>
+					{#if devicesError}
+						<p role="alert" class="text-sm text-destructive">{devicesError}</p>
+					{/if}
+					{#if devicesLoaded}
+						{#if devices.length > 0}
+							<ul class="flex flex-col gap-3">
+								{#each devices as device (device.deviceId)}
+									<li class="flex flex-col gap-3 rounded-xl border p-4">
+										<div
+											class="flex flex-wrap items-center justify-between gap-2"
+										>
+											<div class="flex flex-col gap-1">
+												<p class="text-xs font-medium">Device id</p>
+												<p class="break-all font-mono text-xs select-text">
+													{device.deviceId}
+												</p>
+											</div>
+											{#if device.approved}
+												<Badge variant="secondary">Approved</Badge>
+											{:else}
+												<Badge variant="outline">Not approved</Badge>
+											{/if}
+										</div>
+										<div class="flex flex-col gap-1">
+											<p class="text-xs font-medium">Fingerprint</p>
+											<p class="break-all font-mono text-xs select-text">
+												{device.fingerprint}
+											</p>
+										</div>
+										{#if device.approved}
+											<div>
+												<Button
+													variant="outline"
+													disabled={busy || devicesBusy}
+													onclick={() => revoke(device)}>Revoke approval</Button
+												>
+											</div>
+										{:else}
+											<Field.FieldGroup>
+												<Field.Field orientation="horizontal">
+													<Checkbox
+														id={`browser-sync-verify-${device.deviceId}`}
+														checked={verified[device.deviceId] ===
+															device.fingerprint}
+														onCheckedChange={(checked) => {
+															verified[device.deviceId] = checked
+																? device.fingerprint
+																: '';
+														}}
+														disabled={busy || devicesBusy}
+													/>
+													<Field.FieldLabel
+														for={`browser-sync-verify-${device.deviceId}`}
+														>I compared the full fingerprint on the other device
+														and it matches.</Field.FieldLabel
+													>
+												</Field.Field>
+											</Field.FieldGroup>
+											<div>
+												<Button
+													disabled={busy ||
+														devicesBusy ||
+														verified[device.deviceId] !== device.fingerprint}
+													onclick={() => approve(device)}>Approve device</Button
+												>
+											</div>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{:else}
+							<p role="status" class="text-xs text-muted-foreground">
+								No workspace devices were returned.
+							</p>
+						{/if}
+					{/if}
+				</div>
+			{/if}
+
+			{#if conflicts.length > 0}
+				<div
+					class="flex flex-col gap-3"
+					aria-labelledby="browser-sync-conflicts-heading"
+				>
+					<h4 id="browser-sync-conflicts-heading" class="text-sm font-medium">
+						Conflicts
+					</h4>
+					<p class="text-xs text-muted-foreground">
+						Sync recorded {conflicts.length} change(s) that could not apply automatically.
+						Nothing is overwritten until you choose. Keep local keeps the bytes on
+						this browser; Take remote applies the remote version. Each choice is explicit
+						and applies to one conflict.
+					</p>
+					{#if conflictError}
+						<p role="alert" class="text-sm text-destructive">{conflictError}</p>
+					{/if}
+					<ul class="flex flex-col gap-3">
+						{#each conflicts as conflict (conflict.operationId)}
+							<li class="flex flex-col gap-3 rounded-xl border p-4">
+								<div class="flex flex-col gap-1">
+									<p class="break-all font-mono text-xs select-text">
+										{conflict.path}
+									</p>
+									<p class="text-xs text-muted-foreground">
+										{conflict.reason}
+									</p>
+								</div>
+								<div class="flex flex-wrap gap-2">
+									<Button
+										variant="outline"
+										disabled={busy || conflictBusy !== null}
+										onclick={() => resolveConflictChoice(conflict, 'local')}
+										>{conflictBusy === conflict.operationId
+											? 'Resolving…'
+											: 'Keep local'}</Button
+									>
+									<Button
+										variant="outline"
+										disabled={busy || conflictBusy !== null}
+										onclick={() => resolveConflictChoice(conflict, 'remote')}
+										>{conflictBusy === conflict.operationId
+											? 'Resolving…'
+											: 'Take remote'}</Button
+									>
+								</div>
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
 		{/if}
 
 		{#if notice}<p role="status" class="text-sm">{notice}</p>{/if}

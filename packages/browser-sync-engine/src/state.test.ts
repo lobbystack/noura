@@ -4,8 +4,11 @@ import {
 	createEmptySyncState,
 	createFileSystemSyncStateStore,
 	DEFAULT_SYNC_STATE_PATH,
+	SYNC_STATE_VERSION,
+	validateSyncState,
 	type SyncState,
 	type SyncStateFileSystem,
+	type SyncStateMigration,
 } from './index';
 
 const encoder = new TextEncoder();
@@ -39,37 +42,53 @@ class FakeFileSystem implements SyncStateFileSystem {
 	}
 }
 
+function storedOperation(operationId: string) {
+	return {
+		version: 1 as const,
+		operationId,
+		workspaceId: 'workspace',
+		objectId: 'object',
+		deviceId: 'device',
+		epoch: 1,
+		policyRevision: '1',
+		nonce: 'bm9uY2U=',
+		ciphertext: 'Y2lwaGVy',
+		signature: 'c2ln',
+	};
+}
+
 function populatedState(): SyncState {
 	return {
+		version: SYNC_STATE_VERSION,
 		cursor: '42',
 		pushedRevisions: { 'b.md': 'rev-b', 'a.md': 'rev-a' },
 		knownPaths: ['a.md', 'b.md'],
-		outbox: [
-			{
-				version: 1,
-				operationId: 'operation_1',
-				workspaceId: 'workspace',
-				objectId: 'object',
-				deviceId: 'device',
-				epoch: 1,
-				policyRevision: '1',
-				nonce: 'bm9uY2U=',
-				ciphertext: 'Y2lwaGVy',
-				signature: 'c2ln',
-			},
-		],
+		outbox: [storedOperation('operation_1')],
 		conflicts: [
 			{
 				operationId: 'operation_1',
+				objectId: 'object',
 				path: 'a.md',
 				reason: 'revision_mismatch',
 				expectedRevision: 'expected',
 				currentRevision: 'current',
 				previousPath: null,
 				detectedAt: 1234,
+				operation: storedOperation('operation_1'),
 			},
 		],
 	};
+}
+
+/** State as it was persisted before conflicts carried the encrypted operation. */
+function legacyState(): Record<string, unknown> {
+	const state = populatedState() as unknown as Record<string, unknown>;
+	const conflicts = (state.conflicts as Array<Record<string, unknown>>).map(
+		({ operation: _operation, objectId: _objectId, ...legacy }) => legacy,
+	);
+	state.conflicts = conflicts;
+	delete state.version;
+	return state;
 }
 
 describe('createFileSystemSyncStateStore', () => {
@@ -188,5 +207,76 @@ describe('createFileSystemSyncStateStore', () => {
 		expect(await store.remove()).toBe(true);
 		expect(await store.read()).toEqual(createEmptySyncState());
 		expect(await store.remove()).toBe(false);
+	});
+});
+
+describe('sync state migration', () => {
+	test('createEmptySyncState carries the current schema version', () => {
+		expect(createEmptySyncState().version).toBe(SYNC_STATE_VERSION);
+	});
+
+	test('upgrades legacy state and drops unresolvable conflicts, reporting it', () => {
+		const migrations: SyncStateMigration[] = [];
+		const state = validateSyncState(legacyState(), {
+			onMigration: (migration) => migrations.push(migration),
+		});
+
+		expect(state.version).toBe(SYNC_STATE_VERSION);
+		expect(state.cursor).toBe('42');
+		expect(state.conflicts).toEqual([]);
+		expect(state.outbox).toHaveLength(1);
+		expect(migrations).toEqual([
+			{
+				fromVersion: 1,
+				toVersion: SYNC_STATE_VERSION,
+				droppedConflicts: 1,
+			},
+		]);
+	});
+
+	test('a legacy state file reads without crashing and reports the migration', async () => {
+		const fileSystem = new FakeFileSystem();
+		const migrations: SyncStateMigration[] = [];
+		fileSystem.files.set('state.json', bytes(JSON.stringify(legacyState())));
+		const store = createFileSystemSyncStateStore(
+			fileSystem,
+			'state.json',
+			undefined,
+			{ onMigration: (migration) => migrations.push(migration) },
+		);
+
+		const state = await store.read();
+
+		expect(state.version).toBe(SYNC_STATE_VERSION);
+		expect(state.conflicts).toEqual([]);
+		expect(migrations).toHaveLength(1);
+		expect(migrations[0]!.droppedConflicts).toBe(1);
+	});
+
+	test('rejects state written by a newer schema version', () => {
+		const state = { ...populatedState(), version: SYNC_STATE_VERSION + 1 };
+		let caught: unknown;
+		try {
+			validateSyncState(state);
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toMatchObject({
+			code: BrowserSyncEngineErrorCode.InvalidState,
+		});
+	});
+
+	test('rejects a conflict record that is not an object', () => {
+		const state = populatedState() as unknown as Record<string, unknown>;
+		state.conflicts = ['not-a-conflict'];
+		let caught: unknown;
+		try {
+			validateSyncState(state);
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toMatchObject({
+			code: BrowserSyncEngineErrorCode.InvalidState,
+		});
 	});
 });

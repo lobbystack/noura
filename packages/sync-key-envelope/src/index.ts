@@ -33,6 +33,9 @@ export const RECIPIENT_PREFIX = 'x25519:';
 /** Domain string separating browser device fingerprints from native ones. */
 export const DEVICE_FINGERPRINT_DOMAIN = 'noura.device.card.web';
 
+/** Domain string for native `age` device fingerprints, matching the Rust client. */
+export const AGE_DEVICE_FINGERPRINT_DOMAIN = 'noura.device.card';
+
 /** Domain string binding the browser device enrollment proof. */
 export const ENROLLMENT_DOMAIN = 'noura.device.enroll.web';
 
@@ -694,6 +697,58 @@ export function deviceFingerprint(
 		recipient,
 	]);
 	return bytesToHex(blake3(bytes));
+}
+
+/**
+ * Compute the native `age` device fingerprint for an `age1` recipient.
+ *
+ * The fingerprint is lowercase hexadecimal BLAKE3 over the canonical JSON tuple
+ * `[AGE_DEVICE_FINGERPRINT_DOMAIN, 1, deviceId, accountId, base64(signingPublic),
+ * ageRecipient]`. It matches `crates/local-core` `device_fingerprint` and the
+ * native `noura.device.card` tuple exactly. The recipient is bound as given;
+ * callers must validate it when trust depends on its form.
+ */
+export function deviceFingerprintAge(
+	deviceId: string,
+	accountId: string,
+	signingPublic: Uint8Array,
+	ageRecipient: string,
+): string {
+	const bytes = canonicalTuple([
+		AGE_DEVICE_FINGERPRINT_DOMAIN,
+		1,
+		deviceId,
+		accountId,
+		encodeBase64(signingPublic),
+		ageRecipient,
+	]);
+	return bytesToHex(blake3(bytes));
+}
+
+/**
+ * Compute the device fingerprint for a card whose recipient may be a browser
+ * `x25519:` recipient or a native `age1` recipient.
+ *
+ * A browser recipient uses {@link deviceFingerprint} (`noura.device.card.web`); a
+ * native `age1` recipient uses {@link deviceFingerprintAge}
+ * (`noura.device.card`). Any other recipient form is rejected with
+ * {@link KeyEnvelopeErrorCode.InvalidRecipient}, mirroring the native client,
+ * which parses either an `age` recipient or an `x25519:` recipient.
+ */
+export function deviceFingerprintForCard(
+	deviceId: string,
+	accountId: string,
+	signingPublic: Uint8Array,
+	recipient: string,
+): string {
+	if (recipient.startsWith(RECIPIENT_PREFIX)) {
+		decodeRecipient(recipient);
+		return deviceFingerprint(deviceId, accountId, signingPublic, recipient);
+	}
+	if (!recipient.startsWith('age1')) {
+		return fail(KeyEnvelopeErrorCode.InvalidRecipient);
+	}
+	return deviceFingerprintAge(deviceId, accountId, signingPublic, recipient);
 }
 
 /**

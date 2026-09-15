@@ -10,6 +10,9 @@
  * - flush the outbox in order, then pull and apply version-1 file-change rules
  *   with expected revisions, recording conflicts without overwriting bytes
  *   ({@link BrowserSyncEngine.reconcile});
+ * - resolve a recorded conflict by re-applying the stored encrypted remote
+ *   operation or by enqueueing the local bytes as a replacement operation
+ *   ({@link BrowserSyncEngine.resolveConflict});
  * - diff the local replica against the synchronized baseline so callers can
  *   enqueue added, changed, and deleted paths
  *   ({@link BrowserSyncEngine.snapshotLocalChanges});
@@ -50,6 +53,7 @@ export {
 	serializeSyncState,
 	validateSyncState,
 } from './state';
+export { SYNC_STATE_VERSION } from './types';
 export type { FileSystemSyncStateStore, SyncStateFileSystem } from './state';
 
 export {
@@ -74,12 +78,16 @@ export type {
 	FileChangeCodec,
 	OpenedFileChange,
 	ReconcileResult,
+	ResolveConflictResult,
 	SyncConflict,
 	SyncConflictReason,
+	SyncConflictResolution,
 	SyncState,
+	SyncStateMigration,
 	SyncStateStore,
 	SyncStorageDeleteInput,
 	SyncStorageFile,
 	SyncStorageMoveInput,
 	SyncStorageWriteInput,
+	ValidateSyncStateOptions,
 } from './types';

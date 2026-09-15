@@ -33,8 +33,12 @@ export * from './codec';
 export * from './access-policy';
 
 export {
+	AGE_DEVICE_FINGERPRINT_DOMAIN,
+	DEVICE_FINGERPRINT_DOMAIN,
 	decodeRecipient,
 	deviceFingerprint,
+	deviceFingerprintAge,
+	deviceFingerprintForCard,
 	encodeRecipient,
 	enrollmentProof,
 	KeyEnvelopeError,

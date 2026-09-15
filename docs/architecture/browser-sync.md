@@ -88,15 +88,25 @@ at the library level over injectable `storage`, `remote`, `codec`, and durable
 network call, flushes the outbox in order in batches of at most 100 operations,
 pulls pages from the stored cursor, and applies version-1 file-change rules
 against expected revisions, recording conflicts without overwriting local bytes.
-A revoked codec or remote error transitions the engine to a locked state through
-an injected `onRevoked` hook. It holds no keys and performs no cryptography,
-serialization, or network I/O. `createFileSystemSyncStateStore` supplies the
-durable `SyncStateStore` over an injected filesystem boundary at an
-adapter-owned path outside the canonical workspace, and
-`createWorkspaceStorageAdapter` is the concrete `BrowserSyncStorage` bridge that
-derives its path list from `BrowserWorkspaceStorage.rebuild()`. Host app/OPFS
-wiring, key-rotation application, recovery kits, and UI are still outstanding,
-so the hosted browser still cannot synchronize a workspace end to end.
+A recorded conflict retains the encrypted remote operation and its object
+identity, and `resolveConflict` either force-applies the remote operation or
+enqueues the current local bytes as a replacement operation so the choice can be
+retried and pushed. Durable state carries a schema version, and reading an older
+state upgrades it and drops unresolvable legacy conflicts with a reported
+migration rather than failing. A revoked codec or remote error transitions the
+engine to a locked state through an injected `onRevoked` hook. It holds no keys
+and performs no cryptography, serialization, or network I/O.
+`createFileSystemSyncStateStore` supplies the durable `SyncStateStore` over an
+injected filesystem boundary at an adapter-owned path outside the canonical
+workspace, and `createWorkspaceStorageAdapter` is the concrete
+`BrowserSyncStorage` bridge that derives its path list from
+`BrowserWorkspaceStorage.rebuild()`. The `apps/app` controller now composes that
+bridge over the workspace worker, bootstraps one remote object and wrapped key
+per managed local object, refreshes delivered keys before reconcile, records and
+resolves conflicts, and persists only wrapped keys and locally approved signer
+keys. Key-rotation application, recovery kits, and device-management UI are
+still outstanding, so the hosted browser still cannot synchronize a workspace
+end to end without a trusted device to approve and deliver keys.
 
 ## Locked invariants this proposal must satisfy
 
@@ -221,6 +231,13 @@ only, the exact form below; every other form returns the public error code
   submitted public key. This mirrors `noura.device.enroll.v2` while adding the
   versioned browser domain and the raw X25519 recipient.
 
+`packages/sync-key-envelope` also exports `deviceFingerprintAge` for a native
+`age1` recipient (`noura.device.card`) and `deviceFingerprintForCard`, which
+dispatches on the recipient form and rejects a recipient that is neither an
+`x25519:` nor an `age1` form with `sync_invalid_recipient`. The `age` domain
+function matches `crates/local-core` `device_fingerprint` byte-for-byte, and a
+conformance test pins it and the browser fixture values.
+
 The native `device_fingerprint` now renders the browser variant, and
 `crates/local-core` both consumes and produces the extended key-envelope fields;
 see "Native client support" below. The `apps/server` enrollment, key-storage, and
@@ -336,10 +353,14 @@ ephemeralPublicKey, salt, nonce]` for web entries and the unchanged
   canonical file-change encoding/decoding, the file-change codec, and the
   push/pull transport) and the local replica engine exists in
   `packages/browser-sync-engine` (durable outbox, capped ordered push, cursor-based
-  pull and application, conflict recording, snapshot diffing, and revocation lock
-  state), but there is no host app/OPFS wiring, no key-rotation application, no
-  recovery kit, and no UI, so the hosted browser still cannot open or synchronize
-  a workspace end to end.
+  pull and application, conflict recording and resolution, state migration,
+  snapshot diffing, and revocation lock state). The `apps/app` controller now
+  wires the worker's `objects_list`, per-object keys, pinned key delivery, device
+  approval, binding auto-restore, and conflict resolution over those packages,
+  but there is still no key-rotation application, no recovery kit, and no
+  device-management UI, so the hosted browser still cannot synchronize a
+  workspace end to end without a trusted device approving it and delivering
+  keys.
 - Browser key envelopes are delivered to clients, but clients must still verify
   them locally against pinned signer keys. The server is not a trust source.
 - Revocation and epoch rotation reuse the signed access-policy path, which now
@@ -503,21 +524,31 @@ cryptographic work itself:
   codec; a host maps its `browser_sync_untrusted_signer` error to the revoked
   code when it treats an unpinned signer as revocation.
 - **`state`** is the durable `SyncStateStore`
-  `{cursor, pushedRevisions, knownPaths, outbox, conflicts}`. A host supplies
-  IndexedDB, OPFS, or a native bridge; `createMemorySyncStateStore` is for tests
-  only. `createFileSystemSyncStateStore(fileSystem, path)` persists state through
-  an injected `{read, write, remove}` filesystem boundary at an adapter-owned
-  path (default `.noura-adapter/sync-state.json`). It returns an empty state only
+  `{version, cursor, pushedRevisions, knownPaths, outbox, conflicts}`. Each
+  `SyncConflict` keeps its `operationId`, `objectId`, `path`, `reason`,
+  `expectedRevision`, `currentRevision`, `previousPath`, `detectedAt`, and the
+  original encrypted `operation`, so a conflicting remote operation can be
+  retried without re-pulling. A host supplies IndexedDB, OPFS, or a native
+  bridge; `createMemorySyncStateStore` is for tests only.
+  `createFileSystemSyncStateStore(fileSystem, path)` persists state through an
+  injected `{read, write, remove}` filesystem boundary at an adapter-owned path
+  (default `.noura-adapter/sync-state.json`). It returns an empty state only
   when the file is absent, rejects malformed or oversized bytes with a typed
   `InvalidState` error, refuses to overwrite a corrupt file, and resolves a
-  write only after the injected filesystem write resolves. Remote replicas are
-  left for the caller to purge on revocation.
+  write only after the injected filesystem write resolves. Durable state carries
+  a schema `version`; reading an older state upgrades it to the current version,
+  drops conflict records that no longer hold the encrypted operation, and
+  reports the migration through an optional `onMigration` callback (also
+  surfaced by the engine as `onStateMigration`) instead of crashing. A state
+  written by a newer, unknown version is rejected. Remote replicas are left for
+  the caller to purge on revocation.
 
 Adapter state path constraints:
 
 - The state file is **adapter state, never canonical workspace state**. It holds
-  only the cursor, pushed revisions, known paths, the encrypted outbox, and
-  recorded conflicts; it never holds workspace plaintext or unwrapped keys.
+  only the schema version, cursor, pushed revisions, known paths, the encrypted
+  outbox, and recorded conflicts; conflict records retain the encrypted
+  operation envelope only. It never holds workspace plaintext or unwrapped keys.
 - The path must stay **outside the canonical workspace files and outside every
   workspace backup or snapshot**. The host must place it where
   `BrowserWorkspaceStorage.exportSnapshotEntries`, `BrowserWorkspaceStorage.rebuild()`,
@@ -542,8 +573,22 @@ Behavior:
   requires the path to be absent, `previousPath` moves delete the source and
   write the destination, and null `content` deletes. A revision or absence
   mismatch, or an occupied destination, records a `SyncConflict` for that path
-  and leaves existing bytes untouched. The durable cursor advances only after
+  and leaves existing bytes untouched. Each conflict stores the encrypted remote
+  operation, and a repeated pull of an operation that already has a conflict is
+  skipped so it is never duplicated. The durable cursor advances only after
   every operation in a page is applied or recorded.
+- `resolveConflict(operationId, choice)` resolves one recorded conflict. With
+  `'remote'` it re-opens the stored encrypted operation through the codec and
+  force-applies it — write, delete, or move — to local storage without the
+  original `baseRevision` guard, because the user chose the remote bytes, then
+  removes the conflict and updates `pushedRevisions`/`knownPaths`. With
+  `'local'` it seals the current local bytes for the conflict path as a fresh
+  operation based on the conflicting operation's expected revision, enqueues it
+  in the outbox so local wins, and removes the conflict; a path that no longer
+  exists locally becomes an enqueued deletion. Resolution returns
+  `{resolved, remaining}`; an unknown operation id is rejected with
+  `ConflictNotFound`, and a failed resolution is reported with `ResolveFailed`
+  and leaves the conflict in place. It never fabricates success.
 - `snapshotLocalChanges` diffs `list()` plus revisions against
   `pushedRevisions`/`knownPaths` and returns descriptors for added and changed
   paths plus deletion descriptors for missing known paths; unchanged files are
@@ -555,11 +600,59 @@ Behavior:
 
 `packages/browser-sync-engine` runs an in-memory test suite covering outbox
 durability and order, capped batching, push-failure recovery, add/update/delete/
-move application, revision and occupied-destination conflicts, cursor
-advancement, snapshot diffing, revocation locking, malformed cursor and
-operation rejection, and a round trip of a shared `sync-v1.json` fixture file
-change through the codec boundary. Host app/OPFS wiring, key-rotation
-application, recovery kits, and UI remain outstanding.
+move application, revision and occupied-destination conflicts, conflict
+recording with the encrypted operation, remote force-apply and local-wins
+resolution, repeated-pull deduplication, unknown-operation rejection, legacy
+state migration, cursor advancement, snapshot diffing, revocation locking,
+malformed cursor and operation rejection, and a round trip of a shared
+`sync-v1.json` fixture file change through the codec boundary.
+
+### App host wiring (`apps/app`)
+
+`apps/app/src/lib/browser-sync.ts` is the controller that binds the packages
+above to the hosted app. It reconciles **per object**, not through one shared sync
+object:
+
+- The workspace worker exposes `objects_list`, a minimal managed-object
+  projection `{id, path, type}` derived from `BrowserWorkspaceStorage.rebuild()`;
+  `BrowserWorkspaceFiles.listObjects()` wraps it.
+- `enableSync` creates one remote object and one random object key per managed
+  local object, wraps every key to this browser device, signs one version-1
+  access policy covering all of the objects, and persists only the wrapped keys.
+- The reconcile codec seals each file change under the object that owns its path
+  and opens operations by `operation.objectId`. A local path with no owning
+  object or no object key is skipped and counted in `skippedUnmanaged`; it is
+  never sealed under a different object.
+- Before reconcile the controller calls `receiveKeys` with the pinned signer set
+  (this device plus locally approved devices) and merges delivered keys over the
+  local self-wrapped ones. A delivery failure keeps the local keys.
+- The controller exposes `bindWorkspace`, and `syncNow`/`workspaceSummary`
+  accept an optional `workspaceId`; when no binding is in memory they load the
+  durable record for that workspace instead of reporting `not_configured` for a
+  workspace that has not mounted yet.
+- `workspaceSummary` includes each recorded conflict's `path` and `reason`, and
+  `resolveConflict(operationId, choice)` delegates to the engine and refreshes
+  the summary.
+
+Device approval is local trust, never server trust: `listWorkspaceDevices`
+computes each device fingerprint locally (through `deviceFingerprintForCard`,
+which handles both `x25519:` and `age1` recipients), `approveDevice` stores a
+device's signing public key only after the supplied fingerprint matches the
+locally computed one, and `revokeDeviceApproval` removes it. Only this device
+and device keys approved this way are pinned as signers; the access state is
+never added to the pins. Approvals are persisted in the durable binding store.
+
+Because the engine's bundled `createWorkspaceStorageAdapter` maps an unguarded
+force-apply or force-delete (`expectedRevision` absent) to `null`, which
+`BrowserWorkspaceStorage` rejects as "path must be absent", the app supplies its
+own `createWorkspaceSyncStorage` adapter. It resolves the current revision for
+unguarded calls so a user-chosen remote conflict resolution can overwrite or
+delete local bytes, while guarded calls still pass their expected revision
+through unchanged.
+
+Key-rotation application, recovery kits, and the device-management UI remain
+outstanding; the controller surface exists but the hosted UI does not yet drive
+approval, key rotation, or recovery.
 
 ## Threat model: installed app versus hosted web client
 
@@ -844,12 +937,15 @@ that plainly in the client UI.
 ## Out of scope and explicitly not claimed
 
 - Browser workspace synchronization is not implemented end to end. The operation
-  cryptography and push/pull transport exist at the library level, and the local
-  replica engine, its durable file-system state store, and its concrete
-  `BrowserWorkspaceStorage` adapter exist at the library level in
-  `packages/browser-sync-engine`, but no host app/OPFS wiring, key-rotation
-  application, recovery kit, or UI is implemented, and this document does not
-  authorize implementing those as part of unrelated work.
+  cryptography and push/pull transport exist at the library level, the local
+  replica engine and its durable file-system state store exist in
+  `packages/browser-sync-engine`, and the `apps/app` controller now wires the
+  worker's managed-object list, per-object keys, pinned key delivery, device
+  approval, binding auto-restore, and conflict resolution. It cannot open a
+  synchronized workspace without a trusted device approving this browser and
+  delivering keys, and key-rotation application, recovery kits, and the
+  device-management UI are not implemented. This document does not authorize
+  implementing those as part of unrelated work.
 - The hosted web client is not claimed to be as secure as the installed app.
   Whoever serves future JavaScript can access unlocked content.
 - Non-extractable keys are not claimed to prevent exfiltration; they prevent
@@ -911,12 +1007,17 @@ that plainly in the client UI.
    shared `operation-v1.json` fixture, and `packages/browser-sync-engine` now
    implements local replica reconciliation at the library level: durable outbox,
    capped ordered push, cursor-based pull and version-1 application, conflict
-   recording, snapshot diffing, revocation-driven lock state, a durable
-   file-system `SyncStateStore` at an adapter-owned path, and a concrete
-   `createWorkspaceStorageAdapter` bridge over `BrowserWorkspaceStorage` that
-   derives its path list from `rebuild()`. Still open:
-   host app/OPFS wiring, key-rotation application, browser object activation,
-   browser recovery kits, and UI wiring.
+   recording and resolution, legacy state migration, snapshot diffing,
+   revocation-driven lock state, a durable file-system `SyncStateStore` at an
+   adapter-owned path, and a concrete `createWorkspaceStorageAdapter` bridge over
+   `BrowserWorkspaceStorage` that derives its path list from `rebuild()`. The
+   `apps/app` controller now wires the worker's managed-object list, per-object
+   objects and keys, pinned key delivery, locally verified device approval,
+   binding auto-restore, and conflict resolution, and supplies a storage adapter
+   that preserves the engine's unguarded force-apply and force-delete. Still
+   open:
+   key-rotation application, browser object activation, browser recovery kits,
+   and device-management UI wiring.
 6. Define the browser recovery-kit format and its conformance fixtures.
 7. Add a browser-specific section to `docs/security/threat-model.md` once the
    design is approved.

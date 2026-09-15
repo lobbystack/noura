@@ -101,6 +101,20 @@ export interface BrowserWorkspaceFile {
 }
 
 /**
+ * One managed workspace object's stable identity, current canonical path, and
+ * type. This is the minimal projection a sync binding needs to own an object
+ * without reading its bytes through the worker.
+ */
+export interface BrowserWorkspaceObjectCard {
+	/** Stable object ID (`note_…`, `task_…`, `project_…`). */
+	id: string;
+	/** Current canonical workspace-relative path. */
+	path: string;
+	/** Managed object type. */
+	type: string;
+}
+
+/**
  * Raw canonical file operations on the active browser workspace.
  *
  * Paths are validated by `BrowserWorkspaceStorage` in the worker, which also
@@ -110,6 +124,8 @@ export interface BrowserWorkspaceFile {
 export interface BrowserWorkspaceFiles {
 	/** Every canonical path in the active workspace, sorted. */
 	list(): Promise<string[]>;
+	/** Managed objects `{id, path, type}` in the active workspace, sorted by path. */
+	listObjects(): Promise<BrowserWorkspaceObjectCard[]>;
 	/** Read one canonical file, or `null` when it does not exist. */
 	read(path: string): Promise<BrowserWorkspaceFile | null>;
 	/** Write a canonical file, requiring the given revision or its absence. */
@@ -135,6 +151,8 @@ export function createBrowserWorkspaceFiles(
 ): BrowserWorkspaceFiles {
 	return {
 		list: () => transport.request<string[]>('files_list'),
+		listObjects: () =>
+			transport.request<BrowserWorkspaceObjectCard[]>('objects_list'),
 		async read(path) {
 			const value = await transport.request<{
 				revision: string;

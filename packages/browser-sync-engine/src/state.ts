@@ -7,8 +7,16 @@
  * workspace file, and it is never the canonical copy of anything. The in-memory
  * store is not durable and is intended for tests only.
  */
+import type { EncryptedOperation } from '@noura/shared';
 import { BrowserSyncEngineError, BrowserSyncEngineErrorCode } from './errors';
-import type { SyncState, SyncStateStore } from './types';
+import { SYNC_STATE_VERSION } from './types';
+import type {
+	SyncConflict,
+	SyncState,
+	SyncStateMigration,
+	SyncStateStore,
+	ValidateSyncStateOptions,
+} from './types';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
@@ -45,6 +53,7 @@ export interface FileSystemSyncStateStore extends SyncStateStore {
 /** The initial state for a workspace that has never synchronized. */
 export function createEmptySyncState(): SyncState {
 	return {
+		version: SYNC_STATE_VERSION,
 		cursor: '0',
 		pushedRevisions: {},
 		knownPaths: [],
@@ -56,11 +65,15 @@ export function createEmptySyncState(): SyncState {
 /** Deep-enough clone so callers never mutate a store's in-flight state. */
 export function cloneSyncState(state: SyncState): SyncState {
 	return {
+		version: state.version,
 		cursor: state.cursor,
 		pushedRevisions: { ...state.pushedRevisions },
 		knownPaths: [...state.knownPaths],
 		outbox: [...state.outbox],
-		conflicts: state.conflicts.map((conflict) => ({ ...conflict })),
+		conflicts: state.conflicts.map((conflict) => ({
+			...conflict,
+			operation: { ...conflict.operation },
+		})),
 	};
 }
 
@@ -68,8 +81,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Validate an untrusted state value read from a store. */
-export function validateSyncState(value: unknown): SyncState {
+function isNullableString(value: unknown): value is string | null {
+	return value === null || typeof value === 'string';
+}
+
+/** Lightly validate an envelope so a stored conflict holds an usable operation. */
+function isEncryptedOperation(value: unknown): value is EncryptedOperation {
+	return (
+		isRecord(value) &&
+		typeof value.operationId === 'string' &&
+		value.operationId.length > 0 &&
+		typeof value.workspaceId === 'string' &&
+		typeof value.objectId === 'string'
+	);
+}
+
+/** True when a conflict record can be retried with the stored operation. */
+function isResolvableConflict(value: unknown): value is SyncConflict {
+	return (
+		isRecord(value) &&
+		typeof value.operationId === 'string' &&
+		value.operationId.length > 0 &&
+		typeof value.objectId === 'string' &&
+		typeof value.path === 'string' &&
+		typeof value.reason === 'string' &&
+		isNullableString(value.expectedRevision) &&
+		isNullableString(value.currentRevision) &&
+		isNullableString(value.previousPath) &&
+		typeof value.detectedAt === 'number' &&
+		isEncryptedOperation(value.operation)
+	);
+}
+
+function detectedVersion(value: unknown): number {
+	if (value === undefined) return 1;
+	if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+		throw invalidState();
+	}
+	return value;
+}
+
+/**
+ * Validate an untrusted state value read from a store.
+ *
+ * Older state that lacks `version`, or that holds conflict records from before
+ * the encrypted operation was retained, is migrated rather than rejected: the
+ * state is upgraded to {@link SYNC_STATE_VERSION} and any unresolvable conflict
+ * records are dropped and reported through `options.onMigration`. Only a value
+ * that cannot be interpreted as sync state at all is rejected with
+ * {@link BrowserSyncEngineErrorCode.InvalidState}.
+ */
+export function validateSyncState(
+	value: unknown,
+	options: ValidateSyncStateOptions = {},
+): SyncState {
 	if (!isRecord(value)) throw invalidState();
 	if (typeof value.cursor !== 'string') throw invalidState();
 	if (!isRecord(value.pushedRevisions)) throw invalidState();
@@ -84,7 +149,43 @@ export function validateSyncState(value: unknown): SyncState {
 	}
 	if (!Array.isArray(value.outbox)) throw invalidState();
 	if (!Array.isArray(value.conflicts)) throw invalidState();
-	return value as unknown as SyncState;
+
+	const fromVersion = detectedVersion(value.version);
+	if (fromVersion > SYNC_STATE_VERSION) {
+		throw new BrowserSyncEngineError(
+			BrowserSyncEngineErrorCode.InvalidState,
+			'Durable sync state was written by a newer schema version',
+		);
+	}
+
+	const conflicts: SyncConflict[] = [];
+	let droppedConflicts = 0;
+	for (const entry of value.conflicts) {
+		if (isResolvableConflict(entry)) {
+			conflicts.push(entry);
+			continue;
+		}
+		if (!isRecord(entry)) throw invalidState();
+		droppedConflicts += 1;
+	}
+
+	if (fromVersion !== SYNC_STATE_VERSION || droppedConflicts > 0) {
+		const migration: SyncStateMigration = {
+			fromVersion,
+			toVersion: SYNC_STATE_VERSION,
+			droppedConflicts,
+		};
+		options.onMigration?.(migration);
+	}
+
+	return {
+		version: SYNC_STATE_VERSION,
+		cursor: value.cursor,
+		pushedRevisions: { ...(value.pushedRevisions as Record<string, string>) },
+		knownPaths: [...(value.knownPaths as string[])],
+		outbox: value.outbox as EncryptedOperation[],
+		conflicts,
+	};
 }
 
 function invalidState(cause?: unknown): BrowserSyncEngineError {
@@ -119,14 +220,17 @@ export function serializeSyncState(state: SyncState): Uint8Array {
 }
 
 /** Parse and validate state bytes, reporting malformed input as a typed error. */
-function parseSyncState(bytes: Uint8Array): SyncState {
+function parseSyncState(
+	bytes: Uint8Array,
+	options: ValidateSyncStateOptions = {},
+): SyncState {
 	let value: unknown;
 	try {
 		value = JSON.parse(textDecoder.decode(bytes));
 	} catch (cause) {
 		throw invalidState(cause);
 	}
-	return validateSyncState(value);
+	return validateSyncState(value, options);
 }
 
 /**
@@ -143,13 +247,14 @@ export function createFileSystemSyncStateStore(
 	fileSystem: SyncStateFileSystem,
 	path: string = DEFAULT_SYNC_STATE_PATH,
 	maxBytes: number = MAX_SYNC_STATE_BYTES,
+	options: ValidateSyncStateOptions = {},
 ): FileSystemSyncStateStore {
 	return {
 		async read(): Promise<SyncState> {
 			const bytes = await fileSystem.read(path, maxBytes);
 			if (bytes === null) return createEmptySyncState();
 			if (bytes.byteLength > maxBytes) throw invalidState();
-			return parseSyncState(bytes);
+			return parseSyncState(bytes, options);
 		},
 		async write(state: SyncState): Promise<void> {
 			const existing = await fileSystem.read(path, maxBytes);

@@ -116,6 +116,8 @@ export class BrowserWorkspaceServer {
 						return await this.#updateManifest(payload);
 					case 'objects_query':
 						return await this.#listObjects(payload);
+					case 'objects_list':
+						return await this.#listObjectCards();
 					case 'objects_get':
 						return await this.#getObject(payload);
 					case 'objects_create':
@@ -387,6 +389,26 @@ export class BrowserWorkspaceServer {
 			(value) => supportedObjectType(value.type) && matchesQuery(value, query),
 		);
 		return objects;
+	}
+
+	/**
+	 * Minimal managed-object projection for sync bindings. Unlike
+	 * `objects_query` it returns no bodies or properties, so a binding can own an
+	 * object without reading workspace content through the worker.
+	 */
+	async #listObjectCards(): Promise<
+		Array<{ id: string; path: string; type: string }>
+	> {
+		const managed = (
+			await this.#requireCurrent('objects_list').storage.rebuild()
+		).managed.filter((value) => supportedObjectType(value.type));
+		return managed
+			.map((value) => ({
+				id: value.id,
+				path: value.relativePath,
+				type: value.type,
+			}))
+			.sort((left, right) => left.path.localeCompare(right.path));
 	}
 
 	async #getObject(payload: Record<string, unknown>): Promise<WorkspaceObject> {

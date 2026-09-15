@@ -1150,6 +1150,25 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 		).rejects.toMatchObject({ code: 'revision_conflict' });
 	});
 
+	test('lists managed objects with their current paths and types', async () => {
+		const { server } = await openServer();
+		const created = (await server.request('objects_create', {
+			input: { type: 'note', title: 'Card', body: 'body' },
+		})) as { value: WorkspaceObject };
+		const cards = (await server.request('objects_list')) as Array<{
+			id: string;
+			path: string;
+			type: string;
+		}>;
+		expect(cards).toEqual([
+			{
+				id: created.value.id,
+				path: created.value.relativePath,
+				type: 'note',
+			},
+		]);
+	});
+
 	test('rejects malformed raw file payloads', async () => {
 		const { server } = await openServer();
 		await expect(

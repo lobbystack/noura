@@ -35,12 +35,15 @@
  */
 
 import {
+	accessState,
 	BrowserSyncError,
 	BrowserSyncErrorCode,
 	BrowserSyncTransport,
 	createDeviceIdentity,
 	createFileChangeCodec,
 	decodeBase64,
+	decodeRecipient,
+	deviceFingerprintForCard,
 	encodeBase64,
 	ensureResponseOk,
 	enrollBrowserDevice,
@@ -48,6 +51,7 @@ import {
 	randomBytes,
 	randomIdentifier,
 	readJson,
+	receiveKeys,
 	requestDeviceChallenge,
 	sealIdentity,
 	signAccessPolicy,
@@ -62,18 +66,24 @@ import {
 	type WebKeyEnvelope,
 	type WrappedKeyBundle,
 } from '@noura/browser-sync';
-import type { BrowserWorkspaceFiles } from '@noura/browser-workspace';
+import type {
+	BrowserWorkspaceFiles,
+	BrowserWorkspaceObjectCard,
+} from '@noura/browser-workspace';
 import {
 	BrowserSyncEngine,
 	BrowserSyncEngineError,
 	BrowserSyncEngineErrorCode,
 	createFileSystemSyncStateStore,
-	createWorkspaceStorageAdapter,
 	type BrowserSyncEngineOptions,
 	type BrowserSyncRemote,
 	type BrowserSyncStorage,
+	type FileChange,
 	type FileChangeCodec as EngineFileChangeCodec,
 	type ReconcileResult,
+	type ResolveConflictResult,
+	type SyncConflictResolution,
+	type SyncState,
 	type SyncStateStore,
 	type WorkspaceStorageLike,
 } from '@noura/browser-sync-engine';
@@ -84,9 +94,6 @@ const ADAPTER_DIRECTORY = '.noura-adapter/browser-sync';
 
 /** Default stable key for this browser's wrapped device bundle. */
 export const DEFAULT_BROWSER_SYNC_BUNDLE_ID = 'browser-device';
-
-/** Anchor recorded for the workspace-level sync object; informational only. */
-const BINDING_PATH_ANCHOR = '.noura/workspace.yaml';
 
 /** Roots the sync protocol reserves; they never appear as file changes. */
 const RESERVED_SYNC_ROOTS = new Set([
@@ -122,8 +129,10 @@ export interface BrowserSyncBoundKey {
 
 /** One remote sync object bound to this browser workspace. */
 export interface BrowserSyncBoundObject {
-	/** Informational canonical-path anchor for the object. */
+	/** Canonical-path anchor for the object at bind time. */
 	path: string;
+	/** Stable local object ID, used to follow a move to a new path. */
+	localObjectId?: string;
 	/** Positive safe-integer object key epoch. */
 	epoch: number;
 	/** Canonical access-policy revision the object was bound at. */
@@ -214,6 +223,8 @@ function isBindingRecord(value: unknown): value is BrowserSyncBindingRecord {
 		const value = bound as Record<string, unknown>;
 		if (
 			typeof value.path !== 'string' ||
+			(value.localObjectId !== undefined &&
+				typeof value.localObjectId !== 'string') ||
 			!Number.isSafeInteger(value.epoch) ||
 			(value.epoch as number) < 1 ||
 			typeof value.policyRevision !== 'string' ||
@@ -283,6 +294,8 @@ export type BrowserSyncFailureCode =
 	| 'passphrase_rejected'
 	| 'enroll_failed'
 	| 'custody_failed'
+	| 'device_not_found'
+	| 'fingerprint_mismatch'
 	| 'sync_failed';
 
 /** Uniform typed result for custody actions. */
@@ -298,12 +311,22 @@ export type SyncNowOutcome =
 			applied: number;
 			conflicts: number;
 			cursor: string;
+			/** Local files with no owning object; skipped, never sealed under another object. */
+			skippedUnmanaged: number;
 	  }
 	| { status: 'unavailable'; message: string }
 	| { status: 'locked'; message: string }
 	| { status: 'not_configured'; message: string }
 	| { status: 'revoked'; message: string }
 	| { status: 'error'; message: string };
+
+/** One recorded conflict, projected for the workspace summary. */
+export interface BrowserSyncConflictDetail {
+	operationId: string;
+	objectId: string;
+	path: string;
+	reason: string;
+}
 
 /** Read-only counters for the currently bound workspace replica. */
 export interface BrowserSyncWorkspaceSummary {
@@ -312,6 +335,34 @@ export interface BrowserSyncWorkspaceSummary {
 	cursor: string;
 	pending: number;
 	conflicts: number;
+	/** Recorded conflicts with enough detail to choose a resolution. */
+	conflictDetails: BrowserSyncConflictDetail[];
+}
+
+/** Public, non-secret projection of one device in a workspace access state. */
+export interface BrowserSyncDeviceCard {
+	deviceId: string;
+	accountId: string;
+	publicKey: string;
+	encryptionRecipient: string;
+	fingerprint: string;
+	approved: boolean;
+}
+
+/** One remote sync object bound to this browser workspace. */
+export interface BrowserSyncObjectBinding {
+	/** Stable remote object ID this entry wraps a key for. */
+	objectId: string;
+	/** Canonical path the object owned when it was bound. */
+	path: string;
+	/** Stable local object ID, used to follow a move to a new path. */
+	localObjectId?: string;
+	/** Current local path from the managed-object list, when it differs from `path`. */
+	livePath?: string;
+	/** Positive safe-integer key epoch. */
+	epoch: number;
+	/** Canonical decimal access-policy revision the object was bound at. */
+	policyRevision: string;
 }
 
 /**
@@ -322,14 +373,24 @@ export interface BrowserSyncWorkspaceSummary {
 export interface BrowserSyncWorkspaceBinding {
 	/** Stable workspace id. */
 	workspaceId: string;
-	/** Object that carries this replica's the file changes. */
+	/**
+	 * Primary/default object used when {@link objects} is absent. Kept so a
+	 * single-object binding (including one persisted before per-object sync)
+	 * keeps working unchanged.
+	 */
 	objectId: string;
-	/** Positive safe-integer key epoch. */
+	/** Positive safe-integer key epoch of the primary object. */
 	epoch: number;
-	/** Canonical decimal access-policy revision. */
+	/** Canonical decimal access-policy revision of the primary object. */
 	policyRevision: string;
 	/** Object keys by object id; a key must exist for `objectId`. */
 	objectKeys: ReadonlyMap<string, Uint8Array>;
+	/**
+	 * Per-object bindings by object id. When present and non-empty, a file change
+	 * is sealed under the object whose current or last-known path matches. When
+	 * absent, every change is sealed under the primary `objectId`.
+	 */
+	objects?: ReadonlyMap<string, BrowserSyncObjectBinding>;
 	/** Pinned Ed25519 public keys by signing device id. */
 	pinnedSigners: ReadonlyMap<string, Uint8Array>;
 	/** Local replica boundary. */
@@ -464,17 +525,56 @@ export function createBrowserSyncRemote(options: {
 	};
 }
 
+/** Outcome of one reconcile pass, including unmanaged files that were skipped. */
+export interface BrowserSyncReconcileOutcome extends ReconcileResult {
+	/** Local files with no owning object; skipped, never sealed under another object. */
+	skippedUnmanaged: number;
+}
+
 /**
- * Seal and apply one reconcile pass over the injected boundaries.
+ * Resolve the object that owns a file change.
  *
- * Local changes are snapshotted, sealed into the durable outbox, and flushed by
- * the engine before it pulls and applies remote operations. This performs
- * cryptography through `@noura/browser-sync`'s file-change codec but no network
- * I/O of its own.
+ * When the binding carries per-object entries, the owner is the entry whose
+ * current path matches the change path (or a move's source). When it does not,
+ * the single primary object owns every change. A change whose path matches no
+ * object is unmanaged and returns `null`.
  */
-export async function runBrowserSyncReconcile(
+function resolveObjectOwner(
+	input: BrowserSyncWorkspaceBinding,
+	change: Pick<FileChange, 'path' | 'previousPath'>,
+): BrowserSyncObjectBinding | null {
+	const objects = input.objects;
+	if (objects && objects.size > 0) {
+		const owns = (object: BrowserSyncObjectBinding, path: string): boolean =>
+			object.path === path || object.livePath === path;
+		for (const object of objects.values()) {
+			if (owns(object, change.path)) return object;
+		}
+		if (change.previousPath !== null) {
+			for (const object of objects.values()) {
+				if (owns(object, change.previousPath)) return object;
+			}
+		}
+		return null;
+	}
+	return {
+		objectId: input.objectId,
+		path: change.path,
+		epoch: input.epoch,
+		policyRevision: input.policyRevision,
+	};
+}
+
+/**
+ * Build the per-object file-change codec over the binding.
+ *
+ * Sealing routes a change to the object that owns its path and seals under that
+ * object's key, epoch, and policy revision. Opening resolves by
+ * `operation.objectId`, which the base codec already uses to select the key.
+ */
+function createReconcileCodec(
 	input: BrowserSyncReconcileInput,
-): Promise<ReconcileResult> {
+): EngineFileChangeCodec {
 	const pinnedSigners = new Map<string, string>();
 	for (const [deviceId, key] of input.pinnedSigners) {
 		pinnedSigners.set(deviceId, encodeBase64(key));
@@ -484,13 +584,20 @@ export async function runBrowserSyncReconcile(
 		objectKeys: input.objectKeys,
 		pinnedSigners,
 	});
-	const codec: EngineFileChangeCodec = {
+	return {
 		sealFileChange(change) {
+			const owner = resolveObjectOwner(input, change);
+			if (!owner) {
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.InvalidOperation,
+					'No sync object owns this file change',
+				);
+			}
 			return baseCodec.sealFileChange({
 				workspaceId: input.workspaceId,
-				objectId: input.objectId,
-				epoch: input.epoch,
-				policyRevision: input.policyRevision,
+				objectId: owner.objectId,
+				epoch: owner.epoch,
+				policyRevision: owner.policyRevision,
 				change,
 			});
 		},
@@ -507,18 +614,59 @@ export async function runBrowserSyncReconcile(
 			};
 		},
 	};
+}
+
+function createReconcileEngine(input: BrowserSyncReconcileInput) {
 	const engineOptions: BrowserSyncEngineOptions = {
 		storage: input.storage,
 		remote: input.remote,
-		codec,
+		codec: createReconcileCodec(input),
 		state: input.state,
 		...(input.now === undefined ? {} : { now: input.now }),
 		...(input.onRevoked === undefined ? {} : { onRevoked: input.onRevoked }),
 	};
-	const engine = new BrowserSyncEngine(engineOptions);
+	return new BrowserSyncEngine(engineOptions);
+}
+
+/**
+ * Seal and apply one reconcile pass over the injected boundaries.
+ *
+ * Local changes are snapshotted, sealed into the durable outbox, and flushed by
+ * the engine before it pulls and applies remote operations. This performs
+ * cryptography through `@noura/browser-sync`'s file-change codec but no network
+ * I/O of its own. A local path with no owning object or no object key is skipped
+ * and counted in `skippedUnmanaged`; it is never sealed under another object.
+ */
+export async function runBrowserSyncReconcile(
+	input: BrowserSyncReconcileInput,
+): Promise<BrowserSyncReconcileOutcome> {
+	const engine = createReconcileEngine(input);
 	const changes = await engine.snapshotLocalChanges();
-	for (const change of changes) await engine.enqueueFileChange(change);
-	return engine.reconcile();
+	let skippedUnmanaged = 0;
+	for (const change of changes) {
+		const owner = resolveObjectOwner(input, change);
+		if (!owner || !input.objectKeys.has(owner.objectId)) {
+			skippedUnmanaged += 1;
+			continue;
+		}
+		await engine.enqueueFileChange(change);
+	}
+	const result = await engine.reconcile();
+	return { ...result, skippedUnmanaged };
+}
+
+/**
+ * Resolve one recorded conflict through the same engine boundaries used for
+ * reconcile. Returns the engine's typed result; an unknown operation id is
+ * rejected with `ConflictNotFound` and success is never fabricated.
+ */
+export async function runBrowserSyncResolveConflict(
+	input: BrowserSyncReconcileInput,
+	operationId: string,
+	choice: SyncConflictResolution,
+): Promise<ResolveConflictResult> {
+	const engine = createReconcileEngine(input);
+	return engine.resolveConflict(operationId, choice);
 }
 
 /**
@@ -537,6 +685,8 @@ export interface BrowserSyncWorkspaceSource {
 	policyRevision: string;
 	/** Object keys by object id; a key must exist for `objectId`. */
 	objectKeys: ReadonlyMap<string, Uint8Array>;
+	/** Per-object bindings by object id. */
+	objects?: ReadonlyMap<string, BrowserSyncObjectBinding>;
 	/** Pinned Ed25519 public keys by signing device id. */
 	pinnedSigners: ReadonlyMap<string, Uint8Array>;
 	/** The workspace replica. In the hosted app it lives in the workspace worker. */
@@ -554,9 +704,85 @@ export interface BrowserSyncWorkspaceSource {
 }
 
 /**
+ * Bridge a workspace replica onto the engine's storage boundary while
+ * preserving the engine's unguarded write and delete calls.
+ *
+ * The engine's bundled `createWorkspaceStorageAdapter` maps a missing
+ * `expectedRevision` (an unguarded force-apply or force-delete used by
+ * `resolveConflict`) to `null`, which `BrowserWorkspaceStorage` interprets as
+ * "the path must be absent" and rejects. This adapter resolves the current
+ * revision itself for those unguarded calls, so a user-chosen remote conflict
+ * resolution can actually overwrite or delete local bytes, while every guarded
+ * call still passes its expected revision straight through.
+ */
+export function createWorkspaceSyncStorage(
+	workspace: WorkspaceStorageLike,
+): BrowserSyncStorage {
+	return {
+		async read(path) {
+			const file = await workspace.read(path);
+			return file === null
+				? null
+				: { bytes: file.bytes, revision: file.revision };
+		},
+		async write({ path, bytes, expectedRevision }) {
+			let expected: string | null;
+			if (expectedRevision === undefined) {
+				const current = await workspace.read(path);
+				expected = current?.revision ?? null;
+			} else {
+				expected = expectedRevision;
+			}
+			const result = await workspace.write({
+				path,
+				bytes,
+				expectedRevision: expected,
+			});
+			const revision = (result as { revision?: unknown } | null | undefined)
+				?.revision;
+			if (typeof revision !== 'string') {
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.RequestFailed,
+					'The workspace storage adapter did not return a revision',
+				);
+			}
+			return { revision };
+		},
+		async move({ from, to, expectedRevision }) {
+			await workspace.move({
+				from,
+				to,
+				expectedRevision: requireOperationRevision('move', expectedRevision),
+			});
+		},
+		async delete({ path, expectedRevision }) {
+			if (expectedRevision === undefined) {
+				const current = await workspace.read(path);
+				if (current === null) return;
+				await workspace.delete({ path, expectedRevision: current.revision });
+				return;
+			}
+			await workspace.delete({ path, expectedRevision });
+		},
+		async list() {
+			const rebuilt = await workspace.rebuild();
+			const paths = new Set<string>();
+			for (const file of rebuilt.files ?? []) {
+				if (typeof file?.path === 'string') paths.add(file.path);
+			}
+			for (const managed of rebuilt.managed ?? []) {
+				const managedPath = managed?.relativePath ?? managed?.path;
+				if (typeof managedPath === 'string') paths.add(managedPath);
+			}
+			return [...paths].sort();
+		},
+	};
+}
+
+/**
  * Compose the concrete engine boundaries for one browser workspace.
  *
- * This uses `createWorkspaceStorageAdapter` over the workspace replica, an
+ * This uses {@link createWorkspaceSyncStorage} over the workspace replica, an
  * engine file-system state store, and a `BrowserSyncTransport`-backed remote.
  * It returns `null` when no durable state store can be opened (no OPFS), so the
  * caller can report an unsupported state instead of syncing against volatile
@@ -578,8 +804,9 @@ export async function createBrowserSyncWorkspaceBinding(
 		epoch: source.epoch,
 		policyRevision: source.policyRevision,
 		objectKeys: source.objectKeys,
+		...(source.objects === undefined ? {} : { objects: source.objects }),
 		pinnedSigners: source.pinnedSigners,
-		storage: createWorkspaceStorageAdapter(source.workspace),
+		storage: createWorkspaceSyncStorage(source.workspace),
 		state,
 		remote: createBrowserSyncRemote({
 			origin: source.origin,
@@ -992,7 +1219,11 @@ export class BrowserSyncController {
 	#error: string | null = null;
 	#workspaceFiles: BrowserWorkspaceFiles | null;
 	#bindingStore: BrowserSyncBindingStore | null | undefined;
+	#openedBindingStore: { id: string; store: BrowserSyncBindingStore } | null =
+		null;
 	#stateStore: SyncStateStore | null | undefined;
+	#localWorkspaceId: string | null = null;
+	#record: BrowserSyncBindingRecord | null = null;
 
 	constructor(options: {
 		bundleId: string;
@@ -1105,17 +1336,15 @@ export class BrowserSyncController {
 			);
 		}
 		try {
-			const bindingStore =
-				this.#bindingStore !== undefined
-					? this.#bindingStore
-					: await openBrowserSyncBindingStore(input.workspaceId);
+			const bindingStore = await this.#resolveBindingStore(input.workspaceId);
 			if (!bindingStore) {
 				return failure(
 					'unavailable',
 					'This browser cannot persist a durable sync binding (OPFS is unavailable).',
 				);
 			}
-			const existing = await bindingStore.read();
+			this.#localWorkspaceId = input.workspaceId;
+			const existing = await this.#loadRecord(input.workspaceId);
 			if (existing) {
 				const binding = await this.#buildBinding(
 					existing,
@@ -1129,6 +1358,7 @@ export class BrowserSyncController {
 					);
 				}
 				this.#binding = binding;
+				this.#record = existing;
 				this.#workspaceFiles = workspaceFiles;
 				return ok(await this.workspaceSummary());
 			}
@@ -1138,13 +1368,14 @@ export class BrowserSyncController {
 					'No durable sync binding exists for this browser workspace yet.',
 				);
 			}
-			const binding = await this.#bootstrapBinding(
+			const { binding, record } = await this.#bootstrapBinding(
 				input.workspaceId,
 				identity,
 				workspaceFiles,
 				bindingStore,
 			);
 			this.#binding = binding;
+			this.#record = record;
 			this.#workspaceFiles = workspaceFiles;
 			return ok(await this.workspaceSummary());
 		} catch (error) {
@@ -1166,10 +1397,19 @@ export class BrowserSyncController {
 		identity: DeviceIdentity,
 		workspaceFiles: BrowserWorkspaceFiles,
 		bindingStore: BrowserSyncBindingStore,
-	): Promise<BrowserSyncWorkspaceBinding> {
+	): Promise<{
+		binding: BrowserSyncWorkspaceBinding;
+		record: BrowserSyncBindingRecord;
+	}> {
+		const cards = await workspaceFiles.listObjects();
+		if (cards.length === 0) {
+			throw new BrowserSyncError(
+				BrowserSyncErrorCode.InvalidOperation,
+				'This browser workspace has no managed note, task, or project files, so there is nothing to synchronize yet.',
+			);
+		}
 		const workspaceId = `ws_${randomIdentifier()}`;
-		const objectId = `obj_${randomIdentifier()}`;
-		const objectKey = randomBytes(32);
+		const policyRevision = '1';
 		const challenge = await requestDeviceChallenge(this.#fetch);
 		await createRemoteWorkspace({
 			origin: this.#origin,
@@ -1177,45 +1417,79 @@ export class BrowserSyncController {
 			fetch: this.#fetch,
 			workspaceId,
 		});
-		const epoch = await createRemoteObject({
-			origin: this.#origin,
-			token: identity.token,
-			fetch: this.#fetch,
-			workspaceId,
-			objectId,
-		});
-		const envelope = await wrapKey({
-			workspace_id: workspaceId,
-			object_id: objectId,
-			epoch,
-			signing_device: identity.deviceId,
-			device_id: identity.deviceId,
-			signing_secret: encodeBase64(identity.signingSeed),
-			recipient_public: encodeBase64(identity.x25519Public),
-			object_key: encodeBase64(objectKey),
-			ephemeral_secret: encodeBase64(randomBytes(32)),
-			salt: encodeBase64(randomBytes(32)),
-			nonce: encodeBase64(randomBytes(12)),
-		});
-		const policyEnvelope: AccessPolicyEnvelope = toBoundKey(
-			envelope,
-			identity.deviceId,
-		);
+		const objects: Record<string, BrowserSyncBoundObject> = {};
+		const objectsById = new Map<string, BrowserSyncObjectBinding>();
+		const objectKeys = new Map<string, Uint8Array>();
+		const policyObjects: AccessPolicy['objects'] = [];
+		// The access policy must carry an envelope for every active device, so wrap
+		// each object key to each browser-capable device, not just this one.
+		const activeDevices = await this.#activeWebDevices(workspaceId, identity);
+		for (const card of cards) {
+			const objectId = `obj_${randomIdentifier()}`;
+			const epoch = await createRemoteObject({
+				origin: this.#origin,
+				token: identity.token,
+				fetch: this.#fetch,
+				workspaceId,
+				objectId,
+			});
+			const objectKey = randomBytes(32);
+			const envelopes: BrowserSyncBoundKey[] = [];
+			for (const device of activeDevices) {
+				const envelope = await wrapKey({
+					workspace_id: workspaceId,
+					object_id: objectId,
+					epoch,
+					signing_device: identity.deviceId,
+					device_id: device.deviceId,
+					signing_secret: encodeBase64(identity.signingSeed),
+					recipient_public: encodeBase64(decodeRecipient(device.recipient)),
+					object_key: encodeBase64(objectKey),
+					ephemeral_secret: encodeBase64(randomBytes(32)),
+					salt: encodeBase64(randomBytes(32)),
+					nonce: encodeBase64(randomBytes(12)),
+				});
+				envelopes.push(toBoundKey(envelope, device.deviceId));
+			}
+			const boundKey = envelopes.find(
+				(envelope) => envelope.deviceId === identity.deviceId,
+			);
+			if (!boundKey)
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.InvalidIdentity,
+					'The active device set did not include this browser device, so no object key could be wrapped to it.',
+				);
+			objects[objectId] = {
+				path: card.path,
+				localObjectId: card.id,
+				epoch,
+				policyRevision,
+				key: boundKey,
+			};
+			objectsById.set(objectId, {
+				objectId,
+				path: card.path,
+				localObjectId: card.id,
+				epoch,
+				policyRevision,
+			});
+			objectKeys.set(objectId, objectKey);
+			policyObjects.push({
+				objectId,
+				epoch,
+				grants: [],
+				envelopes,
+			});
+		}
+		const primaryId = cards[0] ? [...objectsById.keys()][0]! : '';
 		const draft: Omit<AccessPolicy, 'signature'> = {
 			version: 1,
 			workspaceId,
-			revision: '1',
+			revision: policyRevision,
 			previousPolicyDigest: null,
 			deviceId: identity.deviceId,
 			members: [{ accountId: challenge.accountId, role: 'owner' }],
-			objects: [
-				{
-					objectId,
-					epoch,
-					grants: [],
-					envelopes: [policyEnvelope],
-				},
-			],
+			objects: policyObjects,
 		};
 		const policy = await signAccessPolicy(draft, identity);
 		await putRemoteAccessPolicy({
@@ -1230,15 +1504,8 @@ export class BrowserSyncController {
 			localWorkspaceId,
 			workspaceId,
 			revision: policy.revision,
-			objectId,
-			objects: {
-				[objectId]: {
-					path: BINDING_PATH_ANCHOR,
-					epoch,
-					policyRevision: policy.revision,
-					key: toBoundKey(envelope, identity.deviceId),
-				},
-			},
+			objectId: primaryId,
+			objects,
 			pinnedSigners: {
 				[identity.deviceId]: encodeBase64(identity.signingPublic),
 			},
@@ -1254,12 +1521,20 @@ export class BrowserSyncController {
 				'This browser cannot open durable sync state (OPFS is unavailable).',
 			);
 		}
+		const primary = objects[primaryId];
+		if (!primary) {
+			throw new BrowserSyncError(
+				BrowserSyncErrorCode.InvalidOperation,
+				'This browser workspace had no managed object to bind.',
+			);
+		}
 		const binding = await createBrowserSyncWorkspaceBinding({
 			workspaceId,
-			objectId,
-			epoch,
-			policyRevision: policy.revision,
-			objectKeys: new Map([[objectId, objectKey]]),
+			objectId: primaryId,
+			epoch: primary.epoch,
+			policyRevision,
+			objectKeys,
+			objects: objectsById,
 			pinnedSigners: new Map([[identity.deviceId, identity.signingPublic]]),
 			workspace: createWorkerWorkspaceStorage(workspaceFiles),
 			origin: this.#origin,
@@ -1273,7 +1548,7 @@ export class BrowserSyncController {
 				'This browser cannot open durable sync state (OPFS is unavailable).',
 			);
 		}
-		return binding;
+		return { binding, record };
 	}
 
 	async #buildBinding(
@@ -1282,11 +1557,21 @@ export class BrowserSyncController {
 		workspaceFiles: BrowserWorkspaceFiles,
 	): Promise<BrowserSyncWorkspaceBinding | null> {
 		const objectKeys = new Map<string, Uint8Array>();
+		const objects = new Map<string, BrowserSyncObjectBinding>();
 		for (const [objectId, bound] of Object.entries(record.objects)) {
 			objectKeys.set(
 				objectId,
 				await unwrapBoundKey(record, objectId, bound, identity),
 			);
+			objects.set(objectId, {
+				objectId,
+				path: bound.path,
+				...(bound.localObjectId === undefined
+					? {}
+					: { localObjectId: bound.localObjectId }),
+				epoch: bound.epoch,
+				policyRevision: bound.policyRevision,
+			});
 		}
 		const pinnedSigners = new Map<string, Uint8Array>();
 		for (const [deviceId, value] of Object.entries(record.pinnedSigners)) {
@@ -1305,6 +1590,7 @@ export class BrowserSyncController {
 			epoch: primary.epoch,
 			policyRevision: primary.policyRevision,
 			objectKeys,
+			objects,
 			pinnedSigners,
 			workspace: createWorkerWorkspaceStorage(workspaceFiles),
 			origin: this.#origin,
@@ -1425,35 +1711,266 @@ export class BrowserSyncController {
 		return ok(this.status());
 	}
 
-	/** Durable cursor, pending outbox, and conflict counts for the bound workspace. */
-	async workspaceSummary(): Promise<BrowserSyncWorkspaceSummary> {
-		const binding = this.#binding;
-		if (!binding) {
+	/**
+	 * Load the durable binding for the current local workspace without creating
+	 * one. This lets a host re-establish the binding after a reload or before a
+	 * component mounts, rather than reporting `not_configured` for a workspace
+	 * that is already synchronized.
+	 */
+	async bindWorkspace(input: {
+		workspaceId: string;
+		workspaceFiles?: BrowserWorkspaceFiles | null;
+	}): Promise<BrowserSyncResult<BrowserSyncWorkspaceSummary>> {
+		if (!this.#keyStore) {
+			return failure(
+				'unavailable',
+				'This browser cannot store wrapped device keys securely (OPFS is unavailable).',
+			);
+		}
+		const identity = this.#identity;
+		if (!identity) {
+			return failure(
+				'locked',
+				'Unlock this browser device before binding a synchronized workspace.',
+			);
+		}
+		const workspaceFiles = input.workspaceFiles ?? this.#workspaceFiles;
+		if (!workspaceFiles) {
+			return failure(
+				'not_configured',
+				'No browser workspace is open, so there is nothing to bind to sync.',
+			);
+		}
+		this.#localWorkspaceId = input.workspaceId;
+		this.#workspaceFiles = workspaceFiles;
+		try {
+			const record = await this.#loadRecord(input.workspaceId);
+			if (!record) {
+				return failure(
+					'not_configured',
+					'No durable sync binding exists for this browser workspace yet.',
+				);
+			}
+			const binding = await this.#buildBinding(
+				record,
+				identity,
+				workspaceFiles,
+			);
+			if (!binding) {
+				return failure(
+					'unavailable',
+					'This browser cannot open the durable sync state for this workspace.',
+				);
+			}
+			this.#binding = binding;
+			return ok(await this.workspaceSummary());
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('sync_failed', this.#error);
+		}
+	}
+
+	/**
+	 * Resolve the durable binding store for one local workspace.
+	 *
+	 * An injected store is returned as-is. An OPFS store is opened per local
+	 * workspace id and cached only for that id, so reusing the controller across
+	 * workspaces never reads another workspace's record.
+	 */
+	async #resolveBindingStore(
+		localId: string,
+	): Promise<BrowserSyncBindingStore | null> {
+		if (this.#bindingStore !== undefined) return this.#bindingStore;
+		if (this.#openedBindingStore?.id === localId)
+			return this.#openedBindingStore.store;
+		const store = await openBrowserSyncBindingStore(localId);
+		this.#openedBindingStore = store ? { id: localId, store } : null;
+		return store;
+	}
+
+	/**
+	 * Load the durable binding record if it is not already in memory. Only the
+	 * wrapped record is read here; object keys are unwrapped later by
+	 * {@link #buildBinding} with the unlocked identity.
+	 */
+	async #loadRecord(
+		workspaceId?: string,
+	): Promise<BrowserSyncBindingRecord | null> {
+		const target = workspaceId ?? this.#localWorkspaceId;
+		if (
+			this.#record &&
+			(target === undefined || this.#record.localWorkspaceId === target)
+		)
+			return this.#record;
+		if (this.#record && target !== undefined) {
+			// A different workspace was requested; drop the other workspace's state.
+			this.#record = null;
+			this.#binding = null;
+		}
+		const localId = target;
+		if (!localId) return null;
+		const store = await this.#resolveBindingStore(localId);
+		if (!store) return null;
+		let record: BrowserSyncBindingRecord | null;
+		try {
+			record = await store.read();
+		} catch {
+			return null;
+		}
+		if (!record) return null;
+		this.#localWorkspaceId = localId;
+		this.#record = record;
+		return record;
+	}
+
+	/** Build the in-memory binding from the durable record and open files. */
+	async #ensureBinding(
+		workspaceId?: string,
+	): Promise<BrowserSyncWorkspaceBinding | null> {
+		if (this.#binding) return this.#binding;
+		const identity = this.#identity;
+		if (!identity) return null;
+		const record = await this.#loadRecord(workspaceId);
+		if (!record) return null;
+		const workspaceFiles = this.#workspaceFiles;
+		if (!workspaceFiles) return null;
+		const binding = await this.#buildBinding(record, identity, workspaceFiles);
+		if (!binding) return null;
+		this.#binding = binding;
+		return binding;
+	}
+
+	/**
+	 * Refresh each bound object's path from the live managed-object list. A
+	 * managed object that is new since bootstrap has no key and is left out;
+	 * files whose path matches no object are unmanaged and never sealed.
+	 */
+	async #liveObjects(
+		binding: BrowserSyncWorkspaceBinding,
+	): Promise<ReadonlyMap<string, BrowserSyncObjectBinding>> {
+		const base = binding.objects ?? new Map<string, BrowserSyncObjectBinding>();
+		const files = this.#workspaceFiles;
+		if (!files) return base;
+		let cards: BrowserWorkspaceObjectCard[];
+		try {
+			cards = await files.listObjects();
+		} catch {
+			return base;
+		}
+		const byLocalId = new Map(cards.map((card) => [card.id, card]));
+		const live = new Map(base);
+		for (const [objectId, object] of live) {
+			const card = object.localObjectId
+				? byLocalId.get(object.localObjectId)
+				: cards.find((candidate) => candidate.path === object.path);
+			if (card) {
+				live.set(objectId, {
+					...object,
+					localObjectId: card.id,
+					livePath: card.path,
+				});
+			}
+		}
+		return live;
+	}
+
+	/**
+	 * Pull keys wrapped to this device and merge them over the locally wrapped
+	 * ones. A delivery failure is not fatal: the local self-wrapped keys stay in
+	 * place, and the server is never a trust source, so nothing from a failed
+	 * delivery is applied.
+	 */
+	async #refreshObjectKeys(
+		binding: BrowserSyncWorkspaceBinding,
+		identity: DeviceIdentity,
+	): Promise<Map<string, Uint8Array>> {
+		const keys = new Map(binding.objectKeys);
+		try {
+			const delivered = await receiveKeys({
+				origin: this.#origin,
+				token: identity.token,
+				workspaceId: binding.workspaceId,
+				deviceId: identity.deviceId,
+				identity,
+				pinnedSigners: binding.pinnedSigners,
+				fetch: this.#fetch,
+			});
+			for (const [objectId, key] of delivered.keys) keys.set(objectId, key);
+		} catch {
+			// Keep the locally wrapped keys; delivery is only a refresh.
+		}
+		return keys;
+	}
+
+	/** Project the durable state into a summary, or an unconfigured one. */
+	#summaryFromState(
+		workspaceId: string | null,
+		state: SyncState | null,
+	): BrowserSyncWorkspaceSummary {
+		if (!state) {
 			return {
 				configured: false,
-				workspaceId: null,
+				workspaceId,
 				cursor: '0',
 				pending: 0,
 				conflicts: 0,
+				conflictDetails: [],
 			};
 		}
+		return {
+			configured: true,
+			workspaceId,
+			cursor: state.cursor,
+			pending: state.outbox.length,
+			conflicts: state.conflicts.length,
+			conflictDetails: state.conflicts.map((conflict) => ({
+				operationId: conflict.operationId,
+				objectId: conflict.objectId,
+				path: conflict.path,
+				reason: conflict.reason,
+			})),
+		};
+	}
+
+	/**
+	 * Durable cursor, pending outbox, and conflict detail for the bound workspace.
+	 *
+	 * When no binding is in memory this loads the durable record for
+	 * `input.workspaceId`, or the last bound workspace, so a summary is available
+	 * before the workspace component has mounted.
+	 */
+	async workspaceSummary(
+		input: { workspaceId?: string } = {},
+	): Promise<BrowserSyncWorkspaceSummary> {
+		if (!this.#binding) {
+			try {
+				await this.#ensureBinding(input.workspaceId);
+			} catch {
+				// Fall through to the record-only summary below.
+			}
+		}
+		const binding = this.#binding;
+		if (binding) {
+			try {
+				return this.#summaryFromState(
+					binding.workspaceId,
+					await binding.state.read(),
+				);
+			} catch {
+				return this.#summaryFromState(binding.workspaceId, null);
+			}
+		}
+		const record = await this.#loadRecord(input.workspaceId).catch(() => null);
+		if (!record) return this.#summaryFromState(null, null);
+		const state =
+			this.#stateStore !== undefined && this.#stateStore !== null
+				? this.#stateStore
+				: await openBrowserSyncStateStore(record.workspaceId);
+		if (!state) return this.#summaryFromState(record.workspaceId, null);
 		try {
-			const state = await binding.state.read();
-			return {
-				configured: true,
-				workspaceId: binding.workspaceId,
-				cursor: state.cursor,
-				pending: state.outbox.length,
-				conflicts: state.conflicts.length,
-			};
+			return this.#summaryFromState(record.workspaceId, await state.read());
 		} catch {
-			return {
-				configured: false,
-				workspaceId: binding.workspaceId,
-				cursor: '0',
-				pending: 0,
-				conflicts: 0,
-			};
+			return this.#summaryFromState(record.workspaceId, null);
 		}
 	}
 
@@ -1462,9 +1979,10 @@ export class BrowserSyncController {
 	 *
 	 * This never fabricates a result: without an unlocked enrolled identity, an
 	 * explicit object-key map, and the injectable replica boundaries it reports
-	 * `locked`, `not_configured`, or `unavailable` and performs no I/O.
+	 * `locked`, `not_configured`, or `unavailable` and performs no I/O. When no
+	 * binding is in memory it loads the durable one for `input.workspaceId`.
 	 */
-	async syncNow(): Promise<SyncNowOutcome> {
+	async syncNow(input: { workspaceId?: string } = {}): Promise<SyncNowOutcome> {
 		if (!this.#keyStore) {
 			return {
 				status: 'unavailable',
@@ -1486,7 +2004,10 @@ export class BrowserSyncController {
 					'This browser device is not enrolled with the sync server yet.',
 			};
 		}
-		const binding = this.#binding;
+		let binding = this.#binding;
+		if (!binding) {
+			binding = await this.#ensureBinding(input.workspaceId).catch(() => null);
+		}
 		if (!binding) {
 			return {
 				status: 'not_configured',
@@ -1505,6 +2026,10 @@ export class BrowserSyncController {
 			};
 		}
 		try {
+			const objects = await this.#liveObjects(binding);
+			const objectKeys = await this.#refreshObjectKeys(binding, identity);
+			binding = { ...binding, objects, objectKeys };
+			this.#binding = binding;
 			const result = await runBrowserSyncReconcile({
 				...binding,
 				identity,
@@ -1519,6 +2044,7 @@ export class BrowserSyncController {
 				applied: result.applied,
 				conflicts: result.conflicts.length,
 				cursor: result.cursor,
+				skippedUnmanaged: result.skippedUnmanaged,
 			};
 		} catch (error) {
 			if (
@@ -1534,6 +2060,298 @@ export class BrowserSyncController {
 			}
 			this.#error = messageOf(error);
 			return { status: 'error', message: this.#error };
+		}
+	}
+
+	/** Decode a durable record's pinned signer keys. */
+	#decodedPins(
+		record: BrowserSyncBindingRecord | null,
+	): Map<string, Uint8Array> {
+		const pins = new Map<string, Uint8Array>();
+		for (const [deviceId, value] of Object.entries(
+			record?.pinnedSigners ?? {},
+		)) {
+			pins.set(deviceId, decodeBase64(value));
+		}
+		return pins;
+	}
+
+	/** Replace the in-memory binding's pinned signers after an approval change. */
+	#applyPins(record: BrowserSyncBindingRecord): void {
+		if (!this.#binding) return;
+		this.#binding = {
+			...this.#binding,
+			pinnedSigners: this.#decodedPins(record),
+		};
+	}
+
+	/**
+	 * Every active device with a browser-capable `x25519:` recipient.
+	 *
+	 * A browser cannot wrap to a native `age1` recipient, and the access policy
+	 * requires an envelope for every active device. A non-browser device therefore
+	 * blocks browser-first bootstrap: that device must create the workspace and
+	 * deliver keys to this browser instead.
+	 */
+	async #activeWebDevices(
+		workspaceId: string,
+		identity: DeviceIdentity,
+	): Promise<Array<{ deviceId: string; recipient: string }>> {
+		const state = await accessState({
+			origin: this.#origin,
+			token: identity.token,
+			workspaceId,
+			fetch: this.#fetch,
+		});
+		const devices: Array<{ deviceId: string; recipient: string }> = [];
+		for (const raw of state.devices) {
+			if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+			const row = raw as Record<string, unknown>;
+			const deviceId = row.deviceId;
+			const recipient = row.encryptionRecipient;
+			if (
+				typeof deviceId !== 'string' ||
+				typeof recipient !== 'string' ||
+				recipient.length === 0
+			)
+				continue;
+			if (!recipient.startsWith('x25519:'))
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.IncompatibleRecipient,
+					'Another device on this account cannot receive browser key envelopes. Create the workspace from that device and have it deliver keys to this browser.',
+				);
+			devices.push({ deviceId, recipient });
+		}
+		if (!devices.some((device) => device.deviceId === identity.deviceId))
+			devices.push({
+				deviceId: identity.deviceId,
+				recipient: identity.recipient,
+			});
+		return devices;
+	}
+
+	/**
+	 * List the workspace's devices with their locally computed fingerprints.
+	 *
+	 * The signing public key of each device comes from the server's access state,
+	 * but the fingerprint is computed locally and trust is read only from the
+	 * pinned signer set. The access state is never added to the pins.
+	 */
+	async listWorkspaceDevices(
+		input: { workspaceId?: string } = {},
+	): Promise<BrowserSyncResult<BrowserSyncDeviceCard[]>> {
+		const identity = this.#identity;
+		if (!identity) {
+			return failure('locked', 'Unlock this browser device to list devices.');
+		}
+		if (!identity.token) {
+			return failure(
+				'not_configured',
+				'This browser device is not enrolled with the sync server yet.',
+			);
+		}
+		const record = await this.#loadRecord(input.workspaceId).catch(() => null);
+		const workspaceId = this.#binding?.workspaceId ?? record?.workspaceId;
+		if (!workspaceId) {
+			return failure(
+				'not_configured',
+				'No synchronized browser workspace is configured yet.',
+			);
+		}
+		const pins = this.#binding?.pinnedSigners ?? this.#decodedPins(record);
+		try {
+			const state = await accessState({
+				origin: this.#origin,
+				token: identity.token,
+				workspaceId,
+				fetch: this.#fetch,
+			});
+			const devices: BrowserSyncDeviceCard[] = [];
+			for (const raw of state.devices) {
+				if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+				const row = raw as Record<string, unknown>;
+				const deviceId = row.deviceId;
+				const accountId = row.accountId;
+				const publicKey = row.publicKey;
+				const encryptionRecipient = row.encryptionRecipient;
+				if (
+					typeof deviceId !== 'string' ||
+					typeof accountId !== 'string' ||
+					typeof publicKey !== 'string' ||
+					typeof encryptionRecipient !== 'string' ||
+					encryptionRecipient.length === 0
+				)
+					continue;
+				let fingerprint: string;
+				try {
+					fingerprint = deviceFingerprintForCard(
+						deviceId,
+						accountId,
+						decodeBase64(publicKey, 32),
+						encryptionRecipient,
+					);
+				} catch {
+					continue;
+				}
+				devices.push({
+					deviceId,
+					accountId,
+					publicKey,
+					encryptionRecipient,
+					fingerprint,
+					approved: pins.has(deviceId),
+				});
+			}
+			devices.sort((left, right) =>
+				left.deviceId.localeCompare(right.deviceId),
+			);
+			return ok(devices);
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('sync_failed', this.#error);
+		}
+	}
+
+	/**
+	 * Approve a device by storing its signing public key, but only when the
+	 * supplied fingerprint matches the locally computed fingerprint for the
+	 * device card. A mismatch stores nothing.
+	 */
+	async approveDevice(
+		deviceId: string,
+		fingerprint: string,
+	): Promise<BrowserSyncResult<BrowserSyncDeviceCard>> {
+		if (!deviceId) {
+			return failure('device_not_found', 'A device id is required.');
+		}
+		const identity = this.#identity;
+		if (!identity) {
+			return failure(
+				'locked',
+				'Unlock this browser device to approve a device.',
+			);
+		}
+		const record = await this.#loadRecord().catch(() => null);
+		const store = record
+			? await this.#resolveBindingStore(record.localWorkspaceId)
+			: null;
+		if (!record || !store) {
+			return failure(
+				'not_configured',
+				'No durable sync binding exists for this browser workspace yet.',
+			);
+		}
+		const listed = await this.listWorkspaceDevices();
+		if (!listed.ok) return failure(listed.code, listed.message);
+		const device = listed.value.find((entry) => entry.deviceId === deviceId);
+		if (!device) {
+			return failure(
+				'device_not_found',
+				'The workspace access state did not include that device.',
+			);
+		}
+		if (device.fingerprint !== fingerprint) {
+			return failure(
+				'fingerprint_mismatch',
+				'The supplied fingerprint did not match the device card; nothing was approved.',
+			);
+		}
+		const next: BrowserSyncBindingRecord = {
+			...record,
+			pinnedSigners: {
+				...record.pinnedSigners,
+				[deviceId]: device.publicKey,
+			},
+		};
+		await store.write(next);
+		this.#record = next;
+		this.#applyPins(next);
+		return ok({ ...device, approved: true });
+	}
+
+	/** Remove a local device approval; the signing key is dropped from the pins. */
+	async revokeDeviceApproval(
+		deviceId: string,
+	): Promise<BrowserSyncResult<boolean>> {
+		const record = await this.#loadRecord().catch(() => null);
+		const store = record
+			? await this.#resolveBindingStore(record.localWorkspaceId)
+			: null;
+		if (!record || !store) {
+			return failure(
+				'not_configured',
+				'No durable sync binding exists for this browser workspace yet.',
+			);
+		}
+		if (!(deviceId in record.pinnedSigners)) return ok(false);
+		const pinnedSigners = { ...record.pinnedSigners };
+		delete pinnedSigners[deviceId];
+		const next: BrowserSyncBindingRecord = { ...record, pinnedSigners };
+		await store.write(next);
+		this.#record = next;
+		this.#applyPins(next);
+		return ok(true);
+	}
+
+	/**
+	 * Resolve one recorded conflict through the engine and refresh the summary.
+	 *
+	 * This delegates to {@link runBrowserSyncResolveConflict}; an unknown
+	 * operation id is reported as a typed failure and success is never faked.
+	 */
+	async resolveConflict(
+		operationId: string,
+		choice: SyncConflictResolution = 'remote',
+	): Promise<
+		BrowserSyncResult<{
+			resolved: BrowserSyncConflictDetail;
+			remaining: number;
+		}>
+	> {
+		const identity = this.#identity;
+		if (!identity) {
+			return failure(
+				'locked',
+				'Unlock this browser device before resolving a conflict.',
+			);
+		}
+		let binding = this.#binding;
+		if (!binding) {
+			binding = await this.#ensureBinding().catch(() => null);
+		}
+		if (!binding) {
+			return failure(
+				'not_configured',
+				'No synchronized browser workspace is configured yet.',
+			);
+		}
+		try {
+			const objects = await this.#liveObjects(binding);
+			const result = await runBrowserSyncResolveConflict(
+				{
+					...binding,
+					objects,
+					identity,
+					onRevoked: () => {
+						this.#identity = null;
+					},
+				},
+				operationId,
+				choice,
+			);
+			await this.workspaceSummary();
+			return ok({
+				resolved: {
+					operationId: result.resolved.operationId,
+					objectId: result.resolved.objectId,
+					path: result.resolved.path,
+					reason: result.resolved.reason,
+				},
+				remaining: result.remaining.length,
+			});
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('sync_failed', this.#error);
 		}
 	}
 }

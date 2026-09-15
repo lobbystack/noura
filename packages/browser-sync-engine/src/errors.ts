@@ -21,6 +21,10 @@ export const BrowserSyncEngineErrorCode = {
 	InvalidState: 'browser_sync_engine_invalid_state',
 	/** A storage adapter was asked to perform a mutation it cannot express. */
 	InvalidStorageCall: 'browser_sync_engine_invalid_storage_call',
+	/** No recorded conflict matched the operation id being resolved. */
+	ConflictNotFound: 'browser_sync_engine_conflict_not_found',
+	/** A conflict resolution failed; no success is reported and the conflict was kept. */
+	ResolveFailed: 'browser_sync_engine_resolve_failed',
 	/** The remote rejected or failed a push; the outbox was left intact. */
 	PushFailed: 'browser_sync_engine_push_failed',
 	/** A pull failed; the durable cursor was not advanced. */

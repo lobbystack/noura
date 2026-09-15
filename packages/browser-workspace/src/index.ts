@@ -5,6 +5,7 @@ export {
 	createBrowserWorkerTransport,
 	type BrowserWorkspaceFile,
 	type BrowserWorkspaceFiles,
+	type BrowserWorkspaceObjectCard,
 } from './transport';
 export {
 	BrowserWorkspaceServer,

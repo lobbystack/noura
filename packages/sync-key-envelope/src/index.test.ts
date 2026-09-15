@@ -4,6 +4,8 @@ import fixture from '../../../docs/workspace-format/fixtures/browser-key-v1.json
 import {
 	decodeRecipient,
 	deviceFingerprint,
+	deviceFingerprintAge,
+	deviceFingerprintForCard,
 	encodeRecipient,
 	enrollmentProof,
 	KeyEnvelopeError,
@@ -243,4 +245,69 @@ describe('browser-device-v1 fixtures', () => {
 			expect(bytesToHex(proof)).toBe(vector.expected_hex);
 		});
 	}
+});
+
+describe('device fingerprint dispatcher', () => {
+	// The native vector is the exact Rust `device_fingerprint` output for the
+	// `noura.device.card` tuple, verified against `crates/local-core`.
+	const nativeVector = {
+		deviceId: 'device_native',
+		accountId: 'account_owner',
+		signingPublic: 'iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=',
+		recipient: 'age1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurs95jt69',
+		expectedHex:
+			'b310cf915085a5e71ec8bbcad7b6a67380fd485b7b38c8ea256b9ec18e6c0ffe',
+	};
+
+	test('routes browser recipients to the web fingerprint from the shared fixture', () => {
+		for (const vector of deviceFixtures.fingerprint.vectors) {
+			const signing = decodeBase64(vector.signing_public);
+			expect(
+				deviceFingerprintForCard(
+					vector.device_id,
+					vector.account_id,
+					signing,
+					vector.recipient,
+				),
+			).toBe(vector.expected_hex);
+		}
+	});
+
+	test('routes native age recipients to the noura.device.card fingerprint', () => {
+		const signing = decodeBase64(nativeVector.signingPublic);
+		expect(
+			deviceFingerprintAge(
+				nativeVector.deviceId,
+				nativeVector.accountId,
+				signing,
+				nativeVector.recipient,
+			),
+		).toBe(nativeVector.expectedHex);
+		expect(
+			deviceFingerprintForCard(
+				nativeVector.deviceId,
+				nativeVector.accountId,
+				signing,
+				nativeVector.recipient,
+			),
+		).toBe(nativeVector.expectedHex);
+	});
+
+	test('rejects a recipient that is neither x25519: nor age1', () => {
+		let error: unknown;
+		try {
+			deviceFingerprintForCard(
+				'device_x',
+				'account_x',
+				decodeBase64(nativeVector.signingPublic),
+				'not-a-recipient',
+			);
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(KeyEnvelopeError);
+		expect((error as KeyEnvelopeError).code).toBe(
+			KeyEnvelopeErrorCode.InvalidRecipient,
+		);
+	});
 });

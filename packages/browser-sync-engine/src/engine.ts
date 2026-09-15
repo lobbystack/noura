@@ -33,9 +33,12 @@ import type {
 	FileChangeCodec,
 	OpenedFileChange,
 	ReconcileResult,
+	ResolveConflictResult,
 	SyncConflict,
 	SyncConflictReason,
+	SyncConflictResolution,
 	SyncState,
+	SyncStateMigration,
 	SyncStateStore,
 } from './types';
 
@@ -56,6 +59,8 @@ export interface BrowserSyncEngineOptions {
 	now?: () => number;
 	/** Called once on a revoked transition so the host can clear key material. */
 	onRevoked?: (error: unknown) => void | Promise<void>;
+	/** Called when an older durable state is upgraded or legacy conflicts are dropped. */
+	onStateMigration?: (migration: SyncStateMigration) => void;
 }
 
 function requireOperationId(operation: EncryptedOperation): string {
@@ -104,6 +109,8 @@ export class BrowserSyncEngine {
 	readonly #state: SyncStateStore;
 	readonly #now: () => number;
 	readonly #onRevoked: ((error: unknown) => void | Promise<void>) | undefined;
+	readonly #onStateMigration:
+		((migration: SyncStateMigration) => void) | undefined;
 	#phase: BrowserSyncEnginePhase = 'active';
 
 	constructor(options: BrowserSyncEngineOptions) {
@@ -113,6 +120,7 @@ export class BrowserSyncEngine {
 		this.#state = options.state;
 		this.#now = options.now ?? Date.now;
 		this.#onRevoked = options.onRevoked;
+		this.#onStateMigration = options.onStateMigration;
 	}
 
 	/** The current lifecycle phase. */
@@ -171,8 +179,18 @@ export class BrowserSyncEngine {
 
 			for (const operation of page.operations) {
 				const operationId = requireOperationId(operation);
+				if (
+					state.conflicts.some((entry) => entry.operationId === operationId)
+				) {
+					continue;
+				}
 				const change = await this.#open(operation);
-				const conflict = await this.#apply(operationId, change, state);
+				const conflict = await this.#apply(
+					operation,
+					operationId,
+					change,
+					state,
+				);
 				if (conflict === null) applied += 1;
 				else {
 					state.conflicts = [...state.conflicts, conflict];
@@ -193,6 +211,57 @@ export class BrowserSyncEngine {
 			cursor: state.cursor,
 			hasMore,
 		};
+	}
+
+	/**
+	 * Resolve one recorded conflict, making the user's choice durable.
+	 *
+	 * `remote` re-opens the stored encrypted operation through the codec and
+	 * force-applies it to local storage, bypassing the original `baseRevision`
+	 * guard because the user chose the remote bytes. `local` seals the current
+	 * local bytes for the conflict path as a fresh operation and enqueues it in
+	 * the outbox; when the path no longer exists locally, a deletion is
+	 * enqueued. Either way the conflict is removed only after the resolution
+	 * work completes, and the durable state is written once.
+	 *
+	 * A resolution that cannot be performed throws a typed
+	 * {@link BrowserSyncEngineError} and leaves the conflict in place; success is
+	 * never fabricated. An unknown `operationId` is rejected with
+	 * {@link BrowserSyncEngineErrorCode.ConflictNotFound}.
+	 */
+	async resolveConflict(
+		operationId: string,
+		choice: SyncConflictResolution,
+	): Promise<ResolveConflictResult> {
+		this.#assertActive('resolve a conflict');
+		const state = await this.#readState();
+		const index = state.conflicts.findIndex(
+			(entry) => entry.operationId === operationId,
+		);
+		if (index < 0) {
+			throw new BrowserSyncEngineError(
+				BrowserSyncEngineErrorCode.ConflictNotFound,
+				'No recorded conflict matched the operation id',
+			);
+		}
+		const resolved = state.conflicts[index]!;
+
+		if (choice === 'remote') {
+			await this.#applyRemoteConflict(resolved, state);
+		} else if (choice === 'local') {
+			await this.#applyLocalConflict(resolved, state);
+		} else {
+			throw new BrowserSyncEngineError(
+				BrowserSyncEngineErrorCode.ResolveFailed,
+				'A conflict resolution choice was not recognized',
+			);
+		}
+
+		state.conflicts = state.conflicts.filter(
+			(entry) => entry.operationId !== operationId,
+		);
+		await this.#writeState(state);
+		return { resolved, remaining: state.conflicts };
 	}
 
 	/**
@@ -346,6 +415,7 @@ export class BrowserSyncEngine {
 	}
 
 	async #apply(
+		operation: EncryptedOperation,
 		operationId: string,
 		change: OpenedFileChange,
 		state: SyncState,
@@ -355,12 +425,14 @@ export class BrowserSyncEngine {
 			currentRevision: string | null,
 		): SyncConflict => ({
 			operationId,
+			objectId: change.objectId,
 			path: change.path,
 			reason,
 			expectedRevision: change.baseRevision,
 			currentRevision,
 			previousPath: change.previousPath,
 			detectedAt: this.#now(),
+			operation,
 		});
 
 		if (change.previousPath !== null) {
@@ -508,6 +580,86 @@ export class BrowserSyncEngine {
 		return null;
 	}
 
+	/**
+	 * Force-apply the stored remote operation for a conflict. The original
+	 * `baseRevision` guard is intentionally dropped: the user chose the remote
+	 * bytes, so a present local file is overwritten and a moved source is
+	 * removed regardless of its revision. State is mutated in memory only; the
+	 * caller persists it after removing the conflict.
+	 */
+	async #applyRemoteConflict(
+		conflict: SyncConflict,
+		state: SyncState,
+	): Promise<void> {
+		const change = await this.#open(conflict.operation);
+		if (change.path !== conflict.path) {
+			throw new BrowserSyncEngineError(
+				BrowserSyncEngineErrorCode.ResolveFailed,
+				'The stored operation did not match the conflict path',
+			);
+		}
+		try {
+			if (change.content === null) {
+				if (change.previousPath !== null) {
+					await this.#forceDelete(change.previousPath);
+					this.#recordAbsent(state, change.previousPath);
+				}
+				await this.#forceDelete(change.path);
+				this.#recordAbsent(state, change.path);
+			} else {
+				const written = await this.#storage.write({
+					path: change.path,
+					bytes: change.content,
+				});
+				this.#recordPresent(state, change.path, written.revision);
+				if (
+					change.previousPath !== null &&
+					change.previousPath !== change.path
+				) {
+					await this.#forceDelete(change.previousPath);
+					this.#recordAbsent(state, change.previousPath);
+				}
+			}
+		} catch (error) {
+			if (isRevokedError(error)) throw await this.#toRevoked(error);
+			throw new BrowserSyncEngineError(
+				BrowserSyncEngineErrorCode.ResolveFailed,
+				'Applying the remote operation failed; the conflict was kept',
+				{ cause: error },
+			);
+		}
+	}
+
+	/** Delete a path if it is present, without an expected-revision guard. */
+	async #forceDelete(path: string): Promise<void> {
+		const current = await this.#storage.read(path);
+		if (current !== null) {
+			await this.#storage.delete({ path });
+		}
+	}
+
+	/**
+	 * Make the local bytes win by sealing them as a fresh operation and
+	 * enqueueing it. The change is based on the conflicting operation's
+	 * expected revision, so it is a sibling write that supersedes the remote
+	 * operation. A path that no longer exists locally becomes a deletion.
+	 */
+	async #applyLocalConflict(
+		conflict: SyncConflict,
+		state: SyncState,
+	): Promise<void> {
+		const current = await this.#storage.read(conflict.path);
+		const change: FileChange = {
+			path: conflict.path,
+			previousPath: null,
+			baseRevision: conflict.expectedRevision,
+			content: current === null ? null : current.bytes,
+		};
+		const operation = await this.#seal(change);
+		state.outbox = [...state.outbox, operation];
+		await this.#recordEnqueuedBaseline(state, change);
+	}
+
 	async #recordEnqueuedBaseline(
 		state: SyncState,
 		change: FileChange,
@@ -538,7 +690,13 @@ export class BrowserSyncEngine {
 	}
 
 	async #readState(): Promise<SyncState> {
-		return cloneSyncState(validateSyncState(await this.#state.read()));
+		const onMigration = this.#onStateMigration;
+		return cloneSyncState(
+			validateSyncState(
+				await this.#state.read(),
+				onMigration ? { onMigration } : {},
+			),
+		);
 	}
 
 	async #writeState(state: SyncState): Promise<void> {
