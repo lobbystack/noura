@@ -259,7 +259,8 @@ describe('receiveKeys', () => {
 		const url = new URL(capturedUrl);
 		expect(url.pathname).toBe(`/v1/workspaces/${WORKSPACE}/keys`);
 		expect(url.searchParams.get('device')).toBe(identity.deviceId);
-		expect(url.searchParams.get('afterObject')).toBe('');
+		// The first page must omit `afterObject`; the server rejects an empty value.
+		expect(url.searchParams.has('afterObject')).toBe(false);
 		expect(url.searchParams.get('afterEpoch')).toBe('0');
 		expect(capturedAuth).toBe('Bearer secret-token');
 	});

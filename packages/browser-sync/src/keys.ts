@@ -218,7 +218,10 @@ export async function receiveKeys(
 			input.origin,
 		);
 		url.searchParams.set('device', input.deviceId);
-		url.searchParams.set('afterObject', afterObject);
+		// The server treats a present-but-empty `afterObject` as an identifier and
+		// rejects it, so omit the parameter entirely on the first page, matching the
+		// native client.
+		if (afterObject !== '') url.searchParams.set('afterObject', afterObject);
 		url.searchParams.set('afterEpoch', String(afterEpoch));
 
 		const response = await input.fetch(url.toString(), {

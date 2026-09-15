@@ -32,10 +32,13 @@ transitions, live-text generations, and capability-bound object activations.
   keys and the pinned signer travel in the URL fragment, never the HTTP request.
 - Native AES-GCM/Ed25519 file transport, age key wrapping, encrypted key-envelope
   persistence, a file-backed crash-replay journal, and conflict preservation.
-- Server-side browser device support: `x25519:` recipient enrollment verified
-  with the `noura.device.enroll.web` proof, signed `noura.sync.key.web` envelope
-  storage, browser envelope verification in key upload and signed access
-  policies, and construction-aware key delivery. No browser client exists yet.
+- Server-side browser device support: enrollment of `x25519:` recipients
+  verified with the `noura.device.enroll.web` proof, storage of signed
+  `noura.sync.key.web` envelopes, browser envelope verification in key upload and
+  signed access policies, and construction-aware key delivery. The browser client
+  library (`packages/browser-sync`) handles device custody, enrollment, key
+  delivery, and operation transport. The hosted app does not call it yet, and no
+  test has run it against this service end to end.
 - Native background capture and restart, pause/resume, owner replica joining,
   verified device approval, encrypted key backup before upload, and explicit
   local/remote resolution of same-path conflicts without overwriting later edits.

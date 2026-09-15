@@ -5,7 +5,7 @@ import {
 	type AccessTransition,
 } from './checkpoints';
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { browserKeySigningBytes } from './browser';
+import { browserKeySigningBytes, browserRecipientMatches } from './browser';
 import { base64, cursor, identifier, record, SyncError } from './protocol';
 import type { SyncStore, Actor } from './store';
 
@@ -383,9 +383,15 @@ export async function setAccess(
 				]),
 			];
 			const activeDevices =
-				await tx`SELECT id,account_id FROM noura_devices WHERE account_id=ANY(${accounts}) AND NOT revoked ORDER BY id FOR SHARE`;
+				await tx`SELECT id,account_id,encryption_recipient FROM noura_devices WHERE account_id=ANY(${accounts}) AND NOT revoked ORDER BY id FOR SHARE`;
 			const devices = new Map(
 				activeDevices.map((device) => [device.id, device.account_id as string]),
+			);
+			const deviceRecipients = new Map(
+				activeDevices.map((device) => [
+					device.id as string,
+					device.encryption_recipient as string | null,
+				]),
 			);
 			for (const account of new Set([
 				...policy.members.map((m) => m.accountId),
@@ -470,6 +476,15 @@ export async function setAccess(
 				)
 					throw new SyncError('sync.key_envelopes_incomplete', 409);
 				for (const envelope of next.envelopes) {
+					if (
+						envelope.construction === 'web' &&
+						(!envelope.recipientPublicKey ||
+							!browserRecipientMatches(
+								deviceRecipients.get(envelope.deviceId),
+								envelope.recipientPublicKey,
+							))
+					)
+						throw new SyncError('sync.invalid_recipient');
 					const existing = oldEnvelopes.find(
 						(old) => old.device_id === envelope.deviceId,
 					);
