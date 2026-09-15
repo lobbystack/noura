@@ -28,6 +28,9 @@ export * from './identity';
 export * from './enrollment';
 export * from './keys';
 export * from './operations';
+export * from './file-change';
+export * from './codec';
+export * from './access-policy';
 
 export {
 	decodeRecipient,

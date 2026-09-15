@@ -94,6 +94,92 @@ export function createBrowserWorkerTransport(
 	};
 }
 
+/** A stored canonical file and its opaque content revision. */
+export interface BrowserWorkspaceFile {
+	revision: string;
+	bytes: Uint8Array;
+}
+
+/**
+ * Raw canonical file operations on the active browser workspace.
+ *
+ * Paths are validated by `BrowserWorkspaceStorage` in the worker, which also
+ * enforces the expected revision and journals each mutation. Bytes cross the
+ * worker boundary as canonical base64 and are decoded here into `Uint8Array`.
+ */
+export interface BrowserWorkspaceFiles {
+	/** Every canonical path in the active workspace, sorted. */
+	list(): Promise<string[]>;
+	/** Read one canonical file, or `null` when it does not exist. */
+	read(path: string): Promise<BrowserWorkspaceFile | null>;
+	/** Write a canonical file, requiring the given revision or its absence. */
+	write(input: {
+		path: string;
+		bytes: Uint8Array;
+		expectedRevision: string | null;
+	}): Promise<{ path: string; revision: string }>;
+	/** Move a canonical file, requiring the source revision and a free destination. */
+	move(input: {
+		from: string;
+		to: string;
+		expectedRevision: string;
+		expectedDestinationRevision: string | null;
+	}): Promise<{ path: string; revision: string }>;
+	/** Delete a canonical file, requiring its current revision. */
+	delete(input: { path: string; expectedRevision: string }): Promise<void>;
+}
+
+/** Build the raw canonical file operations over a worker transport. */
+export function createBrowserWorkspaceFiles(
+	transport: CoreTransport,
+): BrowserWorkspaceFiles {
+	return {
+		list: () => transport.request<string[]>('files_list'),
+		async read(path) {
+			const value = await transport.request<{
+				revision: string;
+				bytes: string;
+			} | null>('files_read', { path });
+			return value === null
+				? null
+				: { revision: value.revision, bytes: decodeBase64(value.bytes) };
+		},
+		write: (input) =>
+			transport.request<{ path: string; revision: string }>('files_write', {
+				path: input.path,
+				bytes: encodeBase64(input.bytes),
+				expectedRevision: input.expectedRevision,
+			}),
+		move: (input) =>
+			transport.request<{ path: string; revision: string }>('files_move', {
+				from: input.from,
+				to: input.to,
+				expectedRevision: input.expectedRevision,
+				expectedDestinationRevision: input.expectedDestinationRevision,
+			}),
+		async delete(input) {
+			await transport.request('files_delete', {
+				path: input.path,
+				expectedRevision: input.expectedRevision,
+			});
+		},
+	};
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+	let binary = '';
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+function decodeBase64(value: string): Uint8Array {
+	const binary = atob(value);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index += 1)
+		bytes[index] = binary.charCodeAt(index);
+	return bytes;
+}
+
 /** Creates the normal typed Noura client over a browser worker transport. */
 export function createBrowserWorkspaceClient(worker: BrowserWorkerEndpoint): {
 	client: NouraClient;
@@ -104,6 +190,8 @@ export function createBrowserWorkspaceClient(worker: BrowserWorkerEndpoint): {
 	 */
 	plugins: PluginRuntime;
 	transport: CoreTransport & { dispose(): void };
+	/** Raw canonical file operations on the active workspace. */
+	files: BrowserWorkspaceFiles;
 	/** Returns a lossless structured-clone snapshot; packaging it for download is UI work. */
 	exportWorkspace(): Promise<BrowserWorkspaceSnapshot>;
 	/** Imports into a new browser workspace with the snapshot's stable workspace ID. */
@@ -118,6 +206,7 @@ export function createBrowserWorkspaceClient(worker: BrowserWorkerEndpoint): {
 			supportedCapabilities: browserPluginCapabilities,
 		}),
 		transport,
+		files: createBrowserWorkspaceFiles(transport),
 		exportWorkspace: () =>
 			transport.request<BrowserWorkspaceSnapshot>('workspace_export'),
 		importWorkspace: (snapshot) =>

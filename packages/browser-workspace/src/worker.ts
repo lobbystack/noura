@@ -126,6 +126,16 @@ export class BrowserWorkspaceServer {
 						return await this.#moveObject(payload);
 					case 'objects_delete':
 						return await this.#deleteObject(payload);
+					case 'files_list':
+						return await this.#listFiles();
+					case 'files_read':
+						return await this.#readFile(payload);
+					case 'files_write':
+						return await this.#writeFile(payload);
+					case 'files_move':
+						return await this.#moveFile(payload);
+					case 'files_delete':
+						return await this.#deleteFile(payload);
 					default:
 						throw coreError(
 							'browser_operation_unsupported',
@@ -584,6 +594,118 @@ export class BrowserWorkspaceServer {
 		return mutation(current);
 	}
 
+	/**
+	 * Raw canonical filesystem operations. These are transport-level primitives
+	 * over `BrowserWorkspaceStorage`, which owns path validation, expected
+	 * revisions, journaling, and recovery. They perform no workspace-format
+	 * interpretation and are the boundary a sync adapter uses to read and apply
+	 * canonical bytes.
+	 */
+	async #listFiles(): Promise<string[]> {
+		const rebuilt = await this.#requireCurrent('files_list').storage.rebuild();
+		const paths = new Set<string>();
+		for (const file of rebuilt.files) paths.add(file.path);
+		for (const managed of rebuilt.managed) paths.add(managed.relativePath);
+		return [...paths].sort();
+	}
+
+	async #readFile(payload: Record<string, unknown>) {
+		if (!hasOnlyKeys(payload, ['path']))
+			throw coreError(
+				'invalid_input',
+				'validation',
+				'files_read accepts only a path',
+				'files_read',
+			);
+		const path = string(payload.path, 'path', 'files_read');
+		const stored = await this.#requireCurrent('files_read').storage.read(path);
+		if (!stored) return null;
+		return {
+			revision: stored.revision,
+			bytes: encodeBase64Bytes(stored.bytes),
+		};
+	}
+
+	async #writeFile(payload: Record<string, unknown>) {
+		if (!hasOnlyKeys(payload, ['path', 'bytes', 'expectedRevision']))
+			throw coreError(
+				'invalid_input',
+				'validation',
+				'files_write accepts only path, bytes, and expectedRevision',
+				'files_write',
+			);
+		const path = string(payload.path, 'path', 'files_write');
+		const bytes = decodeBase64Bytes(payload.bytes, 'bytes', 'files_write');
+		const expectedRevision = nullableRevision(
+			payload.expectedRevision,
+			'expectedRevision',
+			'files_write',
+		);
+		const stored = await this.#requireCurrent('files_write').storage.write({
+			path,
+			bytes,
+			expectedRevision,
+		});
+		return { path, revision: stored.revision };
+	}
+
+	async #moveFile(payload: Record<string, unknown>) {
+		if (
+			!hasOnlyKeys(payload, [
+				'from',
+				'to',
+				'expectedRevision',
+				'expectedDestinationRevision',
+			])
+		)
+			throw coreError(
+				'invalid_input',
+				'validation',
+				'files_move accepts only from, to, expectedRevision, and expectedDestinationRevision',
+				'files_move',
+			);
+		const from = string(payload.from, 'from', 'files_move');
+		const to = string(payload.to, 'to', 'files_move');
+		const expectedRevision = requiredRevision(
+			payload.expectedRevision,
+			'expectedRevision',
+			'files_move',
+		);
+		const expectedDestinationRevision = nullableRevision(
+			payload.expectedDestinationRevision,
+			'expectedDestinationRevision',
+			'files_move',
+		);
+		const stored = await this.#requireCurrent('files_move').storage.move({
+			from,
+			to,
+			expectedRevision,
+			expectedDestinationRevision,
+		});
+		return { path: to, revision: stored.revision };
+	}
+
+	async #deleteFile(payload: Record<string, unknown>) {
+		if (!hasOnlyKeys(payload, ['path', 'expectedRevision']))
+			throw coreError(
+				'invalid_input',
+				'validation',
+				'files_delete accepts only path and expectedRevision',
+				'files_delete',
+			);
+		const path = string(payload.path, 'path', 'files_delete');
+		const expectedRevision = requiredRevision(
+			payload.expectedRevision,
+			'expectedRevision',
+			'files_delete',
+		);
+		await this.#requireCurrent('files_delete').storage.delete({
+			path,
+			expectedRevision,
+		});
+		return undefined;
+	}
+
 	async #findObject(
 		id: string,
 		operation: string,
@@ -984,6 +1106,55 @@ function coreError(
 	operation: string,
 ): CoreError {
 	return { code, category, message, retryable: false, operation };
+}
+function requiredRevision(
+	value: unknown,
+	name: string,
+	operation: string,
+): string {
+	return string(value, name, operation);
+}
+function nullableRevision(
+	value: unknown,
+	name: string,
+	operation: string,
+): string | null {
+	if (value === undefined || value === null) return null;
+	return string(value, name, operation);
+}
+function encodeBase64Bytes(bytes: Uint8Array): string {
+	let binary = '';
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+function decodeBase64Bytes(
+	value: unknown,
+	name: string,
+	operation: string,
+): Uint8Array {
+	const text = string(value, name, operation);
+	let binary: string;
+	try {
+		binary = atob(text);
+	} catch {
+		throw coreError(
+			'invalid_base64',
+			'validation',
+			`${name} must be canonical base64`,
+			operation,
+		);
+	}
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index += 1)
+		bytes[index] = binary.charCodeAt(index);
+	if (encodeBase64Bytes(bytes) !== text)
+		throw coreError(
+			'invalid_base64',
+			'validation',
+			`${name} must be canonical base64`,
+			operation,
+		);
+	return bytes;
 }
 function asCoreError(
 	error: unknown,

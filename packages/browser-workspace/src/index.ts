@@ -1,7 +1,10 @@
 export type * from './protocol';
 export {
 	createBrowserWorkspaceClient,
+	createBrowserWorkspaceFiles,
 	createBrowserWorkerTransport,
+	type BrowserWorkspaceFile,
+	type BrowserWorkspaceFiles,
 } from './transport';
 export {
 	BrowserWorkspaceServer,

@@ -7,6 +7,7 @@ export function createBrowserApp(webRoot: string) {
 	const app = new Hono();
 	app.get('/_app/*', serveStatic({ root: webRoot }));
 	app.get('/pdfjs/*', serveStatic({ root: webRoot }));
+	app.get('/workspace-wasm/*', serveStatic({ root: webRoot }));
 	const routes = [
 		'/',
 		'/inbox',

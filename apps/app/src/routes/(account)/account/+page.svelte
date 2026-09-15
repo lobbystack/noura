@@ -3,6 +3,8 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import * as Field from '$lib/components/ui/field';
+	import BrowserSyncSettings from '$lib/components/browser-sync-settings.svelte';
+	import { getBrowserSyncController } from '$lib/browser-sync';
 	import {
 		session,
 		sendMagicLink,
@@ -24,6 +26,10 @@
 	let invite = $state('');
 	let notice = $state('');
 	let error = $state('');
+	// Tauri-free web detection: importing $lib/platform would pull native code
+	// into this browser-only route.
+	const browserClient =
+		typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
 	async function run(action: () => Promise<void>) {
 		busy = true;
 		error = '';
@@ -79,10 +85,16 @@
 		disabled={busy}
 		onclick={() =>
 			run(async () => {
+				if (browserClient) (await getBrowserSyncController()).lock();
 				await signOut();
 				account = null;
 			})}>Sign out</Button
 	>
+	{#if browserClient}
+		<div class="border-t border-border pt-6">
+			<BrowserSyncSettings />
+		</div>
+	{/if}
 {:else}
 	<p class="text-muted-foreground">
 		Create an account with a passkey, or sign in to connect your desktop.

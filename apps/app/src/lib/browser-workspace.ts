@@ -5,8 +5,14 @@ export function startBrowserWorkspace() {
 		new URL('./browser-workspace.worker.ts', import.meta.url),
 		{ type: 'module' },
 	);
-	const { client, plugins, transport, exportWorkspace, importWorkspace } =
-		createBrowserWorkspaceClient(worker);
+	const {
+		client,
+		plugins,
+		transport,
+		files,
+		exportWorkspace,
+		importWorkspace,
+	} = createBrowserWorkspaceClient(worker);
 	let disposed = false;
 	const stop = () => {
 		if (disposed) return;
@@ -61,6 +67,7 @@ export function startBrowserWorkspace() {
 	return {
 		client,
 		plugins,
+		files,
 		exportWorkspace,
 		importWorkspace,
 		ready,

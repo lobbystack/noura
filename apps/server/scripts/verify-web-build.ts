@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createBrowserApp } from '../src/web';
 
@@ -90,14 +91,43 @@ for (const chunk of chunks) {
 	assert.equal(response.status, 200, `Missing served asset: ${chunk.file}`);
 	assert.ok(!response.headers.get('content-type')?.includes('text/html'));
 }
+const wasmRoot = new URL('workspace-wasm/', build);
+function walkWasm(directory: string): string[] {
+	const entries = readdirSync(new URL(`${directory}/`, wasmRoot), {
+		withFileTypes: true,
+	});
+	return entries.flatMap((entry) =>
+		entry.isDirectory()
+			? walkWasm(`${directory}/${entry.name}`)
+			: [`${directory}/${entry.name}`],
+	);
+}
+let sawWasmBinary = false;
+for (const file of walkWasm('.')) {
+	const normalized = file.replace(/^\.\//, '');
+	if (normalized.endsWith('workspace_format_wasm_bg.wasm'))
+		sawWasmBinary = true;
+	const response = await app.request(`/workspace-wasm/${normalized}`);
+	assert.equal(
+		response.status,
+		200,
+		`Missing served workspace wasm asset: ${normalized}`,
+	);
+}
+assert.ok(sawWasmBinary, 'Hosted build is missing the workspace wasm binary');
+assert.ok(
+	html.includes('wasm-unsafe-eval'),
+	'Hosted CSP must allow WebAssembly compilation',
+);
 for (const path of [
 	'/api/missing',
 	'/v1/missing',
 	'/public/missing',
 	'/_app/missing.js',
+	'/workspace-wasm/missing.wasm',
 	'/unknown',
 ])
 	assert.equal((await app.request(path)).status, 404);
 console.info(
-	'Verified hosted CSP, route isolation, SPA responses, and browser chunks.',
+	'Verified hosted CSP, route isolation, SPA responses, browser chunks, and workspace wasm assets.',
 );

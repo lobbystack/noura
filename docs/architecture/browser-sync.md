@@ -73,10 +73,30 @@ the `noura.device.enroll.web` proof, and pulls and verifies `noura.sync.key.web`
 envelopes against caller-pinned signer keys before unwrapping with the recipient
 secret. It also seals and opens `EncryptedOperation` envelopes and speaks the
 push/pull operation transport at the library level, conforming to the shared
-`operation-v1.json` fixture. The hosted browser still has no local replica
-reconciliation, no outbox or conflict handling, no revocation lock state, no
-recovery kit, and no UI wiring, so it still cannot open or synchronize a
-workspace end to end.
+`operation-v1.json` fixture. It implements canonical version 1 through version 3
+file-change encoding and decoding against the shared `sync-v1.json` fixture and a
+`FileChangeCodec` bridge that seals a file change into an `EncryptedOperation`
+and verifies and opens one back to its change, workspace, object, and epoch. The
+hosted browser still has no local replica reconciliation, no outbox or conflict
+handling, no revocation lock state, no recovery kit, and no UI wiring, so it
+still cannot open or synchronize a workspace end to end.
+
+**Implemented browser replica engine.** `packages/browser-sync-engine`
+(`@noura/browser-sync-engine`) implements the local replica reconciliation layer
+at the library level over injectable `storage`, `remote`, `codec`, and durable
+`state` boundaries. It seals local file changes into a durable outbox before any
+network call, flushes the outbox in order in batches of at most 100 operations,
+pulls pages from the stored cursor, and applies version-1 file-change rules
+against expected revisions, recording conflicts without overwriting local bytes.
+A revoked codec or remote error transitions the engine to a locked state through
+an injected `onRevoked` hook. It holds no keys and performs no cryptography,
+serialization, or network I/O. `createFileSystemSyncStateStore` supplies the
+durable `SyncStateStore` over an injected filesystem boundary at an
+adapter-owned path outside the canonical workspace, and
+`createWorkspaceStorageAdapter` is the concrete `BrowserSyncStorage` bridge that
+derives its path list from `BrowserWorkspaceStorage.rebuild()`. Host app/OPFS
+wiring, key-rotation application, recovery kits, and UI are still outstanding,
+so the hosted browser still cannot synchronize a workspace end to end.
 
 ## Locked invariants this proposal must satisfy
 
@@ -312,11 +332,14 @@ ephemeralPublicKey, salt, nonce]` for web entries and the unchanged
 ### Remaining limitations
 
 - The browser client foundation exists in `packages/browser-sync` (device custody,
-  passphrase unlock, enrollment, pinned key delivery, operation seal/open, and the
-  push/pull transport), but there is no local replica reconciliation, no outbox or
-  conflict handling, no revocation-driven lock state, no recovery kit, and no UI
-  wiring, so the hosted browser still cannot open or synchronize a workspace end
-  to end.
+  passphrase unlock, enrollment, pinned key delivery, operation seal/open,
+  canonical file-change encoding/decoding, the file-change codec, and the
+  push/pull transport) and the local replica engine exists in
+  `packages/browser-sync-engine` (durable outbox, capped ordered push, cursor-based
+  pull and application, conflict recording, snapshot diffing, and revocation lock
+  state), but there is no host app/OPFS wiring, no key-rotation application, no
+  recovery kit, and no UI, so the hosted browser still cannot open or synchronize
+  a workspace end to end.
 - Browser key envelopes are delivered to clients, but clients must still verify
   them locally against pinned signer keys. The server is not a trust source.
 - Revocation and epoch rotation reuse the signed access-policy path, which now
@@ -421,10 +444,122 @@ version 1 and version 2 `EncryptedOperation` cryptography byte-for-byte:
   fixture and asserts byte-identical signature and ciphertext, so Rust and
   TypeScript accept and reject the same vectors.
 
-Remaining browser operation work is the local replica and orchestration layer,
-not cryptography: pulling and applying operations to a replica, an outbox for
-unacknowledged pushes, conflict detection and resolution, and revocation-driven
-lock state.
+### File-change codec
+
+**Implemented at the library level.** `packages/browser-sync` owns the canonical
+file-change payload format and the codec bridge that the local replica engine
+consumes:
+
+- `encodeFileChange` and `decodeFileChange` (in `src/file-change.ts`) implement
+  version 1, version 2, and version 3 file changes exactly as the Rust
+  serializer writes them. Encoding emits no whitespace in the fixture's field
+  order (`version`, `path`, `previousPath`, `baseRevision`, `content`, then
+  `acceptedRevisions` for version 2 and `blob` for version 3) with
+  `serde_json`-compatible string escaping and canonical standard base64 content.
+  Decoding parses strict UTF-8 JSON and validates with `syncFileChangeSchema`
+  from `@noura/workspace-schema`. Both directions conform to the shared
+  `docs/workspace-format/fixtures/sync-v1.json` fixture, so Rust and TypeScript
+  accept and reject the same vectors.
+- `createFileChangeCodec({ identity, objectKeys, pinnedSigners })` (in
+  `src/codec.ts`) is the sync codec bridge. Sealing encodes a version 1 change,
+  looks up the object key for the operation's `objectId`, and calls
+  `sealOperation` with the device identity and the caller-supplied `epoch` and
+  `policyRevision`. Opening calls `validateOperation`, resolves a
+  caller-pinned signer for `operation.deviceId`, and only then decrypts with the
+  object key for `operation.objectId` and decodes the payload.
+- The codec reports the new stable codes `browser_sync_untrusted_signer` for an
+  absent trust pin, `browser_sync_missing_key` for an absent object key, and
+  `browser_sync_invalid_file_change` for a payload that is not valid UTF-8 JSON
+  or fails the schema. The local replica engine consumes this codec through its
+  `codec` boundary: the host binds the envelope identity (`workspaceId`,
+  `objectId`, `epoch`, `policyRevision`) for each seal and maps the engine's
+  byte-oriented file-change descriptor to the codec's canonical change; opening
+  returns that descriptor plus the recovered `workspaceId`, `objectId`, and
+  `epoch`. A host that treats an untrusted signer as revocation maps
+  `browser_sync_untrusted_signer` to its revoked code.
+
+### Local replica reconciliation
+
+**Implemented at the library level.** `packages/browser-sync-engine`
+(`@noura/browser-sync-engine`) is the local replica and orchestration layer, not
+cryptography. It composes four injectable boundaries and performs no network or
+cryptographic work itself:
+
+- **`storage`** reads, writes, moves, and deletes canonical files with expected
+  revisions. `BrowserWorkspaceStorage` provides compatible operations;
+  `createWorkspaceStorageAdapter` is the concrete bridge and derives its path
+  list from `rebuild()` so it reflects canonical ordinary and managed files
+  rather than a stale index. `createBrowserStorageAdapter` is the lower-level
+  bridge that accepts a caller-supplied `list`. `MemorySyncStorage` is an
+  in-memory replica used by tests.
+- **`remote`** pushes operations and pulls pages using the shared `SyncPage` and
+  `SequencedOperation` shapes, with cursors kept as canonical decimal strings.
+- **`codec`** seals a file-change descriptor and opens an encrypted operation
+  back to its `workspaceId`, `objectId`, `epoch`, `path`, `previousPath`,
+  `baseRevision`, and `content`. The codec owns keys, signing, and verification
+  and must throw an error with code `"revoked"` for an untrusted signer or an
+  undecryptable operation that indicates revocation. `createFileChangeCodec` in
+  `@noura/browser-sync` implements this boundary over the canonical file-change
+  codec; a host maps its `browser_sync_untrusted_signer` error to the revoked
+  code when it treats an unpinned signer as revocation.
+- **`state`** is the durable `SyncStateStore`
+  `{cursor, pushedRevisions, knownPaths, outbox, conflicts}`. A host supplies
+  IndexedDB, OPFS, or a native bridge; `createMemorySyncStateStore` is for tests
+  only. `createFileSystemSyncStateStore(fileSystem, path)` persists state through
+  an injected `{read, write, remove}` filesystem boundary at an adapter-owned
+  path (default `.noura-adapter/sync-state.json`). It returns an empty state only
+  when the file is absent, rejects malformed or oversized bytes with a typed
+  `InvalidState` error, refuses to overwrite a corrupt file, and resolves a
+  write only after the injected filesystem write resolves. Remote replicas are
+  left for the caller to purge on revocation.
+
+Adapter state path constraints:
+
+- The state file is **adapter state, never canonical workspace state**. It holds
+  only the cursor, pushed revisions, known paths, the encrypted outbox, and
+  recorded conflicts; it never holds workspace plaintext or unwrapped keys.
+- The path must stay **outside the canonical workspace files and outside every
+  workspace backup or snapshot**. The host must place it where
+  `BrowserWorkspaceStorage.exportSnapshotEntries`, `BrowserWorkspaceStorage.rebuild()`,
+  and native workspace scans do not enumerate it, and it must not appear in a
+  recovery kit, an export, or a synchronization payload. The default
+  `.noura-adapter/sync-state.json` is a non-canonical name, not an exemption: a
+  filesystem boundary whose root overlaps the canonical workspace must exclude
+  that location, or the host must supply a separate root for adapter state.
+- Because the state file is disposable derived sync metadata, losing or deleting
+  it may force a re-diff from canonical files, but it never loses canonical
+  content. Deleting an `index.sqlite` remains safe for the same reason.
+
+Behavior:
+
+- `enqueueFileChange` seals through the codec and appends to the durable outbox
+  before any network call, returning only after the outbox is persisted.
+- `reconcile` flushes the outbox in order in batches of at most 100 operations,
+  removing operations only after a successful push. On failure the outbox is
+  left intact and a typed error is reported. It then pulls pages from the stored
+  cursor and applies the version-1 rules using expected revisions: a non-null
+  `baseRevision` requires the current revision to match, a null `baseRevision`
+  requires the path to be absent, `previousPath` moves delete the source and
+  write the destination, and null `content` deletes. A revision or absence
+  mismatch, or an occupied destination, records a `SyncConflict` for that path
+  and leaves existing bytes untouched. The durable cursor advances only after
+  every operation in a page is applied or recorded.
+- `snapshotLocalChanges` diffs `list()` plus revisions against
+  `pushedRevisions`/`knownPaths` and returns descriptors for added and changed
+  paths plus deletion descriptors for missing known paths; unchanged files are
+  omitted. The caller seals and enqueues them.
+- A revoked codec or remote error, or an explicit `lock()`, transitions the
+  engine to a `locked` state, calls the injected `onRevoked` hook so the host can
+  clear key material, and refuses further reconciliation. Persisted remote
+  replicas are intentionally left for the caller to purge.
+
+`packages/browser-sync-engine` runs an in-memory test suite covering outbox
+durability and order, capped batching, push-failure recovery, add/update/delete/
+move application, revision and occupied-destination conflicts, cursor
+advancement, snapshot diffing, revocation locking, malformed cursor and
+operation rejection, and a round trip of a shared `sync-v1.json` fixture file
+change through the codec boundary. Host app/OPFS wiring, key-rotation
+application, recovery kits, and UI remain outstanding.
 
 ## Threat model: installed app versus hosted web client
 
@@ -695,6 +830,12 @@ that plainly in the client UI.
   erasure; we claim only that we clear references and zeroize buffers we own.
 - **Multiple tabs.** Use the Web Locks API (already used by browser storage) to
   serialize replica mutations, and require each tab to unlock independently.
+- **Adapter sync state.** The durable `SyncStateStore` file written by
+  `createFileSystemSyncStateStore` is disposable adapter metadata, not a
+  workspace file and not a backup. It shares the eviction and clearing rules
+  above, and it must be stored outside the canonical workspace and its backups so
+  it is never enumerated, exported, or synchronized. If it is evicted, the host
+  rebuilds the baseline by diffing canonical files; nothing canonical is lost.
 - **Consequence.** A browser workspace can be lost entirely to eviction or
   clearing. The canonical copy must exist on a native device, or be recoverable
   through an enrolled trusted device or a recovery kit. The hosted web client is
@@ -703,10 +844,12 @@ that plainly in the client UI.
 ## Out of scope and explicitly not claimed
 
 - Browser workspace synchronization is not implemented end to end. The operation
-  cryptography and push/pull transport exist at the library level, but no local
-  replica, outbox, conflict handling, revocation lock state, recovery kit, or UI
-  is implemented, and this document does not authorize implementing those as part
-  of unrelated work.
+  cryptography and push/pull transport exist at the library level, and the local
+  replica engine, its durable file-system state store, and its concrete
+  `BrowserWorkspaceStorage` adapter exist at the library level in
+  `packages/browser-sync-engine`, but no host app/OPFS wiring, key-rotation
+  application, recovery kit, or UI is implemented, and this document does not
+  authorize implementing those as part of unrelated work.
 - The hosted web client is not claimed to be as secure as the installed app.
   Whoever serves future JavaScript can access unlocked content.
 - Non-extractable keys are not claimed to prevent exfiltration; they prevent
@@ -763,10 +906,17 @@ that plainly in the client UI.
    fingerprint, wraps rotated keys to them, verifies and unwraps their envelopes,
    and signs and verifies the browser access-policy tuple. The browser client
    foundation in `packages/browser-sync` now performs enrollment, pinned key
-   delivery, operation seal/open, and the push/pull transport, conforming to the
-   shared `operation-v1.json` fixture. Still open: local replica reconciliation,
-   outbox and conflict handling, revocation-driven client lock state, browser
-   object activation, browser recovery kits, and UI wiring.
+   delivery, operation seal/open, canonical file-change encoding/decoding, the
+   file-change codec, and the push/pull transport, conforming to the
+   shared `operation-v1.json` fixture, and `packages/browser-sync-engine` now
+   implements local replica reconciliation at the library level: durable outbox,
+   capped ordered push, cursor-based pull and version-1 application, conflict
+   recording, snapshot diffing, revocation-driven lock state, a durable
+   file-system `SyncStateStore` at an adapter-owned path, and a concrete
+   `createWorkspaceStorageAdapter` bridge over `BrowserWorkspaceStorage` that
+   derives its path list from `rebuild()`. Still open:
+   host app/OPFS wiring, key-rotation application, browser object activation,
+   browser recovery kits, and UI wiring.
 6. Define the browser recovery-kit format and its conformance fixtures.
 7. Add a browser-specific section to `docs/security/threat-model.md` once the
    design is approved.

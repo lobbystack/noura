@@ -41,6 +41,14 @@ export const BrowserSyncErrorCode = {
 	InvalidOperationSignature: 'browser_sync_invalid_operation_signature',
 	/** An operation failed AES-256-GCM authentication and could not be opened. */
 	OperationDecryptFailed: 'browser_sync_operation_decrypt_failed',
+	/** A delivered operation was signed by a device the caller did not pin. */
+	UntrustedSigner: 'browser_sync_untrusted_signer',
+	/** No object key was available for the operation's object. */
+	MissingKey: 'browser_sync_missing_key',
+	/** A file-change payload was not valid UTF-8 JSON or failed the schema. */
+	InvalidFileChange: 'browser_sync_invalid_file_change',
+	/** A signed object or policy did not verify against the expected key. */
+	InvalidSignature: 'browser_sync_invalid_signature',
 } as const;
 
 /** Union of the stable browser sync client error codes. */

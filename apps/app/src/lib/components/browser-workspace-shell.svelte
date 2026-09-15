@@ -15,6 +15,7 @@
 	import { createBrowserPluginModel } from '$lib/browser-plugins';
 	import type { PluginSettingsModel } from '$lib/plugin-settings-model';
 	import PluginSettingsPanel from './settings/plugin-settings-panel.svelte';
+	import BrowserSyncSettings from './browser-sync-settings.svelte';
 	import {
 		assertBackupActionAllowed,
 		assertFreshIdentity,
@@ -27,7 +28,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Field from '$lib/components/ui/field';
-	let runtime: ReturnType<typeof startBrowserWorkspace> | undefined;
+	let runtime = $state.raw<ReturnType<typeof startBrowserWorkspace>>();
 	let pluginModel: ReturnType<typeof createBrowserPluginModel> | undefined;
 	let plugins = $state.raw<PluginSettingsModel | null>(null);
 	const settingsRoute = $derived(page.url.pathname === '/settings');
@@ -583,6 +584,15 @@
 				to its page to continue editing.
 			</p>{/if}
 		{#if settingsRoute && plugins}
+			<section aria-label="Browser sync" class="flex flex-col gap-3">
+				<h2>Sync</h2>
+				{#key workspace?.workspaceId ?? ''}
+					<BrowserSyncSettings
+						workspaceId={workspace?.workspaceId ?? null}
+						workspaceFiles={runtime?.files ?? null}
+					/>
+				{/key}
+			</section>
 			<section aria-label="Plugin settings">
 				<h2>Plugins</h2>
 				<Button variant="outline" disabled={busy} onclick={() => run(refresh)}

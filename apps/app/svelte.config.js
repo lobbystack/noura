@@ -12,7 +12,9 @@ export default {
 						mode: 'hash',
 						directives: {
 							'default-src': ['self'],
-							'script-src': ['self'],
+							// The workspace format core runs as WebAssembly in a worker;
+							// Chrome requires this directive to compile it under CSP.
+							'script-src': ['self', 'wasm-unsafe-eval'],
 							'connect-src': ['self'],
 							'style-src': ['self', 'unsafe-inline'],
 							'img-src': ['none'],

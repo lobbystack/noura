@@ -1,5 +1,5 @@
 {
-	"name": "@noura/browser-sync",
+	"name": "@noura/browser-sync-engine",
 	"version": "0.1.0",
 	"type": "module",
 	"exports": "./src/index.ts",
@@ -10,9 +10,8 @@
 		"test": "bun test"
 	},
 	"dependencies": {
-		"@noura/shared": "workspace:*",
-		"@noura/sync-key-envelope": "workspace:*",
-		"@noura/workspace-schema": "workspace:*"
+		"@noura/browser-sync": "workspace:*",
+		"@noura/shared": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/bun": "latest",

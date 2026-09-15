@@ -1033,6 +1033,143 @@ describe('BrowserWorkspaceServer', () => {
 	});
 });
 
+describe('BrowserWorkspaceServer raw file operations', () => {
+	async function openServer() {
+		const values = registry();
+		const server = new BrowserWorkspaceServer({
+			format,
+			registry: values.registry,
+			now: () => '2026-09-12T00:00:00Z',
+		});
+		await server.request('workspace_create', {
+			input: { path: 'browser://', name: 'Raw files' },
+		});
+		return { server, values };
+	}
+
+	test('lists, reads, writes, moves, and deletes canonical bytes', async () => {
+		const { server } = await openServer();
+		const written = (await server.request('files_write', {
+			path: 'assets/blob.bin',
+			bytes: 'AAECAw==',
+			expectedRevision: null,
+		})) as { path: string; revision: string };
+		expect(written.path).toBe('assets/blob.bin');
+
+		expect(await server.request('files_list')).toEqual(
+			expect.arrayContaining(['assets/blob.bin', '.noura/workspace.yaml']),
+		);
+
+		const read = (await server.request('files_read', {
+			path: 'assets/blob.bin',
+		})) as { revision: string; bytes: string };
+		expect(read.revision).toBe(written.revision);
+		expect(read.bytes).toBe('AAECAw==');
+
+		const moved = (await server.request('files_move', {
+			from: 'assets/blob.bin',
+			to: 'assets/renamed.bin',
+			expectedRevision: written.revision,
+			expectedDestinationRevision: null,
+		})) as { path: string; revision: string };
+		expect(moved.path).toBe('assets/renamed.bin');
+		expect(
+			await server.request('files_read', { path: 'assets/blob.bin' }),
+		).toBeNull();
+
+		await server.request('files_delete', {
+			path: 'assets/renamed.bin',
+			expectedRevision: moved.revision,
+		});
+		expect(
+			await server.request('files_read', { path: 'assets/renamed.bin' }),
+		).toBeNull();
+	});
+
+	test('rejects raw file operations when no workspace is open', async () => {
+		const values = registry();
+		const server = new BrowserWorkspaceServer({
+			format,
+			registry: values.registry,
+			now: () => '2026-09-12T00:00:00Z',
+		});
+		const requests: Array<[string, Record<string, unknown>]> = [
+			['files_list', {}],
+			['files_read', { path: 'notes/a.md' }],
+			[
+				'files_write',
+				{ path: 'notes/a.md', bytes: 'AA==', expectedRevision: null },
+			],
+			[
+				'files_move',
+				{
+					from: 'notes/a.md',
+					to: 'notes/b.md',
+					expectedRevision: 'r:x',
+					expectedDestinationRevision: null,
+				},
+			],
+			['files_delete', { path: 'notes/a.md', expectedRevision: 'r:x' }],
+		];
+		for (const [command, payload] of requests) {
+			await expect(server.request(command, payload)).rejects.toMatchObject({
+				code: 'workspace_not_open',
+			});
+		}
+	});
+
+	test('rejects traversal paths and stale revisions before writing', async () => {
+		const { server, values } = await openServer();
+		await expect(
+			server.request('files_write', {
+				path: '../escape.md',
+				bytes: 'AA==',
+				expectedRevision: null,
+			}),
+		).rejects.toMatchObject({ code: 'invalid_path' });
+		expect(values.fileSystem.files.has('../escape.md')).toBe(false);
+
+		await server.request('files_write', {
+			path: 'notes/a.md',
+			bytes: 'AA==',
+			expectedRevision: null,
+		});
+		await expect(
+			server.request('files_write', {
+				path: 'notes/a.md',
+				bytes: 'AQ==',
+				expectedRevision: null,
+			}),
+		).rejects.toMatchObject({ code: 'revision_conflict' });
+		await expect(
+			server.request('files_write', {
+				path: 'notes/a.md',
+				bytes: 'AQ==',
+				expectedRevision: 'r:not-current',
+			}),
+		).rejects.toMatchObject({ code: 'revision_conflict' });
+	});
+
+	test('rejects malformed raw file payloads', async () => {
+		const { server } = await openServer();
+		await expect(
+			server.request('files_write', {
+				path: 'notes/a.md',
+				bytes: 'not base64!!',
+				expectedRevision: null,
+			}),
+		).rejects.toMatchObject({ code: 'invalid_base64' });
+		await expect(
+			server.request('files_write', {
+				path: 'notes/a.md',
+				bytes: 'AA==',
+				expectedRevision: null,
+				unexpected: true,
+			}),
+		).rejects.toMatchObject({ code: 'invalid_input' });
+	});
+});
+
 test('transport settles concurrent worker responses by request ID', async () => {
 	const listeners = new Set<
 		(event: MessageEvent<BrowserWorkerResponse>) => void
