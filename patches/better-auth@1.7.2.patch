@@ -1,0 +1,23 @@
+diff --git a/dist/db/get-migration.mjs b/dist/db/get-migration.mjs
+index b4599dc9a368b9e7ba47e7d8eb6b6607ce4bde3e..45e96d0de8c7cd1747699dc3b86a2122a9c07af2 100644
+--- a/dist/db/get-migration.mjs
++++ b/dist/db/get-migration.mjs
+@@ -16,13 +16,17 @@ const map = {
+ 			"uuid"
+ 		],
+ 		number: [
++			"int2",
+ 			"int4",
++			"int8",
+ 			"integer",
+ 			"bigint",
+ 			"smallint",
+ 			"numeric",
+ 			"real",
+-			"double precision"
++			"float4",
++			"double precision",
++			"float8"
+ 		],
+ 		boolean: ["bool", "boolean"],
+ 		date: [

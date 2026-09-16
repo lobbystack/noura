@@ -34,5 +34,8 @@
 		"railway": "^3.11.0",
 		"typescript": "^5.9.3",
 		"typescript-eslint": "latest"
+	},
+	"patchedDependencies": {
+		"better-auth@1.7.2": "patches/better-auth@1.7.2.patch"
 	}
 }
