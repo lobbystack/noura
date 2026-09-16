@@ -3,12 +3,16 @@ import type { EncryptedOperation, SequencedOperation } from '@noura/shared';
 import {
 	accessDigest,
 	accessSigningBytes,
+	buildAttachmentFileChange,
 	createDeviceIdentity,
 	createFileChangeCodec,
 	createMemoryKeyStore,
 	deviceFingerprintForCard,
+	encryptAttachment,
 	encodeBase64,
+	encodeFileChange,
 	encodeRecipient,
+	sealOperation,
 	unlockDeviceIdentity,
 	unwrapKey,
 	wrapKey,
@@ -19,6 +23,7 @@ import {
 } from '@noura/browser-sync';
 import type { BrowserWorkspaceFiles } from '@noura/browser-workspace';
 import {
+	BrowserSyncEngineErrorCode,
 	MemorySyncStorage,
 	createMemorySyncStateStore,
 	type BrowserSyncRemote,
@@ -26,6 +31,8 @@ import {
 } from '@noura/browser-sync-engine';
 import {
 	DEFAULT_BROWSER_SYNC_BUNDLE_ID,
+	MAX_BROWSER_ATTACHMENT_BYTES,
+	createBrowserAttachmentFetcher,
 	createBrowserSyncController,
 	createBrowserSyncWorkspaceBinding,
 	createMemoryBindingStore,
@@ -1764,5 +1771,165 @@ describe('browser recovery kit controller wiring', () => {
 		expect(serialized).not.toContain(PASSPHRASE);
 		expect(serialized).not.toContain('signingSeed');
 		expect(serialized).not.toContain('x25519Secret');
+	});
+});
+
+describe('browser sync attachments', () => {
+	async function attachmentRemote() {
+		const workspaceId = 'ws_attachment';
+		const objectId = 'obj_attachment';
+		const objectKey = crypto.getRandomValues(new Uint8Array(32));
+		const remoteIdentity = await unlockDeviceIdentity(
+			await createDeviceIdentity({ passphrase: PASSPHRASE }),
+			PASSPHRASE,
+		);
+		const plaintext = encoder.encode('attachment-bytes');
+		const { ciphertext, blob } = await encryptAttachment(objectKey, plaintext);
+		const payload = encodeFileChange(
+			buildAttachmentFileChange({ path: 'assets/report.bin', blob }),
+		);
+		const operation = await sealOperation({
+			objectKey,
+			workspaceId,
+			objectId,
+			deviceId: remoteIdentity.deviceId,
+			epoch: 1,
+			policyRevision: '1',
+			plaintext: payload,
+			identity: remoteIdentity,
+		});
+		const remote: BrowserSyncRemote = {
+			async push(operations) {
+				return { sequences: operations.map((_, index) => String(index + 1)) };
+			},
+			async pull(cursor) {
+				if (cursor === '0') {
+					return {
+						accessRevision: '1',
+						operations: [{ ...operation, sequence: '1' }],
+						cursor: '1',
+						hasMore: false,
+					};
+				}
+				return {
+					accessRevision: '1',
+					operations: [],
+					cursor,
+					hasMore: false,
+				};
+			},
+		};
+		const fetch: FetchLike = async (input, init) => {
+			const url = requestUrl(input);
+			const match = url.match(/\/blobs\/([0-9a-f]{64})\/content$/);
+			const range = new Headers(init?.headers)
+				.get('Range')
+				?.match(/^bytes=(\d+)-(\d+)$/);
+			if (init?.method === 'GET' && match && range) {
+				const start = Number(range[1]);
+				const end = Number(range[2]);
+				return new Response(ciphertext.slice(start, end + 1), {
+					status: 206,
+					headers: {
+						'Content-Range': `bytes ${start}-${end}/${ciphertext.length}`,
+					},
+				});
+			}
+			throw new Error(`unexpected attachment request in test: ${url}`);
+		};
+		return {
+			workspaceId,
+			objectId,
+			objectKey,
+			remoteIdentity,
+			plaintext,
+			blob,
+			ciphertext,
+			remote,
+			fetch,
+		};
+	}
+
+	function reconcileInput(
+		setup: Awaited<ReturnType<typeof attachmentRemote>>,
+		storage: MemorySyncStorage,
+		withAttachments: boolean,
+	) {
+		return {
+			identity: setup.remoteIdentity,
+			workspaceId: setup.workspaceId,
+			objectId: setup.objectId,
+			epoch: 1,
+			policyRevision: '1',
+			objectKeys: new Map([[setup.objectId, setup.objectKey]]),
+			pinnedSigners: new Map([
+				[setup.remoteIdentity.deviceId, setup.remoteIdentity.signingPublic],
+			]),
+			storage,
+			state: createMemorySyncStateStore(),
+			remote: setup.remote,
+			...(withAttachments
+				? {
+						attachments: {
+							origin: ORIGIN,
+							token: 'token-attachment',
+							fetch: setup.fetch,
+						},
+					}
+				: {}),
+		};
+	}
+
+	test('applies a version-3 change by downloading and decrypting the blob', async () => {
+		const setup = await attachmentRemote();
+		const storage = new MemorySyncStorage();
+
+		const result = await runBrowserSyncReconcile(
+			reconcileInput(setup, storage, true),
+		);
+
+		expect(result.applied).toBe(1);
+		const stored = await storage.read('assets/report.bin');
+		expect(stored).not.toBeNull();
+		expect(
+			Buffer.from(stored!.bytes).equals(Buffer.from(setup.plaintext)),
+		).toBe(true);
+	});
+
+	test('without transport metadata, a version-3 change is not written', async () => {
+		const setup = await attachmentRemote();
+		const storage = new MemorySyncStorage();
+
+		await expect(
+			runBrowserSyncReconcile(reconcileInput(setup, storage, false)),
+		).rejects.toMatchObject({
+			code: BrowserSyncEngineErrorCode.AttachmentUnavailable,
+		});
+		expect(await storage.read('assets/report.bin')).toBeNull();
+	});
+
+	test('refuses an attachment larger than the browser memory bound', async () => {
+		const setup = await attachmentRemote();
+		const fetcher = createBrowserAttachmentFetcher({
+			origin: ORIGIN,
+			token: 'token-attachment',
+			fetch: setup.fetch,
+			workspaceId: setup.workspaceId,
+			objectKeys: new Map([[setup.objectId, setup.objectKey]]),
+			maxBytes: 8,
+		});
+		await expect(
+			fetcher.fetch({
+				workspaceId: setup.workspaceId,
+				objectId: setup.objectId,
+				epoch: 1,
+				path: 'assets/report.bin',
+				previousPath: null,
+				baseRevision: null,
+				content: null,
+				blob: setup.blob,
+			}),
+		).rejects.toMatchObject({ code: 'browser_sync_blob_too_large' });
+		expect(MAX_BROWSER_ATTACHMENT_BYTES).toBeGreaterThan(8);
 	});
 });

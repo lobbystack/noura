@@ -71,6 +71,7 @@ export type {
 } from './storage';
 
 export type {
+	AttachmentFetcher,
 	BrowserSyncEnginePhase,
 	BrowserSyncRemote,
 	BrowserSyncStorage,

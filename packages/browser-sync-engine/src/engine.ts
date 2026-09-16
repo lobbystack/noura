@@ -26,6 +26,7 @@ import {
 } from './errors';
 import { cloneSyncState, validateSyncState } from './state';
 import type {
+	AttachmentFetcher,
 	BrowserSyncEnginePhase,
 	BrowserSyncRemote,
 	BrowserSyncStorage,
@@ -55,6 +56,13 @@ export interface BrowserSyncEngineOptions {
 	codec: FileChangeCodec;
 	/** Durable state boundary. */
 	state: SyncStateStore;
+	/**
+	 * Downloads and decrypts version-3 attachments. Without it, a version-3
+	 * change cannot be applied and reconcile fails with
+	 * {@link BrowserSyncEngineErrorCode.AttachmentUnavailable} rather than
+	 * writing an empty file.
+	 */
+	attachmentFetcher?: AttachmentFetcher;
 	/** Clock used to timestamp conflicts. Defaults to `Date.now`. */
 	now?: () => number;
 	/** Called once on a revoked transition so the host can clear key material. */
@@ -74,6 +82,22 @@ function requireOperationId(operation: EncryptedOperation): string {
 	return operationId;
 }
 
+function isAttachmentBlob(value: unknown): boolean {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	const blob = value as Record<string, unknown>;
+	return (
+		typeof blob.id === 'string' &&
+		typeof blob.revision === 'string' &&
+		typeof blob.size === 'number' &&
+		Number.isSafeInteger(blob.size) &&
+		blob.size > 0 &&
+		typeof blob.plaintextSize === 'number' &&
+		Number.isSafeInteger(blob.plaintextSize) &&
+		blob.plaintextSize >= 0 &&
+		blob.plaintextSize < blob.size
+	);
+}
+
 function validateOpenedFileChange(change: OpenedFileChange): void {
 	const invalid =
 		typeof change !== 'object' ||
@@ -86,7 +110,8 @@ function validateOpenedFileChange(change: OpenedFileChange): void {
 		change.path.length === 0 ||
 		(change.previousPath !== null && typeof change.previousPath !== 'string') ||
 		(change.baseRevision !== null && typeof change.baseRevision !== 'string') ||
-		(change.content !== null && !(change.content instanceof Uint8Array));
+		(change.content !== null && !(change.content instanceof Uint8Array)) ||
+		(change.blob !== undefined && !isAttachmentBlob(change.blob));
 	if (invalid) {
 		throw new BrowserSyncEngineError(
 			BrowserSyncEngineErrorCode.InvalidOperation,
@@ -107,6 +132,7 @@ export class BrowserSyncEngine {
 	readonly #remote: BrowserSyncRemote;
 	readonly #codec: FileChangeCodec;
 	readonly #state: SyncStateStore;
+	readonly #attachmentFetcher: AttachmentFetcher | undefined;
 	readonly #now: () => number;
 	readonly #onRevoked: ((error: unknown) => void | Promise<void>) | undefined;
 	readonly #onStateMigration:
@@ -118,6 +144,7 @@ export class BrowserSyncEngine {
 		this.#remote = options.remote;
 		this.#codec = options.codec;
 		this.#state = options.state;
+		this.#attachmentFetcher = options.attachmentFetcher;
 		this.#now = options.now ?? Date.now;
 		this.#onRevoked = options.onRevoked;
 		this.#onStateMigration = options.onStateMigration;
@@ -435,16 +462,15 @@ export class BrowserSyncEngine {
 			operation,
 		});
 
+		const content = await this.#resolveContent(change);
+
 		if (change.previousPath !== null) {
-			if (change.content === null) return conflict('invalid_move', null);
+			if (content === null) return conflict('invalid_move', null);
 			const source = await this.#storage.read(change.previousPath);
 			const destination = await this.#storage.read(change.path);
 
 			if (source === null) {
-				if (
-					destination !== null &&
-					bytesEqual(destination.bytes, change.content)
-				) {
+				if (destination !== null && bytesEqual(destination.bytes, content)) {
 					this.#recordPresent(state, change.path, destination.revision);
 					this.#recordAbsent(state, change.previousPath);
 					return null;
@@ -482,7 +508,7 @@ export class BrowserSyncEngine {
 				return conflict('missing_expected_file', null);
 			}
 			if (destination.revision !== change.baseRevision) {
-				if (bytesEqual(destination.bytes, change.content)) {
+				if (bytesEqual(destination.bytes, content)) {
 					this.#recordAbsent(state, change.previousPath);
 					this.#recordPresent(state, change.path, destination.revision);
 					return null;
@@ -492,7 +518,7 @@ export class BrowserSyncEngine {
 			try {
 				const written = await this.#storage.write({
 					path: change.path,
-					bytes: change.content,
+					bytes: content,
 					expectedRevision: change.baseRevision,
 				});
 				await this.#storage.delete({
@@ -507,11 +533,11 @@ export class BrowserSyncEngine {
 			return null;
 		}
 
-		if (change.content !== null) {
+		if (content !== null) {
 			const current = await this.#storage.read(change.path);
 			if (change.baseRevision === null) {
 				if (current !== null) {
-					if (bytesEqual(current.bytes, change.content)) {
+					if (bytesEqual(current.bytes, content)) {
 						this.#recordPresent(state, change.path, current.revision);
 						return null;
 					}
@@ -520,7 +546,7 @@ export class BrowserSyncEngine {
 				try {
 					const written = await this.#storage.write({
 						path: change.path,
-						bytes: change.content,
+						bytes: content,
 						expectedRevision: null,
 					});
 					this.#recordPresent(state, change.path, written.revision);
@@ -534,7 +560,7 @@ export class BrowserSyncEngine {
 				return conflict('missing_expected_file', null);
 			}
 			if (current.revision !== change.baseRevision) {
-				if (bytesEqual(current.bytes, change.content)) {
+				if (bytesEqual(current.bytes, content)) {
 					this.#recordPresent(state, change.path, current.revision);
 					return null;
 				}
@@ -543,7 +569,7 @@ export class BrowserSyncEngine {
 			try {
 				const written = await this.#storage.write({
 					path: change.path,
-					bytes: change.content,
+					bytes: content,
 					expectedRevision: change.baseRevision,
 				});
 				this.#recordPresent(state, change.path, written.revision);
@@ -581,6 +607,49 @@ export class BrowserSyncEngine {
 	}
 
 	/**
+	 * Resolve the plaintext the change should write.
+	 *
+	 * A version-1/2 change carries its bytes inline. A version-3 change carries
+	 * only a signed blob descriptor, so the injected {@link AttachmentFetcher}
+	 * supplies the decrypted bytes; a missing fetcher, an unavailable blob, or a
+	 * plaintext whose length disagrees with the descriptor is a typed error, so
+	 * an absent attachment is never applied as an empty file.
+	 */
+	async #resolveContent(change: OpenedFileChange): Promise<Uint8Array | null> {
+		if (change.content !== null || change.blob === undefined) {
+			return change.content;
+		}
+		const fetcher = this.#attachmentFetcher;
+		if (fetcher === undefined) {
+			throw new BrowserSyncEngineError(
+				BrowserSyncEngineErrorCode.AttachmentUnavailable,
+				'No attachment fetcher was configured for a version-3 change',
+			);
+		}
+		let content: Uint8Array;
+		try {
+			content = await fetcher.fetch(change);
+		} catch (error) {
+			if (isRevokedError(error)) throw await this.#toRevoked(error);
+			throw new BrowserSyncEngineError(
+				BrowserSyncEngineErrorCode.AttachmentUnavailable,
+				'Fetching the attachment for a version-3 change failed',
+				{ cause: error },
+			);
+		}
+		if (
+			!(content instanceof Uint8Array) ||
+			content.length !== change.blob.plaintextSize
+		) {
+			throw new BrowserSyncEngineError(
+				BrowserSyncEngineErrorCode.AttachmentUnavailable,
+				'The attachment plaintext did not match its signed size',
+			);
+		}
+		return content;
+	}
+
+	/**
 	 * Force-apply the stored remote operation for a conflict. The original
 	 * `baseRevision` guard is intentionally dropped: the user chose the remote
 	 * bytes, so a present local file is overwritten and a moved source is
@@ -599,7 +668,8 @@ export class BrowserSyncEngine {
 			);
 		}
 		try {
-			if (change.content === null) {
+			const content = await this.#resolveContent(change);
+			if (content === null) {
 				if (change.previousPath !== null) {
 					await this.#forceDelete(change.previousPath);
 					this.#recordAbsent(state, change.previousPath);
@@ -609,7 +679,7 @@ export class BrowserSyncEngine {
 			} else {
 				const written = await this.#storage.write({
 					path: change.path,
-					bytes: change.content,
+					bytes: content,
 				});
 				this.#recordPresent(state, change.path, written.revision);
 				if (

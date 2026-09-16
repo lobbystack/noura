@@ -33,6 +33,18 @@ const BROWSER_PATH_PREFIX = 'browser://';
 const SNAPSHOT_FORMAT = 'noura.workspace-snapshot';
 
 /**
+ * Plugins a brand-new browser workspace enables immediately, so it is usable
+ * without a manual trip to settings.
+ *
+ * Native `WorkspaceEngine::create_with_identity` seeds `folders`, `notes`,
+ * `tasks`, `calendar`, and `projects`. The browser worker implements only the
+ * `note`, `task`, and `project` object types, so it seeds that supported subset
+ * and deliberately omits `folders` and `calendar`, which have no browser
+ * behavior to enable. An explicit `manifest_update` always overrides this seed.
+ */
+const DEFAULT_ENABLED_PLUGINS = ['notes', 'tasks', 'projects'] as const;
+
+/**
  * A lossless structured-clone artifact. A UI may later wrap these entries in a
  * downloadable archive without changing canonical workspace bytes.
  */
@@ -170,7 +182,12 @@ export class BrowserWorkspaceServer {
 				'workspace_create',
 			);
 		const name = string(input.name, 'name', 'workspace_create');
-		const manifest = this.#format.createWorkspaceManifest(name, this.#now());
+		const created = this.#now();
+		const manifest = this.#format.updateWorkspaceManifest(
+			this.#format.createWorkspaceManifest(name, created),
+			{ enabledPlugins: [...DEFAULT_ENABLED_PLUGINS] },
+			created,
+		);
 		const storage = await this.#registry.createFresh(manifest.id);
 		const bytes = new TextEncoder().encode(
 			this.#format.serializeWorkspaceManifest(manifest),

@@ -16,12 +16,21 @@ Decision markers used throughout:
 
 ## Status
 
-The encrypted sync service currently serves account, device-approval,
-invitation, and encrypted public-viewer pages for the hosted `apps/app` build.
-Browser workspaces are explicitly unavailable in the hosted build today. This
-document describes what browser workspace synchronization would require; it does
-not claim that browser workspaces work, and it does not authorize starting that
-work as part of an unrelated task.
+Browser workspaces run in the hosted `apps/app` build and synchronize with the
+encrypted service. The installed desktop app remains the trust root; the hosted
+browser client is a convenience client. This document records the implemented
+design, the verified behavior, and the remaining gaps.
+
+**Verified live.** A native desktop device (the `desktop_probe` example)
+enrolled with the service, created a workspace, wrapped an object key to a
+browser device as a `noura.sync.key.web` envelope, published a signed
+version-1 access policy covering both devices, and pushed an encrypted
+operation. A separate browser device enrolled earlier received the delivered
+key, pulled the operation, and decrypted it to the original native file. The
+browser-to-browser path (bootstrap, key delivery, operation push/pull,
+cross-device decryption, post-bootstrap object provisioning) was verified the
+same way. The remaining unverified path is browser-authored operations pulled
+by a native device.
 
 **Implemented foundation.** The platform-independent
 `noura.sync.key.web` version 1 envelope format described under "Where the browser
@@ -36,16 +45,19 @@ in both languages and conform to
 **Partially implemented server.** `apps/server` now accepts `x25519:` browser
 recipients during device enrollment and verifies the `noura.device.enroll.web`
 proof, stores browser `noura.sync.key.web` envelopes alongside native `age`
-envelopes, verifies browser envelope signatures on key upload and access
-policies, and returns the construction and browser fields from key delivery and
-access-state. The server's `POST`/`GET /v1/workspaces/:workspace/operations`
+envelopes, verifies browser envelope signatures on key upload, access policies,
+and collaboration-v2 object activations, enforces the browser recipient against
+the enrolled device on every one of those paths, and returns the construction
+and browser fields from key delivery and access-state. The server's
+`POST`/`GET /v1/workspaces/:workspace/operations`
 push/pull routes and the `noura.sync.payload`/`noura.sync.operation` tuples were
-already the shared native protocol; the browser client now speaks them at the
-library level. The hosted browser client does not exist yet, so a browser still
-cannot open a synced workspace, and browser revocation/epoch-rotation wiring and
-UI wiring are not implemented. Local replica reconciliation, outbox/conflict
-handling, and a browser-specific recovery kit exist at the library level (see
-"Browser client foundation").
+already the shared native protocol; the browser client speaks them and the
+hosted browser app wires enrollment, custody, key delivery, reconciliation,
+conflict resolution, and a recovery kit (see "Browser client foundation" and
+"App host wiring"). Revocation transitions the client to a locked state; epoch
+rotation is applied by the native coordinator and tolerated by the browser
+client. Encrypted attachment download and decryption are implemented; the
+browser send path and attachment UI remain outstanding.
 
 **Implemented native client support.** `crates/local-core` now depends on
 `crates/sync-key-envelope` and treats a browser device as a first-class remote
@@ -55,7 +67,8 @@ with `sync-key-envelope::wrap_key` (supplying the ephemeral secret, salt, and
 nonce from the OS random source), verifies and unwraps browser-authored
 `noura.sync.key.web` envelopes against locally pinned signer keys before
 decryption, and reads and produces the extended `construction` plus browser
-fields from key delivery, access-state, and signed access policies. Native `age`
+fields from key delivery, access-state, signed access policies, and
+collaboration-v2 object activations. Native `age`
 envelopes, the seven-field wire shape, and the existing public types keep their
 prior behavior. The local `KeyEnvelope` and `PolicyEnvelope` gained an explicit
 `construction` discriminator and the four optional browser byte fields, and an
@@ -198,9 +211,21 @@ example `noura.sync.key.web` version `1`, and a corresponding update to
 **Proposal.** Allow path 1 for attachment blobs only. Blob identities are
 derived from an already-unlocked object key via BLAKE3 `derive_key` context
 `noura.sync.blob.x25519.v1`, so WASM can decrypt without exposing a long-term
-device key. Encrypted attachments (payload version 3) and streaming `age` blobs
-are out of scope for the first browser sync slice because of browser memory and
-file-size limits.
+device key.
+
+**Implemented in the browser (receive).** `packages/browser-sync` implements the
+same `age` version-1 blob construction in TypeScript (BLAKE3 `derive_key`,
+X25519, HKDF-SHA256, ChaCha20-Poly1305, the `age-encryption.org/v1` header, and
+the 64 KiB STREAM payload) with a fixture generated by native
+`EncryptedBlob::encrypt`, bounded 1 MiB resumable upload/download against the
+server's `tus`/range routes, and an engine attachment fetcher that materializes a
+version-3 file change or fails without writing an empty file. Browser memory
+bounds cap a received attachment at 64 MiB (native limit 1 GiB).
+
+**Not implemented.** Browser-authored attachment send and the attachment UI are
+outstanding: the browser codec still seals version-1 inline payloads, and
+arbitrary attachment paths are not provisioned into the access policy. Native
+binary attachment conflict resolution is also still open.
 
 **Proposal.** Any new envelope or fingerprint version requires shared Rust and
 TypeScript conformance fixtures that accept and reject the same cases before it
@@ -345,6 +370,11 @@ recipient is.
 ephemeralPublicKey, salt, nonce]` for web entries and the unchanged
   three-element tuple for `age`, preserving revision, chain, coverage, and epoch
   rules.
+- **Object activation.** `ObjectActivation` binds the same eight-element browser
+  envelope tuple when an entry is `web`, verifies each entry through the shared
+  `PolicyEnvelope` path, and `receive_activations` stores and unwraps a browser
+  recipient key strictly as it does for `age`. `activate_pending_objects` wraps a
+  new object's key to an approved browser recipient.
 - **Persistence.** A `KeyEnvelope` round-trips both constructions through serde;
   `age` still serializes as the seven-field object. Browser secret material stays
   in the zeroizing native credential record, and `DeviceKeys::create_browser`
@@ -374,12 +404,21 @@ ephemeralPublicKey, salt, nonce]` for web entries and the unchanged
 - Revocation and epoch rotation reuse the signed access-policy path, which now
   accepts web envelopes; the native coordinator now wraps rotated keys for
   approved browser recipients, but no browser UI enforces a revoked locked state.
-- Collaboration-v2 object activation (`noura.sync.object-activation`) still
-  parses only the three-field native envelope. The native activation paths
-  (`ObjectActivation::sign`/`verify`, `receive_activations`, and
-  `activate_pending_objects`) reject a browser recipient with the structured
-  `sync_browser_activation_unsupported` error instead of mis-verifying it;
-  activating a new object for a browser recipient is not implemented.
+- **Implemented.** Collaboration-v2 object activation
+  (`noura.sync.object-activation`) accepts browser recipients. The native
+  `ObjectActivation::sign`/`verify`, `receive_activations`, and
+  `activate_pending_objects` bind the eight-element browser envelope tuple
+  `[deviceId, wrappedKey, signature, "web", recipientPublicKey,
+ephemeralPublicKey, salt, nonce]` and verify it through the same
+  `PolicyEnvelope` path as access policies. The server parses and verifies the
+  same tuple and enforces the enrolled browser recipient. A pending activation
+  that cannot complete — because it targets a browser recipient or because a
+  device still awaits local approval — no longer aborts the pass: the durable
+  activation is retried while already-shared objects still receive keys, and an
+  unapproved device never forces a key rotation or blocks delivery to approved
+  devices. The shared fixture
+  `docs/workspace-format/fixtures/activation-v1.json` pins the mixed age/web
+  activation signing bytes for both Rust and TypeScript.
 - The policy-level `noura.sync.access` tuple extension for browser entries is now
   signed and verified by the native Rust client against the server contract, but
   no shared Rust/TypeScript conformance fixture covers it yet.

@@ -32,7 +32,9 @@ dependencies, not copied donor implementations. The pinned Cargo and Bun
 lockfiles remain the complete dependency inventories.
 
 The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3
-device fingerprints; the Rust side uses the `blake3` crate. These are
+device fingerprints and attachment content revisions, and `@noble/ciphers`
+(MIT) for the ChaCha20-Poly1305 primitive inside the byte-compatible `age`
+attachment stream; the Rust side uses the `blake3` and `age` crates. These are
 dependencies, not copied donor implementations.
 
 Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, MIT `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`, MIT `Tauri`, MIT `Svelte`, MIT `Tiptap`, and CC0-1.0 `fractional-indexing`. Release packaging must include the complete lockfile-derived license report and any license texts required by the selected distribution format.

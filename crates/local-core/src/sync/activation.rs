@@ -99,10 +99,6 @@ impl ObjectActivation {
             if envelope.device_id.as_str() <= previous {
                 return Err(invalid("sync_invalid_object_activation"));
             }
-            // Object activation still parses only the three-field native envelope.
-            if envelope.is_web() {
-                return Err(invalid("sync_browser_activation_unsupported"));
-            }
             envelope
                 .to_key_envelope(&self.workspace_id, &operation.object_id, 1, &self.device_id)?
                 .verify(public_key)?;
@@ -140,11 +136,24 @@ impl ObjectActivation {
             .envelopes
             .iter()
             .map(|envelope| {
-                serde_json::json!([
-                    &envelope.device_id,
-                    &envelope.wrapped_key,
-                    &envelope.signature
-                ])
+                if envelope.is_web() {
+                    serde_json::json!([
+                        &envelope.device_id,
+                        &envelope.wrapped_key,
+                        &envelope.signature,
+                        "web",
+                        envelope.recipient_public_key.as_deref(),
+                        envelope.ephemeral_public_key.as_deref(),
+                        envelope.salt.as_deref(),
+                        envelope.nonce.as_deref(),
+                    ])
+                } else {
+                    serde_json::json!([
+                        &envelope.device_id,
+                        &envelope.wrapped_key,
+                        &envelope.signature
+                    ])
+                }
             })
             .collect();
         let value = if self.version == 1 {
@@ -229,14 +238,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn activation_binds_capability_policy_checkpoint_recipients_and_blobs() {
-        let store = Memory::default();
-        let device = DeviceKeys::create(&store).unwrap();
-        let capability = WorkspaceCapability::sign("workspace", &device).unwrap();
-        let key = ObjectKey::generate();
+    fn activation_content() -> CheckpointContent {
         let bytes = b"fresh collaborative object";
-        let content = CheckpointContent {
+        CheckpointContent {
             version: 1,
             object_id: "object".into(),
             generation: "generation".into(),
@@ -250,10 +254,24 @@ mod tests {
                 accepted_revisions: None,
                 blob: None,
             },
-        };
-        let checkpoint =
-            EncryptedCheckpoint::seal_activation(&device, &key, "workspace", "3", "8", &content)
-                .unwrap();
+        }
+    }
+
+    #[test]
+    fn activation_binds_capability_policy_checkpoint_recipients_and_blobs() {
+        let store = Memory::default();
+        let device = DeviceKeys::create(&store).unwrap();
+        let capability = WorkspaceCapability::sign("workspace", &device).unwrap();
+        let key = ObjectKey::generate();
+        let checkpoint = EncryptedCheckpoint::seal_activation(
+            &device,
+            &key,
+            "workspace",
+            "3",
+            "8",
+            &activation_content(),
+        )
+        .unwrap();
         let envelope = PolicyEnvelope::from(
             device
                 .wrap_key(
@@ -291,9 +309,36 @@ mod tests {
                 .code,
             "sync_invalid_object_activation"
         );
+    }
 
-        // Object activation still parses only the three-field native envelope.
-        let browser_envelope = PolicyEnvelope::from(
+    #[test]
+    fn activation_signs_and_verifies_mixed_age_and_web_envelopes() {
+        let store = Memory::default();
+        let device = DeviceKeys::create(&store).unwrap();
+        let capability = WorkspaceCapability::sign("workspace", &device).unwrap();
+        let key = ObjectKey::generate();
+        let checkpoint = EncryptedCheckpoint::seal_activation(
+            &device,
+            &key,
+            "workspace",
+            "3",
+            "8",
+            &activation_content(),
+        )
+        .unwrap();
+        let age = PolicyEnvelope::from(
+            device
+                .wrap_key(
+                    "workspace",
+                    "object",
+                    1,
+                    device.device_id(),
+                    &device.recipient(),
+                    &key,
+                )
+                .unwrap(),
+        );
+        let web = PolicyEnvelope::from(
             device
                 .wrap_key(
                     "workspace",
@@ -301,18 +346,70 @@ mod tests {
                     1,
                     "device_browser",
                     &sync_key_envelope::encode_recipient([0x07_u8; 32]),
-                    &ObjectKey::generate(),
+                    &key,
                 )
                 .unwrap(),
         );
-        let mut browser_activation = activation.clone();
-        browser_activation.envelopes = vec![browser_envelope];
+        assert!(web.is_web());
+        let activation = ObjectActivation::sign(
+            &device,
+            &capability,
+            "3",
+            "8",
+            DocumentDescriptor {
+                generation: "generation".into(),
+                mode: DocumentMode::Text,
+            },
+            vec![web, age],
+            checkpoint,
+            vec![],
+        )
+        .unwrap();
+        activation.verify(&device.signer().public_key()).unwrap();
+        assert!(
+            activation
+                .envelopes
+                .iter()
+                .any(|envelope| envelope.is_web())
+        );
+
+        // A tampered browser field fails envelope verification before the outer signature.
+        let mut tampered = activation.clone();
+        tampered
+            .envelopes
+            .iter_mut()
+            .find(|envelope| envelope.is_web())
+            .unwrap()
+            .salt = Some(STANDARD.encode([0x09_u8; 32]));
         assert_eq!(
-            browser_activation
+            tampered
                 .verify(&device.signer().public_key())
                 .unwrap_err()
                 .code,
-            "sync_browser_activation_unsupported"
+            "sync_invalid_signature"
+        );
+    }
+
+    /// Pin the activation signing tuple for a browser recipient against the shared
+    /// fixture so the native and server byte sequences cannot drift apart.
+    #[test]
+    fn activation_web_signing_tuple_matches_the_shared_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/workspace-format/fixtures/activation-v1.json"
+        ))
+        .unwrap();
+        let vector = &fixture["vectors"][0];
+        let activation: ObjectActivation =
+            serde_json::from_value(vector["activation"].clone()).unwrap();
+        assert!(
+            activation
+                .envelopes
+                .iter()
+                .any(|envelope| envelope.is_web())
+        );
+        assert_eq!(
+            String::from_utf8(activation.signing_bytes().unwrap()).unwrap(),
+            vector["expected_signing_bytes"].as_str().unwrap()
         );
     }
 }

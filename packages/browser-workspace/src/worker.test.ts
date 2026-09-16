@@ -347,6 +347,72 @@ describe('BrowserWorkspaceServer', () => {
 		});
 	});
 
+	test('seeds the default enabled plugins on a new workspace and round-trips them', async () => {
+		const values = registry();
+		const server = new BrowserWorkspaceServer({
+			format,
+			registry: values.registry,
+			now: () => '2026-09-12T00:00:00Z',
+		});
+		await server.request('workspace_create', {
+			input: { path: 'browser://', name: 'Seeded plugins' },
+		});
+		const manifest = (await server.request(
+			'manifest_read',
+		)) as WorkspaceManifest;
+		expect(manifest.enabled_plugins).toEqual(['notes', 'projects', 'tasks']);
+
+		const reopened = new BrowserWorkspaceServer({
+			format,
+			registry: values.registry,
+			now: () => '2026-09-12T00:00:00Z',
+		});
+		await reopened.request('workspace_open', {
+			input: { path: `browser://${manifest.id}` },
+		});
+		expect(
+			((await reopened.request('manifest_read')) as WorkspaceManifest)
+				.enabled_plugins,
+		).toEqual(['notes', 'projects', 'tasks']);
+	});
+
+	test('disabling a seeded default plugin persists across a reopen', async () => {
+		const values = registry();
+		let tick = 0;
+		const now = () => `2026-09-12T00:00:0${tick++}Z`;
+		const server = new BrowserWorkspaceServer({
+			format,
+			registry: values.registry,
+			now,
+		});
+		await server.request('workspace_create', {
+			input: { path: 'browser://', name: 'Disabled plugin' },
+		});
+		const original = (await server.request(
+			'manifest_read',
+		)) as WorkspaceManifest;
+		const updated = (await server.request('manifest_update', {
+			input: {
+				enabledPlugins: ['notes', 'tasks'],
+				expectedUpdated: original.updated,
+			},
+		})) as WorkspaceManifest;
+		expect(updated.enabled_plugins).toEqual(['notes', 'tasks']);
+
+		const reopened = new BrowserWorkspaceServer({
+			format,
+			registry: values.registry,
+			now,
+		});
+		await reopened.request('workspace_open', {
+			input: { path: `browser://${original.id}` },
+		});
+		expect(
+			((await reopened.request('manifest_read')) as WorkspaceManifest)
+				.enabled_plugins,
+		).toEqual(['notes', 'tasks']);
+	});
+
 	test('a coarse wall clock cannot let a stale tab overwrite a newer preference write', async () => {
 		const values = registry();
 		// `Date` has millisecond resolution, so a real browser clock can return

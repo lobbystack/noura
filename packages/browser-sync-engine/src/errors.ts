@@ -29,6 +29,11 @@ export const BrowserSyncEngineErrorCode = {
 	PushFailed: 'browser_sync_engine_push_failed',
 	/** A pull failed; the durable cursor was not advanced. */
 	PullFailed: 'browser_sync_engine_pull_failed',
+	/**
+	 * A version-3 attachment could not be fetched or authenticated. The
+	 * operation was not applied and the cursor was not advanced.
+	 */
+	AttachmentUnavailable: 'browser_sync_engine_attachment_unavailable',
 	/** The device or workspace authorization was revoked. */
 	Revoked: 'browser_sync_engine_revoked',
 	/** The engine is locked and refuses further reconciliation. */

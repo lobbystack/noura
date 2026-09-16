@@ -12,7 +12,9 @@
 	"dependencies": {
 		"@noura/shared": "workspace:*",
 		"@noura/sync-key-envelope": "workspace:*",
-		"@noura/workspace-schema": "workspace:*"
+		"@noura/workspace-schema": "workspace:*",
+		"@noble/ciphers": "^2.4.0",
+		"@noble/hashes": "^2.4.0"
 	},
 	"devDependencies": {
 		"@types/bun": "latest",

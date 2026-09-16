@@ -47,6 +47,10 @@ pub struct SyncPass {
     pub downloaded: usize,
     pub conflicts: usize,
     pub has_more: bool,
+    /// Recoverable conditions observed during the pass, such as a deferred
+    /// object activation. The pass still succeeds; the condition is retried.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -377,10 +381,6 @@ impl HttpSyncTransport {
                 .iter()
                 .find(|envelope| envelope.device_id == device.device_id())
                 .ok_or_else(|| invalid("sync_key_required"))?;
-            // Object activation still parses only the three-field native envelope.
-            if envelope.is_web() {
-                return Err(invalid("sync_browser_activation_unsupported"));
-            }
             let key_envelope =
                 envelope.to_key_envelope(&workspace, &object_id, 1, &activation.device_id)?;
             engine.sync_store_key(&key_envelope, device, signer)?;

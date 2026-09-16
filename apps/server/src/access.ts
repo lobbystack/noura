@@ -58,7 +58,7 @@ function sorted<T>(
  * "web"` additionally requires the four browser byte fields. Unknown
  * constructions and mixed or missing fields are rejected.
  */
-function policyEnvelope(input: unknown): AccessPolicyEnvelope {
+export function policyEnvelope(input: unknown): AccessPolicyEnvelope {
 	const raw = record(input);
 	const construction = raw.construction ?? 'age';
 	if (construction !== 'age' && construction !== 'web')
@@ -247,6 +247,35 @@ export function accessDigest(policy: AccessPolicy) {
 		.digest('hex');
 }
 
+/**
+ * The exact message an access-policy or object-activation signature covers for
+ * one recipient envelope. Native `age` and browser `web` entries bind different
+ * canonical tuples, so every caller must use this helper rather than rebuilding
+ * the bytes. It mirrors the Rust `KeyEnvelope::signing_bytes_for`.
+ */
+export function signingBytesForEnvelope(
+	workspaceId: string,
+	objectId: string,
+	epoch: number,
+	signingDevice: string,
+	envelope: AccessPolicyEnvelope,
+): Buffer {
+	return envelope.construction === 'web'
+		? browserKeySigningBytes({
+				workspaceId,
+				objectId,
+				epoch,
+				signingDevice,
+				deviceId: envelope.deviceId,
+				recipientPublicKey: envelope.recipientPublicKey!,
+				ephemeralPublicKey: envelope.ephemeralPublicKey!,
+				salt: envelope.salt!,
+				nonce: envelope.nonce!,
+				wrappedKey: envelope.wrappedKey,
+			})
+		: keySigningBytes(workspaceId, objectId, epoch, signingDevice, envelope);
+}
+
 export function verifyAccess(policy: AccessPolicy, publicKey: string) {
 	const key = createPublicKey({
 		key: Buffer.concat([
@@ -262,27 +291,13 @@ export function verifyAccess(policy: AccessPolicy, publicKey: string) {
 		throw new SyncError('sync.invalid_signature', 403);
 	for (const object of policy.objects)
 		for (const envelope of object.envelopes) {
-			const message =
-				envelope.construction === 'web'
-					? browserKeySigningBytes({
-							workspaceId: policy.workspaceId,
-							objectId: object.objectId,
-							epoch: object.epoch,
-							signingDevice: policy.deviceId,
-							deviceId: envelope.deviceId,
-							recipientPublicKey: envelope.recipientPublicKey!,
-							ephemeralPublicKey: envelope.ephemeralPublicKey!,
-							salt: envelope.salt!,
-							nonce: envelope.nonce!,
-							wrappedKey: envelope.wrappedKey,
-						})
-					: keySigningBytes(
-							policy.workspaceId,
-							object.objectId,
-							object.epoch,
-							policy.deviceId,
-							envelope,
-						);
+			const message = signingBytesForEnvelope(
+				policy.workspaceId,
+				object.objectId,
+				object.epoch,
+				policy.deviceId,
+				envelope,
+			);
 			if (!verify(null, message, key, base64(envelope.signature, 64)))
 				throw new SyncError('sync.invalid_signature', 403);
 		}

@@ -17,8 +17,10 @@ import {
 	type BrowserSyncEngineOptions,
 	type BrowserSyncRemote,
 	type BrowserWorkspaceStorageLike,
+	type AttachmentFetcher,
 	type FileChange,
 	type FileChangeCodec,
+	type OpenedFileChange,
 	type SyncState,
 	type SyncStateMigration,
 	type SyncStateStore,
@@ -201,6 +203,7 @@ function createHarness(
 		codec?: FileChangeCodec;
 		state?: SyncState;
 		onRevoked?: BrowserSyncEngineOptions['onRevoked'];
+		attachmentFetcher?: BrowserSyncEngineOptions['attachmentFetcher'];
 	} = {},
 ): {
 	engine: BrowserSyncEngine;
@@ -226,6 +229,9 @@ function createHarness(
 		state: stateStore.store,
 		now: () => 1234,
 		onRevoked,
+		...(options.attachmentFetcher === undefined
+			? {}
+			: { attachmentFetcher: options.attachmentFetcher }),
 	});
 	return {
 		engine,
@@ -958,5 +964,199 @@ describe('browser storage adapter', () => {
 			expectedRevision: written.revision,
 		});
 		expect(await adapted.list()).toEqual([]);
+	});
+});
+
+function attachmentBlob(size = 10, plaintextSize = 8) {
+	return {
+		id: 'a'.repeat(64),
+		size,
+		plaintextSize,
+		revision: 'b'.repeat(64),
+	};
+}
+
+function createV3Codec(
+	change: Omit<OpenedFileChange, 'workspaceId' | 'objectId' | 'epoch'>,
+): FileChangeCodec {
+	return {
+		async sealFileChange(input) {
+			return encodeFileChange(input);
+		},
+		async openFileChange(operation) {
+			return {
+				workspaceId: operation.workspaceId,
+				objectId: operation.objectId,
+				epoch: operation.epoch,
+				...change,
+			};
+		},
+	};
+}
+
+function pushV3Page(remote: FakeRemote): void {
+	const operation = encodeFileChange(change('file.bin', 'x'));
+	remote.pages.push({
+		accessRevision: '1',
+		cursor: '1',
+		hasMore: false,
+		operations: [{ ...operation, sequence: '1' }] as SequencedOperation[],
+	});
+}
+
+describe('version-3 attachments', () => {
+	test('materializes fetched plaintext with the version-1 apply rules', async () => {
+		const plaintext = bytes('attach!!');
+		let fetched = 0;
+		const fetcher: AttachmentFetcher = {
+			async fetch() {
+				fetched += 1;
+				return plaintext;
+			},
+		};
+		const codec = createV3Codec({
+			path: 'file.bin',
+			previousPath: null,
+			baseRevision: null,
+			content: null,
+			blob: attachmentBlob(),
+		});
+		const harness = createHarness({ codec, attachmentFetcher: fetcher });
+		pushV3Page(harness.remote);
+
+		const result = await harness.engine.reconcile();
+		expect(result.applied).toBe(1);
+		expect(fetched).toBe(1);
+		const stored = await harness.storage.read('file.bin');
+		expect(stored).not.toBeNull();
+		expect(Buffer.from(stored!.bytes).equals(Buffer.from(plaintext))).toBe(
+			true,
+		);
+	});
+
+	test('without a fetcher, a version-3 change is not applied as an empty file', async () => {
+		const codec = createV3Codec({
+			path: 'file.bin',
+			previousPath: null,
+			baseRevision: null,
+			content: null,
+			blob: attachmentBlob(),
+		});
+		const harness = createHarness({ codec });
+		pushV3Page(harness.remote);
+
+		await expect(harness.engine.reconcile()).rejects.toMatchObject({
+			code: BrowserSyncEngineErrorCode.AttachmentUnavailable,
+		});
+		expect(await harness.storage.read('file.bin')).toBeNull();
+		expect(harness.persisted().cursor).toBe('0');
+	});
+
+	test('a failing fetcher leaves the path absent and the cursor unadvanced', async () => {
+		const fetcher: AttachmentFetcher = {
+			async fetch() {
+				throw new Error('blob unavailable');
+			},
+		};
+		const codec = createV3Codec({
+			path: 'file.bin',
+			previousPath: null,
+			baseRevision: null,
+			content: null,
+			blob: attachmentBlob(),
+		});
+		const harness = createHarness({ codec, attachmentFetcher: fetcher });
+		pushV3Page(harness.remote);
+
+		await expect(harness.engine.reconcile()).rejects.toMatchObject({
+			code: BrowserSyncEngineErrorCode.AttachmentUnavailable,
+		});
+		expect(await harness.storage.read('file.bin')).toBeNull();
+		expect(harness.persisted().cursor).toBe('0');
+	});
+
+	test('rejects plaintext whose length disagrees with the descriptor', async () => {
+		const fetcher: AttachmentFetcher = {
+			async fetch() {
+				return bytes('short');
+			},
+		};
+		const codec = createV3Codec({
+			path: 'file.bin',
+			previousPath: null,
+			baseRevision: null,
+			content: null,
+			blob: attachmentBlob(10, 8),
+		});
+		const harness = createHarness({ codec, attachmentFetcher: fetcher });
+		pushV3Page(harness.remote);
+
+		await expect(harness.engine.reconcile()).rejects.toMatchObject({
+			code: BrowserSyncEngineErrorCode.AttachmentUnavailable,
+		});
+		expect(await harness.storage.read('file.bin')).toBeNull();
+	});
+
+	test('keeps version-1 conflict rules for a version-3 change', async () => {
+		const harness = createHarness({
+			codec: createV3Codec({
+				path: 'file.bin',
+				previousPath: null,
+				baseRevision: 'f'.repeat(64),
+				content: null,
+				blob: attachmentBlob(),
+			}),
+			attachmentFetcher: {
+				async fetch() {
+					return bytes('newbytes');
+				},
+			},
+		});
+		await harness.storage.write({
+			path: 'file.bin',
+			bytes: bytes('current!'),
+			expectedRevision: null,
+		});
+		pushV3Page(harness.remote);
+
+		const result = await harness.engine.reconcile();
+		expect(result.applied).toBe(0);
+		expect(result.conflicts).toHaveLength(1);
+		expect(result.conflicts[0]!.reason).toBe('revision_mismatch');
+		const stored = await harness.storage.read('file.bin');
+		expect(
+			Buffer.from(stored!.bytes).equals(Buffer.from(bytes('current!'))),
+		).toBe(true);
+	});
+
+	test('remote conflict resolution fetches the attachment', async () => {
+		const harness = createHarness({
+			codec: createV3Codec({
+				path: 'file.bin',
+				previousPath: null,
+				baseRevision: 'f'.repeat(64),
+				content: null,
+				blob: attachmentBlob(),
+			}),
+			attachmentFetcher: {
+				async fetch() {
+					return bytes('newbytes');
+				},
+			},
+		});
+		await harness.storage.write({
+			path: 'file.bin',
+			bytes: bytes('current!'),
+			expectedRevision: null,
+		});
+		pushV3Page(harness.remote);
+		const result = await harness.engine.reconcile();
+		const operationId = result.conflicts[0]!.operationId;
+
+		await harness.engine.resolveConflict(operationId, 'remote');
+		const stored = await harness.storage.read('file.bin');
+		expect(
+			Buffer.from(stored!.bytes).equals(Buffer.from(bytes('newbytes'))),
+		).toBe(true);
 	});
 });

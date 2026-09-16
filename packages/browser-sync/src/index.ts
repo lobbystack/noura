@@ -35,6 +35,7 @@ export * from './keys';
 export * from './operations';
 export * from './file-change';
 export * from './codec';
+export * from './attachments';
 export * from './access-policy';
 export * from './recovery-kit';
 

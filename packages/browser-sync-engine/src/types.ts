@@ -7,6 +7,7 @@
  * and {@link BrowserSyncRemote} boundaries supplied by the host.
  */
 import type { EncryptedOperation, SyncPage } from '@noura/shared';
+import type { FileChangeBlob } from '@noura/browser-sync';
 
 /** A stored canonical file and its opaque content revision. */
 export interface SyncStorageFile {
@@ -79,6 +80,25 @@ export interface OpenedFileChange extends FileChange {
 	workspaceId: string;
 	objectId: string;
 	epoch: number;
+	/**
+	 * Present when the payload was version 3: a signed, encrypted attachment
+	 * descriptor. `content` is then `null`, and the plaintext must be fetched
+	 * through the injected {@link AttachmentFetcher}.
+	 */
+	blob?: FileChangeBlob;
+}
+
+/**
+ * Injected boundary that downloads and decrypts a version-3 attachment. The
+ * engine only materializes the returned plaintext; it performs no cryptography
+ * and never contacts the network itself.
+ *
+ * A missing, unavailable, or unauthenticated attachment MUST throw so the
+ * operation is never applied as an empty file and the cursor never advances.
+ */
+export interface AttachmentFetcher {
+	/** Fetch the decrypted plaintext for one version-3 change. */
+	fetch(change: OpenedFileChange): Promise<Uint8Array>;
 }
 
 /**

@@ -67,9 +67,9 @@
 	</p>
 	{#if accepted}
 		<p role="status">
-			Invitation accepted. Connect a Noura desktop device to this account, then
-			ask the workspace owner to verify its fingerprint and finish granting
-			access.
+			Invitation accepted. Connect or open a Noura desktop or browser device on
+			this account, then ask the workspace owner to verify its fingerprint and
+			finish granting access.
 		</p>
 	{:else if account}
 		<p class="break-all text-sm text-muted-foreground">

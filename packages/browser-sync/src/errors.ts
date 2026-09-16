@@ -51,6 +51,20 @@ export const BrowserSyncErrorCode = {
 	InvalidSignature: 'browser_sync_invalid_signature',
 	/** A recipient device cannot receive a browser key envelope. */
 	IncompatibleRecipient: 'browser_sync_incompatible_recipient',
+	/** An attachment descriptor was malformed or violated the size rules. */
+	InvalidBlob: 'browser_sync_invalid_blob',
+	/** An attachment exceeded the protocol's 1 GiB ciphertext limit. */
+	BlobTooLarge: 'browser_sync_blob_too_large',
+	/** Downloaded ciphertext did not match its signed SHA-256 digest or size. */
+	BlobDigestMismatch: 'browser_sync_blob_digest_mismatch',
+	/** Attachment ciphertext length did not match its authenticated plaintext size. */
+	BlobLengthMismatch: 'browser_sync_blob_length_mismatch',
+	/** Attachment ciphertext could not be authenticated or decrypted. */
+	BlobDecryptFailed: 'browser_sync_blob_decrypt_failed',
+	/** Ciphertext for an attachment was not available from the server. */
+	BlobUnavailable: 'browser_sync_blob_unavailable',
+	/** A byte range for ciphertext was malformed or outside the stored blob. */
+	BlobRangeInvalid: 'browser_sync_blob_range_invalid',
 } as const;
 
 /** Union of the stable browser sync client error codes. */
