@@ -3,6 +3,7 @@ import { createAuth } from './auth';
 import { createApp } from './app';
 import { SyncStore } from './store';
 import { BlobService } from './blobs';
+import { retryReady } from './startup';
 import { fileURLToPath } from 'node:url';
 import { websocket } from 'hono/bun';
 
@@ -10,7 +11,16 @@ const settings = config();
 const store = new SyncStore(settings.databaseUrl);
 const identity = createAuth(settings);
 // Migrations are an explicit deployment step, never raced at application startup.
-await store.ready();
+// The database may still be waking when this process starts, so wait for the
+// schema probe with bounded backoff instead of crashing into a restart loop.
+await retryReady(() => store.ready(), {
+	onRetry: (error, attempt, delayMs) =>
+		console.warn(
+			`Database not ready (attempt ${attempt}): ${
+				error instanceof Error ? error.message : 'unknown error'
+			}; retrying in ${delayMs}ms`,
+		),
+});
 let s3: Bun.S3Client | undefined;
 if (process.env.S3_BUCKET) {
 	const accessKeyId = process.env.S3_ACCESS_KEY_ID;

@@ -32,7 +32,14 @@ export class SyncStore {
 		return this.activeWatches;
 	}
 	constructor(url: string) {
-		this.db = postgres(url, { max: 10, onnotice: () => {} });
+		// `connect_timeout` bounds each TCP attempt (seconds) so a sleeping or
+		// unreachable database fails fast and the startup retry can move on
+		// instead of blocking on a long OS-level connect timeout.
+		this.db = postgres(url, {
+			max: 10,
+			onnotice: () => {},
+			connect_timeout: 10,
+		});
 	}
 	async transaction<T>(run: (tx: Tx) => T | Promise<T>): Promise<T> {
 		// postgres.js 3.4.9 can skip its BEGIN reservation hook at a pipeline
