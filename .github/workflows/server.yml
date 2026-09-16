@@ -1,6 +1,7 @@
 name: Server integration
 on:
   push:
+    branches: [main]
   pull_request:
 jobs:
   postgres:
