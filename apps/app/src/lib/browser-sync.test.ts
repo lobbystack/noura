@@ -1,12 +1,15 @@
 import { describe, expect, test } from 'bun:test';
+import nativeFixture from '../../../../docs/workspace-format/fixtures/native-recovery-v1.json';
 import type { EncryptedOperation, SequencedOperation } from '@noura/shared';
 import {
 	accessDigest,
 	accessSigningBytes,
 	buildAttachmentFileChange,
+	BrowserSyncErrorCode,
 	createDeviceIdentity,
 	createFileChangeCodec,
 	createMemoryKeyStore,
+	decodeBase64,
 	deviceFingerprintForCard,
 	encryptAttachment,
 	encodeBase64,
@@ -19,12 +22,14 @@ import {
 	type AccessPolicy,
 	type DeviceIdentity,
 	type FetchLike,
+	type NativeRecoveryObject,
 	type WebKeyEnvelope,
 } from '@noura/browser-sync';
 import type { BrowserWorkspaceFiles } from '@noura/browser-workspace';
 import {
 	BrowserSyncEngineErrorCode,
 	MemorySyncStorage,
+	createEmptySyncState,
 	createMemorySyncStateStore,
 	type BrowserSyncRemote,
 	type WorkspaceStorageLike,
@@ -37,7 +42,9 @@ import {
 	createBrowserSyncWorkspaceBinding,
 	createMemoryBindingStore,
 	createSameOriginFetch,
+	extractEmbeddedRecoveryIdentity,
 	runBrowserSyncReconcile,
+	runBrowserSyncSendAttachment,
 	type BrowserSyncBindingRecord,
 	type BrowserSyncWorkspaceBinding,
 } from './browser-sync';
@@ -1931,5 +1938,625 @@ describe('browser sync attachments', () => {
 			}),
 		).rejects.toMatchObject({ code: 'browser_sync_blob_too_large' });
 		expect(MAX_BROWSER_ATTACHMENT_BYTES).toBeGreaterThan(8);
+	});
+});
+
+describe('browser attachment send', () => {
+	const sendObjectKey = new Uint8Array(32).fill(9);
+	const sendOtherKey = new Uint8Array(32).fill(11);
+	const sendWorkspaceId = 'workspace';
+	const sendObjectId = 'obj_note';
+	const sendPath = 'attachments/obj_note/photo.png';
+
+	function sendPattern(size: number): Uint8Array {
+		const bytes = new Uint8Array(size);
+		for (let index = 0; index < size; index += 1) bytes[index] = index % 251;
+		return bytes;
+	}
+
+	class FakeSendRemote implements BrowserSyncRemote {
+		readonly pushed: EncryptedOperation[] = [];
+
+		async push(
+			operations: EncryptedOperation[],
+		): Promise<{ sequences: string[] }> {
+			this.pushed.push(...operations);
+			return {
+				sequences: operations.map((_, index) =>
+					String(this.pushed.length * 1000 + index),
+				),
+			};
+		}
+
+		async pull(cursor: string) {
+			return {
+				accessRevision: cursor,
+				cursor,
+				hasMore: false,
+				operations: this.pushed.map((operation, index) => ({
+					...operation,
+					sequence: String(index),
+				})) as SequencedOperation[],
+			};
+		}
+	}
+
+	/** Minimal tus/range blob server; no network is used. */
+	class FakeBlobServer {
+		readonly origin = ORIGIN;
+		readonly token = 'token-attachment';
+		bytes: Uint8Array | null = null;
+		storedId: string | null = null;
+		createBody: Record<string, unknown> | null = null;
+		resumeOffset = 0;
+		fail: number | null = null;
+		readonly patches: number[] = [];
+
+		readonly fetch: FetchLike = async (input, init) => {
+			const url = requestUrl(input);
+			const method = init?.method ?? 'GET';
+			const match = url.match(/\/blobs\/([0-9a-f]{64})(\/content)?$/);
+			if (method === 'POST') {
+				this.createBody = JSON.parse(String(init?.body)) as Record<
+					string,
+					unknown
+				>;
+				return Response.json(
+					{
+						id: this.createBody.id,
+						offset: this.resumeOffset,
+						complete: false,
+						failed: false,
+					},
+					{ status: 201 },
+				);
+			}
+			if (method === 'HEAD') {
+				return new Response(null, {
+					status: 200,
+					headers: {
+						'Upload-Offset': String(this.resumeOffset),
+						'Upload-Length': String(
+							(this.createBody?.size as number | undefined) ??
+								this.bytes?.length ??
+								0,
+						),
+					},
+				});
+			}
+			if (method === 'PATCH') {
+				const offset = Number(new Headers(init?.headers).get('Upload-Offset'));
+				const body = new Uint8Array(init?.body as ArrayBuffer);
+				this.patches.push(body.length);
+				if (this.fail === this.patches.length) return this.errorResponse(500);
+				const total = this.createBody!.size as number;
+				const next = offset + body.length;
+				if (this.bytes === null) this.bytes = new Uint8Array(total);
+				this.bytes.set(body, offset);
+				this.resumeOffset = next;
+				return new Response(null, {
+					status: 204,
+					headers: {
+						'Upload-Offset': String(next),
+						...(next === total ? { 'Noura-Blob-Complete': 'true' } : {}),
+					},
+				});
+			}
+			if (method === 'GET' && match?.[2]) {
+				const id = match[1]!;
+				const range = new Headers(init?.headers)
+					.get('Range')
+					?.match(/^bytes=(\d+)-(\d+)$/);
+				if (!range || this.bytes === null || id !== this.storedId)
+					return this.errorResponse(404);
+				const start = Number(range[1]);
+				const end = Number(range[2]);
+				const slice = this.bytes.slice(start, end + 1);
+				return new Response(slice, {
+					status: 206,
+					headers: {
+						'Content-Range': `bytes ${start}-${end}/${this.bytes.length}`,
+						'Content-Length': String(slice.length),
+					},
+				});
+			}
+			return this.errorResponse(404);
+		};
+
+		private errorResponse(status: number): Response {
+			return Response.json(
+				{ error: { code: 'sync.server_error' } },
+				{ status },
+			);
+		}
+	}
+
+	function sendBinding(
+		identity: DeviceIdentity,
+		options: {
+			storage?: MemorySyncStorage;
+			remote?: BrowserSyncRemote;
+			server?: FakeBlobServer;
+			key?: Uint8Array;
+		} = {},
+	): BrowserSyncWorkspaceBinding {
+		const server = options.server ?? new FakeBlobServer();
+		return {
+			workspaceId: sendWorkspaceId,
+			objectId: sendObjectId,
+			epoch: 1,
+			policyRevision: '1',
+			objectKeys: new Map([[sendObjectId, options.key ?? sendObjectKey]]),
+			objects: new Map([
+				[
+					sendObjectId,
+					{
+						objectId: sendObjectId,
+						path: 'Notes/a.md',
+						localObjectId: 'note_a',
+						epoch: 1,
+						policyRevision: '1',
+					},
+				],
+			]),
+			pinnedSigners: new Map([[identity.deviceId, identity.signingPublic]]),
+			storage: options.storage ?? new MemorySyncStorage(),
+			state: createMemorySyncStateStore(),
+			remote: options.remote ?? new FakeSendRemote(),
+			attachments: {
+				origin: server.origin,
+				token: server.token,
+				fetch: server.fetch,
+			},
+		};
+	}
+
+	async function sendIdentity(): Promise<DeviceIdentity> {
+		return unlockDeviceIdentity(
+			await createDeviceIdentity({ passphrase: PASSPHRASE }),
+			PASSPHRASE,
+		);
+	}
+
+	test('encrypts, uploads, seals v3, and a fresh replica applies it', async () => {
+		const identity = await sendIdentity();
+		const server = new FakeBlobServer();
+		const remote = new FakeSendRemote();
+		const sender = sendBinding(identity, { server, remote });
+		const plaintext = sendPattern(2 * 1024 * 1024 + 123);
+
+		const result = await runBrowserSyncSendAttachment({
+			...sender,
+			identity,
+			objectId: sendObjectId,
+			name: 'photo.png',
+			bytes: plaintext,
+		});
+		expect(result.path).toBe(sendPath);
+		expect(server.bytes).not.toBeNull();
+		expect(server.patches.every((size) => size <= 1024 * 1024)).toBe(true);
+
+		const local = await sender.storage.read(result.path);
+		expect(local).not.toBeNull();
+		expect(Buffer.from(local!.bytes).equals(Buffer.from(plaintext))).toBe(true);
+
+		const queued = await sender.state.read();
+		expect(queued.outbox).toHaveLength(1);
+		expect(queued.knownPaths).toContain(result.path);
+
+		server.storedId = result.blob.id;
+		await runBrowserSyncReconcile({ ...sender, identity });
+		expect(remote.pushed).toHaveLength(1);
+		expect(remote.pushed[0]!.objectId).toBe(sendObjectId);
+
+		// A fresh replica with empty storage and durable state applies the queued
+		// version-3 operation, fetching and decrypting the attachment.
+		const receiverStorage = new MemorySyncStorage();
+		const receiver = sendBinding(identity, {
+			storage: receiverStorage,
+			remote,
+			server,
+		});
+		const outcome = await runBrowserSyncReconcile({ ...receiver, identity });
+		expect(outcome.applied).toBe(1);
+		const stored = await receiverStorage.read(result.path);
+		expect(stored).not.toBeNull();
+		expect(Buffer.from(stored!.bytes).equals(Buffer.from(plaintext))).toBe(
+			true,
+		);
+	});
+
+	test('a reloaded replica applies the persisted version-3 operation', async () => {
+		const identity = await sendIdentity();
+		const server = new FakeBlobServer();
+		const remote = new FakeSendRemote();
+		const sender = sendBinding(identity, { server, remote });
+		const plaintext = sendPattern(4096);
+		const result = await runBrowserSyncSendAttachment({
+			...sender,
+			identity,
+			objectId: sendObjectId,
+			name: 'notes.bin',
+			bytes: plaintext,
+		});
+		server.storedId = result.blob.id;
+		await runBrowserSyncReconcile({ ...sender, identity });
+
+		// A new replica instance with empty storage reopens the encrypted
+		// operation from the remote and materializes the attachment.
+		const storage = new MemorySyncStorage();
+		const receiver = sendBinding(identity, { storage, remote, server });
+		const outcome = await runBrowserSyncReconcile({ ...receiver, identity });
+		expect(outcome.applied).toBe(1);
+		const stored = await storage.read(result.path);
+		expect(stored).not.toBeNull();
+		expect(Buffer.from(stored!.bytes).equals(Buffer.from(plaintext))).toBe(
+			true,
+		);
+	});
+
+	test('refuses a plaintext above the browser bound without uploading', async () => {
+		const identity = await sendIdentity();
+		const server = new FakeBlobServer();
+		const sender = sendBinding(identity, { server });
+
+		await expect(
+			runBrowserSyncSendAttachment({
+				...sender,
+				identity,
+				objectId: sendObjectId,
+				name: 'big.bin',
+				bytes: sendPattern(9),
+				maxBytes: 8,
+			}),
+		).rejects.toMatchObject({ code: BrowserSyncErrorCode.BlobTooLarge });
+
+		expect(server.createBody).toBeNull();
+		const state = await sender.state.read();
+		expect(state.outbox).toHaveLength(0);
+		expect(
+			await sender.storage.read('attachments/obj_note/big.bin'),
+		).toBeNull();
+	});
+
+	test('an upload failure leaves no operation enqueued', async () => {
+		const identity = await sendIdentity();
+		const server = new FakeBlobServer();
+		server.fail = 1;
+		const sender = sendBinding(identity, { server });
+
+		await expect(
+			runBrowserSyncSendAttachment({
+				...sender,
+				identity,
+				objectId: sendObjectId,
+				name: 'photo.png',
+				bytes: sendPattern(4096),
+			}),
+		).rejects.toMatchObject({ code: BrowserSyncErrorCode.RequestFailed });
+
+		const state = await sender.state.read();
+		expect(state.outbox).toHaveLength(0);
+		expect(await sender.storage.read(sendPath)).toBeNull();
+	});
+
+	test('a tampered uploaded blob is rejected and nothing is written', async () => {
+		const identity = await sendIdentity();
+		const server = new FakeBlobServer();
+		const remote = new FakeSendRemote();
+		const sender = sendBinding(identity, { server, remote });
+		const result = await runBrowserSyncSendAttachment({
+			...sender,
+			identity,
+			objectId: sendObjectId,
+			name: 'photo.png',
+			bytes: sendPattern(2048),
+		});
+		server.storedId = result.blob.id;
+		await runBrowserSyncReconcile({ ...sender, identity });
+		expect(server.bytes).not.toBeNull();
+		server.bytes![0] = (server.bytes![0] ?? 0) ^ 0x01;
+
+		const receiverStorage = new MemorySyncStorage();
+		const receiver = sendBinding(identity, {
+			storage: receiverStorage,
+			remote,
+			server,
+		});
+		await expect(
+			runBrowserSyncReconcile({ ...receiver, identity }),
+		).rejects.toMatchObject({
+			code: BrowserSyncEngineErrorCode.AttachmentUnavailable,
+		});
+		expect(await receiverStorage.read(result.path)).toBeNull();
+	});
+
+	test('a wrong object key cannot open the queued operation', async () => {
+		const identity = await sendIdentity();
+		const server = new FakeBlobServer();
+		const remote = new FakeSendRemote();
+		const sender = sendBinding(identity, { server, remote });
+		const result = await runBrowserSyncSendAttachment({
+			...sender,
+			identity,
+			objectId: sendObjectId,
+			name: 'photo.png',
+			bytes: sendPattern(1024),
+		});
+		server.storedId = result.blob.id;
+		await runBrowserSyncReconcile({ ...sender, identity });
+
+		const receiverStorage = new MemorySyncStorage();
+		const receiver = sendBinding(identity, {
+			storage: receiverStorage,
+			remote,
+			server,
+			key: sendOtherKey,
+		});
+		await expect(
+			runBrowserSyncReconcile({ ...receiver, identity }),
+		).rejects.toMatchObject({
+			code: BrowserSyncEngineErrorCode.InvalidOperation,
+		});
+		expect(await receiverStorage.read(result.path)).toBeNull();
+	});
+
+	test('keeps version-1 conflict rules for a version-3 change', async () => {
+		const identity = await sendIdentity();
+		const server = new FakeBlobServer();
+		const remote = new FakeSendRemote();
+		const sender = sendBinding(identity, { server, remote });
+		const plaintext = sendPattern(512);
+		const result = await runBrowserSyncSendAttachment({
+			...sender,
+			identity,
+			objectId: sendObjectId,
+			name: 'photo.png',
+			bytes: plaintext,
+		});
+		server.storedId = result.blob.id;
+		await runBrowserSyncReconcile({ ...sender, identity });
+
+		const storage = new MemorySyncStorage();
+		const local = new Uint8Array([1, 2, 3, 4]);
+		const written = await storage.write({
+			path: result.path,
+			bytes: local,
+			expectedRevision: null,
+		});
+		// Seed the baseline so the local attachment is not re-sealed; the queued
+		// remote version-3 change then hits the ordinary revision rules.
+		const state = createMemorySyncStateStore({
+			...createEmptySyncState(),
+			pushedRevisions: { [result.path]: written.revision },
+			knownPaths: [result.path],
+		});
+		const receiver = {
+			...sendBinding(identity, { storage, remote, server }),
+			state,
+		};
+
+		const outcome = await runBrowserSyncReconcile({ ...receiver, identity });
+		expect(outcome.applied).toBe(0);
+		expect(outcome.conflicts).toHaveLength(1);
+		expect(outcome.conflicts[0]!.reason).toBe('unexpected_file');
+		const stored = await storage.read(result.path);
+		expect(Buffer.from(stored!.bytes).equals(Buffer.from(local))).toBe(true);
+	});
+});
+
+interface NativeRecoveryFixture {
+	recovery: NativeRecoveryObject;
+	recovery_identity: string;
+	recovery_recipient: string;
+	object_keys: Array<{ object_id: string; epoch: number; key: string }>;
+}
+
+const NATIVE_KIT = nativeFixture as unknown as NativeRecoveryFixture;
+
+function nativeFlipLastByte(value: string): string {
+	const bytes = decodeBase64(value);
+	bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0x01;
+	return encodeBase64(bytes);
+}
+
+function changedIdentity(identity: string): string {
+	const last = identity.at(-1);
+	return `${identity.slice(0, -1)}${last === '3' ? '4' : '3'}`;
+}
+
+describe('browser native recovery kit import', () => {
+	async function nativeController() {
+		const bindingStore = createMemoryBindingStore();
+		const stateStore = createMemorySyncStateStore();
+		const keyStore = createMemoryKeyStore();
+		const controller = await createBrowserSyncController({
+			keyStore,
+			origin: ORIGIN,
+			fetch: enrollingFetch('token-native'),
+			bindingStore,
+			stateStore,
+		});
+		await controller.enroll({ passphrase: PASSPHRASE });
+		return { controller, keyStore, bindingStore, stateStore };
+	}
+
+	test('imports the shared fixture and persists only re-wrapped keys', async () => {
+		const { controller, bindingStore } = await nativeController();
+		const result = await controller.importNativeRecoveryKit(NATIVE_KIT, {
+			recoveryIdentity: NATIVE_KIT.recovery_identity,
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.message);
+		expect(result.value.configured).toBe(true);
+
+		const record = await bindingStore.read();
+		expect(record).not.toBeNull();
+		expect(record?.localWorkspaceId).toBe('workspace_native');
+		expect(record?.workspaceId).toBe(NATIVE_KIT.recovery.config.workspaceId);
+		expect(record?.revision).toBe('1');
+		expect(Object.keys(record!.objects).sort()).toEqual([
+			'object_one',
+			'object_two',
+		]);
+		expect(record!.objectId in record!.objects).toBe(true);
+
+		const deviceId = controller.device()?.deviceId;
+		expect(deviceId).toBeDefined();
+		for (const bound of Object.values(record!.objects)) {
+			expect(bound.key.construction).toBe('web');
+			expect(bound.key.deviceId).toBe(deviceId!);
+			expect(bound.key.wrappedKey.length).toBeGreaterThan(0);
+		}
+	});
+
+	test('never writes the recovery identity or a plaintext object key', async () => {
+		const { controller, bindingStore } = await nativeController();
+		const result = await controller.importNativeRecoveryKit(NATIVE_KIT, {
+			recoveryIdentity: NATIVE_KIT.recovery_identity,
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(result.ok).toBe(true);
+
+		const serialized = JSON.stringify(await bindingStore.read());
+		expect(serialized).not.toContain(NATIVE_KIT.recovery_identity);
+		expect(serialized).not.toContain('recovery_identity');
+		expect(serialized).not.toContain('AGE-SECRET-KEY');
+		for (const vector of NATIVE_KIT.object_keys) {
+			expect(serialized).not.toContain(vector.key);
+		}
+	});
+
+	test('accepts a caller-pinned signer matching the kit self-description', async () => {
+		const { controller, bindingStore } = await nativeController();
+		const signer =
+			NATIVE_KIT.recovery.config.trustedDevices[
+				NATIVE_KIT.recovery.config.deviceId
+			]!;
+		const result = await controller.importNativeRecoveryKit(NATIVE_KIT, {
+			recoveryIdentity: NATIVE_KIT.recovery_identity,
+			recoverySignerPublic: signer,
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(result.ok).toBe(true);
+		expect(await bindingStore.read()).not.toBeNull();
+	});
+
+	test('rejects a pinned signer that disagrees with the kit and writes nothing', async () => {
+		const { controller, bindingStore } = await nativeController();
+		const result = await controller.importNativeRecoveryKit(NATIVE_KIT, {
+			recoveryIdentity: NATIVE_KIT.recovery_identity,
+			recoverySignerPublic: encodeBase64(new Uint8Array(32).fill(7)),
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe('custody_failed');
+		expect(await bindingStore.read()).toBeNull();
+	});
+
+	test('rejects a recovery identity that does not match the embedded one', async () => {
+		const { controller, bindingStore } = await nativeController();
+		const result = await controller.importNativeRecoveryKit(NATIVE_KIT, {
+			recoveryIdentity: changedIdentity(NATIVE_KIT.recovery_identity),
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe('custody_failed');
+		expect(await bindingStore.read()).toBeNull();
+	});
+
+	test('rejects a tampered kit and writes nothing', async () => {
+		const { controller, bindingStore } = await nativeController();
+
+		const tamperedSignature = {
+			...NATIVE_KIT,
+			recovery: {
+				...NATIVE_KIT.recovery,
+				signature: nativeFlipLastByte(NATIVE_KIT.recovery.signature),
+			},
+		};
+		const signatureResult = await controller.importNativeRecoveryKit(
+			tamperedSignature,
+			{
+				recoveryIdentity: NATIVE_KIT.recovery_identity,
+				localWorkspaceId: 'workspace_native',
+			},
+		);
+		expect(signatureResult.ok).toBe(false);
+		if (!signatureResult.ok)
+			expect(signatureResult.code).toBe('custody_failed');
+
+		const first = NATIVE_KIT.recovery.envelopes[0]!;
+		const tamperedEnvelope = {
+			...NATIVE_KIT,
+			recovery: {
+				...NATIVE_KIT.recovery,
+				envelopes: [
+					{ ...first, wrappedKey: nativeFlipLastByte(first.wrappedKey) },
+					...NATIVE_KIT.recovery.envelopes.slice(1),
+				],
+			},
+		};
+		const envelopeResult = await controller.importNativeRecoveryKit(
+			tamperedEnvelope,
+			{
+				recoveryIdentity: NATIVE_KIT.recovery_identity,
+				localWorkspaceId: 'workspace_native',
+			},
+		);
+		expect(envelopeResult.ok).toBe(false);
+		expect(await bindingStore.read()).toBeNull();
+	});
+
+	test('rejects a wrong identity when the kit does not embed one', async () => {
+		const { controller, bindingStore } = await nativeController();
+		const { recovery_identity: _omitted, ...withoutIdentity } = NATIVE_KIT;
+		const result = await controller.importNativeRecoveryKit(withoutIdentity, {
+			recoveryIdentity: changedIdentity(NATIVE_KIT.recovery_identity),
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe('custody_failed');
+		expect(await bindingStore.read()).toBeNull();
+	});
+
+	test('returns a typed locked or unavailable result when custody is missing', async () => {
+		const unavailable = await createBrowserSyncController({ keyStore: null });
+		const unavailableResult = await unavailable.importNativeRecoveryKit(
+			NATIVE_KIT,
+			{
+				recoveryIdentity: NATIVE_KIT.recovery_identity,
+				localWorkspaceId: 'workspace_native',
+			},
+		);
+		expect(unavailableResult.ok).toBe(false);
+		if (!unavailableResult.ok)
+			expect(unavailableResult.code).toBe('unavailable');
+
+		const locked = await createBrowserSyncController({
+			keyStore: createMemoryKeyStore(),
+			origin: ORIGIN,
+			fetch: enrollingFetch(),
+			bindingStore: createMemoryBindingStore(),
+			stateStore: createMemorySyncStateStore(),
+		});
+		const lockedResult = await locked.importNativeRecoveryKit(NATIVE_KIT, {
+			recoveryIdentity: NATIVE_KIT.recovery_identity,
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(lockedResult.ok).toBe(false);
+		if (!lockedResult.ok) expect(lockedResult.code).toBe('locked');
+	});
+
+	test('extracts the embedded recovery identity, or null when absent', () => {
+		expect(extractEmbeddedRecoveryIdentity(NATIVE_KIT)).toBe(
+			NATIVE_KIT.recovery_identity,
+		);
+		const { recovery_identity: _omitted, ...withoutIdentity } = NATIVE_KIT;
+		expect(extractEmbeddedRecoveryIdentity(withoutIdentity)).toBeNull();
+		expect(() =>
+			extractEmbeddedRecoveryIdentity({ format: 'other' }),
+		).toThrow();
 	});
 });

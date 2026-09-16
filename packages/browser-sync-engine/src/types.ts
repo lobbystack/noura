@@ -64,15 +64,21 @@ export interface BrowserSyncRemote {
 }
 
 /**
- * One version-1 file change. `content` is the complete file bytes or `null`
- * for a deletion; `baseRevision` is the revision of the bytes the change is
- * based on, or `null` when the path must be absent.
+ * One file change. `content` is the complete file bytes, `null` for a deletion,
+ * or `null` with a {@link blob} for a version-3 encrypted attachment;
+ * `baseRevision` is the revision of the bytes the change is based on, or `null`
+ * when the path must be absent.
  */
 export interface FileChange {
 	path: string;
 	previousPath: string | null;
 	baseRevision: string | null;
 	content: Uint8Array | null;
+	/**
+	 * Present for a version-3 attachment. The bytes live in the encrypted blob,
+	 * so `content` is `null`; the path is still treated as present, not deleted.
+	 */
+	blob?: FileChangeBlob;
 }
 
 /** An opened file change with the envelope identity recovered by the codec. */

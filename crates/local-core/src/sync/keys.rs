@@ -528,6 +528,26 @@ impl DeviceKeys {
         })
     }
 
+    /// Deterministic identity for fixture regeneration only. Production devices always generate
+    /// fresh key material; this exists so the shared recovery fixture can be byte-stable.
+    #[cfg(test)]
+    pub(crate) fn from_test_parts(
+        device_id: &str,
+        signing_seed: [u8; 32],
+        age_identity: &str,
+    ) -> Result<Self> {
+        identifier(device_id)?;
+        Ok(Self {
+            device_id: device_id.into(),
+            signer: SigningIdentity::from_seed(&signing_seed),
+            recipient: DeviceRecipient::Age(
+                age_identity
+                    .parse()
+                    .map_err(|_| invalid("sync_invalid_recovery_file"))?,
+            ),
+        })
+    }
+
     /// Write a user-held recovery identity outside the workspace, without returning it over IPC.
     /// The recovery recipient must also receive encrypted object-key envelopes.
     pub fn export_recovery_identity(

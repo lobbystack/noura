@@ -111,7 +111,8 @@ function validateOpenedFileChange(change: OpenedFileChange): void {
 		(change.previousPath !== null && typeof change.previousPath !== 'string') ||
 		(change.baseRevision !== null && typeof change.baseRevision !== 'string') ||
 		(change.content !== null && !(change.content instanceof Uint8Array)) ||
-		(change.blob !== undefined && !isAttachmentBlob(change.blob));
+		(change.blob !== undefined &&
+			(change.content !== null || !isAttachmentBlob(change.blob)));
 	if (invalid) {
 		throw new BrowserSyncEngineError(
 			BrowserSyncEngineErrorCode.InvalidOperation,
@@ -736,6 +737,15 @@ export class BrowserSyncEngine {
 	): Promise<void> {
 		if (change.previousPath !== null) {
 			this.#recordAbsent(state, change.previousPath);
+		}
+		// A version-3 attachment has `content === null` but is not a deletion:
+		// the path is present locally and must not be resealed as inline bytes.
+		if (change.blob !== undefined) {
+			const current = await this.#storage.read(change.path);
+			if (current !== null) {
+				this.#recordPresent(state, change.path, current.revision);
+			}
+			return;
 		}
 		if (change.content === null) {
 			this.#recordAbsent(state, change.path);

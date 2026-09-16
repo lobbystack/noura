@@ -19,6 +19,7 @@
 	} from '$lib/browser-plugins';
 	import { upcomingCalendarEntries } from '@noura/plugin-calendar';
 	import BrowserCalendarView from './browser-calendar-view.svelte';
+	import BrowserAttachments from './browser-attachments.svelte';
 	import type { PluginSettingsModel } from '$lib/plugin-settings-model';
 	import PluginSettingsPanel from './settings/plugin-settings-panel.svelte';
 	import BrowserSyncSettings from './browser-sync-settings.svelte';
@@ -906,6 +907,15 @@
 								</Field.Group>
 							</form>
 						{/if}
+						{#if !projectRoute && !taskRoute && selected}
+							{#key selected.id}
+								<BrowserAttachments
+									noteId={selected.id}
+									notePath={selected.relativePath}
+									workspaceFiles={runtime?.files ?? null}
+								/>
+							{/key}
+						{/if}
 						{#if projectRoute && selected && plugins?.isEnabled('tasks')}
 							<section
 								aria-label="Project tasks"
@@ -920,8 +930,9 @@
 							</section>
 						{/if}
 					{:else}<p>
-							Select a {kind} or create one. Plain Markdown editing is supported;
-							attachments, autosave, and automatic conflict merging are not.
+							Select a {kind} or create one. Plain Markdown editing is supported.
+							Encrypted attachments are available for a synchronized note; autosave
+							and automatic conflict merging are not.
 						</p>{/if}
 				</section>
 			</div>

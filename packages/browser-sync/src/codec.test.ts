@@ -184,4 +184,70 @@ describe('createFileChangeCodec', () => {
 			}),
 		).rejects.toMatchObject({ code: BrowserSyncErrorCode.MissingKey });
 	});
+
+	test('seals and opens a version-3 attachment under the object key', async () => {
+		const identity = await makeIdentity();
+		const codec = createFileChangeCodec({
+			identity,
+			objectKeys: new Map([[OBJECT_ID, OBJECT_KEY]]),
+			pinnedSigners: pinned(identity),
+		});
+		const blob = {
+			id: 'a'.repeat(64),
+			size: 20,
+			plaintextSize: 10,
+			revision: 'b'.repeat(64),
+		};
+		const sealed = await codec.sealFileChange({
+			workspaceId: 'workspace',
+			objectId: OBJECT_ID,
+			epoch: 1,
+			policyRevision: '1',
+			change: {
+				path: 'attachments/object/photo.png',
+				previousPath: null,
+				baseRevision: null,
+				content: null,
+				blob,
+			},
+		});
+		expect(sealed.version).toBe(1);
+
+		const opened = await codec.openFileChange(sealed);
+		expect(opened.version).toBe(3);
+		expect(opened.content).toBeNull();
+		expect(opened.blob).toEqual(blob);
+		expect(opened.path).toBe('attachments/object/photo.png');
+	});
+
+	test('rejects a version-3 change that also carries inline content', async () => {
+		const identity = await makeIdentity();
+		const codec = createFileChangeCodec({
+			identity,
+			objectKeys: new Map([[OBJECT_ID, OBJECT_KEY]]),
+			pinnedSigners: pinned(identity),
+		});
+		await expect(
+			codec.sealFileChange({
+				workspaceId: 'workspace',
+				objectId: OBJECT_ID,
+				epoch: 1,
+				policyRevision: '1',
+				change: {
+					path: 'attachments/object/photo.png',
+					previousPath: null,
+					baseRevision: null,
+					content: encoder.encode('inline'),
+					blob: {
+						id: 'a'.repeat(64),
+						size: 20,
+						plaintextSize: 10,
+						revision: 'b'.repeat(64),
+					},
+				},
+			}),
+		).rejects.toMatchObject({
+			code: BrowserSyncErrorCode.InvalidFileChange,
+		});
+	});
 });

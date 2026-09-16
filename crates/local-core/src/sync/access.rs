@@ -430,4 +430,43 @@ mod tests {
         assert_ne!(tampered.signing_bytes().unwrap(), base);
         assert!(tampered.verify(&device.signer().public_key()).is_err());
     }
+
+    fn fixture_policy(value: &serde_json::Value) -> AccessPolicy {
+        let mut object = value.clone();
+        object["signature"] = serde_json::json!("");
+        serde_json::from_value(object).unwrap()
+    }
+
+    /// Pin the access-policy signing tuple for browser `web` envelopes against the
+    /// shared fixture so the native and server byte sequences cannot drift apart.
+    #[test]
+    fn access_signing_tuple_matches_the_shared_policy_web_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/workspace-format/fixtures/policy-web-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["domain"], "noura.sync.access");
+        assert_eq!(fixture["info"], "noura.sync.access.v1");
+        assert_eq!(fixture["version"], 1);
+        for (name, object, expected) in [
+            ("web", &fixture["policy"], &fixture["signing_bytes"]),
+            (
+                "mixed age and web",
+                &fixture["mixed"]["policy"],
+                &fixture["mixed"]["signing_bytes"],
+            ),
+        ] {
+            let policy = fixture_policy(object);
+            assert_eq!(
+                String::from_utf8(policy.signing_bytes().unwrap()).unwrap(),
+                expected.as_str().unwrap(),
+                "{name} fixture signing bytes diverged"
+            );
+        }
+        // The mixed vector must actually exercise both envelope constructions.
+        let mixed = fixture_policy(&fixture["mixed"]["policy"]);
+        let envelopes = &mixed.objects[0].envelopes;
+        assert!(envelopes.iter().any(PolicyEnvelope::is_web));
+        assert!(envelopes.iter().any(|envelope| !envelope.is_web()));
+    }
 }

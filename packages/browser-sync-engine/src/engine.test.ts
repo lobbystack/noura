@@ -1159,4 +1159,26 @@ describe('version-3 attachments', () => {
 			Buffer.from(stored!.bytes).equals(Buffer.from(bytes('newbytes'))),
 		).toBe(true);
 	});
+
+	test('enqueues an attachment as a present path, not a deletion', async () => {
+		const harness = createHarness();
+		const path = 'attachments/object/photo.png';
+		await harness.storage.write({
+			path,
+			bytes: bytes('binary'),
+			expectedRevision: null,
+		});
+
+		await harness.engine.enqueueFileChange({
+			path,
+			previousPath: null,
+			baseRevision: null,
+			content: null,
+			blob: attachmentBlob(10, 8),
+		});
+
+		expect(harness.persisted().knownPaths).toContain(path);
+		const changes = await harness.engine.snapshotLocalChanges();
+		expect(changes.map((entry) => entry.path)).not.toContain(path);
+	});
 });

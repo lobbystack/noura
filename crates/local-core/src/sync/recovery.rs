@@ -485,4 +485,135 @@ mod tests {
             assert!(RecoveryKit::load(&link).is_err());
         }
     }
+
+    const NATIVE_RECOVERY_FIXTURE: &str =
+        include_str!("../../../../docs/workspace-format/fixtures/native-recovery-v1.json");
+
+    /// Regenerates the shared fixture. This is test-only and never ships the identity secret in a
+    /// production build; the fixture's recovery identity is a public age test vector.
+    #[test]
+    #[ignore = "regenerates docs/workspace-format/fixtures/native-recovery-v1.json"]
+    fn regenerate_native_recovery_fixture() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use std::collections::BTreeMap;
+
+        let workspace = "workspace_recovery";
+        let device_id = "device_recovery";
+        let account = "account_recovery";
+        let origin = "https://sync.noura.example";
+        let identity = "AGE-SECRET-KEY-1GQ9778VQXMMJVE8SK7J6VT8UJ4HDQAJUVSFCWCM02D8GEWQ72PVQ2Y5J33";
+        let device = DeviceKeys::from_test_parts(device_id, [0x11_u8; 32], identity).unwrap();
+        let config = WorkspaceSyncConfig {
+            version: 1,
+            workspace_id: workspace.into(),
+            origin: origin.into(),
+            device_id: device_id.into(),
+            enabled: false,
+            trusted_devices: BTreeMap::from([(device_id.into(), device.signer().public_key())]),
+            approved_recipients: BTreeMap::from([(device_id.into(), device.recipient())]),
+            approved_accounts: BTreeMap::from([(device_id.into(), account.into())]),
+        };
+        let keys = [
+            ("object_one", 1_u64, [0x21_u8; 32]),
+            ("object_two", 2_u64, [0x42_u8; 32]),
+        ];
+        let envelopes = keys
+            .iter()
+            .map(|(object, epoch, secret)| {
+                device
+                    .wrap_key(
+                        workspace,
+                        object,
+                        *epoch,
+                        device.device_id(),
+                        &device.recipient(),
+                        &ObjectKey::from_bytes(*secret),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut kit = RecoveryKit {
+            version: 1,
+            config,
+            identity: device.recovery_secret().unwrap().to_string(),
+            envelopes,
+            signature: String::new(),
+        };
+        kit.signature = device.signer().sign_bytes(&kit.signing_bytes().unwrap());
+        // Prove the regenerated fixture satisfies the native reader before it is written.
+        kit.reader().unwrap();
+
+        let object_keys = keys
+            .iter()
+            .map(|(object, epoch, secret)| {
+                serde_json::json!({
+                    "object_id": object,
+                    "epoch": epoch,
+                    "key": STANDARD.encode(secret),
+                })
+            })
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "format": "noura.sync.recovery",
+            "domain": "noura.sync.recovery",
+            "version": 1,
+            "recovery": {
+                "version": kit.version,
+                "config": &kit.config,
+                "envelopes": &kit.envelopes,
+                "signature": &kit.signature,
+            },
+            "recovery_identity": &kit.identity,
+            "recovery_recipient": device.recipient(),
+            "object_keys": object_keys,
+        });
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/workspace-format/fixtures/native-recovery-v1.json");
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&document).unwrap()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn native_recovery_fixture_verifies_and_unwraps_its_own_object() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let fixture: serde_json::Value = serde_json::from_str(NATIVE_RECOVERY_FIXTURE).unwrap();
+        assert_eq!(fixture["domain"], "noura.sync.recovery");
+        assert_eq!(fixture["format"], "noura.sync.recovery");
+        assert_eq!(fixture["version"], 1);
+
+        // The public recovery object is signed over the identity secret, so reassemble the full
+        // object before handing it to the native reader.
+        let mut object = fixture["recovery"].as_object().unwrap().clone();
+        object.insert("identity".into(), fixture["recovery_identity"].clone());
+        let kit: RecoveryKit = serde_json::from_value(serde_json::Value::Object(object)).unwrap();
+        let reader = kit.reader().unwrap();
+        assert_eq!(
+            reader.recipient(),
+            fixture["recovery_recipient"].as_str().unwrap()
+        );
+
+        let expected = fixture["object_keys"].as_array().unwrap();
+        assert_eq!(expected.len(), kit.envelopes.len());
+        for vector in expected {
+            let object_id = vector["object_id"].as_str().unwrap();
+            let epoch = vector["epoch"].as_u64().unwrap();
+            let encoded = vector["key"].as_str().unwrap();
+            let envelope = kit
+                .envelopes
+                .iter()
+                .find(|envelope| envelope.object_id == object_id && envelope.epoch == epoch)
+                .expect("fixture envelope must exist");
+            let signer = kit
+                .config
+                .trusted_devices
+                .get(&envelope.signing_device)
+                .unwrap();
+            let key = reader.unwrap_key(envelope, signer).unwrap();
+            assert_eq!(STANDARD.encode(key.secret()), encoded, "{object_id}");
+        }
+    }
 }

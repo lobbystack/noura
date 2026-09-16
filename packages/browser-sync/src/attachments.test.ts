@@ -11,6 +11,9 @@ import {
 	BLOB_UPLOAD_CHUNK_BYTES,
 	MAX_BLOB_BYTES,
 	attachmentDigest,
+	attachmentNameFromPath,
+	attachmentObjectIdFromPath,
+	attachmentPath,
 	attachmentRevision,
 	buildAttachmentFileChange,
 	bytesAttachmentSource,
@@ -18,9 +21,12 @@ import {
 	downloadBlob,
 	encryptAttachment,
 	encryptAttachmentToSink,
+	isAttachmentPathFor,
 	MemoryAttachmentSink,
+	sanitizeAttachmentName,
 	uploadBlob,
 	validateAttachmentBlob,
+	viewAttachmentSource,
 	type AttachmentSink,
 	type AttachmentSource,
 } from './attachments';
@@ -429,4 +435,50 @@ test('fixture uses canonical base64 fields', () => {
 	expect(encodeBase64(decodeBase64(fixture.ciphertextBase64))).toBe(
 		fixture.ciphertextBase64,
 	);
+});
+
+describe('attachment paths', () => {
+	test('builds and parses the conventional object path', () => {
+		const path = attachmentPath('obj_note', 'Quarterly Report.pdf');
+		expect(path).toBe('attachments/obj_note/Quarterly Report.pdf');
+		expect(attachmentObjectIdFromPath(path)).toBe('obj_note');
+		expect(attachmentNameFromPath(path)).toBe('Quarterly Report.pdf');
+		expect(isAttachmentPathFor('obj_note', path)).toBe(true);
+		expect(isAttachmentPathFor('obj_other', path)).toBe(false);
+		expect(attachmentObjectIdFromPath('notes/a.md')).toBeNull();
+		expect(attachmentNameFromPath('attachments/obj_note/')).toBeNull();
+	});
+
+	test('reduces hostile names to one portable component', () => {
+		const sanitized = sanitizeAttachmentName('..\\..\\etc\\passwd');
+		expect(sanitized).not.toContain('/');
+		expect(sanitized).not.toContain('\\');
+		expect(sanitizeAttachmentName('CON')).toBe('_CON');
+		expect(sanitizeAttachmentName('   ')).toBe('attachment');
+		expect(attachmentPath('obj_note', '..')).toBe(
+			'attachments/obj_note/attachment',
+		);
+		expect(() => attachmentPath('bad id', 'x.txt')).toThrow(BrowserSyncError);
+	});
+
+	test('views bytes without copying and rejects out-of-bounds reads', async () => {
+		const source = viewAttachmentSource(pattern(4));
+		expect(source.size).toBe(4);
+		expect(await source.read(1, 2)).toEqual(new Uint8Array([1, 2]));
+		await expect(source.read(3, 2)).rejects.toBeInstanceOf(BrowserSyncError);
+	});
+
+	test('encrypts a non-copying source into a valid descriptor', async () => {
+		const key = randomBytes(32);
+		const plaintext = pattern(100);
+		const sink = new MemoryAttachmentSink();
+		const blob = await encryptAttachmentToSink(
+			key,
+			viewAttachmentSource(plaintext),
+			sink,
+		);
+		validateAttachmentBlob(blob);
+		const opened = await decryptAttachment(key, blob, sink.toBytes());
+		expect(Buffer.from(opened).equals(Buffer.from(plaintext))).toBe(true);
+	});
 });

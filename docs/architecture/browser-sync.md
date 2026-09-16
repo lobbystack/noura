@@ -29,8 +29,9 @@ operation. A separate browser device enrolled earlier received the delivered
 key, pulled the operation, and decrypted it to the original native file. The
 browser-to-browser path (bootstrap, key delivery, operation push/pull,
 cross-device decryption, post-bootstrap object provisioning) was verified the
-same way. The remaining unverified path is browser-authored operations pulled
-by a native device.
+same way. The reverse path was also verified: the browser edited the native
+file, sealed and pushed a version-1 operation, and the desktop probe pulled and
+decrypted it to the edited bytes.
 
 **Implemented foundation.** The platform-independent
 `noura.sync.key.web` version 1 envelope format described under "Where the browser
@@ -222,10 +223,16 @@ server's `tus`/range routes, and an engine attachment fetcher that materializes 
 version-3 file change or fails without writing an empty file. Browser memory
 bounds cap a received attachment at 64 MiB (native limit 1 GiB).
 
-**Not implemented.** Browser-authored attachment send and the attachment UI are
-outstanding: the browser codec still seals version-1 inline payloads, and
-arbitrary attachment paths are not provisioned into the access policy. Native
-binary attachment conflict resolution is also still open.
+**Implemented in the browser (send).** The browser encrypts an attachment with
+the containing note's object key, uploads it through the bounded resumable path,
+writes the plaintext to the local replica under `attachments/<objectId>/`, and
+seals a version-3 file change that reuses the note's object, so no new remote
+object is provisioned. The notes editor exposes attach, progress, list, and
+download controls. Both directions are capped at 64 MiB of browser memory
+against the protocol's 1 GiB limit.
+
+**Not implemented.** Native binary attachment conflict resolution is still open,
+and the engine re-downloads a sender's own just-uploaded blob on the next pull.
 
 **Proposal.** Any new envelope or fingerprint version requires shared Rust and
 TypeScript conformance fixtures that accept and reject the same cases before it
@@ -427,12 +434,17 @@ ephemeralPublicKey, salt, nonce]` and verify it through the same
   `packages/browser-sync` and wired into the `apps/app` controller. It encrypts a
   device's wrapped key bundle and durable binding under a passphrase-derived
   AES-256-GCM key and restores the **same** device identity and binding on
-  another browser without a trusted device. It is not the signed native
-  `noura.sync.recovery` object: native recovery kits and recovery identities are
-  `age`-only, a browser recipient still returns
-  `sync_browser_recovery_unsupported`, and `noura.sync.recovery`
-  interoperability with this browser format remains a proposal that needs its
-  own shared Rust and TypeScript conformance fixtures.
+  another browser without a trusted device.
+- **Implemented (native interop).** A browser can import a native
+  `noura.sync.recovery` kit: `importNativeRecoveryKit` verifies the signed
+  recovery object against a pinned or consistently self-described recovery
+  signer, unwraps the native `age` object-key envelopes with the user-supplied
+  recovery identity, and `recoverNativeKeysToBrowserBinding` re-wraps those keys
+  as self-addressed `noura.sync.key.web` envelopes in a browser binding. The
+  recovery identity and plaintext keys are never persisted. The shared fixture
+  `docs/workspace-format/fixtures/native-recovery-v1.json` is read by both the
+  Rust and TypeScript tests. This is one-way (native kit to browser); native
+  import of a browser kit is not implemented.
 
 ## Browser client foundation
 

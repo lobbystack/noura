@@ -8,6 +8,7 @@
 	import type { BrowserWorkspaceFiles } from '@noura/browser-workspace';
 	import type { RecoveryKitFile } from '@noura/browser-sync';
 	import {
+		extractEmbeddedRecoveryIdentity,
 		getBrowserSyncController,
 		type BrowserSyncConflictDetail,
 		type BrowserSyncController,
@@ -55,6 +56,12 @@
 	let kitAction = $state<'export' | 'import' | null>(null);
 	let kitError = $state('');
 	let kitNotice = $state('');
+	let nativeKitFile = $state<File | null>(null);
+	let nativeRecoveryIdentity = $state('');
+	let nativeIdentityEmbedded = $state(false);
+	let nativeKitAction = $state<'import' | null>(null);
+	let nativeKitError = $state('');
+	let nativeKitNotice = $state('');
 
 	const statusLabels: Record<BrowserSyncStatus, string> = {
 		unavailable: 'Unavailable in this browser',
@@ -112,6 +119,15 @@
 	// A workspace id is required to re-key the recovered binding on import.
 	const canImportKit = $derived(
 		!!workspaceId && !!kitFile && !!importPassphrase && !kitBusy,
+	);
+	const nativeKitBusy = $derived(nativeKitAction !== null);
+	// Native import needs unlocked custody, an open workspace, and an identity.
+	const canImportNativeKit = $derived(
+		custodyActive &&
+			!!workspaceId &&
+			!!nativeKitFile &&
+			nativeRecoveryIdentity.trim().length > 0 &&
+			!nativeKitBusy,
 	);
 
 	async function restoreBinding() {
@@ -481,6 +497,93 @@
 		})();
 	}
 
+	/**
+	 * Read a native kit and prefill the recovery identity when the kit embeds
+	 * one, locking the field so a different value cannot be silently substituted.
+	 */
+	async function chooseNativeRecoveryKit(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0] ?? null;
+		// Clear the native value so the same file can be re-selected later.
+		input.value = '';
+		nativeKitFile = file;
+		nativeKitError = '';
+		nativeKitNotice = '';
+		nativeIdentityEmbedded = false;
+		nativeRecoveryIdentity = '';
+		if (!file) return;
+		try {
+			const parsed: unknown = JSON.parse(await file.text());
+			const embedded = extractEmbeddedRecoveryIdentity(parsed);
+			nativeIdentityEmbedded = embedded !== null;
+			nativeRecoveryIdentity = embedded ?? '';
+		} catch (cause) {
+			nativeKitFile = null;
+			nativeKitError =
+				cause instanceof Error
+					? cause.message
+					: 'That file is not a native Noura recovery kit.';
+		}
+	}
+
+	function importNativeKit() {
+		const value = controller;
+		if (!value || nativeKitBusy) return;
+		if (!workspaceId) {
+			nativeKitError =
+				'Open a browser workspace before importing a native recovery kit.';
+			return;
+		}
+		const file = nativeKitFile;
+		if (!file) {
+			nativeKitError = 'Choose a native recovery kit file to import.';
+			return;
+		}
+		const recoveryIdentity = nativeRecoveryIdentity.trim();
+		if (!recoveryIdentity) {
+			nativeKitError =
+				'Paste the recovery identity from the kit; it is used only for this import.';
+			return;
+		}
+		void (async () => {
+			nativeKitAction = 'import';
+			nativeKitError = '';
+			nativeKitNotice = '';
+			try {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(await file.text());
+				} catch {
+					nativeKitError =
+						'That file is not valid JSON. Choose the native kit exported by a Noura device.';
+					return;
+				}
+				const result = await value.importNativeRecoveryKit(parsed, {
+					recoveryIdentity,
+					localWorkspaceId: workspaceId,
+				});
+				if (!result.ok) {
+					nativeKitError = kitMessage(result.code, result.message);
+					return;
+				}
+				// Drop the secret from the form as soon as it is used.
+				nativeKitFile = null;
+				nativeIdentityEmbedded = false;
+				nativeRecoveryIdentity = '';
+				nativeKitNotice =
+					'Recovered the object keys from the native kit and re-wrapped them to this browser device. Plaintext keys and the recovery identity were not stored.';
+				await refresh();
+			} catch (cause) {
+				nativeKitError =
+					cause instanceof Error
+						? cause.message
+						: 'The native recovery kit could not be imported.';
+			} finally {
+				nativeKitAction = null;
+			}
+		})();
+	}
+
 	onMount(() => {
 		if (!canUseBrowserSync) return;
 		let disposed = false;
@@ -644,7 +747,7 @@
 				</p>
 			</div>
 
-			{#if status === 'locked' || custodyActive || kitNotice || kitError}
+			{#if status === 'locked' || custodyActive || kitNotice || kitError || nativeKitNotice || nativeKitError}
 				<div
 					class="flex flex-col gap-3"
 					aria-labelledby="browser-sync-recovery-heading"
@@ -766,6 +869,91 @@
 							>
 						</div>
 					</div>
+
+					<div class="flex flex-col gap-3 rounded-xl border p-4">
+						<h5 class="text-xs font-medium">Import a native recovery kit</h5>
+						<p class="text-xs text-muted-foreground">
+							This recovers object keys from a native Noura
+							<code>noura.sync.recovery</code> kit and re-wraps them to this browser
+							device. It is not the browser kit above. The recovery identity is sensitive:
+							it is used only in this tab and is never stored or uploaded.
+						</p>
+						<Field.Field>
+							<Field.Label for="browser-sync-native-kit-file"
+								>Native recovery kit file</Field.Label
+							>
+							<Input
+								id="browser-sync-native-kit-file"
+								type="file"
+								accept=".json,application/json"
+								disabled={nativeKitBusy}
+								onchange={chooseNativeRecoveryKit}
+								aria-describedby="browser-sync-native-kit-file-help"
+							/>
+							<p
+								id="browser-sync-native-kit-file-help"
+								class="text-xs text-muted-foreground"
+							>
+								{#if nativeKitFile}
+									Selected {nativeKitFile.name}.
+								{:else}
+									Choose the JSON native recovery kit exported by a native Noura
+									device.
+								{/if}
+							</p>
+						</Field.Field>
+						<Field.Field>
+							<Field.Label for="browser-sync-native-recovery-identity"
+								>Recovery identity</Field.Label
+							>
+							<Input
+								id="browser-sync-native-recovery-identity"
+								type="password"
+								autocomplete="off"
+								bind:value={nativeRecoveryIdentity}
+								disabled={nativeKitBusy ||
+									nativeIdentityEmbedded ||
+									!workspaceId}
+								aria-describedby="browser-sync-native-recovery-identity-help"
+							/>
+							<p
+								id="browser-sync-native-recovery-identity-help"
+								class="text-xs text-muted-foreground"
+							>
+								{#if nativeIdentityEmbedded}
+									This kit embeds its recovery identity, so the field is filled
+									in and locked. It is used only to unwrap the kit’s object
+									keys.
+								{:else if !workspaceId}
+									Open a browser workspace before importing; a workspace id is
+									required to attach the recovered binding.
+								{:else}
+									Paste the <code>AGE-SECRET-KEY-…</code> recovery identity that this
+									kit does not embed. Treat it as a secret; it is never stored.
+								{/if}
+							</p>
+						</Field.Field>
+						<div>
+							<Button
+								type="button"
+								variant="outline"
+								disabled={!canImportNativeKit}
+								onclick={importNativeKit}
+								>{nativeKitAction === 'import'
+									? 'Importing…'
+									: 'Import native recovery kit'}</Button
+							>
+						</div>
+					</div>
+					{#if nativeKitNotice}
+						<p role="status" class="text-sm">{nativeKitNotice}</p>
+					{/if}
+					{#if nativeKitError}
+						<p role="alert" class="text-sm text-destructive">
+							{nativeKitError}
+						</p>
+					{/if}
+
 					{#if kitNotice}
 						<p role="status" class="text-sm">{kitNotice}</p>
 					{/if}

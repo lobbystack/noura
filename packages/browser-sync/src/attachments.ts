@@ -27,6 +27,7 @@ import { blake3 } from '@noble/hashes/blake3.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { syncFileChangeSchema } from '@noura/workspace-schema';
 import { bytesEqual, fixedBytes, isIdentifier, type Bytes } from './crypto';
 import { BrowserSyncError, BrowserSyncErrorCode } from './errors';
 import type { FileChangeBlob, FileChangeV3 } from './file-change';
@@ -223,6 +224,217 @@ export async function deriveBlobRecipient(
 	return { seed, publicKey: await publicFromSeed(seed) };
 }
 
+/** Bech32 human-readable prefix of an age X25519 secret identity, lowercased. */
+export const AGE_SECRET_HRP = 'age-secret-key-';
+
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const BECH32_GENERATORS = [
+	0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3,
+];
+
+function bech32Polymod(values: readonly number[]): number {
+	let checksum = 1;
+	for (const value of values) {
+		const top = checksum >>> 25;
+		checksum = ((checksum & 0x1ffffff) << 5) ^ value;
+		for (let bit = 0; bit < BECH32_GENERATORS.length; bit += 1) {
+			if (((top >>> bit) & 1) === 1) checksum ^= BECH32_GENERATORS[bit]!;
+		}
+	}
+	return checksum;
+}
+
+function bech32HrpExpand(hrp: string): number[] {
+	const values: number[] = [];
+	for (const character of hrp) values.push(character.charCodeAt(0) >>> 5);
+	values.push(0);
+	for (const character of hrp) values.push(character.charCodeAt(0) & 31);
+	return values;
+}
+
+function bech32ConvertBits(
+	values: readonly number[],
+	from: number,
+	to: number,
+): number[] {
+	let accumulator = 0;
+	let bits = 0;
+	const maxValue = (1 << to) - 1;
+	const output: number[] = [];
+	for (const value of values) {
+		accumulator = (accumulator << from) | value;
+		bits += from;
+		while (bits >= to) {
+			bits -= to;
+			output.push((accumulator >>> bits) & maxValue);
+		}
+	}
+	// The Bech32 data must pad to a whole number of bytes with zero bits, as
+	// `CheckedHrpstring`'s byte iterator enforces.
+	if (bits >= from || ((accumulator << (to - bits)) & maxValue) !== 0) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age identity had non-canonical padding',
+		);
+	}
+	return output;
+}
+
+/**
+ * Decode a native age X25519 secret identity (`AGE-SECRET-KEY-...`) to its raw
+ * 32-byte secret.
+ *
+ * This is BIP-173 Bech32 (not Bech32m) with the `age-secret-key-` HRP, matching
+ * age 0.12's identity encoding. Mixed case, a wrong HRP, a bad checksum, a
+ * non-canonical length, and non-zero padding bits are all rejected; the value is
+ * never logged. Native identities are stored uppercase, which this accepts.
+ */
+export function decodeAgeSecretIdentity(identity: string): Bytes {
+	if (
+		typeof identity !== 'string' ||
+		identity.length < 16 ||
+		identity.length > 1024
+	) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age identity was malformed',
+		);
+	}
+	const lower = identity.toLowerCase();
+	if (identity !== lower && identity !== identity.toUpperCase()) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age identity had mixed case',
+		);
+	}
+	const separator = lower.lastIndexOf('1');
+	if (separator < 1 || separator + 7 > lower.length) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age identity was malformed',
+		);
+	}
+	const hrp = lower.slice(0, separator);
+	if (hrp !== AGE_SECRET_HRP) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age identity had the wrong prefix',
+		);
+	}
+	const data: number[] = [];
+	for (const character of lower.slice(separator + 1)) {
+		const value = BECH32_CHARSET.indexOf(character);
+		if (value < 0) {
+			throw new BrowserSyncError(
+				BrowserSyncErrorCode.InvalidBlob,
+				'age identity contained an invalid character',
+			);
+		}
+		data.push(value);
+	}
+	if (bech32Polymod([...bech32HrpExpand(hrp), ...data]) !== 1) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age identity checksum did not verify',
+		);
+	}
+	const bytes = bech32ConvertBits(data.slice(0, data.length - 6), 5, 8);
+	return fixedBytes(Uint8Array.from(bytes), 32, 'age identity secret');
+}
+
+/**
+ * Derive the age X25519 recipient public key for a raw 32-byte age secret.
+ *
+ * This is the same X25519 basepoint multiplication used by native age and by
+ * the attachment path, so its output is byte-compatible with native.
+ */
+export async function deriveAgeRecipient(secret: Uint8Array): Promise<Bytes> {
+	return publicFromSeed(fixedBytes(secret, 32, 'age identity secret'));
+}
+
+/**
+ * Authenticate and decrypt a native age version-1 ciphertext with a raw 32-byte
+ * age X25519 secret, returning the complete plaintext.
+ *
+ * This reuses the attachment path's age header parser, X25519 key agreement,
+ * HKDF-SHA256, ChaCha20-Poly1305, and STREAM payload framing. The age header MAC
+ * is verified before any payload decryption, exactly as native `age::decrypt`.
+ * Native key-envelope plaintexts are small, so the whole plaintext is buffered.
+ */
+export async function decryptAgeCiphertext(
+	secret: Uint8Array,
+	ciphertext: Uint8Array,
+): Promise<Bytes> {
+	const seed = fixedBytes(secret, 32, 'age identity secret');
+	const publicKey = await publicFromSeed(seed);
+	const parsed = await parseAgeHeaderDetailed(ciphertext, seed, publicKey);
+	if (parsed.headerEnd + 16 > ciphertext.length) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age ciphertext was truncated',
+		);
+	}
+	const nonce = ciphertext.subarray(parsed.headerEnd, parsed.headerEnd + 16);
+	const payloadKey = hkdf(sha256, parsed.fileKey, nonce, AGE_PAYLOAD_LABEL, 32);
+	let offset = parsed.headerEnd + 16;
+	let remaining = ciphertext.length - offset;
+	if (remaining < BLOB_TAG_BYTES) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'age ciphertext was truncated',
+		);
+	}
+	const parts: Uint8Array[] = [];
+	let total = 0;
+	let counter = 0;
+	while (remaining > 0) {
+		const length = Math.min(BLOB_ENCRYPTED_CHUNK_BYTES, remaining);
+		const chunk = ciphertext.subarray(offset, offset + length);
+		const guessedLast = length < BLOB_ENCRYPTED_CHUNK_BYTES;
+		let plaintext: Uint8Array;
+		try {
+			plaintext = chacha20poly1305(
+				payloadKey,
+				streamNonce(counter, guessedLast),
+			).decrypt(chunk);
+		} catch (cause) {
+			if (guessedLast) {
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.BlobDecryptFailed,
+					'age ciphertext failed authentication',
+					{ cause },
+				);
+			}
+			// An exact multiple of the STREAM chunk size ends in a full chunk
+			// whose last flag native set; retry as the final chunk.
+			try {
+				plaintext = chacha20poly1305(
+					payloadKey,
+					streamNonce(counter, true),
+				).decrypt(chunk);
+			} catch (finalCause) {
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.BlobDecryptFailed,
+					'age ciphertext failed authentication',
+					{ cause: finalCause },
+				);
+			}
+		}
+		parts.push(plaintext);
+		total += plaintext.length;
+		offset += length;
+		remaining -= length;
+		counter += 1;
+	}
+	const output = new Uint8Array(total);
+	let position = 0;
+	for (const part of parts) {
+		output.set(part, position);
+		position += part.length;
+	}
+	return output;
+}
+
 function encodeBase64NoPad(bytes: Uint8Array): string {
 	let binary = '';
 	for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -313,6 +525,34 @@ export function bytesAttachmentSource(bytes: Uint8Array): AttachmentSource {
 				);
 			}
 			return copy.subarray(offset, offset + length);
+		},
+	};
+}
+
+/**
+ * Zero-copy {@link AttachmentSource} over a caller-owned buffer.
+ *
+ * The returned view aliases `bytes`; the caller must not mutate or release it
+ * until every read has completed. Unlike {@link bytesAttachmentSource} this does
+ * not duplicate the plaintext, which matters for the send path's memory bound.
+ */
+export function viewAttachmentSource(bytes: Uint8Array): AttachmentSource {
+	return {
+		size: bytes.length,
+		async read(offset, length) {
+			if (
+				!Number.isSafeInteger(offset) ||
+				!Number.isSafeInteger(length) ||
+				offset < 0 ||
+				length < 0 ||
+				offset + length > bytes.length
+			) {
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.InvalidBlob,
+					'attachment read was out of bounds',
+				);
+			}
+			return bytes.subarray(offset, offset + length);
 		},
 	};
 }
@@ -793,6 +1033,91 @@ export function buildAttachmentFileChange(
 		content: null,
 		blob: input.blob,
 	};
+}
+
+/** Conventional workspace folder that owns attachment files by object id. */
+export const ATTACHMENT_ROOT = 'attachments';
+
+/** Longest file-name component this module will build or accept. */
+export const ATTACHMENT_NAME_MAX_BYTES = 200;
+
+const RESERVED_DEVICE_STEM =
+	/^(?:CON|CONIN\$|CONOUT\$|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/u;
+
+/**
+ * Reduce a user-supplied file name to one portable path component.
+ *
+ * Path separators, control characters, and the characters Windows reserves are
+ * replaced with `-`. Leading and trailing dots and spaces are stripped, a
+ * Windows device stem is prefixed with `_`, and the name is bounded. The result
+ * is always nonempty; callers still validate the final path with the schema.
+ */
+export function sanitizeAttachmentName(name: string): string {
+	let safe = name
+		.replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/gu, '-')
+		.replace(/^[. ]+|[. ]+$/gu, '')
+		.slice(0, ATTACHMENT_NAME_MAX_BYTES)
+		.replace(/^[. ]+|[. ]+$/gu, '');
+	if (safe.length === 0) safe = 'attachment';
+	const stem = (safe.split('.')[0] ?? '').trim().toUpperCase();
+	if (RESERVED_DEVICE_STEM.test(stem)) safe = `_${safe}`;
+	return safe;
+}
+
+/**
+ * Extract the owning object id from an attachment path of the form
+ * `attachments/<objectId>/<name>`, or `null` when the path is not one.
+ */
+export function attachmentObjectIdFromPath(path: string): string | null {
+	const parts = path.split('/');
+	if (parts.length < 3 || parts[0] !== ATTACHMENT_ROOT) return null;
+	const objectId = parts[1];
+	return typeof objectId === 'string' && isIdentifier(objectId)
+		? objectId
+		: null;
+}
+
+/** The file-name component of an attachment path, or `null`. */
+export function attachmentNameFromPath(path: string): string | null {
+	const objectId = attachmentObjectIdFromPath(path);
+	if (objectId === null) return null;
+	const name = path.slice(`${ATTACHMENT_ROOT}/${objectId}/`.length);
+	return name.length > 0 ? name : null;
+}
+
+/** True when `path` is an attachment owned by `objectId`. */
+export function isAttachmentPathFor(objectId: string, path: string): boolean {
+	return attachmentObjectIdFromPath(path) === objectId;
+}
+
+/**
+ * Build the conventional attachment path for one managed object:
+ * `attachments/<objectId>/<name>`, with a sanitized name. The result is
+ * validated against the portable workspace path rules before it is returned; a
+ * malformed object id or an unrepresentable name is a structured error.
+ */
+export function attachmentPath(objectId: string, name: string): string {
+	if (!isIdentifier(objectId)) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'attachment object id was malformed',
+		);
+	}
+	const path = `${ATTACHMENT_ROOT}/${objectId}/${sanitizeAttachmentName(name)}`;
+	const parsed = syncFileChangeSchema.safeParse({
+		version: 1,
+		path,
+		previousPath: null,
+		baseRevision: null,
+		content: null,
+	});
+	if (!parsed.success) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBlob,
+			'attachment path was not portable',
+		);
+	}
+	return path;
 }
 
 function blobRequestError(response: Response): BrowserSyncError {

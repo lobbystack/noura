@@ -41,6 +41,10 @@
 import {
 	accessDigest,
 	accessState,
+	ATTACHMENT_ROOT,
+	attachmentNameFromPath,
+	attachmentObjectIdFromPath,
+	attachmentPath,
 	BrowserSyncError,
 	BrowserSyncErrorCode,
 	BrowserSyncTransport,
@@ -53,33 +57,44 @@ import {
 	deviceFingerprintForCard,
 	downloadBlob,
 	encodeBase64,
+	encryptAttachmentToSink,
 	ensureResponseOk,
 	enrollBrowserDevice,
 	exportRecoveryKit as buildRecoveryKit,
 	importRecoveryKit as openRecoveryKit,
+	isAttachmentPathFor,
 	isBrowserSyncBindingRecord,
 	isIdentifier,
 	MemoryAttachmentSink,
+	NATIVE_RECOVERY_DOMAIN,
 	randomBytes,
 	randomIdentifier,
 	readJson,
 	receiveKeys,
+	recoverNativeKeysToBrowserBinding as rewrapNativeKeys,
 	requestDeviceChallenge,
 	sealIdentity,
 	signAccessPolicy,
 	unlockDeviceIdentity,
 	unwrapKey,
+	uploadBlob,
+	viewAttachmentSource,
 	wrapKey,
 	type AccessPolicy,
 	type AccessPolicyEnvelope,
 	type AccessPolicyObject,
 	type AccessState,
+	type AttachmentSource,
 	type BrowserSyncBindingRecord,
 	type BrowserSyncBoundKey,
 	type BrowserSyncBoundObject,
 	type DeviceIdentity,
 	type FetchLike,
+	type FileChangeBlob,
 	type KeyStore,
+	type NativeRecoveryEnvelope,
+	type NativeRecoveryObject,
+	type RecoverNativeKeysToBrowserBindingInput,
 	type RecoveryKitFile,
 	type WebKeyEnvelope,
 	type WrappedKeyBundle,
@@ -382,7 +397,11 @@ export type BrowserSyncFailureCode =
 	| 'custody_failed'
 	| 'device_not_found'
 	| 'fingerprint_mismatch'
-	| 'sync_failed';
+	| 'sync_failed'
+	| 'attachment_failed'
+	| 'attachment_too_large'
+	| 'attachment_unavailable'
+	| 'object_not_found';
 
 /** Uniform typed result for custody actions. */
 export type BrowserSyncResult<T = undefined> =
@@ -694,15 +713,35 @@ export interface BrowserSyncReconcileOutcome extends ReconcileResult {
 /**
  * Resolve the object that owns a file change.
  *
- * When the binding carries per-object entries, the owner is the entry whose
- * current path matches the change path (or a move's source). When it does not,
- * the single primary object owns every change. A change whose path matches no
- * object is unmanaged and returns `null`.
+ * An attachment path of the form `attachments/<objectId>/<name>` belongs to the
+ * object named in the path, so the containing note's key seals it without a new
+ * remote object. Otherwise, when the binding carries per-object entries, the
+ * owner is the entry whose current path matches the change path (or a move's
+ * source). When it does not, the single primary object owns every change. A
+ * change whose path matches no object is unmanaged and returns `null`.
  */
 function resolveObjectOwner(
 	input: BrowserSyncWorkspaceBinding,
 	change: Pick<FileChange, 'path' | 'previousPath'>,
 ): BrowserSyncObjectBinding | null {
+	const attachmentId =
+		attachmentObjectIdFromPath(change.path) ??
+		(change.previousPath === null
+			? null
+			: attachmentObjectIdFromPath(change.previousPath));
+	if (attachmentId !== null) {
+		const objects = input.objects;
+		if (objects && objects.size > 0) {
+			return objects.get(attachmentId) ?? null;
+		}
+		if (attachmentId !== input.objectId) return null;
+		return {
+			objectId: input.objectId,
+			path: change.path,
+			epoch: input.epoch,
+			policyRevision: input.policyRevision,
+		};
+	}
 	const objects = input.objects;
 	if (objects && objects.size > 0) {
 		const owns = (object: BrowserSyncObjectBinding, path: string): boolean =>
@@ -838,6 +877,174 @@ export async function runBrowserSyncResolveConflict(
 ): Promise<ResolveConflictResult> {
 	const engine = createReconcileEngine(input);
 	return engine.resolveConflict(operationId, choice);
+}
+
+/** Insert a short suffix before a file name's extension. */
+function withUniqueSuffix(name: string, suffix: string): string {
+	const dot = name.lastIndexOf('.');
+	if (dot > 0) return `${name.slice(0, dot)}-${suffix}${name.slice(dot)}`;
+	return `${name}-${suffix}`;
+}
+
+/** Choose an attachment path that is absent from the local replica. */
+async function uniqueAttachmentPath(
+	storage: BrowserSyncStorage,
+	objectId: string,
+	name: string,
+): Promise<string> {
+	const base = attachmentPath(objectId, name);
+	if ((await storage.read(base)) === null) return base;
+	for (let attempt = 0; attempt < 8; attempt += 1) {
+		const candidate = attachmentPath(
+			objectId,
+			withUniqueSuffix(name, randomIdentifier().slice(0, 6)),
+		);
+		if ((await storage.read(candidate)) === null) return candidate;
+	}
+	throw new BrowserSyncError(
+		BrowserSyncErrorCode.InvalidOperation,
+		'Could not choose a unique attachment path',
+	);
+}
+
+/** Wrap a ciphertext source so each read reports absolute upload progress. */
+function progressAttachmentSource(
+	source: AttachmentSource,
+	onProgress: (uploadedBytes: number, totalBytes: number) => void,
+): AttachmentSource {
+	return {
+		size: source.size,
+		async read(offset, length) {
+			const bytes = await source.read(offset, length);
+			onProgress(offset + bytes.length, source.size);
+			return bytes;
+		},
+	};
+}
+
+/** Inputs for {@link runBrowserSyncSendAttachment}. */
+export interface BrowserSyncSendAttachmentInput extends BrowserSyncReconcileInput {
+	/** Object that owns the attachment; the containing note's object. */
+	objectId: string;
+	/** User-supplied file name, reduced to one portable path component. */
+	name: string;
+	/** Complete plaintext bytes. */
+	bytes: Uint8Array;
+	/** Called as ciphertext reaches the server, in bounded upload steps. */
+	onProgress?: (uploadedBytes: number, totalBytes: number) => void;
+	/**
+	 * Largest plaintext accepted, defaulting to
+	 * {@link MAX_BROWSER_ATTACHMENT_BYTES}. Injectable so tests can exercise the
+	 * bound without allocating a large buffer.
+	 */
+	maxBytes?: number;
+}
+
+/** Result of a successful {@link runBrowserSyncSendAttachment}. */
+export interface BrowserSyncSendAttachmentOutcome {
+	/** Workspace path the version-3 change writes. */
+	path: string;
+	/** Signed encrypted descriptor carried by the queued change. */
+	blob: FileChangeBlob;
+}
+
+/**
+ * Attach one file to a managed object without a network round trip of its own
+ * beyond the blob upload.
+ *
+ * The attachment is encrypted with the owning object's key using the same `age`
+ * v1 construction as native, uploaded through the bounded resumable path (which
+ * only resolves once the server acknowledges completion), written to the local
+ * replica at `attachments/<objectId>/<name>`, then sealed and enqueued as a
+ * version-3 file change. No operation is enqueued if encryption, upload, or the
+ * local write fails. The caller reconciles to push the queued operation.
+ */
+export async function runBrowserSyncSendAttachment(
+	input: BrowserSyncSendAttachmentInput,
+): Promise<BrowserSyncSendAttachmentOutcome> {
+	if (!input.attachments) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.RequestFailed,
+			'No sync transport is configured, so an attachment cannot be uploaded.',
+		);
+	}
+	if (input.bytes.length > (input.maxBytes ?? MAX_BROWSER_ATTACHMENT_BYTES)) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.BlobTooLarge,
+			`Attachments are limited to ${input.maxBytes ?? MAX_BROWSER_ATTACHMENT_BYTES} bytes in the browser.`,
+		);
+	}
+	// Validate the name and resolve the owner before any encryption or upload.
+	const candidate = attachmentPath(input.objectId, input.name);
+	const owner = resolveObjectOwner(input, {
+		path: candidate,
+		previousPath: null,
+	});
+	if (!owner || owner.objectId !== input.objectId) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidOperation,
+			'The containing object is not bound for sync, so the attachment cannot be attached.',
+		);
+	}
+	const objectKey = input.objectKeys.get(owner.objectId);
+	if (!objectKey) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.MissingKey,
+			'No object key is available for the containing object.',
+		);
+	}
+	const path = await uniqueAttachmentPath(
+		input.storage,
+		owner.objectId,
+		input.name,
+	);
+
+	const sink = new MemoryAttachmentSink();
+	const blob = await encryptAttachmentToSink(
+		objectKey,
+		viewAttachmentSource(input.bytes),
+		sink,
+	);
+	const ciphertext = sink.toBytes();
+	await uploadBlob({
+		origin: input.attachments.origin,
+		token: input.attachments.token,
+		fetch: input.attachments.fetch,
+		workspaceId: input.workspaceId,
+		objectId: owner.objectId,
+		epoch: owner.epoch,
+		blob,
+		source:
+			input.onProgress === undefined
+				? viewAttachmentSource(ciphertext)
+				: progressAttachmentSource(
+						viewAttachmentSource(ciphertext),
+						input.onProgress,
+					),
+	});
+
+	// The blob is complete. Write the canonical bytes locally so the replica is
+	// consistent, then enqueue the change. A failed seal must not leave a local
+	// file that a later snapshot would seal as inline content.
+	await input.storage.write({
+		path,
+		bytes: input.bytes,
+		expectedRevision: null,
+	});
+	const engine = createReconcileEngine(input);
+	try {
+		await engine.enqueueFileChange({
+			path,
+			previousPath: null,
+			baseRevision: null,
+			content: null,
+			blob,
+		});
+	} catch (error) {
+		await input.storage.delete({ path }).catch(() => {});
+		throw error;
+	}
+	return { path, blob };
 }
 
 /**
@@ -1436,6 +1643,183 @@ async function unwrapBoundKey(
 	);
 }
 
+/** Public fields extracted from a native `noura.sync.recovery` kit file. */
+export interface ParsedNativeRecoveryKit {
+	/** Signed public recovery object; the library validates its internals. */
+	recovery: NativeRecoveryObject;
+	/** Embedded age recovery identity when the kit records one, else `null`. */
+	recoveryIdentity: string | null;
+	/** Base64 Ed25519 recovery signer the recovery object self-describes. */
+	recoverySignerPublic: string | null;
+}
+
+/** Options for {@link BrowserSyncController.importNativeRecoveryKit}. */
+export interface ImportNativeRecoveryKitOptions {
+	/** User-supplied native `AGE-SECRET-KEY-...` recovery identity secret. */
+	recoveryIdentity: string;
+	/**
+	 * Caller-pinned base64 Ed25519 recovery signer public key. When the kit also
+	 * records one, the two must match; neither is trusted alone.
+	 */
+	recoverySignerPublic?: string;
+	/** Local browser workspace the recovered binding attaches to. */
+	localWorkspaceId?: string;
+}
+
+/**
+ * The Ed25519 recovery signer a native recovery object self-describes.
+ *
+ * The recovery object's own (signed) configuration pins the public key of the
+ * device that authored it. Returning it here lets the importer verify the
+ * recovery signature, but only when the caller has not pinned a different key.
+ */
+export function nativeRecoverySignerPublic(
+	recovery: NativeRecoveryObject,
+): string | null {
+	const config = recovery.config as unknown;
+	if (!config || typeof config !== 'object' || Array.isArray(config))
+		return null;
+	const record = config as Record<string, unknown>;
+	const deviceId = record.deviceId;
+	const trusted = record.trustedDevices;
+	if (typeof deviceId !== 'string') return null;
+	if (!trusted || typeof trusted !== 'object' || Array.isArray(trusted))
+		return null;
+	const pin = (trusted as Record<string, unknown>)[deviceId];
+	return typeof pin === 'string' ? pin : null;
+}
+
+/**
+ * Parse a native `noura.sync.recovery` kit file.
+ *
+ * This validates the file wrapper and extracts the embedded recovery identity
+ * and self-described recovery signer. The signed recovery object's own fields
+ * and signatures are validated by `importNativeRecoveryKit`; a file that is not
+ * a native recovery kit, including a browser `noura.browser-recovery-kit`, is
+ * rejected rather than guessed.
+ */
+export function parseNativeRecoveryKit(file: unknown): ParsedNativeRecoveryKit {
+	if (!file || typeof file !== 'object' || Array.isArray(file)) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'The native recovery kit was not an object.',
+		);
+	}
+	const kit = file as Record<string, unknown>;
+	const format = kit.format ?? kit.domain;
+	if (format !== NATIVE_RECOVERY_DOMAIN) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'The file was not a native Noura recovery kit.',
+		);
+	}
+	const recovery = kit.recovery;
+	if (!recovery || typeof recovery !== 'object' || Array.isArray(recovery)) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'The native recovery kit was missing its recovery object.',
+		);
+	}
+	const rawIdentity = kit.recovery_identity;
+	if (
+		rawIdentity !== undefined &&
+		(typeof rawIdentity !== 'string' || rawIdentity.length === 0)
+	) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'The native recovery kit had a malformed recovery identity.',
+		);
+	}
+	return {
+		recovery: recovery as NativeRecoveryObject,
+		recoveryIdentity: typeof rawIdentity === 'string' ? rawIdentity : null,
+		recoverySignerPublic: nativeRecoverySignerPublic(
+			recovery as NativeRecoveryObject,
+		),
+	};
+}
+
+/**
+ * Extract the recovery identity embedded in a parsed native recovery kit, or
+ * `null` when the kit does not record one. The caller must then require the user
+ * to paste it. A malformed or non-native file throws instead of being ignored.
+ */
+export function extractEmbeddedRecoveryIdentity(file: unknown): string | null {
+	return parseNativeRecoveryKit(file).recoveryIdentity;
+}
+
+/** Resolve the recovery signer, rejecting an inconsistent self-description. */
+function resolveNativeRecoverySigner(
+	parsed: ParsedNativeRecoveryKit,
+	pinned: string | undefined,
+): { ok: true; value: Uint8Array } | { ok: false; message: string } {
+	const selfDescribed = parsed.recoverySignerPublic;
+	if (
+		pinned !== undefined &&
+		selfDescribed !== null &&
+		pinned !== selfDescribed
+	) {
+		return {
+			ok: false,
+			message:
+				'The supplied recovery signer does not match the signer the kit self-describes; refusing to trust either.',
+		};
+	}
+	const chosen = pinned ?? selfDescribed;
+	if (chosen === undefined || chosen === null) {
+		return {
+			ok: false,
+			message:
+				'This kit does not record its recovery signer, so the signer public key must be supplied.',
+		};
+	}
+	try {
+		return { ok: true, value: decodeBase64(chosen, 32) };
+	} catch {
+		return {
+			ok: false,
+			message:
+				'The recovery signer public key was not a 32-byte base64 Ed25519 key.',
+		};
+	}
+}
+
+/**
+ * Build the binding's per-object metadata from a native recovery object.
+ *
+ * A native kit does not carry the browser replica's canonical paths, so each
+ * recovered object is anchored to its native object id. A native object id is
+ * not a canonical file path, so no local file is mis-associated; the binding
+ * holds the re-wrapped key until the replica is reconciled.
+ */
+function nativeRecoveryObjects(recovery: NativeRecoveryObject): {
+	objectId: string;
+	objects: RecoverNativeKeysToBrowserBindingInput['objects'];
+} | null {
+	const envelopes = Array.isArray(recovery.envelopes) ? recovery.envelopes : [];
+	const highest = new Map<string, number>();
+	for (const raw of envelopes) {
+		const envelope = raw as NativeRecoveryEnvelope;
+		if (
+			!envelope ||
+			typeof envelope.objectId !== 'string' ||
+			!Number.isSafeInteger(envelope.epoch) ||
+			envelope.epoch < 1
+		)
+			continue;
+		const current = highest.get(envelope.objectId) ?? 0;
+		if (envelope.epoch > current)
+			highest.set(envelope.objectId, envelope.epoch);
+	}
+	const objects: RecoverNativeKeysToBrowserBindingInput['objects'] = {};
+	let primary: string | null = null;
+	for (const [objectId, epoch] of highest) {
+		if (primary === null) primary = objectId;
+		objects[objectId] = { path: objectId, epoch, policyRevision: '1' };
+	}
+	return primary === null ? null : { objectId: primary, objects };
+}
+
 /**
  * Browser device custody and sync controller.
  *
@@ -1754,6 +2138,126 @@ export class BrowserSyncController {
 			this.#record = next;
 			this.#binding = null;
 			this.#error = null;
+			return ok(await this.workspaceSummary({ workspaceId: localWorkspaceId }));
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('custody_failed', this.#error);
+		}
+	}
+
+	/**
+	 * Import a native `noura.sync.recovery` recovery kit and re-wrap its object
+	 * keys to this browser device.
+	 *
+	 * The signed public recovery object is verified against a recovery signer
+	 * that the caller pins or the kit self-describes consistently; if the two
+	 * disagree the import is refused rather than trusting either. Each recovered
+	 * object key is unwrapped with the supplied recovery identity, immediately
+	 * re-wrapped as a `noura.sync.key.web` envelope addressed to this unlocked
+	 * browser device, and persisted as a durable binding. The recovery identity
+	 * and the plaintext keys stay in memory; only ciphertext and public pins are
+	 * written. When no unlocked device bundle exists this returns `locked` and
+	 * creates nothing.
+	 */
+	async importNativeRecoveryKit(
+		file: unknown,
+		options: ImportNativeRecoveryKitOptions,
+	): Promise<BrowserSyncResult<BrowserSyncWorkspaceSummary>> {
+		if (!this.#keyStore) {
+			return failure(
+				'unavailable',
+				'This browser cannot store wrapped device keys securely (OPFS is unavailable).',
+			);
+		}
+		const identity = this.#identity;
+		if (!this.#bundle || !identity) {
+			return failure(
+				'locked',
+				'Unlock this browser device before importing a native recovery kit. No browser device was created.',
+			);
+		}
+		if (!identity.token) {
+			return failure(
+				'not_configured',
+				'This browser device is not enrolled with the sync server yet.',
+			);
+		}
+		const localWorkspaceId = options.localWorkspaceId ?? this.#localWorkspaceId;
+		if (!localWorkspaceId || !isIdentifier(localWorkspaceId)) {
+			return failure(
+				'not_configured',
+				'Open a browser workspace before importing a native recovery kit.',
+			);
+		}
+		let parsed: ParsedNativeRecoveryKit;
+		try {
+			parsed = parseNativeRecoveryKit(file);
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('custody_failed', this.#error);
+		}
+		const recoveryIdentity = options.recoveryIdentity?.trim() ?? '';
+		if (!recoveryIdentity) {
+			return failure(
+				'custody_failed',
+				'Enter the native recovery identity, or paste the one the kit embeds.',
+			);
+		}
+		if (
+			parsed.recoveryIdentity !== null &&
+			parsed.recoveryIdentity !== recoveryIdentity
+		) {
+			return failure(
+				'custody_failed',
+				'The pasted recovery identity does not match the identity embedded in this kit.',
+			);
+		}
+		const signer = resolveNativeRecoverySigner(
+			parsed,
+			options.recoverySignerPublic?.trim(),
+		);
+		if (!signer.ok) return failure('custody_failed', signer.message);
+		const recoveryObjects = nativeRecoveryObjects(parsed.recovery);
+		if (!recoveryObjects) {
+			return failure(
+				'custody_failed',
+				'The native recovery kit carried no object keys to recover.',
+			);
+		}
+		const store = await this.#resolveBindingStore(localWorkspaceId);
+		if (!store) {
+			return failure(
+				'unavailable',
+				'This browser cannot persist a durable sync binding (OPFS is unavailable).',
+			);
+		}
+		try {
+			const result = await rewrapNativeKeys({
+				recovery: parsed.recovery,
+				recoveryIdentity,
+				trustedRecoverySigner: signer.value,
+				device: identity,
+				localWorkspaceId,
+				revision: '1',
+				objectId: recoveryObjects.objectId,
+				objects: recoveryObjects.objects,
+			});
+			await store.write(result.binding);
+			this.#localWorkspaceId = localWorkspaceId;
+			this.#record = result.binding;
+			this.#binding = null;
+			this.#error = null;
+			if (this.#workspaceFiles) {
+				try {
+					this.#binding = await this.#buildBinding(
+						result.binding,
+						identity,
+						this.#workspaceFiles,
+					);
+				} catch {
+					this.#binding = null;
+				}
+			}
 			return ok(await this.workspaceSummary({ workspaceId: localWorkspaceId }));
 		} catch (error) {
 			this.#error = messageOf(error);
@@ -3053,6 +3557,227 @@ export class BrowserSyncController {
 		} catch (error) {
 			this.#error = messageOf(error);
 			return failure('sync_failed', this.#error);
+		}
+	}
+
+	/**
+	 * Resolve the bound object that owns a note's attachments.
+	 *
+	 * Per-object bindings are matched by the stable local object id first, then
+	 * by the note's current path. A single-object binding owns its own
+	 * attachments. Returns `null` when the note is unmanaged, so the caller
+	 * reports a blocker rather than provisioning a new remote object.
+	 */
+	async #resolveAttachmentObject(input: {
+		noteId?: string;
+		notePath?: string;
+	}): Promise<BrowserSyncObjectBinding | null> {
+		const binding =
+			this.#binding ?? (await this.#ensureBinding().catch(() => null));
+		if (!binding) return null;
+		const objects = binding.objects
+			? await this.#liveObjects(binding)
+			: undefined;
+		if (objects && objects.size > 0) {
+			for (const object of objects.values()) {
+				if (input.noteId !== undefined && object.localObjectId === input.noteId)
+					return object;
+				if (
+					input.notePath !== undefined &&
+					(object.path === input.notePath || object.livePath === input.notePath)
+				)
+					return object;
+			}
+			return null;
+		}
+		if (!binding.objectKeys.has(binding.objectId)) return null;
+		return {
+			objectId: binding.objectId,
+			path: input.notePath ?? '',
+			epoch: binding.epoch,
+			policyRevision: binding.policyRevision,
+		};
+	}
+
+	/** List the attachments stored for one note's owning object. */
+	async listNoteAttachments(input: {
+		noteId?: string;
+		notePath?: string;
+	}): Promise<BrowserSyncResult<Array<{ path: string; name: string }>>> {
+		const identity = this.#identity;
+		if (!identity)
+			return failure(
+				'locked',
+				'Unlock this browser device to list attachments.',
+			);
+		const binding =
+			this.#binding ?? (await this.#ensureBinding().catch(() => null));
+		if (!binding)
+			return failure(
+				'not_configured',
+				'No synchronized browser workspace is configured yet.',
+			);
+		const target = await this.#resolveAttachmentObject(input);
+		if (!target)
+			return failure(
+				'object_not_found',
+				'This note is not synchronized with an object that can own attachments.',
+			);
+		try {
+			const prefix = `${ATTACHMENT_ROOT}/${target.objectId}/`;
+			const paths = (await binding.storage.list()).filter(
+				(path) =>
+					path.startsWith(prefix) && isAttachmentPathFor(target.objectId, path),
+			);
+			const items = paths
+				.map((path) => ({
+					path,
+					name: attachmentNameFromPath(path) ?? path.slice(prefix.length),
+				}))
+				.sort((left, right) => left.name.localeCompare(right.name));
+			return ok(items);
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('sync_failed', this.#error);
+		}
+	}
+
+	/** Read one attachment's plaintext bytes from the local replica. */
+	async readNoteAttachment(input: {
+		noteId?: string;
+		notePath?: string;
+		path: string;
+	}): Promise<
+		BrowserSyncResult<{ name: string; bytes: Uint8Array<ArrayBuffer> }>
+	> {
+		const identity = this.#identity;
+		if (!identity)
+			return failure(
+				'locked',
+				'Unlock this browser device to download an attachment.',
+			);
+		const binding =
+			this.#binding ?? (await this.#ensureBinding().catch(() => null));
+		if (!binding)
+			return failure(
+				'not_configured',
+				'No synchronized browser workspace is configured yet.',
+			);
+		const target = await this.#resolveAttachmentObject(input);
+		if (!target || !isAttachmentPathFor(target.objectId, input.path))
+			return failure(
+				'object_not_found',
+				'That attachment does not belong to the open note.',
+			);
+		try {
+			const file = await binding.storage.read(input.path);
+			if (file === null)
+				return failure(
+					'attachment_unavailable',
+					'That attachment is not stored in this browser.',
+				);
+			return ok({
+				name: attachmentNameFromPath(input.path) ?? input.path,
+				bytes: new Uint8Array(file.bytes),
+			});
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('attachment_failed', this.#error);
+		}
+	}
+
+	/**
+	 * Encrypt, upload, and queue one attachment for the note's owning object.
+	 *
+	 * Nothing is enqueued unless the server acknowledges the complete ciphertext
+	 * and the canonical bytes reach the local replica. Returns the queued path and
+	 * descriptor; the caller reconciles to publish the operation.
+	 */
+	async sendAttachment(input: {
+		noteId?: string;
+		notePath?: string;
+		name: string;
+		bytes: Uint8Array;
+		onProgress?: (uploadedBytes: number, totalBytes: number) => void;
+	}): Promise<BrowserSyncResult<BrowserSyncSendAttachmentOutcome>> {
+		if (!this.#keyStore)
+			return failure(
+				'unavailable',
+				'This browser cannot store wrapped device keys securely (OPFS is unavailable).',
+			);
+		const identity = this.#identity;
+		if (!identity)
+			return failure('locked', 'Unlock this browser device to attach a file.');
+		if (!identity.token)
+			return failure(
+				'not_configured',
+				'This browser device is not enrolled with the sync server yet.',
+			);
+		const binding =
+			this.#binding ?? (await this.#ensureBinding().catch(() => null));
+		if (!binding)
+			return failure(
+				'not_configured',
+				'No synchronized browser workspace is configured yet.',
+			);
+		if (!binding.attachments)
+			return failure(
+				'not_configured',
+				'No sync transport is configured, so an attachment cannot be uploaded.',
+			);
+		const target = await this.#resolveAttachmentObject(input);
+		if (!target)
+			return failure(
+				'object_not_found',
+				'This note is not synchronized with an object that can own attachments. Sync the note first.',
+			);
+		if (input.bytes.length > MAX_BROWSER_ATTACHMENT_BYTES)
+			return failure(
+				'attachment_too_large',
+				`Attachments are limited to ${Math.floor(
+					MAX_BROWSER_ATTACHMENT_BYTES / (1024 * 1024),
+				)} MB in the browser. This file is ${Math.ceil(
+					input.bytes.length / (1024 * 1024),
+				)} MB.`,
+			);
+		try {
+			const result = await runBrowserSyncSendAttachment({
+				...binding,
+				identity,
+				objectId: target.objectId,
+				name: input.name,
+				bytes: input.bytes,
+				...(input.onProgress === undefined
+					? {}
+					: { onProgress: input.onProgress }),
+				onRevoked: () => {
+					this.#identity = null;
+				},
+			});
+			return ok(result);
+		} catch (error) {
+			if (
+				error instanceof BrowserSyncEngineError &&
+				error.code === BrowserSyncEngineErrorCode.Revoked
+			) {
+				this.#identity = null;
+				return failure(
+					'locked',
+					'This browser device or workspace access was revoked.',
+				);
+			}
+			this.#error = messageOf(error);
+			if (
+				error instanceof BrowserSyncError &&
+				error.code === BrowserSyncErrorCode.BlobTooLarge
+			)
+				return failure('attachment_too_large', this.#error);
+			if (
+				error instanceof BrowserSyncError &&
+				error.code === BrowserSyncErrorCode.InvalidOperation
+			)
+				return failure('object_not_found', this.#error);
+			return failure('attachment_failed', this.#error);
 		}
 	}
 }

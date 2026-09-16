@@ -28,6 +28,7 @@ import {
 	type FileChange,
 	type FileChangeBlob,
 	type FileChangeInputV1,
+	type FileChangeInputV3,
 } from './file-change';
 import type { DeviceIdentity } from './identity';
 import { openOperation, sealOperation, validateOperation } from './operations';
@@ -46,8 +47,14 @@ export interface FileChangeDescriptor {
 	previousPath: string | null;
 	/** Revision the change is based on, or `null` when the path must be absent. */
 	baseRevision: string | null;
-	/** Complete file bytes, or `null` for a deletion. */
+	/** Complete file bytes, or `null` for a deletion or a version-3 attachment. */
 	content: Uint8Array | null;
+	/**
+	 * Version-3 encrypted attachment descriptor. When present, `content` must be
+	 * `null` and the sealed payload is version 3; otherwise a version 1 payload
+	 * is sealed.
+	 */
+	blob?: FileChangeBlob;
 }
 
 /** An opened file change with the envelope identity recovered by the codec. */
@@ -188,9 +195,10 @@ function toOpenedFileChange(
  * Create a file-change codec over an unlocked identity, object keys, and pinned
  * signers.
  *
- * Sealing always emits a version 1 payload, matching the local replica engine;
- * opening decodes any supported payload version. A missing object key is
- * reported as `browser_sync_missing_key` and an absent trust pin as
+ * Sealing emits a version 3 payload when the descriptor carries a `blob`
+ * (attachment) and a version 1 payload otherwise; opening decodes any supported
+ * payload version. A missing object key is reported as
+ * `browser_sync_missing_key` and an absent trust pin as
  * `browser_sync_untrusted_signer`.
  */
 export function createFileChangeCodec(
@@ -198,16 +206,29 @@ export function createFileChangeCodec(
 ): FileChangeCodec {
 	return {
 		async sealFileChange(input) {
-			const canonical: FileChangeInputV1 = {
-				version: 1,
-				path: input.change.path,
-				previousPath: input.change.previousPath,
-				baseRevision: input.change.baseRevision,
-				content:
-					input.change.content === null
-						? null
-						: encodeBase64(input.change.content),
-			};
+			const canonical: FileChangeInputV1 | FileChangeInputV3 =
+				input.change.blob === undefined
+					? {
+							version: 1,
+							path: input.change.path,
+							previousPath: input.change.previousPath,
+							baseRevision: input.change.baseRevision,
+							content:
+								input.change.content === null
+									? null
+									: encodeBase64(input.change.content),
+						}
+					: {
+							version: 3,
+							path: input.change.path,
+							previousPath: input.change.previousPath,
+							baseRevision: input.change.baseRevision,
+							content:
+								input.change.content === null
+									? null
+									: encodeBase64(input.change.content),
+							blob: input.change.blob,
+						};
 			const plaintext = encodeFileChange(canonical);
 			return sealOperation({
 				objectKey: resolveObjectKey(options.objectKeys, input.objectId),

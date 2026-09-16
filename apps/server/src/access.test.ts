@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import policyFixture from '../../../docs/workspace-format/fixtures/policy-web-v1.json';
 import {
 	accessDigest,
 	accessPolicy,
@@ -176,5 +177,31 @@ test('native age policy envelopes verify exactly as before', () => {
 		randomBytes(80).toString('base64');
 	expect(() => verifyAccess(tampered, publicKey)).toThrow(
 		'sync.invalid_signature',
+	);
+});
+
+test('accessSigningBytes matches the pinned web and mixed policy fixtures byte for byte', () => {
+	const vectors = [
+		{
+			name: 'web',
+			policy: policyFixture.policy,
+			expected: policyFixture.signing_bytes,
+		},
+		{
+			name: 'mixed age and web',
+			policy: policyFixture.mixed.policy,
+			expected: policyFixture.mixed.signing_bytes,
+		},
+	];
+	for (const vector of vectors) {
+		expect(
+			accessSigningBytes(
+				vector.policy as unknown as Omit<AccessPolicy, 'signature'>,
+			).toString('utf8'),
+			vector.name,
+		).toBe(vector.expected);
+	}
+	expect(policyFixture.mixed.signing_bytes).not.toBe(
+		policyFixture.signing_bytes,
 	);
 });
