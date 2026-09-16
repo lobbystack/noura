@@ -3,6 +3,8 @@ import {
 	chatFrontmatterSchema,
 	chatMessageFrontmatterSchema,
 	objectIdSchema,
+	projectPropertiesSchema,
+	taskPropertiesSchema,
 	workspaceManifestSchema,
 } from './index';
 
@@ -15,6 +17,8 @@ const fixtures = (await Bun.file(
 ).json()) as {
 	manifest: Fixture[];
 	object_id: Fixture[];
+	task_properties: Fixture[];
+	project_properties: Fixture[];
 	chat: Fixture[];
 	chat_message: Fixture[];
 };
@@ -30,6 +34,20 @@ describe('workspace format conformance', () => {
 	for (const fixture of fixtures.object_id) {
 		test(`object ID: ${fixture.name}`, () => {
 			expect(objectIdSchema.safeParse(fixture.value).success).toBe(
+				fixture.valid,
+			);
+		});
+	}
+	for (const fixture of fixtures.task_properties) {
+		test(`task properties: ${fixture.name}`, () => {
+			expect(taskPropertiesSchema.safeParse(fixture.value).success).toBe(
+				fixture.valid,
+			);
+		});
+	}
+	for (const fixture of fixtures.project_properties) {
+		test(`project properties: ${fixture.name}`, () => {
+			expect(projectPropertiesSchema.safeParse(fixture.value).success).toBe(
 				fixture.valid,
 			);
 		});

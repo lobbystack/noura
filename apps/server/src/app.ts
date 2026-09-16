@@ -12,9 +12,8 @@ import {
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
-import { serveStatic } from 'hono/bun';
+import { createBrowserApp } from './web';
 import { upgradeWebSocket } from 'hono/bun';
-import { join } from 'node:path';
 import { randomBytes, createPublicKey, verify } from 'node:crypto';
 import type { AccountAuth } from './auth';
 import { accessPolicy, setAccess } from './access';
@@ -24,6 +23,11 @@ import {
 	workspaceCapability,
 } from './capabilities';
 import { storeOwnKey } from './keys';
+import {
+	browserEnrollmentSigningBytes,
+	browserRecipient,
+	isAgeRecipient,
+} from './browser';
 import {
 	acceptInvitation,
 	createInvitation,
@@ -146,13 +150,49 @@ export function createApp(
 			const deviceId = identifier(body.deviceId);
 			const publicKey = base64(body.publicKey, 32);
 			const proof = base64(body.proof, 64);
-			const recipient = body.encryptionRecipient ?? null;
-			if (
-				recipient !== null &&
-				(typeof recipient !== 'string' ||
-					!/^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$/.test(recipient))
-			)
+			const publicKeyBase64 = publicKey.toString('base64');
+			const recipientInput = body.encryptionRecipient ?? null;
+			let recipient: string | null = null;
+			let challenge: Buffer;
+			if (recipientInput === null) {
+				challenge = Buffer.from(
+					JSON.stringify([
+						'noura.device.enroll',
+						options.origin,
+						session.user.id,
+						deviceId,
+						publicKeyBase64,
+						nonce,
+					]),
+				);
+			} else if (typeof recipientInput !== 'string') {
 				throw new SyncError('sync.invalid_recipient');
+			} else if (isAgeRecipient(recipientInput)) {
+				recipient = recipientInput;
+				challenge = Buffer.from(
+					JSON.stringify([
+						'noura.device.enroll.v2',
+						options.origin,
+						session.user.id,
+						deviceId,
+						publicKeyBase64,
+						recipient,
+						nonce,
+					]),
+				);
+			} else if (browserRecipient(recipientInput)) {
+				recipient = recipientInput;
+				challenge = browserEnrollmentSigningBytes({
+					origin: options.origin,
+					accountId: session.user.id,
+					deviceId,
+					publicKey: publicKeyBase64,
+					recipient,
+					challenge: nonce,
+				});
+			} else {
+				throw new SyncError('sync.invalid_recipient');
+			}
 			const key = createPublicKey({
 				key: Buffer.concat([
 					Buffer.from('302a300506032b6570032100', 'hex'),
@@ -161,17 +201,6 @@ export function createApp(
 				format: 'der',
 				type: 'spki',
 			});
-			const challenge = Buffer.from(
-				JSON.stringify([
-					recipient === null ? 'noura.device.enroll' : 'noura.device.enroll.v2',
-					options.origin,
-					session.user.id,
-					deviceId,
-					publicKey.toString('base64'),
-					...(recipient === null ? [] : [recipient]),
-					nonce,
-				]),
-			);
 			if (!verify(null, challenge, key, proof))
 				throw new SyncError('sync.invalid_signature', 403);
 			const token = randomBytes(32).toString('base64url');
@@ -733,7 +762,7 @@ export function createApp(
 					await tx`SELECT id FROM noura_devices WHERE id=${recipientDevice} AND account_id=${actor.accountId}`;
 				if (!owned) throw new SyncError('sync.forbidden', 403);
 				const rows =
-					await tx`SELECT k.object_id AS "objectId",k.epoch::text,k.device_id AS "deviceId",k.wrapped_key AS "wrappedKey",k.signing_device AS "signingDevice",k.signature,d.public_key AS "signingPublicKey"
+					await tx`SELECT k.object_id AS "objectId",k.epoch::text,k.device_id AS "deviceId",k.wrapped_key AS "wrappedKey",k.signing_device AS "signingDevice",k.signature,k.construction,k.recipient_public_key AS "recipientPublicKey",k.ephemeral_public_key AS "ephemeralPublicKey",k.salt,k.nonce,d.public_key AS "signingPublicKey"
 			 FROM noura_key_envelopes k JOIN noura_devices d ON d.id=k.signing_device
 			 WHERE k.workspace_id=${workspace} AND k.device_id=${recipientDevice} AND k.signature IS NOT NULL
 			 AND (k.object_id COLLATE "C",k.epoch)>(${afterObject},${afterEpoch}::bigint)
@@ -778,7 +807,7 @@ export function createApp(
 					const objects =
 						await tx`SELECT id AS "objectId",epoch::text,generation,document_mode AS "documentMode" FROM noura_objects WHERE workspace_id=${workspace} ORDER BY id COLLATE "C" LIMIT 1001`;
 					const envelopes =
-						await tx`SELECT object_id AS "objectId",epoch::text,device_id AS "deviceId",wrapped_key AS "wrappedKey",signing_device AS "signingDevice",signature FROM noura_key_envelopes k WHERE workspace_id=${workspace} AND epoch=(SELECT epoch FROM noura_objects o WHERE o.workspace_id=k.workspace_id AND o.id=k.object_id) ORDER BY object_id COLLATE "C",epoch,device_id COLLATE "C" LIMIT 10001`;
+						await tx`SELECT object_id AS "objectId",epoch::text,device_id AS "deviceId",wrapped_key AS "wrappedKey",signing_device AS "signingDevice",signature,construction,recipient_public_key AS "recipientPublicKey",ephemeral_public_key AS "ephemeralPublicKey",salt,nonce FROM noura_key_envelopes k WHERE workspace_id=${workspace} AND epoch=(SELECT epoch FROM noura_objects o WHERE o.workspace_id=k.workspace_id AND o.id=k.object_id) ORDER BY object_id COLLATE "C",epoch,device_id COLLATE "C" LIMIT 10001`;
 					const devices =
 						await tx`SELECT id AS "deviceId",account_id AS "accountId",public_key AS "publicKey",encryption_recipient AS "encryptionRecipient" FROM noura_devices WHERE NOT revoked AND account_id IN (SELECT account_id FROM noura_members WHERE workspace_id=${workspace} UNION SELECT account_id FROM noura_grants WHERE workspace_id=${workspace}) ORDER BY id COLLATE "C" LIMIT 1001`;
 					if (
@@ -802,21 +831,7 @@ export function createApp(
 			),
 		);
 	});
-	if (options.webRoot) {
-		app.get('/_app/*', serveStatic({ root: options.webRoot }));
-		const index = async (c: import('hono').Context<Env>) => {
-			c.header('Referrer-Policy', 'no-referrer');
-			c.header('Content-Security-Policy', "frame-ancestors 'none'");
-			const file = Bun.file(join(options.webRoot!, 'index.html'));
-			if (!(await file.exists()))
-				return c.json({ error: { code: 'server.web_unavailable' } }, 503);
-			return c.html(await file.text());
-		};
-		app.get('/account', index);
-		app.get('/account/device', index);
-		app.get('/invite/:token', index);
-		app.get('/share/:token', index);
-	}
+	if (options.webRoot) app.route('/', createBrowserApp(options.webRoot));
 	app.get('/public/:token', async (c) =>
 		c.json(await readPublicLink(store, c.req.param('token'))),
 	);

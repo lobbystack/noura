@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/local-core", "crates/mcp-server", "src-tauri"]
+members = [
+    "crates/local-core",
+    "crates/mcp-server",
+    "crates/sync-key-envelope",
+    "crates/workspace-format",
+    "crates/workspace-format-wasm",
+    "src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,10 +32,13 @@ diffy = "=0.5.1"
 fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
+hkdf = "=0.12.4"
+hmac = "=0.12.1"
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
 notify = "8"
+pbkdf2 = "=0.12.2"
 pulldown-cmark = "0.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
 rmcp = { version = "3.1", features = ["server", "transport-io"] }
@@ -44,8 +54,11 @@ tokio-tungstenite = { version = "=0.30.0", default-features = false, features = 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 ts-rs = { version = "11", features = ["serde-compat"] }
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "1", default-features = false }
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
 libc = "0.2"
 windows-sys = "0.61.2"
+wasm-bindgen = "0.2.127"
+x25519-dalek = "=2.0.1"
+js-sys = "0.3.104"

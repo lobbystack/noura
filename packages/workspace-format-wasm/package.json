@@ -1,0 +1,17 @@
+{
+	"name": "@noura/workspace-format-wasm",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"build": "tsc --noEmit",
+		"check": "tsc --noEmit",
+		"lint": "prettier --check src scripts package.json",
+		"wasm:build": "bun scripts/build-wasm.ts",
+		"test:runtime": "bun scripts/test-wasm-runtime.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5.9.3"
+	}
+}

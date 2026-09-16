@@ -2,7 +2,7 @@
 
 ## Protected assets
 
-Noura protects workspace bytes, provider credentials, stable identity, and the integrity of writes performed after an external edit. The Initial MVP assumes a trusted local user and trusted first-party bundled plugins. It does not claim isolation from malware running under the same operating system account.
+Noura protects workspace bytes, provider credentials, stable identity, and the integrity of writes that follow an external edit. The Initial MVP assumes a trusted local user and trusted first-party bundled plugins. It does not claim isolation from malware running under the same operating system account.
 
 ## Trust boundaries
 

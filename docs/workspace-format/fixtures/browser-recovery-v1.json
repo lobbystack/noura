@@ -1,0 +1,37 @@
+{
+  "format": "noura.browser-recovery-kit",
+  "version": 1,
+  "test_only": true,
+  "note": "Test-only browser recovery-kit fixture. Passphrases and keys are public test vectors; never use them.",
+  "recovery_passphrase": "browser-recovery-test-passphrase",
+  "device_passphrase": "browser-device-test-passphrase",
+  "kit": {
+    "format": "noura.browser-recovery-kit",
+    "version": 1,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "kdf": "pbkdf2-sha256",
+    "iterations": 310000,
+    "salt": "LC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0hJSks=",
+    "nonce": "TE1OT1BRUlNUVVZX",
+    "ciphertext": "otBwbZTU3dduyDkPxA7ctNRl2Pzi3FEoekjdEAhf21VsdOse7TjpSpOTtJqQWtspBi3mDjyEt0ebFAWWgto4Kao5FOADTt4a3enZ0E93SDz9c3WyzSL4JkE+tDnIlysGSV8x3XYfDII4T/dEcoEkeVrPM7oHma0E8A0VI9XmTiicwXQlMQTzCpoFbQrehEti1zoArMxb8BhPF8DlxzrpFcD31bNcwKuekXe2DpNCMrNF9TtOLxkJ1TLvUHu7PQr7diK+nUxgDWQmlkmRjiC3iWlZQFcKAvfEFZg9dqKjZ7Ubyji9bS5/lYzvHUW9bZRlkEWArfITYhANur4LzKGqKkqhyXLut8fBkw+EDdABnBvhK7a7O8GP1nEOEgmfZW8zpzkqc54Zl3DC6E7TUlVkALMb4r+5ZE6szjZkVLimc+9Eg3oTwdGt+1cAjlXyFSQ7s9GFOBHF2bRVTawh2M2+42zNzR36HhWdUCy09PePnHGwzMcttEiiShYorhnjoNmYf1yPqCZtYxeuUC44y5NW5SfTQstrc+OjOXmj94j9+pInPL5uklLA911Kh04F9iqCSYTyR/kBR+ejxMlyHySup2Xypvfl2DQ+ni7MvPQtuHc8geL/JtvIeNnejTn1C4xVj1ok6xoyEkgsC/9i+COKwPxLFZrmRl6vcR4JYkrTZkGsp1nfi2b/BAACcwWQr0qPljHc6p29/TB/3wnAdASyG+pZady6XeEM3QbgL/XdiZGvcEcd9WcTxpAcaNsTYtKn5puWlvXSCicOejXphQgZkw+zIzmWX36jh1QOznOdGjKklCFJX3eapRJASbdlacFLGyBE3hA4xgSDuukt8CKsu0FFWO40qv9kl3dl2+ZD3UsIjcMHcrvvhT4zIUWIsJgRQql8y8QfVphY8jn8vMnQuSnr5FfDe0zt427j/JYdpEcfXzK8u0DfeTt0XlfxLLpp2+RsIvsqAKTNY/3iNf2QEJYt+0H0bz4rXK38+ytliEKjNNrpbmLA3SdgRGgo8IHnPgC8FH/8L7Ll64ZDrA+AZD3juL3+vfYsWuZoijb0BtdWoCIkeXXOGPOlEskboUbL48x+yVEsN2vzvDKs2aRo4OSOTbpzVBMC0XvZB8ZLWufa2UqhYgVVrglF9VJCn2K11ZjZXcHFOMD6avUdZexzfSu2ep40Jtp0jll/HPePIgg6erjvFMzXdE8wE9lcLctMfNUKS1N5vjZrSvqxcNlT0R8TSWnXMT+mh8/Ui5EBFDkyfKK/Z8wgyuPFnuCiu2Je/R0ThyuWk1HTPtqXlKvqFQPA/GFhkDnV0kSMDJlkknJ84orsuSkv2C7bypD040BJvHT6fQbDjSQw2u88aCvKCOvBZfJXtqq2LRMOwcY9NAHlQj0QQ3kjC/kpGCOfJH89VPbSZaGeaPFftvoKwX158e51Z4N0AHWiRTZ5xXG3Tzexdf4QrC1nQX5UGtRblZjJxCfGQX7mUqkuFX8LXun8AS2YjTOhpaAx2RNuZN0D0YlOLN50blt6dF+GWovxVb6WahA/dEV1UhaGrb3FazVkhqKgcJ5PQLuneV71e0DXIrQaQki5X+jIcRRuF/MNjJDjNRmdfjl/V5ILVhGBYxHXudlEavhz9uoDBFTPSu0N77GlGHhGsE+t/a7TdSLvq75tiQnJ7jcMwyGf1U8OKXTx8I+F3nRgECHRMEU/3jCvPdcnEQE3y2z7sS1Nb38TyJKv1sdZUk2iyQFpYxdc/H7BWBWvcvQU+mOLgD1Y5BKtuYtupUtlYHRNnVjn8JKkNRmLLoEF9uqjO/gouVQaEKjO6D2nHFx6cYvlZX4/XjBfACj8zA0CPh7iUvCTiKkGfiYQRhwj9DT5X7WX5vNvrOCyXxFZCItbb6s2yXgQxe4yqSiquDXltUS7kUlAarGzEt0P5LqzYKmL6n9zS/DOdWPehZnRLK/Vj8kY0g8r1DA4WMEehilFbl/AfccHzHpxJ8hWF/pU10rqLXbCCYIFF4xOnN6aIztgRbZtIVyQQ6lWBp0Zmz6MW+GxOyhHyFVR7YAVdpGABBOHGMQPlvQWOdHMZ9PfAsKLugmoE8su75Eqd+NU6Pw+YLdkqPMd87cRZYa21/yxxbLx0ooOHfd382ZQZ7gQH0uwXLtsMqRL72jSt6u4vF6l1UU6FrrfDZqGpNK+whIGlPoDabUlyq0wD/xhaaI6KVGzzJA7O5Kudf20rE4nt+GyWZK1RddIJJTfqRnnegvjxN+mzbaz9H6QoWprF0iyfjugJ+ZJIDB0tbVwhg+btW3O/N6C3YinfqtBshbnKjQtqlLCZBmwHyyACjrCXdLZa5Hn9LsqtPOEjrFE56rqE4k2rNM5Bwq7yGSqFYVrSKidxOcyfy51LN8r8MNv07m6r1rrVCDY6FzQeKq7AUfT6cggMz4yUXBRK7S2VnEvREl5cyai7Ui8mYtLSqjiHWiszMAmHXo7kUfBXTlZiJyI03uaftqmNOrpIyTqkF44z01IHRIaqaJLcQ9mbRv3e3/MaUDk9hU+e7adIV44eEqyWUmKpKzdo/i5QC02B2Hbj5tTlYAke7Nuf5476RTEhTb2dPL5xu1LUdE4wcGzetu3zIc3MUDztYyOFRXlBtKbge/LbLSXDkCYW6z3cHmiucYn8e6ELTACCS3mVOBiAUeGNLgHXB8Cm7N9husalD+bZ0meIUMHGQxDwusB6wbBkTC2pGJ7iNSW0jgTrhek7g57B1Vj3soJNvYtRIZIFcIi2wTwICIz+TRMniS09QMv7uwLYT27QfaN56Rs+RvDwIur/6ad8uO/YnzoEpF2c/ZeKBzrLKulK902tq3wqXiqu0hxr05lSyt0njAli+YG6emjEyzlibi6ynNZAyFfttzIu4fg4EvywGlmjq0WsZo7aiOMvaWLYD8qFjC230+kMkJm0yJ+k7wHgFi1XRMCj1egUxzXs7E5wLWA0eWNG7UN6Y+SqMaoTCnVRfUcqQIs23Rgay7v39OI4Z0wNBAeTBW+JI3w5BmMcgVmqPtcpLunSVKIuuz1jg0R+fmZawV9Wi4hgOm4J+3abzJhei8etlZF"
+  },
+  "expected": {
+    "device_id": "device_browser_recovery",
+    "local_workspace_id": "workspace_local_recovery",
+    "workspace_id": "workspace_remote_recovery",
+    "revision": "1",
+    "primary_object_id": "object_recovery_one",
+    "object_keys": [
+      {
+        "object_id": "object_recovery_one",
+        "epoch": 1,
+        "key": "ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE="
+      },
+      {
+        "object_id": "object_recovery_two",
+        "epoch": 2,
+        "key": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
+      }
+    ]
+  }
+}

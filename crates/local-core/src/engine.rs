@@ -412,14 +412,7 @@ impl WorkspaceEngine {
             ignore: Vec::new(),
         };
         validate_manifest(&manifest, "workspace_create")?;
-        let bytes = serde_yaml_ng::to_string(&manifest).map_err(|_| {
-            CoreError::new(
-                "manifest_serialize_failed",
-                ErrorCategory::Parse,
-                ".noura/workspace.yaml could not be serialized",
-                "workspace_create",
-            )
-        })?;
+        let bytes = serialize_workspace_manifest(&manifest, "workspace_create")?;
         resolve_for_write(&canonical, WORKSPACE_MANIFEST_PATH, "workspace_create")?;
         atomic_write(
             &canonical,
@@ -666,14 +659,7 @@ impl WorkspaceEngine {
         }
         manifest.updated = now_rfc3339();
         validate_manifest(&manifest, "manifest_update")?;
-        let bytes = serde_yaml_ng::to_string(&manifest).map_err(|_| {
-            CoreError::new(
-                "manifest_serialize_failed",
-                ErrorCategory::Parse,
-                ".noura/workspace.yaml could not be serialized",
-                "manifest_update",
-            )
-        })?;
+        let bytes = serialize_workspace_manifest(&manifest, "manifest_update")?;
         atomic_write_checked(
             &self.root,
             Path::new(WORKSPACE_MANIFEST_PATH),
@@ -1014,9 +1000,9 @@ impl WorkspaceEngine {
         properties.remove("updated");
         normalize_domain_properties(&input.object_type, &mut properties)?;
         let id = new_object_id(&input.object_type);
-        let relative_path = input
-            .relative_path
-            .unwrap_or_else(|| default_object_path(&input.object_type, &input.title, &id));
+        let relative_path = input.relative_path.unwrap_or_else(|| {
+            workspace_format::default_managed_object_path(&input.object_type, &input.title, &id)
+        });
         let object = WorkspaceObject {
             id,
             object_type: input.object_type,
@@ -4081,25 +4067,104 @@ fn check_revision(bytes: &[u8], expected: &str, operation: &str) -> Result<()> {
     Ok(())
 }
 fn validate_manifest(manifest: &WorkspaceManifest, operation: &str) -> Result<()> {
-    if !valid_object_id(&manifest.id, "workspace") {
-        return Err(CoreError::validation(
+    workspace_format::validate_workspace_manifest(manifest)
+        .map_err(|error| map_format_error(error, operation))?;
+    compile_workspace_ignores(Path::new("."), &manifest.ignore)?;
+    Ok(())
+}
+
+fn serialize_workspace_manifest(manifest: &WorkspaceManifest, operation: &str) -> Result<String> {
+    workspace_format::serialize_workspace_manifest(manifest)
+        .map_err(|error| map_format_error(error, operation))
+}
+
+fn map_format_error(error: workspace_format::FormatError, operation: &str) -> CoreError {
+    match error {
+        workspace_format::FormatError::InvalidObjectId => CoreError::new(
+            "invalid_object_id",
+            ErrorCategory::Identity,
+            "The stable ID does not match the object type",
+            operation,
+        ),
+        workspace_format::FormatError::ObjectSerialization => CoreError::new(
+            "serialize_failed",
+            ErrorCategory::Parse,
+            "Frontmatter could not be serialized",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidManifest => CoreError::new(
+            "invalid_workspace_manifest",
+            ErrorCategory::Parse,
+            ".noura/workspace.yaml is invalid",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidWorkspaceId => CoreError::validation(
             "invalid_workspace_id",
             "The workspace ID must be a lowercase stable workspace ID",
             operation,
-        ));
-    }
-    if manifest.name.trim().is_empty() {
-        return Err(CoreError::validation(
+        ),
+        workspace_format::FormatError::WorkspaceNameRequired => CoreError::validation(
             "workspace_name_required",
             "A workspace name is required",
             operation,
-        ));
+        ),
+        workspace_format::FormatError::InvalidPluginId => CoreError::validation(
+            "invalid_plugin_id",
+            "Plugin identifiers use lowercase letters, digits, and hyphens",
+            operation,
+        ),
+        workspace_format::FormatError::UnsupportedWorkspaceVersion => CoreError::validation(
+            "unsupported_workspace_version",
+            "This workspace format version is not supported",
+            operation,
+        ),
+        workspace_format::FormatError::ManifestSerialization => CoreError::new(
+            "manifest_serialize_failed",
+            ErrorCategory::Parse,
+            ".noura/workspace.yaml could not be serialized",
+            operation,
+        ),
+        workspace_format::FormatError::TitleRequired => {
+            CoreError::validation("title_required", "A title is required", operation)
+        }
+        workspace_format::FormatError::InvalidTimestamp => CoreError::validation(
+            "invalid_timestamp",
+            "A timestamp must be an RFC 3339 instant",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidTaskStatus => {
+            CoreError::validation("invalid_field", "Unsupported status value", operation)
+        }
+        workspace_format::FormatError::InvalidTaskStatusType => {
+            CoreError::validation("invalid_field", "status must be a string", operation)
+        }
+        workspace_format::FormatError::InvalidTaskPriority => {
+            CoreError::validation("invalid_field", "Unsupported priority value", operation)
+        }
+        workspace_format::FormatError::InvalidTaskPriorityType => {
+            CoreError::validation("invalid_field", "priority must be a string", operation)
+        }
+        workspace_format::FormatError::InvalidTaskDue => CoreError::validation(
+            "invalid_date",
+            "due must use YYYY-MM-DD or RFC 3339 with an explicit offset",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidTaskProject => CoreError::validation(
+            "invalid_project_id",
+            "Task project references use a stable project ID",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidProjectStatus => CoreError::validation(
+            "invalid_field",
+            "Unsupported project status value",
+            operation,
+        ),
+        workspace_format::FormatError::InvalidProjectStatusType => CoreError::validation(
+            "invalid_field",
+            "project status must be a string",
+            operation,
+        ),
     }
-    for id in &manifest.enabled_plugins {
-        validate_plugin_id(id, operation)?;
-    }
-    compile_workspace_ignores(Path::new("."), &manifest.ignore)?;
-    Ok(())
 }
 
 /// Plugin identifiers match the plugin-sdk manifest pattern: a lowercase
@@ -4137,27 +4202,19 @@ fn validate_plugin_key(value: &str, operation: &str) -> Result<()> {
 }
 
 fn parse_workspace_manifest(bytes: &[u8], operation: &str) -> Result<WorkspaceManifest> {
-    let mut manifest: WorkspaceManifest = serde_yaml_ng::from_slice(bytes).map_err(|_| {
-        CoreError::new(
-            "invalid_workspace_manifest",
-            ErrorCategory::Parse,
-            ".noura/workspace.yaml is invalid",
-            operation,
-        )
-    })?;
+    let mut manifest = workspace_format::decode_workspace_manifest(bytes)
+        .map_err(|error| map_format_error(error, operation))?;
     validate_manifest(&manifest, operation)?;
     if manifest.format_version != 1 {
-        return Err(CoreError::validation(
-            "unsupported_workspace_version",
-            "This workspace format version is not supported",
+        return Err(map_format_error(
+            workspace_format::FormatError::UnsupportedWorkspaceVersion,
             operation,
         ));
     }
     // `enabled_plugins` is deduplicated with insignificant order in the
     // format; readers canonicalize so consumers never observe a raw hand
     // edit's duplicates, matching the writer's normalization.
-    manifest.enabled_plugins.sort();
-    manifest.enabled_plugins.dedup();
+    workspace_format::normalize_workspace_manifest(&mut manifest);
     Ok(manifest)
 }
 
@@ -4218,105 +4275,66 @@ fn file_stem(path: &str) -> String {
         .unwrap_or("Untitled")
         .replace(['-', '_'], " ")
 }
-fn default_object_path(object_type: &str, title: &str, id: &str) -> String {
-    let value = slug::slugify(title);
-    let slug = if value.is_empty() { "untitled" } else { &value };
-    let short = &id[id.len().saturating_sub(6)..];
-    if object_type == "project" {
-        format!("projects/{slug}--{short}/project.md")
-    } else {
-        format!("{object_type}s/{slug}--{short}.md")
-    }
-}
 fn normalize_domain_properties(
     object_type: &str,
     properties: &mut BTreeMap<String, serde_json::Value>,
 ) -> Result<()> {
     if object_type == "task" {
-        properties
-            .entry("status".into())
-            .or_insert_with(|| serde_json::json!("todo"));
-        properties
-            .entry("priority".into())
-            .or_insert_with(|| serde_json::json!("medium"));
-        validate_enum(
-            properties,
-            "status",
-            &["todo", "in-progress", "done", "cancelled"],
-        )?;
-        validate_enum(properties, "priority", &["low", "medium", "high", "urgent"])?;
-        if let Some(value) = properties.get("due").and_then(serde_json::Value::as_str) {
-            validate_date_value(value, "due")?;
-        }
-        if let Some(project) = properties
-            .get("project")
-            .and_then(serde_json::Value::as_str)
-            && !crate::valid_object_id(project, "project")
-        {
-            return Err(CoreError::validation(
-                "invalid_project_id",
-                "Task project references use a stable project ID",
-                "object_validate",
-            ));
-        }
+        workspace_format::normalize_task_properties(properties).map_err(task_format_error)?;
     } else if object_type == "project" {
-        properties
-            .entry("status".into())
-            .or_insert_with(|| serde_json::json!("planned"));
-        validate_enum(
-            properties,
-            "status",
-            &["planned", "active", "on-hold", "completed", "cancelled"],
-        )?;
+        workspace_format::normalize_project_properties(properties).map_err(task_format_error)?;
     }
     Ok(())
 }
-fn validate_enum(
-    properties: &BTreeMap<String, serde_json::Value>,
-    field: &str,
-    values: &[&str],
-) -> Result<()> {
-    let value = properties
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            CoreError::validation(
-                "invalid_field",
-                format!("{field} must be a string"),
-                "object_validate",
-            )
-        })?;
-    if !values.contains(&value) {
-        return Err(CoreError::validation(
+fn task_format_error(error: workspace_format::FormatError) -> CoreError {
+    match error {
+        workspace_format::FormatError::InvalidTaskStatus => CoreError::validation(
             "invalid_field",
-            format!("Unsupported {field} value"),
+            "Unsupported status value",
             "object_validate",
-        ));
-    }
-    Ok(())
-}
-fn validate_date_value(value: &str, field: &str) -> Result<()> {
-    let date_only = value.len() == 10
-        && value.as_bytes().get(4) == Some(&b'-')
-        && value.as_bytes().get(7) == Some(&b'-')
-        && value.parse::<jiff::civil::Date>().is_ok();
-    let timed = (value.ends_with('Z')
-        || value
-            .as_bytes()
-            .iter()
-            .skip(10)
-            .any(|byte| matches!(byte, b'+' | b'-')))
-        && value.parse::<jiff::Timestamp>().is_ok();
-    if !date_only && !timed {
-        return Err(CoreError::validation(
+        ),
+        workspace_format::FormatError::InvalidTaskStatusType => CoreError::validation(
+            "invalid_field",
+            "status must be a string",
+            "object_validate",
+        ),
+        workspace_format::FormatError::InvalidTaskPriority => CoreError::validation(
+            "invalid_field",
+            "Unsupported priority value",
+            "object_validate",
+        ),
+        workspace_format::FormatError::InvalidTaskPriorityType => CoreError::validation(
+            "invalid_field",
+            "priority must be a string",
+            "object_validate",
+        ),
+        workspace_format::FormatError::InvalidTaskDue => CoreError::validation(
             "invalid_date",
-            format!("{field} must use YYYY-MM-DD or RFC 3339 with an explicit offset"),
+            "due must use YYYY-MM-DD or RFC 3339 with an explicit offset",
             "object_validate",
-        ));
+        ),
+        workspace_format::FormatError::InvalidTaskProject => CoreError::validation(
+            "invalid_project_id",
+            "Task project references use a stable project ID",
+            "object_validate",
+        ),
+        workspace_format::FormatError::InvalidProjectStatus => CoreError::validation(
+            "invalid_field",
+            "Unsupported project status value",
+            "object_validate",
+        ),
+        workspace_format::FormatError::InvalidProjectStatusType => CoreError::validation(
+            "invalid_field",
+            "project status must be a string",
+            "object_validate",
+        ),
+        _ => CoreError::validation(
+            "invalid_field",
+            "Task metadata is invalid",
+            "object_validate",
+        ),
     }
-    Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4345,6 +4363,94 @@ mod tests {
                 .is_some_and(|manifest| validate_manifest(&manifest, "manifest_validate").is_ok());
             assert_eq!(accepted, fixture.valid);
         }
+    }
+
+    #[test]
+    fn task_mutations_use_portable_defaults_validation_and_canonical_bytes() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "task".into(),
+                title: "Portable task".into(),
+                body: String::new(),
+                relative_path: Some("tasks/portable.md".into()),
+                properties: BTreeMap::from([("custom".into(), serde_json::json!("kept"))]),
+            })
+            .unwrap();
+        assert_eq!(created.value.properties["status"], "todo");
+        assert_eq!(created.value.properties["priority"], "medium");
+
+        let updated = engine
+            .update_object(
+                &created.value.id,
+                ObjectPatch {
+                    title: None,
+                    body: None,
+                    properties: BTreeMap::from([("status".into(), serde_json::json!("done"))]),
+                    remove_properties: Vec::new(),
+                    expected_revision: created.revision,
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.value.properties["status"], "done");
+        assert_eq!(updated.value.properties["custom"], "kept");
+        assert!(
+            std::fs::read_to_string(workspace.path().join("tasks/portable.md"))
+                .unwrap()
+                .contains("status: done")
+        );
+
+        let removed = engine
+            .update_object(
+                &created.value.id,
+                ObjectPatch {
+                    title: None,
+                    body: None,
+                    properties: BTreeMap::new(),
+                    remove_properties: vec!["custom".into(), "status".into()],
+                    expected_revision: updated.revision,
+                },
+            )
+            .unwrap();
+        assert_eq!(removed.value.properties["status"], "todo");
+        assert!(!removed.value.properties.contains_key("custom"));
+        assert!(
+            !std::fs::read_to_string(workspace.path().join("tasks/portable.md"))
+                .unwrap()
+                .contains("custom:")
+        );
+    }
+
+    #[test]
+    fn project_creation_keeps_native_defaults_for_omitted_optional_values() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let input = serde_json::from_value(serde_json::json!({
+            "type": "project",
+            "title": "Portable project"
+        }))
+        .unwrap();
+
+        let created = engine.create_object(input).unwrap();
+
+        assert_eq!(created.value.body, "");
+        assert_eq!(created.value.properties["status"], "planned");
+        assert_eq!(created.value.properties.len(), 1);
+        assert!(
+            created
+                .value
+                .relative_path
+                .starts_with("projects/portable-project--")
+        );
+        assert!(created.value.relative_path.ends_with("/project.md"));
+        assert!(workspace.path().join(created.value.relative_path).is_file());
     }
 
     #[test]

@@ -8,6 +8,7 @@ export default definePlugin({
 		name: 'Folders',
 		version: '0.1.0',
 		capabilities: ['workspace.files', 'workspace.events', 'ai.tools'],
+		platforms: ['desktop'],
 	},
 	activate(context) {
 		const disposers = [

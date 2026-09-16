@@ -1,6 +1,23 @@
-import { PluginHost, type PluginHostServices } from '@noura/plugin-sdk';
+import {
+	PluginHost,
+	type PluginCapability,
+	type PluginDefinition,
+	type PluginHostOptions,
+	type PluginHostServices,
+} from '@noura/plugin-sdk';
 import { firstPartyPlugins } from './first-party';
-import type { NouraClient } from './index';
+import type { NouraClient } from './client';
+
+/**
+ * The browser worker implements only these plugin-facing services. Notes,
+ * tasks, projects, and the read-only calendar view activate with a subset of
+ * these; `ai.*` and `workspace.files` are never available in the browser.
+ */
+export const browserPluginCapabilities: readonly PluginCapability[] = [
+	'workspace.objects',
+	'workspace.commands',
+	'workspace.events',
+];
 
 /**
  * Adapter from the typed workspace client to the capability-gated
@@ -38,8 +55,55 @@ export function createPluginHostServices(
 export interface PluginSyncResult {
 	activated: Array<string>;
 	deactivated: Array<string>;
+	/** Enabled manifests this host intentionally cannot activate. */
+	unavailablePluginIds: Array<string>;
 	/** Verbatim from .noura/workspace.yaml; may include unknown future plugin ids. */
 	enabledPluginIds: Array<string>;
+}
+
+export interface PluginRegistrySnapshot {
+	enabledPluginIds: Array<string>;
+	updated: string;
+}
+
+/**
+ * Durable plugin preferences backed by `.noura/workspace.yaml`. The client
+ * transport owns canonical validation and serialization; this registry never
+ * writes manifest bytes or keeps a separate preference store.
+ */
+export class PluginRegistry {
+	constructor(private readonly client: Pick<NouraClient, 'manifest'>) {}
+
+	async read(): Promise<PluginRegistrySnapshot> {
+		const manifest = await this.client.manifest.read();
+		return {
+			enabledPluginIds: manifest.enabledPlugins,
+			updated: manifest.updated,
+		};
+	}
+
+	async setEnabled(
+		pluginId: string,
+		enabled: boolean,
+		expectedUpdated: string,
+	): Promise<PluginRegistrySnapshot> {
+		const current = await this.client.manifest.read();
+		const enabledPluginIds = new Set(current.enabledPlugins);
+		if (enabled) enabledPluginIds.add(pluginId);
+		else enabledPluginIds.delete(pluginId);
+		const manifest = await this.client.manifest.update({
+			enabledPlugins: [...enabledPluginIds],
+			expectedUpdated,
+		});
+		return {
+			enabledPluginIds: manifest.enabledPlugins,
+			updated: manifest.updated,
+		};
+	}
+}
+
+export interface PluginRuntimeOptions extends PluginHostOptions {
+	plugins?: readonly PluginDefinition[];
 }
 
 /**
@@ -50,11 +114,24 @@ export interface PluginSyncResult {
  */
 export class PluginRuntime {
 	readonly host: PluginHost;
+	readonly registry: PluginRegistry;
 	#client: NouraClient;
+	#plugins: readonly PluginDefinition[];
 
-	constructor(client: NouraClient, host?: PluginHost) {
+	constructor(
+		client: NouraClient,
+		optionsOrHost: PluginRuntimeOptions | PluginHost = {},
+		host?: PluginHost,
+	) {
+		const options = optionsOrHost instanceof PluginHost ? {} : optionsOrHost;
+		const configuredHost =
+			optionsOrHost instanceof PluginHost ? optionsOrHost : host;
 		this.#client = client;
-		this.host = host ?? new PluginHost(createPluginHostServices(client));
+		this.registry = new PluginRegistry(client);
+		this.#plugins = options.plugins ?? firstPartyPlugins;
+		this.host =
+			configuredHost ??
+			new PluginHost(createPluginHostServices(client), options);
 	}
 
 	async syncWithManifest(): Promise<PluginSyncResult> {
@@ -67,11 +144,21 @@ export class PluginRuntime {
 			}
 		}
 		const activated: Array<string> = [];
-		for (const plugin of firstPartyPlugins) {
+		const unavailablePluginIds: Array<string> = [];
+		for (const plugin of this.#plugins) {
 			if (
 				enabled.has(plugin.manifest.id) &&
 				!this.host.isActive(plugin.manifest.id)
 			) {
+				const error = this.host.activationError(plugin);
+				if (
+					error?.code === 'plugin_platform_unsupported' ||
+					error?.code === 'plugin_capability_unsupported'
+				) {
+					unavailablePluginIds.push(plugin.manifest.id);
+					continue;
+				}
+				if (error) throw error;
 				await this.host.activate(plugin);
 				activated.push(plugin.manifest.id);
 			}
@@ -79,8 +166,23 @@ export class PluginRuntime {
 		return {
 			activated,
 			deactivated,
+			unavailablePluginIds,
 			enabledPluginIds: manifest.enabledPlugins,
 		};
+	}
+
+	/** Persists a preference first, then brings this host to the durable state. */
+	async setEnabled(
+		pluginId: string,
+		enabled: boolean,
+		expectedUpdated: string,
+	): Promise<PluginSyncResult & PluginRegistrySnapshot> {
+		const preference = await this.registry.setEnabled(
+			pluginId,
+			enabled,
+			expectedUpdated,
+		);
+		return { ...(await this.syncWithManifest()), ...preference };
 	}
 
 	/**

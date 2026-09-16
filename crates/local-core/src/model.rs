@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -43,36 +41,6 @@ pub enum ParseStatus {
     Unmanaged,
     Malformed,
     Binary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export)]
-#[serde(rename_all = "snake_case")]
-pub struct WorkspaceManifest {
-    pub id: String,
-    pub format_version: u32,
-    pub name: String,
-    pub created: String,
-    pub updated: String,
-    pub enabled_plugins: Vec<String>,
-    pub ignore: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceObject {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub object_type: String,
-    pub title: String,
-    pub body: String,
-    pub relative_path: String,
-    pub revision: String,
-    pub created: Option<String>,
-    pub updated: Option<String>,
-    #[ts(type = "Record<string, unknown>")]
-    pub properties: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -199,51 +167,6 @@ pub fn new_object_id(object_type: &str) -> String {
     )
 }
 
-pub fn valid_object_id(id: &str, object_type: &str) -> bool {
-    if !valid_object_type(object_type) {
-        return false;
-    }
-    let Some(value) = id.strip_prefix(&format!("{object_type}_")) else {
-        return false;
-    };
-    value.len() == 26 && value == value.to_ascii_lowercase() && value.parse::<ulid::Ulid>().is_ok()
-}
-
-pub fn valid_object_type(value: &str) -> bool {
-    value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && value
-            .bytes()
-            .skip(1)
-            .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
-}
-
 pub fn now_rfc3339() -> String {
     jiff::Timestamp::now().to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct Fixtures {
-        object_id: Vec<Fixture>,
-    }
-    #[derive(Deserialize)]
-    struct Fixture {
-        valid: bool,
-        value: String,
-    }
-
-    #[test]
-    fn rust_object_id_validation_matches_shared_conformance_fixtures() {
-        let fixtures: Fixtures = serde_json::from_str(include_str!(
-            "../../../docs/workspace-format/fixtures/conformance-v1.json"
-        ))
-        .unwrap();
-        for fixture in fixtures.object_id {
-            assert_eq!(valid_object_id(&fixture.value, "note"), fixture.valid);
-        }
-    }
 }

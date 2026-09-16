@@ -1,5 +1,11 @@
 import { browser } from '$app/environment';
-import { isCoreError, type PluginManifest } from '@noura/workspace';
+import {
+	firstPartyPlugins,
+	isCoreError,
+	type PluginManifest,
+} from '@noura/workspace';
+import { supportsPlatform } from '@noura/plugin-sdk';
+import { getAppPlatform, platformLabels } from './platform';
 import {
 	movePlugin,
 	normalizePluginOrder,
@@ -24,6 +30,33 @@ function errorMessage(error: unknown) {
  * The manifest file is authoritative; this store only projects it.
  */
 class PluginStore {
+	get platform() {
+		return getAppPlatform();
+	}
+	get catalog() {
+		return firstPartyPlugins.map((plugin) => plugin.manifest);
+	}
+
+	isSupported(id: string): boolean {
+		const manifest = this.catalog.find((plugin) => plugin.id === id);
+		return (
+			!!manifest &&
+			this.platform !== null &&
+			supportsPlatform(manifest, this.platform)
+		);
+	}
+
+	unavailableReason(id: string): string | null {
+		if (!this.platform)
+			return 'Native platform could not be detected. Start or build through the Tauri CLI.';
+		if (!this.isSupported(id))
+			return `Not available on ${platformLabels[this.platform]}.`;
+		if (!workspace.isReady) return 'Open a workspace to manage this plugin.';
+		if (!this.synced) return 'Loading workspace plugin preferences…';
+		if (this.lastError)
+			return 'Plugin preferences could not be loaded. Try again.';
+		return null;
+	}
 	activeManifests = $state<PluginManifest[]>([]);
 	enabledIds = $state<Array<string>>([]);
 	pluginOrder = $state<NavigationId[]>(normalizePluginOrder());
@@ -37,9 +70,7 @@ class PluginStore {
 	#orderWorkspaceId: string | null = null;
 
 	get activeIds(): Array<string> {
-		return this.enabledIds.filter((id) =>
-			this.activeManifests.some((manifest) => manifest.id === id),
-		);
+		return this.enabledIds.filter((id) => this.isEnabled(id));
 	}
 
 	get orderedPluginIds(): NavigationId[] {
@@ -54,6 +85,7 @@ class PluginStore {
 
 	isEnabled(id: string): boolean {
 		return (
+			this.isSupported(id) &&
 			this.enabledIds.includes(id) &&
 			this.activeManifests.some((manifest) => manifest.id === id)
 		);
@@ -61,6 +93,10 @@ class PluginStore {
 
 	async init() {
 		if (!browser || this.#initialized) return;
+		if (this.platform === 'web' || !this.platform) {
+			this.synced = true;
+			return;
+		}
 		this.#initialized = true;
 		await this.sync();
 		try {
@@ -94,6 +130,12 @@ class PluginStore {
 	}
 
 	async #runSync() {
+		if (this.platform === 'web' || !this.platform) {
+			this.activeManifests = [];
+			this.enabledIds = [];
+			this.synced = true;
+			return;
+		}
 		try {
 			const result = await getPluginRuntime().syncWithManifest();
 			const runtime = getPluginRuntime();
@@ -158,6 +200,8 @@ class PluginStore {
 	}
 
 	async setEnabled(pluginId: string, enabled: boolean) {
+		const reason = this.unavailableReason(pluginId);
+		if (reason) throw new Error(reason);
 		const client = getNouraClient();
 		const manifest = await client.manifest.read();
 		const next = enabled

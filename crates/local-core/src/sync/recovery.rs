@@ -6,12 +6,19 @@ use std::{
     path::Path,
 };
 
+use aes_gcm::{
+    Aes256Gcm, KeyInit,
+    aead::{Aead, Payload},
+};
 use ed25519_dalek::{Signature, VerifyingKey};
+use hmac::Hmac;
+use pbkdf2::pbkdf2;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::*;
-use crate::{Result, WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
+use crate::{CoreError, Result, WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
 
 const MAX_KIT: u64 = 8 * 1024 * 1024;
 
@@ -127,7 +134,7 @@ impl WorkspaceSyncCoordinator {
         let mut kit = RecoveryKit {
             version: 1,
             config,
-            identity: device.recovery_secret().to_string(),
+            identity: device.recovery_secret()?.to_string(),
             envelopes,
             signature: String::new(),
         };
@@ -330,6 +337,443 @@ fn write_backup(destination: &Path, workspace: &Path, bytes: &[u8]) -> Result<()
     Ok(())
 }
 
+/// Exact browser recovery-kit format discriminator, matching the browser client.
+pub const BROWSER_RECOVERY_FORMAT: &str = "noura.browser-recovery-kit";
+
+/// Supported browser recovery-kit format version.
+pub const BROWSER_RECOVERY_VERSION: u8 = 1;
+
+/// Supported browser recovery-kit key-derivation function identifier.
+pub const BROWSER_RECOVERY_KDF: &str = "pbkdf2-sha256";
+
+/// Minimum PBKDF2-HMAC-SHA256 iteration count accepted from a browser kit.
+pub const BROWSER_RECOVERY_MIN_ITERATIONS: u32 = 310_000;
+
+/// Maximum decoded browser recovery-kit ciphertext bytes accepted on import.
+pub const BROWSER_RECOVERY_MAX_CIPHERTEXT: usize = 4 * 1024 * 1024;
+
+/// Maximum number of object bindings accepted from a browser recovery kit.
+const MAX_BROWSER_BINDING_OBJECTS: usize = 100_000;
+
+/// Domain string the browser client binds as AES-GCM additional authenticated data.
+const BROWSER_RECOVERY_AAD_DOMAIN: &str = "noura.browser-recovery-kit.aad.v1";
+
+/// Domain string binding the browser at-rest wrapped key bundle.
+const BROWSER_BUNDLE_DOMAIN: &str = "noura.browser-sync.bundle";
+
+/// Browser at-rest wrapped key bundle version.
+const BROWSER_BUNDLE_VERSION: u8 = 1;
+
+/// Browser at-rest wrapped key bundle key-derivation function identifier.
+const BROWSER_BUNDLE_KDF: &str = "pbkdf2-sha256";
+
+/// Length in bytes of a browser PBKDF2 salt.
+const BROWSER_SALT_LENGTH: usize = 32;
+
+/// Length in bytes of a browser AES-256-GCM nonce.
+const BROWSER_NONCE_LENGTH: usize = 12;
+
+/// Length in bytes of a browser Ed25519 seed, X25519 secret, or public key.
+const BROWSER_SECRET_LENGTH: usize = 32;
+
+/// Smallest decoded ciphertext that still contains a 16-byte AES-GCM tag.
+const BROWSER_MIN_CIPHERTEXT: usize = 16;
+
+/// Maximum base64 characters accepted for the kit ciphertext before decoding.
+const BROWSER_RECOVERY_MAX_CIPHERTEXT_CHARS: usize =
+    BROWSER_RECOVERY_MAX_CIPHERTEXT.div_ceil(3) * 4 + 8;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserRecoveryKit {
+    format: String,
+    version: u8,
+    created_at: String,
+    kdf: String,
+    iterations: u32,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserRecoveryPayload {
+    bundle: BrowserWrappedBundle,
+    binding: BrowserBinding,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserWrappedBundle {
+    version: u8,
+    id: String,
+    device_id: String,
+    kdf: String,
+    iterations: u32,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+    signing_public: String,
+    recipient_public: String,
+}
+
+/// Decrypted browser bundle payload. Zeroized on drop; native import never persists it.
+#[derive(Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserBundlePayload {
+    signing_seed: String,
+    x25519_secret: String,
+    token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserBinding {
+    version: u8,
+    local_workspace_id: String,
+    workspace_id: String,
+    revision: String,
+    object_id: String,
+    objects: BTreeMap<String, BrowserBoundObject>,
+    pinned_signers: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserBoundObject {
+    path: String,
+    #[serde(default)]
+    local_object_id: Option<String>,
+    epoch: u64,
+    policy_revision: String,
+    key: BrowserBoundKey,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserBoundKey {
+    device_id: String,
+    wrapped_key: String,
+    signature: String,
+    construction: String,
+    recipient_public_key: String,
+    ephemeral_public_key: String,
+    salt: String,
+    nonce: String,
+}
+
+/// One browser-bound object recovered from a browser recovery kit.
+pub struct BrowserRecoveredObject {
+    /// Stable identifier of the remote sync object.
+    pub object_id: String,
+    /// Positive safe-integer key epoch.
+    pub epoch: u64,
+    /// Canonical-path anchor recorded at bind time.
+    pub path: String,
+    /// Stable local object ID, when the binding recorded one.
+    pub local_object_id: Option<String>,
+    /// Access-policy revision the object was bound at.
+    pub policy_revision: String,
+}
+
+/// Result of importing a browser recovery kit on a native client.
+///
+/// The recovered keys and binding metadata are enough to seed native sync
+/// secrets. The browser device identity itself is **not** adopted: native import
+/// only recovers the object keys the device was entitled to, using the bundle's
+/// X25519 secret as a reader. Only [`Self::keys`] holds plaintext key material.
+pub struct BrowserRecoveryImport {
+    /// Device identifier the browser kit was bound to.
+    pub device_id: String,
+    /// Stable id of the local browser workspace the binding belonged to.
+    pub local_workspace_id: String,
+    /// Remote workspace identifier.
+    pub workspace_id: String,
+    /// Access-policy revision persisted in the binding.
+    pub revision: String,
+    /// Primary sync object id from the binding.
+    pub primary_object_id: String,
+    /// Pinned signer public keys by device id, base64.
+    pub pinned_signers: BTreeMap<String, String>,
+    /// Per-object binding metadata, without plaintext keys.
+    pub objects: Vec<BrowserRecoveredObject>,
+    /// Recovered plaintext object keys by object id. Never persist these directly.
+    pub keys: BTreeMap<String, ObjectKey>,
+}
+
+fn browser_invalid() -> CoreError {
+    invalid("sync_invalid_recovery_file")
+}
+
+fn browser_passphrase_rejected() -> CoreError {
+    invalid("sync_recovery_passphrase_rejected")
+}
+
+/// The browser kit's AES-GCM additional authenticated data.
+fn browser_kit_aad() -> Result<Vec<u8>> {
+    serde_json::to_vec(&(
+        BROWSER_RECOVERY_AAD_DOMAIN,
+        BROWSER_RECOVERY_FORMAT,
+        BROWSER_RECOVERY_VERSION,
+    ))
+    .map_err(|_| browser_invalid())
+}
+
+/// The browser at-rest bundle's AES-GCM additional authenticated data.
+fn browser_bundle_aad(bundle: &BrowserWrappedBundle) -> Result<Vec<u8>> {
+    serde_json::to_vec(&(
+        BROWSER_BUNDLE_DOMAIN,
+        bundle.version,
+        &bundle.id,
+        &bundle.device_id,
+        &bundle.kdf,
+        bundle.iterations,
+        &bundle.salt,
+        &bundle.nonce,
+        &bundle.signing_public,
+        &bundle.recipient_public,
+    ))
+    .map_err(|_| browser_invalid())
+}
+
+/// Derive an AES-256-GCM key-encryption key with PBKDF2-HMAC-SHA256.
+fn browser_kek(passphrase: &str, salt: &[u8], iterations: u32) -> Result<Zeroizing<[u8; 32]>> {
+    let mut kek = Zeroizing::new([0_u8; 32]);
+    pbkdf2::<Hmac<Sha256>>(passphrase.as_bytes(), salt, iterations, &mut *kek)
+        .map_err(|_| browser_invalid())?;
+    Ok(kek)
+}
+
+/// Import a browser recovery kit with both the recovery and device passphrases.
+///
+/// A browser recovery kit needs **two** secrets: the recovery passphrase that
+/// decrypts the kit itself, and the browser device passphrase that decrypts the
+/// inner `WrappedKeyBundle`. This recovers the object keys the browser device
+/// held; it does not adopt the browser device identity, its signing seed, or its
+/// bearer token. All secret material is held in native memory and zeroized.
+pub fn import_browser_recovery_kit(
+    kit_json: &str,
+    recovery_passphrase: &str,
+    device_passphrase: &str,
+) -> Result<BrowserRecoveryImport> {
+    if recovery_passphrase.is_empty() || device_passphrase.is_empty() {
+        return Err(browser_invalid());
+    }
+    let kit: BrowserRecoveryKit = serde_json::from_str(kit_json).map_err(|_| browser_invalid())?;
+    import_browser_recovery(&kit, recovery_passphrase, device_passphrase)
+}
+
+fn import_browser_recovery(
+    kit: &BrowserRecoveryKit,
+    recovery_passphrase: &str,
+    device_passphrase: &str,
+) -> Result<BrowserRecoveryImport> {
+    if kit.format != BROWSER_RECOVERY_FORMAT
+        || kit.version != BROWSER_RECOVERY_VERSION
+        || kit.kdf != BROWSER_RECOVERY_KDF
+        || kit.created_at.is_empty()
+        || kit.iterations < BROWSER_RECOVERY_MIN_ITERATIONS
+        || kit.ciphertext.len() > BROWSER_RECOVERY_MAX_CIPHERTEXT_CHARS
+    {
+        return Err(browser_invalid());
+    }
+
+    let salt = decode(&kit.salt, BROWSER_SALT_LENGTH, BROWSER_SALT_LENGTH)?;
+    let nonce: [u8; BROWSER_NONCE_LENGTH] =
+        decode(&kit.nonce, BROWSER_NONCE_LENGTH, BROWSER_NONCE_LENGTH)?
+            .try_into()
+            .map_err(|_| browser_invalid())?;
+    let ciphertext = decode(
+        &kit.ciphertext,
+        BROWSER_MIN_CIPHERTEXT,
+        BROWSER_RECOVERY_MAX_CIPHERTEXT,
+    )?;
+
+    let aad = browser_kit_aad()?;
+    let kek = browser_kek(recovery_passphrase, &salt, kit.iterations)?;
+    let plaintext = Zeroizing::new(
+        Aes256Gcm::new((&*kek).into())
+            .decrypt(
+                (&nonce).into(),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| browser_passphrase_rejected())?,
+    );
+
+    let payload: BrowserRecoveryPayload =
+        serde_json::from_slice(&plaintext[..]).map_err(|_| browser_invalid())?;
+    validate_browser_bundle(&payload.bundle)?;
+    let x25519_secret = open_browser_bundle(&payload.bundle, device_passphrase)?;
+    build_browser_recovery(&payload.binding, &payload.bundle, &x25519_secret)
+}
+
+/// Validate the browser wrapped-bundle metadata and encodings before decrypting.
+fn validate_browser_bundle(bundle: &BrowserWrappedBundle) -> Result<()> {
+    if bundle.version != BROWSER_BUNDLE_VERSION
+        || bundle.kdf != BROWSER_BUNDLE_KDF
+        || bundle.iterations < BROWSER_RECOVERY_MIN_ITERATIONS
+    {
+        return Err(browser_invalid());
+    }
+    identifier(&bundle.id)?;
+    identifier(&bundle.device_id)?;
+    decode(&bundle.salt, BROWSER_SALT_LENGTH, BROWSER_SALT_LENGTH)?;
+    decode(&bundle.nonce, BROWSER_NONCE_LENGTH, BROWSER_NONCE_LENGTH)?;
+    decode(
+        &bundle.signing_public,
+        BROWSER_SECRET_LENGTH,
+        BROWSER_SECRET_LENGTH,
+    )?;
+    decode(
+        &bundle.recipient_public,
+        BROWSER_SECRET_LENGTH,
+        BROWSER_SECRET_LENGTH,
+    )?;
+    decode(
+        &bundle.ciphertext,
+        BROWSER_MIN_CIPHERTEXT,
+        BROWSER_RECOVERY_MAX_CIPHERTEXT,
+    )?;
+    Ok(())
+}
+
+/// Open the inner browser bundle and return only its X25519 reader secret.
+fn open_browser_bundle(
+    bundle: &BrowserWrappedBundle,
+    device_passphrase: &str,
+) -> Result<Zeroizing<[u8; 32]>> {
+    let salt = decode(&bundle.salt, BROWSER_SALT_LENGTH, BROWSER_SALT_LENGTH)?;
+    let nonce: [u8; BROWSER_NONCE_LENGTH] =
+        decode(&bundle.nonce, BROWSER_NONCE_LENGTH, BROWSER_NONCE_LENGTH)?
+            .try_into()
+            .map_err(|_| browser_invalid())?;
+    let ciphertext = decode(
+        &bundle.ciphertext,
+        BROWSER_MIN_CIPHERTEXT,
+        BROWSER_RECOVERY_MAX_CIPHERTEXT,
+    )?;
+    let aad = browser_bundle_aad(bundle)?;
+    let kek = browser_kek(device_passphrase, &salt, bundle.iterations)?;
+    let plaintext = Zeroizing::new(
+        Aes256Gcm::new((&*kek).into())
+            .decrypt(
+                (&nonce).into(),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| browser_passphrase_rejected())?,
+    );
+    let payload: BrowserBundlePayload =
+        serde_json::from_slice(&plaintext[..]).map_err(|_| browser_invalid())?;
+    let signing_seed = decode(
+        &payload.signing_seed,
+        BROWSER_SECRET_LENGTH,
+        BROWSER_SECRET_LENGTH,
+    )?;
+    if signing_seed.as_slice() == [0_u8; BROWSER_SECRET_LENGTH] {
+        return Err(browser_invalid());
+    }
+    let secret: [u8; BROWSER_SECRET_LENGTH] = decode(
+        &payload.x25519_secret,
+        BROWSER_SECRET_LENGTH,
+        BROWSER_SECRET_LENGTH,
+    )?
+    .try_into()
+    .map_err(|_| browser_invalid())?;
+    Ok(Zeroizing::new(secret))
+}
+
+/// Unwrap every self-wrapped binding key and collect the recovered metadata.
+fn build_browser_recovery(
+    binding: &BrowserBinding,
+    bundle: &BrowserWrappedBundle,
+    x25519_secret: &Zeroizing<[u8; 32]>,
+) -> Result<BrowserRecoveryImport> {
+    if binding.version != BROWSER_RECOVERY_VERSION
+        || binding.objects.is_empty()
+        || binding.objects.len() > MAX_BROWSER_BINDING_OBJECTS
+        || !binding.objects.contains_key(&binding.object_id)
+    {
+        return Err(browser_invalid());
+    }
+    identifier(&binding.workspace_id)?;
+    identifier(&binding.local_workspace_id)?;
+    let recipient = decode(
+        &bundle.recipient_public,
+        BROWSER_SECRET_LENGTH,
+        BROWSER_SECRET_LENGTH,
+    )?;
+
+    let mut keys = BTreeMap::new();
+    let mut objects = Vec::with_capacity(binding.objects.len());
+    for (object_id, object) in &binding.objects {
+        identifier(object_id)?;
+        if object.key.construction != "web"
+            || object.key.device_id != bundle.device_id
+            || object.epoch == 0
+            || object.epoch > sync_key_envelope::MAX_EPOCH
+        {
+            return Err(browser_invalid());
+        }
+        if decode(
+            &object.key.recipient_public_key,
+            BROWSER_SECRET_LENGTH,
+            BROWSER_SECRET_LENGTH,
+        )? != recipient
+        {
+            return Err(browser_invalid());
+        }
+        let signer = binding
+            .pinned_signers
+            .get(&object.key.device_id)
+            .ok_or_else(|| invalid("sync_untrusted_device"))?;
+        let signer: [u8; BROWSER_SECRET_LENGTH] =
+            decode(signer, BROWSER_SECRET_LENGTH, BROWSER_SECRET_LENGTH)?
+                .try_into()
+                .map_err(|_| browser_invalid())?;
+        let envelope = sync_key_envelope::WebKeyEnvelope {
+            workspace_id: binding.workspace_id.clone(),
+            object_id: object_id.clone(),
+            epoch: object.epoch,
+            signing_device: object.key.device_id.clone(),
+            device_id: object.key.device_id.clone(),
+            recipient_public_key: object.key.recipient_public_key.clone(),
+            ephemeral_public_key: object.key.ephemeral_public_key.clone(),
+            salt: object.key.salt.clone(),
+            nonce: object.key.nonce.clone(),
+            wrapped_key: object.key.wrapped_key.clone(),
+            signature: object.key.signature.clone(),
+        };
+        let key = sync_key_envelope::unwrap_key(&envelope, **x25519_secret, signer)
+            .map_err(|error| invalid(error.code()))?;
+        keys.insert(object_id.clone(), ObjectKey::from_bytes(*key));
+        objects.push(BrowserRecoveredObject {
+            object_id: object_id.clone(),
+            epoch: object.epoch,
+            path: object.path.clone(),
+            local_object_id: object.local_object_id.clone(),
+            policy_revision: object.policy_revision.clone(),
+        });
+    }
+
+    Ok(BrowserRecoveryImport {
+        device_id: bundle.device_id.clone(),
+        local_workspace_id: binding.local_workspace_id.clone(),
+        workspace_id: binding.workspace_id.clone(),
+        revision: binding.revision.clone(),
+        primary_object_id: binding.object_id.clone(),
+        pinned_signers: binding.pinned_signers.clone(),
+        objects,
+        keys,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +928,283 @@ mod tests {
             std::os::unix::fs::symlink(&path, &link).unwrap();
             assert!(RecoveryKit::load(&link).is_err());
         }
+    }
+
+    const NATIVE_RECOVERY_FIXTURE: &str =
+        include_str!("../../../../docs/workspace-format/fixtures/native-recovery-v1.json");
+
+    /// Regenerates the shared fixture. This is test-only and never ships the identity secret in a
+    /// production build; the fixture's recovery identity is a public age test vector.
+    #[test]
+    #[ignore = "regenerates docs/workspace-format/fixtures/native-recovery-v1.json"]
+    fn regenerate_native_recovery_fixture() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use std::collections::BTreeMap;
+
+        let workspace = "workspace_recovery";
+        let device_id = "device_recovery";
+        let account = "account_recovery";
+        let origin = "https://sync.noura.example";
+        let identity = "AGE-SECRET-KEY-1GQ9778VQXMMJVE8SK7J6VT8UJ4HDQAJUVSFCWCM02D8GEWQ72PVQ2Y5J33";
+        let device = DeviceKeys::from_test_parts(device_id, [0x11_u8; 32], identity).unwrap();
+        let config = WorkspaceSyncConfig {
+            version: 1,
+            workspace_id: workspace.into(),
+            origin: origin.into(),
+            device_id: device_id.into(),
+            enabled: false,
+            trusted_devices: BTreeMap::from([(device_id.into(), device.signer().public_key())]),
+            approved_recipients: BTreeMap::from([(device_id.into(), device.recipient())]),
+            approved_accounts: BTreeMap::from([(device_id.into(), account.into())]),
+        };
+        let keys = [
+            ("object_one", 1_u64, [0x21_u8; 32]),
+            ("object_two", 2_u64, [0x42_u8; 32]),
+        ];
+        let envelopes = keys
+            .iter()
+            .map(|(object, epoch, secret)| {
+                device
+                    .wrap_key(
+                        workspace,
+                        object,
+                        *epoch,
+                        device.device_id(),
+                        &device.recipient(),
+                        &ObjectKey::from_bytes(*secret),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut kit = RecoveryKit {
+            version: 1,
+            config,
+            identity: device.recovery_secret().unwrap().to_string(),
+            envelopes,
+            signature: String::new(),
+        };
+        kit.signature = device.signer().sign_bytes(&kit.signing_bytes().unwrap());
+        // Prove the regenerated fixture satisfies the native reader before it is written.
+        kit.reader().unwrap();
+
+        let object_keys = keys
+            .iter()
+            .map(|(object, epoch, secret)| {
+                serde_json::json!({
+                    "object_id": object,
+                    "epoch": epoch,
+                    "key": STANDARD.encode(secret),
+                })
+            })
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "format": "noura.sync.recovery",
+            "domain": "noura.sync.recovery",
+            "version": 1,
+            "recovery": {
+                "version": kit.version,
+                "config": &kit.config,
+                "envelopes": &kit.envelopes,
+                "signature": &kit.signature,
+            },
+            "recovery_identity": &kit.identity,
+            "recovery_recipient": device.recipient(),
+            "object_keys": object_keys,
+        });
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/workspace-format/fixtures/native-recovery-v1.json");
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&document).unwrap()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn native_recovery_fixture_verifies_and_unwraps_its_own_object() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let fixture: serde_json::Value = serde_json::from_str(NATIVE_RECOVERY_FIXTURE).unwrap();
+        assert_eq!(fixture["domain"], "noura.sync.recovery");
+        assert_eq!(fixture["format"], "noura.sync.recovery");
+        assert_eq!(fixture["version"], 1);
+
+        // The public recovery object is signed over the identity secret, so reassemble the full
+        // object before handing it to the native reader.
+        let mut object = fixture["recovery"].as_object().unwrap().clone();
+        object.insert("identity".into(), fixture["recovery_identity"].clone());
+        let kit: RecoveryKit = serde_json::from_value(serde_json::Value::Object(object)).unwrap();
+        let reader = kit.reader().unwrap();
+        assert_eq!(
+            reader.recipient(),
+            fixture["recovery_recipient"].as_str().unwrap()
+        );
+
+        let expected = fixture["object_keys"].as_array().unwrap();
+        assert_eq!(expected.len(), kit.envelopes.len());
+        for vector in expected {
+            let object_id = vector["object_id"].as_str().unwrap();
+            let epoch = vector["epoch"].as_u64().unwrap();
+            let encoded = vector["key"].as_str().unwrap();
+            let envelope = kit
+                .envelopes
+                .iter()
+                .find(|envelope| envelope.object_id == object_id && envelope.epoch == epoch)
+                .expect("fixture envelope must exist");
+            let signer = kit
+                .config
+                .trusted_devices
+                .get(&envelope.signing_device)
+                .unwrap();
+            let key = reader.unwrap_key(envelope, signer).unwrap();
+            assert_eq!(STANDARD.encode(key.secret()), encoded, "{object_id}");
+        }
+    }
+
+    const BROWSER_RECOVERY_FIXTURE: &str =
+        include_str!("../../../../docs/workspace-format/fixtures/browser-recovery-v1.json");
+
+    fn browser_recovery_fixture() -> serde_json::Value {
+        serde_json::from_str(BROWSER_RECOVERY_FIXTURE).unwrap()
+    }
+
+    fn browser_recovery_kit(fixture: &serde_json::Value) -> String {
+        serde_json::to_string(&fixture["kit"]).unwrap()
+    }
+
+    #[test]
+    fn browser_recovery_fixture_imports_and_matches_object_keys() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let fixture = browser_recovery_fixture();
+        assert!(fixture["test_only"].as_bool().unwrap());
+        assert!(fixture["note"].as_str().is_some());
+        let kit = browser_recovery_kit(&fixture);
+        let result = import_browser_recovery_kit(
+            &kit,
+            fixture["recovery_passphrase"].as_str().unwrap(),
+            fixture["device_passphrase"].as_str().unwrap(),
+        )
+        .unwrap();
+
+        let expected = &fixture["expected"];
+        assert_eq!(result.device_id, expected["device_id"].as_str().unwrap());
+        assert_eq!(
+            result.workspace_id,
+            expected["workspace_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            result.local_workspace_id,
+            expected["local_workspace_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            result.primary_object_id,
+            expected["primary_object_id"].as_str().unwrap()
+        );
+        assert_eq!(result.revision, expected["revision"].as_str().unwrap());
+
+        let vectors = expected["object_keys"].as_array().unwrap();
+        assert_eq!(result.keys.len(), vectors.len());
+        for vector in vectors {
+            let object_id = vector["object_id"].as_str().unwrap();
+            let epoch = vector["epoch"].as_u64().unwrap();
+            let key = result
+                .keys
+                .get(object_id)
+                .unwrap_or_else(|| panic!("missing key for {object_id}"));
+            assert_eq!(
+                STANDARD.encode(key.secret()),
+                vector["key"].as_str().unwrap(),
+                "{object_id}"
+            );
+            let entry = result
+                .objects
+                .iter()
+                .find(|entry| entry.object_id == object_id)
+                .expect("recovered metadata must exist");
+            assert_eq!(entry.epoch, epoch, "{object_id}");
+        }
+    }
+
+    #[test]
+    fn browser_recovery_rejects_wrong_secrets_and_tampering() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let fixture = browser_recovery_fixture();
+        let passphrase = fixture["recovery_passphrase"].as_str().unwrap();
+        let device = fixture["device_passphrase"].as_str().unwrap();
+        let kit = browser_recovery_kit(&fixture);
+
+        assert_eq!(
+            import_browser_recovery_kit(&kit, "wrong recovery passphrase", device)
+                .err()
+                .expect("wrong recovery passphrase must fail")
+                .code,
+            "sync_recovery_passphrase_rejected"
+        );
+        assert_eq!(
+            import_browser_recovery_kit(&kit, passphrase, "wrong device passphrase")
+                .err()
+                .expect("wrong device passphrase must fail")
+                .code,
+            "sync_recovery_passphrase_rejected"
+        );
+        assert!(import_browser_recovery_kit(&kit, "", device).is_err());
+        assert!(import_browser_recovery_kit(&kit, passphrase, "").is_err());
+
+        let mut tampered = fixture.clone();
+        let mut ciphertext = STANDARD
+            .decode(tampered["kit"]["ciphertext"].as_str().unwrap())
+            .unwrap();
+        let last = ciphertext.len() - 1;
+        ciphertext[last] ^= 0x01;
+        tampered["kit"]["ciphertext"] = serde_json::json!(STANDARD.encode(ciphertext));
+        assert_eq!(
+            import_browser_recovery_kit(&browser_recovery_kit(&tampered), passphrase, device)
+                .err()
+                .expect("tampered ciphertext must fail")
+                .code,
+            "sync_recovery_passphrase_rejected"
+        );
+
+        let mut wrong_version = fixture.clone();
+        wrong_version["kit"]["version"] = serde_json::json!(2);
+        assert_eq!(
+            import_browser_recovery_kit(&browser_recovery_kit(&wrong_version), passphrase, device)
+                .err()
+                .expect("unknown version must fail")
+                .code,
+            "sync_invalid_recovery_file"
+        );
+
+        let mut weak = fixture.clone();
+        weak["kit"]["iterations"] = serde_json::json!(BROWSER_RECOVERY_MIN_ITERATIONS - 1);
+        assert_eq!(
+            import_browser_recovery_kit(&browser_recovery_kit(&weak), passphrase, device)
+                .err()
+                .expect("below-minimum iterations must fail")
+                .code,
+            "sync_invalid_recovery_file"
+        );
+
+        let mut wrong_kdf = fixture.clone();
+        wrong_kdf["kit"]["kdf"] = serde_json::json!("scrypt");
+        assert_eq!(
+            import_browser_recovery_kit(&browser_recovery_kit(&wrong_kdf), passphrase, device)
+                .err()
+                .expect("unknown kdf must fail")
+                .code,
+            "sync_invalid_recovery_file"
+        );
+
+        let mut wrong_format = fixture.clone();
+        wrong_format["kit"]["format"] = serde_json::json!("noura.other-kit");
+        assert_eq!(
+            import_browser_recovery_kit(&browser_recovery_kit(&wrong_format), passphrase, device)
+                .err()
+                .expect("unknown format must fail")
+                .code,
+            "sync_invalid_recovery_file"
+        );
     }
 }

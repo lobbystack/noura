@@ -1,0 +1,19 @@
+{
+	"name": "@noura/browser-storage",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": "./src/index.ts",
+	"scripts": {
+		"build": "tsc --noEmit",
+		"check": "tsc --noEmit",
+		"lint": "prettier --check src package.json",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@noura/workspace-format-wasm": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5.9.3"
+	}
+}

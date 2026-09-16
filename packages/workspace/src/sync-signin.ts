@@ -4,7 +4,7 @@ import type {
 	SyncAccount,
 	SyncAccountPoll,
 } from '@noura/shared';
-import type { CoreTransport } from './index';
+import type { CoreTransport } from './client';
 
 export type SyncServiceConfiguration = { origin: string | null };
 export type SignInProgress = {
