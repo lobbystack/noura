@@ -8,11 +8,11 @@
  */
 
 export interface RetryReadyOptions {
-	/** Total probe attempts before giving up. Defaults to 60. */
+	/** Total probe attempts before giving up. Defaults to 30. */
 	attempts?: number;
-	/** Delay before the second attempt, doubled each retry. Defaults to 1000ms. */
+	/** Delay before the second attempt, doubled each retry. Defaults to 500ms. */
 	baseDelayMs?: number;
-	/** Upper bound for a single delay. Defaults to 5000ms. */
+	/** Upper bound for a single delay. Defaults to 3000ms. */
 	maxDelayMs?: number;
 	/** Injectable sleep for tests. Defaults to `setTimeout`. */
 	sleep?: (ms: number) => Promise<void>;
@@ -32,9 +32,9 @@ export async function retryReady(
 	probe: () => Promise<void>,
 	options: RetryReadyOptions = {},
 ): Promise<void> {
-	const attempts = Math.max(1, options.attempts ?? 60);
-	const baseDelayMs = Math.max(0, options.baseDelayMs ?? 1000);
-	const maxDelayMs = Math.max(0, options.maxDelayMs ?? 5000);
+	const attempts = Math.max(1, options.attempts ?? 30);
+	const baseDelayMs = Math.max(0, options.baseDelayMs ?? 500);
+	const maxDelayMs = Math.max(0, options.maxDelayMs ?? 3000);
 	const sleep = options.sleep ?? defaultSleep;
 	let lastError: unknown;
 	for (let attempt = 1; attempt <= attempts; attempt += 1) {
