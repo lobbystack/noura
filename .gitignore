@@ -13,3 +13,6 @@ index.sqlite*
 src-tauri/gen/
 packages/workspace-format-wasm/wasm/
 crates/workspace-format/bindings/
+
+# Local agent/tooling artifacts
+.openchamber/

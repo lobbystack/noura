@@ -16,34 +16,16 @@ The same dependency path includes `proc-macro-error` (`RUSTSEC-2024-0370`) and t
 
 ## Collaborative-text decoder dependency
 
-The pinned `yrs 0.26.0` interoperability stack reaches unmaintained
-`smallstr 0.3.1` through the required `small-client` feature
-(`RUSTSEC-2026-0215`). The advisory reports maintenance status and has no patched
-release. The inspected `yrs 0.27.4` still uses the dependency and requires Rust
-language features newer than Noura's pinned Rust 1.91 toolchain. Noura accepts
-this single advisory while tracking upstream removal in
-[`docs/provenance/yrs.md`](../provenance/yrs.md). The exception does not cover a
-future vulnerability advisory and does not waive isolated, bounded decoding or
-the malicious-input acceptance suite.
+The pinned `yrs 0.26.0` interoperability stack reaches unmaintained `smallstr 0.3.1` through the required `small-client` feature (`RUSTSEC-2026-0215`). The advisory reports maintenance status and has no patched release. The inspected `yrs 0.27.4` still uses the dependency and requires Rust language features newer than Noura's pinned Rust 1.91 toolchain. Noura accepts this single advisory while tracking upstream removal in [`docs/provenance/yrs.md`](../provenance/yrs.md). The exception does not cover a future vulnerability advisory and does not waive isolated, bounded decoding or the malicious-input acceptance suite.
 
-Collaboration activation additionally requires an immutable owner-signed workspace
-capability. Relay feature discovery alone cannot authorize a transition.
+Collaboration activation additionally requires an immutable owner-signed workspace capability. Relay feature discovery alone cannot authorize a transition.
 
 ## PostgreSQL transaction driver
 
-The pinned `postgres 3.4.9` release has an open upstream transaction-reservation
-defect: at a pipeline boundary, `BEGIN` can reach PostgreSQL before the driver
-marks that connection reserved. Noura does not rely on the affected `sql.begin`
-path. `SyncStore.transaction` first obtains an exclusive physical connection,
-then issues `BEGIN`, `COMMIT`, or `ROLLBACK` only through that reserved handle;
-all relay transaction sites use this wrapper. The collaboration load gate keeps
-the concurrency level above the reproduced boundary. Track
-[porsager/postgres#1189](https://github.com/porsager/postgres/issues/1189) and
-remove the workaround only after an upstream release has a targeted regression
-test and Noura's concurrent transaction tests and soak still pass.
+The pinned `postgres 3.4.9` release has an open upstream transaction-reservation defect: at a pipeline boundary, `BEGIN` can reach PostgreSQL before the driver marks that connection reserved. Noura does not rely on the affected `sql.begin` path. `SyncStore.transaction` first obtains an exclusive physical connection, then issues `BEGIN`, `COMMIT`, or `ROLLBACK` only through that reserved handle; all relay transaction sites use this wrapper. The collaboration load gate keeps the concurrency level above the reproduced boundary. Track [porsager/postgres#1189](https://github.com/porsager/postgres/issues/1189) and remove the workaround only after an upstream release has a targeted regression test and Noura's concurrent transaction tests and soak still pass.
 
 ## License exception
 
-`webpki-root-certs`, used through Rust TLS, distributes Mozilla's public root-certificate data under `CDLA-Permissive-2.0`. This permissive data license is explicitly allowed. It does not authorize copying unrelated source code.
+Rust TLS uses `webpki-root-certs`, which distributes Mozilla's public root-certificate data under `CDLA-Permissive-2.0`. This permissive data license is explicitly allowed. It does not authorize copying unrelated source code.
 
-Review these exceptions whenever Tauri or `genai` changes, and before each release. A newly reported vulnerability is not covered by an unmaintained-code exception.
+Review these exceptions whenever Tauri or `genai` changes, and before each release. An unmaintained-code exception does not cover a newly reported vulnerability.
