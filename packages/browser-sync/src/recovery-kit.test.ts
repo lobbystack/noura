@@ -389,6 +389,51 @@ describe('native recovery interoperability', () => {
 		expect(serialized).not.toContain(expected.key);
 	});
 
+	test('marks recovered objects unmapped so they never own local files', async () => {
+		const bundle = await createDeviceIdentity({ passphrase: PASSPHRASE });
+		const device = await unlockDeviceIdentity(bundle, PASSPHRASE);
+		const result = await recoverNativeKeysToBrowserBinding({
+			recovery: NATIVE_RECOVERY,
+			recoveryIdentity: NATIVE.recovery_identity,
+			trustedRecoverySigner: NATIVE_RECOVERY_SIGNER,
+			device,
+			localWorkspaceId: 'workspace_local',
+			revision: '1',
+			objectId: 'object_one',
+			objects: {
+				object_one: {
+					path: 'notes/one.md',
+					epoch: 1,
+					policyRevision: '1',
+				},
+			},
+		});
+		expect(result.binding.objects.object_one?.unmapped).toBe(true);
+	});
+
+	test('rejects a binding object id that could be read as a file path', async () => {
+		const bundle = await createDeviceIdentity({ passphrase: PASSPHRASE });
+		const device = await unlockDeviceIdentity(bundle, PASSPHRASE);
+		await expect(
+			recoverNativeKeysToBrowserBinding({
+				recovery: NATIVE_RECOVERY,
+				recoveryIdentity: NATIVE.recovery_identity,
+				trustedRecoverySigner: NATIVE_RECOVERY_SIGNER,
+				device,
+				localWorkspaceId: 'workspace_local',
+				revision: '1',
+				objectId: 'notes/victim.md',
+				objects: {
+					'notes/victim.md': {
+						path: 'notes/victim.md',
+						epoch: 1,
+						policyRevision: '1',
+					},
+				},
+			}),
+		).rejects.toBeInstanceOf(BrowserSyncError);
+	});
+
 	test('rejects a requested epoch the recovery object does not carry', async () => {
 		const bundle = await createDeviceIdentity({ passphrase: PASSPHRASE });
 		const device = await unlockDeviceIdentity(bundle, PASSPHRASE);

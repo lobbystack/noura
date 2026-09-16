@@ -60,6 +60,38 @@ describe('device identity custody', () => {
 		expect(identity.token).toBe('bearer-token-value');
 	});
 
+	test('rejects a bundle whose seed does not match its signing public key', async () => {
+		const keys = await generateDeviceKeys();
+		const other = await generateDeviceKeys();
+		const bundle = await sealBundle({
+			passphrase: PASSPHRASE,
+			deviceId: 'device_one',
+			signingSeed: keys.signingSeed,
+			x25519Secret: keys.x25519Secret,
+			signingPublic: other.signingPublic,
+			x25519Public: keys.x25519Public,
+		});
+		await expect(openBundle(bundle, PASSPHRASE)).rejects.toMatchObject({
+			code: BrowserSyncErrorCode.InvalidBundle,
+		});
+	});
+
+	test('rejects a bundle whose recipient secret does not match its recipient public key', async () => {
+		const keys = await generateDeviceKeys();
+		const other = await generateDeviceKeys();
+		const bundle = await sealBundle({
+			passphrase: PASSPHRASE,
+			deviceId: 'device_one',
+			signingSeed: keys.signingSeed,
+			x25519Secret: keys.x25519Secret,
+			signingPublic: keys.signingPublic,
+			x25519Public: other.x25519Public,
+		});
+		await expect(openBundle(bundle, PASSPHRASE)).rejects.toMatchObject({
+			code: BrowserSyncErrorCode.InvalidBundle,
+		});
+	});
+
 	test('rejects a wrong passphrase with a structured error', async () => {
 		const bundle = await createDeviceIdentity({ passphrase: PASSPHRASE });
 		let error: unknown;

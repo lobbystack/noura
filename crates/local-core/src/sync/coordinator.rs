@@ -286,14 +286,13 @@ impl WorkspaceSyncCoordinator {
             access = transport.access_state(&engine.manifest().id).await?;
         }
         // Drop approvals for devices the relay no longer lists for this
-        // workspace. A revoked device's stale recipient and account must not
-        // keep it in the authorized-writer set or the sharing gate. Persist the
-        // drop only once the local revision matches the relay head, so a later
-        // chain refresh can still verify policies signed before the revocation.
+        // workspace, for this pass only. The relay roster is unsigned, so it
+        // must never durably delete local trust: a malicious or compromised
+        // relay could otherwise permanently revoke a legitimate device by
+        // omitting it from the roster. The pruned view still keeps a stale
+        // revoked device out of the authorized-writer set and the sharing gate;
+        // a genuine revocation is re-derived on every pass.
         let config = access.effective_config(&persisted, device.device_id());
-        if config != persisted && access.revision() == engine.sync_access_revision()? {
-            engine.sync_save_configuration(&config)?;
-        }
         let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
         // Fetch rotations before capturing new edits. Never select an epoch from an unverified key.
         transport

@@ -53,6 +53,12 @@ export const GCM_TAG_BYTES = 16;
 /** Maximum accepted ciphertext length in bytes. */
 export const MAX_CIPHERTEXT_BYTES = 1024 * 1024;
 
+/**
+ * Maximum accepted operation-pull response body: a full page of 100
+ * maximum-size ciphertexts, base64-expanded, plus envelope overhead.
+ */
+export const MAX_SYNC_PAGE_RESPONSE_BYTES = 192 * 1024 * 1024;
+
 /** Operation kind carried by a version 2 document operation. */
 export type OperationKind = NonNullable<EncryptedOperation['kind']>;
 
@@ -637,7 +643,7 @@ export async function pullOperations(
 		},
 	});
 	ensureResponseOk(response);
-	return parseSyncPage(await readJson(response));
+	return parseSyncPage(await readJson(response, MAX_SYNC_PAGE_RESPONSE_BYTES));
 }
 
 /** A workspace membership entry returned by {@link listWorkspaces}. */

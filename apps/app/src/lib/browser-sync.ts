@@ -356,6 +356,10 @@ function parseAccessPolicy(value: unknown): AccessPolicy | null {
 					mode: descriptor.mode,
 				};
 		}
+		// A version-2 policy binds a document descriptor per object; the server
+		// rejects a version-2 object without one. A malformed or partial response
+		// must not be rebuilt and re-signed, so skip provisioning instead.
+		if (version === 2 && document === undefined) return null;
 		objects.push({
 			objectId: object.objectId,
 			epoch: object.epoch as number,
@@ -464,6 +468,12 @@ export interface BrowserSyncObjectBinding {
 	localObjectId?: string;
 	/** Current local path from the managed-object list, when it differs from `path`. */
 	livePath?: string;
+	/**
+	 * True when this object was recovered from a native kit and has no verified
+	 * canonical local path. Unmapped objects can open delivered operations but
+	 * never own a local file or attachment.
+	 */
+	unmapped?: boolean;
 	/** Positive safe-integer key epoch. */
 	epoch: number;
 	/** Canonical decimal access-policy revision the object was bound at. */
@@ -582,6 +592,9 @@ function failure<T = undefined>(
 /**
  * Only same-origin requests are allowed. The hosted app is served by the sync
  * server, so a relative URL and the page origin address the same service.
+ *
+ * Redirects are refused (`redirect: 'error'`): checking only the initial URL
+ * would let a malicious sync server answer with a 30x to an arbitrary origin.
  */
 export function createSameOriginFetch(
 	base: string = globalThis.location?.origin ?? '',
@@ -596,7 +609,7 @@ export function createSameOriginFetch(
 				),
 			);
 		}
-		return fetchImpl(input, init);
+		return fetchImpl(input, { ...init, redirect: 'error' });
 	};
 }
 
@@ -732,7 +745,8 @@ function resolveObjectOwner(
 	if (attachmentId !== null) {
 		const objects = input.objects;
 		if (objects && objects.size > 0) {
-			return objects.get(attachmentId) ?? null;
+			const owner = objects.get(attachmentId) ?? null;
+			return owner && owner.unmapped !== true ? owner : null;
 		}
 		if (attachmentId !== input.objectId) return null;
 		return {
@@ -745,7 +759,8 @@ function resolveObjectOwner(
 	const objects = input.objects;
 	if (objects && objects.size > 0) {
 		const owns = (object: BrowserSyncObjectBinding, path: string): boolean =>
-			object.path === path || object.livePath === path;
+			object.unmapped !== true &&
+			(object.path === path || object.livePath === path);
 		for (const object of objects.values()) {
 			if (owns(object, change.path)) return object;
 		}
@@ -1789,9 +1804,11 @@ function resolveNativeRecoverySigner(
  * Build the binding's per-object metadata from a native recovery object.
  *
  * A native kit does not carry the browser replica's canonical paths, so each
- * recovered object is anchored to its native object id. A native object id is
- * not a canonical file path, so no local file is mis-associated; the binding
- * holds the re-wrapped key until the replica is reconciled.
+ * recovered object is anchored to its native object id. Object ids are
+ * validated as identifiers (never canonical file paths) and the persisted
+ * binding marks every recovered object `unmapped`, so a crafted kit cannot make
+ * a local file or attachment be sealed under a recovered key. The binding holds
+ * the re-wrapped key until the replica is reconciled.
  */
 function nativeRecoveryObjects(recovery: NativeRecoveryObject): {
 	objectId: string;
@@ -1803,7 +1820,7 @@ function nativeRecoveryObjects(recovery: NativeRecoveryObject): {
 		const envelope = raw as NativeRecoveryEnvelope;
 		if (
 			!envelope ||
-			typeof envelope.objectId !== 'string' ||
+			!isIdentifier(envelope.objectId) ||
 			!Number.isSafeInteger(envelope.epoch) ||
 			envelope.epoch < 1
 		)
@@ -2232,6 +2249,24 @@ export class BrowserSyncController {
 				'This browser cannot persist a durable sync binding (OPFS is unavailable).',
 			);
 		}
+		// A recovery kit is untrusted input. Never let it silently repoint an
+		// already-configured workspace at a different remote workspace.
+		let existing: BrowserSyncBindingRecord | null = null;
+		try {
+			existing = await store.read();
+		} catch (error) {
+			this.#error = messageOf(error);
+			return failure('custody_failed', this.#error);
+		}
+		if (
+			existing &&
+			existing.workspaceId !== parsed.recovery.config.workspaceId
+		) {
+			return failure(
+				'custody_failed',
+				'This browser workspace is already bound to a different sync workspace; clear the existing binding before importing a recovery kit.',
+			);
+		}
 		try {
 			const result = await rewrapNativeKeys({
 				recovery: parsed.recovery,
@@ -2443,6 +2478,7 @@ export class BrowserSyncController {
 				...(bound.localObjectId === undefined
 					? {}
 					: { localObjectId: bound.localObjectId }),
+				...(bound.unmapped === true ? { unmapped: true } : {}),
 				epoch: bound.epoch,
 				policyRevision: bound.policyRevision,
 			});

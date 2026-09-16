@@ -46,6 +46,7 @@ import {
 	encodeUtf8,
 	fixedBytes,
 	importVerifyKey,
+	isIdentifier,
 	randomBytes,
 } from './crypto';
 import type { Bytes } from './crypto';
@@ -512,9 +513,11 @@ function isNativeRecoveryConfig(value: unknown): value is NativeRecoveryConfig {
 	return (
 		typeof config.version === 'number' &&
 		config.version === NATIVE_RECOVERY_VERSION &&
-		typeof config.workspaceId === 'string' &&
+		// Identifiers are bound into signed tuples and later used as routing and
+		// binding keys; reject path-like or otherwise malformed values up front.
+		isIdentifier(config.workspaceId) &&
 		typeof config.origin === 'string' &&
-		typeof config.deviceId === 'string' &&
+		isIdentifier(config.deviceId) &&
 		typeof config.enabled === 'boolean' &&
 		isStringRecord(config.trustedDevices) &&
 		isStringRecord(config.approvedRecipients) &&
@@ -528,14 +531,14 @@ function isNativeRecoveryEnvelope(
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const envelope = value as Record<string, unknown>;
 	return (
-		typeof envelope.workspaceId === 'string' &&
-		typeof envelope.objectId === 'string' &&
+		isIdentifier(envelope.workspaceId) &&
+		isIdentifier(envelope.objectId) &&
 		typeof envelope.epoch === 'number' &&
 		Number.isSafeInteger(envelope.epoch) &&
 		envelope.epoch > 0 &&
-		typeof envelope.deviceId === 'string' &&
+		isIdentifier(envelope.deviceId) &&
 		typeof envelope.wrappedKey === 'string' &&
-		typeof envelope.signingDevice === 'string' &&
+		isIdentifier(envelope.signingDevice) &&
 		typeof envelope.signature === 'string'
 	);
 }
@@ -903,6 +906,16 @@ export async function recoverNativeKeysToBrowserBinding(
 		recoveryIdentity: input.recoveryIdentity,
 		trustedRecoverySigner: input.trustedRecoverySigner,
 	});
+	if (
+		!isIdentifier(input.localWorkspaceId) ||
+		!isIdentifier(input.objectId) ||
+		!Object.keys(input.objects).every((objectId) => isIdentifier(objectId))
+	) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'the recovery binding used a malformed workspace or object identifier',
+		);
+	}
 	if (!(input.objectId in input.objects)) {
 		throw new BrowserSyncError(
 			BrowserSyncErrorCode.InvalidBundle,
@@ -941,6 +954,9 @@ export async function recoverNativeKeysToBrowserBinding(
 				: { localObjectId: bound.localObjectId }),
 			epoch: bound.epoch,
 			policyRevision: bound.policyRevision,
+			// A native kit carries no verified canonical paths, so the recovered
+			// object must not be treated as the owner of a local file.
+			unmapped: true,
 			key: toBoundKey(envelope, input.device.deviceId),
 		};
 	}
