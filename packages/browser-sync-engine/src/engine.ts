@@ -57,6 +57,14 @@ export interface BrowserSyncEngineOptions {
 	/** Durable state boundary. */
 	state: SyncStateStore;
 	/**
+	 * This replica's own device id. During `reconcile`, a pulled operation whose
+	 * envelope `deviceId` equals this value was sealed by this device, so it is
+	 * skipped without opening, fetching an attachment, applying, or recording a
+	 * conflict; the cursor still advances. Absent or empty keeps the previous
+	 * behavior and processes every operation.
+	 */
+	deviceId?: string;
+	/**
 	 * Downloads and decrypts version-3 attachments. Without it, a version-3
 	 * change cannot be applied and reconcile fails with
 	 * {@link BrowserSyncEngineErrorCode.AttachmentUnavailable} rather than
@@ -133,6 +141,7 @@ export class BrowserSyncEngine {
 	readonly #remote: BrowserSyncRemote;
 	readonly #codec: FileChangeCodec;
 	readonly #state: SyncStateStore;
+	readonly #deviceId: string | undefined;
 	readonly #attachmentFetcher: AttachmentFetcher | undefined;
 	readonly #now: () => number;
 	readonly #onRevoked: ((error: unknown) => void | Promise<void>) | undefined;
@@ -145,6 +154,10 @@ export class BrowserSyncEngine {
 		this.#remote = options.remote;
 		this.#codec = options.codec;
 		this.#state = options.state;
+		this.#deviceId =
+			typeof options.deviceId === 'string' && options.deviceId.length > 0
+				? options.deviceId
+				: undefined;
 		this.#attachmentFetcher = options.attachmentFetcher;
 		this.#now = options.now ?? Date.now;
 		this.#onRevoked = options.onRevoked;
@@ -206,6 +219,12 @@ export class BrowserSyncEngine {
 			this.#validatePage(page, state.cursor);
 
 			for (const operation of page.operations) {
+				if (
+					this.#deviceId !== undefined &&
+					operation.deviceId === this.#deviceId
+				) {
+					continue;
+				}
 				const operationId = requireOperationId(operation);
 				if (
 					state.conflicts.some((entry) => entry.operationId === operationId)

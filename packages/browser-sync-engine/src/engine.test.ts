@@ -53,14 +53,17 @@ function canonicalFileChange(change: FileChange): string {
 
 let operationCounter = 0;
 
-function encodeFileChange(change: FileChange): EncryptedOperation {
+function encodeFileChange(
+	change: FileChange,
+	deviceId = 'device',
+): EncryptedOperation {
 	operationCounter += 1;
 	return {
 		version: 1,
 		operationId: `operation_${operationCounter}`,
 		workspaceId: 'workspace',
 		objectId: 'object',
-		deviceId: 'device',
+		deviceId,
 		epoch: 1,
 		policyRevision: '1',
 		nonce: toBase64(new Uint8Array(12)),
@@ -202,6 +205,7 @@ function createHarness(
 		storage?: MemorySyncStorage;
 		codec?: FileChangeCodec;
 		state?: SyncState;
+		deviceId?: string;
 		onRevoked?: BrowserSyncEngineOptions['onRevoked'];
 		attachmentFetcher?: BrowserSyncEngineOptions['attachmentFetcher'];
 	} = {},
@@ -229,6 +233,7 @@ function createHarness(
 		state: stateStore.store,
 		now: () => 1234,
 		onRevoked,
+		...(options.deviceId === undefined ? {} : { deviceId: options.deviceId }),
 		...(options.attachmentFetcher === undefined
 			? {}
 			: { attachmentFetcher: options.attachmentFetcher }),
@@ -1180,5 +1185,104 @@ describe('version-3 attachments', () => {
 		expect(harness.persisted().knownPaths).toContain(path);
 		const changes = await harness.engine.snapshotLocalChanges();
 		expect(changes.map((entry) => entry.path)).not.toContain(path);
+	});
+});
+
+describe('own-device operation skip', () => {
+	function singleOperationPage(operation: EncryptedOperation, cursor: string) {
+		return {
+			accessRevision: cursor,
+			cursor,
+			hasMore: false,
+			operations: [{ ...operation, sequence: '1' }],
+		};
+	}
+
+	test('skips an operation sealed by this device and still advances the cursor', async () => {
+		const harness = createHarness({ deviceId: 'device' });
+		const own = encodeFileChange(change('own.md', 'mine'), 'device');
+		harness.remote.pages = [singleOperationPage(own, '5')];
+
+		const result = await harness.engine.reconcile();
+
+		expect(result.applied).toBe(0);
+		expect(result.conflicts).toEqual([]);
+		expect(result.cursor).toBe('5');
+		expect(await harness.storage.read('own.md')).toBeNull();
+		expect(harness.persisted().cursor).toBe('5');
+		expect(harness.persisted().conflicts).toEqual([]);
+		expect(harness.persisted().knownPaths).not.toContain('own.md');
+	});
+
+	test('a page mixing own and other-device operations applies only the others', async () => {
+		const harness = createHarness({ deviceId: 'device' });
+		const own = encodeFileChange(change('own.md', 'mine'), 'device');
+		const other = encodeFileChange(
+			change('other.md', 'theirs'),
+			'other-device',
+		);
+		harness.remote.pages = [
+			{
+				accessRevision: '6',
+				cursor: '6',
+				hasMore: false,
+				operations: [
+					{ ...own, sequence: '1' },
+					{ ...other, sequence: '2' },
+				],
+			},
+		];
+
+		const result = await harness.engine.reconcile();
+
+		expect(result.applied).toBe(1);
+		expect(result.conflicts).toEqual([]);
+		expect(await harness.storage.read('own.md')).toBeNull();
+		expect(
+			decoder.decode((await harness.storage.read('other.md'))!.bytes),
+		).toBe('theirs');
+		expect(harness.persisted().cursor).toBe('6');
+	});
+
+	test('does not fetch an attachment for a skipped own version-3 operation', async () => {
+		let fetched = 0;
+		const harness = createHarness({
+			deviceId: 'device',
+			codec: createV3Codec({
+				path: 'file.bin',
+				previousPath: null,
+				baseRevision: null,
+				content: null,
+				blob: attachmentBlob(),
+			}),
+			attachmentFetcher: {
+				async fetch() {
+					fetched += 1;
+					return bytes('attach!!');
+				},
+			},
+		});
+		const own = encodeFileChange(change('file.bin', 'x'), 'device');
+		harness.remote.pages = [singleOperationPage(own, '1')];
+
+		const result = await harness.engine.reconcile();
+
+		expect(fetched).toBe(0);
+		expect(result.applied).toBe(0);
+		expect(await harness.storage.read('file.bin')).toBeNull();
+		expect(harness.persisted().cursor).toBe('1');
+	});
+
+	test('an absent own-device id keeps processing every operation', async () => {
+		const harness = createHarness();
+		harness.remote.pages = [page([change('a.md', 'a')], '2')];
+
+		const result = await harness.engine.reconcile();
+
+		expect(result.applied).toBe(1);
+		expect(decoder.decode((await harness.storage.read('a.md'))!.bytes)).toBe(
+			'a',
+		);
+		expect(harness.persisted().cursor).toBe('2');
 	});
 });

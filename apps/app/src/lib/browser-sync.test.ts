@@ -247,17 +247,23 @@ describe('browser sync reconciliation', () => {
 			await createDeviceIdentity({ passphrase }),
 			passphrase,
 		);
+		// The remote operation is authored by another device; the local identity
+		// must not match it or the engine would skip it as its own operation.
+		const remoteIdentity = await unlockDeviceIdentity(
+			await createDeviceIdentity({ passphrase }),
+			passphrase,
+		);
 		const objectKey = crypto.getRandomValues(new Uint8Array(32));
 		const objectKeys = new Map([['obj_reconcile', objectKey]]);
 		const pinnedSigners = new Map([
-			[identity.deviceId, identity.signingPublic],
+			[remoteIdentity.deviceId, remoteIdentity.signingPublic],
 		]);
 
 		const remoteCodec = createFileChangeCodec({
-			identity,
+			identity: remoteIdentity,
 			objectKeys,
 			pinnedSigners: new Map([
-				[identity.deviceId, encodeBase64(identity.signingPublic)],
+				[remoteIdentity.deviceId, encodeBase64(remoteIdentity.signingPublic)],
 			]),
 		});
 		const remoteOperation: EncryptedOperation =
@@ -1129,6 +1135,31 @@ describe('browser sync per-object binding', () => {
 		const bundle = await keyStore.read(DEFAULT_BROWSER_SYNC_BUNDLE_ID);
 		if (!bundle) throw new Error('no stored bundle');
 		const identity = await unlockDeviceIdentity(bundle, PASSPHRASE);
+		// The delivered operation is authored by another device; approve its signer
+		// so the engine applies it rather than skipping it as this device's own.
+		const remote = await unlockDeviceIdentity(
+			await createDeviceIdentity({ passphrase: PASSPHRASE }),
+			PASSPHRASE,
+		);
+		const remoteRecipient = encodeRecipient(remote.x25519Public);
+		state.devices = [
+			{
+				deviceId: remote.deviceId,
+				accountId: 'acct_one',
+				publicKey: encodeBase64(remote.signingPublic),
+				encryptionRecipient: remoteRecipient,
+			},
+		];
+		const approved = await controller.approveDevice(
+			remote.deviceId,
+			deviceFingerprintForCard(
+				remote.deviceId,
+				'acct_one',
+				remote.signingPublic,
+				remoteRecipient,
+			),
+		);
+		if (!approved.ok) throw new Error(approved.message);
 
 		const deliveredKey = randomBytes(32);
 		await deliveredKeyFor({
@@ -1140,10 +1171,10 @@ describe('browser sync per-object binding', () => {
 			key: deliveredKey,
 		});
 		const codec = createFileChangeCodec({
-			identity,
+			identity: remote,
 			objectKeys: new Map([[record.objectId, deliveredKey]]),
 			pinnedSigners: new Map([
-				[identity.deviceId, encodeBase64(identity.signingPublic)],
+				[remote.deviceId, encodeBase64(remote.signingPublic)],
 			]),
 		});
 		state.operations.push({
@@ -1221,6 +1252,31 @@ describe('browser sync per-object binding', () => {
 		const bundle = await keyStore.read(DEFAULT_BROWSER_SYNC_BUNDLE_ID);
 		if (!bundle) throw new Error('no stored bundle');
 		const identity = await unlockDeviceIdentity(bundle, PASSPHRASE);
+		// The conflicting operation is authored by another device; approve its
+		// signer so the engine records the conflict instead of skipping it.
+		const remote = await unlockDeviceIdentity(
+			await createDeviceIdentity({ passphrase: PASSPHRASE }),
+			PASSPHRASE,
+		);
+		const remoteRecipient = encodeRecipient(remote.x25519Public);
+		state.devices = [
+			{
+				deviceId: remote.deviceId,
+				accountId: 'acct_one',
+				publicKey: encodeBase64(remote.signingPublic),
+				encryptionRecipient: remoteRecipient,
+			},
+		];
+		const approved = await controller.approveDevice(
+			remote.deviceId,
+			deviceFingerprintForCard(
+				remote.deviceId,
+				'acct_one',
+				remote.signingPublic,
+				remoteRecipient,
+			),
+		);
+		if (!approved.ok) throw new Error(approved.message);
 
 		const deliveredKey = randomBytes(32);
 		await deliveredKeyFor({
@@ -1232,10 +1288,10 @@ describe('browser sync per-object binding', () => {
 			key: deliveredKey,
 		});
 		const codec = createFileChangeCodec({
-			identity,
+			identity: remote,
 			objectKeys: new Map([[record.objectId, deliveredKey]]),
 			pinnedSigners: new Map([
-				[identity.deviceId, encodeBase64(identity.signingPublic)],
+				[remote.deviceId, encodeBase64(remote.signingPublic)],
 			]),
 		});
 		const remoteOperation = await codec.sealFileChange({
@@ -1790,6 +1846,12 @@ describe('browser sync attachments', () => {
 			await createDeviceIdentity({ passphrase: PASSPHRASE }),
 			PASSPHRASE,
 		);
+		// The receiving replica is a different device than the operation author,
+		// so it does not skip the operation as its own.
+		const localIdentity = await unlockDeviceIdentity(
+			await createDeviceIdentity({ passphrase: PASSPHRASE }),
+			PASSPHRASE,
+		);
 		const plaintext = encoder.encode('attachment-bytes');
 		const { ciphertext, blob } = await encryptAttachment(objectKey, plaintext);
 		const payload = encodeFileChange(
@@ -1849,6 +1911,7 @@ describe('browser sync attachments', () => {
 			objectId,
 			objectKey,
 			remoteIdentity,
+			localIdentity,
 			plaintext,
 			blob,
 			ciphertext,
@@ -1863,7 +1926,7 @@ describe('browser sync attachments', () => {
 		withAttachments: boolean,
 	) {
 		return {
-			identity: setup.remoteIdentity,
+			identity: setup.localIdentity,
 			workspaceId: setup.workspaceId,
 			objectId: setup.objectId,
 			epoch: 1,
@@ -2152,12 +2215,16 @@ describe('browser attachment send', () => {
 		// A fresh replica with empty storage and durable state applies the queued
 		// version-3 operation, fetching and decrypting the attachment.
 		const receiverStorage = new MemorySyncStorage();
+		const receiverIdentity = await sendIdentity();
 		const receiver = sendBinding(identity, {
 			storage: receiverStorage,
 			remote,
 			server,
 		});
-		const outcome = await runBrowserSyncReconcile({ ...receiver, identity });
+		const outcome = await runBrowserSyncReconcile({
+			...receiver,
+			identity: receiverIdentity,
+		});
 		expect(outcome.applied).toBe(1);
 		const stored = await receiverStorage.read(result.path);
 		expect(stored).not.toBeNull();
@@ -2185,8 +2252,12 @@ describe('browser attachment send', () => {
 		// A new replica instance with empty storage reopens the encrypted
 		// operation from the remote and materializes the attachment.
 		const storage = new MemorySyncStorage();
+		const receiverIdentity = await sendIdentity();
 		const receiver = sendBinding(identity, { storage, remote, server });
-		const outcome = await runBrowserSyncReconcile({ ...receiver, identity });
+		const outcome = await runBrowserSyncReconcile({
+			...receiver,
+			identity: receiverIdentity,
+		});
 		expect(outcome.applied).toBe(1);
 		const stored = await storage.read(result.path);
 		expect(stored).not.toBeNull();
@@ -2258,13 +2329,14 @@ describe('browser attachment send', () => {
 		server.bytes![0] = (server.bytes![0] ?? 0) ^ 0x01;
 
 		const receiverStorage = new MemorySyncStorage();
+		const receiverIdentity = await sendIdentity();
 		const receiver = sendBinding(identity, {
 			storage: receiverStorage,
 			remote,
 			server,
 		});
 		await expect(
-			runBrowserSyncReconcile({ ...receiver, identity }),
+			runBrowserSyncReconcile({ ...receiver, identity: receiverIdentity }),
 		).rejects.toMatchObject({
 			code: BrowserSyncEngineErrorCode.AttachmentUnavailable,
 		});
@@ -2287,6 +2359,7 @@ describe('browser attachment send', () => {
 		await runBrowserSyncReconcile({ ...sender, identity });
 
 		const receiverStorage = new MemorySyncStorage();
+		const receiverIdentity = await sendIdentity();
 		const receiver = sendBinding(identity, {
 			storage: receiverStorage,
 			remote,
@@ -2294,7 +2367,7 @@ describe('browser attachment send', () => {
 			key: sendOtherKey,
 		});
 		await expect(
-			runBrowserSyncReconcile({ ...receiver, identity }),
+			runBrowserSyncReconcile({ ...receiver, identity: receiverIdentity }),
 		).rejects.toMatchObject({
 			code: BrowserSyncEngineErrorCode.InvalidOperation,
 		});
@@ -2335,8 +2408,12 @@ describe('browser attachment send', () => {
 			...sendBinding(identity, { storage, remote, server }),
 			state,
 		};
+		const receiverIdentity = await sendIdentity();
 
-		const outcome = await runBrowserSyncReconcile({ ...receiver, identity });
+		const outcome = await runBrowserSyncReconcile({
+			...receiver,
+			identity: receiverIdentity,
+		});
 		expect(outcome.applied).toBe(0);
 		expect(outcome.conflicts).toHaveLength(1);
 		expect(outcome.conflicts[0]!.reason).toBe('unexpected_file');

@@ -231,8 +231,12 @@ object is provisioned. The notes editor exposes attach, progress, list, and
 download controls. Both directions are capped at 64 MiB of browser memory
 against the protocol's 1 GiB limit.
 
-**Not implemented.** Native binary attachment conflict resolution is still open,
-and the engine re-downloads a sender's own just-uploaded blob on the next pull.
+**Implemented.** Native binary attachment conflict resolution keeps the local
+bytes and publishes a version-2 change; choosing remote materializes the blob and
+publishes a version-3 change. The remaining caveat is that a peer needs the blob
+or the original operation to converge. The engine also skips operations whose
+envelope `deviceId` matches its own device, so it no longer re-downloads and
+re-applies its own pushed operations.
 
 **Proposal.** Any new envelope or fingerprint version requires shared Rust and
 TypeScript conformance fixtures that accept and reject the same cases before it

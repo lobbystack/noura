@@ -46,6 +46,11 @@ pub use presence::{
     CollaborationPresenceEvent, CollaborationPresenceInput, CollaborationPresenceMember,
     EncryptedPresence, PresenceContext, PresenceSelection,
 };
+pub use recovery::{
+    BROWSER_RECOVERY_FORMAT, BROWSER_RECOVERY_KDF, BROWSER_RECOVERY_MAX_CIPHERTEXT,
+    BROWSER_RECOVERY_MIN_ITERATIONS, BROWSER_RECOVERY_VERSION, BrowserRecoveredObject,
+    BrowserRecoveryImport, import_browser_recovery_kit,
+};
 use serde::{Deserialize, Serialize};
 pub use signin::{DeviceConnection, DeviceSignIn, DeviceSignInInfo, DeviceSignInStatus};
 pub use transport::{HttpSyncTransport, SyncPass, SyncSecrets};

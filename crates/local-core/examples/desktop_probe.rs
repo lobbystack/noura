@@ -16,6 +16,10 @@
 //! `statePath` at a real credential location, never reuse it for real workspaces, and
 //! delete it when the probe finishes. The file is written with owner-only permissions
 //! and is never printed.
+//!
+//! To reduce the chance of misuse, reads and writes of probe state additionally require
+//! the environment variable `NOURA_DESKTOP_PROBE_ALLOW_STATE=1`, and `statePath` must
+//! resolve inside the system temp directory. Without both guards the probe refuses.
 
 use std::{
     cell::RefCell,
@@ -158,11 +162,27 @@ fn write_state(
     path: &Path,
     state: &ProbeState,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // This state file holds test-only device secrets. Require an explicit opt-in
+    // and confine it to the system temp directory so it can never be aimed at a
+    // real user location or a real credential store.
+    if std::env::var("NOURA_DESKTOP_PROBE_ALLOW_STATE").as_deref() != Ok("1") {
+        return Err("NOURA_DESKTOP_PROBE_ALLOW_STATE=1 is required to write probe state".into());
+    }
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temp = std::fs::canonicalize(std::env::temp_dir())?;
+    let resolved = std::fs::canonicalize(parent)?;
+    if !resolved.starts_with(&temp) {
+        return Err("probe state must be written inside the system temp directory".into());
+    }
+    eprintln!("desktop_probe: WARNING writing test-only secrets inside the temp directory");
     let bytes = Zeroizing::new(serde_json::to_vec(state)?);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -183,6 +203,19 @@ fn write_state(
 }
 
 fn read_state(path: &Path) -> std::result::Result<ProbeState, Box<dyn std::error::Error>> {
+    // Symmetric with `write_state`: never read probe state from a real location.
+    if std::env::var("NOURA_DESKTOP_PROBE_ALLOW_STATE").as_deref() != Ok("1") {
+        return Err("NOURA_DESKTOP_PROBE_ALLOW_STATE=1 is required to read probe state".into());
+    }
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temp = std::fs::canonicalize(std::env::temp_dir())?;
+    let resolved = std::fs::canonicalize(parent)?;
+    if !resolved.starts_with(&temp) {
+        return Err("probe state must be read from inside the system temp directory".into());
+    }
     let bytes = Zeroizing::new(std::fs::read(path)?);
     Ok(serde_json::from_slice(&bytes)?)
 }

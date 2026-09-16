@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import nativeFixture from '../../../docs/workspace-format/fixtures/native-recovery-v1.json';
+import browserRecoveryFixture from '../../../docs/workspace-format/fixtures/browser-recovery-v1.json';
 import {
 	BrowserSyncError,
 	BrowserSyncErrorCode,
@@ -408,6 +409,55 @@ describe('native recovery interoperability', () => {
 					},
 				},
 			}),
+		).rejects.toBeInstanceOf(BrowserSyncError);
+	});
+
+	test('the shared browser recovery fixture unlocks and recovers the expected keys', async () => {
+		const fixture = browserRecoveryFixture as {
+			kit: unknown;
+			recovery_passphrase: string;
+			device_passphrase: string;
+			expected: {
+				device_id: string;
+				object_keys: Array<{ object_id: string; epoch: number; key: string }>;
+			};
+		};
+		const { bundle, binding } = await importRecoveryKit(
+			fixture.kit,
+			fixture.recovery_passphrase,
+		);
+		const identity = await unlockDeviceIdentity(
+			bundle,
+			fixture.device_passphrase,
+		);
+		expect(identity.deviceId).toBe(fixture.expected.device_id);
+
+		const recovered = new Map<string, string>();
+		for (const [objectId, bound] of Object.entries(binding.objects)) {
+			const key = await unwrapKey(
+				{
+					workspace_id: binding.workspaceId,
+					object_id: objectId,
+					epoch: bound.epoch,
+					signing_device: bound.key.deviceId,
+					device_id: bound.key.deviceId,
+					recipient_public_key: bound.key.recipientPublicKey,
+					ephemeral_public_key: bound.key.ephemeralPublicKey,
+					salt: bound.key.salt,
+					nonce: bound.key.nonce,
+					wrapped_key: bound.key.wrappedKey,
+					signature: bound.key.signature,
+				},
+				identity.x25519Secret,
+				identity.signingPublic,
+			);
+			recovered.set(objectId, encodeBase64(key));
+		}
+		for (const expected of fixture.expected.object_keys) {
+			expect(recovered.get(expected.object_id)).toBe(expected.key);
+		}
+		await expect(
+			importRecoveryKit(fixture.kit, OTHER_PASSPHRASE),
 		).rejects.toBeInstanceOf(BrowserSyncError);
 	});
 });

@@ -831,6 +831,7 @@ function createReconcileEngine(input: BrowserSyncReconcileInput) {
 		remote: input.remote,
 		codec: createReconcileCodec(input),
 		state: input.state,
+		deviceId: input.identity.deviceId,
 		...(input.now === undefined ? {} : { now: input.now }),
 		...(input.onRevoked === undefined ? {} : { onRevoked: input.onRevoked }),
 		...(attachmentFetcher === undefined ? {} : { attachmentFetcher }),

@@ -33,10 +33,12 @@ fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
 hkdf = "=0.12.4"
+hmac = "=0.12.1"
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
 notify = "8"
+pbkdf2 = "=0.12.2"
 pulldown-cmark = "0.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
 rmcp = { version = "3.1", features = ["server", "transport-io"] }

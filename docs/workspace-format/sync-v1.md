@@ -202,7 +202,7 @@ serializer; TypeScript exposes validation only.
 
 Directory fsync is implemented on Unix. Equivalent crash-durability behavior on
 Windows still needs implementation and platform testing. Move/identity conflict
-resolution, attachment conflict resolution, and collaborative text updates remain unfinished.
+resolution and collaborative text updates remain unfinished.
 
 ## Encrypted attachments
 
@@ -243,7 +243,28 @@ is truncated durably so retry can fetch clean bytes.
 
 Ordinary binary attachments stream with bounded buffers. Files starting with a
 Markdown frontmatter delimiter still use the existing canonical parser, which
-currently loads the whole file for identity validation. Attachment conflicts
-are retained and shown for review; explicit binary conflict resolution remains
-a separate release requirement. Completed blobs are retained until safe snapshot
-coverage and garbage collection are implemented.
+currently loads the whole file for identity validation. Attachment conflicts are
+retained and shown for review.
+
+Explicit binary resolution follows the same safety conditions as reviewed text:
+the local file must exist, the catalogued object revision must equal the current
+on-disk revision, and the change must keep its path (no move). The reviewer then
+chooses one branch:
+
+- `remote`: materialize the reviewed blob into the canonical path through the
+  existing blob store, verifying its ciphertext digest and decrypting with the
+  object key before replacement, then publish a signed version-3 change that
+  repeats the same blob manifest. The exact ciphertext must already be present
+  locally; otherwise the call fails with `sync_blob_unavailable` and changes
+  nothing.
+- `local`: keep the current canonical bytes and publish a signed version-2 change
+  whose content is those bytes and whose accepted revisions include the local and
+  remote branches.
+
+Both choices commit canonical bytes before the journal publishes the resolution and
+marks the receipt resolved, and an interrupted resolution resumes the same retained
+ciphertext. Because version 3 carries no `acceptedRevisions`, a replica converges to
+a reviewed remote branch only if it already holds the blob or applies the original
+attachment operation first; otherwise the resolution remains a conflict. Completed
+blobs are retained until safe snapshot coverage and garbage collection are
+implemented.
