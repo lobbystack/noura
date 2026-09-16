@@ -23,9 +23,11 @@ fs2.workspace = true
 futures.workspace = true
 genai.workspace = true
 ignore.workspace = true
+hmac.workspace = true
 jiff.workspace = true
 keyring.workspace = true
 notify.workspace = true
+pbkdf2.workspace = true
 pulldown-cmark.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
@@ -33,13 +35,16 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 slug.workspace = true
+sync-key-envelope = { path = "../sync-key-envelope" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
-ulid.workspace = true
+ulid = { workspace = true, features = ["std"] }
 uuid.workspace = true
 url.workspace = true
+workspace-format = { path = "../workspace-format" }
+x25519-dalek.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

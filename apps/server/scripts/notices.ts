@@ -6,7 +6,7 @@ import { readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 const metafile = (await Bun.file('dist/metafile.json').json()) as {
 	inputs: Record<string, unknown>;
 };
-const browserInputs = Bun.file('../server-web/.svelte-kit/client-inputs.json');
+const browserInputs = Bun.file('../app/.svelte-kit/hosted-client-inputs.json');
 if (await browserInputs.exists()) {
 	const browser = (await browserInputs.json()) as {
 		version: number;
@@ -45,12 +45,17 @@ for (const input of Object.keys(metafile.inputs)) {
 						pkg.name === 'dompurify' &&
 						pkg.license === '(MPL-2.0 OR Apache-2.0)'
 							? 'Apache-2.0'
-							: // 0.10.6 omits package.json license metadata; its shipped LICENSE explicitly grants MIT.
+							: // These versions omit metadata; their shipped LICENSE explicitly grants MIT.
 								pkg.name === 'svelte-toolbelt' &&
-								  pkg.version === '0.10.6' &&
+								  ['0.7.1', '0.10.6'].includes(pkg.version) &&
 								  !pkg.license
 								? 'MIT'
-								: pkg.license,
+								: // These published versions omit metadata but ship the MIT LICENSE.
+									pkg.name === 'runed' &&
+									  ['0.23.4', '0.25.0', '0.28.0'].includes(pkg.version) &&
+									  !pkg.license
+									? 'MIT'
+									: pkg.license,
 					directory,
 				});
 				break;
@@ -69,7 +74,9 @@ const allowed = new Set([
 	'MIT-0',
 	'Unlicense',
 	'(MIT OR Apache-2.0)',
+	'Apache-2.0 OR MIT',
 	'OFL-1.1',
+	'CC0-1.0',
 ]);
 let notices = '# Noura server and browser bundled dependency notices\n\n';
 for (const [name, pkg] of [...packages].sort(([a], [b]) =>
@@ -84,6 +91,8 @@ for (const [name, pkg] of [...packages].sort(([a], [b]) =>
 	if (!files.length) {
 		if (name === '@better-auth/utils@0.4.2') {
 			notices += await readFile('licenses/better-auth-utils-0.4.2.txt', 'utf8');
+		} else if (name === '@tauri-apps/api@2.11.1') {
+			notices += await readFile('licenses/tauri-api-2.11.1.txt', 'utf8');
 		} else if (name === '@tus/utils@0.7.1') {
 			notices += await readFile('licenses/tus-utils-0.7.1.txt', 'utf8');
 		} else {

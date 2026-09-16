@@ -2,7 +2,9 @@ import { expect, test } from 'bun:test';
 import {
 	definePlugin,
 	PluginHost,
+	PluginRuntimeError,
 	requireCapability,
+	supportsPlatform,
 	type PluginHostServices,
 } from './index';
 import { AiRegistry } from '@noura/ai';
@@ -21,6 +23,151 @@ test('plugin manifests enforce declared capabilities', () => {
 		requireCapability(plugin.manifest, 'workspace.storage'),
 	).toThrow();
 });
+
+test('platform metadata gates activation while legacy manifests remain portable', async () => {
+	let desktopActivated = false;
+	const desktopOnly = definePlugin({
+		manifest: {
+			id: 'desktop-only',
+			name: 'Desktop only',
+			version: '1.0.0',
+			capabilities: [],
+			platforms: ['desktop'],
+		},
+		activate() {
+			desktopActivated = true;
+		},
+	});
+	expect(supportsPlatform(desktopOnly.manifest, 'desktop')).toBe(true);
+	expect(supportsPlatform(desktopOnly.manifest, 'web')).toBe(false);
+	expect(() =>
+		definePlugin({
+			manifest: {
+				id: 'no-platforms',
+				name: 'No platforms',
+				version: '1.0.0',
+				capabilities: [],
+				platforms: [],
+			},
+			activate() {},
+		}),
+	).toThrow();
+
+	const webHost = new PluginHost({} as PluginHostServices, {
+		platform: 'web',
+	});
+	await expect(webHost.activate(desktopOnly)).rejects.toThrow(
+		'does not support web',
+	);
+	expect(desktopActivated).toBe(false);
+	expect(webHost.isActive('desktop-only')).toBe(false);
+
+	let activated = false;
+	await webHost.activate(
+		definePlugin({
+			manifest: {
+				id: 'legacy',
+				name: 'Legacy',
+				version: '1.0.0',
+				capabilities: [],
+			},
+			activate() {
+				activated = true;
+			},
+		}),
+	);
+	expect(activated).toBe(true);
+});
+
+test('partial hosts reject unavailable activation capabilities before plugin code runs', async () => {
+	let activated = false;
+	const host = new PluginHost({} as PluginHostServices, {
+		platform: 'web',
+		supportedCapabilities: ['workspace.objects'],
+	});
+	await expect(
+		host.activate(
+			definePlugin({
+				manifest: {
+					id: 'requires-commands',
+					name: 'Requires commands',
+					version: '1.0.0',
+					capabilities: ['workspace.objects', 'workspace.commands'],
+					platforms: ['web'],
+					activationCapabilities: {
+						web: ['workspace.objects', 'workspace.commands'],
+					},
+				},
+				activate() {
+					activated = true;
+				},
+			}),
+		),
+	).rejects.toMatchObject({
+		code: 'plugin_capability_unsupported',
+		category: 'validation',
+		operation: 'plugin_activate',
+	});
+	expect(activated).toBe(false);
+	const error = new PluginRuntimeError(
+		'plugin_capability_unsupported',
+		'Unavailable',
+		'plugin_activate',
+		{},
+	);
+	expect(error.retryable).toBe(false);
+});
+
+test('a context reports only the capabilities the activation actually holds', async () => {
+	const seen: {
+		capabilities?: ReadonlySet<string>;
+		held?: Array<boolean>;
+	} = {};
+	const full = new PluginHost({} as PluginHostServices);
+	await full.activate({
+		manifest: {
+			id: 'grants',
+			name: 'Grants',
+			version: '1.0.0',
+			capabilities: ['workspace.objects', 'ai.context'],
+		},
+		activate(context) {
+			seen.capabilities = context.capabilities;
+			seen.held = [
+				context.hasCapability('workspace.objects'),
+				context.hasCapability('ai.context'),
+				context.hasCapability('workspace.files'),
+			];
+		},
+	});
+	expect([...seen.capabilities!]).toEqual(['workspace.objects', 'ai.context']);
+	expect(seen.held).toEqual([true, true, false]);
+
+	const partial = new PluginHost({} as PluginHostServices, {
+		platform: 'web',
+		supportedCapabilities: ['workspace.objects'],
+	});
+	await partial.activate({
+		manifest: {
+			id: 'partial-grants',
+			name: 'Partial grants',
+			version: '1.0.0',
+			capabilities: ['workspace.objects', 'ai.context'],
+			platforms: ['web'],
+			activationCapabilities: { web: ['workspace.objects'] },
+		},
+		activate(context) {
+			seen.capabilities = context.capabilities;
+			seen.held = [
+				context.hasCapability('workspace.objects'),
+				context.hasCapability('ai.context'),
+			];
+		},
+	});
+	expect([...seen.capabilities!]).toEqual(['workspace.objects']);
+	expect(seen.held).toEqual([true, false]);
+});
+
 test('plugin host denies undeclared object access', async () => {
 	const services: PluginHostServices = {
 		files: {

@@ -16,7 +16,7 @@ The probe sends neither workspace content nor provider credentials. It uses no p
 
 Run `bun run verify:pi-runtime` to build a standalone browser bundle and reject Node-only runtime imports. With Pi `0.84.4`, the standalone bundle is 285.97 kB uncompressed and 62.85 kB gzip.
 
-The application production build loads the probe only from the AI route. The current route chunk contribution is approximately 106.48 kB gzip; reassess this cost before making the production agent surface generally available.
+The application production build loads the probe only from the AI route. The current route chunk contribution is 106.48 kB gzip; reassess this cost before making the production agent surface generally available.
 
 ## Mobile status
 

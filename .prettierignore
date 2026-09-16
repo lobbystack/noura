@@ -2,10 +2,12 @@ node_modules/
 target/
 .git/
 .agents/
-.svelte-kit/
+.svelte-kit*/
 build/
+build-hosted/
 dist/
 src-tauri/icons/
+crates/workspace-format/bindings/
 Cargo.lock
 bun.lock
 crates/local-core/bindings/

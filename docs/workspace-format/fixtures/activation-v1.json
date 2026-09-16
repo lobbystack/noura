@@ -1,0 +1,59 @@
+{
+  "domain": "noura.sync.object-activation",
+  "version": 1,
+  "vectors": [
+    {
+      "name": "mixed-age-web-envelopes",
+      "activation": {
+        "version": 1,
+        "activationId": "activation_fixture",
+        "workspaceId": "workspace",
+        "policyRevision": "7",
+        "coveredSequence": "12",
+        "capabilityDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "deviceId": "device_signer",
+        "document": {
+          "generation": "generation",
+          "mode": "text"
+        },
+        "envelopes": [
+          {
+            "deviceId": "device_age",
+            "wrappedKey": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+            "signature": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=="
+          },
+          {
+            "deviceId": "device_browser",
+            "wrappedKey": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+            "signature": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ==",
+            "construction": "web",
+            "recipientPublicKey": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=",
+            "ephemeralPublicKey": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+            "salt": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+            "nonce": "CQkJCQkJCQkJCQkJ"
+          }
+        ],
+        "checkpoint": {
+          "version": 1,
+          "generation": "generation",
+          "coveredSequence": "12",
+          "payload": {
+            "version": 1,
+            "operationId": "operation_fixture",
+            "workspaceId": "workspace",
+            "objectId": "object",
+            "deviceId": "device_signer",
+            "epoch": 1,
+            "policyRevision": "7",
+            "nonce": "CgoKCgoKCgoKCgoK",
+            "ciphertext": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+            "signature": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=="
+          },
+          "signature": "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ=="
+        },
+        "signature": "Dg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg=="
+      },
+      "expected_signing_bytes": "[\"noura.sync.object-activation\",1,\"activation_fixture\",\"workspace\",\"7\",\"12\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"device_signer\",[\"generation\",\"text\"],[[\"device_age\",\"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\",\"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg==\"],[\"device_browser\",\"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=\",\"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ==\",\"web\",\"BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=\",\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=\",\"CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=\",\"CQkJCQkJCQkJCQkJ\"]],\"d2252a6611dba989063a0fa0a9e1d9c254813e0dc844a471bcac95a90b45c016\"]"
+    }
+  ]
+}

@@ -4,15 +4,46 @@ export { syncFileChangeSchema } from './sync';
 export const objectIdSchema = z
 	.string()
 	.regex(/^[a-z][a-z-]*_[0-9a-hjkmnp-tv-z]{26}$/);
+const civilDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function isCivilDate(value: string): boolean {
+	const match = civilDatePattern.exec(value);
+	if (!match) return false;
+	const year = Number(match[1]);
+	const month = Number(match[2]);
+	const day = Number(match[3]);
+	if (month < 1 || month > 12 || day < 1) return false;
+	const daysInMonth = [
+		31,
+		year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28,
+		31,
+		30,
+		31,
+		30,
+		31,
+		31,
+		30,
+		31,
+		30,
+		31,
+	];
+	return day <= daysInMonth[month - 1]!;
+}
+
+function isDateValue(value: string): boolean {
+	if (isCivilDate(value)) return true;
+	const timestampDate = /^(\d{4}-\d{2}-\d{2})T/.exec(value)?.[1];
+	return (
+		timestampDate !== undefined &&
+		isCivilDate(timestampDate) &&
+		!Number.isNaN(Date.parse(value)) &&
+		/(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+	);
+}
+
 export const dateValueSchema = z
 	.string()
-	.refine(
-		(value) =>
-			/^\d{4}-\d{2}-\d{2}$/.test(value) ||
-			(!Number.isNaN(Date.parse(value)) &&
-				/(?:Z|[+-]\d{2}:\d{2})$/.test(value)),
-		'Use YYYY-MM-DD or RFC 3339 with an explicit offset',
-	);
+	.refine(isDateValue, 'Use YYYY-MM-DD or RFC 3339 with an explicit offset');
 export const taskStatusSchema = z.enum([
 	'todo',
 	'in-progress',
@@ -20,6 +51,38 @@ export const taskStatusSchema = z.enum([
 	'cancelled',
 ]);
 export const taskPrioritySchema = z.enum(['low', 'medium', 'high', 'urgent']);
+export const projectIdSchema = z
+	.string()
+	.regex(/^project_[0-9a-hjkmnp-tv-z]{26}$/);
+export const taskPropertiesSchema = z
+	.object({
+		status: taskStatusSchema.default('todo'),
+		priority: taskPrioritySchema.default('medium'),
+		due: z
+			.unknown()
+			.optional()
+			.superRefine((value, context) => {
+				if (typeof value === 'string' && !isDateValue(value))
+					context.addIssue({
+						code: 'custom',
+						message: 'Use YYYY-MM-DD or RFC 3339 with an explicit offset',
+					});
+			}),
+		project: z
+			.unknown()
+			.optional()
+			.superRefine((value, context) => {
+				if (
+					typeof value === 'string' &&
+					!projectIdSchema.safeParse(value).success
+				)
+					context.addIssue({
+						code: 'custom',
+						message: 'Task project references use a stable project ID',
+					});
+			}),
+	})
+	.passthrough();
 export const projectStatusSchema = z.enum([
 	'planned',
 	'active',
@@ -27,6 +90,11 @@ export const projectStatusSchema = z.enum([
 	'completed',
 	'cancelled',
 ]);
+export const projectPropertiesSchema = z
+	.object({
+		status: projectStatusSchema.default('planned'),
+	})
+	.passthrough();
 export const pluginIdSchema = z
 	.string()
 	.regex(

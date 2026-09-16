@@ -1,0 +1,220 @@
+{
+  "invalid": [
+    {
+      "expected_error": "sync_invalid_signature",
+      "name": "tampered_signature",
+      "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      "operation": "verify",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "AJ5BnFGptO77WBUFYhRVLbEe4SDaAerJHNCFtSRxUPosevrGp72/kcOsiOyA3zKifZdhueoMv29Ta+KpYePGAw==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+    },
+    {
+      "expected_error": "sync_decrypt_failed",
+      "name": "tampered_ciphertext",
+      "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      "operation": "open",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEU=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "vuTrjlgr8TurKmcZV0ShqH+rLLPR1vxizzQ8wXXZN5PlKRiQLK7o3pjLHlhddbjrHRNsXNBGBY2MuQXRi0aWDA==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+    },
+    {
+      "expected_error": "sync_decrypt_failed",
+      "name": "tampered_metadata",
+      "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      "operation": "open",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object_other",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "aWHplydHZeEijxFXT7ct13Tq2yjDbSVnLa/tmTnoNZYVstLpNKSwbsmb2XfyFFIhhbba0A3pwOYh02LrfWNKAw==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+    },
+    {
+      "expected_error": "sync_decrypt_failed",
+      "name": "wrong_object_key",
+      "object_key": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
+      "operation": "open",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "/55BnFGptO77WBUFYhRVLbEe4SDaAerJHNCFtSRxUPosevrGp72/kcOsiOyA3zKifZdhueoMv29Ta+KpYePGAw==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+    },
+    {
+      "expected_error": "sync_invalid_signature",
+      "name": "wrong_signer_public",
+      "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      "operation": "verify",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "/55BnFGptO77WBUFYhRVLbEe4SDaAerJHNCFtSRxUPosevrGp72/kcOsiOyA3zKifZdhueoMv29Ta+KpYePGAw==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o="
+    },
+    {
+      "expected_error": "sync_invalid_base64",
+      "name": "bad_base64_nonce",
+      "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      "operation": "open",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "not-base64!!",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "/55BnFGptO77WBUFYhRVLbEe4SDaAerJHNCFtSRxUPosevrGp72/kcOsiOyA3zKifZdhueoMv29Ta+KpYePGAw==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+    },
+    {
+      "expected_error": "sync_invalid_envelope",
+      "name": "epoch_zero",
+      "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      "operation": "open",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 0,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "V47O83fjtS1X2S4P8aiCl/7fb5Jzk3JQB4VoJeIrdcHXOZUoj7QKRscW5yUf7zVNhhwHEe46LHZ5WEslLylKBw==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+    },
+    {
+      "expected_error": "sync_invalid_envelope",
+      "name": "unsupported_version",
+      "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+      "operation": "open",
+      "operation_value": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "JzbTyy/+rFWeYsuMiDB1cOtSPGfGnLuixyRr9h9V5E1KhCMs0+qZhG9b91ZcEV1pnRMmQcFOuvUQjF1pazyOAQ==",
+        "version": 3,
+        "workspaceId": "workspace"
+      },
+      "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+    }
+  ],
+  "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+  "operation_domain": "noura.sync.operation",
+  "payload_domain": "noura.sync.payload",
+  "signing_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+  "signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  "valid": [
+    {
+      "expected_operation": {
+        "ciphertext": "20SaLZi3b2+wn4Vpg+0U3xsJAI8WRC2HtMKsrt19qTRU4mUkfN+9eX1KL/t/UEQ=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "objectId": "object",
+        "operationId": "operation_basic",
+        "policyRevision": "1",
+        "signature": "/55BnFGptO77WBUFYhRVLbEe4SDaAerJHNCFtSRxUPosevrGp72/kcOsiOyA3zKifZdhueoMv29Ta+KpYePGAw==",
+        "version": 1,
+        "workspaceId": "workspace"
+      },
+      "expected_plaintext_base64": "cHJpdmF0ZS9wYXRoLm1kCm9wZXJhdGlvbiBib2R5Cg==",
+      "inputs": {
+        "device_id": "device_browser",
+        "epoch": 1,
+        "nonce": "BgYGBgYGBgYGBgYG",
+        "object_id": "object",
+        "operation_id": "operation_basic",
+        "plaintext_base64": "cHJpdmF0ZS9wYXRoLm1kCm9wZXJhdGlvbiBib2R5Cg==",
+        "policy_revision": "1",
+        "workspace_id": "workspace"
+      },
+      "name": "operation-v1-basic"
+    },
+    {
+      "expected_operation": {
+        "ciphertext": "cEKn1nkN9NEa+R6NQmTFgSeRDaWPrJNrQAIilPbXAS7XWn5CM8XeYt0=",
+        "deviceId": "device_browser",
+        "epoch": 1,
+        "generation": "generation",
+        "kind": "text",
+        "nonce": "BwcHBwcHBwcHBwcH",
+        "objectId": "object",
+        "operationId": "operation_document",
+        "policyRevision": "1",
+        "signature": "w8a7Ggr7TdYqnRyeU3+qhXooxxRvgqCb5ZSGHTadmOOhR0TEAIueplDvQjuTNJGdvzQ7ay7gaUih963//bIzBg==",
+        "version": 2,
+        "workspaceId": "workspace"
+      },
+      "expected_plaintext_base64": "ZG9jdW1lbnQgZ2VuZXJhdGlvbiB0ZXh0Cg==",
+      "inputs": {
+        "device_id": "device_browser",
+        "epoch": 1,
+        "generation": "generation",
+        "kind": "text",
+        "nonce": "BwcHBwcHBwcHBwcH",
+        "object_id": "object",
+        "operation_id": "operation_document",
+        "plaintext_base64": "ZG9jdW1lbnQgZ2VuZXJhdGlvbiB0ZXh0Cg==",
+        "policy_revision": "1",
+        "workspace_id": "workspace"
+      },
+      "name": "operation-v2-document"
+    }
+  ],
+  "version": 1
+}

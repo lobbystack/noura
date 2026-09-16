@@ -1,8 +1,9 @@
 .git
 **/node_modules
-**/.svelte-kit
+**/.svelte-kit*
 **/dist
 **/build
+**/build-hosted
 target
 **/.env
 **/.env.*

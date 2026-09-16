@@ -1,0 +1,59 @@
+{
+	"domain": "noura.sync.recovery",
+	"format": "noura.sync.recovery",
+	"object_keys": [
+		{
+			"epoch": 1,
+			"key": "ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE=",
+			"object_id": "object_one"
+		},
+		{
+			"epoch": 2,
+			"key": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
+			"object_id": "object_two"
+		}
+	],
+	"recovery": {
+		"config": {
+			"approvedAccounts": {
+				"device_recovery": "account_recovery"
+			},
+			"approvedRecipients": {
+				"device_recovery": "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
+			},
+			"deviceId": "device_recovery",
+			"enabled": false,
+			"origin": "https://sync.noura.example",
+			"trustedDevices": {
+				"device_recovery": "0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc="
+			},
+			"version": 1,
+			"workspaceId": "workspace_recovery"
+		},
+		"envelopes": [
+			{
+				"deviceId": "device_recovery",
+				"epoch": 1,
+				"objectId": "object_one",
+				"signature": "NEFH8dxAjAzICf+8uTYObRuGb3ePnSsrWBAnh8Dl5Udl7Re364nFNo8c8rd1xfpyJmGIlzfFxBHLKgcaWiNcAg==",
+				"signingDevice": "device_recovery",
+				"workspaceId": "workspace_recovery",
+				"wrappedKey": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBEMDNNVks5UDJoTElNenVHY1Z3TTh1MGJjTkxCVVp1MzExTU52Ukt0TDEwCmdnR3JQZTB3V2JQOGU5S0JxRHE4YXRlRVdLdnJiWGVoYkJJcUNnWFZGT0kKLT4gLlEtZ3JlYXNlIDpQMHQ4IDlVOCBJMlpbCm03M0RwQlF4R2xwS1BBV2FPdmZkSXduWkljSWVwenBkMFFGY0ZiMVJBTnVscXc4N1cxWWIxUkJuZmlnTVZBaC8KTENqOEhVMnlYVDMzd21mNnltYTJtMjJCaWU5SXZDdm1RcHlnclhaNUVaZ1lvOW0zVTRjajZ6N2pJZGRzc3o1TAppV1NoCi0tLSBvSTFqR1RxWStTczg5aXBNNDVDRDdzL0NjSEFqMndkTXp1L0FSMEd0WVJrCr22c543zc6QIW/kQR1ADr1aflR4GIEYn+JBUusd+RER6z7Q2t87NfJXrD7OIp/1kMk3/mVGgXp1kNuqDZbxIdScxNXz1j7PCzDGy7A0QkX5gnN5ua7G2EzhRqM/qiqEaGqy7IegiXKe6bjzyS9T42X76pZ8Ir8pFlmVuG4dkTTr4EI/62eckRMHi2fuxZI="
+			},
+			{
+				"deviceId": "device_recovery",
+				"epoch": 2,
+				"objectId": "object_two",
+				"signature": "vhEtVIe5X6YPOp7ibMHk3gmaceNHcpYRbh2ijcEwqgHLsuO/PQFS2Ub1xCcKitmk2K52kDZ3I7WaChg8G3IsDQ==",
+				"signingDevice": "device_recovery",
+				"workspaceId": "workspace_recovery",
+				"wrappedKey": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB1aWt4SDNJakw3UC9TYWkyNWw5QUZ5Nm1BUExOTHl3Tml1dTZxL0RQb0J3Cld2SjhCMDl4QW02OEduRmNhczRJZ1VBOGI2VHlYUFFqVVhiRzJ0U1YvbWcKLT4gfF1ZbW0hbD4tZ3JlYXNlIExaajMgZC9OdCBNIi81CkhITXRKdTBubkRSaUw5Q2xyeXErUW9nSXZNNVNFbWJOMGF6Q3JCb1hVMURydlN5RVZjWTN4UEJMQXlNeVI4b3IKWXVjWU80RHJjL2xTQ0kzWFdla3I2UnQ1MjFBRHdpUy93emRsbC9JMEJnCi0tLSAvd3hMQ3BpMDlGbU9sdXM2VWd5UWJHeTJLNkJ4K3NHWjkyTTFwc0gwREtzCv+EAntqxDf7pBZvavw/JxctdTsA+erOybvqvGlri5jWPjogfnL8qAnxw0sieMq7GgUggqgUEo7wAGtaecxMlKnRtfEbyC897X54gDUKHu06XIn0pZLVbXgd+PTKGqfdXsin3uWLmnXWHUP9Gj4JG5AYkV/dUcYsIcYMvxCsg3rDatYyk5b4dHPY4YqacoA="
+			}
+		],
+		"signature": "iDieTiOQigbydEtbUz5oYa8Fv30LmE/ySpO+YRVleYGvyFj68QTIm9asgP19DlSM9pbRGPDWPprzYuX87eA5BA==",
+		"version": 1
+	},
+	"recovery_identity": "AGE-SECRET-KEY-1GQ9778VQXMMJVE8SK7J6VT8UJ4HDQAJUVSFCWCM02D8GEWQ72PVQ2Y5J33",
+	"recovery_recipient": "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa",
+	"version": 1
+}

@@ -29,17 +29,17 @@ At run start, the controller composes instructions deterministically: Noura base
 
 ## Streaming and events
 
-Each stream operation has a stable UUID. Every `AiStreamFrame` includes that operation ID and a strictly increasing sequence number. Frames are delivered over a dedicated `tauri::ipc::Channel<AiStreamFrame>` because token and tool deltas are frequent, ordered, and must not be dropped.
+Each stream operation has a stable UUID. Every `AiStreamFrame` includes that operation ID and a strictly increasing sequence number. Native code delivers frames over a dedicated `tauri::ipc::Channel<AiStreamFrame>` because token and tool deltas are frequent, ordered, and must not be dropped.
 
 `noura://core-event` remains for durable, lower-frequency facts such as `chat:created`, `chat:renamed`, `chat:message-appended`, `chat:assistant-finished`, and `chat:expired`. It is not a streaming transport: its broadcast semantics intentionally allow lag recovery. Files remain canonical when an event or derived index disagrees.
 
-The native provider bridge applies bounded backpressure. A closed Channel receiver is cancellation. Public errors contain a stable code and safe message only; raw provider bodies, request headers, credential references, and secrets are never emitted.
+The native provider bridge applies bounded backpressure. A closed Channel receiver is cancellation. Public errors contain a stable code and safe message only; the native bridge never emits raw provider bodies, request headers, credential references, or secrets.
 
 ## Cancellation and lifecycle
 
 Cancellation is bidirectional: Pi's `AbortSignal` asks native code to cancel the operation; native cancellation or receiver loss terminates the provider stream and produces an aborted terminal frame. Only one active run is allowed per chat, and a duplicate start cannot replace the active run's cancellation handle.
 
-On application suspension, native operations are cancelled or terminated and the available partial assistant text is persisted as cancelled. On startup or resume, in-progress assistant and tool-call records are recovered as interrupted unless a matching, durable tool result proves completion. Ambiguous mutations are never retried automatically.
+On application suspension, native code cancels or terminates operations and persists the available partial assistant text as cancelled. On startup or resume, it recovers in-progress assistant and tool-call records as interrupted unless a matching, durable tool result proves completion. It never retries ambiguous mutations automatically.
 
 ## Durable chat records
 
@@ -53,8 +53,8 @@ All mutation requests use expected revisions. External edits win and surface a c
 
 Web search and URL fetch are later, separate native capabilities. They accept only validated HTTPS destinations, reject private/local addresses and unsafe redirects, enforce size/type/timeout limits, return text-oriented extracted content with source attribution, and have their own one-time disclosure. They never use browser cookies, browser history, local URL schemes, or credential discovery.
 
-Exa is not enabled automatically. A September 2026 review found that its API requires an account and API key, grants use only to authorized users under its Terms, is subject to documented usage limits, and has usage-based pricing. Zero-configuration redistribution is therefore not established. Noura's native web service fails closed unless a compliant, explicitly configured provider and the separate web disclosure are present.
+Noura does not enable Exa automatically. A September 2026 review found that its API requires an account and API key, grants use only to authorized users under its Terms, is subject to documented usage limits, and has usage-based pricing. Noura therefore cannot establish zero-configuration redistribution. Noura's native web service fails closed unless a compliant, explicitly configured provider and the separate web disclosure are present.
 
 ## Superseded sidecar direction
 
-The former sidecar approach is superseded for the Noura AI runtime. Pi is bundled as a browser-safe first-party dependency in the WebView; native provider access is reached only through typed IPC. The Phase 0 compatibility record remains in [Pi runtime spike](./ai-runtime-spike.md).
+The Noura AI runtime supersedes the former sidecar approach. Noura bundles Pi as a browser-safe first-party dependency in the WebView; the WebView reaches native provider access only through typed IPC. The Phase 0 compatibility record remains in [Pi runtime spike](./ai-runtime-spike.md).

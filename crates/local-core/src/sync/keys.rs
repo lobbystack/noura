@@ -9,10 +9,14 @@ use age::secrecy::ExposeSecret;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use x25519_dalek::{X25519_BASEPOINT_BYTES, x25519};
 use zeroize::Zeroizing;
 
 use super::{ObjectKey, SigningIdentity, crypto::decode, identifier, invalid};
 use crate::{CoreError, ErrorCategory, Result, WORKSPACE_MANIFEST_PATH};
+
+/// Largest accepted positive safe-integer epoch, shared with the browser envelope crate.
+const MAX_EPOCH: u64 = sync_key_envelope::MAX_EPOCH;
 
 /// Native credential-store boundary, replaceable by an in-memory implementation in tests.
 pub trait SyncCredentials {
@@ -137,11 +141,38 @@ impl SyncCredentials for KeychainCredentials {
     }
 }
 
-/// Signing and age recipient identities stay native and have no IPC serialization.
+/// Whether a key envelope was constructed for a native `age` recipient or a
+/// browser `x25519:` recipient. Mirrors the server's `construction`
+/// discriminator; an absent discriminator on the wire means [`Self::Age`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyConstruction {
+    /// Native `age` X25519 recipient envelope, unchanged from the original format.
+    #[default]
+    Age,
+    /// Portable `noura.sync.key.web` version 1 envelope for a browser recipient.
+    Web,
+}
+
+impl KeyConstruction {
+    /// True for the native construction, used to omit the discriminator from the wire.
+    pub fn is_age(&self) -> bool {
+        matches!(self, Self::Age)
+    }
+}
+
+/// A device recipient identity: either the original native `age` X25519 identity
+/// or a raw browser X25519 secret used for `noura.sync.key.web` envelopes.
+enum DeviceRecipient {
+    Age(age::x25519::Identity),
+    Web(Zeroizing<[u8; 32]>),
+}
+
+/// Signing and recipient identities stay native and have no IPC serialization.
 pub struct DeviceKeys {
     device_id: String,
     signer: SigningIdentity,
-    recipient: age::x25519::Identity,
+    recipient: DeviceRecipient,
 }
 
 #[derive(Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
@@ -150,9 +181,18 @@ struct StoredKeys {
     version: u8,
     signing_seed: String,
     recipient_identity: String,
+    #[serde(default)]
+    #[zeroize(skip)]
+    construction: KeyConstruction,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A native `age` or browser `noura.sync.key.web` recipient-wrapped object key.
+///
+/// Age envelopes keep the original seven fields, so their serialized bytes and
+/// signatures are unchanged. Browser envelopes add the explicit `construction`
+/// discriminator and the four `noura.sync.key.web` fields. Persisted envelopes
+/// round-trip through both constructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KeyEnvelope {
     pub workspace_id: String,
@@ -162,20 +202,110 @@ pub struct KeyEnvelope {
     pub wrapped_key: String,
     pub signing_device: String,
     pub signature: String,
+    #[serde(default, skip_serializing_if = "KeyConstruction::is_age")]
+    pub construction: KeyConstruction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+}
+
+impl KeyEnvelope {
+    /// Build the browser envelope view, rejecting an incomplete discriminator.
+    fn web_envelope(&self) -> Result<sync_key_envelope::WebKeyEnvelope> {
+        if self.construction != KeyConstruction::Web {
+            return Err(invalid("sync_invalid_key_envelope"));
+        }
+        Ok(sync_key_envelope::WebKeyEnvelope {
+            workspace_id: self.workspace_id.clone(),
+            object_id: self.object_id.clone(),
+            epoch: self.epoch,
+            signing_device: self.signing_device.clone(),
+            device_id: self.device_id.clone(),
+            recipient_public_key: self
+                .recipient_public_key
+                .clone()
+                .ok_or_else(|| invalid("sync_invalid_key_envelope"))?,
+            ephemeral_public_key: self
+                .ephemeral_public_key
+                .clone()
+                .ok_or_else(|| invalid("sync_invalid_key_envelope"))?,
+            salt: self
+                .salt
+                .clone()
+                .ok_or_else(|| invalid("sync_invalid_key_envelope"))?,
+            nonce: self
+                .nonce
+                .clone()
+                .ok_or_else(|| invalid("sync_invalid_key_envelope"))?,
+            wrapped_key: self.wrapped_key.clone(),
+            signature: self.signature.clone(),
+        })
+    }
+
+    /// A browser envelope must carry exactly the four browser fields.
+    fn has_no_browser_fields(&self) -> bool {
+        self.recipient_public_key.is_none()
+            && self.ephemeral_public_key.is_none()
+            && self.salt.is_none()
+            && self.nonce.is_none()
+    }
+
+    /// A browser envelope must carry all four browser fields.
+    fn has_browser_fields(&self) -> bool {
+        self.recipient_public_key.is_some()
+            && self.ephemeral_public_key.is_some()
+            && self.salt.is_some()
+            && self.nonce.is_some()
+    }
+}
+
+impl DeviceRecipient {
+    fn construction(&self) -> KeyConstruction {
+        match self {
+            Self::Age(_) => KeyConstruction::Age,
+            Self::Web(_) => KeyConstruction::Web,
+        }
+    }
 }
 
 impl DeviceKeys {
-    /// Create a fresh identity under a random, non-reused native credential reference.
+    /// Create a fresh native `age` identity under a random, non-reused credential reference.
     pub fn create(store: &impl SyncCredentials) -> Result<Self> {
+        Self::generate(
+            store,
+            DeviceRecipient::Age(age::x25519::Identity::generate()),
+        )
+    }
+
+    /// Create a fresh browser `x25519:` identity. Secret material stays in the credential store.
+    pub fn create_browser(store: &impl SyncCredentials) -> Result<Self> {
+        Self::generate(
+            store,
+            DeviceRecipient::Web(Zeroizing::new(random_array::<32>())),
+        )
+    }
+
+    fn generate(store: &impl SyncCredentials, recipient: DeviceRecipient) -> Result<Self> {
         let keys = Self {
             device_id: format!("device_{}", uuid::Uuid::new_v4()),
             signer: SigningIdentity::generate(),
-            recipient: age::x25519::Identity::generate(),
+            recipient,
         };
+        keys.persist(store)?;
+        Ok(keys)
+    }
+
+    fn persist(&self, store: &impl SyncCredentials) -> Result<()> {
         let mut record = StoredKeys {
             version: 1,
-            signing_seed: STANDARD.encode(keys.signer.seed().as_slice()),
-            recipient_identity: keys.recipient.to_string().expose_secret().to_owned(),
+            signing_seed: STANDARD.encode(self.signer.seed().as_slice()),
+            recipient_identity: self.recipient_secret_string(),
+            construction: self.recipient.construction(),
         };
         let encoded = Zeroizing::new(
             serde_json::to_string(&record).map_err(|_| invalid("sync_serialize_failed"))?,
@@ -183,8 +313,14 @@ impl DeviceKeys {
         use zeroize::Zeroize;
         record.signing_seed.zeroize();
         record.recipient_identity.zeroize();
-        store.write(&keys.device_id, &encoded)?;
-        Ok(keys)
+        store.write(&self.device_id, &encoded)
+    }
+
+    fn recipient_secret_string(&self) -> String {
+        match &self.recipient {
+            DeviceRecipient::Age(identity) => identity.to_string().expose_secret().to_owned(),
+            DeviceRecipient::Web(secret) => STANDARD.encode(secret.as_slice()),
+        }
     }
 
     pub fn load(store: &impl SyncCredentials, device_id: &str) -> Result<Self> {
@@ -198,10 +334,22 @@ impl DeviceKeys {
         let seed = Zeroizing::new(decode(&record.signing_seed, 32, 32)?);
         let seed: &[u8; 32] = seed.as_slice().try_into().map_err(|_| credential_error())?;
         let signer = SigningIdentity::from_seed(seed);
-        let recipient = record
-            .recipient_identity
-            .parse()
-            .map_err(|_| credential_error())?;
+        let recipient = match record.construction {
+            KeyConstruction::Age => DeviceRecipient::Age(
+                record
+                    .recipient_identity
+                    .parse()
+                    .map_err(|_| credential_error())?,
+            ),
+            KeyConstruction::Web => {
+                let secret = decode(&record.recipient_identity, 32, 32)?;
+                let secret: [u8; 32] = secret
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| credential_error())?;
+                DeviceRecipient::Web(Zeroizing::new(secret))
+            }
+        };
         use zeroize::Zeroize;
         record.signing_seed.zeroize();
         record.recipient_identity.zeroize();
@@ -219,10 +367,16 @@ impl DeviceKeys {
         &self.signer
     }
     pub fn recipient(&self) -> String {
-        self.recipient.to_public().to_string()
+        match &self.recipient {
+            DeviceRecipient::Age(identity) => identity.to_public().to_string(),
+            DeviceRecipient::Web(secret) => {
+                sync_key_envelope::encode_recipient(x25519(**secret, X25519_BASEPOINT_BYTES))
+            }
+        }
     }
 
-    /// Encrypt a context-bound object key with age, then authenticate its routing statement.
+    /// Encrypt a context-bound object key for a native `age` or browser `x25519:` recipient,
+    /// then authenticate its routing statement.
     pub fn wrap_key(
         &self,
         workspace: &str,
@@ -235,8 +389,11 @@ impl DeviceKeys {
         for id in [workspace, object, recipient_device] {
             identifier(id)?;
         }
-        if epoch == 0 || epoch > 9_007_199_254_740_991 {
+        if epoch == 0 || epoch > MAX_EPOCH {
             return Err(invalid("sync_invalid_epoch"));
+        }
+        if recipient.starts_with(sync_key_envelope::RECIPIENT_PREFIX) {
+            return self.wrap_web_key(workspace, object, epoch, recipient_device, recipient, key);
         }
         let recipient: age::x25519::Recipient = recipient
             .parse()
@@ -263,9 +420,60 @@ impl DeviceKeys {
             wrapped_key: STANDARD.encode(ciphertext),
             signing_device: self.device_id.clone(),
             signature: String::new(),
+            construction: KeyConstruction::Age,
+            recipient_public_key: None,
+            ephemeral_public_key: None,
+            salt: None,
+            nonce: None,
         };
         envelope.signature = self.signer.sign_bytes(&envelope.signing_bytes()?);
         Ok(envelope)
+    }
+
+    /// Wrap a `noura.sync.key.web` envelope. This crate owns randomness generation, so the
+    /// ephemeral secret, HKDF salt, and AES-GCM nonce come from the native OS random source.
+    fn wrap_web_key(
+        &self,
+        workspace: &str,
+        object: &str,
+        epoch: u64,
+        recipient_device: &str,
+        recipient: &str,
+        key: &ObjectKey,
+    ) -> Result<KeyEnvelope> {
+        let public = sync_key_envelope::decode_recipient(recipient).map_err(web_error)?;
+        let ephemeral_secret = random_array::<32>();
+        let salt = random_array::<32>();
+        let nonce = random_array::<12>();
+        let signing_seed = self.signer.seed();
+        let web = sync_key_envelope::wrap_key(
+            workspace,
+            object,
+            epoch,
+            &self.device_id,
+            *signing_seed,
+            recipient_device,
+            public,
+            *key.secret(),
+            ephemeral_secret,
+            salt,
+            nonce,
+        )
+        .map_err(web_error)?;
+        Ok(KeyEnvelope {
+            workspace_id: web.workspace_id,
+            object_id: web.object_id,
+            epoch: web.epoch,
+            device_id: web.device_id,
+            wrapped_key: web.wrapped_key,
+            signing_device: web.signing_device,
+            signature: web.signature,
+            construction: KeyConstruction::Web,
+            recipient_public_key: Some(web.recipient_public_key),
+            ephemeral_public_key: Some(web.ephemeral_public_key),
+            salt: Some(web.salt),
+            nonce: Some(web.nonce),
+        })
     }
 
     /// Only a previously trusted signer is accepted; never trust a key merely because the server returned it.
@@ -274,22 +482,69 @@ impl DeviceKeys {
             return Err(invalid("sync_wrong_recipient"));
         }
         envelope.verify(trusted_signer)?;
-        unwrap(&self.recipient, envelope)
+        match (envelope.construction, &self.recipient) {
+            (KeyConstruction::Age, DeviceRecipient::Age(identity)) => unwrap(identity, envelope),
+            (KeyConstruction::Web, DeviceRecipient::Web(secret)) => {
+                self.unwrap_web_key(envelope, trusted_signer, secret)
+            }
+            _ => Err(invalid("sync_wrong_recipient")),
+        }
     }
 
-    pub(crate) fn recovery_secret(&self) -> Zeroizing<String> {
-        Zeroizing::new(self.recipient.to_string().expose_secret().to_owned())
+    fn unwrap_web_key(
+        &self,
+        envelope: &KeyEnvelope,
+        trusted_signer: &str,
+        secret: &Zeroizing<[u8; 32]>,
+    ) -> Result<ObjectKey> {
+        let signer: [u8; 32] = decode(trusted_signer, 32, 32)?
+            .try_into()
+            .map_err(|_| invalid("sync_invalid_key"))?;
+        let key = sync_key_envelope::unwrap_key(&envelope.web_envelope()?, **secret, signer)
+            .map_err(web_error)?;
+        Ok(ObjectKey::from_bytes(*key))
     }
 
-    /// This ephemeral reader can unwrap old recipient envelopes, but has no old signing seed.
+    pub(crate) fn recovery_secret(&self) -> Result<Zeroizing<String>> {
+        match &self.recipient {
+            DeviceRecipient::Age(identity) => Ok(Zeroizing::new(
+                identity.to_string().expose_secret().to_owned(),
+            )),
+            DeviceRecipient::Web(_) => Err(invalid("sync_browser_recovery_unsupported")),
+        }
+    }
+
+    /// This ephemeral reader can unwrap old native `age` recipient envelopes, but has no old signing seed.
     pub(crate) fn recovery_reader(device_id: &str, secret: &str) -> Result<Self> {
         identifier(device_id)?;
         Ok(Self {
             device_id: device_id.into(),
             signer: SigningIdentity::generate(),
-            recipient: secret
-                .parse()
-                .map_err(|_| invalid("sync_invalid_recovery_file"))?,
+            recipient: DeviceRecipient::Age(
+                secret
+                    .parse()
+                    .map_err(|_| invalid("sync_invalid_recovery_file"))?,
+            ),
+        })
+    }
+
+    /// Deterministic identity for fixture regeneration only. Production devices always generate
+    /// fresh key material; this exists so the shared recovery fixture can be byte-stable.
+    #[cfg(test)]
+    pub(crate) fn from_test_parts(
+        device_id: &str,
+        signing_seed: [u8; 32],
+        age_identity: &str,
+    ) -> Result<Self> {
+        identifier(device_id)?;
+        Ok(Self {
+            device_id: device_id.into(),
+            signer: SigningIdentity::from_seed(&signing_seed),
+            recipient: DeviceRecipient::Age(
+                age_identity
+                    .parse()
+                    .map_err(|_| invalid("sync_invalid_recovery_file"))?,
+            ),
         })
     }
 
@@ -320,8 +575,11 @@ impl DeviceKeys {
             .file_name()
             .ok_or_else(|| invalid("sync_invalid_recovery_path"))?;
         let destination = parent.join(name);
-        let secret = self.recipient.to_string();
-        let public = self.recipient.to_public().to_string();
+        let DeviceRecipient::Age(identity) = &self.recipient else {
+            return Err(invalid("sync_browser_recovery_unsupported"));
+        };
+        let secret = identity.to_string();
+        let public = identity.to_public().to_string();
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -348,6 +606,9 @@ impl DeviceKeys {
         envelope: &KeyEnvelope,
         trusted_signer: &str,
     ) -> Result<ObjectKey> {
+        if envelope.construction != KeyConstruction::Age {
+            return Err(invalid("sync_invalid_recovery_file"));
+        }
         envelope.verify(trusted_signer)?;
         let metadata = std::fs::symlink_metadata(identity_file)
             .map_err(|error| CoreError::io(error, "sync_recovery", None))?;
@@ -372,9 +633,11 @@ impl KeyEnvelope {
         self.verify(trusted_signer)?;
         let mut result = self.clone();
         result.signing_device = device.device_id().into();
-        result.signature = device.signer().sign_bytes(&result.signing_bytes()?);
+        result.signature = device.signer().sign_bytes(&result.signing_bytes_for()?);
         Ok(result)
     }
+
+    /// The native `noura.sync.key` version 1 signing tuple.
     fn signing_bytes(&self) -> Result<Vec<u8>> {
         serde_json::to_vec(&(
             "noura.sync.key",
@@ -389,6 +652,35 @@ impl KeyEnvelope {
         .map_err(|_| invalid("sync_serialize_failed"))
     }
 
+    /// The portable `noura.sync.key.web` version 1 signing tuple.
+    fn web_signing_bytes(&self) -> Result<Vec<u8>> {
+        if !self.has_browser_fields() {
+            return Err(invalid("sync_invalid_key_envelope"));
+        }
+        serde_json::to_vec(&(
+            sync_key_envelope::DOMAIN,
+            sync_key_envelope::VERSION,
+            &self.workspace_id,
+            &self.object_id,
+            self.epoch,
+            &self.signing_device,
+            &self.device_id,
+            self.recipient_public_key.as_deref(),
+            self.ephemeral_public_key.as_deref(),
+            self.salt.as_deref(),
+            self.nonce.as_deref(),
+            &self.wrapped_key,
+        ))
+        .map_err(|_| invalid("sync_serialize_failed"))
+    }
+
+    fn signing_bytes_for(&self) -> Result<Vec<u8>> {
+        match self.construction {
+            KeyConstruction::Age => self.signing_bytes(),
+            KeyConstruction::Web => self.web_signing_bytes(),
+        }
+    }
+
     pub fn verify(&self, trusted_signer: &str) -> Result<()> {
         for id in [
             &self.workspace_id,
@@ -398,8 +690,21 @@ impl KeyEnvelope {
         ] {
             identifier(id)?;
         }
-        if self.epoch == 0 || self.epoch > 9_007_199_254_740_991 {
+        if self.epoch == 0 || self.epoch > MAX_EPOCH {
             return Err(invalid("sync_invalid_epoch"));
+        }
+        if self.construction == KeyConstruction::Web {
+            if !self.has_browser_fields() {
+                return Err(invalid("sync_invalid_key_envelope"));
+            }
+            let public: [u8; 32] = decode(trusted_signer, 32, 32)?
+                .try_into()
+                .map_err(|_| invalid("sync_invalid_key"))?;
+            return sync_key_envelope::verify_envelope(&self.web_envelope()?, public)
+                .map_err(web_error);
+        }
+        if !self.has_no_browser_fields() {
+            return Err(invalid("sync_invalid_key_envelope"));
         }
         decode(&self.wrapped_key, 60, 4096)?;
         let public: [u8; 32] = decode(trusted_signer, 32, 32)?
@@ -445,6 +750,19 @@ fn credential_error() -> CoreError {
         "Sync credentials are unavailable in the operating system credential store",
         "sync",
     )
+}
+
+/// Fill a fixed-size buffer from the OS random source already used for AES-GCM nonces.
+fn random_array<const N: usize>() -> [u8; N] {
+    use aes_gcm::aead::rand_core::RngCore;
+    let mut bytes = [0_u8; N];
+    aes_gcm::aead::OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
+/// Preserve the browser envelope crate's stable public error codes at the native boundary.
+fn web_error(error: sync_key_envelope::KeyEnvelopeError) -> CoreError {
+    invalid(error.code())
 }
 
 #[cfg(test)]
@@ -523,6 +841,108 @@ mod tests {
                 .unwrap_key(&changed, &owner.signer().public_key())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn browser_envelopes_wrap_verify_unwrap_reject_tampering_and_round_trip() {
+        let store = Memory::default();
+        let owner = DeviceKeys::create(&store).unwrap();
+        let browser = DeviceKeys::create_browser(&store).unwrap();
+        let restored = DeviceKeys::load(&store, browser.device_id()).unwrap();
+        assert_eq!(restored.recipient(), browser.recipient());
+        assert!(
+            browser
+                .recipient()
+                .starts_with(sync_key_envelope::RECIPIENT_PREFIX)
+        );
+        let key = ObjectKey::generate();
+        let envelope = owner
+            .wrap_key(
+                "workspace",
+                "object",
+                1,
+                browser.device_id(),
+                &browser.recipient(),
+                &key,
+            )
+            .unwrap();
+        assert_eq!(envelope.construction, KeyConstruction::Web);
+        assert!(envelope.has_browser_fields());
+        assert_eq!(
+            serde_json::to_value(&envelope).unwrap()["construction"],
+            "web"
+        );
+        let decoded: KeyEnvelope =
+            serde_json::from_value(serde_json::to_value(&envelope).unwrap()).unwrap();
+        assert_eq!(decoded, envelope);
+
+        envelope.verify(&owner.signer().public_key()).unwrap();
+        let unwrapped = restored
+            .unwrap_key(&envelope, &owner.signer().public_key())
+            .unwrap();
+        assert_eq!(unwrapped.secret(), key.secret());
+
+        assert!(
+            restored
+                .unwrap_key(
+                    &envelope,
+                    &DeviceKeys::create(&store).unwrap().signer().public_key()
+                )
+                .is_err()
+        );
+
+        let mut tampered_signature = envelope.clone();
+        let mut signature = STANDARD.decode(&tampered_signature.signature).unwrap();
+        signature[0] ^= 0xFF;
+        tampered_signature.signature = STANDARD.encode(signature);
+        assert_eq!(
+            restored
+                .unwrap_key(&tampered_signature, &owner.signer().public_key())
+                .err()
+                .expect("tampered signature must fail")
+                .code,
+            "sync_invalid_signature"
+        );
+
+        let mut tampered_ciphertext = envelope.clone();
+        let mut wrapped = STANDARD.decode(&tampered_ciphertext.wrapped_key).unwrap();
+        let last = wrapped.len() - 1;
+        wrapped[last] ^= 0x01;
+        tampered_ciphertext.wrapped_key = STANDARD.encode(wrapped);
+        // Re-sign so only the AEAD tag can reject the tampered ciphertext.
+        tampered_ciphertext.signature = owner
+            .signer()
+            .sign_bytes(&tampered_ciphertext.web_signing_bytes().unwrap());
+        assert_eq!(
+            restored
+                .unwrap_key(&tampered_ciphertext, &owner.signer().public_key())
+                .err()
+                .expect("tampered ciphertext must fail")
+                .code,
+            "sync_key_unwrap_failed"
+        );
+    }
+
+    #[test]
+    fn age_envelopes_keep_the_seven_field_wire_shape() {
+        let store = Memory::default();
+        let device = DeviceKeys::create(&store).unwrap();
+        let envelope = device
+            .wrap_key(
+                "workspace",
+                "object",
+                1,
+                device.device_id(),
+                &device.recipient(),
+                &ObjectKey::generate(),
+            )
+            .unwrap();
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 7);
+        assert!(!value.as_object().unwrap().contains_key("construction"));
+        let decoded: KeyEnvelope = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, envelope);
+        assert_eq!(decoded.construction, KeyConstruction::Age);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build:release": "bun run --cwd ../server-web build && bun run build && bun scripts/web-assets.ts",
+		"build:release": "bun run --cwd ../app build:hosted && bun scripts/verify-web-build.ts && bun run build && bun scripts/web-assets.ts",
 		"dev": "bun --watch src/main.ts",
 		"start": "bun src/main.ts",
 		"migrate": "bun src/migrate.ts",

@@ -18,7 +18,7 @@
 	};
 
 	const activeModule = $derived(
-		sidebarModuleFor(page.url.pathname, new Set(plugins.enabledIds)),
+		sidebarModuleFor(page.url.pathname, new Set(plugins.activeIds)),
 	);
 	const Section = $derived(
 		activeModule ? SECTION_COMPONENTS[activeModule.id] : undefined,

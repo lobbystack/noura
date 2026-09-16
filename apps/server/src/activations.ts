@@ -1,8 +1,12 @@
 import { createPublicKey, verify } from 'node:crypto';
 import type postgres from 'postgres';
 import type { ObjectActivation } from '../../../packages/shared/src/generated/ObjectActivation';
-import type { PolicyEnvelope } from '../../../packages/shared/src/generated/PolicyEnvelope';
-import { keySigningBytes } from './access';
+import {
+	policyEnvelope,
+	signingBytesForEnvelope,
+	type AccessPolicyEnvelope,
+} from './access';
+import { browserRecipientMatches } from './browser';
 import {
 	capabilityDigest,
 	verifyWorkspaceCapability,
@@ -30,6 +34,15 @@ function exact(input: unknown, fields: string[]) {
 	)
 		throw new SyncError('sync.invalid_object_activation');
 	return value;
+}
+
+/** Parse one activation envelope with the shared policy-envelope rules. */
+function activationEnvelope(input: unknown): AccessPolicyEnvelope {
+	try {
+		return policyEnvelope(input);
+	} catch {
+		throw new SyncError('sync.invalid_object_activation');
+	}
 }
 
 function sorted<T>(
@@ -67,19 +80,10 @@ export function objectActivation(input: unknown): ObjectActivation {
 	const descriptor = exact(value.document, ['generation', 'mode']);
 	if (!['text', 'attachment'].includes(descriptor.mode as string))
 		throw new SyncError('sync.invalid_document_mode');
-	const envelopes = sorted<PolicyEnvelope>(
+	const envelopes = sorted<AccessPolicyEnvelope>(
 		value.envelopes,
 		(envelope) => envelope.deviceId,
-		(input) => {
-			const envelope = exact(input, ['deviceId', 'wrappedKey', 'signature']);
-			base64(envelope.wrappedKey, 60, 4096);
-			base64(envelope.signature, 64);
-			return {
-				deviceId: identifier(envelope.deviceId),
-				wrappedKey: envelope.wrappedKey as string,
-				signature: envelope.signature as string,
-			};
-		},
+		activationEnvelope,
 	);
 	if (!envelopes.length) throw new SyncError('sync.invalid_object_activation');
 	const blobs =
@@ -163,11 +167,20 @@ export function activationSigningBytes(value: ObjectActivation) {
 		value.capabilityDigest,
 		value.deviceId,
 		[value.document.generation, value.document.mode],
-		value.envelopes.map((envelope) => [
-			envelope.deviceId,
-			envelope.wrappedKey,
-			envelope.signature,
-		]),
+		value.envelopes.map((envelope) =>
+			envelope.construction === 'web'
+				? [
+						envelope.deviceId,
+						envelope.wrappedKey,
+						envelope.signature,
+						'web',
+						envelope.recipientPublicKey,
+						envelope.ephemeralPublicKey,
+						envelope.salt,
+						envelope.nonce,
+					]
+				: [envelope.deviceId, envelope.wrappedKey, envelope.signature],
+		),
 		checkpointDigest(value.checkpoint),
 	];
 	if (value.version === 2)
@@ -186,6 +199,26 @@ export function activationDigest(value: ObjectActivation) {
 	return digest(
 		Buffer.concat([activationSigningBytes(value), base64(value.signature, 64)]),
 	);
+}
+
+/**
+ * Every browser activation envelope must wrap to the recipient enrolled for its
+ * device. This mirrors the access-policy recipient check in `access.ts`.
+ */
+export function verifyActivationRecipients(
+	envelopes: AccessPolicyEnvelope[],
+	recipients: Map<string, string | null>,
+) {
+	for (const envelope of envelopes)
+		if (
+			envelope.construction === 'web' &&
+			(!envelope.recipientPublicKey ||
+				!browserRecipientMatches(
+					recipients.get(envelope.deviceId),
+					envelope.recipientPublicKey,
+				))
+		)
+			throw new SyncError('sync.invalid_recipient');
 }
 
 export function verifyObjectActivation(
@@ -208,7 +241,7 @@ export function verifyObjectActivation(
 		if (
 			!verify(
 				null,
-				keySigningBytes(
+				signingBytesForEnvelope(
 					value.workspaceId,
 					value.checkpoint.payload.objectId,
 					1,
@@ -264,13 +297,20 @@ async function validateCurrent(
 		await tx`SELECT 1 FROM noura_objects WHERE workspace_id=${value.workspaceId} AND id=${objectId}`;
 	if (existing) throw new SyncError('sync.object_already_exists', 409);
 	const devices =
-		await tx`SELECT d.id FROM noura_devices d JOIN noura_members m ON m.account_id=d.account_id AND m.workspace_id=${value.workspaceId} WHERE NOT d.revoked ORDER BY d.id COLLATE "C"`;
+		await tx`SELECT d.id,d.encryption_recipient AS "encryptionRecipient" FROM noura_devices d JOIN noura_members m ON m.account_id=d.account_id AND m.workspace_id=${value.workspaceId} WHERE NOT d.revoked ORDER BY d.id COLLATE "C"`;
 	const expected = devices.map((device) => device.id as string);
 	if (
 		JSON.stringify(expected) !==
 		JSON.stringify(value.envelopes.map((envelope) => envelope.deviceId))
 	)
 		throw new SyncError('sync.key_envelopes_incomplete', 409);
+	const recipients = new Map(
+		devices.map((device) => [
+			device.id as string,
+			device.encryptionRecipient as string | null,
+		]),
+	);
+	verifyActivationRecipients(value.envelopes, recipients);
 	return objectId;
 }
 
@@ -372,7 +412,7 @@ export async function commitObjectActivation(
 		}
 		await tx`INSERT INTO noura_objects(workspace_id,id,epoch,generation,document_mode) VALUES(${workspace},${objectId},1,${value.document.generation},${value.document.mode})`;
 		for (const envelope of value.envelopes)
-			await tx`INSERT INTO noura_key_envelopes(workspace_id,object_id,epoch,device_id,wrapped_key,signing_device,signature) VALUES(${workspace},${objectId},1,${envelope.deviceId},${envelope.wrappedKey},${actor.deviceId},${envelope.signature})`;
+			await tx`INSERT INTO noura_key_envelopes(workspace_id,object_id,epoch,device_id,wrapped_key,signing_device,signature,construction,recipient_public_key,ephemeral_public_key,salt,nonce) VALUES(${workspace},${objectId},1,${envelope.deviceId},${envelope.wrappedKey},${actor.deviceId},${envelope.signature},${envelope.construction ?? 'age'},${envelope.recipientPublicKey ?? null},${envelope.ephemeralPublicKey ?? null},${envelope.salt ?? null},${envelope.nonce ?? null})`;
 		await tx`INSERT INTO noura_activation_checkpoints(workspace_id,object_id,epoch,activation_id,generation,covered_sequence,checkpoint) VALUES(${workspace},${objectId},1,${id},${value.document.generation},${value.coveredSequence},${tx.json(JSON.parse(JSON.stringify(value.checkpoint)))})`;
 		await tx`UPDATE noura_object_activations SET committed=true WHERE workspace_id=${workspace} AND id=${id}`;
 		await tx`SELECT pg_notify('noura_sync',${workspace})`;

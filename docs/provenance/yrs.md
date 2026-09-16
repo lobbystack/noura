@@ -10,13 +10,6 @@
 - Reviewer: Codex (author review).
 - Date: 2026-09-06.
 
-Interop is tested against Yjs 13.6.32 and y-codemirror.next 0.3.6. Noura uses
-UTF-16 offsets explicitly; Yrs defaults to byte offsets.
+Interop is tested against Yjs 13.6.32 and y-codemirror.next 0.3.6. Noura uses UTF-16 offsets explicitly; Yrs defaults to byte offsets.
 
-The 2026-09-06 dependency audit reports `RUSTSEC-2026-0215`: transitive
-`smallstr 0.3.1` is unmaintained with no patched release. The approved narrow
-exception is recorded in `deny.toml`. Upgrading to the inspected Yrs 0.27.4 does
-not remove that dependency and also requires language features newer than the
-repository's Rust 1.91 CI toolchain. Recheck the upstream dependency and remove
-the exception on every Yrs upgrade and before each release. A future
-vulnerability advisory is not covered by this maintenance-only exception.
+The 2026-09-06 dependency audit reports `RUSTSEC-2026-0215`: transitive `smallstr 0.3.1` is unmaintained with no patched release. The approved narrow exception is recorded in `deny.toml`. Upgrading to the inspected Yrs 0.27.4 does not remove that dependency and also requires language features newer than the repository's Rust 1.91 CI toolchain. Recheck the upstream dependency and remove the exception on every Yrs upgrade and before each release. A future vulnerability advisory is not covered by this maintenance-only exception.

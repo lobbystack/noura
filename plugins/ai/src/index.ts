@@ -7,6 +7,7 @@ export default definePlugin({
 		name: 'AI',
 		version: '0.1.0',
 		capabilities: [],
+		platforms: ['desktop'],
 	},
 	activate() {},
 });
