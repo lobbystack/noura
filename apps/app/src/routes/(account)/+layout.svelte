@@ -12,7 +12,13 @@
 <main
 	class="mx-auto flex min-h-screen w-full max-w-lg flex-col justify-center gap-8 px-6 py-12"
 >
-	<a href="/account" class="text-base font-semibold tracking-tight">Noura</a>
+	<a
+		href="/account"
+		class="flex items-center gap-2 text-base font-semibold tracking-tight"
+	>
+		<img src="/logo.png" alt="" width="24" height="24" class="rounded-md" />
+		Noura
+	</a>
 	<section
 		class="flex flex-col gap-6 rounded-2xl border bg-card p-6 text-card-foreground"
 	>

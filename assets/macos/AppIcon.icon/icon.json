@@ -1,0 +1,16 @@
+{
+	"groups": [
+		{
+			"layers": [
+				{
+					"image-name": "noura-n.png",
+					"name": "N"
+				}
+			],
+			"name": "N"
+		}
+	],
+	"supported-platforms": {
+		"squares": ["macOS"]
+	}
+}

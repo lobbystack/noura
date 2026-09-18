@@ -473,9 +473,12 @@
 <ModeWatcher />
 <main class="mx-auto flex min-h-svh max-w-6xl flex-col gap-6 p-6">
 	<header class="flex flex-wrap items-center justify-between gap-4">
-		<div>
-			<h1 class="text-base font-semibold">Noura · Browser workspace</h1>
-			<p class="text-sm text-muted-foreground">{workspaceName}</p>
+		<div class="flex items-center gap-2">
+			<img src="/logo.png" alt="" width="24" height="24" class="rounded-md" />
+			<div>
+				<h1 class="text-base font-semibold">Noura · Browser workspace</h1>
+				<p class="text-sm text-muted-foreground">{workspaceName}</p>
+			</div>
 		</div>
 		<a href="/account">Account</a>
 	</header>

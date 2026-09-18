@@ -82,14 +82,15 @@
 	/>
 	<meta property="og:type" content="website" />
 	<meta property="og:url" content={siteConfig.marketingUrl} />
-	<link rel="icon" href="/favicon.svg" />
+	<link rel="icon" href="/favicon.png" sizes="any" />
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+	<meta property="og:image" content={`${siteConfig.marketingUrl}/logo.png`} />
+	<meta name="twitter:card" content="summary_large_image" />
 </svelte:head>
 
 <header class="site-header">
 	<a class="brand" href="#top" aria-label="Noura home">
-		<svg viewBox="0 0 32 32" aria-hidden="true">
-			<path d="M6 23V9l10 9 10-9v14" />
-		</svg>
+		<img src="/logo.png" alt="" width="28" height="28" />
 		<span>Noura</span>
 	</a>
 	<nav aria-label="Primary navigation">
@@ -319,6 +320,7 @@
 
 <footer>
 	<div class="footer-brand">
+		<img src="/logo.png" alt="" width="26" height="26" class="footer-mark" />
 		<span>Noura</span>
 		<p>The open workspace for humans and AI.</p>
 	</div>
@@ -350,16 +352,10 @@
 		font-weight: 760;
 		letter-spacing: -0.03em;
 	}
-	.brand svg {
+	.brand img {
 		width: 28px;
 		height: 28px;
-	}
-	.brand path {
-		fill: none;
-		stroke: currentColor;
-		stroke-width: 3;
-		stroke-linecap: round;
-		stroke-linejoin: round;
+		border-radius: 7px;
 	}
 	.site-header nav {
 		display: flex;
@@ -1108,6 +1104,13 @@
 		display: grid;
 		grid-template-columns: 1fr auto;
 		gap: 70px;
+	}
+	.footer-mark {
+		width: 26px;
+		height: 26px;
+		border-radius: 7px;
+		vertical-align: -6px;
+		margin-right: 8px;
 	}
 	.footer-brand span {
 		font-size: 20px;
