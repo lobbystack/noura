@@ -469,7 +469,12 @@ pub struct BrowserRecoveredObject {
     pub object_id: String,
     /// Positive safe-integer key epoch.
     pub epoch: u64,
-    /// Canonical-path anchor recorded at bind time.
+    /// Path anchor recorded at bind time.
+    ///
+    /// This value comes from the kit and is **not** verified against the local
+    /// workspace. Callers must not use it to associate a local file with the
+    /// recovered object; match local objects by `local_object_id` after
+    /// independent verification, or leave the object unmapped.
     pub path: String,
     /// Stable local object ID, when the binding recorded one.
     pub local_object_id: Option<String>,
@@ -714,6 +719,11 @@ fn build_browser_recovery(
     let mut objects = Vec::with_capacity(binding.objects.len());
     for (object_id, object) in &binding.objects {
         identifier(object_id)?;
+        if let Some(local_object_id) = &object.local_object_id {
+            // A local object id is metadata from an untrusted kit; never accept
+            // a path-like value that a caller could mistake for a file path.
+            identifier(local_object_id)?;
+        }
         if object.key.construction != "web"
             || object.key.device_id != bundle.device_id
             || object.epoch == 0

@@ -36,6 +36,7 @@ import {
 	decodeBase64,
 	decodeUtf8,
 	deriveKek,
+	deriveRecipientPublic,
 	encodeBase64,
 	encodeUtf8,
 	fixedBytes,
@@ -43,6 +44,7 @@ import {
 	isIdentifier,
 	randomBytes,
 	randomIdentifier,
+	signingSeedMatchesPublic,
 	type Bytes,
 } from './crypto';
 import { BrowserSyncError, BrowserSyncErrorCode } from './errors';
@@ -432,6 +434,32 @@ export async function openBundle(
 		throw new BrowserSyncError(
 			BrowserSyncErrorCode.InvalidBundle,
 			'bundle signing seed was invalid',
+		);
+	}
+	// The public keys are authenticated by the GCM AAD, but the ciphertext can
+	// still pair a seed with a public key it does not generate (for example a
+	// corrupted or incorrectly produced bundle). Fail closed here rather than
+	// surfacing an opaque signing or unwrapping failure later.
+	if (!(await signingSeedMatchesPublic(signingSeed, signingPublic))) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'bundle signing seed did not match its signing public key',
+		);
+	}
+	let derivedRecipientPublic: Bytes;
+	try {
+		derivedRecipientPublic = await deriveRecipientPublic(x25519Secret);
+	} catch (cause) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'bundle recipient secret was invalid',
+			{ cause },
+		);
+	}
+	if (!bytesEqual(derivedRecipientPublic, x25519Public)) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidBundle,
+			'bundle recipient secret did not match its recipient public key',
 		);
 	}
 	return {

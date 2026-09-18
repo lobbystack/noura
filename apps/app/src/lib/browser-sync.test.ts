@@ -238,6 +238,16 @@ describe('browser sync controller custody', () => {
 			sameOrigin('https://other.example/v1/device-challenges'),
 		).rejects.toThrow('same-origin');
 	});
+
+	test('same-origin fetch forces redirect: error', async () => {
+		let captured: RequestInit | undefined;
+		const sameOrigin = createSameOriginFetch(ORIGIN, async (_input, init) => {
+			captured = init;
+			return json({ ok: true });
+		});
+		await sameOrigin('/v1/device-challenges');
+		expect(captured?.redirect).toBe('error');
+	});
 });
 
 describe('browser sync reconciliation', () => {
@@ -2485,6 +2495,9 @@ describe('browser native recovery kit import', () => {
 			expect(bound.key.construction).toBe('web');
 			expect(bound.key.deviceId).toBe(deviceId!);
 			expect(bound.key.wrappedKey.length).toBeGreaterThan(0);
+			// A native kit carries no verified paths, so recovered objects must
+			// never be treated as owners of local files.
+			expect(bound.unmapped).toBe(true);
 		}
 	});
 
@@ -2503,6 +2516,44 @@ describe('browser native recovery kit import', () => {
 		for (const vector of NATIVE_KIT.object_keys) {
 			expect(serialized).not.toContain(vector.key);
 		}
+	});
+
+	test('rejects replacing a binding that points at a different remote workspace', async () => {
+		const { controller, bindingStore } = await nativeController();
+		const boundKey = {
+			deviceId: 'device_existing',
+			wrappedKey: '',
+			signature: '',
+			construction: 'web' as const,
+			recipientPublicKey: '',
+			ephemeralPublicKey: '',
+			salt: '',
+			nonce: '',
+		};
+		await bindingStore.write({
+			version: 1,
+			localWorkspaceId: 'workspace_native',
+			workspaceId: 'workspace_other',
+			revision: '1',
+			objectId: 'object_other',
+			objects: {
+				object_other: {
+					path: 'notes/other.md',
+					epoch: 1,
+					policyRevision: '1',
+					key: boundKey,
+				},
+			},
+			pinnedSigners: { device_existing: '' },
+		});
+		const result = await controller.importNativeRecoveryKit(NATIVE_KIT, {
+			recoveryIdentity: NATIVE_KIT.recovery_identity,
+			localWorkspaceId: 'workspace_native',
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe('custody_failed');
+		// The existing binding must be left untouched.
+		expect((await bindingStore.read())?.workspaceId).toBe('workspace_other');
 	});
 
 	test('accepts a caller-pinned signer matching the kit self-description', async () => {

@@ -53,6 +53,13 @@ const X25519_PKCS8_PREFIX = [
 const utf8 = new TextEncoder();
 const utf8Fatal = new TextDecoder('utf-8', { fatal: true });
 
+/**
+ * Fixed, domain-separated message signed to confirm a signing seed corresponds
+ * to its public key. It is a constant, never caller-controlled, so it is not a
+ * signing oracle.
+ */
+const KEY_CHECK_MESSAGE = utf8.encode('noura.browser-sync.key-check.v1');
+
 /** Fill a new buffer with cryptographically secure random bytes. */
 export function randomBytes(length: number): Bytes {
 	const output = new Uint8Array(length);
@@ -378,5 +385,70 @@ export async function importAesKey(
 		{ name: 'AES-GCM' },
 		false,
 		usages,
+	);
+}
+
+/**
+ * Derive the raw X25519 public key for a 32-byte recipient secret.
+ *
+ * This computes `X25519(secret, 9)` using the curve base point, matching
+ * `@noura/sync-key-envelope` and the native client. It confirms that a wrapped
+ * bundle's stored recipient public key is the one its recipient secret
+ * generates.
+ */
+export async function deriveRecipientPublic(
+	secret: Uint8Array,
+): Promise<Bytes> {
+	const privateKey = await globalThis.crypto.subtle.importKey(
+		'pkcs8',
+		concatBytes(
+			X25519_PKCS8_PREFIX,
+			fixedBytes(secret, SECRET_LENGTH, 'recipient secret'),
+		),
+		{ name: 'X25519' },
+		false,
+		['deriveBits'],
+	);
+	const basepoint = new Uint8Array(SECRET_LENGTH);
+	basepoint[0] = 9;
+	const publicKey = await globalThis.crypto.subtle.importKey(
+		'raw',
+		basepoint,
+		{ name: 'X25519' },
+		false,
+		[],
+	);
+	const bits = await globalThis.crypto.subtle.deriveBits(
+		{ name: 'X25519', public: publicKey },
+		privateKey,
+		256,
+	);
+	return fixedBytes(new Uint8Array(bits), SECRET_LENGTH, 'recipient public');
+}
+
+/**
+ * True when `seed` is the Ed25519 signing seed for `publicKey`.
+ *
+ * WebCrypto cannot derive an Ed25519 public key from its seed, so this signs a
+ * fixed, domain-separated message with the seed and verifies it against the
+ * public key. A seed that does not correspond cannot produce a verifying
+ * signature without forging one. Both keys are non-extractable.
+ */
+export async function signingSeedMatchesPublic(
+	seed: Uint8Array,
+	publicKey: Uint8Array,
+): Promise<boolean> {
+	const signingKey = await importSigningKey(seed);
+	const signature = await globalThis.crypto.subtle.sign(
+		{ name: 'Ed25519' },
+		signingKey,
+		KEY_CHECK_MESSAGE,
+	);
+	const verifyKey = await importVerifyKey(publicKey);
+	return globalThis.crypto.subtle.verify(
+		{ name: 'Ed25519' },
+		verifyKey,
+		signature,
+		KEY_CHECK_MESSAGE,
 	);
 }

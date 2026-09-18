@@ -211,6 +211,7 @@ export async function receiveKeys(
 	const unsupported: UnsupportedEnvelope[] = [];
 	let afterObject = input.afterObject ?? '';
 	let afterEpoch = input.afterEpoch ?? 0;
+	let hasMore = true;
 
 	for (let page = 0; page < MAX_KEY_PAGES; page += 1) {
 		const url = new URL(
@@ -240,16 +241,44 @@ export async function receiveKeys(
 				'response was missing envelopes',
 			);
 		}
+		// Mirror the native client: a page is at most 100 envelopes, and a
+		// `hasMore` page that carries none cannot advance the cursor.
+		if (
+			data.envelopes.length > 100 ||
+			(data.hasMore === true && data.envelopes.length === 0)
+		) {
+			throw new BrowserSyncError(
+				BrowserSyncErrorCode.InvalidResponse,
+				'key page was malformed',
+			);
+		}
 
 		for (const raw of data.envelopes) {
 			const row = asRecord(raw);
+			const objectId = requireString(row.objectId, 'objectId');
+			const epoch = requireEpoch(row.epoch);
+			// Envelopes are ordered by (object id, epoch) and every row must move
+			// the cursor strictly forward. A repeated or out-of-order cursor would
+			// otherwise loop on a page and return a partial key set.
+			if (
+				objectId < afterObject ||
+				(objectId === afterObject && epoch <= afterEpoch)
+			) {
+				throw new BrowserSyncError(
+					BrowserSyncErrorCode.InvalidResponse,
+					'key envelopes were not in ascending order',
+				);
+			}
+			afterObject = objectId;
+			afterEpoch = epoch;
+
 			const construction =
 				typeof row.construction === 'string' ? row.construction : 'age';
 			if (construction !== 'web') {
 				unsupported.push({
-					objectId: requireString(row.objectId, 'objectId'),
+					objectId,
 					deviceId: requireString(row.deviceId, 'deviceId'),
-					epoch: requireEpoch(row.epoch),
+					epoch,
 					construction,
 					code: BrowserSyncErrorCode.UnsupportedEnvelope,
 				});
@@ -262,12 +291,15 @@ export async function receiveKeys(
 			);
 		}
 
-		if (data.hasMore !== true || data.envelopes.length === 0) {
-			break;
-		}
-		const last = asRecord(data.envelopes[data.envelopes.length - 1]);
-		afterObject = requireString(last.objectId, 'objectId');
-		afterEpoch = requireEpoch(last.epoch);
+		hasMore = data.hasMore === true;
+		if (!hasMore) break;
+	}
+
+	if (hasMore) {
+		throw new BrowserSyncError(
+			BrowserSyncErrorCode.InvalidResponse,
+			'key pagination exceeded the maximum page count',
+		);
 	}
 
 	return { keys, unsupported };

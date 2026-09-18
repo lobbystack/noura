@@ -95,7 +95,16 @@ export function accessSigningBytes(
 				object.grants.map((grant) => [grant.accountId, grant.role]),
 				object.envelopes.map(envelopeTuple),
 			];
-			if (policy.version === 2 && object.document) {
+			if (policy.version === 2) {
+				// The server signs a document tuple for every version-2 object
+				// and rejects one without a document descriptor. Reject here too
+				// so the two implementations cannot silently diverge.
+				if (!object.document) {
+					throw new BrowserSyncError(
+						BrowserSyncErrorCode.InvalidPolicy,
+						'version-2 access policy object was missing its document descriptor',
+					);
+				}
 				entry.push([object.document.generation, object.document.mode]);
 			}
 			return entry;

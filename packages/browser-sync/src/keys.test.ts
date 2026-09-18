@@ -200,6 +200,40 @@ describe('receiveKeys', () => {
 		]);
 	});
 
+	test('rejects a page whose cursor does not advance', async () => {
+		const identity = await makeIdentity();
+		const envelope = await makeEnvelope(identity, 'object-1');
+		const fetchImpl: FetchLike = async () =>
+			Response.json({ envelopes: [row(envelope)], hasMore: true });
+
+		await expect(
+			receiveKeys({
+				origin: ORIGIN,
+				token: 'device-token',
+				workspaceId: WORKSPACE,
+				deviceId: identity.deviceId,
+				identity,
+				pinnedSigners: pinnedSigners(),
+				fetch: fetchImpl,
+			}),
+		).rejects.toMatchObject({ code: 'browser_sync_invalid_response' });
+	});
+
+	test('rejects a hasMore page with no envelopes', async () => {
+		const identity = await makeIdentity();
+		await expect(
+			receiveKeys({
+				origin: ORIGIN,
+				token: 'device-token',
+				workspaceId: WORKSPACE,
+				deviceId: identity.deviceId,
+				identity,
+				pinnedSigners: pinnedSigners(),
+				fetch: jsonFetch({ envelopes: [], hasMore: true }),
+			}),
+		).rejects.toMatchObject({ code: 'browser_sync_invalid_response' });
+	});
+
 	test('returns an unsupported marker for age envelopes', async () => {
 		const identity = await makeIdentity();
 		const ageRow = {

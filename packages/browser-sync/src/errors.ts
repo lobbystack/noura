@@ -49,6 +49,8 @@ export const BrowserSyncErrorCode = {
 	InvalidFileChange: 'browser_sync_invalid_file_change',
 	/** A signed object or policy did not verify against the expected key. */
 	InvalidSignature: 'browser_sync_invalid_signature',
+	/** An access policy was malformed or internally inconsistent. */
+	InvalidPolicy: 'browser_sync_invalid_policy',
 	/** A recipient device cannot receive a browser key envelope. */
 	IncompatibleRecipient: 'browser_sync_incompatible_recipient',
 	/** An attachment descriptor was malformed or violated the size rules. */

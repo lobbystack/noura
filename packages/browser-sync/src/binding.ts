@@ -38,6 +38,14 @@ export interface BrowserSyncBoundObject {
 	epoch: number;
 	/** Canonical access-policy revision the object was bound at. */
 	policyRevision: string;
+	/**
+	 * True when this object came from a recovery import and has no verified
+	 * canonical local path. An unmapped object may decrypt delivered operations
+	 * but must never be treated as the owner of a local file or attachment, so a
+	 * crafted recovery kit cannot cause local bytes to be sealed under an
+	 * attacker-known key.
+	 */
+	unmapped?: boolean;
 	/** Self-wrapped object key; never plaintext. */
 	key: BrowserSyncBoundKey;
 }
@@ -93,6 +101,7 @@ export function isBrowserSyncBindingRecord(
 			typeof bound.path !== 'string' ||
 			(bound.localObjectId !== undefined &&
 				typeof bound.localObjectId !== 'string') ||
+			(bound.unmapped !== undefined && typeof bound.unmapped !== 'boolean') ||
 			!Number.isSafeInteger(bound.epoch) ||
 			(bound.epoch as number) < 1 ||
 			typeof bound.policyRevision !== 'string' ||

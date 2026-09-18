@@ -31,7 +31,12 @@ import { syncFileChangeSchema } from '@noura/workspace-schema';
 import { bytesEqual, fixedBytes, isIdentifier, type Bytes } from './crypto';
 import { BrowserSyncError, BrowserSyncErrorCode } from './errors';
 import type { FileChangeBlob, FileChangeV3 } from './file-change';
-import { ensureResponseOk, readJson, type FetchLike } from './http';
+import {
+	ensureResponseOk,
+	readBoundedBytes,
+	readJson,
+	type FetchLike,
+} from './http';
 
 /** BLAKE3 `derive_key` context binding an object key to its blob identity. */
 export const BLOB_KEY_CONTEXT = 'noura.sync.blob.x25519.v1';
@@ -1416,7 +1421,9 @@ export async function downloadBlob(input: DownloadBlobInput): Promise<void> {
 				'attachment range response was malformed',
 			);
 		}
-		const bytes = new Uint8Array(await response.arrayBuffer());
+		// Bound the read at the expected range length so a lying
+		// `Content-Range` cannot force an oversized allocation.
+		const bytes = await readBoundedBytes(response, length);
 		if (bytes.length !== length) {
 			throw new BrowserSyncError(
 				BrowserSyncErrorCode.BlobLengthMismatch,
