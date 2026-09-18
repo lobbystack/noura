@@ -352,6 +352,325 @@ pub(crate) fn decode(value: &str, min: usize, max: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    const OPERATION_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/workspace-format/fixtures/operation-v1.json"
+    ));
+
+    const PAYLOAD_DOMAIN: &str = "noura.sync.payload";
+    const OPERATION_DOMAIN: &str = "noura.sync.operation";
+
+    #[derive(Deserialize)]
+    struct OperationFixtures {
+        payload_domain: String,
+        operation_domain: String,
+        version: u8,
+        object_key: String,
+        signing_secret: String,
+        signing_public: String,
+        valid: Vec<ValidOperation>,
+        invalid: Vec<InvalidOperation>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct OperationInputs {
+        workspace_id: String,
+        object_id: String,
+        device_id: String,
+        epoch: u64,
+        policy_revision: String,
+        operation_id: String,
+        nonce: String,
+        plaintext_base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<OperationKind>,
+    }
+
+    #[derive(Deserialize)]
+    struct ValidOperation {
+        name: String,
+        inputs: OperationInputs,
+        expected_operation: EncryptedOperation,
+        expected_plaintext_base64: String,
+    }
+
+    #[derive(Deserialize)]
+    struct InvalidOperation {
+        name: String,
+        operation: String,
+        operation_value: EncryptedOperation,
+        signing_public: String,
+        object_key: String,
+        expected_error: String,
+    }
+
+    fn array<const N: usize>(value: &str) -> [u8; N] {
+        STANDARD
+            .decode(value)
+            .unwrap()
+            .try_into()
+            .unwrap_or_else(|_| panic!("expected {N} decoded bytes for {value}"))
+    }
+
+    /// Deterministic test-only sealing path mirroring `seal_context` with a
+    /// caller-supplied nonce and operation id. Production randomness is untouched.
+    fn seal_fixture(
+        signer: &SigningIdentity,
+        key: &ObjectKey,
+        inputs: &OperationInputs,
+    ) -> EncryptedOperation {
+        let document = match (inputs.generation.as_deref(), inputs.kind) {
+            (Some(generation), Some(kind)) => Some((generation, kind)),
+            (None, None) => None,
+            _ => panic!("fixture set only one of generation and kind"),
+        };
+        let nonce: [u8; 12] = decode(&inputs.nonce, 12, 12).unwrap().try_into().unwrap();
+        let plaintext = STANDARD.decode(&inputs.plaintext_base64).unwrap();
+        let mut operation = EncryptedOperation {
+            version: if document.is_some() { 2 } else { 1 },
+            generation: document.map(|(generation, _)| generation.into()),
+            kind: document.map(|(_, kind)| kind),
+            operation_id: inputs.operation_id.clone(),
+            workspace_id: inputs.workspace_id.clone(),
+            object_id: inputs.object_id.clone(),
+            device_id: inputs.device_id.clone(),
+            epoch: inputs.epoch,
+            policy_revision: inputs.policy_revision.clone(),
+            nonce: STANDARD.encode(nonce),
+            ciphertext: String::new(),
+            signature: String::new(),
+        };
+        let aad = operation.associated_data().unwrap();
+        let cipher = Aes256Gcm::new((&*key.0).into());
+        operation.ciphertext = STANDARD.encode(
+            cipher
+                .encrypt(
+                    (&nonce).into(),
+                    Payload {
+                        msg: &plaintext,
+                        aad: &aad,
+                    },
+                )
+                .unwrap(),
+        );
+        operation.signature = signer.sign_bytes(&operation.signing_bytes().unwrap());
+        operation
+    }
+
+    fn resign_fixture(signer: &SigningIdentity, operation: &mut EncryptedOperation) {
+        operation.signature = signer.sign_bytes(&operation.signing_bytes().unwrap());
+    }
+
+    #[test]
+    #[ignore = "regenerates docs/workspace-format/fixtures/operation-v1.json"]
+    fn regenerate_operation_fixture() {
+        let signing_secret = [0x01_u8; 32];
+        let signer = SigningIdentity::from_seed(&signing_secret);
+        let other_signer = SigningIdentity::from_seed(&[0x08_u8; 32]);
+        let object_key = [0x03_u8; 32];
+        let key = ObjectKey::from_bytes(object_key);
+
+        let v1_inputs = OperationInputs {
+            workspace_id: "workspace".into(),
+            object_id: "object".into(),
+            device_id: "device_browser".into(),
+            epoch: 1,
+            policy_revision: "1".into(),
+            operation_id: "operation_basic".into(),
+            nonce: STANDARD.encode([0x06_u8; 12]),
+            plaintext_base64: STANDARD.encode(b"private/path.md\noperation body\n"),
+            generation: None,
+            kind: None,
+        };
+        let v2_inputs = OperationInputs {
+            workspace_id: "workspace".into(),
+            object_id: "object".into(),
+            device_id: "device_browser".into(),
+            epoch: 1,
+            policy_revision: "1".into(),
+            operation_id: "operation_document".into(),
+            nonce: STANDARD.encode([0x07_u8; 12]),
+            plaintext_base64: STANDARD.encode(b"document generation text\n"),
+            generation: Some("generation".into()),
+            kind: Some(OperationKind::Text),
+        };
+
+        let v1 = seal_fixture(&signer, &key, &v1_inputs);
+        let v2 = seal_fixture(&signer, &key, &v2_inputs);
+        v1.verify(&signer.public_key()).unwrap();
+        v2.verify(&signer.public_key()).unwrap();
+
+        let mut tampered_signature = v1.clone();
+        let mut signature = STANDARD.decode(&tampered_signature.signature).unwrap();
+        signature[0] ^= 0xFF;
+        tampered_signature.signature = STANDARD.encode(signature);
+
+        let mut tampered_ciphertext = v1.clone();
+        let mut ciphertext = STANDARD.decode(&tampered_ciphertext.ciphertext).unwrap();
+        let last = ciphertext.len() - 1;
+        ciphertext[last] ^= 0x01;
+        tampered_ciphertext.ciphertext = STANDARD.encode(ciphertext);
+        resign_fixture(&signer, &mut tampered_ciphertext);
+
+        let mut tampered_metadata = v1.clone();
+        tampered_metadata.object_id = "object_other".into();
+        resign_fixture(&signer, &mut tampered_metadata);
+
+        let mut bad_base64_nonce = v1.clone();
+        bad_base64_nonce.nonce = "not-base64!!".into();
+
+        let mut epoch_zero = v1.clone();
+        epoch_zero.epoch = 0;
+        resign_fixture(&signer, &mut epoch_zero);
+
+        let mut unsupported_version = v1.clone();
+        unsupported_version.version = 3;
+        resign_fixture(&signer, &mut unsupported_version);
+
+        let document = json!({
+            "payload_domain": PAYLOAD_DOMAIN,
+            "operation_domain": OPERATION_DOMAIN,
+            "version": 1,
+            "object_key": STANDARD.encode(object_key),
+            "signing_secret": STANDARD.encode(signing_secret),
+            "signing_public": signer.public_key(),
+            "valid": [
+                {
+                    "name": "operation-v1-basic",
+                    "inputs": serde_json::to_value(&v1_inputs).unwrap(),
+                    "expected_operation": v1,
+                    "expected_plaintext_base64": v1_inputs.plaintext_base64,
+                },
+                {
+                    "name": "operation-v2-document",
+                    "inputs": serde_json::to_value(&v2_inputs).unwrap(),
+                    "expected_operation": v2,
+                    "expected_plaintext_base64": v2_inputs.plaintext_base64,
+                },
+            ],
+            "invalid": [
+                {
+                    "name": "tampered_signature",
+                    "operation": "verify",
+                    "operation_value": tampered_signature,
+                    "signing_public": signer.public_key(),
+                    "object_key": STANDARD.encode(object_key),
+                    "expected_error": "sync_invalid_signature",
+                },
+                {
+                    "name": "tampered_ciphertext",
+                    "operation": "open",
+                    "operation_value": tampered_ciphertext,
+                    "signing_public": signer.public_key(),
+                    "object_key": STANDARD.encode(object_key),
+                    "expected_error": "sync_decrypt_failed",
+                },
+                {
+                    "name": "tampered_metadata",
+                    "operation": "open",
+                    "operation_value": tampered_metadata,
+                    "signing_public": signer.public_key(),
+                    "object_key": STANDARD.encode(object_key),
+                    "expected_error": "sync_decrypt_failed",
+                },
+                {
+                    "name": "wrong_object_key",
+                    "operation": "open",
+                    "operation_value": v1,
+                    "signing_public": signer.public_key(),
+                    "object_key": STANDARD.encode([0x09_u8; 32]),
+                    "expected_error": "sync_decrypt_failed",
+                },
+                {
+                    "name": "wrong_signer_public",
+                    "operation": "verify",
+                    "operation_value": v1,
+                    "signing_public": other_signer.public_key(),
+                    "object_key": STANDARD.encode(object_key),
+                    "expected_error": "sync_invalid_signature",
+                },
+                {
+                    "name": "bad_base64_nonce",
+                    "operation": "open",
+                    "operation_value": bad_base64_nonce,
+                    "signing_public": signer.public_key(),
+                    "object_key": STANDARD.encode(object_key),
+                    "expected_error": "sync_invalid_base64",
+                },
+                {
+                    "name": "epoch_zero",
+                    "operation": "open",
+                    "operation_value": epoch_zero,
+                    "signing_public": signer.public_key(),
+                    "object_key": STANDARD.encode(object_key),
+                    "expected_error": "sync_invalid_envelope",
+                },
+                {
+                    "name": "unsupported_version",
+                    "operation": "open",
+                    "operation_value": unsupported_version,
+                    "signing_public": signer.public_key(),
+                    "object_key": STANDARD.encode(object_key),
+                    "expected_error": "sync_invalid_envelope",
+                },
+            ],
+        });
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/workspace-format/fixtures/operation-v1.json");
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&document).unwrap()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn operation_fixtures_match_seal_open_and_tamper_rejection() {
+        let fixtures: OperationFixtures = serde_json::from_str(OPERATION_FIXTURE).unwrap();
+        assert_eq!(fixtures.payload_domain, PAYLOAD_DOMAIN);
+        assert_eq!(fixtures.operation_domain, OPERATION_DOMAIN);
+        assert_eq!(fixtures.version, 1);
+        assert!(!fixtures.valid.is_empty() && !fixtures.invalid.is_empty());
+
+        let signer = SigningIdentity::from_seed(&array::<32>(&fixtures.signing_secret));
+        assert_eq!(signer.public_key(), fixtures.signing_public);
+        let key = ObjectKey::from_bytes(array::<32>(&fixtures.object_key));
+
+        for vector in &fixtures.valid {
+            let operation = seal_fixture(&signer, &key, &vector.inputs);
+            assert_eq!(operation, vector.expected_operation, "{}", vector.name);
+            operation.verify(&fixtures.signing_public).unwrap();
+            let expected = STANDARD.decode(&vector.expected_plaintext_base64).unwrap();
+            let opened = operation.open(&key, &fixtures.signing_public).unwrap();
+            assert_eq!(opened.as_slice(), expected.as_slice(), "{}", vector.name);
+        }
+
+        for vector in &fixtures.invalid {
+            let error = match vector.operation.as_str() {
+                "verify" => vector
+                    .operation_value
+                    .verify(&vector.signing_public)
+                    .map(|_| ())
+                    .unwrap_err(),
+                "open" => vector
+                    .operation_value
+                    .open(
+                        &ObjectKey::from_bytes(array::<32>(&vector.object_key)),
+                        &vector.signing_public,
+                    )
+                    .map(|_| ())
+                    .unwrap_err(),
+                other => panic!("unknown fixture operation {other}"),
+            };
+            assert_eq!(error.code, vector.expected_error, "{}", vector.name);
+        }
+    }
 
     #[test]
     fn encrypted_roundtrip_authenticates_metadata_and_key() {

@@ -4,9 +4,7 @@ The open workspace for humans and AI.
 
 Noura is an open-source, local-first desktop workspace where everything is a plugin. Combine notes, tasks, projects, and AI chat in one workspace. Keep your work in ordinary files you can edit, back up, and use without Noura.
 
-[![Status: Local Alpha](https://img.shields.io/badge/status-Local%20Alpha-8b5cf6)](#try-noura)
-[![Continuous integration](https://github.com/lobbystack/noura/actions/workflows/ci.yml/badge.svg)](https://github.com/lobbystack/noura/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Status: Local Alpha](https://img.shields.io/badge/status-Local%20Alpha-8b5cf6)](#try-noura) [![Continuous integration](https://github.com/lobbystack/noura/actions/workflows/ci.yml/badge.svg)](https://github.com/lobbystack/noura/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [Try Noura](#try-noura) · [Documentation](#documentation) · [Contribute](#contributing)
 
@@ -56,6 +54,13 @@ Create a workspace, add a note, and open the note’s Markdown file in your edit
 
 ## Develop Noura
 
+The browser workspace build also requires the Rust Wasm target and the wasm-bindgen CLI version that matches the Rust dependency:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.127 --locked
+```
+
 Run the development checks from the repository root:
 
 ```sh
@@ -95,16 +100,16 @@ Read the [workspace format](docs/workspace-format/v1.md) for file layouts and th
 
 Start with the directory for the part you want to work on:
 
-| Directory                                                             | Purpose                                                                        |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| [`apps/app`](apps/app)                                                | SvelteKit and Svelte 5 application interface                                   |
-| [`apps/website`](apps/website)                                        | Marketing website                                                              |
-| [`apps/server`](apps/server) and [`apps/server-web`](apps/server-web) | Sync service, account pages, and share viewer                                  |
-| [`packages`](packages)                                                | Typed workspace client, shared types, editor, AI runtime, and plugin contracts |
-| [`crates/local-core`](crates/local-core)                              | Rust file operations, validation, indexing, watching, and credentials          |
-| [`crates/mcp-server`](crates/mcp-server)                              | MCP adapter over local-core services                                           |
-| [`plugins`](plugins)                                                  | First-party workspace modules                                                  |
-| [`src-tauri`](src-tauri)                                              | Tauri 2 desktop shell and native bridge                                        |
+| Directory | Purpose |
+| --- | --- |
+| [`apps/app`](apps/app) | SvelteKit and Svelte 5 interface for the desktop app, account pages, share viewer, and experimental browser workspace |
+| [`apps/website`](apps/website) | Marketing website |
+| [`apps/server`](apps/server) | Experimental sync service that hosts the browser build of `apps/app` |
+| [`packages`](packages) | Typed workspace client, shared types, editor, AI runtime, and plugin contracts |
+| [`crates/local-core`](crates/local-core) | Rust file operations, validation, indexing, watching, and credentials |
+| [`crates/mcp-server`](crates/mcp-server) | MCP adapter over local-core services |
+| [`plugins`](plugins) | First-party workspace modules |
+| [`src-tauri`](src-tauri) | Tauri 2 desktop shell and native bridge |
 
 ## Documentation
 

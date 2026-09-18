@@ -6,6 +6,8 @@ Deploy, back up, and validate the Noura sync service with this runbook. The serv
 
 The image runs as the unprivileged `bun` user. Run it behind HTTPS termination and set `PUBLIC_ORIGIN` to that exact external origin. Passkey configuration, allowlisted email, and mail delivery must use the same origin. The supplied Compose configuration binds the service to `127.0.0.1:1900`; run Caddy or another TLS proxy on the host.
 
+Railway mounts volumes as root. On Railway, set `RAILWAY_RUN_UID=0`: the image entrypoint starts as root only to take ownership of the mounted `BLOB_ROOT`, then drops to `bun` before the service starts. The long-running server never runs as root.
+
 Set these values in an operator secret store:
 
 - `DATABASE_URL`

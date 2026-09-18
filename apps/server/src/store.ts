@@ -32,7 +32,14 @@ export class SyncStore {
 		return this.activeWatches;
 	}
 	constructor(url: string) {
-		this.db = postgres(url, { max: 10, onnotice: () => {} });
+		// `connect_timeout` bounds each TCP attempt (seconds) so a sleeping or
+		// unreachable database fails fast and the startup retry can move on
+		// instead of blocking on a long OS-level connect timeout.
+		this.db = postgres(url, {
+			max: 10,
+			onnotice: () => {},
+			connect_timeout: 10,
+		});
 	}
 	async transaction<T>(run: (tx: Tx) => T | Promise<T>): Promise<T> {
 		// postgres.js 3.4.9 can skip its BEGIN reservation hook at a pipeline
@@ -62,7 +69,7 @@ export class SyncStore {
 	async ready() {
 		// Resolve the required release columns even when the tables contain no rows.
 		await this
-			.db`SELECT w.access_revision,d.encryption_recipient,k.signing_device,k.signature,a.policy,p.snapshot,
+			.db`SELECT w.access_revision,d.encryption_recipient,k.signing_device,k.signature,k.construction,k.recipient_public_key,k.ephemeral_public_key,k.salt,k.nonce,a.policy,p.snapshot,
 			 s.token_hash,c.expires_at,r.count,m.role,m.history_after,o.epoch,g.role,g.history_after,u.ciphertext,b.tus_info,b.complete,
 			 i.accepted_account_id,i.completed_at,i.revoked_at,t.committed,cp.checkpoint,b.transition_id,wc.capability
 		 FROM noura_workspaces w

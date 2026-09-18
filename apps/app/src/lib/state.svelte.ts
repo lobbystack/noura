@@ -1,13 +1,11 @@
 import { browser } from '$app/environment';
 import type { WorkspaceState } from '@noura/workspace';
-import {
-	createNouraClient,
-	createTauriTransport,
-	PluginRuntime,
-} from '@noura/workspace';
+import { createNouraClient, createTauriTransport } from '@noura/workspace';
+import { AppPluginRuntime } from './app-plugin-runtime';
+import { getAppPlatform } from './platform';
 
 let client: ReturnType<typeof createNouraClient> | null = null;
-let pluginRuntime: PluginRuntime | null = null;
+let pluginRuntime: AppPluginRuntime | null = null;
 
 type RecentWorkspace = {
 	path: string;
@@ -24,12 +22,26 @@ function errorMessage(error: unknown) {
 }
 
 export function getNouraClient() {
+	if (!getAppPlatform())
+		throw new Error(
+			'Native platform could not be detected. Start or build the frontend through the Tauri CLI.',
+		);
+	if (getAppPlatform() === 'web')
+		throw new Error(
+			'Local workspaces are not available in the web browser. Open Noura in the native app.',
+		);
 	if (!client) client = createNouraClient(createTauriTransport());
 	return client;
 }
 
-export function getPluginRuntime(): PluginRuntime {
-	if (!pluginRuntime) pluginRuntime = new PluginRuntime(getNouraClient());
+export function getPluginRuntime(): AppPluginRuntime {
+	const platform = getAppPlatform();
+	if (!platform)
+		throw new Error(
+			'Native platform could not be detected. Start or build the frontend through the Tauri CLI.',
+		);
+	if (!pluginRuntime)
+		pluginRuntime = new AppPluginRuntime(getNouraClient(), platform);
 	return pluginRuntime;
 }
 

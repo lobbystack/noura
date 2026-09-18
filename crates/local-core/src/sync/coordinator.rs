@@ -9,7 +9,7 @@ use super::{
 use crate::{Result, WorkspaceEngine};
 
 /// Local consent and pinned sender keys. This file is never part of a synced payload.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceSyncConfig {
     pub version: u8,
@@ -256,29 +256,43 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         wait: bool,
     ) -> Result<SyncPass> {
-        let config = engine
+        let persisted = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
-        if !config.enabled {
+        if !persisted.enabled {
             return Err(invalid("sync_paused"));
         }
         let device = DeviceKeys::load(store, &connection.device_id)?;
-        Self::check_connection(&config, connection, &device)?;
+        Self::check_connection(&persisted, connection, &device)?;
         let transport = connection.transport(store)?;
         if let Some(transition) = engine.sync_pending_transition()? {
             super::approvals::finish_access_transition(
                 engine,
                 &transport,
                 &device,
-                &config,
+                &persisted,
                 &transition,
             )
             .await?;
         }
         let mut access = transport.access_state(&engine.manifest().id).await?;
         if access.revision() != engine.sync_access_revision()? {
-            transport.refresh_access_policies(engine, &config).await?;
+            // The chain is refreshed with the persisted pins, which keeps every
+            // historical policy signature verifiable. Only after this succeeds
+            // is the effective configuration safe to prune.
+            transport
+                .refresh_access_policies(engine, &persisted)
+                .await?;
             access = transport.access_state(&engine.manifest().id).await?;
+        }
+        // Drop approvals for devices the relay no longer lists for this
+        // workspace. A revoked device's stale recipient and account must not
+        // keep it in the authorized-writer set or the sharing gate. Persist the
+        // drop only once the local revision matches the relay head, so a later
+        // chain refresh can still verify policies signed before the revocation.
+        let config = access.effective_config(&persisted, device.device_id());
+        if config != persisted && access.revision() == engine.sync_access_revision()? {
+            engine.sync_save_configuration(&config)?;
         }
         let mut secrets = engine.sync_restore_secrets(&device, &config.trusted_devices)?;
         // Fetch rotations before capturing new edits. Never select an epoch from an unverified key.
@@ -301,21 +315,38 @@ impl WorkspaceSyncCoordinator {
             .synchronize_readonly(engine, &secrets, false)
             .await?;
         engine.sync_capture_workspace(&device, &mut secrets)?;
-        if config.approved_recipients.len() > 1
-            && !transport
+        let mut warnings = Vec::new();
+        if config.approved_recipients.len() > 1 {
+            let share = match transport
                 .activate_pending_objects(engine, &device, &config, &secrets, &access)
-                .await?
-        {
-            transport.prepare_objects(engine).await?;
-            transport
-                .share_approved_keys(engine, &device, &config, &secrets)
-                .await?;
+                .await
+            {
+                Ok(true) => false,
+                Ok(false) => true,
+                Err(error) if activation_error_is_recoverable(&error) => {
+                    // The pending activation stays durable and is retried; a
+                    // browser recipient or a device still awaiting local
+                    // approval must not stop already-shared objects from
+                    // receiving their keys in this pass.
+                    warnings.push(error.code.clone());
+                    true
+                }
+                Err(error) => return Err(error),
+            };
+            if share {
+                transport.prepare_objects(engine).await?;
+                transport
+                    .share_approved_keys(engine, &device, &config, &secrets)
+                    .await?;
+            }
         }
-        if wait {
-            transport.synchronize_wait(engine, &secrets).await
+        let mut pass = if wait {
+            transport.synchronize_wait(engine, &secrets).await?
         } else {
-            transport.synchronize(engine, &secrets).await
-        }
+            transport.synchronize(engine, &secrets).await?
+        };
+        pass.warnings.extend(warnings);
+        Ok(pass)
     }
 
     pub(crate) fn check_connection(
@@ -487,6 +518,16 @@ impl WorkspaceSyncCoordinator {
     }
 }
 
+/// Activation failures that must not abort a synchronization pass. The pending
+/// activation remains durable and is retried, while already-shared objects still
+/// receive keys. Every other error is still fatal.
+fn activation_error_is_recoverable(error: &crate::CoreError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "sync_browser_activation_unsupported" | "sync_device_approval_required"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +630,28 @@ mod tests {
             std::fs::read(root.join("moved.txt")).unwrap(),
             b"canonical bytes"
         );
+    }
+
+    #[test]
+    fn only_deferred_activation_failures_continue_the_pass() {
+        for code in [
+            "sync_browser_activation_unsupported",
+            "sync_device_approval_required",
+        ] {
+            assert!(
+                activation_error_is_recoverable(&invalid(code)),
+                "{code} must not abort the pass"
+            );
+        }
+        for code in [
+            "sync_key_required",
+            "sync_writer_not_authorized",
+            "sync_invalid_object_activation",
+        ] {
+            assert!(
+                !activation_error_is_recoverable(&invalid(code)),
+                "{code} must stay fatal"
+            );
+        }
     }
 }

@@ -1,187 +1,54 @@
 # Experimental native text collaboration
 
-Production discovery advertises no live-text capability. This document describes
-the implemented protocol and durable records, not a completed collaboration release.
+Production discovery advertises no live-text capability. This document describes the implemented protocol and durable records, not a completed collaboration release.
 
-Workspace capability version 1 is an immutable owner-signed record binding the
-workspace ID, collaboration protocol 1, minimum native client protocol 1, minimum
-relay protocol 1, and signing device. The experimental relay stores only the exact
-signed record and requires it before staging an access transition. Unknown fields,
-unsupported minimums, identity changes, and replacement attempts fail closed.
+Workspace capability version 1 is an immutable owner-signed record binding the workspace ID, collaboration protocol 1, minimum native client protocol 1, minimum relay protocol 1, and signing device. The experimental relay stores only the exact signed record and requires it before staging an access transition. Unknown fields, unsupported minimums, identity changes, and replacement attempts fail closed.
 
-Approving the final fingerprint on an accepted invitation automatically begins
-activation when the relay advertises access-transition version 1. Approval itself
-only pins the candidate device identity. Activation rotates every existing object
-to a newly generated key and document generation, wraps that key independently for
-every effective reader device, checkpoints current visible bytes, and commits the
-policy, checkpoints, and any checkpoint blobs as one signed transition. The exact
-transition, local recipient envelope, and staged ciphertext survive retries. A
-relay without the transition capability receives no key grant; the legacy path
-that reused an existing epoch is rejected.
+Approving the final fingerprint on an accepted invitation automatically begins activation when the relay advertises access-transition version 1. Approval itself only pins the candidate device identity. Activation rotates every existing object to a newly generated key and document generation, wraps that key independently for every effective reader device, checkpoints current visible bytes, and commits the policy, checkpoints, and any checkpoint blobs as one signed transition. The exact transition, local recipient envelope, and staged ciphertext survive retries. A relay without the transition capability receives no key grant; the legacy path that reused an existing epoch is rejected.
 
-The relay records the signed checkpoint boundary for newly added workspace and
-object readers. Pulls for those accounts exclude operations at or before that
-boundary and advance directly to the current cursor when no later operation is
-visible. A fresh recipient therefore receives the checkpoint and future
-operations, never retired ciphertext or pre-invitation history.
+The relay records the signed checkpoint boundary for newly added workspace and object readers. Pulls for those accounts exclude operations at or before that boundary and advance directly to the current cursor when no later operation is visible. A fresh recipient therefore receives the checkpoint and future operations, never retired ciphertext or pre-invitation history.
 
-Access policy version 2 adds `document: { generation, mode }` to each object.
-Modes are `text` and `attachment`. Its object signing tuple appends
-`[generation, mode]` to the version-1 object fields. Version 1 signatures are
-unchanged. The relay requires a signed checkpoint when the descriptor changes,
-and rejects policy downgrade from version 2.
+Access policy version 2 adds `document: { generation, mode }` to each object. Modes are `text` and `attachment`. Its object signing tuple appends `[generation, mode]` to the version-1 object fields. Version 1 signatures are unchanged. The relay requires a signed checkpoint when the descriptor changes, and rejects policy downgrade from version 2.
 
-Encrypted operation version 2 adds `generation` and `kind` (`text`, `metadata`,
-or `file`). Both are appended to the encryption associated-data and signature
-tuples. The relay checks the current generation and rejects whole-file
-replacement operations for text generations. Native materialization supports
-text operations, validated expected-value metadata patches, coordinated body and
-metadata transactions, and generation-bound whole-file operations for attachment mode.
-Oversized, binary, and NUL-containing files enter attachment mode through a
-signed checkpoint. Metadata fields apply independently in durable operation order;
-same-field races retain the losing signed operation and local state in a review
-record. Signed move and tombstone operations use stable object identity and an
-expected lifecycle revision. Deletes move canonical bytes to durable collaboration
-trash while the state record retains pending drafts through acknowledgement;
-destination collisions and conflicting lifecycle operations enter review.
+Encrypted operation version 2 adds `generation` and `kind` (`text`, `metadata`, or `file`). Both are appended to the encryption associated-data and signature tuples. The relay checks the current generation and rejects whole-file replacement operations for text generations. Native materialization supports text operations, validated expected-value metadata patches, coordinated body and metadata transactions, and generation-bound whole-file operations for attachment mode. Oversized, binary, and NUL-containing files enter attachment mode through a signed checkpoint. Metadata fields apply independently in durable operation order; same-field races retain the losing signed operation and local state in a review record. Signed move and tombstone operations use stable object identity and an expected lifecycle revision. Deletes move canonical bytes to durable collaboration trash while the state record retains pending drafts through acknowledgement; destination collisions and conflicting lifecycle operations enter review.
 
 Object activation version 1 atomically publishes a writer-created object at epoch
 
-1. Its signature binds the immutable workspace capability digest, current policy
-   revision and operation boundary, fresh generation and mode, exact effective-reader
-   envelopes, and checkpoint digest. Version 2 additionally binds a checkpoint blob
-   manifest. The relay stages exact signed bytes before accepting a blob and commits
-   the object, envelopes, checkpoint, and generation together. An unpublished stale
-   activation is resolved by identity and rebuilt from retained local bytes. Other
-   clients verify its capability, historical writer authority, envelopes, and
-   checkpoint before installation.
+1. Its signature binds the immutable workspace capability digest, current policy revision and operation boundary, fresh generation and mode, exact effective-reader envelopes, and checkpoint digest. Version 2 additionally binds a checkpoint blob manifest. The relay stages exact signed bytes before accepting a blob and commits the object, envelopes, checkpoint, and generation together. The client resolves an unpublished stale activation by identity and rebuilds it from retained local bytes. Other clients verify its capability, historical writer authority, envelopes, and checkpoint before installation.
 
-Text plaintext contains `{ version: 1, objectId, generation, updates }`.
-Updates are base64 Yjs update-v1 bytes. The root shared text is named `content`.
-Yrs uses UTF-16 offsets, matching Yjs and CodeMirror. Tests consume independently
-generated `fixtures/yjs-text-v1.json` and `fixtures/yrs-text-v1.json` for Unicode,
-deletion, state vectors and local undo. Versions are pinned in Cargo and Bun.
-No upstream implementation source was copied.
+Text plaintext contains `{ version: 1, objectId, generation, updates }`. Updates are base64 Yjs update-v1 bytes. The root shared text is named `content`. Yrs uses UTF-16 offsets, matching Yjs and CodeMirror. Tests consume independently generated `fixtures/yjs-text-v1.json` and `fixtures/yrs-text-v1.json` for Unicode, deletion, state vectors and local undo. Cargo and Bun pin versions. No upstream implementation source was copied.
 
-The native coordinator validates a candidate document before writing. Text is
-limited to 8 MiB and encoded document history to 32 MiB. Restore and candidate
-application cross a dedicated native worker process that receives only CRDT bytes
-and text, never credentials, network handles, workspace paths, or file writers. Its
-environment is cleared and its working directory is the filesystem root. Release
-workers enter Apple's pure-computation Seatbelt profile on macOS; Linux workers
-install a no-new-privileges seccomp filter that rejects networking, filesystem
-opens and mutations, process creation, and execution. Windows hosts assign a
-512 MiB, kill-on-close Job Object, but workers fail closed before decoding because
-equivalent AppContainer network/filesystem confinement is not implemented and
-validated. Requests have a
-five-second deadline, a 512 MiB process limit (enforced by `RLIMIT_AS` on Linux,
-physical-footprint monitoring on macOS, and the Job Object on Windows), an
-aggregate preflight budget including an 8x decoded-structure allowance, and a
-bounded 16-worker concurrency ceiling. Worker panic, timeout, saturation, invalid
-shared types, missing references, attributes, invalid Unicode text, or an oversized
-result fails before canonical bytes or recovery intent change. A debug-only explicit
-test marker permits the worker to inherit an already active host sandbox when a
-nested macOS profile is refused; release builds fail closed. Windows capability
-confinement and cross-platform adversarial execution remain release blockers.
-Text-operation envelopes above 700 KiB use a versioned encrypted blob descriptor;
-the ciphertext is flushed and renamed by digest before the signed operation is
-enqueued, and receivers verify and decrypt the blob before candidate application.
+The native coordinator validates a candidate document before writing. Text is limited to 8 MiB and encoded document history to 32 MiB. Restore and candidate application cross a dedicated native worker process that receives only CRDT bytes and text, never credentials, network handles, workspace paths, or file writers. Its environment is cleared and its working directory is the filesystem root. Release workers enter Apple's pure-computation Seatbelt profile on macOS; Linux workers install a no-new-privileges seccomp filter that rejects networking, filesystem opens and mutations, process creation, and execution. Windows hosts assign a 512 MiB, kill-on-close Job Object, but workers fail closed before decoding because equivalent AppContainer network/filesystem confinement is not implemented and validated. Requests have a five-second deadline, a 512 MiB process limit (enforced by `RLIMIT_AS` on Linux, physical-footprint monitoring on macOS, and the Job Object on Windows), an aggregate preflight budget including an 8x decoded-structure allowance, and a bounded 16-worker concurrency ceiling. Worker panic, timeout, saturation, invalid shared types, missing references, attributes, invalid Unicode text, or an oversized result fails before canonical bytes or recovery intent change. A debug-only explicit test marker permits the worker to inherit an already active host sandbox when a nested macOS profile is refused; release builds fail closed. Windows capability confinement and cross-platform adversarial execution remain release blockers. Text-operation envelopes above 700 KiB use a versioned encrypted blob descriptor; the ciphertext is flushed and renamed by digest before the signed operation is enqueued, and receivers verify and decrypt the blob before candidate application.
 
-For managed Markdown, the shared text is the body; native canonical Markdown
-serialization remains authoritative. Any valid editor body detail normalized by
-canonical serialization remains in the durable CRDT draft. General text retains
-BOM and newline conventions. Legacy raw/body mutations cannot bypass an active
-text generation. Desktop and MCP creates and updates, desktop moves/deletes,
-editor transactions, and external saves use the native per-object coordinator
-whenever collaboration is active. Before canonical normalization, the exact
-external bytes are flushed to a recovery snapshot; invalid managed documents,
-protected-field changes, deletions, and format-only ambiguity remain untouched
-and enter durable review. A writer-created canonical object is captured into the
-signed activation state immediately after its durable file save; if capture is
-temporarily unavailable, the successful save returns a recovery warning and the
-normal sync scan resumes activation.
+For managed Markdown, the shared text is the body; native canonical Markdown serialization remains authoritative. Any valid editor body detail normalized by canonical serialization remains in the durable CRDT draft. General text retains BOM and newline conventions. Legacy raw/body mutations cannot bypass an active text generation. Desktop and MCP creates and updates, desktop moves/deletes, editor transactions, and external saves use the native per-object coordinator whenever collaboration is active. Before canonical normalization, the application flushes the exact external bytes to a recovery snapshot; invalid managed documents, protected-field changes, deletions, and format-only ambiguity remain untouched and enter durable review. The application captures a writer-created canonical object into the signed activation state immediately after its durable file save; if capture is temporarily unavailable, the successful save returns a recovery warning and the normal sync scan resumes activation.
 
 ## Durable records
 
 All records are ordinary files, resolved through native workspace path checks:
 
-| Path beneath `.noura/sync/`                   | Contents                                                                                                                            |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `policies/<revision>.json`                    | Verified policy history, linked to the accepted head.                                                                               |
-| `collaboration/<object>/checkpoint.json`      | Signed checkpoint and retained rollback floor.                                                                                      |
-| `collaboration/<object>/state.json`           | Generation, path, acknowledged baseline, current draft, exact pending text/metadata changes, recent acknowledgments, and Yrs state. |
-| `collaboration/<object>/intent.json`          | Recovery intent binding prior revision, candidate state, encrypted operation and optional batch receipt.                            |
-| `collaboration/<object>/batches/<batch>.json` | Idempotency digest and durable revision acknowledgment.                                                                             |
-| `collaboration/<object>/reviews/*`            | Retained generation transitions, competing bytes, and signed same-field metadata conflicts requiring review.                        |
+| Path beneath `.noura/sync/` | Contents |
+| --- | --- |
+| `policies/<revision>.json` | Verified policy history, linked to the accepted head. |
+| `collaboration/<object>/checkpoint.json` | Signed checkpoint and retained rollback floor. |
+| `collaboration/<object>/state.json` | Generation, path, acknowledged baseline, current draft, exact pending text/metadata changes, recent acknowledgments, and Yrs state. |
+| `collaboration/<object>/intent.json` | Recovery intent binding prior revision, candidate state, encrypted operation and optional batch receipt. |
+| `collaboration/<object>/batches/<batch>.json` | Idempotency digest and durable revision acknowledgment. |
+| `collaboration/<object>/reviews/*` | Retained generation transitions, competing bytes, and signed same-field metadata conflicts requiring review. |
 
-The sync journal also retains the exact pending object activation and committed
-activation records. These remain rebuildable coordination state around canonical
-workspace files; SQLite is not their source of truth.
+The sync journal also retains the exact pending object activation and committed activation records. These remain rebuildable coordination state around canonical workspace files; SQLite is not their source of truth.
 
-Workspace sync status exposes the durable access-transition phase and an installed
-flag for each checkpointed object. It separately exposes a pending writer-created
-object activation, its stable identity and path, and whether its checkpoint has
-been installed. Normal sync resumes either pending transaction after restart or
-reconnection; the UI retry action is not required for correctness.
+Workspace sync status exposes the durable access-transition phase and an installed flag for each checkpointed object. It separately exposes a pending writer-created object activation, its stable identity and path, and whether its checkpoint has been installed. Normal sync resumes either pending transaction after restart or reconnection; the UI retry action is not required for correctness.
 
-A local submission writes and flushes its intent, atomically writes and flushes
-canonical bytes, writes state and encrypted outgoing operation, records the batch
-receipt, then clears the intent. Committed events follow these writes. Native
-server-acknowledgment persistence emits `Synced` only once that object's outbox
-is empty. Index maintenance is derived and cannot make a failed file save succeed.
+A local submission writes and flushes its intent, atomically writes and flushes canonical bytes, writes state and encrypted outgoing operation, records the batch receipt, then clears the intent. Committed events follow these writes. Native server-acknowledgment persistence emits `Synced` only once that object's outbox is empty. Index maintenance is derived and cannot make a failed file save succeed.
 
-The desktop coordinator returns to an authoritative durable HTTP pull at least
-every five seconds even while its notification socket appears connected, and
-also while that path is unavailable. Its native WebSocket authenticates with the
-device token from the OS credential store, coalesces local presence to ten sends
-per second, sends a 20-second heartbeat, and reconnects with jittered exponential
-timing bounded from one to 30 seconds. Socket errors never acknowledge durable
-edits; the coordinator falls back to authoritative HTTP pulls.
+The desktop coordinator returns to an authoritative durable HTTP pull at least every five seconds even while its notification socket appears connected, and also while that path is unavailable. Its native WebSocket authenticates with the device token from the OS credential store, coalesces local presence to ten sends per second, sends a 20-second heartbeat, and reconnects with jittered exponential timing bounded from one to 30 seconds. Socket errors never acknowledge durable edits; the coordinator falls back to authoritative HTTP pulls.
 
-Experimental realtime protocol version 1 uses a native-authenticated WebSocket.
-The relay sends coalesced operation-change notifications; HTTP pulls and their
-durable acknowledgments remain authoritative. Presence ciphertext is separately
-rate-limited, signed by the device, and encrypted with the current object key. Its
-authenticated context binds the workspace, object, generation, epoch, device,
-connection session, and monotonic sequence. The relay validates current device,
-membership, object permission, epoch, and generation before forwarding it through
-transient PostgreSQL notifications. It never stores presence. Outbound queues and
-pending inbound-presence work are each limited to 256 messages and 1 MiB; outbound
-events are coalesced and slow or flooding peers are closed.
-Presence expires after 30 seconds and a connection close emits a transient removal.
+Experimental realtime protocol version 1 uses a native-authenticated WebSocket. The relay sends coalesced operation-change notifications; HTTP pulls and their durable acknowledgments remain authoritative. The device separately rate-limits, signs, and encrypts presence ciphertext with the current object key. Its authenticated context binds the workspace, object, generation, epoch, device, connection session, and monotonic sequence. The relay validates current device, membership, object permission, epoch, and generation before forwarding it through transient PostgreSQL notifications. It never stores presence. The relay limits outbound queues and pending inbound-presence work to 256 messages and 1 MiB each; it coalesces outbound events and closes slow or flooding peers. Presence expires after 30 seconds and a connection close emits a transient removal.
 
-Recovery authenticates the encrypted operation, reconstructs the candidate,
-checks materialized bytes and revisions, and either finishes an incomplete write
-or finishes recording an already completed write. Competing external bytes are
-preserved. Missing state requires verified checkpoint recovery rather than
-silently reseeding an existing generation.
+Recovery authenticates the encrypted operation, reconstructs the candidate, checks materialized bytes and revisions, and either finishes an incomplete write or finishes recording an already completed write. It preserves competing external bytes. Missing state requires verified checkpoint recovery rather than silently reseeding an existing generation.
 
-State version 2 keeps the relay-acknowledged baseline separate from the current
-materialized draft. Each local operation records its exact update list before it
-enters the outbox. A relay receipt first advances that baseline and its durable
-sequence, then removes the operation from the outbox. A crash between those
-writes is recognized by the bounded recent-acknowledgment list and completes
-idempotently. Later local drafts remain pending and are reconstructed from the
-baseline during every state validation; the latest local file is never inferred
-to be acknowledged. Version-1 state migrates only when no text operation is
-pending, otherwise it fails closed and requires recovery.
+State version 2 keeps the relay-acknowledged baseline separate from the current materialized draft. Each local operation records its exact update list before it enters the outbox. A relay receipt first advances that baseline and its durable sequence, then removes the operation from the outbox. A crash between those writes is recognized by the bounded recent-acknowledgment list and completes idempotently. Later local drafts remain pending, and the client reconstructs them from the baseline during every state validation; the latest local file is never inferred to be acknowledged. Version-1 state migrates only when no text operation is pending, otherwise it fails closed and requires recovery.
 
-The generated collaboration bootstrap identifies the effective `writer` or
-`viewer` role and the initial Rust-owned save status. The typed workspace client
-exposes `open`, `submitUpdates`, `flush`, `close`, and `setPresence`.
-The editor adapter batches at 100 ms, shares a document across local views,
-suppresses resubmission of native updates, retains failed batches, and limits
-undo to local transactions. Native leases close independently across windows.
-An activation event swaps a clean open editor directly onto the checkpoint. A
-dirty managed editor first submits its retained title and body through one native
-transaction at the bootstrap revision, then reopens the durable session; a dirty
-raw-text editor applies and flushes its retained body through that session. Any
-failed submission leaves the visible draft paused in the review surface.
-The native layer seals presence and decrypts verified remote presence with no key
-material exposed to components or stores. Remote selections expire after 30
-seconds and are cleared immediately when the transport reports offline.
+The generated collaboration bootstrap identifies the effective `writer` or `viewer` role and the initial Rust-owned save status. The typed workspace client exposes `open`, `submitUpdates`, `flush`, `close`, and `setPresence`. The editor adapter batches at 100 ms, shares a document across local views, suppresses resubmission of native updates, retains failed batches, and limits undo to local transactions. Native leases close independently across windows. An activation event swaps a clean open editor directly onto the checkpoint. A dirty managed editor first submits its retained title and body through one native transaction at the bootstrap revision, then reopens the durable session; a dirty raw-text editor applies and flushes its retained body through that session. Any failed submission leaves the visible draft paused in the review surface. The native layer seals presence and decrypts verified remote presence with no key material exposed to components or stores. Remote selections expire after 30 seconds and are cleared immediately when the transport reports offline.
 
-Durable `/operations` HTTP traffic uses a shared per-device token bucket at
-20 requests/second with a burst of 40, separate from the account limit. A separate
-10/second presence bucket protects the realtime transport; it stores only rate
-counters, never presence payloads.
+Durable `/operations` HTTP traffic uses a shared per-device token bucket at 20 requests/second with a burst of 40, separate from the account limit. A separate 10/second presence bucket protects the realtime transport; it stores only rate counters, never presence payloads.

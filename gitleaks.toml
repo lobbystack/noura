@@ -1,0 +1,19 @@
+# Gitleaks configuration for the Noura repository.
+#
+# Extend the default rules, then allowlist only deterministic, synthetic
+# material that is intentional in tree. Nothing here permits a real credential.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic workspace-format conformance fixtures and test vectors"
+paths = [
+	'''(^|/)docs/workspace-format/fixtures/.*''',
+]
+
+[[allowlists]]
+description = "Synthetic age identity in the recovery fixture regenerator (test-only)"
+regexTarget = "match"
+regexes = [
+	'''AGE-SECRET-KEY-1GQ9778VQXMMJVE8SK7J6VT8UJ4HDQAJUVSFCWCM02D8GEWQ72PVQ2Y5J33''',
+]

@@ -2,7 +2,10 @@
 	"name": "@noura/workspace",
 	"version": "0.1.0",
 	"type": "module",
-	"exports": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./browser": "./src/client.ts"
+	},
 	"scripts": {
 		"check": "tsc --noEmit",
 		"build": "tsc",

@@ -35,7 +35,7 @@ Desktop projections share one refresh lifecycle. Object mutations, external chan
 
 The lifecycle serializes reads and filters events by workspace ID. It rereads when the window regains focus or visibility. A failed background read leaves the last successful projection on screen. Editors own revision and conflict state, so projection refreshes cannot replace active drafts.
 
-## Query Calendar intervals
+## Query calendar intervals
 
 Calendar projects the `due`, `date`, and `start` properties without changing their source files. Queries use half-open ranges. A valid `end` after `start` creates an interval. The query returns that entry when its interval overlaps the requested range.
 

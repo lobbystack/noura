@@ -110,6 +110,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             signing_device: owner.device_id().into(),
             wrapped_key: envelope.wrapped_key.clone(),
             signature: envelope.signature.clone(),
+            construction: KeyConstruction::Age,
+            recipient_public_key: None,
+            ephemeral_public_key: None,
+            salt: None,
+            nonce: None,
         },
         &owner.signer().public_key(),
     )?;

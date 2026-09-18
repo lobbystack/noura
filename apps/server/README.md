@@ -8,6 +8,8 @@ Once enabled, rollout admission and protocol continuity remain separate. Setting
 
 The experimental service supports approved-device authentication, signed encrypted operation exchange, signed access policies, device-wrapped content keys, and revocable encrypted public snapshots. Native clients retain canonical file application, durable journals, conflict preservation, and local key material. Experimental invitation, checkpoint, text-generation, notification, and presence features retain durable HTTP pull and acknowledgment as their authoritative transport.
 
+The service also supports browser devices. It verifies `x25519:` recipient enrollment and browser key envelopes, and delivers keys by envelope construction. The browser client library, `packages/browser-sync`, handles device custody, enrollment, key delivery, and operation transport. The hosted app does not call it yet, and no test runs it end to end against this service.
+
 ## Run locally
 
 From this directory, copy `.env.example` to `.env`. Set the database connection, a random `AUTH_SECRET`, account email delivery, sender address, and `ALLOWED_EMAILS`. Choose one delivery path: `SMTP_URL` or `RESEND_API_KEY`. An empty allowlist admits nobody. No messages are printed to logs in lieu of a mail transport.
@@ -19,6 +21,12 @@ bun run start
 ```
 
 To include the account pages and public viewer, run `bun run build:release`, then `bun dist/main.js`. Docker packages this combined release automatically.
+
+`apps/app` builds the browser UI. Its `(account)` route group contains `/account`, `/account/device`, `/invite/[token]`, and `/share/[token]`, outside the `(workspace)` layout and its native initialization. Browser workspace routes run the hosted notes, tasks, and projects client over browser storage and encrypted sync. They remain experimental.
+
+`build:release` creates `apps/app/build-hosted`, verifies CSP hashes and the account routes’ static import boundary, generates bundled dependency notices, and copies the app to `dist/public`. Native builds use `apps/app/build` and Tauri’s CSP. Don’t substitute a native build for the hosted build: only the hosted build keeps the restrictive account and share CSP.
+
+The server serves only explicit SPA destinations and asset prefixes. Missing API endpoints, missing assets, unknown paths, and non-GET page requests don’t fall back to HTML. For frontend development, `bun run --cwd ../app dev` proxies `/api`, `/public`, and `/v1` to loopback port 1900. Set the server’s `PUBLIC_ORIGIN` to the frontend origin when you use that proxy. Test secure cookies and passkeys on the same-origin release build before deployment.
 
 Use `/health` for liveness and `/ready` for database/schema readiness. Production requires an HTTPS `PUBLIC_ORIGIN`; plain HTTP is allowed only for loopback.
 
@@ -44,24 +52,39 @@ Native clients use Better Auth's device-authorization flow and include `encrypti
 
 The temporary account bearer session is exchanged for a Noura device session inside native code and then signed out.
 
+Browser devices enroll an `x25519:` recipient: the prefix plus standard padded base64 of a 32-byte X25519 public key. Their proof signs these canonical UTF-8 bytes:
+
+```text
+["noura.device.enroll.web",1,serverOrigin,accountId,deviceId,publicKeyBase64,encryptionRecipient,challenge]
+```
+
+An unusable recipient returns `sync.invalid_recipient`, and a bad proof returns `sync.invalid_signature`. The service stores the recipient string unchanged; the string grants no content key.
+
+Key upload accepts an optional envelope `construction`:
+
+- **Absent or `"age"`**: the native seven-field record, signed over `["noura.sync.key",1,workspaceId,objectId,epoch,signingDevice,deviceId,wrappedKey]`
+- **`"web"`**: adds `recipientPublicKey`, `ephemeralPublicKey`, `salt`, and `nonce`, signed over the `noura.sync.key.web` version 1 tuple, and must wrap to the recipient device’s enrolled `x25519:` key
+
+`noura_key_envelopes` stores `construction` (default `'age'`) and the four nullable browser columns. Key delivery and `access-state` return them for every envelope.
+
 All remaining `/v1` routes require `Authorization: Bearer <token>`:
 
-| Method     | Route                                   | Purpose                                    |
-| ---------- | --------------------------------------- | ------------------------------------------ |
-| GET        | `/v1/devices`                           | List your devices                          |
-| DELETE     | `/v1/devices/:id`                       | Revoke your device and its sessions        |
-| GET/POST   | `/v1/workspaces`                        | List/create (`{id}`) workspaces            |
-| POST/GET   | `/v1/workspaces/:id/invitations`        | Create/list workspace invitations          |
-| DELETE     | `/v1/workspaces/:id/invitations/:id`    | Revoke a pending workspace invitation      |
-| POST       | `/v1/workspaces/:id/objects`            | Create an opaque object (`{id}`)           |
-| POST       | `/v1/workspaces/:id/operations`         | Upload `{operations: [...]}`               |
-| GET        | `/v1/workspaces/:id/operations?after=0` | Fetch an authorized page                   |
-| PUT/GET    | `/v1/workspaces/:id/access`             | Commit/read signed access policy revisions |
-| GET        | `/v1/workspaces/:id/access-state`       | Current policy and key-distribution state  |
-| PUT        | `/v1/keys/self`                         | Back up a writer's own signed key envelope |
-| GET        | `/v1/workspaces/:id/keys`               | Retrieve authorized device key envelopes   |
-| POST       | `/v1/workspaces/:id/links`              | Create an encrypted public snapshot        |
-| PUT/DELETE | `/v1/workspaces/:id/links/:link`        | Update/revoke a public snapshot            |
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/v1/devices` | List your devices |
+| DELETE | `/v1/devices/:id` | Revoke your device and its sessions |
+| GET/POST | `/v1/workspaces` | List/create (`{id}`) workspaces |
+| POST/GET | `/v1/workspaces/:id/invitations` | Create/list workspace invitations |
+| DELETE | `/v1/workspaces/:id/invitations/:id` | Revoke a pending workspace invitation |
+| POST | `/v1/workspaces/:id/objects` | Create an opaque object (`{id}`) |
+| POST | `/v1/workspaces/:id/operations` | Upload `{operations: [...]}` |
+| GET | `/v1/workspaces/:id/operations?after=0` | Fetch an authorized page |
+| PUT/GET | `/v1/workspaces/:id/access` | Commit/read signed access policy revisions |
+| GET | `/v1/workspaces/:id/access-state` | Current policy and key-distribution state |
+| PUT | `/v1/keys/self` | Back up a writer's own signed key envelope |
+| GET | `/v1/workspaces/:id/keys` | Retrieve authorized device key envelopes |
+| POST | `/v1/workspaces/:id/links` | Create an encrypted public snapshot |
+| PUT/DELETE | `/v1/workspaces/:id/links/:link` | Update/revoke a public snapshot |
 
 `GET /public/:token` returns an active encrypted public snapshot anonymously. `/share/:token` is its browser viewer, `/account` handles sign-in, and `/account/device` explicitly approves or denies desktop device codes.
 

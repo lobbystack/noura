@@ -331,6 +331,22 @@
 			invitation.devices.every((device) => device.approved)
 		);
 	}
+	type RecipientKind = 'browser' | 'desktop';
+	const recipientLabels: Record<RecipientKind, string> = {
+		browser: 'Browser',
+		desktop: 'Desktop',
+	};
+	/**
+	 * Classify a device by its encryption recipient. A browser device publishes an
+	 * `x25519:` recipient; a desktop device publishes an `age1…` recipient.
+	 * Unrecognized recipients return `null` instead of guessing.
+	 */
+	function recipientKind(device: SyncDevice): RecipientKind | null {
+		const recipient = device.encryptionRecipient;
+		if (recipient.startsWith('x25519:')) return 'browser';
+		if (recipient.startsWith('age1')) return 'desktop';
+		return null;
+	}
 	async function retryInvitationActivation(invitation: SyncInvitation) {
 		const root = workspace.state?.rootPath;
 		const ownId = account?.deviceId;
@@ -992,13 +1008,22 @@
 							{#if devices.length > 0}
 								<ul class="flex flex-col gap-3">
 									{#each devices as device (device.deviceId)}
+										{@const recipient = recipientKind(device)}
 										<li class="flex flex-col gap-3 rounded-xl border p-4">
 											<div
 												class="flex flex-wrap items-center justify-between gap-2"
 											>
-												<p class="break-all text-xs">
-													Device: {device.deviceId}
-												</p>
+												<div class="flex flex-wrap items-center gap-2">
+													<p class="break-all text-xs">
+														Device: {device.deviceId}
+													</p>
+													{#if recipient}<Badge
+															variant="outline"
+															aria-label={`Device type: ${
+																recipientLabels[recipient]
+															}`}>{recipientLabels[recipient]}</Badge
+														>{/if}
+												</div>
 												{#if device.deviceId === account.deviceId}<Badge
 														variant="secondary">This device</Badge
 													>{:else if device.approved}<Badge variant="secondary"
@@ -1008,6 +1033,13 @@
 											<p class="break-all font-mono text-xs select-text">
 												{device.fingerprint}
 											</p>
+											{#if recipient === 'browser'}
+												<p class="text-xs text-muted-foreground">
+													Approving pins this browser device’s signing key. The
+													next automatic sync delivers the encrypted workspace
+													keys to it. No separate delivery step is needed.
+												</p>
+											{/if}
 											{#if device.deviceId !== account.deviceId && !device.approved}
 												<Field.FieldGroup
 													><Field.Field orientation="horizontal">
@@ -1136,7 +1168,18 @@
 									{#if invitation.status === 'accepted'}
 										{#each invitation.devices as device (device.deviceId)}
 											{@const verificationKey = `${invitation.id}:${device.deviceId}`}
-											<p class="break-all text-xs">Device: {device.deviceId}</p>
+											{@const recipient = recipientKind(device)}
+											<div class="flex flex-wrap items-center gap-2">
+												<p class="break-all text-xs">
+													Device: {device.deviceId}
+												</p>
+												{#if recipient}<Badge
+														variant="outline"
+														aria-label={`Device type: ${
+															recipientLabels[recipient]
+														}`}>{recipientLabels[recipient]}</Badge
+													>{/if}
+											</div>
 											<p class="break-all font-mono text-xs select-text">
 												{device.fingerprint}
 											</p>
@@ -1144,6 +1187,14 @@
 													>Fingerprint approved</Badge
 												>
 											{:else}
+												{#if recipient === 'browser'}
+													<p class="text-xs text-muted-foreground">
+														Approving pins this browser device’s signing key.
+														The next automatic sync delivers the encrypted
+														workspace keys to it. No separate delivery step is
+														needed.
+													</p>
+												{/if}
 												<Field.Field orientation="horizontal">
 													<Checkbox
 														id={`invite-${verificationKey}`}
@@ -1179,8 +1230,10 @@
 										{#if invitation.devices.length === 0}<p
 												class="text-xs text-muted-foreground"
 											>
-												The recipient must connect a desktop device before you
-												can grant access.
+												No recipient devices are available yet. Desktop and
+												browser devices can both be approved and receive
+												workspace keys. Ask the recipient to connect or open a
+												device, then review invitations again.
 											</p>{/if}
 										{#if invitationReady(invitation)}
 											<Badge variant="secondary">

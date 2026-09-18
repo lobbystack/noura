@@ -67,6 +67,11 @@ ALTER TABLE noura_workspaces ADD COLUMN IF NOT EXISTS access_revision bigint NOT
 ALTER TABLE noura_devices ADD COLUMN IF NOT EXISTS encryption_recipient text;
 ALTER TABLE noura_key_envelopes ADD COLUMN IF NOT EXISTS signing_device text REFERENCES noura_devices(id);
 ALTER TABLE noura_key_envelopes ADD COLUMN IF NOT EXISTS signature text;
+ALTER TABLE noura_key_envelopes ADD COLUMN IF NOT EXISTS construction text NOT NULL DEFAULT 'age';
+ALTER TABLE noura_key_envelopes ADD COLUMN IF NOT EXISTS recipient_public_key text;
+ALTER TABLE noura_key_envelopes ADD COLUMN IF NOT EXISTS ephemeral_public_key text;
+ALTER TABLE noura_key_envelopes ADD COLUMN IF NOT EXISTS salt text;
+ALTER TABLE noura_key_envelopes ADD COLUMN IF NOT EXISTS nonce text;
 CREATE TABLE IF NOT EXISTS noura_access_log (
  workspace_id text NOT NULL REFERENCES noura_workspaces(id), revision bigint NOT NULL,
  device_id text NOT NULL REFERENCES noura_devices(id), policy jsonb NOT NULL,

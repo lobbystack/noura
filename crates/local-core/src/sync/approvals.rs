@@ -67,7 +67,16 @@ pub fn device_fingerprint(
 ) -> Result<String> {
     identifier(device)?;
     identifier(account)?;
-    super::crypto::decode(public_key, 32, 32)?;
+    let public: [u8; 32] = super::crypto::decode(public_key, 32, 32)?
+        .try_into()
+        .map_err(|_| invalid("sync_invalid_key"))?;
+    if recipient.starts_with(sync_key_envelope::RECIPIENT_PREFIX) {
+        sync_key_envelope::decode_recipient(recipient)
+            .map_err(|_| invalid("sync_invalid_recipient"))?;
+        return Ok(sync_key_envelope::device_fingerprint(
+            device, account, public, recipient,
+        ));
+    }
     recipient
         .parse::<age::x25519::Recipient>()
         .map_err(|_| invalid("sync_invalid_recipient"))?;
@@ -132,6 +141,36 @@ struct StoredEnvelope {
     wrapped_key: String,
     signing_device: String,
     signature: String,
+    #[serde(default)]
+    construction: KeyConstruction,
+    #[serde(default)]
+    recipient_public_key: Option<String>,
+    #[serde(default)]
+    ephemeral_public_key: Option<String>,
+    #[serde(default)]
+    salt: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
+}
+
+impl StoredEnvelope {
+    /// Reconstruct the discriminated envelope for this workspace and epoch.
+    fn to_key_envelope(&self, workspace: &str, object: &str, epoch: u64) -> KeyEnvelope {
+        KeyEnvelope {
+            workspace_id: workspace.into(),
+            object_id: object.into(),
+            epoch,
+            device_id: self.device_id.clone(),
+            wrapped_key: self.wrapped_key.clone(),
+            signing_device: self.signing_device.clone(),
+            signature: self.signature.clone(),
+            construction: self.construction,
+            recipient_public_key: self.recipient_public_key.clone(),
+            ephemeral_public_key: self.ephemeral_public_key.clone(),
+            salt: self.salt.clone(),
+            nonce: self.nonce.clone(),
+        }
+    }
 }
 
 impl WorkspaceSyncCoordinator {
@@ -545,15 +584,12 @@ pub(crate) async fn finish_access_transition(
             .find(|envelope| envelope.device_id == device.device_id())
             .ok_or_else(|| invalid("sync_key_required"))?;
         engine.sync_store_key(
-            &KeyEnvelope {
-                workspace_id: transition.policy.workspace_id.clone(),
-                object_id: object.object_id.clone(),
-                epoch: object.epoch,
-                device_id: envelope.device_id.clone(),
-                wrapped_key: envelope.wrapped_key.clone(),
-                signing_device: transition.policy.device_id.clone(),
-                signature: envelope.signature.clone(),
-            },
+            &envelope.to_key_envelope(
+                &transition.policy.workspace_id,
+                &object.object_id,
+                object.epoch,
+                &transition.policy.device_id,
+            )?,
             device,
             &public,
         )?;
@@ -597,6 +633,95 @@ pub(crate) async fn finish_access_transition(
     transport
         .receive_checkpoints(engine, device, &secrets)
         .await
+}
+
+/// Whether the currently delivered recipients differ from the approved
+/// recipients that should hold an envelope. A device that is enrolled but not
+/// yet approved locally cannot receive a wrapped key, so it must not force a key
+/// rotation or block delivery to approved devices.
+fn readers_changed(state: &AccessState, config: &WorkspaceSyncConfig, device: &DeviceKeys) -> bool {
+    let approved: BTreeSet<&str> = state
+        .devices
+        .iter()
+        .filter(|candidate| device_is_approved(candidate, config, device))
+        .map(|candidate| candidate.device_id.as_str())
+        .collect();
+    state.objects.iter().any(|object| {
+        let grants = state
+            .policy
+            .as_ref()
+            .and_then(|policy| {
+                policy
+                    .objects
+                    .iter()
+                    .find(|entry| entry.object_id == object.object_id)
+            })
+            .map(|entry| entry.grants.as_slice())
+            .unwrap_or_default();
+        let mut expected: Vec<_> = state
+            .devices
+            .iter()
+            .filter(|candidate| {
+                approved.contains(candidate.device_id.as_str())
+                    && (state
+                        .members
+                        .iter()
+                        .any(|member| member.account_id == candidate.account_id)
+                        || grants
+                            .iter()
+                            .any(|grant| grant.account_id == candidate.account_id))
+            })
+            .map(|candidate| candidate.device_id.as_str())
+            .collect();
+        expected.sort_unstable();
+        let mut actual: Vec<_> = state
+            .envelopes
+            .iter()
+            .filter(|envelope| {
+                envelope.object_id == object.object_id
+                    && envelope.epoch == object.epoch
+                    && approved.contains(envelope.device_id.as_str())
+            })
+            .map(|envelope| envelope.device_id.as_str())
+            .collect();
+        actual.sort_unstable();
+        actual != expected
+    })
+}
+
+/// True when a current-epoch envelope exists for a device the relay no longer
+/// lists for this workspace. A revoked device disappears from the active roster
+/// but its envelope lingers until a rotation replaces the epoch, so observing
+/// this orphan must force a rotation instead of aborting the pass.
+fn orphan_reader(state: &AccessState) -> bool {
+    state.envelopes.iter().any(|envelope| {
+        state
+            .objects
+            .iter()
+            .any(|object| object.object_id == envelope.object_id && object.epoch == envelope.epoch)
+            && !state
+                .devices
+                .iter()
+                .any(|device| device.device_id == envelope.device_id)
+    })
+}
+
+/// A recipient device is deliverable when its pinned signing key, account, and
+/// recipient match the locally approved configuration.
+fn device_is_approved(
+    candidate: &RemoteDevice,
+    config: &WorkspaceSyncConfig,
+    device: &DeviceKeys,
+) -> bool {
+    config.approved_accounts.get(&candidate.device_id) == Some(&candidate.account_id)
+        && config.trusted_devices.get(&candidate.device_id) == Some(&candidate.public_key)
+        && (candidate.device_id == device.device_id()
+            || candidate
+                .encryption_recipient
+                .as_ref()
+                .is_some_and(|recipient| {
+                    config.approved_recipients.get(&candidate.device_id) == Some(recipient)
+                }))
 }
 
 fn prepare_rotation_transition(
@@ -786,6 +911,40 @@ fn approve_device_card(config: &mut WorkspaceSyncConfig, device: SyncDevice) -> 
 impl AccessState {
     pub(crate) fn revision(&self) -> &str {
         &self.revision
+    }
+
+    /// Drop local recipient approvals for devices the relay no longer lists for
+    /// this workspace. A revoked device disappears from the active roster, but
+    /// its pinned recipient and account would otherwise keep it in the
+    /// authorized-writer set and keep the workspace in multi-recipient sharing
+    /// mode. The owner's own device is never dropped, so the owner-approval
+    /// invariant holds. Pinned public keys stay in place because historical
+    /// policy signatures are verified against them; dropping the approved
+    /// recipient and account is enough to remove the device from the effective
+    /// recipient and writer sets.
+    pub(crate) fn effective_config(
+        &self,
+        config: &WorkspaceSyncConfig,
+        own_device_id: &str,
+    ) -> WorkspaceSyncConfig {
+        let present: BTreeSet<&str> = self
+            .devices
+            .iter()
+            .map(|device| device.device_id.as_str())
+            .collect();
+        // A verified pass always contains the connected device. If it is
+        // missing, the roster is not trustworthy enough to prune local state.
+        if !present.contains(own_device_id) {
+            return config.clone();
+        }
+        let mut effective = config.clone();
+        effective.approved_recipients.retain(|device, _| {
+            device.as_str() == own_device_id || present.contains(device.as_str())
+        });
+        effective.approved_accounts.retain(|device, _| {
+            device.as_str() == own_device_id || present.contains(device.as_str())
+        });
+        effective
     }
 
     pub(crate) fn verified_role(
@@ -1010,11 +1169,11 @@ impl HttpSyncTransport {
             {
                 continue;
             }
-            let age = recipient
+            let recipient_key = recipient
                 .encryption_recipient
                 .as_ref()
                 .ok_or_else(|| invalid("sync_device_upgrade_required"))?;
-            let expected_age = if recipient.device_id == device.device_id() {
+            let expected_recipient = if recipient.device_id == device.device_id() {
                 device.recipient()
             } else {
                 config
@@ -1023,7 +1182,7 @@ impl HttpSyncTransport {
                     .cloned()
                     .ok_or_else(|| invalid("sync_device_approval_required"))?
             };
-            if &expected_age != age
+            if &expected_recipient != recipient_key
                 || config.approved_accounts.get(&recipient.device_id) != Some(&recipient.account_id)
                 || config.trusted_devices.get(&recipient.device_id) != Some(&recipient.public_key)
             {
@@ -1034,7 +1193,7 @@ impl HttpSyncTransport {
                 &operation.object_id,
                 1,
                 &recipient.device_id,
-                age,
+                recipient_key,
                 key,
             )?));
         }
@@ -1079,74 +1238,28 @@ impl HttpSyncTransport {
             .policy
             .as_ref()
             .is_some_and(|policy| policy.version == 2)
+            && (readers_changed(&state, config, device) || orphan_reader(&state))
         {
-            let changes_readers = state.objects.iter().any(|object| {
-                let grants = state
-                    .policy
-                    .as_ref()
-                    .and_then(|policy| {
-                        policy
-                            .objects
-                            .iter()
-                            .find(|entry| entry.object_id == object.object_id)
-                    })
-                    .map(|entry| entry.grants.as_slice())
-                    .unwrap_or_default();
-                let mut expected: Vec<_> = state
-                    .devices
-                    .iter()
-                    .filter(|candidate| {
-                        state
-                            .members
-                            .iter()
-                            .any(|member| member.account_id == candidate.account_id)
-                            || grants
-                                .iter()
-                                .any(|grant| grant.account_id == candidate.account_id)
-                    })
-                    .map(|candidate| candidate.device_id.as_str())
-                    .collect();
-                expected.sort_unstable();
-                let mut actual: Vec<_> = state
-                    .envelopes
-                    .iter()
-                    .filter(|envelope| {
-                        envelope.object_id == object.object_id && envelope.epoch == object.epoch
-                    })
-                    .map(|envelope| envelope.device_id.as_str())
-                    .collect();
-                actual.sort_unstable();
-                actual != expected
-            });
-            if changes_readers {
-                if !self.access_transitions_available().await? {
-                    return Err(invalid("sync_access_transition_unavailable"));
-                }
-                self.ensure_workspace_capability(&workspace, device, &config.trusted_devices)
-                    .await?;
-                let transition = prepare_rotation_transition(
-                    engine,
-                    device,
-                    config,
-                    &state,
-                    state.members.clone(),
-                    state.devices.clone(),
-                )?;
-                return finish_access_transition(engine, self, device, config, &transition).await;
+            if !self.access_transitions_available().await? {
+                return Err(invalid("sync_access_transition_unavailable"));
             }
+            self.ensure_workspace_capability(&workspace, device, &config.trusted_devices)
+                .await?;
+            let transition = prepare_rotation_transition(
+                engine,
+                device,
+                config,
+                &state,
+                state.members.clone(),
+                state.devices.clone(),
+            )?;
+            return finish_access_transition(engine, self, device, config, &transition).await;
         }
         let revision = super::transport::parse_cursor(&state.revision)?;
         let mut pending = Vec::new();
         let mut objects = Vec::new();
         let mut changed = false;
-        if state.envelopes.iter().any(|envelope| {
-            state.objects.iter().any(|object| {
-                object.object_id == envelope.object_id && object.epoch == envelope.epoch
-            }) && !state
-                .devices
-                .iter()
-                .any(|device| device.device_id == envelope.device_id)
-        }) {
+        if orphan_reader(&state) {
             return Err(invalid("sync_key_rotation_required"));
         }
         if state.policy.as_ref().is_some_and(|policy| {
@@ -1187,7 +1300,16 @@ impl HttpSyncTransport {
                 {
                     continue;
                 }
-                let age = recipient
+                // An enrolled device that is not yet approved locally cannot
+                // receive a wrapped key. Skip it so approved devices still do.
+                if recipient.device_id != device.device_id()
+                    && !config
+                        .approved_recipients
+                        .contains_key(&recipient.device_id)
+                {
+                    continue;
+                }
+                let recipient_key = recipient
                     .encryption_recipient
                     .as_ref()
                     .ok_or_else(|| invalid("sync_device_upgrade_required"))?;
@@ -1200,7 +1322,7 @@ impl HttpSyncTransport {
                         .cloned()
                         .ok_or_else(|| invalid("sync_device_approval_required"))?
                 };
-                if &expected != age
+                if &expected != recipient_key
                     || config.approved_accounts.get(&recipient.device_id)
                         != Some(&recipient.account_id)
                     || config.trusted_devices.get(&recipient.device_id)
@@ -1214,15 +1336,7 @@ impl HttpSyncTransport {
                         && entry.device_id == recipient.device_id
                 });
                 let envelope = if let Some(existing) = existing {
-                    let envelope = KeyEnvelope {
-                        workspace_id: workspace.clone(),
-                        object_id: object.object_id.clone(),
-                        epoch,
-                        device_id: existing.device_id.clone(),
-                        wrapped_key: existing.wrapped_key.clone(),
-                        signing_device: existing.signing_device.clone(),
-                        signature: existing.signature.clone(),
-                    };
+                    let envelope = existing.to_key_envelope(&workspace, &object.object_id, epoch);
                     let signer = config
                         .trusted_devices
                         .get(&envelope.signing_device)
@@ -1241,7 +1355,7 @@ impl HttpSyncTransport {
                         &object.object_id,
                         epoch,
                         &recipient.device_id,
-                        age,
+                        recipient_key,
                         key,
                     )?
                 };
@@ -1287,5 +1401,382 @@ impl HttpSyncTransport {
         self.set_access(&policy, &device.signer().public_key())
             .await?;
         engine.sync_accept_access_policy(&state.revision, previous_digest.as_deref(), &policy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::RefCell, collections::BTreeMap};
+    use zeroize::Zeroizing;
+
+    #[derive(Default)]
+    struct Memory(RefCell<BTreeMap<String, Zeroizing<String>>>);
+    impl SyncCredentials for Memory {
+        fn read(&self, reference: &str) -> Result<Zeroizing<String>> {
+            self.0
+                .borrow()
+                .get(reference)
+                .cloned()
+                .ok_or_else(|| invalid("test_missing"))
+        }
+        fn write(&self, reference: &str, value: &str) -> Result<()> {
+            self.0
+                .borrow_mut()
+                .insert(reference.into(), Zeroizing::new(value.into()));
+            Ok(())
+        }
+    }
+
+    fn remote(device: &DeviceKeys, account: &str, recipient: String) -> RemoteDevice {
+        RemoteDevice {
+            device_id: device.device_id().into(),
+            account_id: account.into(),
+            public_key: device.signer().public_key(),
+            encryption_recipient: Some(recipient),
+        }
+    }
+
+    #[test]
+    fn browser_device_fingerprint_matches_the_shared_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/workspace-format/fixtures/browser-device-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["fingerprint"]["domain"], "noura.device.card.web");
+        let vector = &fixture["fingerprint"]["vectors"][0];
+        assert_eq!(
+            device_fingerprint(
+                vector["device_id"].as_str().unwrap(),
+                vector["account_id"].as_str().unwrap(),
+                vector["signing_public"].as_str().unwrap(),
+                vector["recipient"].as_str().unwrap(),
+            )
+            .unwrap(),
+            vector["expected_hex"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn mixed_age_and_browser_cards_approve_and_reject_changed_browser_cards() {
+        let store = Memory::default();
+        let own = DeviceKeys::create(&store).unwrap();
+        let browser = DeviceKeys::create_browser(&store).unwrap();
+        let native = DeviceKeys::create(&store).unwrap();
+        let mut config = WorkspaceSyncConfig {
+            version: 1,
+            workspace_id: "workspace".into(),
+            origin: "https://sync.example.com".into(),
+            device_id: own.device_id().into(),
+            enabled: true,
+            trusted_devices: BTreeMap::from([(own.device_id().into(), own.signer().public_key())]),
+            approved_recipients: BTreeMap::from([(own.device_id().into(), own.recipient())]),
+            approved_accounts: BTreeMap::from([(own.device_id().into(), "account".into())]),
+        };
+        let browser_card = sync_device(
+            remote(&browser, "account", browser.recipient()),
+            &config,
+            &own,
+        )
+        .unwrap();
+        assert!(!browser_card.approved);
+        assert_ne!(
+            browser_card.fingerprint,
+            device_fingerprint(
+                browser.device_id(),
+                "account",
+                &browser.signer().public_key(),
+                &native.recipient(),
+            )
+            .unwrap()
+        );
+        approve_device_card(&mut config, browser_card.clone()).unwrap();
+        let native_card = sync_device(
+            remote(&native, "account", native.recipient()),
+            &config,
+            &own,
+        )
+        .unwrap();
+        approve_device_card(&mut config, native_card).unwrap();
+        assert_eq!(
+            config.approved_recipients.get(browser.device_id()),
+            Some(&browser.recipient())
+        );
+        assert_eq!(
+            config.approved_recipients.get(native.device_id()),
+            Some(&native.recipient())
+        );
+        assert!(
+            browser
+                .recipient()
+                .starts_with(sync_key_envelope::RECIPIENT_PREFIX)
+        );
+        assert!(
+            !native
+                .recipient()
+                .starts_with(sync_key_envelope::RECIPIENT_PREFIX)
+        );
+
+        let replacement = DeviceKeys::create_browser(&store).unwrap();
+        let changed = sync_device(
+            remote(&browser, "account", replacement.recipient()),
+            &config,
+            &own,
+        )
+        .unwrap();
+        assert_ne!(changed.fingerprint, browser_card.fingerprint);
+        assert_eq!(
+            approve_device_card(&mut config, changed).unwrap_err().code,
+            "sync_device_changed"
+        );
+        assert_eq!(
+            config.approved_recipients.get(browser.device_id()),
+            Some(&browser.recipient())
+        );
+    }
+
+    #[test]
+    fn unapproved_browser_devices_do_not_force_a_reader_change() {
+        let store = Memory::default();
+        let own = DeviceKeys::create(&store).unwrap();
+        let approved = DeviceKeys::create_browser(&store).unwrap();
+        let pending = DeviceKeys::create(&store).unwrap();
+        let mut config = WorkspaceSyncConfig {
+            version: 1,
+            workspace_id: "workspace".into(),
+            origin: "https://sync.example.com".into(),
+            device_id: own.device_id().into(),
+            enabled: true,
+            trusted_devices: BTreeMap::from([(own.device_id().into(), own.signer().public_key())]),
+            approved_recipients: BTreeMap::from([(own.device_id().into(), own.recipient())]),
+            approved_accounts: BTreeMap::from([(own.device_id().into(), "account".into())]),
+        };
+        let approved_card = sync_device(
+            remote(&approved, "account", approved.recipient()),
+            &config,
+            &own,
+        )
+        .unwrap();
+        approve_device_card(&mut config, approved_card).unwrap();
+        let members = vec![AccessMember {
+            account_id: "account".into(),
+            role: WorkspaceRole::Owner,
+        }];
+        let state = AccessState {
+            revision: "1".into(),
+            members: members.clone(),
+            objects: vec![ObjectEpoch {
+                object_id: "object".into(),
+                epoch: "1".into(),
+                generation: Some("generation".into()),
+                document_mode: Some(DocumentMode::Text),
+            }],
+            envelopes: vec![
+                StoredEnvelope {
+                    object_id: "object".into(),
+                    epoch: "1".into(),
+                    device_id: own.device_id().into(),
+                    wrapped_key: "own".into(),
+                    signing_device: own.device_id().into(),
+                    signature: "own".into(),
+                    construction: KeyConstruction::Age,
+                    recipient_public_key: None,
+                    ephemeral_public_key: None,
+                    salt: None,
+                    nonce: None,
+                },
+                StoredEnvelope {
+                    object_id: "object".into(),
+                    epoch: "1".into(),
+                    device_id: approved.device_id().into(),
+                    wrapped_key: "browser".into(),
+                    signing_device: own.device_id().into(),
+                    signature: "browser".into(),
+                    construction: KeyConstruction::Web,
+                    recipient_public_key: Some(approved.recipient()),
+                    ephemeral_public_key: Some(approved.recipient()),
+                    salt: Some("salt".into()),
+                    nonce: Some("nonce".into()),
+                },
+            ],
+            devices: vec![
+                remote(&own, "account", own.recipient()),
+                remote(&approved, "account", approved.recipient()),
+                remote(&pending, "account", pending.recipient()),
+            ],
+            policy: Some(AccessPolicy {
+                version: 2,
+                workspace_id: "workspace".into(),
+                revision: "1".into(),
+                previous_policy_digest: None,
+                device_id: own.device_id().into(),
+                members,
+                objects: vec![],
+                signature: String::new(),
+            }),
+        };
+        // Both approved devices already hold an envelope, so no rotation is due.
+        assert!(!readers_changed(&state, &config, &own));
+        // The enrolled but unapproved device cannot be delivered to either.
+        assert!(!device_is_approved(
+            &remote(&pending, "account", pending.recipient()),
+            &config,
+            &own,
+        ));
+    }
+
+    fn stored_envelope(object: &str, device: &DeviceKeys, epoch: &str) -> StoredEnvelope {
+        StoredEnvelope {
+            object_id: object.into(),
+            epoch: epoch.into(),
+            device_id: device.device_id().into(),
+            wrapped_key: "wrapped".into(),
+            signing_device: device.device_id().into(),
+            signature: "signature".into(),
+            construction: KeyConstruction::Age,
+            recipient_public_key: None,
+            ephemeral_public_key: None,
+            salt: None,
+            nonce: None,
+        }
+    }
+
+    #[test]
+    fn effective_config_drops_revoked_recipients_and_keeps_the_owner() {
+        let store = Memory::default();
+        let own = DeviceKeys::create(&store).unwrap();
+        let revoked = DeviceKeys::create(&store).unwrap();
+        let config = WorkspaceSyncConfig {
+            version: 1,
+            workspace_id: "workspace".into(),
+            origin: "https://sync.example.com".into(),
+            device_id: own.device_id().into(),
+            enabled: true,
+            trusted_devices: BTreeMap::from([
+                (own.device_id().into(), own.signer().public_key()),
+                (revoked.device_id().into(), revoked.signer().public_key()),
+            ]),
+            approved_recipients: BTreeMap::from([
+                (own.device_id().into(), own.recipient()),
+                (revoked.device_id().into(), revoked.recipient()),
+            ]),
+            approved_accounts: BTreeMap::from([
+                (own.device_id().into(), "account".into()),
+                (revoked.device_id().into(), "account".into()),
+            ]),
+        };
+        let state = AccessState {
+            revision: "1".into(),
+            members: vec![AccessMember {
+                account_id: "account".into(),
+                role: WorkspaceRole::Owner,
+            }],
+            objects: vec![],
+            envelopes: vec![],
+            devices: vec![remote(&own, "account", own.recipient())],
+            policy: None,
+        };
+        let effective = state.effective_config(&config, own.device_id());
+        assert_eq!(
+            effective.approved_recipients.get(own.device_id()),
+            Some(&own.recipient())
+        );
+        assert_eq!(
+            effective.approved_accounts.get(own.device_id()),
+            Some(&"account".into())
+        );
+        assert!(
+            !effective
+                .approved_recipients
+                .contains_key(revoked.device_id())
+        );
+        assert!(
+            !effective
+                .approved_accounts
+                .contains_key(revoked.device_id())
+        );
+        // Pinned public keys are retained so historical policies still verify.
+        assert!(effective.trusted_devices.contains_key(revoked.device_id()));
+    }
+
+    #[test]
+    fn a_revoked_devices_lingering_envelope_forces_rotation() {
+        let store = Memory::default();
+        let own = DeviceKeys::create(&store).unwrap();
+        let approved = DeviceKeys::create_browser(&store).unwrap();
+        let revoked = DeviceKeys::create(&store).unwrap();
+        let config = WorkspaceSyncConfig {
+            version: 1,
+            workspace_id: "workspace".into(),
+            origin: "https://sync.example.com".into(),
+            device_id: own.device_id().into(),
+            enabled: true,
+            trusted_devices: BTreeMap::from([
+                (own.device_id().into(), own.signer().public_key()),
+                (approved.device_id().into(), approved.signer().public_key()),
+                (revoked.device_id().into(), revoked.signer().public_key()),
+            ]),
+            approved_recipients: BTreeMap::from([
+                (own.device_id().into(), own.recipient()),
+                (approved.device_id().into(), approved.recipient()),
+                (revoked.device_id().into(), revoked.recipient()),
+            ]),
+            approved_accounts: BTreeMap::from([
+                (own.device_id().into(), "account".into()),
+                (approved.device_id().into(), "account".into()),
+                (revoked.device_id().into(), "account".into()),
+            ]),
+        };
+        let members = vec![AccessMember {
+            account_id: "account".into(),
+            role: WorkspaceRole::Owner,
+        }];
+        let state = AccessState {
+            revision: "1".into(),
+            members: members.clone(),
+            objects: vec![ObjectEpoch {
+                object_id: "object".into(),
+                epoch: "1".into(),
+                generation: Some("generation".into()),
+                document_mode: Some(DocumentMode::Text),
+            }],
+            envelopes: vec![
+                stored_envelope("object", &own, "1"),
+                stored_envelope("object", &approved, "1"),
+                stored_envelope("object", &revoked, "1"),
+            ],
+            devices: vec![
+                remote(&own, "account", own.recipient()),
+                remote(&approved, "account", approved.recipient()),
+            ],
+            policy: Some(AccessPolicy {
+                version: 2,
+                workspace_id: "workspace".into(),
+                revision: "1".into(),
+                previous_policy_digest: None,
+                device_id: own.device_id().into(),
+                members,
+                objects: vec![],
+                signature: String::new(),
+            }),
+        };
+        // The two active devices already hold current-epoch envelopes, so an
+        // ordinary reader comparison sees no change.
+        assert!(!readers_changed(&state, &config, &own));
+        // The revoked device's lingering envelope still triggers a rotation.
+        assert!(orphan_reader(&state));
+        // A rotation built from the effective set never re-wraps to the revoked
+        // device, and the stale local approval is dropped.
+        let effective = state.effective_config(&config, own.device_id());
+        assert!(
+            !effective
+                .approved_recipients
+                .contains_key(revoked.device_id())
+        );
+        assert!(
+            effective
+                .approved_recipients
+                .contains_key(approved.device_id())
+        );
     }
 }

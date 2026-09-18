@@ -37,7 +37,7 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
 3. Create a note named `Syntax sample`. Add headings, emphasis, a link, a task list, a fenced code block, and a table.
 4. Open the workspace folder outside Noura. Confirm that each object is an ordinary Markdown file with a stable frontmatter ID and the expected body.
 
-## Verify Calendar views
+## Verify calendar views
 
 1. Open Calendar and choose Month, Week, then Day.
 2. Confirm each view uses the same focus date. Confirm Today resets it and previous/next uses the active view's unit.

@@ -29,17 +29,17 @@ At run start, the controller composes instructions deterministically: Noura base
 
 ## Streaming and events
 
-Each stream operation has a stable UUID. Every `AiStreamFrame` includes that operation ID and a strictly increasing sequence number. Frames are delivered over a dedicated `tauri::ipc::Channel<AiStreamFrame>` because token and tool deltas are frequent, ordered, and must not be dropped.
+Each stream operation has a stable UUID. Every `AiStreamFrame` includes that operation ID and a strictly increasing sequence number. Native code delivers frames over a dedicated `tauri::ipc::Channel<AiStreamFrame>` because token and tool deltas are frequent, ordered, and must not be dropped.
 
 `noura://core-event` remains for durable, lower-frequency facts such as `chat:created`, `chat:renamed`, `chat:message-appended`, `chat:assistant-finished`, and `chat:expired`. It is not a streaming transport: its broadcast semantics intentionally allow lag recovery. Files remain canonical when an event or derived index disagrees.
 
-The native provider bridge applies bounded backpressure. A closed Channel receiver is cancellation. Public errors contain a stable code and safe message only; raw provider bodies, request headers, credential references, and secrets are never emitted.
+The native provider bridge applies bounded backpressure. A closed Channel receiver is cancellation. Public errors contain a stable code and safe message only; the native bridge never emits raw provider bodies, request headers, credential references, or secrets.
 
 ## Cancellation and lifecycle
 
 Cancellation is bidirectional: Pi's `AbortSignal` asks native code to cancel the operation; native cancellation or receiver loss terminates the provider stream and produces an aborted terminal frame. Only one active run is allowed per chat, and a duplicate start cannot replace the active run's cancellation handle.
 
-On application suspension, native operations are cancelled or terminated and the available partial assistant text is persisted as cancelled. On startup or resume, in-progress assistant and tool-call records are recovered as interrupted unless a matching, durable tool result proves completion. Ambiguous mutations are never retried automatically.
+On application suspension, native code cancels or terminates operations and persists the available partial assistant text as cancelled. On startup or resume, it recovers in-progress assistant and tool-call records as interrupted unless a matching, durable tool result proves completion. It never retries ambiguous mutations automatically.
 
 ## Durable chat records
 

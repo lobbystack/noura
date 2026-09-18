@@ -1652,14 +1652,20 @@ mod workspace_restore_tests {
     fn missing_last_workspace_does_not_open_an_older_one_or_recreate_it() {
         let fixture = Fixture::new();
         let older = fixture.create("older");
-        let last = fixture.create("last");
-        std::fs::remove_dir_all(&last.path).unwrap();
-        let path = PathBuf::from(&last.path);
+        // Point at a path that never existed. Removing a created workspace
+        // leaves a Windows watcher handle race; the behavior under test is the
+        // missing path, not the deletion.
+        let missing = fixture.0.join("missing");
+        let last = RecentWorkspace {
+            path: missing.to_str().unwrap().into(),
+            name: "last".into(),
+            workspace_id: "missing-workspace".into(),
+        };
         assert!(
             restore_last_workspace(&[last, older], |workspace| fixture.open(&workspace.path))
                 .is_err()
         );
-        assert!(!path.exists());
+        assert!(!missing.exists());
     }
     #[test]
     fn missing_manifest_is_recreated_with_saved_identity() {
