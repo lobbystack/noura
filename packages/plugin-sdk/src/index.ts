@@ -143,9 +143,28 @@ export interface PluginHostServices {
 	};
 }
 
+/**
+ * Validate a manifest and return a deep-frozen snapshot. The host must never
+ * trust a manifest object a plugin can mutate after validation.
+ */
+function freezeManifest(value: PluginManifest): PluginManifest {
+	const manifest = pluginManifestSchema.parse(value);
+	Object.freeze(manifest.capabilities);
+	if (manifest.platforms) Object.freeze(manifest.platforms);
+	if (manifest.activationCapabilities) {
+		for (const key of ['desktop', 'mobile', 'web'] as const) {
+			const list = manifest.activationCapabilities[key];
+			if (list) Object.freeze(list);
+		}
+		Object.freeze(manifest.activationCapabilities);
+	}
+	return Object.freeze(manifest);
+}
+
 export function definePlugin(definition: PluginDefinition): PluginDefinition {
-	pluginManifestSchema.parse(definition.manifest);
-	return definition;
+	// Return a frozen snapshot so a plugin holding its original manifest cannot
+	// expand its declared capabilities after validation.
+	return { ...definition, manifest: freezeManifest(definition.manifest) };
 }
 export function requireCapability(
 	manifest: PluginManifest,
@@ -203,8 +222,13 @@ export class PluginRuntimeError extends Error {
 	}
 }
 
+interface ActivePlugin {
+	definition: PluginDefinition;
+	manifest: PluginManifest;
+}
+
 export class PluginHost {
-	#active = new Map<string, PluginDefinition>();
+	#active = new Map<string, ActivePlugin>();
 	#contexts = new Map<string, PluginContext>();
 	/**
 	 * Registrations made through a context belong to that activation, even when
@@ -263,44 +287,46 @@ export class PluginHost {
 		return null;
 	}
 	async activate(definition: PluginDefinition) {
-		if (this.#active.has(definition.manifest.id))
+		const manifest = freezeManifest(definition.manifest);
+		if (this.#active.has(manifest.id))
 			throw new PluginRuntimeError(
 				'plugin_already_active',
-				`Plugin already active: ${definition.manifest.id}`,
+				`Plugin already active: ${manifest.id}`,
 				'plugin_activate',
-				{ pluginId: definition.manifest.id },
+				{ pluginId: manifest.id },
 			);
-		const activationError = this.activationError(definition);
+		const activationError = this.activationError({ ...definition, manifest });
 		if (activationError) throw activationError;
-		this.#disposers.set(definition.manifest.id, new Set());
-		const context = this.contextFor(definition.manifest);
+		this.#disposers.set(manifest.id, new Set());
+		const context = this.contextFor(manifest);
 		try {
 			await definition.activate(context);
-			this.#active.set(definition.manifest.id, definition);
-			this.#contexts.set(definition.manifest.id, context);
+			this.#active.set(manifest.id, { definition, manifest });
+			this.#contexts.set(manifest.id, context);
 		} catch (error) {
-			this.#dispose(definition.manifest.id);
+			this.#dispose(manifest.id);
 			throw error;
 		}
 	}
 	/** Deactivate a plugin and run its cleanup. Returns whether it was active. */
 	async deactivate(id: string): Promise<boolean> {
-		const definition = this.#active.get(id);
-		if (!definition) return false;
+		const active = this.#active.get(id);
+		if (!active) return false;
 		this.#active.delete(id);
 		const context = this.#contexts.get(id);
 		this.#contexts.delete(id);
 		// Contributions must be gone before user-defined asynchronous cleanup
 		// yields. A disabled plugin cannot remain callable during this window.
 		this.#dispose(id);
-		if (definition.deactivate) await definition.deactivate(context!);
+		if (active.definition.deactivate)
+			await active.definition.deactivate(context!);
 		return true;
 	}
 	isActive(id: string): boolean {
 		return this.#active.has(id);
 	}
 	activeManifests(): PluginManifest[] {
-		return [...this.#active.values()].map((plugin) => plugin.manifest);
+		return [...this.#active.values()].map((active) => active.manifest);
 	}
 	private contextFor(manifest: PluginManifest): PluginContext {
 		const granted = new Set(

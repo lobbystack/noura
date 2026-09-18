@@ -50,6 +50,9 @@ export default defineRailway(() => {
 			PORT: '1900',
 			HOST: '0.0.0.0',
 			BLOB_ROOT: '/data/blobs',
+			// Railway mounts volumes as root. The image entrypoint starts as root
+			// only to fix the mount ownership, then drops to the unprivileged
+			// `bun` user before the server process starts (see apps/server/entrypoint.sh).
 			RAILWAY_RUN_UID: '0',
 		},
 		volumeMounts: {

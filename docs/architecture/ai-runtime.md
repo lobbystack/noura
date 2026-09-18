@@ -51,10 +51,13 @@ All mutation requests use expected revisions. External edits win and surface a c
 
 ## Web access
 
-Web search and URL fetch are later, separate native capabilities. They accept only validated HTTPS destinations, reject private/local addresses and unsafe redirects, enforce size/type/timeout limits, return text-oriented extracted content with source attribution, and have their own one-time disclosure. They never use browser cookies, browser history, local URL schemes, or credential discovery.
+Web search and URL fetch have a separate native authorization boundary. Access requires its own one-time disclosure and consent, in addition to AI provider consent. The native service applies these restrictions:
 
-Noura does not enable Exa automatically. A September 2026 review found that its API requires an account and API key, grants use only to authorized users under its Terms, is subject to documented usage limits, and has usage-based pricing. Noura therefore cannot establish zero-configuration redistribution. Noura's native web service fails closed unless a compliant, explicitly configured provider and the separate web disclosure are present.
+- Accept only validated HTTPS destinations
+- Reject private or local addresses and unsafe redirects
+- Enforce size, type, and timeout limits
+- Return text-oriented content with source attribution
 
-## Superseded sidecar direction
+Web access never uses browser cookies, browser history, local URL schemes, or credential discovery.
 
-The Noura AI runtime supersedes the former sidecar approach. Noura bundles Pi as a browser-safe first-party dependency in the WebView; the WebView reaches native provider access only through typed IPC. The Phase 0 compatibility record remains in [Pi runtime spike](./ai-runtime-spike.md).
+Noura’s native web service fails closed until you configure a compliant provider and grant separate web-access consent. Provider configuration does not authorize a request on its own.

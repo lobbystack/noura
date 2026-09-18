@@ -364,6 +364,87 @@ test('plugin host deactivation runs the cleanup and updates active state', async
 	expect(await host.deactivate('disposable')).toBe(false);
 });
 
+test('plugin manifests are frozen snapshots that cannot be expanded after validation', () => {
+	const manifest = {
+		id: 'frozen',
+		name: 'Frozen',
+		version: '1.0.0',
+		capabilities: ['workspace.search'] as (
+			'workspace.search' | 'workspace.storage'
+		)[],
+	};
+	const plugin = definePlugin({
+		manifest,
+		activate() {},
+	});
+	// Mutating the caller's original object must not change the snapshot.
+	manifest.capabilities.push('workspace.storage');
+	manifest.id = 'frozen-renamed';
+	expect(() =>
+		requireCapability(plugin.manifest, 'workspace.storage'),
+	).toThrow();
+	expect(plugin.manifest.id).toBe('frozen');
+	expect(Object.isFrozen(plugin.manifest)).toBe(true);
+	expect(Object.isFrozen(plugin.manifest.capabilities)).toBe(true);
+});
+
+test('plugin host snapshots a raw definition manifest at activation', async () => {
+	const host = new PluginHost({
+		files: {
+			list: async () => [],
+			listNonManagedMarkdown: async () => [],
+			createFolder: async () => {},
+			moveFolder: async () => {},
+			removeEmptyFolder: async () => {},
+		},
+		objects: {
+			list: async () => [],
+			get: async () => {
+				throw new Error();
+			},
+			create: async () => {
+				throw new Error();
+			},
+			update: async () => {
+				throw new Error();
+			},
+		},
+		search: { query: async () => [] },
+		events: { subscribe: async () => () => {} },
+		commands: { register: () => () => {} },
+		storage: {
+			get: async () => undefined,
+			set: async () => {},
+			delete: async () => false,
+		},
+		ai: {
+			registerTool: () => () => true,
+			registerContextProvider: () => () => true,
+			registerInstructionProvider: () => () => true,
+		},
+	} satisfies PluginHostServices);
+	const raw = {
+		manifest: {
+			id: 'raw',
+			name: 'Raw',
+			version: '1.0.0',
+			capabilities: [] as ('workspace.storage' | 'workspace.search')[],
+		},
+		activate() {},
+	};
+	await host.activate(raw);
+	raw.manifest.capabilities.push('workspace.storage');
+	raw.manifest.id = 'raw-renamed';
+	expect(host.activeManifests()).toEqual([
+		{
+			id: 'raw',
+			name: 'Raw',
+			version: '1.0.0',
+			capabilities: [],
+		},
+	]);
+});
+
 test('AI instruction registrations are capability-gated, owned, and removed on disable', async () => {
 	const registry = new AiRegistry();
 	const host = new PluginHost({

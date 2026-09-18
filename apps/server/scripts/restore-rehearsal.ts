@@ -6,9 +6,9 @@ import {
 	randomBytes,
 	sign,
 } from 'node:crypto';
-import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import postgres from 'postgres';
 import { createApp } from '../src/app';
 import { BlobService } from '../src/blobs';
@@ -53,20 +53,53 @@ const databaseUrl = (name: string) => {
 	url.pathname = `/${name}`;
 	return url.toString();
 };
+const POSTGRES_TOOLS = new Set(['pg_dump', 'pg_restore']);
+
+/**
+ * Resolve a PostgreSQL CLI without letting an environment variable run an
+ * arbitrary binary. `NOURA_TEST_PG_BIN` may point at an install directory, but
+ * it must be absolute, non-world-writable, and contain a real executable.
+ */
+async function resolvePgTool(tool: string): Promise<string> {
+	if (!POSTGRES_TOOLS.has(tool))
+		throw new Error(`Unsupported PostgreSQL tool: ${tool}`);
+	const configured = process.env.NOURA_TEST_PG_BIN?.trim();
+	if (!configured) return tool;
+	if (!isAbsolute(configured))
+		throw new Error('NOURA_TEST_PG_BIN must be an absolute path');
+	const directory = resolve(configured);
+	const directoryInfo = await stat(directory);
+	if (!directoryInfo.isDirectory())
+		throw new Error('NOURA_TEST_PG_BIN must point to a directory');
+	if ((directoryInfo.mode & 0o022) !== 0)
+		throw new Error(
+			'NOURA_TEST_PG_BIN must not be writable by group or other users',
+		);
+	const binary = join(directory, tool);
+	const binaryInfo = await stat(binary);
+	if (!binaryInfo.isFile() || (binaryInfo.mode & 0o111) === 0)
+		throw new Error(`NOURA_TEST_PG_BIN does not contain an executable ${tool}`);
+	return binary;
+}
+
 async function pg(tool: string, database: string, args: string[]) {
 	const url = new URL(adminUrl!);
-	const command = process.env.NOURA_TEST_PG_BIN
-		? join(process.env.NOURA_TEST_PG_BIN, tool)
-		: tool;
+	const command = await resolvePgTool(tool);
+	// Do not hand the full environment (or arbitrary secrets) to the CLI.
+	const env: Record<string, string> = {
+		PATH: process.env.PATH ?? '/usr/bin:/bin',
+		PGHOST: url.hostname,
+		PGPORT: url.port || '5432',
+		PGUSER: decodeURIComponent(url.username),
+		PGPASSWORD: decodeURIComponent(url.password),
+		PGDATABASE: database,
+	};
+	for (const name of ['HOME', 'LANG', 'TMPDIR', 'SYSTEMROOT'] as const) {
+		const value = process.env[name];
+		if (value) env[name] = value;
+	}
 	const child = Bun.spawn([command, ...args], {
-		env: {
-			...process.env,
-			PGHOST: url.hostname,
-			PGPORT: url.port || '5432',
-			PGUSER: decodeURIComponent(url.username),
-			PGPASSWORD: decodeURIComponent(url.password),
-			PGDATABASE: database,
-		},
+		env,
 		stdout: 'ignore',
 		stderr: 'pipe',
 	});

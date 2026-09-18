@@ -4,7 +4,7 @@ Report suspected vulnerabilities privately. Do not open a public issue.
 
 ## Report a vulnerability
 
-Use GitHub's private vulnerability reporting: [Report a vulnerability](https://github.com/lobbystack/noura/security/advisories/new).
+Use [GitHub’s private vulnerability reporting](https://github.com/lobbystack/noura/security/advisories/new).
 
 If you cannot use GitHub, email `hello@lobbystack.com`. Include a description, reproduction steps, and the affected version or commit.
 

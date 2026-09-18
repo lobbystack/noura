@@ -1,194 +1,194 @@
 {
-  "domain": "noura.sync.key.web",
-  "info": "noura.sync.key.web.v1",
-  "invalid": [
-    {
-      "envelope": {
-        "device_id": "device_browser",
-        "ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signature": "YVHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
-        "signing_device": "device_signer",
-        "workspace_id": "workspace",
-        "wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
-      },
-      "expected_error": "sync_invalid_signature",
-      "name": "tampered_signature",
-      "operation": "verify",
-      "trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
-    },
-    {
-      "envelope": {
-        "device_id": "device_browser",
-        "ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signature": "WdS4Xa8zS/Oe2++jhR9dB3baff+4CSuybSJXd+h3xlz911wmhtkYzYgfBPTk/bJ4PrjNVjAHeY87hflFEbgHAQ==",
-        "signing_device": "device_signer",
-        "workspace_id": "workspace",
-        "wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcc="
-      },
-      "expected_error": "sync_key_unwrap_failed",
-      "name": "tampered_wrapped_key",
-      "operation": "unwrap",
-      "recipient_secret": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-      "trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
-    },
-    {
-      "envelope": {
-        "device_id": "device_browser_other",
-        "ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signature": "HAiuK0ACNhS7SRwapeL5R6za5WB8YTPKQX/GkmvwtGysi6XXXV9vd2c2YhbRe5d+26X9cWEjJLD+B8UMl9ZVCg==",
-        "signing_device": "device_signer",
-        "workspace_id": "workspace",
-        "wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
-      },
-      "expected_error": "sync_key_unwrap_failed",
-      "name": "tampered_aad_field",
-      "operation": "unwrap",
-      "recipient_secret": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-      "trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
-    },
-    {
-      "envelope": {
-        "device_id": "device_browser",
-        "ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signature": "nlHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
-        "signing_device": "device_signer",
-        "workspace_id": "workspace",
-        "wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
-      },
-      "expected_error": "sync_key_unwrap_failed",
-      "name": "wrong_recipient_secret",
-      "operation": "unwrap",
-      "recipient_secret": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
-      "trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
-    },
-    {
-      "expected_error": "sync_invalid_key_envelope",
-      "inputs": {
-        "device_id": "device_browser",
-        "ephemeral_secret": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
-        "recipient_public": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signing_device": "device_signer",
-        "signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        "workspace_id": "workspace"
-      },
-      "name": "low_order_recipient_public",
-      "operation": "wrap"
-    },
-    {
-      "envelope": {
-        "device_id": "device_browser",
-        "ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signature": "not-base64!!",
-        "signing_device": "device_signer",
-        "workspace_id": "workspace",
-        "wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
-      },
-      "expected_error": "sync_invalid_base64",
-      "name": "bad_base64",
-      "operation": "verify",
-      "trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
-    },
-    {
-      "envelope": {
-        "device_id": "device_browser",
-        "ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "recipient_public_key": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCg==",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signature": "nlHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
-        "signing_device": "device_signer",
-        "workspace_id": "workspace",
-        "wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
-      },
-      "expected_error": "sync_invalid_base64",
-      "name": "wrong_length",
-      "operation": "verify",
-      "trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
-    },
-    {
-      "expected_error": "sync_invalid_epoch",
-      "inputs": {
-        "device_id": "device_browser",
-        "ephemeral_secret": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
-        "epoch": 0,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
-        "recipient_public": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signing_device": "device_signer",
-        "signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        "workspace_id": "workspace"
-      },
-      "name": "epoch_zero",
-      "operation": "wrap"
-    }
-  ],
-  "object_key_domain": "noura.sync.object-key",
-  "valid": [
-    {
-      "expected_envelope": {
-        "device_id": "device_browser",
-        "ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signature": "nlHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
-        "signing_device": "device_signer",
-        "workspace_id": "workspace",
-        "wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
-      },
-      "inputs": {
-        "device_id": "device_browser",
-        "ephemeral_secret": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
-        "epoch": 1,
-        "nonce": "BgYGBgYGBgYGBgYG",
-        "object_id": "object",
-        "object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
-        "recipient_public": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
-        "salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-        "signing_device": "device_signer",
-        "signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-        "workspace_id": "workspace"
-      },
-      "name": "browser-key-v1-basic",
-      "recipient_secret": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-      "trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
-    }
-  ],
-  "version": 1
+	"domain": "noura.sync.key.web",
+	"info": "noura.sync.key.web.v1",
+	"invalid": [
+		{
+			"envelope": {
+				"device_id": "device_browser",
+				"ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signature": "YVHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
+				"signing_device": "device_signer",
+				"workspace_id": "workspace",
+				"wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
+			},
+			"expected_error": "sync_invalid_signature",
+			"name": "tampered_signature",
+			"operation": "verify",
+			"trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+		},
+		{
+			"envelope": {
+				"device_id": "device_browser",
+				"ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signature": "WdS4Xa8zS/Oe2++jhR9dB3baff+4CSuybSJXd+h3xlz911wmhtkYzYgfBPTk/bJ4PrjNVjAHeY87hflFEbgHAQ==",
+				"signing_device": "device_signer",
+				"workspace_id": "workspace",
+				"wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcc="
+			},
+			"expected_error": "sync_key_unwrap_failed",
+			"name": "tampered_wrapped_key",
+			"operation": "unwrap",
+			"recipient_secret": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+			"trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+		},
+		{
+			"envelope": {
+				"device_id": "device_browser_other",
+				"ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signature": "HAiuK0ACNhS7SRwapeL5R6za5WB8YTPKQX/GkmvwtGysi6XXXV9vd2c2YhbRe5d+26X9cWEjJLD+B8UMl9ZVCg==",
+				"signing_device": "device_signer",
+				"workspace_id": "workspace",
+				"wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
+			},
+			"expected_error": "sync_key_unwrap_failed",
+			"name": "tampered_aad_field",
+			"operation": "unwrap",
+			"recipient_secret": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+			"trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+		},
+		{
+			"envelope": {
+				"device_id": "device_browser",
+				"ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signature": "nlHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
+				"signing_device": "device_signer",
+				"workspace_id": "workspace",
+				"wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
+			},
+			"expected_error": "sync_key_unwrap_failed",
+			"name": "wrong_recipient_secret",
+			"operation": "unwrap",
+			"recipient_secret": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
+			"trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+		},
+		{
+			"expected_error": "sync_invalid_key_envelope",
+			"inputs": {
+				"device_id": "device_browser",
+				"ephemeral_secret": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+				"recipient_public": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signing_device": "device_signer",
+				"signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+				"workspace_id": "workspace"
+			},
+			"name": "low_order_recipient_public",
+			"operation": "wrap"
+		},
+		{
+			"envelope": {
+				"device_id": "device_browser",
+				"ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signature": "not-base64!!",
+				"signing_device": "device_signer",
+				"workspace_id": "workspace",
+				"wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
+			},
+			"expected_error": "sync_invalid_base64",
+			"name": "bad_base64",
+			"operation": "verify",
+			"trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+		},
+		{
+			"envelope": {
+				"device_id": "device_browser",
+				"ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"recipient_public_key": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCg==",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signature": "nlHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
+				"signing_device": "device_signer",
+				"workspace_id": "workspace",
+				"wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
+			},
+			"expected_error": "sync_invalid_base64",
+			"name": "wrong_length",
+			"operation": "verify",
+			"trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+		},
+		{
+			"expected_error": "sync_invalid_epoch",
+			"inputs": {
+				"device_id": "device_browser",
+				"ephemeral_secret": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+				"epoch": 0,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+				"recipient_public": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signing_device": "device_signer",
+				"signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+				"workspace_id": "workspace"
+			},
+			"name": "epoch_zero",
+			"operation": "wrap"
+		}
+	],
+	"object_key_domain": "noura.sync.object-key",
+	"valid": [
+		{
+			"expected_envelope": {
+				"device_id": "device_browser",
+				"ephemeral_public_key": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"recipient_public_key": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signature": "nlHrI6iEs1pjjRl7yAXgsQjzOjMb57Zf6zy1CMfIcsVPycaJRRExm8Gt5l4/rzCpq1KdiDWieBnoFgzjaj4CBQ==",
+				"signing_device": "device_signer",
+				"workspace_id": "workspace",
+				"wrapped_key": "evwIN2h9DkuH6a/SkKGHT6fqGMpAF0hRDgqGQcQBdA5cL9mEblvrLga7/VVhvPsbyyNK2yY/HGN3yzEn7Un0AJd7EXYTmH0qcsl4Yz3aT5QGQwaCrIHfrt5q4YOhKVSkXO0IrrUPvOP5IfVjICpfPcY="
+			},
+			"inputs": {
+				"device_id": "device_browser",
+				"ephemeral_secret": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+				"epoch": 1,
+				"nonce": "BgYGBgYGBgYGBgYG",
+				"object_id": "object",
+				"object_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+				"recipient_public": "zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=",
+				"salt": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+				"signing_device": "device_signer",
+				"signing_secret": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+				"workspace_id": "workspace"
+			},
+			"name": "browser-key-v1-basic",
+			"recipient_secret": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+			"trusted_signer_public": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+		}
+	],
+	"version": 1
 }
