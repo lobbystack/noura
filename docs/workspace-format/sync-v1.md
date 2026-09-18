@@ -90,7 +90,7 @@ Local resolution retains its signed ciphertext intent under `resolutions/` befor
 
 The shared conformance fixtures cover all three payload versions. Rust remains the serializer; TypeScript exposes validation only.
 
-Directory fsync is implemented on Unix. Equivalent crash-durability behavior on Windows still needs implementation and platform testing. Move/identity conflict resolution and collaborative text updates remain unfinished.
+Directory fsync is implemented on Unix. Equivalent crash-durability behavior on Windows still needs implementation and platform testing. Move/identity conflict resolution remains unfinished. Collaborative text updates are experimental, disabled by default, and remain release-gated; see [the collaboration protocol](collaboration.md).
 
 ## Encrypted attachments
 

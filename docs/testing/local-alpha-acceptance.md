@@ -73,11 +73,13 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
 1. In Settings, choose **Rebuild index**. Confirm the button stays disabled while running and a success toast appears. Confirm every projection refreshes.
 2. Record each object's ID, path, body, and dated properties.
 3. Quit Noura.
-4. Find the workspace's local index by matching the ID from `.noura/workspace.yaml`:
+4. Find the workspace’s local index by matching the ID from `.noura/workspace.yaml`. On macOS, search the application-data directory with:
 
    ```sh
    find "$HOME/Library/Application Support" -path "*/workspaces/*/index.sqlite" -print
    ```
+
+   On other platforms, locate the index in Noura’s operating system application-data directory. Match the workspace ID before deleting any index.
 
 5. Delete only that workspace's `index.sqlite`, then reopen Noura and the disposable workspace.
 6. Confirm notes, tasks, projects, IDs, paths, bodies, search results, Calendar results, and project boards match the recorded state. Calendar may return to Month because its view preference is disposable.
