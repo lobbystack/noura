@@ -66,7 +66,7 @@ No upstream implementation source was copied.
 The native coordinator validates a candidate document before writing. Text is
 limited to 8 MiB and encoded document history to 32 MiB. Restore and candidate
 application cross a dedicated native worker process that receives only CRDT bytes
-and text—never credentials, network handles, workspace paths, or file writers. Its
+and text, never credentials, network handles, workspace paths, or file writers. Its
 environment is cleared and its working directory is the filesystem root. Release
 workers enter Apple's pure-computation Seatbelt profile on macOS; Linux workers
 install a no-new-privileges seccomp filter that rejects networking, filesystem

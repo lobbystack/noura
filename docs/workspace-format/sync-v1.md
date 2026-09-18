@@ -202,7 +202,9 @@ serializer; TypeScript exposes validation only.
 
 Directory fsync is implemented on Unix. Equivalent crash-durability behavior on
 Windows still needs implementation and platform testing. Move/identity conflict
-resolution, attachment conflict resolution, and collaborative text updates remain unfinished.
+resolution and attachment conflict resolution remain unfinished. Collaborative
+text updates are experimental, disabled by default, and remain release-gated; see
+[the collaboration protocol](collaboration.md).
 
 ## Encrypted attachments
 

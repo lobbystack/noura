@@ -145,10 +145,6 @@ public publishing are not implemented by this protocol. The experimental native
 realtime client supplies authenticated notifications and encrypted presence, while
 durable HTTP pulls and acknowledgements remain authoritative.
 The experimental text coordinator and editor adapter are described in
-[collaboration.md](collaboration.md). The PostgreSQL 16 restore rehearsal has
-passed with staged and committed transitions, checkpoint/blob manifests,
-resumable uploads, and restored protocol state. Cross-platform
-invitation-to-collaboration acceptance, the 20-editor WAN latency target, the
-Windows worker capability confinement, native multi-process CRDT load, and an
-independent security implementation review remain release gates. The
-implementation and tests were author-performed, not an independent audit.
+[collaboration.md](collaboration.md). Production startup keeps these routes
+disabled. The implementation and tests were author-performed, not an
+independent security audit.

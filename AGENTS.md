@@ -69,7 +69,7 @@ After completing the code, ask the user if they want a playground link. Only cal
 - `crates/local-core` owns canonical parsing, deterministic serialization, filesystem safety, atomic writes, indexing, watching, reconciliation, credentials, and domain operations.
 - `crates/mcp-server` adapts MCP tools to local-core services and must not duplicate business logic.
 - `src-tauri` owns the desktop process and typed IPC/event bridge.
-- A future `apps/server` may use Bun, TypeScript, and Hono. It is outside the Initial MVP and must not become a dependency of local features.
+- `apps/server` contains the experimental encrypted sync service built with Bun, TypeScript, and Hono. It must not become a dependency of local features. `apps/server-web` contains its account pages and encrypted share viewer.
 
 ### Workspace schema ownership
 
