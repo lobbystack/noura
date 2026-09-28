@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { getNouraClient, workspace } from '$lib/state.svelte';
 	import { isPlainTextPath } from '$lib/editor/text-files';
+	import { workspaceTree } from '$lib/workspace-tree.svelte';
+	import { findTreeNode } from '$lib/workspace-tree';
+	import type { UnmanagedFile } from '@noura/workspace';
 	import { plugins } from '$lib/plugins.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
@@ -14,28 +17,45 @@
 	import { toast } from 'svelte-sonner';
 
 	type Note = Awaited<
-		ReturnType<ReturnType<typeof getNouraClient>['notes']['list']>
-	>[number];
-	type RawFile =
-		| Awaited<
-				ReturnType<
-					ReturnType<typeof getNouraClient>['files']['listNonManagedMarkdown']
-				>
-		  >[number]
-		| { relativePath: string; title: string; parseStatus: null };
+		ReturnType<ReturnType<typeof getNouraClient>['notes']['get']>
+	>;
+	type RawFile = {
+		relativePath: string;
+		title: string;
+		parseStatus: UnmanagedFile['parseStatus'] | null;
+	};
 
-	// These lists are lookup indexes for URL-driven selection, not a
-	// navigator: the sidebar file tree owns navigation now. They load on
-	// demand before each lookup, so opening Notes doesn't scan the workspace.
-	let notes = $state<Note[]>([]);
-	let rawFiles = $state<RawFile[]>([]);
-	let loaded = $state(false);
 	let selected = $state<Note | null>(null);
 	let selectedRaw = $state<RawFile | null>(null);
 	let appliedKey: string | null = null;
 	let autofocusTitle = $state(false);
 	let selectionGeneration = 0;
-	let loadGeneration = 0;
+
+	// Opening a document reads only that document. The sidebar tree already
+	// holds every path and parse status, so there is nothing to list first.
+	async function findNote(id: string): Promise<Note | null> {
+		const client = getNouraClient();
+		try {
+			return await client.notes.get(id);
+		} catch {
+			// The index may not have seen an external change yet. Listing the
+			// files reconciles it, then the note resolves if it exists.
+			await client.files.list();
+			return await client.notes.get(id).catch(() => null);
+		}
+	}
+
+	function rawFileAt(relativePath: string): RawFile | null {
+		if (!/\.md$/i.test(relativePath) && !isPlainTextPath(relativePath))
+			return null;
+		const node = findTreeNode(workspaceTree.tree, relativePath);
+		const name = relativePath.split('/').pop() ?? relativePath;
+		return {
+			relativePath,
+			title: name.replace(/\.md$/i, ''),
+			parseStatus: node?.parseStatus ?? null,
+		};
+	}
 
 	async function select(
 		n: Note,
@@ -68,39 +88,6 @@
 		tabsStore.open(`raw:${file.relativePath}`, 'markdown', file.title);
 	}
 
-	async function load(): Promise<void> {
-		const generation = ++loadGeneration;
-		const workspaceId = workspace.state?.workspaceId;
-		const [list, raw, entries] = await Promise.all([
-			getNouraClient().notes.list(),
-			getNouraClient().files.listNonManagedMarkdown(),
-			getNouraClient().files.list(),
-		]);
-		if (
-			generation === loadGeneration &&
-			workspace.state?.workspaceId === workspaceId
-		) {
-			notes = list;
-			rawFiles = [
-				...raw,
-				...entries
-					.filter(
-						(entry) =>
-							entry.kind === 'file' &&
-							entry.parseStatus !== 'managed' &&
-							isPlainTextPath(entry.relativePath) &&
-							!raw.some((file) => file.relativePath === entry.relativePath),
-					)
-					.map((entry) => ({
-						relativePath: entry.relativePath,
-						title: entry.name,
-						parseStatus: null,
-					})),
-			];
-			loaded = true;
-		}
-	}
-
 	// Selection is URL-driven: /notes?selected=<id> or /notes?raw=<path>.
 	// Plain /notes keeps whatever is already open, like any editor surface.
 	afterNavigate(() => {
@@ -117,13 +104,9 @@
 		if (selectedRaw?.relativePath === rawPath) return;
 		void (async () => {
 			try {
-				// Command-palette navigation can change this URL while this page is
-				// already mounted. Refresh both lookup projections before resolving a
-				// managed ID or raw path so external additions and moves are visible.
-				if (!loaded || selectedId !== null || rawPath !== null) await load();
-				if (generation !== selectionGeneration || key !== appliedKey) return;
 				if (selectedId !== null) {
-					const note = notes.find((entry) => entry.id === selectedId);
+					const note = await findNote(selectedId);
+					if (generation !== selectionGeneration || key !== appliedKey) return;
 					if (note) {
 						// Param-driven selection comes from the sidebar tree; a
 						// pristine "Untitled" empty note is a fresh creation via
@@ -138,7 +121,7 @@
 						toast.error('That note is no longer in the workspace');
 					}
 				} else if (rawPath !== null) {
-					const file = rawFiles.find((entry) => entry.relativePath === rawPath);
+					const file = rawFileAt(rawPath);
 					if (file) {
 						await selectRaw(file, generation);
 					} else {
@@ -159,7 +142,6 @@
 		if (!(await flushPendingDrafts())) return;
 		try {
 			const res = await getNouraClient().notes.create({ title: 'Untitled' });
-			await load();
 			if (res.value) {
 				await select(res.value as Note, { isNew: true });
 			}
@@ -171,9 +153,6 @@
 	}
 
 	function handleSaved(updated: Note) {
-		notes = notes.some((entry) => entry.id === updated.id)
-			? notes.map((entry) => (entry.id === updated.id ? updated : entry))
-			: [...notes, updated];
 		selected = updated;
 		tabsStore.renameObject(updated.id, updated.title);
 	}
@@ -195,8 +174,7 @@
 			await goto(`/projects?selected=${encodeURIComponent(object.id)}`);
 			return;
 		}
-		await load();
-		const managed = notes.find((note) => note.id === object.id);
+		const managed = await findNote(object.id);
 		if (managed) selected = managed;
 	}
 </script>

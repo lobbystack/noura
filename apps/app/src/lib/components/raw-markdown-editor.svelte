@@ -292,6 +292,13 @@
 	onMount(() => {
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
+		// Read the file while the collaboration check runs instead of after it.
+		const read = /\.md$/i.test(file.relativePath)
+			? getNouraClient().files.readRawMarkdown({
+					relativePath: file.relativePath,
+				})
+			: null;
+		read?.catch(() => {});
 		void acquireNativeCollaboration(file.relativePath)
 			.then(async (lease) => {
 				if (disposed) {
@@ -301,13 +308,11 @@
 				collaborationLease = lease;
 				collaboration = lease?.session ?? null;
 				if (!lease) {
-					if (!/\.md$/i.test(file.relativePath))
+					if (!read)
 						throw new Error(
 							'This text file is not available for collaborative editing yet. You can still edit its workspace file in another application.',
 						);
-					const value = await getNouraClient().files.readRawMarkdown({
-						relativePath: file.relativePath,
-					});
+					const value = await read;
 					if (!disposed) loaded = value;
 				}
 				if (!disposed) {
@@ -451,7 +456,13 @@
 			/>
 		</div>
 	{:else if collaborationOpening && !collaborationFailed}
-		<p class="p-6 text-sm text-muted-foreground">Opening document…</p>
+		<!-- Fast opens finish before this fades in, so they never flash it. -->
+		<p
+			class="p-6 text-sm text-muted-foreground animate-in fade-in fill-mode-backwards delay-300"
+			role="status"
+		>
+			Opening document…
+		</p>
 	{/if}
 </div>
 

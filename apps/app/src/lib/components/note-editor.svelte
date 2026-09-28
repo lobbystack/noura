@@ -609,7 +609,11 @@
 					onerror={(error) => (autosaveError = error)}
 				/>
 			{:else if collaborationOpening}
-				<p class="p-6 text-sm text-muted-foreground" role="status">
+				<!-- Fast opens finish before this fades in, so they never flash it. -->
+				<p
+					class="p-6 text-sm text-muted-foreground animate-in fade-in fill-mode-backwards delay-300"
+					role="status"
+				>
 					Opening document…
 				</p>
 			{:else if !collaborationFailed}

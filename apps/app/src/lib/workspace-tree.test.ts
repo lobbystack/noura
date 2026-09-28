@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+	findTreeNode,
 	buildWorkspaceTree,
 	collectFilePaths,
 	collectFolderNames,
@@ -178,4 +179,29 @@ test('PDF files open in the PDF route even before indexing', () => {
 			children: [],
 		}),
 	).toEqual({ route: '/pdf', query: { path: 'course/Lecture.PDF' } });
+});
+
+describe('finding a tree node', () => {
+	const tree = buildWorkspaceTree([
+		entry('10 - Personnel', 'folder'),
+		entry('10 - Personnel/journal.md', 'file', { parseStatus: 'malformed' }),
+		entry('10 - Personnel/sub', 'folder'),
+		entry('10 - Personnel/sub/deep.md'),
+		entry('10 - Personnel.md'),
+	]);
+
+	test('finds files at any depth with their parse status', () => {
+		expect(findTreeNode(tree, '10 - Personnel/journal.md')?.parseStatus).toBe(
+			'malformed',
+		);
+		expect(findTreeNode(tree, '10 - Personnel/sub/deep.md')?.name).toBe(
+			'deep.md',
+		);
+		expect(findTreeNode(tree, '10 - Personnel.md')?.kind).toBe('file');
+	});
+
+	test('returns null for paths the tree does not hold', () => {
+		expect(findTreeNode(tree, '10 - Personnel/missing.md')).toBeNull();
+		expect(findTreeNode(tree, 'elsewhere/journal.md')).toBeNull();
+	});
 });

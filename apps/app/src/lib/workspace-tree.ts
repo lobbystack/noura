@@ -119,6 +119,22 @@ export function nextUntitledPath(
 }
 
 /** Collect every file path in a tree — the disambiguation input. */
+/** The node at `relativePath`, searching only the folders on its path. */
+export function findTreeNode(
+	nodes: WorkspaceTreeNode[],
+	relativePath: string,
+): WorkspaceTreeNode | null {
+	for (const node of nodes) {
+		if (node.relativePath === relativePath) return node;
+		if (
+			node.kind === 'folder' &&
+			relativePath.startsWith(`${node.relativePath}/`)
+		)
+			return findTreeNode(node.children, relativePath);
+	}
+	return null;
+}
+
 export function collectFilePaths(nodes: WorkspaceTreeNode[]): Set<string> {
 	const paths = new Set<string>();
 	const walk = (list: WorkspaceTreeNode[]) => {
