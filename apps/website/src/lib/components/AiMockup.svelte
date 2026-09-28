@@ -11,7 +11,7 @@
 <div
 	class="chat"
 	role="img"
-	aria-label="An AI chat in Noura. The user shares two notes as context, and the assistant proposes three tasks that wait for approval."
+	aria-label="An AI chat in noura. The user shares two notes as context, and the assistant proposes three tasks that wait for approval."
 >
 	<div class="chat-head">
 		<Icon name="sparkle" size={16} />

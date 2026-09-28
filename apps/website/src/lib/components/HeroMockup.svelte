@@ -27,7 +27,7 @@
 <div
 	class="mockup"
 	role="img"
-	aria-label="The Noura app showing a note with linked tasks, next to the Markdown file Noura saves for one of those tasks"
+	aria-label="The noura app showing a note with linked tasks, next to the Markdown file noura saves for one of those tasks"
 >
 	<div class="window">
 		<div class="titlebar">

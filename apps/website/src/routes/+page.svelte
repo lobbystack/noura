@@ -6,9 +6,9 @@
 	import { onMount } from 'svelte';
 	import { detectPlatform, siteConfig, type Platform } from '$lib/site-config';
 
-	const title = 'Noura: the open workspace for humans and AI';
+	const title = 'noura: the open workspace for humans and AI';
 	const description =
-		'Notes, tasks, projects, and AI in one free, open-source desktop app. Noura saves your work as plain Markdown files in a folder you own.';
+		'Notes, tasks, projects, and AI in one free, open-source desktop app. noura saves your work as plain Markdown files in a folder you own.';
 
 	const features = [
 		{
@@ -20,7 +20,7 @@
 		{
 			label: 'Own',
 			title: 'Plain files you can take anywhere',
-			body: 'Noura saves each note, task, and project as a Markdown file in a folder you choose. Back it up, sync it, or open it in another editor.',
+			body: 'noura saves each note, task, and project as a Markdown file in a folder you choose. Back it up, sync it, or open it in another editor.',
 			chips: ['Markdown', 'Works offline', 'Your folder'],
 		},
 		{
@@ -49,11 +49,11 @@
 	const aiPoints = [
 		{
 			title: 'Your provider',
-			body: 'Connect the AI service you already use. Noura keeps your API key in your system keychain.',
+			body: 'Connect the AI service you already use. noura keeps your API key in your system keychain.',
 		},
 		{
 			title: 'Your context',
-			body: 'Pick the notes the AI can read. Noura asks before it sends any workspace content.',
+			body: 'Pick the notes the AI can read. noura asks before it sends any workspace content.',
 		},
 		{
 			title: 'Your approval',
@@ -77,7 +77,7 @@
 		],
 		[
 			'Rebuildable index',
-			'Delete the search index and Noura rebuilds it from your files.',
+			'Delete the search index and noura rebuilds it from your files.',
 		],
 		[
 			'Encrypted sync',
@@ -87,36 +87,36 @@
 
 	const faqs = [
 		[
-			'What is Noura?',
-			'Noura is a desktop app for notes, tasks, projects, and your calendar, with AI chat built in. It saves everything as Markdown files in a folder you choose.',
+			'What is noura?',
+			'noura is a desktop app for notes, tasks, projects, and your calendar, with AI chat built in. It saves everything as Markdown files in a folder you choose.',
 		],
 		[
-			'Is Noura free?',
+			'Is noura free?',
 			'Yes. The app is free to use, and the source code is open under the MIT license.',
 		],
 		[
 			'Where does my data live?',
-			'In a folder on your computer. Noura also keeps a local search index for speed. You can delete that index at any time, and Noura rebuilds it from your files.',
+			'In a folder on your computer. noura also keeps a local search index for speed. You can delete that index at any time, and noura rebuilds it from your files.',
 		],
 		[
 			'How do updates work?',
-			'Noura checks for a new version in the background and downloads it for you. When it is ready, you choose when to restart. Noura saves your open drafts first, and every update is signed so your computer only installs releases from us.',
+			'noura checks for a new version in the background and downloads it for you. When it is ready, you choose when to restart. noura saves your open drafts first, and every update is signed so your computer only installs releases from us.',
 		],
 		[
-			'Can I edit my files outside Noura?',
-			'Yes. Edit, move, or rename files with any app. Noura picks up the changes and asks you to review when two edits overlap.',
+			'Can I edit my files outside noura?',
+			'Yes. Edit, move, or rename files with any app. noura picks up the changes and asks you to review when two edits overlap.',
 		],
 		[
 			'Can AI read my workspace?',
-			'Only when you allow it. You choose the provider and the notes it can use, and Noura asks before it sends workspace content. External tools connect through MCP with the same rules.',
+			'Only when you allow it. You choose the provider and the notes it can use, and noura asks before it sends workspace content. External tools connect through MCP with the same rules.',
 		],
 		[
 			'Do I need an account?',
-			'No. Noura works offline without an account. Sync between devices is optional, and it encrypts your workspace before anything leaves your device.',
+			'No. noura works offline without an account. Sync between devices is optional, and it encrypts your workspace before anything leaves your device.',
 		],
 		[
-			'Which platforms does Noura support?',
-			'Noura runs on macOS, Windows, and Linux. Download the installer for your computer, and Noura keeps itself up to date from there.',
+			'Which platforms does noura support?',
+			'noura runs on macOS, Windows, and Linux. Download the installer for your computer, and noura keeps itself up to date from there.',
 		],
 	] as const;
 
@@ -155,7 +155,7 @@ bun run tauri dev`;
 	<meta property="og:title" content={title} />
 	<meta property="og:description" content={description} />
 	<meta property="og:type" content="website" />
-	<meta property="og:site_name" content="Noura" />
+	<meta property="og:site_name" content="noura" />
 	<meta property="og:url" content={siteConfig.marketingUrl} />
 	<meta name="twitter:card" content="summary" />
 	<meta name="twitter:title" content={title} />
@@ -169,9 +169,9 @@ bun run tauri dev`;
 
 <header class="site-header">
 	<div class="header-inner">
-		<a class="brand" href="#top" aria-label="Noura home">
+		<a class="brand" href="#top" aria-label="noura home">
 			<img src="/logo.png" alt="" width="30" height="30" />
-			<span>Noura</span>
+			<span>noura</span>
 		</a>
 		<nav aria-label="Primary navigation">
 			<a class="nav-link" href="#features">Features</a>
@@ -181,7 +181,7 @@ bun run tauri dev`;
 			<a
 				class="nav-icon"
 				href={siteConfig.githubUrl}
-				aria-label="Noura on GitHub"
+				aria-label="noura on GitHub"
 			>
 				<Icon name="github" size={20} />
 			</a>
@@ -194,12 +194,11 @@ bun run tauri dev`;
 	<section class="dark-world" id="top" aria-labelledby="hero-heading">
 		<ShaderBackground />
 		<div class="hero">
-			<p class="badge"><i></i>Free and open source · Now in alpha</p>
 			<h1 id="hero-heading">
 				The open workspace <em>for humans and AI.</em>
 			</h1>
 			<p class="hero-copy">
-				Write notes, plan tasks, and work with AI in one app. Noura saves
+				Write notes, plan tasks, and work with AI in one app. noura saves
 				everything as plain Markdown files on your computer, so your work stays
 				yours.
 			</p>
@@ -209,17 +208,12 @@ bun run tauri dev`;
 						Download for {primaryDownload.platform}
 					</a>
 				{:else}
-					<a class="pill pill-light pill-lg" href="#download">Download Noura</a>
+					<a class="pill pill-light pill-lg" href="#download">Download noura</a>
 				{/if}
 				<a class="pill pill-ghost pill-lg" href={siteConfig.githubUrl}>
 					<Icon name="github" size={17} />Star on GitHub
 				</a>
 			</div>
-			<p class="trust-line">
-				<span>Works offline</span><span>No account needed</span><span
-					>macOS, Windows, Linux</span
-				>
-			</p>
 		</div>
 
 		<div class="hero-visual">
@@ -230,8 +224,8 @@ bun run tauri dev`;
 			<div>
 				<h2>Your work stays open.</h2>
 				<p>
-					Noura gives you a fast, focused workspace. Underneath, your files stay
-					readable in any text editor, with or without Noura.
+					noura gives you a fast, focused workspace. Underneath, your files stay
+					readable in any text editor, with or without noura.
 				</p>
 			</div>
 			<a class="open-cta" href="#how-it-works">How it works</a>
@@ -273,7 +267,7 @@ bun run tauri dev`;
 		<div
 			class="product-stage"
 			role="img"
-			aria-label="Noura plugin settings next to a project board"
+			aria-label="noura plugin settings next to a project board"
 		>
 			<div class="mini-sidebar" aria-hidden="true">
 				<img class="mini-brand" src="/logo.png" alt="" />
@@ -314,8 +308,8 @@ bun run tauri dev`;
 				<h3>Your folder is the database.</h3>
 			</div>
 			<p>
-				Noura keeps a local index so search stays fast. Delete it, and Noura
-				rebuilds it from your files. Edit a file in another app, and Noura shows
+				noura keeps a local index so search stays fast. Delete it, and noura
+				rebuilds it from your files. Edit a file in another app, and noura shows
 				the change right away.
 			</p>
 		</div>
@@ -359,7 +353,7 @@ bun run tauri dev`;
 			<p class="kicker">Privacy</p>
 			<h2 id="trust-heading">Yours by default.</h2>
 			<p>
-				Noura runs on your computer and saves your work as ordinary files. You
+				noura runs on your computer and saves your work as ordinary files. You
 				don't need an account, and anyone can read the code.
 			</p>
 		</div>
@@ -402,7 +396,7 @@ bun run tauri dev`;
 					Start with a folder. <em>Keep it forever.</em>
 				</h2>
 				<p>
-					Noura is free. Install it once, and it updates itself when a new
+					noura is free. Install it once, and it updates itself when a new
 					version ships. It's still an alpha, so tell us what breaks.
 				</p>
 			</div>
@@ -467,7 +461,7 @@ bun run tauri dev`;
 
 <footer>
 	<div class="footer-brand">
-		<span><img src="/logo.png" alt="" width="26" height="26" />Noura</span>
+		<span><img src="/logo.png" alt="" width="26" height="26" />noura</span>
 		<p>The open workspace for humans and AI.</p>
 	</div>
 	<nav aria-label="Footer navigation">
@@ -479,7 +473,7 @@ bun run tauri dev`;
 		<a href={`${siteConfig.githubUrl}/blob/main/SECURITY.md`}>Security</a>
 	</nav>
 	<p class="copyright">
-		© {new Date().getFullYear()} Noura. Free and open source.
+		© {new Date().getFullYear()} noura. Free and open source.
 	</p>
 </footer>
 
@@ -656,26 +650,6 @@ bun run tauri dev`;
 		margin: 0 auto;
 		text-align: center;
 	}
-	.badge {
-		display: inline-flex;
-		align-items: center;
-		gap: 9px;
-		margin: 0 0 28px;
-		padding: 7px 14px;
-		border-radius: 999px;
-		background: rgba(255, 255, 255, 0.07);
-		box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-		color: #c9c7d0;
-		font-size: 13px;
-		font-weight: 600;
-	}
-	.badge i {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: var(--lavender);
-		box-shadow: 0 0 10px var(--lavender);
-	}
 	h1 {
 		max-width: 900px;
 		margin: 0 auto 22px;
@@ -698,27 +672,6 @@ bun run tauri dev`;
 		justify-content: center;
 		gap: 12px;
 		margin-top: 34px;
-	}
-	.trust-line {
-		display: flex;
-		flex-wrap: wrap;
-		justify-content: center;
-		gap: 8px 22px;
-		margin: 26px 0 0;
-		color: #8b8a90;
-		font-size: 13px;
-	}
-	.trust-line span {
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-	}
-	.trust-line span::before {
-		content: '';
-		width: 5px;
-		height: 5px;
-		border-radius: 50%;
-		background: #5d5b66;
 	}
 	.hero-visual {
 		max-width: 1120px;
@@ -1505,9 +1458,6 @@ bun run tauri dev`;
 		}
 		.dark-world {
 			padding: 48px 16px 28px;
-		}
-		.badge {
-			font-size: 12px;
 		}
 		h1 {
 			font-size: 44px;
