@@ -23,10 +23,9 @@
 			<Empty.Media variant="icon">
 				<FolderOpen />
 			</Empty.Media>
-			<Empty.Title>Open your workspace</Empty.Title>
+			<Empty.Title>Welcome to noura</Empty.Title>
 			<Empty.Description>
-				Noura works from an ordinary folder. Your Markdown files remain the
-				durable source of truth.
+				Your notes and tasks live as Markdown files in a folder you choose.
 			</Empty.Description>
 		</Empty.Header>
 
@@ -56,54 +55,41 @@
 				<Separator />
 			{/if}
 
-			<div class="flex flex-col gap-2">
-				<p class="text-sm text-muted-foreground">
-					Choose an existing folder that contains a Noura workspace.
-				</p>
-				<Button
-					type="button"
-					disabled={workspace.isLoading}
-					onclick={() => workspace.pickAndOpen()}
-				>
-					{#if workspace.isLoading}
-						<Spinner data-icon="inline-start" />
-					{:else}
-						<FolderOpen data-icon="inline-start" />
-					{/if}
-					Open workspace
-				</Button>
-			</div>
-
-			<Separator />
-
 			<form class="flex flex-col gap-3" onsubmit={createWorkspace}>
 				<Field.Group>
 					<Field.Field>
-						<Field.Label for="new-workspace-name">Workspace name</Field.Label>
-						<Input
-							id="new-workspace-name"
-							bind:value={workspaceName}
-							placeholder="My workspace"
-							autocomplete="off"
-						/>
+						<Field.Label for="new-workspace-name">New workspace</Field.Label>
+						<div class="flex gap-2">
+							<Input
+								id="new-workspace-name"
+								bind:value={workspaceName}
+								placeholder="Name"
+								autocomplete="off"
+							/>
+							<Button
+								type="submit"
+								disabled={workspace.isLoading ||
+									workspaceName.trim().length === 0}
+							>
+								{#if workspace.isLoading}<Spinner
+										data-icon="inline-start"
+									/>{/if}
+								Create…
+							</Button>
+						</div>
 					</Field.Field>
 				</Field.Group>
-				<p class="text-sm text-muted-foreground">
-					You’ll choose or create its folder in Finder next.
-				</p>
-				<Button
-					type="submit"
-					variant="outline"
-					disabled={workspace.isLoading || workspaceName.trim().length === 0}
-				>
-					{#if workspace.isLoading}
-						<Spinner data-icon="inline-start" />
-					{:else}
-						<FolderOpen data-icon="inline-start" />
-					{/if}
-					Choose folder and create
-				</Button>
 			</form>
+
+			<Button
+				type="button"
+				variant="outline"
+				disabled={workspace.isLoading}
+				onclick={() => workspace.pickAndOpen()}
+			>
+				<FolderOpen data-icon="inline-start" />
+				Open an existing workspace…
+			</Button>
 
 			{#if workspace.error}
 				<p class="text-sm text-destructive" role="alert">{workspace.error}</p>

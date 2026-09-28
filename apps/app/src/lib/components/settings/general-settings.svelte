@@ -6,6 +6,7 @@
 	import * as ToggleGroup from '$lib/components/ui/toggle-group';
 	import { Switch } from '$lib/components/ui/switch';
 	import { getAppPlatform } from '$lib/platform';
+	import UpdatesSettings from './updates-settings.svelte';
 	import Sun from 'phosphor-svelte/lib/Sun';
 	import Moon from 'phosphor-svelte/lib/Moon';
 	import Desktop from 'phosphor-svelte/lib/Desktop';
@@ -37,6 +38,8 @@
 </script>
 
 <Field.FieldGroup>
+	{#if desktop}<UpdatesSettings />{/if}
+
 	<Field.Field>
 		<Field.FieldLabel id="appearance-label">Appearance</Field.FieldLabel>
 		<ToggleGroup.Root

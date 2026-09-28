@@ -16,8 +16,6 @@
 	import ArrowsClockwise from 'phosphor-svelte/lib/ArrowsClockwise';
 	import Users from 'phosphor-svelte/lib/Users';
 	import Files from 'phosphor-svelte/lib/Files';
-	import DownloadSimple from 'phosphor-svelte/lib/DownloadSimple';
-	import Wrench from 'phosphor-svelte/lib/Wrench';
 	import Info from 'phosphor-svelte/lib/Info';
 	import ArrowLeft from 'phosphor-svelte/lib/ArrowLeft';
 	import GeneralSettings from './general-settings.svelte';
@@ -28,8 +26,6 @@
 	import AiSettings from './ai-settings.svelte';
 	import ExternalToolsSettings from './external-tools-settings.svelte';
 	import FilesSettings from './files-settings.svelte';
-	import UpdatesSettings from './updates-settings.svelte';
-	import MaintenanceSettings from './maintenance-settings.svelte';
 	import AboutSettings from './about-settings.svelte';
 	import SyncAccountSettings from '$lib/components/sync-account-settings.svelte';
 
@@ -48,8 +44,6 @@
 		| 'sync'
 		| 'people'
 		| 'files'
-		| 'updates'
-		| 'maintenance'
 		| 'about';
 	type Entry = {
 		id: Section;
@@ -68,7 +62,8 @@
 					id: 'general',
 					label: 'General',
 					icon: GearSix,
-					keywords: 'appearance theme dark light system startup login',
+					keywords:
+						'appearance theme dark light system startup login updates version',
 				},
 				{
 					id: 'editor',
@@ -146,20 +141,6 @@
 		{
 			label: 'App',
 			entries: [
-				{
-					id: 'updates',
-					label: 'Updates',
-					icon: DownloadSimple,
-					keywords: 'version upgrade release',
-					desktopOnly: true,
-				},
-				{
-					id: 'maintenance',
-					label: 'Maintenance',
-					description: 'Find files noura can’t read and rebuild search.',
-					icon: Wrench,
-					keywords: 'diagnostics problems rebuild index search',
-				},
 				{
 					id: 'about',
 					label: 'About noura',
@@ -303,10 +284,6 @@
 			<ExternalToolsSettings />
 		{:else if selected === 'files'}
 			<FilesSettings />
-		{:else if selected === 'updates'}
-			<UpdatesSettings />
-		{:else if selected === 'maintenance'}
-			<MaintenanceSettings />
 		{:else if selected === 'about'}
 			<AboutSettings />
 		{:else if selected === 'account' || selected === 'sync' || selected === 'people'}

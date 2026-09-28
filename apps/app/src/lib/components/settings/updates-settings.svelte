@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getAppUpdates } from '$lib/app-updates.svelte';
+	import * as Field from '$lib/components/ui/field';
 	import { Button } from '$lib/components/ui/button';
 	import { Spinner } from '$lib/components/ui/spinner';
 
@@ -13,25 +14,19 @@
 	const timeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
 </script>
 
-<div class="flex flex-col gap-6">
-	<dl class="flex flex-col divide-y divide-border">
-		<div class="flex justify-between gap-4 py-3">
-			<dt class="text-sm">Installed version</dt>
-			<dd class="text-sm text-muted-foreground">{updates.version ?? '—'}</dd>
-		</div>
-	</dl>
+<Field.Field>
+	<Field.FieldLabel>Updates</Field.FieldLabel>
+	<Field.FieldDescription>
+		{#if updates.supported}
+			You have version {updates.version ?? '…'}. noura downloads new versions in
+			the background, and you choose when to restart.
+		{:else}
+			You have version {updates.version ?? '…'}. This build doesn’t update
+			itself; install noura from noura.app to get updates.
+		{/if}
+	</Field.FieldDescription>
 
-	{#if !updates.supported}
-		<p class="text-sm text-muted-foreground">
-			This build doesn’t update itself. Install noura from noura.app to get
-			updates automatically.
-		</p>
-	{:else}
-		<p class="text-sm text-muted-foreground">
-			noura checks for updates when it opens and every 6 hours, then downloads
-			them in the background. You choose when to restart.
-		</p>
-
+	{#if updates.supported}
 		{#if state.status === 'ready'}
 			<div class="flex flex-col gap-3 rounded-lg border p-4">
 				<p class="text-sm font-medium">Version {state.version} is ready</p>
@@ -60,17 +55,13 @@
 					Check for updates
 				</Button>
 				<p role="status" class="text-sm text-muted-foreground">
-					{#if state.status === 'checking'}
-						Checking…
-					{:else if state.status === 'downloading'}
+					{#if state.status === 'downloading'}
 						Downloading version {state.version}…
 					{:else if state.status === 'installing'}
 						Installing version {state.version}…
-					{:else if state.lastCheck?.outcome === 'current'}
-						You have the latest version. Checked at {timeFormat.format(
-							state.lastCheck.at,
-						)}.
-					{:else if state.lastCheck?.outcome === 'failed'}
+					{:else if state.status === 'idle' && state.lastCheck?.outcome === 'current'}
+						Up to date as of {timeFormat.format(state.lastCheck.at)}.
+					{:else if state.status === 'idle' && state.lastCheck?.outcome === 'failed'}
 						<span class="text-destructive"
 							>Couldn’t reach the update server. Check your connection.</span
 						>
@@ -79,4 +70,4 @@
 			</div>
 		{/if}
 	{/if}
-</div>
+</Field.Field>
