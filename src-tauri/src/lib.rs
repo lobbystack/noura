@@ -499,6 +499,7 @@ fn workspace_state(state: State<AppState>) -> Result<WorkspaceState, CoreError> 
             root_path: None,
             indexed_files: 0,
             diagnostics: Vec::new(),
+            sync_enabled: false,
         },
         |workspace| workspace.state(),
     ))

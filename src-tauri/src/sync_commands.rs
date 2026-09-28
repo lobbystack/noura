@@ -1032,7 +1032,11 @@ pub async fn collaboration_open(
     input: local_core::sync::collaboration::CollaborationOpenInput,
 ) -> Result<Option<local_core::sync::collaboration::CollaborationSession>, CoreError> {
     let engine = current_engine(&state)?;
-    if engine.sync_configuration()?.is_none() {
+    // Most files aren't collaborative. Answer from the sync journal before
+    // reading credentials from the keychain or decrypting workspace keys.
+    if engine.sync_configuration()?.is_none()
+        || !engine.collaboration_path_is_active(&input.relative_path)?
+    {
         return Ok(None);
     }
     let Some(connection) = state

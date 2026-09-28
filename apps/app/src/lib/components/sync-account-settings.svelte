@@ -493,6 +493,9 @@
 				: action === 'pause'
 					? sync.pauseWorkspace()
 					: sync.resumeWorkspace());
+			// The workspace state records whether sync is on, which decides
+			// whether documents open collaboration sessions.
+			if (action === 'enable') await workspace.refresh();
 			if (!disposed && workspace.state?.rootPath === root) {
 				syncStatus = value;
 				statusRoot = root;

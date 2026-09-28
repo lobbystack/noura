@@ -638,6 +638,19 @@ impl WorkspaceEngine {
         Ok(Some(reference.blob))
     }
 
+    /// Whether the file at `relative_path` is a collaborative text document.
+    /// Reads only the sync journal, so callers can skip credentials otherwise.
+    pub fn collaboration_path_is_active(&self, relative_path: &str) -> Result<bool> {
+        self.sync_file_path(relative_path)?;
+        let journal = self.sync_journal()?;
+        Ok(journal
+            .objects
+            .iter()
+            .find(|(_, object)| object.path == relative_path)
+            .and_then(|(id, _)| Self::sync_document_descriptor(&journal, id))
+            .is_some_and(|descriptor| descriptor.mode == DocumentMode::Text))
+    }
+
     pub fn collaboration_object_is_active(&self, object_id: &str) -> Result<bool> {
         crate::sync::identifier(object_id)?;
         let journal = self.sync_journal()?;
@@ -4355,6 +4368,34 @@ mod tests {
         assert_eq!(
             std::fs::read(f.directory.path().join("workspace/note.md")).unwrap(),
             "\u{feff}another window".as_bytes()
+        );
+    }
+
+    #[test]
+    fn path_activity_matches_whether_open_returns_a_session() {
+        let f = fixture();
+        assert!(f.engine.collaboration_path_is_active("note.md").unwrap());
+        assert!(
+            !f.engine
+                .collaboration_path_is_active("elsewhere.md")
+                .unwrap()
+        );
+        assert!(
+            f.engine
+                .collaboration_open(
+                    CollaborationOpenInput {
+                        relative_path: "elsewhere.md".into()
+                    },
+                    &f.device,
+                    &f.secrets
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            f.engine
+                .collaboration_path_is_active("../escape.md")
+                .is_err()
         );
     }
 

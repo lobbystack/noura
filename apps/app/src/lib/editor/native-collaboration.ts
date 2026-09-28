@@ -21,3 +21,13 @@ export function acquireNativeCollaboration(relativePath: string) {
 	}
 	return registry.acquire(relativePath);
 }
+
+/**
+ * Collaboration is part of sync. In a workspace without sync, documents open
+ * as plain local files and nothing asks about collaboration. Activation after
+ * sync starts uses `acquireNativeCollaboration` directly.
+ */
+export async function openNativeCollaboration(relativePath: string) {
+	if (workspace.state?.syncEnabled === false) return null;
+	return acquireNativeCollaboration(relativePath);
+}

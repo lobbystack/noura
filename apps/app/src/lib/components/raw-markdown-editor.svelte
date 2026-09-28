@@ -2,7 +2,10 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import type { CollaborationSession } from '@noura/editor';
-	import { acquireNativeCollaboration } from '$lib/editor/native-collaboration';
+	import {
+		acquireNativeCollaboration,
+		openNativeCollaboration,
+	} from '$lib/editor/native-collaboration';
 	import type { CollaborationLease } from '$lib/editor/collaboration-registry';
 	import CollaborativeTextSurface from '$lib/components/collaborative-text-surface.svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
@@ -299,7 +302,7 @@
 				})
 			: null;
 		read?.catch(() => {});
-		void acquireNativeCollaboration(file.relativePath)
+		void openNativeCollaboration(file.relativePath)
 			.then(async (lease) => {
 				if (disposed) {
 					await lease?.release();

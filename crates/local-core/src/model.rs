@@ -98,6 +98,9 @@ pub struct WorkspaceState {
     pub root_path: Option<String>,
     pub indexed_files: u64,
     pub diagnostics: Vec<Diagnostic>,
+    /// Whether this workspace has sync set up. Local-only workspaces skip
+    /// collaboration entirely.
+    pub sync_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
