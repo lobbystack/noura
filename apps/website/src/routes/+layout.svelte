@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { asset } from '$app/paths';
 	import './global.css';
 	import CookieBanner from '$lib/components/CookieBanner.svelte';
 	import SiteFooter from '$lib/components/SiteFooter.svelte';
@@ -8,8 +9,8 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href="/favicon.png" type="image/png" />
-	<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+	<link rel="icon" href={asset('/favicon.png')} type="image/png" />
+	<link rel="apple-touch-icon" href={asset('/apple-touch-icon.png')} />
 </svelte:head>
 
 <SiteHeader />

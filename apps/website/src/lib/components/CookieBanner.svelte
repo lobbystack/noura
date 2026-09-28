@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { siteConfig } from '$lib/site-config';
 	import {
@@ -12,20 +13,21 @@
 	const optional = siteConfig.optionalCookies;
 	const hasOptional = optional.length > 0;
 
-	let choices = $state<Record<string, boolean>>({});
-
 	onMount(loadConsent);
 
 	const visible = $derived(
 		consent.loaded && (consent.value === null || consent.settingsOpen),
 	);
 
-	$effect(() => {
-		if (consent.settingsOpen) {
-			choices = Object.fromEntries(
+	// Start from the saved choice each time the settings open; edits stay local
+	// until the visitor saves.
+	const choices = $derived.by(() => {
+		const draft = $state(
+			Object.fromEntries(
 				optional.map((c) => [c.id, consent.value?.granted[c.id] === true]),
-			);
-		}
+			),
+		);
+		return draft;
 	});
 </script>
 
@@ -60,7 +62,7 @@
 			</p>
 		{/if}
 		<div class="actions">
-			<a href="/cookies/">Cookie policy</a>
+			<a href={resolve('/cookies/')}>Cookie policy</a>
 			{#if hasOptional}
 				<button type="button" class="secondary" onclick={rejectOptional}>
 					Reject optional

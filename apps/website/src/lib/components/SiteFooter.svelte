@@ -1,26 +1,29 @@
 <script lang="ts">
+	import { asset, resolve } from '$app/paths';
 	import { siteConfig } from '$lib/site-config';
 	import { openCookieSettings } from '$lib/cookie-consent.svelte';
 </script>
 
 <footer>
 	<div class="footer-brand">
-		<span><img src="/logo.png" alt="" width="26" height="26" />noura</span>
+		<span
+			><img src={asset('/logo.png')} alt="" width="26" height="26" />noura</span
+		>
 		<p>The open workspace for humans and AI.</p>
 	</div>
 	<div class="footer-links">
 		<nav aria-label="Product">
 			<p>Product</p>
-			<a href="/#download">Download</a>
+			<a href={resolve('/#download')}>Download</a>
 			<a href={siteConfig.githubUrl}>GitHub</a>
 			<a href={siteConfig.releasesUrl}>Releases</a>
 			<a href={`${siteConfig.githubUrl}/blob/main/SECURITY.md`}>Security</a>
 		</nav>
 		<nav aria-label="Legal">
 			<p>Legal</p>
-			<a href="/privacy/">Privacy policy</a>
-			<a href="/terms/">Terms and conditions</a>
-			<a href="/cookies/">Cookie policy</a>
+			<a href={resolve('/privacy/')}>Privacy policy</a>
+			<a href={resolve('/terms/')}>Terms and conditions</a>
+			<a href={resolve('/cookies/')}>Cookie policy</a>
 			<button type="button" onclick={openCookieSettings}>Cookie settings</button
 			>
 			<a href={`${siteConfig.githubUrl}/blob/main/LICENSE`}>MIT license</a>

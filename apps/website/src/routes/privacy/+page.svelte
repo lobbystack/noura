@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import LegalPage from '$lib/components/LegalPage.svelte';
 	import { siteConfig } from '$lib/site-config';
 
@@ -46,8 +47,8 @@
 		logs to keep the site running and secure.
 	</p>
 	<p>
-		Your browser stores your cookie choice locally. See the <a href="/cookies/"
-			>cookie policy</a
+		Your browser stores your cookie choice locally. See the <a
+			href={resolve('/cookies/')}>cookie policy</a
 		>.
 	</p>
 

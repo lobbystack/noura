@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { asset } from '$app/paths';
 	import AiMockup from '$lib/components/AiMockup.svelte';
 	import HeroMockup from '$lib/components/HeroMockup.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -243,7 +244,7 @@ bun run tauri dev`;
 			aria-label="noura plugin settings next to a project board"
 		>
 			<div class="mini-sidebar" aria-hidden="true">
-				<img class="mini-brand" src="/logo.png" alt="" />
+				<img class="mini-brand" src={asset('/logo.png')} alt="" />
 				<i class="active"></i><i></i><i></i><i></i>
 			</div>
 

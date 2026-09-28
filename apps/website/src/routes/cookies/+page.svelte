@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import LegalPage from '$lib/components/LegalPage.svelte';
 	import { openCookieSettings } from '$lib/cookie-consent.svelte';
 	import { siteConfig } from '$lib/site-config';
@@ -104,7 +105,8 @@
 	<h2>Questions</h2>
 	<p>
 		Email <a href={`mailto:${legal.contactEmail}`}>{legal.contactEmail}</a>. The
-		<a href="/privacy/">privacy policy</a> explains how we handle personal information.
+		<a href={resolve('/privacy/')}>privacy policy</a> explains how we handle personal
+		information.
 	</p>
 </LegalPage>
 

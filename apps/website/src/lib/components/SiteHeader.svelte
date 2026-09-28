@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { asset, resolve } from '$app/paths';
 	import Icon from './Icon.svelte';
 	import { siteConfig } from '$lib/site-config';
 </script>
@@ -7,8 +8,8 @@
 
 <header class="site-header">
 	<div class="header-inner">
-		<a class="brand" href="/" aria-label="noura home">
-			<img src="/logo.png" alt="" width="30" height="30" />
+		<a class="brand" href={resolve('/')} aria-label="noura home">
+			<img src={asset('/logo.png')} alt="" width="30" height="30" />
 			<span>noura</span>
 		</a>
 		<nav aria-label="Primary navigation">
@@ -19,7 +20,7 @@
 			>
 				<Icon name="github" size={20} />
 			</a>
-			<a class="download" href="/#download">Download</a>
+			<a class="download" href={resolve('/#download')}>Download</a>
 		</nav>
 	</div>
 </header>
