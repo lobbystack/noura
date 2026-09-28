@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { APIError, createAuthEndpoint, formCsrfMiddleware } from 'better-auth/api';
+import {
+	APIError,
+	createAuthEndpoint,
+	formCsrfMiddleware,
+} from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
 import { generateRandomString } from 'better-auth/crypto';
 import * as z from 'zod';
@@ -71,10 +75,12 @@ export function passkeySignup(options: {
 						throw new APIError('FORBIDDEN', {
 							message: 'This email is not invited to this server.',
 						});
-					const existing = await ctx.context.internalAdapter.findUserByEmail(email);
+					const existing =
+						await ctx.context.internalAdapter.findUserByEmail(email);
 					if (existing?.user.emailVerified)
 						throw new APIError('CONFLICT', {
-							message: 'An account already exists for this email. Sign in instead.',
+							message:
+								'An account already exists for this email. Sign in instead.',
 						});
 					const pendingMagicLink =
 						await ctx.context.internalAdapter.findVerificationValue(
@@ -104,9 +110,10 @@ export function passkeySignup(options: {
 					body: z.object({ context: z.string(), credentialID: z.string() }),
 				},
 				async (ctx) => {
-					const pending = await ctx.context.internalAdapter.consumeVerificationValue(
-						contextIdentifier(ctx.body.context),
-					);
+					const pending =
+						await ctx.context.internalAdapter.consumeVerificationValue(
+							contextIdentifier(ctx.body.context),
+						);
 					if (!pending)
 						throw new APIError('BAD_REQUEST', {
 							message: 'This signup has expired. Start again.',
@@ -136,7 +143,10 @@ export function passkeySignup(options: {
 						} satisfies Activation),
 						expiresAt: new Date(Date.now() + expiresInSeconds * 1000),
 					});
-					const url = new URL('/api/auth/passkey-sign-up/activate', options.origin);
+					const url = new URL(
+						'/api/auth/passkey-sign-up/activate',
+						options.origin,
+					);
 					url.searchParams.set('token', token);
 					await options.sendActivation(user.email, url.toString());
 					return ctx.json({ status: true });
@@ -149,9 +159,10 @@ export function passkeySignup(options: {
 					query: z.object({ token: z.string() }),
 				},
 				async (ctx) => {
-					const pending = await ctx.context.internalAdapter.consumeVerificationValue(
-						activationIdentifier(ctx.query.token),
-					);
+					const pending =
+						await ctx.context.internalAdapter.consumeVerificationValue(
+							activationIdentifier(ctx.query.token),
+						);
 					if (!pending)
 						throw new APIError('BAD_REQUEST', {
 							message: 'This activation link has expired.',
@@ -164,7 +175,11 @@ export function passkeySignup(options: {
 						model: 'passkey',
 						where: [{ field: 'userId', value: activation.userId }],
 					});
-					if (!passkeys.some((passkey) => passkey.credentialID === activation.credentialID))
+					if (
+						!passkeys.some(
+							(passkey) => passkey.credentialID === activation.credentialID,
+						)
+					)
 						throw new APIError('BAD_REQUEST', {
 							message: 'The registered passkey is no longer available.',
 						});
@@ -175,10 +190,15 @@ export function passkeySignup(options: {
 								where: [{ field: 'id', value: passkey.id }],
 							});
 					}
-					const user = await ctx.context.internalAdapter.updateUser(activation.userId, {
-						emailVerified: true,
-					});
-					const session = await ctx.context.internalAdapter.createSession(user.id);
+					const user = await ctx.context.internalAdapter.updateUser(
+						activation.userId,
+						{
+							emailVerified: true,
+						},
+					);
+					const session = await ctx.context.internalAdapter.createSession(
+						user.id,
+					);
 					await setSessionCookie(ctx, { session, user });
 					throw ctx.redirect(activation.callbackURL);
 				},
@@ -213,14 +233,18 @@ export async function resolvePasskeySignupUser(
 	context: string | null | undefined,
 ) {
 	if (!context)
-		throw new APIError('BAD_REQUEST', { message: 'Signup context is required.' });
+		throw new APIError('BAD_REQUEST', {
+			message: 'Signup context is required.',
+		});
 	const pending = await ctx.context.internalAdapter.findVerificationValue(
 		contextIdentifier(context),
 	);
 	if (!pending || pending.expiresAt <= new Date())
 		throw new APIError('BAD_REQUEST', { message: 'This signup has expired.' });
 	const signup = parse<SignupContext>(pending.value);
-	const existing = await ctx.context.internalAdapter.findUserByEmail(signup.email);
+	const existing = await ctx.context.internalAdapter.findUserByEmail(
+		signup.email,
+	);
 	if (existing?.user.emailVerified)
 		throw new APIError('CONFLICT', {
 			message: 'An account already exists for this email. Sign in instead.',
@@ -235,7 +259,11 @@ export async function resolvePasskeySignupUser(
 			},
 			{ method: 'passkey' },
 		));
-	return { id: user.id, name: user.email, displayName: user.name || user.email };
+	return {
+		id: user.id,
+		name: user.email,
+		displayName: user.name || user.email,
+	};
 }
 
 export async function requireVerifiedPasskeyUser(ctx: {
