@@ -415,6 +415,7 @@ fn workspace_create(
     input: CreateWorkspaceInput,
 ) -> Result<WorkspaceState, CoreError> {
     let engine = WorkspaceEngine::create(&input.path, &input.name)?;
+    engine.set_system_trash(local_core::os_trash());
     let value = engine.state();
     save_recent(&app, &engine)?;
     let engine = Arc::new(engine);
@@ -440,6 +441,7 @@ fn workspace_open(
         .unwrap_or_else(|| workspace_name_from_path(&input.path));
     let workspace_id = registered.map(|workspace| workspace.workspace_id.as_str());
     let engine = WorkspaceEngine::open_or_initialize(&input.path, &name, workspace_id)?;
+    engine.set_system_trash(local_core::os_trash());
     if workspace_id.is_some_and(|workspace_id| workspace_id != engine.manifest().id) {
         return Err(CoreError::validation(
             "workspace_identity_changed",
@@ -1307,30 +1309,8 @@ struct ShowInFolderInput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TrashRestoreInput {
-    trash_path: String,
-}
-
-#[tauri::command(async)]
-fn trash_list(state: State<AppState>) -> Result<Vec<local_core::TrashEntry>, CoreError> {
-    with_engine(&state, "trash_list", |engine| engine.trash_list())
-}
-
-#[tauri::command]
-fn trash_restore(
-    state: State<AppState>,
-    input: TrashRestoreInput,
-) -> Result<local_core::TrashEntry, CoreError> {
-    with_engine(&state, "trash_restore", |engine| {
-        engine.trash_restore(&input.trash_path)
-    })
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 enum WorkspaceFolder {
     Root,
-    Trash,
 }
 
 #[derive(Deserialize)]
@@ -1347,13 +1327,6 @@ fn workspace_show_in_folder(
     with_engine(&state, "workspace_show_in_folder", |engine| {
         let path = match input.folder {
             WorkspaceFolder::Root => engine.root().to_path_buf(),
-            WorkspaceFolder::Trash => {
-                let trash = engine.root().join(".noura/trash");
-                std::fs::create_dir_all(&trash).map_err(|error| {
-                    CoreError::io(error, "workspace_show_in_folder", trash.to_str())
-                })?;
-                trash
-            }
         };
         os_files::open_directory(&path, "workspace_show_in_folder")
     })
@@ -1529,6 +1502,7 @@ pub fn run() {
                 )
             }) {
                 Ok(Some(engine)) => {
+                    engine.set_system_trash(local_core::os_trash());
                     let engine = Arc::new(engine);
                     *app.state::<AppState>()
                         .engine
@@ -1642,8 +1616,6 @@ pub fn run() {
             objects_delete,
             objects_adopt,
             object_show_in_folder,
-            trash_list,
-            trash_restore,
             workspace_show_in_folder,
             app_open_link,
             mcp_connection,

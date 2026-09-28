@@ -83,7 +83,6 @@ import type {
 	RawConflictResolveResult,
 	MarkdownLinkTarget,
 	RenameChatInput,
-	TrashEntry,
 } from '@noura/shared';
 export type * from '@noura/shared';
 export { isCoreError } from '@noura/shared';
@@ -139,8 +138,8 @@ export interface WorkspaceService {
 	listRecent(): Promise<
 		Array<{ path: string; name: string; workspaceId: string }>
 	>;
-	/** Open the workspace folder, or its trash folder, in the file manager. */
-	showInFolder(folder: 'root' | 'trash'): Promise<void>;
+	/** Open the workspace folder in the file manager. */
+	showInFolder(folder: 'root'): Promise<void>;
 	/** How an MCP client launches this app to reach the open workspace. */
 	mcpConnection(): Promise<McpConnection>;
 	/** Launch the MCP command as a client would; true when it answers. */
@@ -149,12 +148,6 @@ export interface WorkspaceService {
 export interface McpConnection {
 	command: string;
 	args: string[];
-}
-export interface TrashService {
-	/** Trashed files and chats, newest first. */
-	list(): Promise<TrashEntry[]>;
-	/** Move an entry back to its original path. Fails if that path is taken. */
-	restore(trashPath: string): Promise<TrashEntry>;
 }
 export interface ObjectService<T extends WorkspaceObject> {
 	list(query?: ObjectQuery): Promise<T[]>;
@@ -386,7 +379,6 @@ export interface NouraClient {
 		disconnect(): Promise<void>;
 	};
 	workspaces: WorkspaceService;
-	trash: TrashService;
 	/** Open an HTTP or HTTPS link in the default browser. */
 	openLink(url: string): Promise<void>;
 	objects: GenericObjectService;
@@ -634,11 +626,6 @@ export function createNouraClient(
 				transport.request('workspace_show_in_folder', { input: { folder } }),
 			mcpConnection: () => transport.request('mcp_connection'),
 			testMcpConnection: () => transport.request('mcp_test_connection'),
-		},
-		trash: {
-			list: () => transport.request('trash_list'),
-			restore: (trashPath) =>
-				transport.request('trash_restore', { input: { trashPath } }),
 		},
 		openLink: (url) => transport.request('app_open_link', { url }),
 		objects: objectService,

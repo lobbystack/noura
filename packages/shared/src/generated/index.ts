@@ -67,8 +67,6 @@ export type { SearchInput } from './SearchInput';
 export type { SearchResult } from './SearchResult';
 export type { TaskPriority } from './TaskPriority';
 export type { TaskStatus } from './TaskStatus';
-export type { TrashEntry } from './TrashEntry';
-export type { TrashEntryKind } from './TrashEntryKind';
 export type { UnmanagedFile } from './UnmanagedFile';
 export type { WorkspaceEntry } from './WorkspaceEntry';
 export type { WorkspaceEntryKind } from './WorkspaceEntryKind';

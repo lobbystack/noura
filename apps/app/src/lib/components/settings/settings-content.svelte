@@ -132,9 +132,11 @@
 				},
 				{
 					id: 'files',
-					label: 'Files and trash',
+					label: 'Ignored files',
+					description:
+						'noura won’t index or show files that match these patterns. They follow the same rules as .gitignore.',
 					icon: Files,
-					keywords: 'ignore gitignore trash restore deleted',
+					keywords: 'ignore gitignore exclude hidden files',
 				},
 			],
 		},

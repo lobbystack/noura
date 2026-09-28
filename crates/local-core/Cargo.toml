@@ -49,6 +49,9 @@ x25519-dalek.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+trash.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 atomicwrites = "=0.4.4"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

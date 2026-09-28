@@ -1916,325 +1916,183 @@ fn create_note(
         .unwrap()
 }
 
+/// A stand-in for the operating system trash that moves each path into its
+/// own folder and records what it received.
+fn fake_system_trash() -> (
+    tempfile::TempDir,
+    std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
+    local_core::SystemTrash,
+) {
+    let bin = tempdir().unwrap();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let destination = bin.path().to_owned();
+    let log = received.clone();
+    let trash: local_core::SystemTrash = std::sync::Arc::new(move |path: &std::path::Path| {
+        let mut log = log.lock().unwrap();
+        let target = destination.join(log.len().to_string());
+        std::fs::rename(path, target)?;
+        log.push(path.to_owned());
+        Ok(())
+    });
+    (bin, received, trash)
+}
+
 #[test]
-fn trash_restore_round_trips_a_deleted_object_with_its_identity() {
+fn deleting_an_object_moves_it_to_the_system_trash() {
     let (workspace, _app_data, engine) = engine();
+    let (bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    let mut events = engine.subscribe();
     let note = create_note(&engine, "Launch brief");
     let original = workspace.path().join(&note.value.relative_path);
     let bytes = std::fs::read(&original).unwrap();
+
+    engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap();
+    // The file left the workspace before the call returned.
+    assert!(!original.exists());
+    // The engine works on the canonical root, which resolves /var to /private/var on macOS.
+    let canonical = std::fs::canonicalize(workspace.path())
+        .unwrap()
+        .join(&note.value.relative_path);
+    assert_eq!(*received.lock().unwrap(), [canonical]);
+    assert_eq!(std::fs::read(bin.path().join("0")).unwrap(), bytes);
+    assert!(
+        std::fs::read_dir(workspace.path().join(".noura/trash"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(engine.get_object(&note.value.id).unwrap().is_none());
+    let deleted = std::iter::from_fn(|| events.try_recv().ok())
+        .find(|event| event.event_type == "object:deleted")
+        .unwrap();
+    assert!(deleted.payload["trashPath"].is_null());
+}
+
+#[test]
+fn deleting_falls_back_to_the_workspace_trash_when_the_system_refuses() {
+    let (workspace, _app_data, engine) = engine();
+    engine.set_system_trash(Some(std::sync::Arc::new(|_: &std::path::Path| {
+        Err(std::io::Error::other("no trash on this volume"))
+    })));
+    let note = create_note(&engine, "Launch brief");
+    let original = workspace.path().join(&note.value.relative_path);
+    let bytes = std::fs::read(&original).unwrap();
+
     engine
         .delete_object(&note.value.id, &note.revision)
         .unwrap();
     assert!(!original.exists());
-
-    let entries = engine.trash_list().unwrap();
-    assert_eq!(entries.len(), 1);
-    let entry = &entries[0];
-    assert_eq!(entry.original_path, note.value.relative_path);
-    assert_eq!(entry.kind, local_core::TrashEntryKind::File);
-    assert_eq!(entry.size, bytes.len() as u64);
-    assert!(entry.deleted_at.is_some());
-
-    let restored = engine.trash_restore(&entry.trash_path).unwrap();
-    assert_eq!(restored.original_path, note.value.relative_path);
-    assert_eq!(std::fs::read(&original).unwrap(), bytes);
-    assert!(engine.trash_list().unwrap().is_empty());
-    let object = engine.get_object(&note.value.id).unwrap().unwrap();
-    assert_eq!(object.relative_path, note.value.relative_path);
-    // Emptied timestamp folders don't linger in the trash.
+    let batch = std::fs::read_dir(workspace.path().join(".noura/trash"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
     assert_eq!(
+        std::fs::read(batch.join(&note.value.relative_path)).unwrap(),
+        bytes
+    );
+    assert!(engine.get_object(&note.value.id).unwrap().is_none());
+}
+
+#[test]
+fn deleting_reports_a_system_trash_failure_that_already_removed_the_file() {
+    let (workspace, _app_data, engine) = engine();
+    let elsewhere = tempdir().unwrap();
+    let destination = elsewhere.path().join("moved.md");
+    engine.set_system_trash(Some(std::sync::Arc::new(move |path: &std::path::Path| {
+        std::fs::rename(path, &destination)?;
+        Err(std::io::Error::other("trash metadata write failed"))
+    })));
+    let note = create_note(&engine, "Launch brief");
+
+    assert!(
+        engine
+            .delete_object(&note.value.id, &note.revision)
+            .is_err()
+    );
+    // Nothing lands in the workspace trash as if the move had failed cleanly.
+    assert!(
         std::fs::read_dir(workspace.path().join(".noura/trash"))
             .unwrap()
-            .count(),
-        0
+            .next()
+            .is_none()
     );
+    assert!(elsewhere.path().join("moved.md").is_file());
 }
 
 #[test]
-fn trash_restore_never_overwrites_a_file_at_the_original_path() {
+fn deleting_a_stale_revision_leaves_the_file_and_the_system_trash_alone() {
     let (workspace, _app_data, engine) = engine();
-    let note = create_note(&engine, "Launch brief");
-    engine
-        .delete_object(&note.value.id, &note.revision)
-        .unwrap();
-    let occupied = workspace.path().join(&note.value.relative_path);
-    std::fs::write(&occupied, "external edit\n").unwrap();
-
-    let entry = engine.trash_list().unwrap().remove(0);
-    let error = engine.trash_restore(&entry.trash_path).unwrap_err();
-    assert_eq!(error.code, "trash_restore_target_exists");
-    assert_eq!(
-        std::fs::read_to_string(&occupied).unwrap(),
-        "external edit\n"
-    );
-    assert!(workspace.path().join(&entry.trash_path).is_file());
-}
-
-#[test]
-fn trash_restore_rejects_paths_outside_the_listed_entries() {
-    let (workspace, _app_data, engine) = engine();
-    let note = create_note(&engine, "Launch brief");
-    engine
-        .delete_object(&note.value.id, &note.revision)
-        .unwrap();
-    std::fs::write(workspace.path().join("outside.md"), "keep\n").unwrap();
-
-    for path in [
-        "",
-        "../outside.md",
-        "/etc/passwd",
-        "outside.md",
-        ".noura/trash/../../outside.md",
-        ".noura/trash",
-        ".noura/manifest.yaml",
-    ] {
-        let error = engine.trash_restore(path).unwrap_err();
-        assert_eq!(error.code, "trash_entry_not_found", "{path}");
-    }
-    assert_eq!(engine.trash_list().unwrap().len(), 1);
-    assert_eq!(
-        std::fs::read_to_string(workspace.path().join("outside.md")).unwrap(),
-        "keep\n"
-    );
-}
-
-#[test]
-fn trash_restore_refuses_to_write_into_internal_directories() {
-    let (workspace, _app_data, engine) = engine();
-    let trashed = workspace
-        .path()
-        .join(".noura/trash/2026-09-01T10-00-00Z/.noura/sync/state.json");
-    std::fs::create_dir_all(trashed.parent().unwrap()).unwrap();
-    std::fs::write(&trashed, "{}").unwrap();
-
-    let entry = engine.trash_list().unwrap().remove(0);
-    assert_eq!(entry.original_path, ".noura/sync/state.json");
-    let error = engine.trash_restore(&entry.trash_path).unwrap_err();
-    assert_eq!(error.code, "reserved_path");
-    assert!(trashed.is_file());
-}
-
-#[test]
-fn trash_lists_and_restores_an_expired_chat_as_one_entry() {
-    let (workspace, _app_data, engine) = engine();
-    let chat = workspace
-        .path()
-        .join(".noura/trash/2026-09-01T10-00-00-5Z/chats/planning--abc123");
-    std::fs::create_dir_all(chat.join("messages/2026-09-01")).unwrap();
-    std::fs::write(chat.join("chat.md"), "chat").unwrap();
-    std::fs::write(chat.join("messages/2026-09-01/message.md"), "hello").unwrap();
-
-    let entries = engine.trash_list().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].kind, local_core::TrashEntryKind::Chat);
-    assert_eq!(entries[0].original_path, "chats/planning--abc123");
-    assert_eq!(entries[0].size, 9);
-    assert_eq!(
-        entries[0].deleted_at.as_deref(),
-        Some("2026-09-01T10:00:00.5Z")
-    );
-
-    engine.trash_restore(&entries[0].trash_path).unwrap();
-    let restored = workspace.path().join("chats/planning--abc123");
-    assert_eq!(
-        std::fs::read_to_string(restored.join("chat.md")).unwrap(),
-        "chat"
-    );
-    assert_eq!(
-        std::fs::read_to_string(restored.join("messages/2026-09-01/message.md")).unwrap(),
-        "hello"
-    );
-}
-
-#[test]
-fn trash_restore_of_a_duplicate_identity_keeps_both_files_and_reports_it() {
-    let (workspace, _app_data, engine) = engine();
+    let (_bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
     let note = create_note(&engine, "Launch brief");
     let original = workspace.path().join(&note.value.relative_path);
-    let bytes = std::fs::read(&original).unwrap();
-    engine
-        .delete_object(&note.value.id, &note.revision)
-        .unwrap();
-    // Another copy with the same stable ID appears through an external tool.
-    std::fs::write(workspace.path().join("copy.md"), &bytes).unwrap();
-    engine.reconcile().unwrap();
-
-    let entry = engine.trash_list().unwrap().remove(0);
-    engine.trash_restore(&entry.trash_path).unwrap();
-    assert!(original.is_file());
-    assert!(workspace.path().join("copy.md").is_file());
-    assert!(
-        engine
-            .state()
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "identity_conflict")
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn trash_skips_symlinks_instead_of_following_them() {
-    let (workspace, _app_data, engine) = engine();
-    let outside = tempdir().unwrap();
-    std::fs::write(outside.path().join("secret.md"), "secret").unwrap();
-    let batch = workspace.path().join(".noura/trash/2026-09-01T10-00-00Z");
-    std::fs::create_dir_all(&batch).unwrap();
-    std::os::unix::fs::symlink(outside.path(), batch.join("linked")).unwrap();
-    std::os::unix::fs::symlink(outside.path().join("secret.md"), batch.join("file.md")).unwrap();
-
-    assert!(engine.trash_list().unwrap().is_empty());
-    assert_eq!(
-        engine
-            .trash_restore(".noura/trash/2026-09-01T10-00-00Z/file.md")
-            .unwrap_err()
-            .code,
-        "trash_entry_not_found"
-    );
-}
-
-#[test]
-fn trash_restores_malformed_markdown_and_unknown_folder_names_byte_for_byte() {
-    let (workspace, _app_data, engine) = engine();
-    // A folder name that isn't a timestamp, from a manual cleanup or another tool.
-    let batch = workspace.path().join(".noura/trash/manual-cleanup");
-    std::fs::create_dir_all(&batch).unwrap();
-    let malformed = b"---\ntitle: [unclosed\n---\nbody\n".to_vec();
-    let binary = vec![0u8, 159, 146, 150, 255];
-    std::fs::write(batch.join("broken.md"), &malformed).unwrap();
-    std::fs::write(batch.join("photo.bin"), &binary).unwrap();
-
-    let entries = engine.trash_list().unwrap();
-    assert_eq!(
-        entries
-            .iter()
-            .map(|entry| (entry.original_path.as_str(), entry.deleted_at.as_deref()))
-            .collect::<Vec<_>>(),
-        [("broken.md", None), ("photo.bin", None)]
-    );
-    for entry in &entries {
-        engine.trash_restore(&entry.trash_path).unwrap();
-    }
-    assert_eq!(
-        std::fs::read(workspace.path().join("broken.md")).unwrap(),
-        malformed
-    );
-    assert_eq!(
-        std::fs::read(workspace.path().join("photo.bin")).unwrap(),
-        binary
-    );
-    let listed = engine.list_workspace_entries().unwrap();
-    assert!(
-        listed
-            .iter()
-            .any(|entry| entry.relative_path == "broken.md")
-    );
-    assert!(engine.trash_list().unwrap().is_empty());
-}
-
-#[test]
-fn trash_restore_keeps_edits_made_inside_the_trash() {
-    let (workspace, _app_data, engine) = engine();
-    let note = create_note(&engine, "Launch brief");
-    engine
-        .delete_object(&note.value.id, &note.revision)
-        .unwrap();
-    let entry = engine.trash_list().unwrap().remove(0);
-    let trashed = workspace.path().join(&entry.trash_path);
-    let edited = std::fs::read_to_string(&trashed)
+    let edited = std::fs::read_to_string(&original)
         .unwrap()
-        .replace("Body text.", "Edited while trashed.");
-    std::fs::write(&trashed, &edited).unwrap();
+        .replace("Body text.", "Edited outside noura.");
+    std::fs::write(&original, &edited).unwrap();
 
-    engine.trash_restore(&entry.trash_path).unwrap();
-    let original = workspace.path().join(&note.value.relative_path);
+    let error = engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap_err();
+    assert_eq!(error.code, "revision_conflict");
     assert_eq!(std::fs::read_to_string(&original).unwrap(), edited);
-    let object = engine.get_object(&note.value.id).unwrap().unwrap();
-    assert!(object.body.contains("Edited while trashed."));
+    assert!(received.lock().unwrap().is_empty());
 }
 
 #[test]
-fn trash_restore_reports_an_entry_removed_after_listing() {
-    let (workspace, _app_data, engine) = engine();
-    let note = create_note(&engine, "Launch brief");
-    engine
-        .delete_object(&note.value.id, &note.revision)
-        .unwrap();
-    let entry = engine.trash_list().unwrap().remove(0);
-    std::fs::remove_file(workspace.path().join(&entry.trash_path)).unwrap();
-
-    let error = engine.trash_restore(&entry.trash_path).unwrap_err();
-    assert_eq!(error.code, "trash_entry_not_found");
-    assert!(!workspace.path().join(&note.value.relative_path).exists());
-}
-
-#[test]
-fn trash_restore_recreates_a_folder_moved_away_since_deletion() {
-    let (workspace, _app_data, engine) = engine();
-    let note = engine
-        .create_object(CreateObjectInput {
-            object_type: "note".into(),
-            title: "Brief".into(),
-            body: "Body text.".into(),
-            relative_path: Some("projects/q3/brief.md".into()),
-            properties: BTreeMap::new(),
-        })
-        .unwrap();
-    engine
-        .delete_object(&note.value.id, &note.revision)
-        .unwrap();
-    // The folder that held the note is moved elsewhere by another tool.
-    std::fs::rename(
-        workspace.path().join("projects"),
-        workspace.path().join("archive"),
-    )
-    .unwrap();
-    engine.reconcile().unwrap();
-
-    let entry = engine.trash_list().unwrap().remove(0);
-    engine.trash_restore(&entry.trash_path).unwrap();
-    assert!(workspace.path().join("projects/q3/brief.md").is_file());
-    let object = engine.get_object(&note.value.id).unwrap().unwrap();
-    assert_eq!(object.relative_path, "projects/q3/brief.md");
-}
-
-#[test]
-fn trash_restore_with_a_stale_index_rebuilds_to_the_same_state() {
+fn deleted_objects_stay_gone_after_an_index_rebuild() {
     let (workspace, app_data, engine) = engine();
-    let note = create_note(&engine, "Launch brief");
-    let original = workspace.path().join(&note.value.relative_path);
-    let bytes = std::fs::read(&original).unwrap();
+    let (_bin, _received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    let kept = create_note(&engine, "Kept");
+    let deleted = create_note(&engine, "Deleted");
     engine
-        .delete_object(&note.value.id, &note.revision)
+        .delete_object(&deleted.value.id, &deleted.revision)
         .unwrap();
-    // An external file the index hasn't seen yet when the restore runs.
-    std::fs::write(workspace.path().join("later.md"), "# Later\n").unwrap();
 
-    let entry = engine.trash_list().unwrap().remove(0);
-    engine.trash_restore(&entry.trash_path).unwrap();
-    assert!(
-        engine
-            .list_workspace_entries()
-            .unwrap()
-            .iter()
-            .any(|entry| entry.relative_path == "later.md")
-    );
-
-    // The restore is durable on its own: losing the index right after it,
-    // as an interrupted index update would, rebuilds the same state from files.
     let index_path = engine.index_path().to_owned();
     drop(engine);
     std::fs::remove_file(index_path).unwrap();
     let rebuilt = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
-    assert_eq!(std::fs::read(&original).unwrap(), bytes);
-    let object = rebuilt.get_object(&note.value.id).unwrap().unwrap();
-    assert_eq!(object.relative_path, note.value.relative_path);
-    assert!(rebuilt.trash_list().unwrap().is_empty());
-    assert!(
+    assert!(rebuilt.get_object(&deleted.value.id).unwrap().is_none());
+    assert_eq!(
         rebuilt
-            .list_workspace_entries()
+            .get_object(&kept.value.id)
             .unwrap()
-            .iter()
-            .any(|entry| entry.relative_path == "later.md")
+            .unwrap()
+            .relative_path,
+        kept.value.relative_path
     );
+}
+
+#[test]
+fn expired_chats_go_to_the_system_trash_as_one_folder() {
+    let (workspace, _app_data, engine) = engine();
+    let (bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    let expiring = engine
+        .create_chat(CreateChatInput {
+            title: "Expire safely".into(),
+            retention: Some(ChatRetention::Ephemeral),
+            retention_days: Some(30),
+        })
+        .unwrap()
+        .value;
+    let directory = workspace
+        .path()
+        .join(&expiring.relative_path)
+        .parent()
+        .unwrap()
+        .to_owned();
+
+    let expired = engine.expire_chats("2031-01-01T00:00:00Z").unwrap();
+    assert_eq!(expired, vec![expiring.id]);
+    assert!(!directory.exists());
+    assert_eq!(received.lock().unwrap().len(), 1);
+    assert!(bin.path().join("0/chat.md").is_file());
 }

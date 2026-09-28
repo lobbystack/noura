@@ -37,6 +37,7 @@ hmac = "=0.12.1"
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
+trash = "5"
 notify = "8"
 pbkdf2 = "=0.12.2"
 pulldown-cmark = "0.13"

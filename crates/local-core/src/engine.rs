@@ -326,7 +326,7 @@ struct CollaborationPresenceCacheEntry {
 
 mod sync;
 mod trash;
-pub use trash::{TrashEntry, TrashEntryKind};
+pub use trash::{SystemTrash, os_trash};
 
 pub struct WorkspaceEngine {
     root: PathBuf,
@@ -342,6 +342,7 @@ pub struct WorkspaceEngine {
     collaboration_mutation_fault: Mutex<Option<u8>>,
     collaboration_sessions: Mutex<HashMap<String, (String, String, bool)>>,
     collaboration_presence: Mutex<HashMap<String, CollaborationPresenceCacheEntry>>,
+    system_trash: std::sync::RwLock<Option<SystemTrash>>,
 }
 
 impl WorkspaceEngine {
@@ -518,6 +519,7 @@ impl WorkspaceEngine {
             collaboration_mutation_fault: Mutex::new(None),
             collaboration_sessions: Mutex::new(HashMap::new()),
             collaboration_presence: Mutex::new(HashMap::new()),
+            system_trash: std::sync::RwLock::new(None),
         };
         engine.recover_pending_chat_mutations()?;
         engine.reconcile()?;
@@ -2311,19 +2313,7 @@ impl WorkspaceEngine {
         let bytes = std::fs::read(&source)
             .map_err(|error| CoreError::io(error, "object_delete", Some(&object.relative_path)))?;
         check_revision(&bytes, expected_revision, "object_delete")?;
-        let timestamp = now_rfc3339().replace([':', '.'], "-");
-        let trash_relative = Path::new(".noura/trash")
-            .join(timestamp)
-            .join(&object.relative_path);
-        let trash_value = trash_relative.to_string_lossy();
-        let trash = resolve_for_write(&self.root, &trash_value, "trash_write")?;
-        if let Some(parent) = trash.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| CoreError::io(error, "object_delete", trash.to_str()))?;
-        }
-        std::fs::rename(&source, &trash)
-            .map_err(|error| CoreError::io(error, "object_delete", Some(&object.relative_path)))?;
-        sync_rename_parents(&source, &trash, "object_delete")?;
+        let trash_path = self.discard(&source, &object.relative_path, "object_delete")?;
         if let Ok(mut journal) = self.self_writes.lock() {
             journal.insert(object.relative_path.clone(), "<deleted>".into());
         }
@@ -2333,7 +2323,11 @@ impl WorkspaceEngine {
             .map_err(|_| lock_error("object_delete"))
             .and_then(|mut index| index.remove_path(&object.relative_path));
         let (index_status, warnings) = self.index_outcome(result);
-        self.emit("object:deleted","application",serde_json::json!({"id":id,"path":object.relative_path,"trashPath":trash_relative.to_string_lossy()}));
+        self.emit(
+            "object:deleted",
+            "application",
+            serde_json::json!({"id":id,"path":object.relative_path,"trashPath":trash_path}),
+        );
         Ok(MutationResult {
             value: object,
             revision: markdown::revision(&bytes),
@@ -3275,20 +3269,11 @@ impl WorkspaceEngine {
                 return Ok(false);
             }
         }
-        let timestamp = now_rfc3339().replace([':', '.'], "-");
-        let trash_relative = Path::new(".noura/trash").join(timestamp).join(directory);
-        let trash =
-            resolve_for_write(&self.root, &trash_relative.to_string_lossy(), "chat_expire")?;
-        if trash.exists() {
-            return Ok(false);
+        match self.discard(&source, &directory.to_string_lossy(), "chat_expire") {
+            Ok(_) => {}
+            Err(error) if error.code == "trash_destination_exists" => return Ok(false),
+            Err(error) => return Err(error),
         }
-        if let Some(parent) = trash.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| CoreError::io(error, "chat_expire", parent.to_str()))?;
-        }
-        std::fs::rename(&source, &trash)
-            .map_err(|error| CoreError::io(error, "chat_expire", source.to_str()))?;
-        sync_rename_parents(&source, &trash, "chat_expire")?;
         if let Ok(mut journal) = self.self_writes.lock() {
             for file in files {
                 if let Some(relative) = file.strip_prefix(&self.root).ok().and_then(Path::to_str) {

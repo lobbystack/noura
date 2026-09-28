@@ -6,12 +6,20 @@
 WorkspaceEngine
 ├── safe path resolver and cross-process lock
 ├── Markdown parser and canonical serializer
-├── atomic writer and workspace trash
+├── atomic writer and trash
 ├── SQLite full-text search derived index
 ├── scanner and rebuild path
 ├── watcher, self-write journal, and reconciliation
 └── provider configuration and OS credential store
 ```
+
+## Delete to the system trash
+
+Deleting a note, task, or project moves its file to the operating system trash: the macOS Trash, the Windows Recycle Bin, or the freedesktop.org trash on Linux. People restore it there like any other file, so the app has no restore screen of its own. Expired chats follow the same path.
+
+Some systems have no trash, and some volumes refuse the move. In that case the engine moves the file to `.noura/trash/<timestamp>/` in the workspace, so a delete never destroys data. On macOS the engine calls `NSFileManager`, because the Finder method asks for permission to control Finder.
+
+The desktop app and the MCP server turn the system trash on with `WorkspaceEngine::set_system_trash`. Other embedders and the tests use `.noura/trash` unless they opt in. Collaboration deletes keep their own recoverable copies under `.noura/trash/collaboration/`, because sync recovery reads them back.
 
 ## Preserve durable writes
 

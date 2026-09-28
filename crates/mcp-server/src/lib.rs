@@ -313,6 +313,7 @@ impl ServerHandler for NouraMcp {}
 pub async fn serve_stdio(workspace: String) -> Result<(), Box<dyn std::error::Error>> {
     use rmcp::ServiceExt;
     let engine = WorkspaceEngine::open(workspace)?;
+    engine.set_system_trash(local_core::os_trash());
     let handler = NouraMcp::new(engine);
     tokio::spawn(handler.clone().run_reconciliation());
     let server = handler.serve(rmcp::transport::stdio()).await?;
