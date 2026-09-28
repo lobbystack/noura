@@ -1314,11 +1314,14 @@ fn object_open_terminal(state: State<AppState>, input: ShowInFolderInput) -> Res
 pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-        for uri in args {
-            sync_commands::handle_auth_return(app, &uri);
-        }
-    }));
+    let builder = builder
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            for uri in args {
+                sync_commands::handle_auth_return(app, &uri);
+            }
+        }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())

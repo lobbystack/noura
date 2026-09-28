@@ -2,15 +2,20 @@
 	import { onMount, type Component, type Snippet } from 'svelte';
 	import { getAppPlatform } from '$lib/platform';
 	let { children } = $props<{ children: Snippet }>();
+	const shells = {
+		native: () => import('$lib/components/native-workspace-shell.svelte'),
+		browser: () => import('$lib/components/browser-workspace-shell.svelte'),
+	};
 	let Shell = $state<Component<{ children?: Snippet }> | null>(null);
 	let error = $state('');
 	onMount(() => {
 		let disposed = false;
 		const platform = getAppPlatform();
+		// Look the loader up from a table. The minifier folds an if/else or
+		// ternary of two dynamic imports into one preload call that lists only
+		// the second branch's stylesheets, so the native shell lost its CSS.
 		const load =
-			platform && platform !== 'web'
-				? import('$lib/components/native-workspace-shell.svelte')
-				: import('$lib/components/browser-workspace-shell.svelte');
+			shells[platform && platform !== 'web' ? 'native' : 'browser']();
 		void load
 			.then((module) => {
 				if (!disposed)

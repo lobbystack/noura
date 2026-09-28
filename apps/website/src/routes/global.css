@@ -1,5 +1,4 @@
 @import '@fontsource-variable/manrope';
-@import '@fontsource/dm-serif-display/400-italic.css';
 
 :root {
 	font-family: 'Manrope Variable', sans-serif;
@@ -16,6 +15,7 @@
 
 html {
 	scroll-behavior: smooth;
+	scroll-padding-top: 88px;
 	background: #fff;
 }
 
