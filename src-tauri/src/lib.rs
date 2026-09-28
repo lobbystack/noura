@@ -1320,8 +1320,16 @@ pub fn run() {
                 sync_commands::handle_auth_return(app, &uri);
             }
         }))
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
+    // On Linux, Tauri can replace only an AppImage. A .deb install skips the
+    // updater, so it never downloads an update it can't apply; users install
+    // the new package instead.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let builder = if cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_none() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    };
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())

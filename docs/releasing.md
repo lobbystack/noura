@@ -16,6 +16,8 @@ If you protected the key with a password, also set `TAURI_SIGNING_PRIVATE_KEY_PA
 
 To sign and notarize the macOS app with an Apple Developer ID, add these secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. Without them, the workflow signs the app ad hoc, and macOS asks each user to approve it in **System Settings** > **Privacy & Security** on first launch.
 
+The updater key signs update bundles, not installers. Windows shows a SmartScreen warning for `Noura-Windows-Setup.exe` until you sign it with an Authenticode code signing certificate. Tauri documents the setup in [Windows code signing](https://v2.tauri.app/distribute/sign/windows/).
+
 ## Publish a version
 
 1. Set the same version in `src-tauri/tauri.conf.json` and in `[workspace.package]` in `Cargo.toml`.
@@ -40,3 +42,5 @@ The website links to `releases/latest/download/<file>`, so its buttons serve the
 ## How the app updates
 
 Noura checks `latest.json` on the latest GitHub release 5 seconds after launch and every 6 hours. When it finds a newer version, it downloads the bundle and verifies its signature in the background. It then offers a **Restart** button. Before installing, Noura writes any open drafts to disk. If that write fails, Noura keeps the current version running.
+
+On Linux, only the AppImage updates itself. The `.deb` package runs without the updater, so its users install each new version from the website.
