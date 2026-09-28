@@ -60,10 +60,28 @@ pub fn open_in_terminal(engine: &WorkspaceEngine, id: &str) -> Result<(), CoreEr
     }
 }
 
+/// Open a folder in the OS file manager.
+pub fn open_directory(path: &std::path::Path, operation: &str) -> Result<(), CoreError> {
+    #[cfg(target_os = "macos")]
+    let result = Command::new("/usr/bin/open").arg(path).spawn();
+    #[cfg(target_os = "linux")]
+    let result = Command::new("xdg-open").arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer.exe").arg(path).spawn();
+    result
+        .map(|_| ())
+        .map_err(|error| CoreError::io(error, operation, path.to_str()))
+}
+
 /// Open an explicitly clicked PDF link through the OS browser boundary.
 pub fn open_http_link(value: &str) -> Result<(), CoreError> {
+    open_web_link(value, "pdf_open_link")
+}
+
+/// Open an HTTP or HTTPS link the user clicked in the default browser.
+pub fn open_web_link(value: &str, operation: &str) -> Result<(), CoreError> {
     let url = tauri::Url::parse(value)
-        .map_err(|_| CoreError::validation("invalid_link", "Invalid web link", "pdf_open_link"))?;
+        .map_err(|_| CoreError::validation("invalid_link", "Invalid web link", operation))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -72,7 +90,7 @@ pub fn open_http_link(value: &str) -> Result<(), CoreError> {
         return Err(CoreError::validation(
             "invalid_link",
             "Only HTTP and HTTPS links can be opened",
-            "pdf_open_link",
+            operation,
         ));
     }
     #[cfg(target_os = "macos")]
@@ -85,5 +103,5 @@ pub fn open_http_link(value: &str) -> Result<(), CoreError> {
         .spawn();
     result
         .map(|_| ())
-        .map_err(|error| CoreError::io(error, "pdf_open_link", None))
+        .map_err(|error| CoreError::io(error, operation, None))
 }

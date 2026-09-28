@@ -9,7 +9,9 @@
 	import {
 		createCollaborativeView,
 		createPdfPreviewExtensions,
+		spellcheckAttributes,
 	} from '@noura/editor/runtime';
+	import { preferences } from '$lib/preferences.svelte';
 	let {
 		session,
 		sourceRelativePath,
@@ -25,14 +27,12 @@
 	let presence = $state.raw<CollaborationPresence[]>([]);
 	function attachEditor(element: HTMLElement) {
 		const active = session;
-		const view = createCollaborativeView(
-			element,
-			active,
-			language,
-			language === 'markdown'
+		const view = createCollaborativeView(element, active, language, [
+			spellcheckAttributes(preferences.spellcheck),
+			...(language === 'markdown'
 				? createPdfPreviewExtensions(markdownAssets(sourceRelativePath))
-				: [],
-		);
+				: []),
+		]);
 		const unsubscribe = active.subscribe(() => {
 			status = active.status;
 			presence = active.presence;

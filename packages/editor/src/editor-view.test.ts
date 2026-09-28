@@ -174,3 +174,39 @@ describe('PDF previews', () => {
 		globalThis.IntersectionObserver = originalObserver;
 	});
 });
+
+describe('spellcheck', () => {
+	test('stays off by default and follows the preference when toggled', () => {
+		const host = document.createElement('div');
+		document.body.append(host);
+		const documentModel = createLiveMarkdownDocument('markdown', 'Hello');
+		const editor = createLiveMarkdownEditor(host, {
+			ytext: documentModel.ytext,
+			collaborative: false,
+		});
+		expect(editor.view.contentDOM.getAttribute('spellcheck')).toBe('false');
+
+		editor.setSpellcheck(true);
+		expect(editor.view.contentDOM.getAttribute('spellcheck')).toBe('true');
+		expect(editor.view.contentDOM.getAttribute('autocorrect')).toBe('on');
+
+		editor.setSpellcheck(false);
+		expect(editor.view.contentDOM.getAttribute('spellcheck')).toBe('false');
+		editor.destroy();
+		documentModel.destroy();
+	});
+
+	test('starts enabled when the option asks for it', () => {
+		const host = document.createElement('div');
+		document.body.append(host);
+		const documentModel = createLiveMarkdownDocument('markdown', 'Hello');
+		const editor = createLiveMarkdownEditor(host, {
+			ytext: documentModel.ytext,
+			collaborative: false,
+			spellcheck: true,
+		});
+		expect(editor.view.contentDOM.getAttribute('spellcheck')).toBe('true');
+		editor.destroy();
+		documentModel.destroy();
+	});
+});

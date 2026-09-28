@@ -13,6 +13,7 @@ import {
 import type { DecorationSet } from '@codemirror/view';
 import {
 	Annotation,
+	Compartment,
 	EditorState,
 	StateEffect,
 	StateField,
@@ -467,11 +468,20 @@ const checkboxMarkDecoration = Decoration.replace({
 	})(),
 });
 
+/** CodeMirror turns spellcheck off by default; this restores the platform's. */
+export function spellcheckAttributes(enabled: boolean): Extension {
+	return EditorView.contentAttributes.of({
+		spellcheck: enabled ? 'true' : 'false',
+		autocorrect: enabled ? 'on' : 'off',
+	});
+}
+
 export function createLiveMarkdownEditor(
 	parent: HTMLElement,
 	options: LiveMarkdownOptions,
 ): LiveMarkdownEditor {
 	const doc = options.ytext;
+	const spelling = new Compartment();
 	const reportSelection = (view: EditorView) => {
 		const range = view.state.selection.main;
 		const coordinates = range.empty ? null : view.coordsAtPos(range.head);
@@ -579,6 +589,7 @@ export function createLiveMarkdownEditor(
 		}),
 		EditorState.readOnly.of(options.readOnly === true),
 		EditorView.editable.of(options.readOnly !== true),
+		spelling.of(spellcheckAttributes(options.spellcheck === true)),
 	];
 	let undoManager: Y.UndoManager | null = null;
 	if (options.collaborative !== false) {
@@ -619,5 +630,9 @@ export function createLiveMarkdownEditor(
 		redo: () => undoManager?.redo(),
 		focus: () => view.focus(),
 		destroy: () => view.destroy(),
+		setSpellcheck: (enabled: boolean) =>
+			view.dispatch({
+				effects: spelling.reconfigure(spellcheckAttributes(enabled)),
+			}),
 	};
 }

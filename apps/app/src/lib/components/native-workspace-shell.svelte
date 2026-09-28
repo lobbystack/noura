@@ -36,6 +36,8 @@
 	import { Spinner } from '$lib/components/ui/spinner/index.js';
 	import CommandPalette from '$lib/components/command-palette.svelte';
 	import AppUpdateNotice from '$lib/components/app-update-notice.svelte';
+	import { AppUpdates, setAppUpdates } from '$lib/app-updates.svelte';
+	import { preferences } from '$lib/preferences.svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children } = $props<{ children: Snippet }>();
@@ -105,6 +107,8 @@
 		sidebarModuleFor($page.url.pathname, new Set(plugins.activeIds)) !== null,
 	);
 
+	setAppUpdates(new AppUpdates());
+
 	onMount(() => {
 		let returnCount = 0;
 		const signIn = getNouraClient().sync.signIn;
@@ -143,7 +147,11 @@
 	<title>{workspace.name}</title>
 </svelte:head>
 
-<div class="flex h-svh min-h-0 flex-col overflow-hidden">
+<div
+	class="flex h-svh min-h-0 flex-col overflow-hidden"
+	style:--content-text-size={preferences.textSizeValue}
+	style:--content-max-width={preferences.lineWidthValue}
+>
 	<header
 		class="flex h-(--app-titlebar-height) shrink-0 items-center border-b border-sidebar-border bg-sidebar"
 		data-tauri-drag-region

@@ -146,6 +146,11 @@
 /* Live Preview (CodeMirror) — editorial typography, separate from UI chrome. */
 .live-md {
 	font-size: var(--content-text-size);
+	/* Headings scale with the text size chosen in Settings. */
+	--content-heading-4-size: calc(var(--content-text-size) * 1.125);
+	--content-heading-3-size: calc(var(--content-text-size) * 1.25);
+	--content-heading-2-size: calc(var(--content-text-size) * 1.5);
+	--content-heading-1-size: calc(var(--content-text-size) * 2);
 }
 .live-md .cm-editor {
 	background: transparent;
@@ -158,6 +163,9 @@
 .live-md .cm-content {
 	caret-color: var(--foreground);
 	padding: 0.5rem 1.5rem;
+	width: 100%;
+	max-width: var(--content-max-width, none);
+	margin-inline: auto;
 }
 .live-md .cm-line {
 	padding: 0.1rem 0;

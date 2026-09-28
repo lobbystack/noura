@@ -325,6 +325,8 @@ struct CollaborationPresenceCacheEntry {
 }
 
 mod sync;
+mod trash;
+pub use trash::{TrashEntry, TrashEntryKind};
 
 pub struct WorkspaceEngine {
     root: PathBuf,

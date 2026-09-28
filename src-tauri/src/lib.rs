@@ -515,11 +515,19 @@ fn manifest_read(state: State<AppState>) -> Result<WorkspaceManifest, CoreError>
 }
 #[tauri::command]
 fn manifest_update(
+    app: AppHandle,
     state: State<AppState>,
     input: ManifestUpdateInput,
 ) -> Result<WorkspaceManifest, CoreError> {
     with_engine(&state, "manifest_update", |engine| {
-        engine.manifest_update(input)
+        let renamed = input.name.is_some();
+        let manifest = engine.manifest_update(input)?;
+        // The recent list caches the name for the workspace switcher; the
+        // manifest stays canonical, so a failed cache refresh is not an error.
+        if renamed {
+            let _ = save_recent(&app, engine);
+        }
+        Ok(manifest)
     })
 }
 #[tauri::command]
@@ -1294,6 +1302,155 @@ struct ShowInFolderInput {
     id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashRestoreInput {
+    trash_path: String,
+}
+
+#[tauri::command]
+fn trash_list(state: State<AppState>) -> Result<Vec<local_core::TrashEntry>, CoreError> {
+    with_engine(&state, "trash_list", |engine| engine.trash_list())
+}
+
+#[tauri::command]
+fn trash_restore(
+    state: State<AppState>,
+    input: TrashRestoreInput,
+) -> Result<local_core::TrashEntry, CoreError> {
+    with_engine(&state, "trash_restore", |engine| {
+        engine.trash_restore(&input.trash_path)
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum WorkspaceFolder {
+    Root,
+    Trash,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceShowInFolderInput {
+    folder: WorkspaceFolder,
+}
+
+#[tauri::command]
+fn workspace_show_in_folder(
+    state: State<AppState>,
+    input: WorkspaceShowInFolderInput,
+) -> Result<(), CoreError> {
+    with_engine(&state, "workspace_show_in_folder", |engine| {
+        let path = match input.folder {
+            WorkspaceFolder::Root => engine.root().to_path_buf(),
+            WorkspaceFolder::Trash => {
+                let trash = engine.root().join(".noura/trash");
+                std::fs::create_dir_all(&trash).map_err(|error| {
+                    CoreError::io(error, "workspace_show_in_folder", trash.to_str())
+                })?;
+                trash
+            }
+        };
+        os_files::open_directory(&path, "workspace_show_in_folder")
+    })
+}
+
+#[tauri::command]
+fn app_open_link(url: String) -> Result<(), CoreError> {
+    os_files::open_web_link(&url, "app_open_link")
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConnection {
+    command: String,
+    args: Vec<String>,
+}
+
+/// The command an MCP client runs to reach the open workspace through this
+/// app's own binary. An AppImage runs from a temporary mount, so use the
+/// AppImage file itself there.
+#[tauri::command]
+fn mcp_connection(state: State<AppState>) -> Result<McpConnection, CoreError> {
+    with_engine(&state, "mcp_connection", |engine| {
+        let command = std::env::var_os("APPIMAGE")
+            .map(std::path::PathBuf::from)
+            .map(Ok)
+            .unwrap_or_else(std::env::current_exe)
+            .map_err(|error| CoreError::io(error, "mcp_connection", None))?;
+        let unsupported = || {
+            CoreError::validation(
+                "unsupported_path",
+                "This path can't be represented for an MCP client",
+                "mcp_connection",
+            )
+        };
+        Ok(McpConnection {
+            command: command.to_str().ok_or_else(unsupported)?.to_owned(),
+            args: vec![
+                "mcp".into(),
+                "--workspace".into(),
+                engine.root().to_str().ok_or_else(unsupported)?.to_owned(),
+            ],
+        })
+    })
+}
+
+/// Start the MCP command exactly as a client would and wait for its
+/// initialize reply, so users know the configuration works before copying it.
+#[tauri::command]
+async fn mcp_test_connection(state: State<'_, AppState>) -> Result<bool, CoreError> {
+    let connection = mcp_connection(state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::{BufRead, Write};
+        let failed = || {
+            CoreError::validation(
+                "mcp_unavailable",
+                "The MCP server did not start",
+                "mcp_test_connection",
+            )
+        };
+        let mut child = std::process::Command::new(&connection.command)
+            .args(&connection.args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|_| failed())?;
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "noura-settings", "version": "1" }
+            }
+        });
+        let mut stdin = child.stdin.take().ok_or_else(failed)?;
+        let stdout = child.stdout.take().ok_or_else(failed)?;
+        writeln!(stdin, "{request}").map_err(|_| failed())?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let ok = std::io::BufReader::new(stdout).read_line(&mut line).is_ok()
+                && serde_json::from_str::<serde_json::Value>(&line)
+                    .is_ok_and(|reply| reply.get("result").is_some());
+            let _ = sender.send(ok);
+        });
+        let ok = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or(false);
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        Ok(ok)
+    })
+    .await
+    .map_err(|_| unavailable("mcp_test_connection"))?
+}
+
 #[tauri::command]
 fn object_show_in_folder(
     state: State<AppState>,
@@ -1320,7 +1477,11 @@ pub fn run() {
                 sync_commands::handle_auth_return(app, &uri);
             }
         }))
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
     // On Linux, Tauri can replace only an AppImage. A .deb install skips the
     // updater, so it never downloads an update it can't apply; users install
     // the new package instead.
@@ -1478,6 +1639,12 @@ pub fn run() {
             objects_delete,
             objects_adopt,
             object_show_in_folder,
+            trash_list,
+            trash_restore,
+            workspace_show_in_folder,
+            app_open_link,
+            mcp_connection,
+            mcp_test_connection,
             object_open_terminal,
             search_query,
             calendar_query,

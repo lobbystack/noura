@@ -2,6 +2,7 @@
 	import { markdownAssets } from '$lib/pdf/markdown';
 	import { createPointerSelectionTracker } from '$lib/editor/pointer-selection';
 	import { browser } from '$app/environment';
+	import { preferences } from '$lib/preferences.svelte';
 	import { fromAction } from 'svelte/attachments';
 	import type {
 		EditorSelectionState,
@@ -46,6 +47,11 @@
 	} = $props();
 
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
+
+	// Keep the mounted CodeMirror view in step with the Settings toggle.
+	$effect(() => {
+		editor?.setSpellcheck(preferences.spellcheck);
+	});
 	let selection = $state.raw<EditorSelectionState | null>(null);
 	let selectingWithPointer = $state(false);
 	let mountFailed = $state(false);
@@ -90,6 +96,7 @@
 					ytext: document.ytext,
 					collaborative: !readOnly,
 					readOnly,
+					spellcheck: preferences.spellcheck,
 					...markdownAssets(sourceRelativePath),
 					onChange: () => onedit?.(handle.doc()),
 					onSelectionChange: (next) => {

@@ -307,6 +307,27 @@ impl NouraMcp {
 #[tool_handler(router=self.tool_router)]
 impl ServerHandler for NouraMcp {}
 
+/// Serve the workspace at `workspace` over stdio until the client disconnects.
+/// Both the standalone `noura-mcp` binary and the desktop app's `mcp` mode use
+/// this, so external tools get the same services either way.
+pub async fn serve_stdio(workspace: String) -> Result<(), Box<dyn std::error::Error>> {
+    use rmcp::ServiceExt;
+    let engine = WorkspaceEngine::open(workspace)?;
+    let handler = NouraMcp::new(engine);
+    tokio::spawn(handler.clone().run_reconciliation());
+    let server = handler.serve(rmcp::transport::stdio()).await?;
+    server.waiting().await?;
+    Ok(())
+}
+
+/// Read `--workspace <path>` from command-line arguments.
+pub fn workspace_argument(arguments: &[String]) -> Option<String> {
+    arguments
+        .windows(2)
+        .find(|pair| pair[0] == "--workspace")
+        .map(|pair| pair[1].clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

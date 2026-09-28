@@ -722,125 +722,17 @@
 			{#if section === 'account'}
 				<div class="flex flex-wrap items-center justify-between gap-3">
 					<p class="break-all text-sm">{account.origin}</p>
-					<Badge variant="secondary">Account connected</Badge>
+					<Badge variant="secondary">Signed in</Badge>
 				</div>
-				<p class="break-all text-xs text-muted-foreground">
-					Device ID: {account.deviceId}
-				</p>
 				<div class="flex flex-col gap-1">
-					<p class="text-xs font-medium">This device’s fingerprint</p>
+					<p class="text-xs font-medium">Device code</p>
 					<p class="break-all font-mono text-xs select-text">
 						{account.fingerprint}
 					</p>
-				</div>
-				<p class="text-xs text-muted-foreground">
-					Credentials stay in your operating system’s credential store. Your
-					local workspace remains available when disconnected.
-				</p>
-				<div
-					class="flex flex-col gap-3"
-					aria-labelledby="join-workspace-heading"
-				>
-					<h3 id="join-workspace-heading" class="text-sm font-medium">
-						Join a workspace
-					</h3>
 					<p class="text-xs text-muted-foreground">
-						Create a local copy of a workspace you belong to on this server. The
-						server provides workspace IDs and your role, not readable names.
+						When you approve this computer from another device, check that both
+						show this code.
 					</p>
-					<div>
-						<Button
-							variant="outline"
-							disabled={busy || remoteBusy || joining || importingRecovery}
-							onclick={loadRemoteWorkspaces}
-							>{remoteBusy
-								? 'Loading workspaces…'
-								: 'Load my workspaces'}</Button
-						>
-					</div>
-					{#if remoteAccount === account.deviceId}
-						{#if remoteWorkspaces.length > 0}
-							<form
-								onsubmit={(event) => {
-									event.preventDefault();
-									void joinRemoteWorkspace();
-								}}
-							>
-								<Field.FieldGroup>
-									<Field.Field
-										><Field.FieldLabel for="remote-workspace-id"
-											>Workspace ID</Field.FieldLabel
-										>
-										<Select.Root
-											type="single"
-											bind:value={selectedRemote}
-											disabled={joining || remoteBusy || importingRecovery}
-										>
-											<Select.Trigger id="remote-workspace-id" class="w-full"
-												><span class="truncate"
-													>{selectedMembership
-														? `${selectedMembership.id} · ${selectedMembership.role}`
-														: 'Choose a workspace'}</span
-												></Select.Trigger
-											>
-											<Select.Content
-												><Select.Group
-													>{#each remoteWorkspaces as remote (remote.id)}<Select.Item
-															value={remote.id}
-															label={`${remote.id} · ${remote.role}`}
-															>{remote.id} · {remote.role}</Select.Item
-														>{/each}</Select.Group
-												></Select.Content
-											>
-										</Select.Root>
-									</Field.Field>
-									{#if selectedRemote}<p
-											class="break-all text-xs text-muted-foreground"
-										>
-											Selected ID: {selectedRemote}
-											Role: {selectedMembership?.role}
-										</p>{/if}
-									{#if selectedMembership?.role === 'viewer'}<p
-											class="text-xs text-muted-foreground"
-										>
-											As a viewer, this device downloads shared updates. Edits
-											you make locally stay on this device and are not uploaded.
-										</p>{/if}
-									<Field.Field
-										><Field.FieldLabel for="joined-workspace-name"
-											>Local display name</Field.FieldLabel
-										><Input
-											id="joined-workspace-name"
-											bind:value={localName}
-											required
-											disabled={joining || remoteBusy || importingRecovery}
-											autocomplete="off"
-										/></Field.Field
-									>
-									<div>
-										<Button
-											type="submit"
-											disabled={busy ||
-												joining ||
-												importingRecovery ||
-												remoteBusy ||
-												!selectedRemote ||
-												!localName.trim()}
-											>{joining
-												? 'Joining workspace…'
-												: 'Choose empty folder and join'}</Button
-										>
-									</div>
-								</Field.FieldGroup>
-							</form>
-						{:else if !remoteBusy}<p class="text-xs text-muted-foreground">
-								No workspaces available to this account were returned.
-							</p>{/if}
-					{/if}
-					{#if joinError}<p role="alert" class="text-sm text-destructive">
-							{joinError}
-						</p>{/if}
-					{#if joinNotice}<p role="status" class="text-sm">{joinNotice}</p>{/if}
 				</div>
 			{/if}
 			{#if section === 'sync'}
@@ -1273,8 +1165,8 @@
 			{/if}
 			{#if section === 'people' && !syncConfigured}
 				<p class="text-sm text-muted-foreground">
-					Enable workspace sync in Sync &amp; devices to manage invitations and
-					access.
+					Turn on sync for this workspace in Sync &amp; devices, then invite
+					people here.
 				</p>
 			{/if}
 			{#if section === 'sync'}
@@ -1325,6 +1217,108 @@
 						</p>{/if}
 				</div>
 			{/if}
+			{#if section === 'sync'}
+				<div
+					class="flex flex-col gap-3"
+					aria-labelledby="join-workspace-heading"
+				>
+					<h3 id="join-workspace-heading" class="text-sm font-medium">
+						Join a workspace
+					</h3>
+					<p class="text-xs text-muted-foreground">
+						Download a workspace you were invited to into an empty folder on
+						this computer. The server only knows workspace IDs, so choose a name
+						for your copy.
+					</p>
+					<div>
+						<Button
+							variant="outline"
+							disabled={busy || remoteBusy || joining || importingRecovery}
+							onclick={loadRemoteWorkspaces}
+							>{remoteBusy
+								? 'Loading workspaces…'
+								: 'Load my workspaces'}</Button
+						>
+					</div>
+					{#if remoteAccount === account.deviceId}
+						{#if remoteWorkspaces.length > 0}
+							<form
+								onsubmit={(event) => {
+									event.preventDefault();
+									void joinRemoteWorkspace();
+								}}
+							>
+								<Field.FieldGroup>
+									<Field.Field
+										><Field.FieldLabel for="remote-workspace-id"
+											>Workspace ID</Field.FieldLabel
+										>
+										<Select.Root
+											type="single"
+											bind:value={selectedRemote}
+											disabled={joining || remoteBusy || importingRecovery}
+										>
+											<Select.Trigger id="remote-workspace-id" class="w-full"
+												><span class="truncate"
+													>{selectedMembership
+														? `${selectedMembership.id} · ${selectedMembership.role}`
+														: 'Choose a workspace'}</span
+												></Select.Trigger
+											>
+											<Select.Content
+												><Select.Group
+													>{#each remoteWorkspaces as remote (remote.id)}<Select.Item
+															value={remote.id}
+															label={`${remote.id} · ${remote.role}`}
+															>{remote.id} · {remote.role}</Select.Item
+														>{/each}</Select.Group
+												></Select.Content
+											>
+										</Select.Root>
+									</Field.Field>
+									{#if selectedMembership?.role === 'viewer'}<p
+											class="text-xs text-muted-foreground"
+										>
+											As a viewer, this device downloads shared updates. Edits
+											you make locally stay on this device and are not uploaded.
+										</p>{/if}
+									<Field.Field
+										><Field.FieldLabel for="joined-workspace-name"
+											>Local display name</Field.FieldLabel
+										><Input
+											id="joined-workspace-name"
+											bind:value={localName}
+											required
+											disabled={joining || remoteBusy || importingRecovery}
+											autocomplete="off"
+										/></Field.Field
+									>
+									<div>
+										<Button
+											type="submit"
+											disabled={busy ||
+												joining ||
+												importingRecovery ||
+												remoteBusy ||
+												!selectedRemote ||
+												!localName.trim()}
+											>{joining
+												? 'Joining workspace…'
+												: 'Choose empty folder and join'}</Button
+										>
+									</div>
+								</Field.FieldGroup>
+							</form>
+						{:else if !remoteBusy}<p class="text-xs text-muted-foreground">
+								No workspaces available to this account were returned.
+							</p>{/if}
+					{/if}
+					{#if joinError}<p role="alert" class="text-sm text-destructive">
+							{joinError}
+						</p>{/if}
+					{#if joinNotice}<p role="status" class="text-sm">{joinNotice}</p>{/if}
+				</div>
+			{/if}
 			{#if section === 'account'}
 				<div>
 					<Button
@@ -1368,8 +1362,16 @@
 			</p>
 		{:else}
 			<p class="text-sm text-muted-foreground">
-				An account is only needed for Noura Sync. Your local workspace works
-				without one.
+				{#if section === 'sync'}
+					Sync keeps an end-to-end encrypted copy of this workspace on your
+					other devices. Sign in to turn it on.
+				{:else if section === 'people'}
+					Invite people to this workspace and choose what they can do. Sign in
+					and turn on sync first.
+				{:else}
+					You only need an account for sync and sharing. Everything else works
+					without one.
+				{/if}
 			</p>
 			<div class="flex flex-wrap gap-2">
 				<Button
@@ -1388,8 +1390,8 @@
 			</div>
 			{#if !configuredOrigin && !selfHosted}
 				<p class="text-sm text-muted-foreground">
-					Noura Sync is not configured for this build. Use a self-hosted server
-					to connect.
+					This build has no default sync server. Connect to your own server
+					instead.
 				</p>
 			{/if}
 			<div>
@@ -1416,7 +1418,7 @@
 							disabled={busy}
 						/>
 						<Field.FieldDescription
-							>Enter the address of your Noura server.</Field.FieldDescription
+							>The address where your noura server runs.</Field.FieldDescription
 						>
 					</Field.Field>
 				</Field.FieldGroup>

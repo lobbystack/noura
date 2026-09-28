@@ -268,3 +268,6 @@ export type { CollaborationReceipt } from './generated/CollaborationReceipt';
 
 export type { PdfInfo } from './generated/PdfInfo';
 export type { PdfRangeInput } from './generated/PdfRangeInput';
+
+export type { TrashEntry } from './generated/TrashEntry';
+export type { TrashEntryKind } from './generated/TrashEntryKind';

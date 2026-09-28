@@ -47,6 +47,8 @@ export interface LiveMarkdownOptions {
 	) => () => void;
 	onChange?: (view: EditorView) => void;
 	onSelectionChange?: (selection: EditorSelectionState) => void;
+	/** Let the platform underline misspelled words. Off by default. */
+	spellcheck?: boolean;
 }
 
 export interface LiveMarkdownEditor {
@@ -58,6 +60,7 @@ export interface LiveMarkdownEditor {
 	redo: () => void;
 	destroy: () => void;
 	focus: () => void;
+	setSpellcheck: (enabled: boolean) => void;
 }
 
 export interface LiveMarkdownDocument {

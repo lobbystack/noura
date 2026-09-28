@@ -1,65 +1,94 @@
 <script lang="ts">
 	import { tick, type Component } from 'svelte';
 	import { getSettingsDialog } from '$lib/settings.svelte';
-	const settings = getSettingsDialog();
-	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
+	import { Button } from '$lib/components/ui/button';
 	import { cn } from '$lib/utils';
-	import PuzzlePiece from 'phosphor-svelte/lib/PuzzlePiece';
+	import { getAppPlatform } from '$lib/platform';
 	import GearSix from 'phosphor-svelte/lib/GearSix';
+	import TextAa from 'phosphor-svelte/lib/TextAa';
+	import Keyboard from 'phosphor-svelte/lib/Keyboard';
 	import UserCircle from 'phosphor-svelte/lib/UserCircle';
+	import FolderSimple from 'phosphor-svelte/lib/FolderSimple';
+	import PuzzlePiece from 'phosphor-svelte/lib/PuzzlePiece';
+	import Sparkle from 'phosphor-svelte/lib/Sparkle';
+	import PlugsConnected from 'phosphor-svelte/lib/PlugsConnected';
 	import ArrowsClockwise from 'phosphor-svelte/lib/ArrowsClockwise';
 	import Users from 'phosphor-svelte/lib/Users';
+	import Files from 'phosphor-svelte/lib/Files';
+	import DownloadSimple from 'phosphor-svelte/lib/DownloadSimple';
 	import Wrench from 'phosphor-svelte/lib/Wrench';
 	import Info from 'phosphor-svelte/lib/Info';
 	import ArrowLeft from 'phosphor-svelte/lib/ArrowLeft';
-	import Keyboard from 'phosphor-svelte/lib/Keyboard';
-	import PreferencesSettings from './preferences-settings.svelte';
-	import SlidersHorizontal from 'phosphor-svelte/lib/SlidersHorizontal';
+	import GeneralSettings from './general-settings.svelte';
+	import EditorSettings from './editor-settings.svelte';
+	import ShortcutsSettings from './shortcuts-settings.svelte';
+	import WorkspaceGeneralSettings from './workspace-general-settings.svelte';
 	import PluginsSettings from './plugins-settings.svelte';
-	import WorkspaceSettings from './workspace-settings.svelte';
+	import AiSettings from './ai-settings.svelte';
+	import ExternalToolsSettings from './external-tools-settings.svelte';
+	import FilesSettings from './files-settings.svelte';
+	import UpdatesSettings from './updates-settings.svelte';
+	import MaintenanceSettings from './maintenance-settings.svelte';
+	import AboutSettings from './about-settings.svelte';
 	import SyncAccountSettings from '$lib/components/sync-account-settings.svelte';
-	import appPackage from '../../../../../../package.json';
+
+	const settings = getSettingsDialog();
+	const desktop = getAppPlatform() === 'desktop';
 
 	type Section =
-		| 'preferences'
-		| 'plugins'
 		| 'general'
+		| 'editor'
+		| 'shortcuts'
+		| 'account'
+		| 'workspace'
+		| 'plugins'
+		| 'ai'
+		| 'external-tools'
 		| 'sync'
 		| 'people'
-		| 'account'
-		| 'advanced'
-		| 'about'
-		| 'shortcuts';
+		| 'files'
+		| 'updates'
+		| 'maintenance'
+		| 'about';
 	type Entry = {
 		id: Section;
 		label: string;
-		description: string;
+		/** Shown under the heading only when it tells the reader something new. */
+		description?: string;
 		icon: Component;
 		keywords?: string;
+		desktopOnly?: boolean;
 	};
 	const groups: { label: string; entries: Entry[] }[] = [
 		{
-			label: 'Personal',
+			label: 'This computer',
 			entries: [
 				{
-					id: 'preferences',
-					label: 'Preferences',
-					description: 'Choose an appearance for this device.',
-					icon: SlidersHorizontal,
-					keywords: 'appearance theme dark light system',
+					id: 'general',
+					label: 'General',
+					icon: GearSix,
+					keywords: 'appearance theme dark light system startup login',
 				},
 				{
-					id: 'account',
-					label: 'Account',
-					description: 'Manage your Noura account and this device.',
-					icon: UserCircle,
+					id: 'editor',
+					label: 'Editor',
+					description:
+						'These settings apply to every workspace on this computer.',
+					icon: TextAa,
+					keywords: 'text size font line width spelling spellcheck',
 				},
 				{
 					id: 'shortcuts',
 					label: 'Keyboard shortcuts',
-					description: 'Shortcuts for search, settings, and dialogs.',
 					icon: Keyboard,
+					keywords: 'keys',
+				},
+				{
+					id: 'account',
+					label: 'Account',
+					icon: UserCircle,
+					keywords: 'sign in log out disconnect server',
 				},
 			],
 		},
@@ -67,70 +96,101 @@
 			label: 'Workspace',
 			entries: [
 				{
-					id: 'plugins',
-					label: 'Plugins',
-					description: 'Enable plugins and configure them for this workspace.',
-					icon: PuzzlePiece,
-					keywords:
-						'AI providers models credentials permissions notes tasks calendar projects folders',
+					id: 'workspace',
+					label: 'Name and location',
+					icon: FolderSimple,
+					keywords: 'rename folder path',
 				},
 				{
-					id: 'general',
-					label: 'General',
-					description: 'View the workspace name and folder location.',
-					icon: GearSix,
+					id: 'plugins',
+					label: 'Plugins',
+					description: 'Turn features on or off for this workspace.',
+					icon: PuzzlePiece,
+					keywords: 'notes tasks calendar projects folders',
+				},
+				{
+					id: 'ai',
+					label: 'AI',
+					description:
+						'Connect an AI provider and review what it can read in this workspace.',
+					icon: Sparkle,
+					keywords: 'providers models api keys permissions consent',
+				},
+				{
+					id: 'external-tools',
+					label: 'External tools',
+					icon: PlugsConnected,
+					keywords: 'mcp claude cursor assistant model context protocol',
+					desktopOnly: true,
 				},
 				{
 					id: 'sync',
-					label: 'Sync & devices',
-					description: 'Manage synchronization, trusted devices, and recovery.',
+					label: 'Sync and devices',
 					icon: ArrowsClockwise,
-					keywords: 'encryption recovery conflicts',
+					keywords: 'encryption recovery conflicts join devices',
 				},
 				{
 					id: 'people',
-					label: 'People & access',
-					description: 'Create invitations and review workspace access.',
+					label: 'People',
 					icon: Users,
-					keywords: 'invitations roles sharing',
+					keywords: 'invitations roles sharing access',
+				},
+				{
+					id: 'files',
+					label: 'Files and trash',
+					icon: Files,
+					keywords: 'ignore gitignore trash restore deleted',
 				},
 			],
 		},
 		{
-			label: 'Application',
+			label: 'App',
 			entries: [
 				{
-					id: 'advanced',
-					label: 'Advanced',
-					description: 'Check diagnostics and rebuild the search index.',
+					id: 'updates',
+					label: 'Updates',
+					icon: DownloadSimple,
+					keywords: 'version upgrade release',
+					desktopOnly: true,
+				},
+				{
+					id: 'maintenance',
+					label: 'Maintenance',
+					description: 'Find files noura can’t read and rebuild search.',
 					icon: Wrench,
-					keywords: 'diagnostics rebuild issues',
+					keywords: 'diagnostics problems rebuild index search',
 				},
 				{
 					id: 'about',
-					label: 'About Noura',
-					description: 'Version and license information.',
+					label: 'About noura',
 					icon: Info,
-					keywords: 'version license',
+					keywords: 'version license privacy terms',
 				},
 			],
 		},
 	];
+	const visibleGroups = groups
+		.map((group) => ({
+			...group,
+			entries: group.entries.filter((entry) => desktop || !entry.desktopOnly),
+		}))
+		.filter((group) => group.entries.length);
+
 	let selected = $derived.by<Section>(() => {
 		settings.requestId;
-		return settings.requestedSection ?? 'plugins';
+		return settings.requestedSection ?? 'general';
 	});
 	let query = $state('');
 	let mobileContent = $state(true);
 	let content: HTMLDivElement;
 	let heading: HTMLHeadingElement;
 	const current = $derived(
-		groups
+		visibleGroups
 			.flatMap((group) => group.entries)
 			.find((entry) => entry.id === selected)!,
 	);
 	const filtered = $derived(
-		groups
+		visibleGroups
 			.map((group) => ({
 				...group,
 				entries: group.entries.filter((entry) =>
@@ -221,45 +281,36 @@
 			>
 				{current.label}
 			</h1>
-			<p class="text-sm leading-relaxed text-muted-foreground">
-				{current.description}
-			</p>
+			{#if current.description}
+				<p class="text-sm leading-relaxed text-muted-foreground">
+					{current.description}
+				</p>
+			{/if}
 		</header>
-		{#if selected === 'plugins'}
-			<PluginsSettings />
-		{:else if selected === 'preferences'}
-			<PreferencesSettings />
-		{:else if selected === 'general' || selected === 'advanced'}
-			<WorkspaceSettings section={selected} />
+		{#if selected === 'general'}
+			<GeneralSettings />
+		{:else if selected === 'editor'}
+			<EditorSettings />
+		{:else if selected === 'shortcuts'}
+			<ShortcutsSettings />
+		{:else if selected === 'workspace'}
+			<WorkspaceGeneralSettings />
+		{:else if selected === 'plugins'}
+			<PluginsSettings onopenai={() => selectSection('ai')} />
+		{:else if selected === 'ai'}
+			<AiSettings />
+		{:else if selected === 'external-tools'}
+			<ExternalToolsSettings />
+		{:else if selected === 'files'}
+			<FilesSettings />
+		{:else if selected === 'updates'}
+			<UpdatesSettings />
+		{:else if selected === 'maintenance'}
+			<MaintenanceSettings />
+		{:else if selected === 'about'}
+			<AboutSettings />
 		{:else if selected === 'account' || selected === 'sync' || selected === 'people'}
 			<SyncAccountSettings section={selected} />
-		{:else if selected === 'shortcuts'}
-			<dl class="flex flex-col divide-y divide-border">
-				{#each [['Open settings', '⌘ / Ctrl ,'], ['Search and commands', '⌘ / Ctrl K'], ['Close dialog', 'Esc']] as [label, shortcut] (label)}
-					<div class="flex items-center justify-between gap-4 py-4">
-						<dt>{label}</dt>
-						<dd>
-							<kbd
-								class="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground"
-								>{shortcut}</kbd
-							>
-						</dd>
-					</div>
-				{/each}
-			</dl>
-		{:else if selected === 'about'}
-			<div class="flex flex-col gap-6">
-				<dl class="flex flex-col divide-y divide-border">
-					<div class="flex justify-between py-4">
-						<dt>Version</dt>
-						<dd>{appPackage.version ?? '0.1.0'}</dd>
-					</div>
-					<div class="flex justify-between py-4">
-						<dt>License</dt>
-						<dd>MIT</dd>
-					</div>
-				</dl>
-			</div>
 		{/if}
 	</div>
 </div>

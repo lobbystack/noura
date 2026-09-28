@@ -7,7 +7,6 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Separator } from '$lib/components/ui/separator';
 	import PluginPlatforms from './plugin-platforms.svelte';
-	import { platformLabels } from '$lib/platform';
 	import Sparkle from 'phosphor-svelte/lib/Sparkle';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
@@ -99,14 +98,13 @@
 	}
 </script>
 
-<p class="mb-4 text-sm text-muted-foreground">
-	Current platform: {plugins.platform
-		? platformLabels[plugins.platform]
-		: 'Unknown native platform'}.
-	{#if !workspaceReady}Open a workspace to manage plugins.{/if}
-	{#if plugins.platform === 'web'}Browser plugins have objects, commands and
-		events only. Native-only features remain unavailable.{/if}
-</p>
+{#if !workspaceReady || plugins.platform === 'web'}
+	<p class="mb-4 text-sm text-muted-foreground">
+		{#if !workspaceReady}Open a workspace to manage plugins.{/if}
+		{#if plugins.platform === 'web'}In the browser, some plugin features only
+			work in the desktop app.{/if}
+	</p>
+{/if}
 {#if error || plugins.lastError}<p
 		role="alert"
 		class="text-sm text-destructive"
@@ -164,8 +162,6 @@
 			</p>
 		{:else if configuration}
 			{@render configuration(selected.id)}
-		{:else}
-			<p class="text-sm text-muted-foreground">No additional settings.</p>
 		{/if}
 		{#if manifest?.capabilities.length}
 			<details class="text-sm">

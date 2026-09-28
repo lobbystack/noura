@@ -1900,3 +1900,195 @@ fn pdf_links_resolve_page_fragments_and_encoded_names_without_managing_files() {
         engine.inspect_pdf("course/moved.pdf").unwrap().length
     );
 }
+
+fn create_note(
+    engine: &WorkspaceEngine,
+    title: &str,
+) -> local_core::MutationResult<local_core::WorkspaceObject> {
+    engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: title.into(),
+            body: "Body text.".into(),
+            relative_path: None,
+            properties: BTreeMap::new(),
+        })
+        .unwrap()
+}
+
+#[test]
+fn trash_restore_round_trips_a_deleted_object_with_its_identity() {
+    let (workspace, _app_data, engine) = engine();
+    let note = create_note(&engine, "Launch brief");
+    let original = workspace.path().join(&note.value.relative_path);
+    let bytes = std::fs::read(&original).unwrap();
+    engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap();
+    assert!(!original.exists());
+
+    let entries = engine.trash_list().unwrap();
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry.original_path, note.value.relative_path);
+    assert_eq!(entry.kind, local_core::TrashEntryKind::File);
+    assert_eq!(entry.size, bytes.len() as u64);
+    assert!(entry.deleted_at.is_some());
+
+    let restored = engine.trash_restore(&entry.trash_path).unwrap();
+    assert_eq!(restored.original_path, note.value.relative_path);
+    assert_eq!(std::fs::read(&original).unwrap(), bytes);
+    assert!(engine.trash_list().unwrap().is_empty());
+    let object = engine.get_object(&note.value.id).unwrap().unwrap();
+    assert_eq!(object.relative_path, note.value.relative_path);
+    // Emptied timestamp folders don't linger in the trash.
+    assert_eq!(
+        std::fs::read_dir(workspace.path().join(".noura/trash"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn trash_restore_never_overwrites_a_file_at_the_original_path() {
+    let (workspace, _app_data, engine) = engine();
+    let note = create_note(&engine, "Launch brief");
+    engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap();
+    let occupied = workspace.path().join(&note.value.relative_path);
+    std::fs::write(&occupied, "external edit\n").unwrap();
+
+    let entry = engine.trash_list().unwrap().remove(0);
+    let error = engine.trash_restore(&entry.trash_path).unwrap_err();
+    assert_eq!(error.code, "trash_restore_target_exists");
+    assert_eq!(
+        std::fs::read_to_string(&occupied).unwrap(),
+        "external edit\n"
+    );
+    assert!(workspace.path().join(&entry.trash_path).is_file());
+}
+
+#[test]
+fn trash_restore_rejects_paths_outside_the_listed_entries() {
+    let (workspace, _app_data, engine) = engine();
+    let note = create_note(&engine, "Launch brief");
+    engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap();
+    std::fs::write(workspace.path().join("outside.md"), "keep\n").unwrap();
+
+    for path in [
+        "",
+        "../outside.md",
+        "/etc/passwd",
+        "outside.md",
+        ".noura/trash/../../outside.md",
+        ".noura/trash",
+        ".noura/manifest.yaml",
+    ] {
+        let error = engine.trash_restore(path).unwrap_err();
+        assert_eq!(error.code, "trash_entry_not_found", "{path}");
+    }
+    assert_eq!(engine.trash_list().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("outside.md")).unwrap(),
+        "keep\n"
+    );
+}
+
+#[test]
+fn trash_restore_refuses_to_write_into_internal_directories() {
+    let (workspace, _app_data, engine) = engine();
+    let trashed = workspace
+        .path()
+        .join(".noura/trash/2026-09-01T10-00-00Z/.noura/sync/state.json");
+    std::fs::create_dir_all(trashed.parent().unwrap()).unwrap();
+    std::fs::write(&trashed, "{}").unwrap();
+
+    let entry = engine.trash_list().unwrap().remove(0);
+    assert_eq!(entry.original_path, ".noura/sync/state.json");
+    let error = engine.trash_restore(&entry.trash_path).unwrap_err();
+    assert_eq!(error.code, "reserved_path");
+    assert!(trashed.is_file());
+}
+
+#[test]
+fn trash_lists_and_restores_an_expired_chat_as_one_entry() {
+    let (workspace, _app_data, engine) = engine();
+    let chat = workspace
+        .path()
+        .join(".noura/trash/2026-09-01T10-00-00-5Z/chats/planning--abc123");
+    std::fs::create_dir_all(chat.join("messages/2026-09-01")).unwrap();
+    std::fs::write(chat.join("chat.md"), "chat").unwrap();
+    std::fs::write(chat.join("messages/2026-09-01/message.md"), "hello").unwrap();
+
+    let entries = engine.trash_list().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].kind, local_core::TrashEntryKind::Chat);
+    assert_eq!(entries[0].original_path, "chats/planning--abc123");
+    assert_eq!(entries[0].size, 9);
+    assert_eq!(
+        entries[0].deleted_at.as_deref(),
+        Some("2026-09-01T10:00:00.5Z")
+    );
+
+    engine.trash_restore(&entries[0].trash_path).unwrap();
+    let restored = workspace.path().join("chats/planning--abc123");
+    assert_eq!(
+        std::fs::read_to_string(restored.join("chat.md")).unwrap(),
+        "chat"
+    );
+    assert_eq!(
+        std::fs::read_to_string(restored.join("messages/2026-09-01/message.md")).unwrap(),
+        "hello"
+    );
+}
+
+#[test]
+fn trash_restore_of_a_duplicate_identity_keeps_both_files_and_reports_it() {
+    let (workspace, _app_data, engine) = engine();
+    let note = create_note(&engine, "Launch brief");
+    let original = workspace.path().join(&note.value.relative_path);
+    let bytes = std::fs::read(&original).unwrap();
+    engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap();
+    // Another copy with the same stable ID appears through an external tool.
+    std::fs::write(workspace.path().join("copy.md"), &bytes).unwrap();
+    engine.reconcile().unwrap();
+
+    let entry = engine.trash_list().unwrap().remove(0);
+    engine.trash_restore(&entry.trash_path).unwrap();
+    assert!(original.is_file());
+    assert!(workspace.path().join("copy.md").is_file());
+    assert!(
+        engine
+            .state()
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "identity_conflict")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn trash_skips_symlinks_instead_of_following_them() {
+    let (workspace, _app_data, engine) = engine();
+    let outside = tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.md"), "secret").unwrap();
+    let batch = workspace.path().join(".noura/trash/2026-09-01T10-00-00Z");
+    std::fs::create_dir_all(&batch).unwrap();
+    std::os::unix::fs::symlink(outside.path(), batch.join("linked")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.md"), batch.join("file.md")).unwrap();
+
+    assert!(engine.trash_list().unwrap().is_empty());
+    assert_eq!(
+        engine
+            .trash_restore(".noura/trash/2026-09-01T10-00-00Z/file.md")
+            .unwrap_err()
+            .code,
+        "trash_entry_not_found"
+    );
+}

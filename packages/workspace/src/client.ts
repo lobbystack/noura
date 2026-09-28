@@ -83,6 +83,7 @@ import type {
 	RawConflictResolveResult,
 	MarkdownLinkTarget,
 	RenameChatInput,
+	TrashEntry,
 } from '@noura/shared';
 export type * from '@noura/shared';
 export { isCoreError } from '@noura/shared';
@@ -113,6 +114,7 @@ export {
 	createAppUpdater,
 	type AppUpdater,
 	type AppUpdaterAdapter,
+	type AppUpdateCheck,
 	type AppUpdateState,
 	type PendingAppUpdate,
 } from './app-updater';
@@ -137,6 +139,22 @@ export interface WorkspaceService {
 	listRecent(): Promise<
 		Array<{ path: string; name: string; workspaceId: string }>
 	>;
+	/** Open the workspace folder, or its trash folder, in the file manager. */
+	showInFolder(folder: 'root' | 'trash'): Promise<void>;
+	/** How an MCP client launches this app to reach the open workspace. */
+	mcpConnection(): Promise<McpConnection>;
+	/** Launch the MCP command as a client would; true when it answers. */
+	testMcpConnection(): Promise<boolean>;
+}
+export interface McpConnection {
+	command: string;
+	args: string[];
+}
+export interface TrashService {
+	/** Trashed files and chats, newest first. */
+	list(): Promise<TrashEntry[]>;
+	/** Move an entry back to its original path. Fails if that path is taken. */
+	restore(trashPath: string): Promise<TrashEntry>;
 }
 export interface ObjectService<T extends WorkspaceObject> {
 	list(query?: ObjectQuery): Promise<T[]>;
@@ -303,6 +321,8 @@ export interface GenericObjectService {
 		id: string,
 		patch: ObjectPatch,
 	): Promise<MutationResult<WorkspaceObject>>;
+	/** Open this object's enclosing folder in the OS file manager. */
+	showInFolder(id: string): Promise<void>;
 }
 
 export interface ManifestService {
@@ -366,6 +386,9 @@ export interface NouraClient {
 		disconnect(): Promise<void>;
 	};
 	workspaces: WorkspaceService;
+	trash: TrashService;
+	/** Open an HTTP or HTTPS link in the default browser. */
+	openLink(url: string): Promise<void>;
 	objects: GenericObjectService;
 	manifest: ManifestService;
 	pluginState: PluginStateService;
@@ -426,6 +449,8 @@ function genericObjects(transport: CoreTransport): GenericObjectService {
 		get: (id) => transport.request('objects_get', { id }),
 		create: (input) => transport.request('objects_create', { input }),
 		update: (id, patch) => transport.request('objects_update', { id, patch }),
+		showInFolder: (id) =>
+			transport.request('object_show_in_folder', { input: { id } }),
 	};
 }
 
@@ -443,9 +468,9 @@ function objects<T extends WorkspaceObject>(
 		move: (input) => transport.request('objects_move', { input }),
 		delete: (input) => transport.request('objects_delete', { input }),
 		showInFolder: (id: string) =>
-			transport.request('object_show_in_folder', { id }),
+			transport.request('object_show_in_folder', { input: { id } }),
 		openTerminal: (id: string) =>
-			transport.request('object_open_terminal', { id }),
+			transport.request('object_open_terminal', { input: { id } }),
 	};
 }
 
@@ -605,7 +630,17 @@ export function createNouraClient(
 			current: () => transport.request('workspace_state'),
 			rebuildIndex: () => transport.request('workspace_rebuild_index'),
 			listRecent: () => transport.request('workspace_list_recent'),
+			showInFolder: (folder) =>
+				transport.request('workspace_show_in_folder', { input: { folder } }),
+			mcpConnection: () => transport.request('mcp_connection'),
+			testMcpConnection: () => transport.request('mcp_test_connection'),
 		},
+		trash: {
+			list: () => transport.request('trash_list'),
+			restore: (trashPath) =>
+				transport.request('trash_restore', { input: { trashPath } }),
+		},
+		openLink: (url) => transport.request('app_open_link', { url }),
 		objects: objectService,
 		manifest: manifestService,
 		pluginState: pluginStateService,

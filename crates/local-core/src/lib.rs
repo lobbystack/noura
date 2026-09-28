@@ -30,7 +30,7 @@ pub use engine::{
     ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
     ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch, RawConflictResolveInput,
     RawConflictResolveResult, RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput,
-    RawSaveResult, ResolveConflictInput, WorkspaceEngine,
+    RawSaveResult, ResolveConflictInput, TrashEntry, TrashEntryKind, WorkspaceEngine,
 };
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{CalendarEntry, IndexStore, SearchInput, SearchResult};

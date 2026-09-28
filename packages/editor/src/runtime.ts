@@ -2,6 +2,7 @@ export {
 	createPdfPreviewExtensions,
 	createLiveMarkdownDocument,
 	createLiveMarkdownEditor,
+	spellcheckAttributes,
 } from './factory';
 export type {
 	EditorSelectionState,
