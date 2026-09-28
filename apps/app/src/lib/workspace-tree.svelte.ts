@@ -21,6 +21,10 @@ class WorkspaceTreeStore {
 
 	async start(workspaceId: string | null | undefined): Promise<void> {
 		if (!browser) return;
+		// The sidebar remounts on every visit to a route that shows it. Once the
+		// projection runs for this workspace, core events and window focus keep
+		// the tree current, so remounting must not rescan the workspace.
+		if (this.#projection && workspaceId === this.#workspaceId) return;
 		this.#workspaceChanged(workspaceId);
 		this.#projection ??= new LiveProjection({
 			refresh: () => this.refresh(),

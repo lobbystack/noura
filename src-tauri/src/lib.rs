@@ -262,6 +262,9 @@ fn unavailable(operation: &str) -> CoreError {
         operation,
     )
 }
+// Plain Tauri commands run on the main thread and freeze the window while
+// they work. Read commands that may reconcile or scan the workspace are
+// declared `#[tauri::command(async)]` so they run on the async runtime.
 fn with_engine<T>(
     state: &State<AppState>,
     operation: &str,
@@ -509,7 +512,7 @@ fn workspace_rebuild_index(state: State<AppState>) -> Result<WorkspaceState, Cor
     engine.rebuild_index()?;
     Ok(engine.state())
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn manifest_read(state: State<AppState>) -> Result<WorkspaceManifest, CoreError> {
     with_engine(&state, "manifest_read", WorkspaceEngine::read_manifest)
 }
@@ -530,7 +533,7 @@ fn manifest_update(
         Ok(manifest)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn plugin_state_get(
     state: State<AppState>,
     plugin_id: String,
@@ -590,7 +593,7 @@ async fn workspace_pick_folder(app: AppHandle, title: String) -> Result<Option<S
         })
         .transpose()
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn objects_query(
     state: State<AppState>,
     query: ObjectQuery,
@@ -624,7 +627,7 @@ fn objects_query(
         Ok(values)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn objects_get(state: State<AppState>, id: String) -> Result<WorkspaceObject, CoreError> {
     with_engine(&state, "objects_get", |engine| {
         engine.get_object(&id)?.ok_or_else(|| {
@@ -719,12 +722,12 @@ fn chats_rename(
     with_engine(&state, "chat_rename", |engine| engine.rename_chat(input))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_list(state: State<AppState>) -> Result<Vec<Chat>, CoreError> {
     with_engine(&state, "chat_list", WorkspaceEngine::list_chats)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_read(state: State<AppState>, id: String) -> Result<ChatRead, CoreError> {
     with_engine(&state, "chat_read", |engine| engine.read_chat(&id))
 }
@@ -860,7 +863,7 @@ fn managed_conflict_resolve(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn raw_markdown_read(
     state: State<AppState>,
     relative_path: String,
@@ -927,7 +930,7 @@ const MIME_BY_EXTENSION: &[(&str, &str)] = &[
 
 const MAX_ASSET_BYTES: i64 = 20 * 1024 * 1024;
 
-#[tauri::command]
+#[tauri::command(async)]
 fn files_inspect_pdf(
     state: State<AppState>,
     relative_path: String,
@@ -937,7 +940,7 @@ fn files_inspect_pdf(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn files_read_pdf_range(
     state: State<AppState>,
     input: local_core::PdfRangeInput,
@@ -952,7 +955,7 @@ fn files_open_pdf_link(url: String) -> Result<(), CoreError> {
     os_files::open_http_link(&url)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn files_read_local_asset(
     state: State<AppState>,
     input: AssetInput,
@@ -976,7 +979,7 @@ fn files_read_local_asset(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn files_resolve_markdown_link(
     state: State<AppState>,
     input: MarkdownLinkInput,
@@ -1079,14 +1082,14 @@ fn objects_adopt(
         )
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn search_query(
     state: State<AppState>,
     input: SearchInput,
 ) -> Result<Vec<SearchResult>, CoreError> {
     with_engine(&state, "search_query", |engine| engine.search(&input))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn calendar_query(
     state: State<AppState>,
     input: CalendarInput,
@@ -1101,11 +1104,11 @@ fn folders_create(state: State<AppState>, input: FolderInput) -> Result<(), Core
         engine.create_folder(&input.relative_path)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn folders_list(state: State<AppState>) -> Result<Vec<local_core::FolderEntry>, CoreError> {
     with_engine(&state, "folders_list", WorkspaceEngine::list_folders)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn files_list(state: State<AppState>) -> Result<Vec<WorkspaceEntry>, CoreError> {
     with_engine(
         &state,
@@ -1113,7 +1116,7 @@ fn files_list(state: State<AppState>) -> Result<Vec<WorkspaceEntry>, CoreError> 
         WorkspaceEngine::list_workspace_entries,
     )
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn files_list_non_managed_markdown(
     state: State<AppState>,
 ) -> Result<Vec<UnmanagedFile>, CoreError> {
@@ -1160,7 +1163,7 @@ fn ai_credential_delete(
         .ai("ai_credential_delete")?
         .delete_credential(&input.credential_ref)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_consent_read(
     state: State<AppState>,
     input: AiConsentReadInput,
@@ -1308,7 +1311,7 @@ struct TrashRestoreInput {
     trash_path: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn trash_list(state: State<AppState>) -> Result<Vec<local_core::TrashEntry>, CoreError> {
     with_engine(&state, "trash_list", |engine| engine.trash_list())
 }
@@ -1371,7 +1374,7 @@ struct McpConnection {
 /// The command an MCP client runs to reach the open workspace through this
 /// app's own binary. An AppImage runs from a temporary mount, so use the
 /// AppImage file itself there.
-#[tauri::command]
+#[tauri::command(async)]
 fn mcp_connection(state: State<AppState>) -> Result<McpConnection, CoreError> {
     with_engine(&state, "mcp_connection", |engine| {
         let command = std::env::var_os("APPIMAGE")

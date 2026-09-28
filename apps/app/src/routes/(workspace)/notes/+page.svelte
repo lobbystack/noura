@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { getNouraClient, workspace } from '$lib/state.svelte';
 	import { isPlainTextPath } from '$lib/editor/text-files';
-	import { LiveProjection } from '$lib/live-refresh';
 	import { plugins } from '$lib/plugins.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
@@ -13,7 +12,6 @@
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { toast } from 'svelte-sonner';
-	import { onMount } from 'svelte';
 
 	type Note = Awaited<
 		ReturnType<ReturnType<typeof getNouraClient>['notes']['list']>
@@ -27,7 +25,8 @@
 		| { relativePath: string; title: string; parseStatus: null };
 
 	// These lists are lookup indexes for URL-driven selection, not a
-	// navigator: the sidebar file tree owns navigation now.
+	// navigator: the sidebar file tree owns navigation now. They load on
+	// demand before each lookup, so opening Notes doesn't scan the workspace.
 	let notes = $state<Note[]>([]);
 	let rawFiles = $state<RawFile[]>([]);
 	let loaded = $state(false);
@@ -35,7 +34,6 @@
 	let selectedRaw = $state<RawFile | null>(null);
 	let appliedKey: string | null = null;
 	let autofocusTitle = $state(false);
-	let projection = $state.raw<LiveProjection | null>(null);
 	let selectionGeneration = 0;
 	let loadGeneration = 0;
 
@@ -155,23 +153,6 @@
 				);
 			}
 		})();
-	});
-
-	onMount(() => {
-		if (!browser) return;
-		const coordinator = new LiveProjection({
-			refresh: load,
-			subscribe: (handler) => getNouraClient().events.subscribe(handler),
-			workspaceId: () => workspace.state?.workspaceId,
-			focusSource: window,
-			visibilitySource: document,
-		});
-		projection = coordinator;
-		void coordinator.start().catch(() => {});
-		return () => {
-			coordinator.dispose();
-			if (projection === coordinator) projection = null;
-		};
 	});
 
 	async function create() {
