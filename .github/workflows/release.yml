@@ -111,7 +111,9 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tauriScript: bun run tauri
-          args: --config tauri.release.conf.json ${{ matrix.args }}
+          # tauri-action resolves --config from the repository root, while the
+          # tauri script runs inside src-tauri. An absolute path works for both.
+          args: --config ${{ github.workspace }}/src-tauri/tauri.release.conf.json ${{ matrix.args }}
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
 
