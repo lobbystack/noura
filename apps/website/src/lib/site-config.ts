@@ -4,6 +4,27 @@ export interface SiteConfig {
 	marketingUrl: string;
 	githubUrl: string;
 	releasesUrl: string;
+	/** Legal details shown in the policies. Replace every bracketed value before launch. */
+	legal: {
+		entity: string;
+		address: string;
+		contactEmail: string;
+		privacyOfficer: string;
+		governingLaw: string;
+		websiteHost: string;
+		syncHost: string;
+		emailProvider: string;
+		effectiveDate: string;
+	};
+	/**
+	 * Optional cookie categories that need consent. Keep this empty while the
+	 * site sets no analytics or marketing cookies; the banner then only informs.
+	 */
+	optionalCookies: ReadonlyArray<{
+		id: string;
+		label: string;
+		purpose: string;
+	}>;
 	/**
 	 * Installers per platform. The release workflow uploads each file under a
 	 * stable name, so these links always serve the latest published release.
@@ -23,6 +44,18 @@ export const siteConfig: SiteConfig = {
 	marketingUrl: 'https://noura.app/',
 	githubUrl,
 	releasesUrl: `${githubUrl}/releases`,
+	legal: {
+		entity: '[Legal entity name]',
+		address: '[Mailing address]',
+		contactEmail: '[privacy contact email]',
+		privacyOfficer: '[Name and title of the person in charge of privacy]',
+		governingLaw: '[the Province of Québec, Canada]',
+		websiteHost: '[website hosting provider]',
+		syncHost: '[sync hosting provider]',
+		emailProvider: '[email delivery provider]',
+		effectiveDate: '[Effective date]',
+	},
+	optionalCookies: [],
 	downloads: [
 		{
 			platform: 'macOS',

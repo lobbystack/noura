@@ -161,34 +161,7 @@ bun run tauri dev`;
 	<meta name="twitter:title" content={title} />
 	<meta name="twitter:description" content={description} />
 	<meta property="og:image" content={`${siteConfig.marketingUrl}logo.png`} />
-	<link rel="icon" href="/favicon.png" type="image/png" />
-	<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 </svelte:head>
-
-<a class="skip-link" href="#main">Skip to content</a>
-
-<header class="site-header">
-	<div class="header-inner">
-		<a class="brand" href="#top" aria-label="noura home">
-			<img src="/logo.png" alt="" width="30" height="30" />
-			<span>noura</span>
-		</a>
-		<nav aria-label="Primary navigation">
-			<a class="nav-link" href="#features">Features</a>
-			<a class="nav-link" href="#ai">AI</a>
-			<a class="nav-link" href="#privacy">Privacy</a>
-			<a class="nav-link" href="#faq">FAQ</a>
-			<a
-				class="nav-icon"
-				href={siteConfig.githubUrl}
-				aria-label="noura on GitHub"
-			>
-				<Icon name="github" size={20} />
-			</a>
-			<a class="pill pill-dark" href="#download">Download</a>
-		</nav>
-	</div>
-</header>
 
 <main id="main">
 	<section class="dark-world" id="top" aria-labelledby="hero-heading">
@@ -459,95 +432,7 @@ bun run tauri dev`;
 	</section>
 </main>
 
-<footer>
-	<div class="footer-brand">
-		<span><img src="/logo.png" alt="" width="26" height="26" />noura</span>
-		<p>The open workspace for humans and AI.</p>
-	</div>
-	<nav aria-label="Footer navigation">
-		<a href="#features">Features</a>
-		<a href="#privacy">Privacy</a>
-		<a href="#faq">FAQ</a>
-		<a href={siteConfig.githubUrl}>GitHub</a>
-		<a href={`${siteConfig.githubUrl}/blob/main/LICENSE`}>MIT License</a>
-		<a href={`${siteConfig.githubUrl}/blob/main/SECURITY.md`}>Security</a>
-	</nav>
-	<p class="copyright">
-		© {new Date().getFullYear()} noura. Free and open source.
-	</p>
-</footer>
-
 <style>
-	/* Header */
-	.skip-link {
-		position: absolute;
-		left: 16px;
-		top: -60px;
-		z-index: 100;
-		padding: 10px 16px;
-		border-radius: 999px;
-		background: var(--ink);
-		color: white;
-		text-decoration: none;
-	}
-	.skip-link:focus {
-		top: 12px;
-	}
-	.site-header {
-		position: sticky;
-		top: 0;
-		z-index: 50;
-		background: rgba(255, 255, 255, 0.82);
-		backdrop-filter: saturate(1.4) blur(14px);
-		-webkit-backdrop-filter: saturate(1.4) blur(14px);
-	}
-	.header-inner {
-		height: 72px;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		max-width: 1440px;
-		margin: 0 auto;
-		padding: 0 32px;
-	}
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: 9px;
-		text-decoration: none;
-		font-size: 17px;
-		font-weight: 760;
-		letter-spacing: -0.03em;
-	}
-	.brand img {
-		display: block;
-		width: 30px;
-		height: 30px;
-	}
-	.site-header nav {
-		display: flex;
-		align-items: center;
-		gap: 26px;
-	}
-	.nav-link {
-		text-decoration: none;
-		font-size: 14px;
-		font-weight: 620;
-		color: #3c3b41;
-		transition: color 160ms ease;
-	}
-	.nav-link:hover {
-		color: var(--ink);
-	}
-	.nav-icon {
-		display: grid;
-		place-items: center;
-		color: #3c3b41;
-	}
-	.nav-icon:hover {
-		color: var(--ink);
-	}
-
 	/* Buttons */
 	.pill {
 		display: inline-flex;
@@ -572,10 +457,6 @@ bun run tauri dev`;
 		min-height: 48px;
 		padding: 0 26px;
 		font-size: 15px;
-	}
-	.pill-dark {
-		background: var(--ink);
-		color: white;
 	}
 	.pill-light {
 		background: #f6f7f4;
@@ -1323,58 +1204,8 @@ bun run tauri dev`;
 		white-space: nowrap;
 	}
 
-	/* Footer */
-	footer {
-		margin: 0 24px 24px;
-		padding: 48px;
-		border-radius: 28px;
-		background: #f6f5f8;
-		display: grid;
-		grid-template-columns: 1fr auto;
-		gap: 40px 70px;
-	}
-	.footer-brand span {
-		display: inline-flex;
-		align-items: center;
-		gap: 10px;
-		font-size: 20px;
-		font-weight: 780;
-		letter-spacing: -0.04em;
-	}
-	.footer-brand p {
-		margin: 8px 0 0;
-		color: #6f6d76;
-		font-size: 14px;
-	}
-	footer nav {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 12px 28px;
-		align-items: start;
-	}
-	footer nav a {
-		text-decoration: none;
-		color: #3c3b41;
-		font-size: 14px;
-		font-weight: 620;
-	}
-	footer nav a:hover {
-		color: var(--ink);
-	}
-	.copyright {
-		grid-column: 1/-1;
-		margin: 0;
-		padding-top: 24px;
-		border-top: 1px solid #e0dfe4;
-		color: #86848c;
-		font-size: 13px;
-	}
-
 	/* Responsive */
 	@media (max-width: 1080px) {
-		.nav-link {
-			display: none;
-		}
 		.ai {
 			grid-template-columns: 1fr;
 			gap: 56px;
@@ -1395,9 +1226,6 @@ bun run tauri dev`;
 		}
 		.dark-world {
 			padding-top: 64px;
-		}
-		.header-inner {
-			padding: 0 18px;
 		}
 		.open-copy,
 		.product-followup {
@@ -1438,14 +1266,8 @@ bun run tauri dev`;
 		.download-inner {
 			padding: 84px 24px 64px;
 		}
-		footer {
-			grid-template-columns: 1fr;
-		}
 	}
 	@media (max-width: 600px) {
-		.header-inner {
-			height: 64px;
-		}
 		.pill {
 			min-height: 38px;
 			padding: 0 16px;
@@ -1569,15 +1391,6 @@ bun run tauri dev`;
 		}
 		pre {
 			font-size: 12.5px;
-		}
-		footer {
-			margin: 0 10px 10px;
-			padding: 32px 24px;
-		}
-		footer nav {
-			display: grid;
-			grid-template-columns: 1fr 1fr;
-			gap: 16px;
 		}
 	}
 </style>
