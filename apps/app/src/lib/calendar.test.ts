@@ -46,7 +46,7 @@ describe('calendar ranges', () => {
 			cmd: [
 				process.execPath,
 				'-e',
-				'import { formatCalendarBoundary } from "./apps/app/src/lib/calendar.ts"; console.log(JSON.stringify([formatCalendarBoundary(new Date(2026, 2, 8)), formatCalendarBoundary(new Date(2026, 2, 9))]));',
+				`import { formatCalendarBoundary } from ${JSON.stringify(`${import.meta.dir}/calendar.ts`)}; console.log(JSON.stringify([formatCalendarBoundary(new Date(2026, 2, 8)), formatCalendarBoundary(new Date(2026, 2, 9))]));`,
 			],
 			env: { ...process.env, TZ: 'America/Toronto' },
 		});
