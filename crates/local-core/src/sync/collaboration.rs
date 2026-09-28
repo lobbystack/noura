@@ -787,20 +787,16 @@ fn restrict_worker_capabilities() -> std::io::Result<()> {
     use std::ffi::{CStr, c_char};
 
     unsafe extern "C" {
-        static kSBXProfilePureComputation: c_char;
         fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> i32;
         fn sandbox_free_error(errorbuf: *mut c_char);
     }
 
-    const SANDBOX_NAMED: u64 = 1;
+    // Deny every operation. The worker only computes on bytes it already read
+    // and writes to the stdout pipe it inherited. macOS 27 kills a process
+    // that enters the named pure-computation profile, so the rules are inline.
+    const DENY_ALL: &CStr = c"(version 1)(deny default)";
     let mut error = std::ptr::null_mut();
-    let status = unsafe {
-        sandbox_init(
-            &raw const kSBXProfilePureComputation,
-            SANDBOX_NAMED,
-            &mut error,
-        )
-    };
+    let status = unsafe { sandbox_init(DENY_ALL.as_ptr(), 0, &mut error) };
     if status == 0 {
         return Ok(());
     }
