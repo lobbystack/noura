@@ -11,7 +11,7 @@ for (const directive of [
 	"default-src 'self'",
 	"script-src 'self'",
 	"connect-src 'self'",
-	"img-src 'none'",
+	"img-src 'self'",
 	"object-src 'none'",
 	"base-uri 'none'",
 	"form-action 'self'",

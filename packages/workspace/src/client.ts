@@ -109,6 +109,13 @@ export {
 	type HostCloseRequest,
 	type HostLifecycleAdapter,
 } from './host-lifecycle';
+export {
+	createAppUpdater,
+	type AppUpdater,
+	type AppUpdaterAdapter,
+	type AppUpdateState,
+	type PendingAppUpdate,
+} from './app-updater';
 export { firstPartyPlugins } from './first-party';
 export {
 	PluginRuntime,

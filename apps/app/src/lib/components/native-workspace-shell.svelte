@@ -35,6 +35,7 @@
 	import { Toaster } from '$lib/components/ui/sonner/index.js';
 	import { Spinner } from '$lib/components/ui/spinner/index.js';
 	import CommandPalette from '$lib/components/command-palette.svelte';
+	import AppUpdateNotice from '$lib/components/app-update-notice.svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children } = $props<{ children: Snippet }>();
@@ -204,3 +205,4 @@
 
 <SettingsModal />
 <Toaster />
+<AppUpdateNotice />

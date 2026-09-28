@@ -17,7 +17,7 @@ export default {
 							'script-src': ['self', 'wasm-unsafe-eval'],
 							'connect-src': ['self'],
 							'style-src': ['self', 'unsafe-inline'],
-							'img-src': ['none'],
+							'img-src': ['self'],
 							'font-src': ['self'],
 							'object-src': ['none'],
 							'base-uri': ['none'],
