@@ -60,6 +60,13 @@
 	});
 </script>
 
+<img
+	src="/logo.png"
+	alt="Noura"
+	width="40"
+	height="40"
+	class="mb-3 rounded-lg"
+/>
 <h1 class="text-base font-semibold">
 	{account
 		? 'Your account'

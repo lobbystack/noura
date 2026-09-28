@@ -104,6 +104,13 @@
 	aria-label="Primary navigation"
 >
 	<div class="flex flex-col items-center gap-1">
+		<a
+			href="/inbox"
+			aria-label="Noura home"
+			class="mb-2 flex size-9 items-center justify-center"
+		>
+			<img src="/logo.png" alt="" width="26" height="26" class="rounded-md" />
+		</a>
 		{#each plugins.orderedSidebarPluginIds as pluginId (pluginId)}
 			{@const entry = pluginEntries[pluginId]}
 			{#if entry && (pluginId === 'inbox' || plugins.isEnabled(pluginId))}

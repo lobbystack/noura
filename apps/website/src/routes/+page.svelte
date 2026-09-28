@@ -160,10 +160,7 @@ bun run tauri dev`;
 	<meta name="twitter:card" content="summary" />
 	<meta name="twitter:title" content={title} />
 	<meta name="twitter:description" content={description} />
-	<meta
-		property="og:image"
-		content={`${siteConfig.marketingUrl}noura-icon-512.png`}
-	/>
+	<meta property="og:image" content={`${siteConfig.marketingUrl}logo.png`} />
 	<link rel="icon" href="/favicon.png" type="image/png" />
 	<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 </svelte:head>
@@ -173,7 +170,7 @@ bun run tauri dev`;
 <header class="site-header">
 	<div class="header-inner">
 		<a class="brand" href="#top" aria-label="Noura home">
-			<img src="/noura-icon.png" alt="" width="30" height="30" />
+			<img src="/logo.png" alt="" width="30" height="30" />
 			<span>Noura</span>
 		</a>
 		<nav aria-label="Primary navigation">
@@ -279,7 +276,7 @@ bun run tauri dev`;
 			aria-label="Noura plugin settings next to a project board"
 		>
 			<div class="mini-sidebar" aria-hidden="true">
-				<img class="mini-brand" src="/noura-icon.png" alt="" />
+				<img class="mini-brand" src="/logo.png" alt="" />
 				<i class="active"></i><i></i><i></i><i></i>
 			</div>
 
@@ -470,8 +467,7 @@ bun run tauri dev`;
 
 <footer>
 	<div class="footer-brand">
-		<span><img src="/noura-icon.png" alt="" width="26" height="26" />Noura</span
-		>
+		<span><img src="/logo.png" alt="" width="26" height="26" />Noura</span>
 		<p>The open workspace for humans and AI.</p>
 	</div>
 	<nav aria-label="Footer navigation">
