@@ -174,6 +174,31 @@ test.describe('finding files', () => {
 			await page.keyboard.press('Enter');
 			await expect(app.fileName).toHaveValue(name);
 		}
+		// Letters typed right after the shortcut never reach the notes.
+		expect(await app.doc()).toBe('a');
+		expect(await app.storedBody('Alpha.md')).toBe(noteFileBody('a'));
+		expect(await app.storedBody('Beta.md')).toBe(noteFileBody('b'));
+	});
+
+	test('keys typed right after Cmd-O go to quick open, not the note', async ({
+		app,
+		page,
+	}) => {
+		await writeNote(app, 'Quiet', 'unchanged');
+		const palette = page.getByRole('dialog', { name: 'Search and commands' });
+		for (let round = 0; round < 3; round += 1) {
+			await app.editor().focus();
+			// No waiting between the shortcut and the typing.
+			await page.keyboard.press('ControlOrMeta+o');
+			await page.keyboard.type('quiet');
+			await expect(palette.getByRole('combobox')).toHaveValue('quiet');
+			await page.keyboard.press('Escape');
+			await expect(palette).toBeHidden();
+			// Escape gives the caret back to the note.
+			await expect(app.editor()).toBeFocused();
+		}
+		expect(await app.doc()).toBe('unchanged');
+		expect(await app.storedBody('Quiet.md')).toBe(noteFileBody('unchanged'));
 	});
 
 	test('a shortcut pressed twice quickly runs twice', async ({ app, page }) => {
