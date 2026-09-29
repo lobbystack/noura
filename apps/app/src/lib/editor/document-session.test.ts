@@ -210,4 +210,19 @@ describe('DocumentSession', () => {
 		const seen = await session.exclusive(async () => file.body);
 		expect(seen).toBe('ab');
 	});
+
+	test('a flush during an exclusive operation waits for it, then saves', async () => {
+		const { editor, session, file } = setup('a');
+		const rename = deferred();
+		const renaming = session.exclusive(() => rename.promise);
+		// Let the operation start, then type while it holds autosave.
+		await Promise.resolve();
+		await Promise.resolve();
+		editor.type('b', session);
+		const flushing = session.flush();
+		rename.resolve();
+		await renaming;
+		await expect(flushing).resolves.toBe(true);
+		expect(file.body).toBe('ab');
+	});
 });
