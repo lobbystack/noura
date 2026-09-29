@@ -46,6 +46,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         "Synthetic attack test",
         directory.path().join("app1"),
     )?;
+    // Sync is a plugin that new workspaces start with turned off.
+    source.enable_sync_plugin()?;
     let workspace = source.manifest().id;
     let original = "Authorized owner content\n";
     let replacement = "Unauthorized viewer replacement\n";

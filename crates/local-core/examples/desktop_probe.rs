@@ -399,6 +399,8 @@ async fn run_bootstrap(input: Input) -> std::result::Result<(), Box<dyn std::err
         "Desktop to browser test",
         &app_data,
     )?;
+    // Sync is a plugin that new workspaces start with turned off.
+    engine.enable_sync_plugin()?;
     let workspace = engine.manifest().id;
     eprintln!("desktop_probe: creating workspace {workspace}");
     transport.create_workspace(&workspace).await?;
