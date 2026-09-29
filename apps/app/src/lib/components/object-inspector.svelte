@@ -21,6 +21,13 @@
 		onclose?: () => void;
 	} = $props();
 
+	// Only some systems have a terminal the app can open; hide it elsewhere.
+	let canOpenTerminal = $state(false);
+	void getClient()
+		.app.capabilities()
+		.then((capabilities) => (canOpenTerminal = capabilities.openTerminal))
+		.catch(() => {});
+
 	const taskProps = $derived(
 		object?.properties as Record<string, unknown> | undefined,
 	);
@@ -176,15 +183,17 @@
 								<FolderOpen data-icon="inline-start" />
 								Reveal
 							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								class="h-7 flex-1 text-xs"
-								onclick={openTerminal}
-							>
-								<Terminal data-icon="inline-start" />
-								Terminal
-							</Button>
+							{#if canOpenTerminal}
+								<Button
+									variant="outline"
+									size="sm"
+									class="h-7 flex-1 text-xs"
+									onclick={openTerminal}
+								>
+									<Terminal data-icon="inline-start" />
+									Terminal
+								</Button>
+							{/if}
 						</div>
 					</div>
 				</div>

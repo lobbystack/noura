@@ -3,7 +3,9 @@
 	import { getNouraClient } from '$lib/state.svelte';
 	import { getAppPlatform } from '$lib/platform';
 	import * as Item from '$lib/components/ui/item';
+	import { Button } from '$lib/components/ui/button';
 	import ArrowUpRight from 'phosphor-svelte/lib/ArrowUpRight';
+	import { toast } from 'svelte-sonner';
 
 	const updates = getAppUpdates();
 	const client = getNouraClient();
@@ -23,6 +25,22 @@
 		},
 	];
 
+	let copying = $state(false);
+
+	async function copyDiagnostics() {
+		copying = true;
+		try {
+			await navigator.clipboard.writeText(await client.app.diagnostics());
+			toast.success('Diagnostics copied', {
+				description: 'File names and paths are left out.',
+			});
+		} catch {
+			toast.error('Could not copy diagnostics');
+		} finally {
+			copying = false;
+		}
+	}
+
 	function open(event: MouseEvent, href: string) {
 		if (!desktop) return;
 		event.preventDefault();
@@ -40,6 +58,19 @@
 			<dt class="text-sm">License</dt>
 			<dd class="text-sm text-muted-foreground">MIT, free and open source</dd>
 		</div>
+		{#if desktop}
+			<div class="flex items-center justify-between gap-4 py-3">
+				<dt class="text-sm">Diagnostics</dt>
+				<dd>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={copying}
+						onclick={copyDiagnostics}>Copy diagnostics</Button
+					>
+				</dd>
+			</div>
+		{/if}
 	</dl>
 
 	<Item.Group>
