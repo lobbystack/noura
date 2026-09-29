@@ -111,4 +111,30 @@ describe('filtered views', () => {
 		const result = filterTasks(tasks, { mode: 'completed' }, now);
 		expect(result.map((t) => t.id)).toEqual(['task_done']);
 	});
+
+	test('project view includes only tasks linked to that project', () => {
+		const linked = [
+			...tasks,
+			task({
+				id: 'task_project',
+				properties: {
+					status: 'todo',
+					project: 'project_a',
+				} as Task['properties'],
+			}),
+			task({
+				id: 'task_other_project',
+				properties: {
+					status: 'todo',
+					project: 'project_b',
+				} as Task['properties'],
+			}),
+		];
+		const result = filterTasks(
+			linked,
+			{ mode: 'project', projectId: 'project_a' },
+			now,
+		);
+		expect(result.map((t) => t.id)).toEqual(['task_project']);
+	});
 });

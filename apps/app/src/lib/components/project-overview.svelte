@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
 	import type { CoreEvent, Project } from '@noura/workspace';
@@ -216,14 +215,12 @@
 	onMount(() => {
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
-		if (browser) {
-			void getNouraClient()
-				.events.subscribe((event) => void handleExternalEvent(event))
-				.then((unlisten) => {
-					if (disposed) unlisten();
-					else unsubscribe = unlisten;
-				});
-		}
+		void getNouraClient()
+			.events.subscribe((event) => void handleExternalEvent(event))
+			.then((unlisten) => {
+				if (disposed) unlisten();
+				else unsubscribe = unlisten;
+			});
 		return () => {
 			disposed = true;
 			unsubscribe?.();
