@@ -46,6 +46,16 @@ export interface BrowserStorageFileSystem {
 	write(path: string, bytes: Uint8Array): Promise<void>;
 	remove(path: string): Promise<boolean>;
 	list(path: string): Promise<DirectoryEntry[]>;
+	/** Creates a folder and its parents. Existing folders are left alone. */
+	makeDirectory(path: string): Promise<void>;
+	/**
+	 * Removes a folder. Without `recursive` it must be empty. Resolves false
+	 * when the folder does not exist.
+	 */
+	removeDirectory(
+		path: string,
+		options?: { recursive?: boolean },
+	): Promise<boolean>;
 }
 
 /** Serializes adapter operations across cooperating browser contexts. */
@@ -73,10 +83,31 @@ export type BrowserWorkspaceSnapshotEntry = {
 
 export type RebuiltManagedFile = Extract<ParsedMarkdown, { kind: 'managed' }>;
 
+/** One canonical file as the last enumeration or mutation saw it. */
+export type RebuiltFile = {
+	path: string;
+	revision: string;
+	/**
+	 * The parsed Markdown for a live workspace `.md` file, otherwise null.
+	 * Metadata under `.noura` and hidden folders is kept but never parsed.
+	 */
+	parsed: ParsedMarkdown | null;
+};
+
 export type RebuildResult = {
 	files: Array<{ path: string; revision: string }>;
+	/** Every file with its parse result, sorted by path. */
+	entries: RebuiltFile[];
+	/** Every folder, including empty ones, sorted by path. */
+	folders: string[];
+	/** Managed objects, including every file of a duplicated stable ID. */
 	managed: RebuiltManagedFile[];
 	malformedMarkdown: Array<{ path: string; error: string }>;
+	/**
+	 * Stable IDs that more than one live file uses. The files stay untouched;
+	 * only operations addressed by one of these IDs fail.
+	 */
+	duplicates: Array<{ id: string; paths: string[] }>;
 };
 
 export class BrowserStorageError extends Error {
@@ -90,6 +121,7 @@ export class BrowserStorageError extends Error {
 			| 'snapshot_too_large'
 			| 'workspace_not_empty'
 			| 'path_exists'
+			| 'folder_not_empty'
 			| 'recovery_failed',
 		message: string,
 	) {
@@ -98,23 +130,16 @@ export class BrowserStorageError extends Error {
 	}
 }
 
-export class DuplicateObjectIdentityError extends BrowserStorageError {
-	constructor(
-		public readonly id: string,
-		public readonly paths: string[],
-	) {
-		super(
-			'recovery_failed',
-			`The stable object ID ${id} occurs in more than one canonical file`,
-		);
-		this.name = 'DuplicateObjectIdentityError';
-	}
-}
-
 type Journal =
 	| { version: 1; id: string; kind: 'write'; path: string }
 	| { version: 1; id: string; kind: 'move'; from: string; to: string }
 	| { version: 1; id: string; kind: 'delete'; path: string }
+	| {
+			version: 1;
+			id: string;
+			kind: 'moves';
+			moves: Array<{ from: string; to: string }>;
+	  }
 	| {
 			version: 1;
 			id: string;
@@ -194,15 +219,28 @@ function isWindowsDeviceName(stem: string): boolean {
 	);
 }
 
+type CachedFile = { revision: string; parsed: ParsedMarkdown | null };
+
+type WorkspaceCache = {
+	files: Map<string, CachedFile>;
+	folders: Set<string>;
+};
+
 /**
  * Stores canonical workspace bytes in OPFS without interpreting or serializing
  * the workspace format in TypeScript. Mutations are journaled and recoverable;
  * success means the journal has been removed after its canonical file change.
+ *
+ * The first read enumerates and parses every file once. Later reads reuse that
+ * projection, and each mutation updates only the paths it changed. Another
+ * browser context that changes the same files must call `invalidate`.
  */
 export class BrowserWorkspaceStorage {
 	readonly #fileSystem: BrowserStorageFileSystem;
 	readonly #format: WorkspaceFormat;
 	readonly #lock: BrowserStorageLock;
+	#cache: WorkspaceCache | null = null;
+	#result: RebuildResult | null = null;
 
 	constructor({ fileSystem, format, lock }: BrowserWorkspaceStorageOptions) {
 		this.#fileSystem = fileSystem;
@@ -212,6 +250,32 @@ export class BrowserWorkspaceStorage {
 
 	async recover(): Promise<void> {
 		await this.#lock.run(() => this.#recoverLocked());
+	}
+
+	/**
+	 * Forget what this adapter knows about `paths` (or everything) because
+	 * another context changed them. The next read enumerates again.
+	 */
+	async invalidate(paths?: readonly string[]): Promise<void> {
+		await this.#lock.run(async () => {
+			await this.#recoverLocked();
+			if (!this.#cache) return;
+			if (paths === undefined) {
+				this.#drop();
+				return;
+			}
+			for (const path of paths) {
+				let valid: string;
+				try {
+					valid = validateRelativePath(path);
+				} catch {
+					continue;
+				}
+				const bytes = await this.#fileSystem.read(valid);
+				if (bytes === null) this.#forget(valid);
+				else this.#remember(valid, bytes);
+			}
+		});
 	}
 
 	async read(path: string): Promise<StoredFile | null> {
@@ -233,6 +297,7 @@ export class BrowserWorkspaceStorage {
 		return this.#lock.run(async () => {
 			await this.#recoverLocked();
 			await this.#assertExpected(path, input.expectedRevision);
+			await this.#assertNotFolder(path);
 			const journal: Journal = {
 				version: 1,
 				id: transactionId(),
@@ -240,6 +305,7 @@ export class BrowserWorkspaceStorage {
 				path,
 			};
 			await this.#stageAndCommit(journal, bytes);
+			this.#remember(path, bytes);
 			return this.#storedFile(path, bytes);
 		});
 	}
@@ -272,6 +338,8 @@ export class BrowserWorkspaceStorage {
 				to,
 			};
 			await this.#stageAndCommit(journal, source.bytes);
+			this.#forget(from);
+			this.#remember(to, source.bytes);
 			return this.#storedFile(to, source.bytes);
 		});
 	}
@@ -292,6 +360,132 @@ export class BrowserWorkspaceStorage {
 			};
 			await this.#writeJournal(journal);
 			await this.#applyJournal(journal);
+			this.#forget(path);
+		});
+	}
+
+	/**
+	 * Creates an empty folder. Refuses when a file or folder already uses the
+	 * path.
+	 */
+	async createFolder(path: string): Promise<void> {
+		path = validateRelativePath(path);
+		await this.#lock.run(async () => {
+			await this.#recoverLocked();
+			await this.#assertAbsent(path);
+			const cache = await this.#loaded();
+			if (cache.folders.has(path))
+				throw new BrowserStorageError(
+					'path_exists',
+					'A folder already exists at the destination',
+				);
+			await this.#fileSystem.makeDirectory(path);
+			this.#addFolders(cache, path, true);
+			this.#result = null;
+		});
+	}
+
+	/** Removes an empty folder. */
+	async removeEmptyFolder(path: string): Promise<void> {
+		path = validateRelativePath(path);
+		await this.#lock.run(async () => {
+			await this.#recoverLocked();
+			const cache = await this.#loaded();
+			if (!cache.folders.has(path))
+				throw new BrowserStorageError('not_found', 'The folder does not exist');
+			if ((await this.#fileSystem.list(path)).length > 0)
+				throw new BrowserStorageError(
+					'folder_not_empty',
+					'The folder is not empty',
+				);
+			await this.#fileSystem.removeDirectory(path);
+			cache.folders.delete(path);
+			this.#result = null;
+		});
+	}
+
+	/**
+	 * Moves a file or a whole folder to `to`, which must not exist. A folder
+	 * moves file by file under one journal, so an interrupted move finishes on
+	 * the next start. Returns the files that moved.
+	 */
+	async movePath(input: {
+		from: string;
+		to: string;
+	}): Promise<Array<{ from: string; to: string }>> {
+		const from = validateRelativePath(input.from);
+		const to = validateRelativePath(input.to);
+		if (from === to || to.startsWith(`${from}/`))
+			throw new BrowserStorageError(
+				'invalid_path',
+				'A folder cannot move into itself',
+			);
+		return this.#lock.run(async () => {
+			await this.#recoverLocked();
+			const cache = await this.#loaded();
+			const isFolder = cache.folders.has(from);
+			if (!isFolder && !cache.files.has(from))
+				throw new BrowserStorageError(
+					'not_found',
+					'The file or folder does not exist',
+				);
+			await this.#assertAbsent(to);
+			if (cache.folders.has(to))
+				throw new BrowserStorageError(
+					'path_exists',
+					'A folder already exists at the destination',
+				);
+			const moves = isFolder
+				? [...cache.files.keys()]
+						.filter((path) => path.startsWith(`${from}/`))
+						.sort()
+						.map((path) => ({
+							from: path,
+							to: `${to}${path.slice(from.length)}`,
+						}))
+				: [{ from, to }];
+			for (const move of moves) validateRelativePath(move.to);
+			const emptyFolders = isFolder
+				? [...cache.folders]
+						.filter((path) => path === from || path.startsWith(`${from}/`))
+						.map((path) => `${to}${path.slice(from.length)}`)
+				: [];
+			if (moves.length > 0) {
+				const journal: Journal = {
+					version: 1,
+					id: transactionId(),
+					kind: 'moves',
+					moves,
+				};
+				await this.#writeJournal(journal);
+				await this.#applyJournal(journal);
+			}
+			for (const folder of emptyFolders)
+				await this.#fileSystem.makeDirectory(folder);
+			if (isFolder)
+				await this.#fileSystem.removeDirectory(from, { recursive: true });
+			for (const move of moves) {
+				const moved = cache.files.get(move.from);
+				cache.files.delete(move.from);
+				if (moved)
+					cache.files.set(move.to, {
+						revision: moved.revision,
+						parsed: this.#parse(
+							move.to,
+							(await this.#fileSystem.read(move.to)) ?? new Uint8Array(),
+						),
+					});
+				this.#addFolders(cache, parentPath(move.to), true);
+			}
+			if (isFolder) {
+				for (const folder of [...cache.folders])
+					if (folder === from || folder.startsWith(`${from}/`))
+						cache.folders.delete(folder);
+				for (const folder of emptyFolders)
+					this.#addFolders(cache, folder, true);
+			}
+			this.#result = null;
+			return moves;
 		});
 	}
 
@@ -306,7 +500,7 @@ export class BrowserWorkspaceStorage {
 		validateSnapshotLimits(limits);
 		return this.#lock.run(async () => {
 			await this.#recoverLocked();
-			const paths = await this.#enumerateExportedFiles('');
+			const paths = (await this.#enumerate('')).files;
 			if (paths.length > limits.maxEntries) throw snapshotTooLarge();
 			const entries: BrowserWorkspaceSnapshotEntry[] = [];
 			let totalBytes = 0;
@@ -336,7 +530,7 @@ export class BrowserWorkspaceStorage {
 		const copied = validateSnapshotEntries(entries);
 		await this.#lock.run(async () => {
 			await this.#recoverLocked();
-			if ((await this.#enumerateExportedFiles('')).length > 0)
+			if ((await this.#enumerate('')).files.length > 0)
 				throw new BrowserStorageError(
 					'workspace_not_empty',
 					'An imported browser workspace must be created in an empty destination',
@@ -355,42 +549,126 @@ export class BrowserWorkspaceStorage {
 				);
 			await this.#writeJournal(journal);
 			await this.#applyJournal(journal);
+			this.#drop();
 		});
 	}
 
-	/** Re-enumerates canonical files; no database or in-memory index is consulted. */
+	/**
+	 * The workspace as its canonical files describe it. The first call reads
+	 * every file; later calls reuse that projection until a mutation or
+	 * `invalidate` changes it. No database is consulted.
+	 */
 	async rebuild(): Promise<RebuildResult> {
 		return this.#lock.run(async () => {
 			await this.#recoverLocked();
-			const paths = await this.#enumerateFiles('');
-			const files: RebuildResult['files'] = [];
-			const managed: RebuiltManagedFile[] = [];
-			const malformedMarkdown: RebuildResult['malformedMarkdown'] = [];
-			const identities = new Map<string, string[]>();
-
-			for (const path of paths) {
-				const bytes = await this.#fileSystem.read(path);
-				if (bytes === null) continue;
-				files.push({ path, revision: this.#format.contentRevision(bytes) });
-				if (!isLiveWorkspaceObjectPath(path) || !path.endsWith('.md')) continue;
-				const parsed = this.#format.parseMarkdown(path, bytes);
-				if (parsed.kind === 'malformed') {
-					malformedMarkdown.push({ path, error: parsed.error });
-					continue;
-				}
-				if (parsed.kind !== 'managed') continue;
-				managed.push(parsed);
-				const pathsForId = identities.get(parsed.id) ?? [];
-				pathsForId.push(path);
-				identities.set(parsed.id, pathsForId);
-			}
-
-			for (const [id, pathsForId] of identities) {
-				if (pathsForId.length > 1)
-					throw new DuplicateObjectIdentityError(id, pathsForId);
-			}
-			return { files, managed, malformedMarkdown };
+			const cache = await this.#loaded();
+			this.#result ??= this.#project(cache);
+			return this.#result;
 		});
+	}
+
+	async #loaded(): Promise<WorkspaceCache> {
+		if (this.#cache) return this.#cache;
+		const listing = await this.#enumerate('');
+		const cache: WorkspaceCache = {
+			files: new Map(),
+			folders: new Set(listing.folders),
+		};
+		for (const path of listing.files) {
+			const bytes = await this.#fileSystem.read(path);
+			if (bytes === null) continue;
+			cache.files.set(path, {
+				revision: this.#format.contentRevision(bytes),
+				parsed: this.#parse(path, bytes),
+			});
+		}
+		this.#cache = cache;
+		this.#result = null;
+		return cache;
+	}
+
+	#project(cache: WorkspaceCache): RebuildResult {
+		const entries = [...cache.files]
+			.map(([path, file]) => ({ path, ...file }))
+			.sort((left, right) => compareCodeUnits(left.path, right.path));
+		const managed: RebuiltManagedFile[] = [];
+		const malformedMarkdown: RebuildResult['malformedMarkdown'] = [];
+		const identities = new Map<string, string[]>();
+		for (const entry of entries) {
+			if (entry.parsed?.kind === 'malformed')
+				malformedMarkdown.push({ path: entry.path, error: entry.parsed.error });
+			if (entry.parsed?.kind !== 'managed') continue;
+			managed.push(entry.parsed);
+			const paths = identities.get(entry.parsed.id) ?? [];
+			paths.push(entry.path);
+			identities.set(entry.parsed.id, paths);
+		}
+		return {
+			files: entries.map(({ path, revision }) => ({ path, revision })),
+			entries,
+			folders: [...cache.folders].sort(compareCodeUnits),
+			managed,
+			malformedMarkdown,
+			duplicates: [...identities]
+				.filter(([, paths]) => paths.length > 1)
+				.map(([id, paths]) => ({ id, paths }))
+				.sort((left, right) => compareCodeUnits(left.id, right.id)),
+		};
+	}
+
+	#parse(path: string, bytes: Uint8Array): ParsedMarkdown | null {
+		if (!isLiveWorkspaceObjectPath(path) || !path.endsWith('.md')) return null;
+		let parsed: ParsedMarkdown;
+		try {
+			parsed = this.#format.parseMarkdown(path, bytes);
+		} catch {
+			// A committed file must never fail its mutation after the fact.
+			return {
+				kind: 'malformed',
+				title: '',
+				body: '',
+				error: 'The file could not be read',
+			};
+		}
+		// The file's location is canonical; the parser may not know it.
+		return parsed.kind === 'managed'
+			? {
+					...parsed,
+					relativePath: path,
+					revision: this.#format.contentRevision(bytes),
+				}
+			: parsed;
+	}
+
+	#remember(path: string, bytes: Uint8Array) {
+		const cache = this.#cache;
+		if (!cache) return;
+		cache.files.set(path, {
+			revision: this.#format.contentRevision(bytes),
+			parsed: this.#parse(path, bytes),
+		});
+		this.#addFolders(cache, parentPath(path), true);
+		this.#result = null;
+	}
+
+	#forget(path: string) {
+		if (!this.#cache) return;
+		this.#cache.files.delete(path);
+		this.#result = null;
+	}
+
+	#drop() {
+		this.#cache = null;
+		this.#result = null;
+	}
+
+	#addFolders(cache: WorkspaceCache, folder: string, withAncestors: boolean) {
+		let current = folder;
+		while (current.length > 0) {
+			if (!isExcludedFromSnapshot(current)) cache.folders.add(current);
+			if (!withAncestors) return;
+			current = parentPath(current);
+		}
 	}
 
 	async #assertExpected(
@@ -424,12 +702,21 @@ export class BrowserWorkspaceStorage {
 			);
 	}
 
+	/** A file cannot replace a folder of the same name. */
+	async #assertNotFolder(path: string): Promise<void> {
+		if (this.#cache?.folders.has(path))
+			throw new BrowserStorageError(
+				'path_exists',
+				'A folder already exists at the destination',
+			);
+	}
+
 	#storedFile(path: string, bytes: Uint8Array): StoredFile {
 		return { path, bytes, revision: this.#format.contentRevision(bytes) };
 	}
 
 	async #stageAndCommit(
-		journal: Exclude<Journal, { kind: 'delete' }>,
+		journal: Extract<Journal, { kind: 'write' | 'move' }>,
 		bytes: Uint8Array,
 	) {
 		await this.#fileSystem.write(stagePath(journal.id), bytes);
@@ -464,6 +751,18 @@ export class BrowserWorkspaceStorage {
 					.catch(() => {});
 			return;
 		}
+		if (journal.kind === 'moves') {
+			// Each step is idempotent: a source that is already gone moved
+			// before the interruption.
+			for (const move of journal.moves) {
+				const bytes = await this.#fileSystem.read(move.from);
+				if (bytes === null) continue;
+				await this.#fileSystem.write(move.to, bytes);
+				await this.#fileSystem.remove(move.from);
+			}
+			await this.#fileSystem.remove(journalPath(journal.id));
+			return;
+		}
 		if (journal.kind === 'write' || journal.kind === 'move') {
 			const bytes = await this.#fileSystem.read(stagePath(journal.id));
 			if (bytes === null)
@@ -488,6 +787,7 @@ export class BrowserWorkspaceStorage {
 
 	async #recoverLocked(): Promise<void> {
 		const entries = await this.#fileSystem.list(JOURNAL_DIRECTORY);
+		let recovered = false;
 		for (const entry of entries.sort((left, right) =>
 			left.name.localeCompare(right.name),
 		)) {
@@ -498,44 +798,41 @@ export class BrowserWorkspaceStorage {
 			);
 			if (bytes === null) continue;
 			await this.#applyJournal(parseJournal(id, bytes));
+			recovered = true;
 		}
+		// A recovered journal changed files behind the projection.
+		if (recovered) this.#drop();
 	}
 
-	async #enumerateFiles(directory: string): Promise<string[]> {
+	async #enumerate(
+		directory: string,
+	): Promise<{ files: string[]; folders: string[] }> {
 		const entries = await this.#fileSystem.list(directory);
-		const paths: string[] = [];
+		const files: string[] = [];
+		const folders: string[] = [];
 		for (const entry of entries.sort((left, right) =>
-			left.name.localeCompare(right.name),
+			compareCodeUnits(left.name, right.name),
 		)) {
 			const path =
 				directory.length === 0 ? entry.name : `${directory}/${entry.name}`;
 			if (isExcludedFromSnapshot(path)) continue;
+			validateRelativePath(path);
 			if (entry.kind === 'file') {
-				validateRelativePath(path);
-				paths.push(path);
-			} else paths.push(...(await this.#enumerateFiles(path)));
-		}
-		return paths;
-	}
-
-	async #enumerateExportedFiles(directory: string): Promise<string[]> {
-		const entries = await this.#fileSystem.list(directory);
-		const paths: string[] = [];
-		for (const entry of entries.sort((left, right) =>
-			left.name.localeCompare(right.name),
-		)) {
-			const path =
-				directory.length === 0 ? entry.name : `${directory}/${entry.name}`;
-			if (isExcludedFromSnapshot(path)) continue;
-			if (entry.kind === 'file') {
-				validateRelativePath(path);
-				paths.push(path);
+				files.push(path);
 			} else {
-				paths.push(...(await this.#enumerateExportedFiles(path)));
+				folders.push(path);
+				const nested = await this.#enumerate(path);
+				files.push(...nested.files);
+				folders.push(...nested.folders);
 			}
 		}
-		return paths;
+		return { files, folders };
 	}
+}
+
+/** Orders strings by UTF-16 code unit, independent of the user's locale. */
+function compareCodeUnits(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function transactionId(): string {
@@ -618,6 +915,32 @@ function parseJournal(id: string, bytes: Uint8Array): Journal {
 				from: validateRelativePath(value.from),
 				to: validateRelativePath(value.to),
 			};
+		if (
+			value.kind === 'moves' &&
+			Array.isArray(value.moves) &&
+			hasOnlyKeys(value, ['version', 'id', 'kind', 'moves'])
+		) {
+			if (
+				value.moves.length === 0 ||
+				value.moves.length > BROWSER_SNAPSHOT_LIMITS.maxEntries
+			)
+				return malformedJournal();
+			const moves = value.moves.map((move) => {
+				if (
+					!isRecord(move) ||
+					typeof move.from !== 'string' ||
+					typeof move.to !== 'string' ||
+					move.from === move.to ||
+					!hasOnlyKeys(move, ['from', 'to'])
+				)
+					return malformedJournal();
+				return {
+					from: validateRelativePath(move.from),
+					to: validateRelativePath(move.to),
+				};
+			});
+			return { version: 1, id, kind: 'moves', moves };
+		}
 		if (
 			value.kind === 'delete' &&
 			typeof value.path === 'string' &&
@@ -715,9 +1038,15 @@ export function isExcludedFromSnapshot(path: string): boolean {
 	);
 }
 
-/** Durable metadata is retained, but only ordinary workspace files define live objects. */
+/**
+ * Durable metadata is retained, but only visible workspace files define live
+ * objects. This matches the native scanner: nothing under a dot folder, no dot
+ * files, and no top-level `node_modules` or `target` folder.
+ */
 export function isLiveWorkspaceObjectPath(path: string): boolean {
-	return !path.startsWith('.noura/');
+	const parts = path.split('/');
+	if (parts[0] === 'node_modules' || parts[0] === 'target') return false;
+	return parts.every((part) => !part.startsWith('.'));
 }
 
 function validateSnapshotLimits(limits: BrowserWorkspaceSnapshotLimits): void {
@@ -803,6 +1132,26 @@ export class OpfsFileSystem implements BrowserStorageFileSystem {
 			return entries;
 		} catch (error) {
 			if (isNotFound(error)) return [];
+			throw error;
+		}
+	}
+
+	async makeDirectory(path: string): Promise<void> {
+		await this.#directory(path, true);
+	}
+
+	async removeDirectory(
+		path: string,
+		options: { recursive?: boolean } = {},
+	): Promise<boolean> {
+		try {
+			const parent = await this.#directory(parentPath(path), false);
+			await parent.removeEntry(fileName(path), {
+				recursive: options.recursive === true,
+			});
+			return true;
+		} catch (error) {
+			if (isNotFound(error)) return false;
 			throw error;
 		}
 	}
