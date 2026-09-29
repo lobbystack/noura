@@ -60,7 +60,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 	test.describe(`rendered Markdown, ${colorScheme}`, () => {
 		test.use({ colorScheme });
 
-		test.fixme('code keeps readable colors', async ({ app, page }) => {
+		test('code keeps readable colors', async ({ app, page }) => {
 			await openRendered(app);
 			const editor = app.editor('File text');
 			const block = editor.locator('.cm-md-codeblock').nth(1);

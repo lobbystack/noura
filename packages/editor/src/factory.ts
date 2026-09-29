@@ -413,22 +413,22 @@ const editorTheme = EditorView.theme({
 	},
 	'.cm-md-code-fence': { color: 'var(--muted-foreground)' },
 	'.cm-md-codeblock .tok-keyword, .cm-md-codeblock .tok-operatorKeyword': {
-		color: 'var(--chart-4, #8250df)',
+		color: 'var(--syntax-keyword, #6f42c1)',
 	},
 	'.cm-md-codeblock .tok-string, .cm-md-codeblock .tok-string2': {
-		color: 'var(--chart-2, #0a7f4f)',
+		color: 'var(--syntax-string, #116329)',
 	},
 	'.cm-md-codeblock .tok-number, .cm-md-codeblock .tok-bool, .cm-md-codeblock .tok-atom':
-		{ color: 'var(--chart-1, #b35900)' },
+		{ color: 'var(--syntax-number, #953800)' },
 	'.cm-md-codeblock .tok-comment': {
 		color: 'var(--muted-foreground)',
 		fontStyle: 'italic',
 	},
 	'.cm-md-codeblock .tok-typeName, .cm-md-codeblock .tok-className': {
-		color: 'var(--chart-3, #0550ae)',
+		color: 'var(--syntax-type, #0550ae)',
 	},
 	'.cm-md-codeblock .tok-definition, .cm-md-codeblock .tok-propertyName': {
-		color: 'var(--chart-5, #953800)',
+		color: 'var(--syntax-definition, #0a3069)',
 	},
 	'.cm-md-math-source': { fontFamily: 'var(--font-mono, monospace)' },
 	'.cm-md-callout': {
