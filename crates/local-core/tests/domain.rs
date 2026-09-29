@@ -2300,3 +2300,35 @@ fn chat_message_mutations_return_the_next_chat_revision() {
         vec!["one", "two", "three", "reply"]
     );
 }
+
+#[test]
+fn file_operations_report_their_changes_as_the_apps_own() {
+    let (_workspace, _app_data, engine) = engine();
+    let note = create_note(&engine, "Launch brief");
+    let mut events = engine.subscribe();
+    engine
+        .move_file(&note.value.relative_path, "Renamed.md")
+        .unwrap();
+    engine.trash_path("Renamed.md").unwrap();
+    let changes: Vec<_> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter(|event| event.event_type.starts_with("object:"))
+        .collect();
+    assert!(
+        changes
+            .iter()
+            .any(|event| event.event_type == "object:moved")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|event| event.event_type == "object:deleted")
+    );
+    for event in changes {
+        assert_eq!(
+            event.source,
+            local_core::EventSource::Application,
+            "{}",
+            event.event_type
+        );
+    }
+}

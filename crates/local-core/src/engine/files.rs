@@ -172,7 +172,7 @@ impl WorkspaceEngine {
         std::fs::rename(source, destination)
             .map_err(|error| CoreError::io(error, "folder_move", Some(to)))?;
         drop(_guard);
-        self.reconcile()?;
+        self.reconcile_as_application()?;
         Ok(())
     }
 
@@ -210,7 +210,7 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, Some(to)))?;
         sync_rename_parents(&source, &destination, operation)?;
         drop(guard);
-        self.reconcile()
+        self.reconcile_as_application()
     }
 
     /// Move a file or folder to the trash. Returns the `.noura/trash` path
@@ -231,7 +231,7 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, Some(relative_path)))?;
         let trashed = self.discard(&source, relative_path, operation)?;
         drop(guard);
-        self.reconcile()?;
+        self.reconcile_as_application()?;
         Ok(trashed)
     }
 

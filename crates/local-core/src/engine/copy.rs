@@ -59,7 +59,7 @@ impl WorkspaceEngine {
         })?;
         atomic_write(&self.root, relative, &bytes, operation)?;
         drop(guard);
-        self.reconcile()
+        self.reconcile_as_application()
     }
 }
 

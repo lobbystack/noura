@@ -232,6 +232,19 @@
 			return;
 		}
 		if (activationInProgress || activationNeedsReview || !target) return;
+		// A move or rename made in this app (from the file tree) only changes
+		// where the note lives, so keep editing and show the new name.
+		const moved = event.payload as { id?: string; path?: string };
+		if (
+			event.source === 'application' &&
+			event.type === 'object:moved' &&
+			moved.id === target.id &&
+			moved.path &&
+			moved.path !== target.relativePath
+		) {
+			adoptNote({ ...target, relativePath: moved.path });
+			return;
+		}
 		// A bulk external change carries this note among many others.
 		const own = editorObjectEvent(event, target.id, {
 			includeApplication: !!collaboration,

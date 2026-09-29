@@ -35,6 +35,17 @@
 	/** Stays the same when an open file is renamed, so the editor stays put. */
 	let rawKey = $state(0);
 	let appliedKey: string | null = null;
+
+	// A document shows only while its tab is open: closing the tab, or
+	// trashing the file from the tree, closes it here too.
+	const hasTab = (objectId: string) =>
+		tabsStore.tabs.some((tab) => tab.objectId === objectId);
+	const shownNote = $derived(selected && hasTab(selected.id) ? selected : null);
+	const shownRaw = $derived(
+		selectedRaw && hasTab(`raw:${selectedRaw.relativePath}`)
+			? selectedRaw
+			: null,
+	);
 	let autofocusTitle = $state(false);
 	let selectionGeneration = 0;
 	// Editors reopen when the sync plugin adds or removes collaboration.
@@ -85,7 +96,7 @@
 		n: Note,
 		options?: { isNew?: boolean; selectionGeneration?: number },
 	) {
-		if (selected?.id === n.id) return;
+		if (shownNote?.id === n.id) return;
 		const show = () => {
 			if (
 				options?.selectionGeneration !== undefined &&
@@ -101,7 +112,7 @@
 	}
 
 	async function selectRaw(file: RawFile, requestedGeneration?: number) {
-		if (selectedRaw?.relativePath === file.relativePath) return;
+		if (shownRaw?.relativePath === file.relativePath) return;
 		const show = () => {
 			if (
 				requestedGeneration !== undefined &&
@@ -128,8 +139,8 @@
 		const generation = ++selectionGeneration;
 		appliedKey = key;
 		if (key === '|') return;
-		if (selected?.id === selectedId) return;
-		if (selectedRaw?.relativePath === rawPath) return;
+		if (shownNote?.id === selectedId) return;
+		if (shownRaw?.relativePath === rawPath) return;
 		void (async () => {
 			try {
 				if (selectedId !== null) {
@@ -218,26 +229,26 @@
 
 <div class="flex h-full flex-col">
 	<div class="flex min-h-0 flex-1 flex-col">
-		{#key `${$collaborationSlot.generation}:${selected?.id ?? `raw:${selectedRaw ? rawKey : ''}`}`}
-			{#if selectedRaw}
+		{#key `${$collaborationSlot.generation}:${shownNote?.id ?? `raw:${shownRaw ? rawKey : ''}`}`}
+			{#if shownRaw}
 				<RawMarkdownEditor
-					file={selectedRaw}
+					file={shownRaw}
 					onmanaged={handleManaged}
 					onrenamed={handleRawRenamed}
 				/>
 			{:else}
-				<NoteEditor note={selected} onsaved={handleSaved} {autofocusTitle} />
+				<NoteEditor note={shownNote} onsaved={handleSaved} {autofocusTitle} />
 			{/if}
 		{/key}
 	</div>
-	{#if web && selected && plugins.isEnabled('sync')}
+	{#if web && shownNote && plugins.isEnabled('sync')}
 		<!-- Browser sync sends attachments per note; the desktop app syncs files. -->
 		{#await import('$lib/components/browser-attachments.svelte') then { default: Attachments }}
-			{#key selected.id}
+			{#key shownNote.id}
 				<div class="shrink-0 border-t border-border px-6 py-4">
 					<Attachments
-						noteId={selected.id}
-						notePath={selected.relativePath}
+						noteId={shownNote.id}
+						notePath={shownNote.relativePath}
 						workspaceFiles={getBrowserWorkspace().files}
 					/>
 				</div>

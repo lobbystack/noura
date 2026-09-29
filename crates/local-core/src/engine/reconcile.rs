@@ -65,6 +65,12 @@ impl WorkspaceEngine {
         self.reconcile_forced_with_source(&HashSet::new(), EventSource::Reconciliation)
     }
 
+    /// Walk after a file operation this app performed, so the resulting events
+    /// read as the app's own changes rather than edits from another program.
+    pub(super) fn reconcile_as_application(&self) -> Result<()> {
+        self.reconcile_forced_with_source(&HashSet::new(), EventSource::Application)
+    }
+
     /// Whether a read must walk the workspace before trusting the index:
     /// the watcher is down, or it saw a change nobody reconciled yet.
     pub(super) fn needs_reconcile(&self) -> bool {
