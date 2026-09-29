@@ -317,7 +317,7 @@ fn body(path: &str, bytes: &[u8], object_id: &str) -> Result<String> {
         }
         Ok(object.body)
     } else {
-        let (text, _, _) = split_raw_bytes(bytes)?;
+        let (text, _) = split_raw_bytes(bytes)?;
         crate::sync::collaboration::validate_text(&text)?;
         Ok(text)
     }
@@ -333,8 +333,8 @@ fn render(path: &str, bytes: &[u8], object_id: &str, text: &str) -> Result<Vec<u
         object.body = text.into();
         markdown::serialize_object(&object)?
     } else {
-        let (_, crlf, bom) = split_raw_bytes(bytes)?;
-        compose_raw_bytes(text, crlf, bom)
+        let (_, layout) = split_raw_bytes(bytes)?;
+        compose_raw_bytes(text, &layout)
     };
     if next.len() > MAX_TEXT_BYTES {
         return Err(invalid("collaboration_unsupported_text"));
@@ -489,8 +489,13 @@ fn text_format(path: &str, bytes: &[u8]) -> Result<Option<CollaborativeTextForma
     {
         return Ok(None);
     }
-    let (_, uses_crlf, has_bom) = split_raw_bytes(bytes)?;
-    Ok(Some(CollaborativeTextFormat { has_bom, uses_crlf }))
+    let (_, layout) = split_raw_bytes(bytes)?;
+    Ok(Some(CollaborativeTextFormat {
+        has_bom: layout.has_bom,
+        // Every device must derive the same format from the same bytes, so
+        // this keeps the original rule: any CRLF line counts.
+        uses_crlf: layout.any_crlf(),
+    }))
 }
 
 fn apply_format_patch(
@@ -498,7 +503,8 @@ fn apply_format_patch(
     bytes: &[u8],
     patch: &CollaborativeFormatPatch,
 ) -> Result<Vec<u8>> {
-    let (body, uses_crlf, has_bom) = split_raw_bytes(bytes)?;
+    let (body, layout) = split_raw_bytes(bytes)?;
+    let (uses_crlf, has_bom) = (layout.any_crlf(), layout.has_bom);
     if is_markdown(path)
         && matches!(
             markdown::parse_markdown(path, bytes),
@@ -508,10 +514,10 @@ fn apply_format_patch(
     {
         return Err(invalid("collaboration_format_conflict"));
     }
+    // A format change rewrites every line with the new ending.
     Ok(compose_raw_bytes(
         &body,
-        patch.value.uses_crlf,
-        patch.value.has_bom,
+        &RawLayout::uniform(&body, patch.value.uses_crlf, patch.value.has_bom),
     ))
 }
 

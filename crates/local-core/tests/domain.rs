@@ -1392,6 +1392,71 @@ fn raw_markdown_save_preserves_crlf_and_bom_and_reindexes() {
 }
 
 #[test]
+fn raw_markdown_save_keeps_mixed_line_endings() {
+    let (workspace, _app_data, engine) = engine();
+    let path = workspace.path().join("mixed.md");
+    let original = b"# Mixed\r\n\r\nfrom windows\r\nfrom unix\nlast\r\n";
+    std::fs::write(&path, original).unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("mixed.md").unwrap();
+    assert!(base.uses_crlf);
+
+    // Saving the text unchanged writes the same bytes.
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "mixed.md".into(),
+            base_revision: base.revision.clone(),
+            base_body: base.body.clone(),
+            local_body: base.body.clone(),
+        })
+        .unwrap();
+    let RawSaveResult::Saved { current, .. } = saved else {
+        panic!("expected a save, got {saved:?}");
+    };
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(current.revision, base.revision);
+
+    // An edit changes one line; every other line keeps its ending, and the
+    // new line takes the ending most lines use.
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "mixed.md".into(),
+            base_revision: current.revision.clone(),
+            base_body: current.body.clone(),
+            local_body: current.body.replace("last\n", "last\nadded\n"),
+        })
+        .unwrap();
+    let RawSaveResult::Saved { current, .. } = saved else {
+        panic!("expected a save, got {saved:?}");
+    };
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"# Mixed\r\n\r\nfrom windows\r\nfrom unix\nlast\r\nadded\r\n"
+    );
+
+    // An external edit merges with a local one, and both keep their lines'
+    // endings.
+    std::fs::write(
+        &path,
+        b"# Mixed\r\n\r\nfrom windows\r\nfrom unix\nexternal\nlast\r\nadded\r\n",
+    )
+    .unwrap();
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "mixed.md".into(),
+            base_revision: current.revision.clone(),
+            base_body: current.body.clone(),
+            local_body: current.body.replace("# Mixed\n", "# Mixed today\n"),
+        })
+        .unwrap();
+    assert!(matches!(saved, RawSaveResult::Saved { .. }), "{saved:?}");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"# Mixed today\r\n\r\nfrom windows\r\nfrom unix\nexternal\nlast\r\nadded\r\n"
+    );
+}
+
+#[test]
 fn raw_markdown_rejects_traversal_and_non_markdown_paths() {
     let (_workspace, _app_data, engine) = engine();
     assert!(engine.read_raw_markdown("../outside.md").is_err());

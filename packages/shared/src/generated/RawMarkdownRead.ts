@@ -2,7 +2,8 @@
 
 /**
  * Complete current contents of one Markdown file addressed by relative path.
- * Raw files expose their full bytes as UTF-8 text with CRLF normalized to LF;
- * uses-crlf and has-bom flags are preserved for faithful writes.
+ * Raw files expose their full bytes as UTF-8 text with CRLF normalized to LF.
+ * Saves keep the BOM and each unchanged line's own ending; `uses_crlf` is
+ * the ending most lines use, which new lines get.
  */
 export type RawMarkdownRead = { relativePath: string, body: string, revision: string, usesCrlf: boolean, hasBom: boolean, };

@@ -164,8 +164,9 @@ pub struct ManagedConflictResolveInput {
 }
 
 /// Complete current contents of one Markdown file addressed by relative path.
-/// Raw files expose their full bytes as UTF-8 text with CRLF normalized to LF;
-/// uses-crlf and has-bom flags are preserved for faithful writes.
+/// Raw files expose their full bytes as UTF-8 text with CRLF normalized to LF.
+/// Saves keep the BOM and each unchanged line's own ending; `uses_crlf` is
+/// the ending most lines use, which new lines get.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -1566,13 +1567,13 @@ impl WorkspaceEngine {
             }
             CoreError::io(error, "raw_markdown_read", Some(relative_path))
         })?;
-        let (body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        let (body, layout) = split_raw_bytes(&bytes)?;
         Ok(RawMarkdownRead {
             relative_path: relative_path.to_owned(),
             body,
             revision: markdown::revision(&bytes),
-            uses_crlf,
-            has_bom,
+            uses_crlf: layout.uses_crlf,
+            has_bom: layout.has_bom,
         })
     }
 
@@ -1697,7 +1698,8 @@ impl WorkspaceEngine {
         let bytes = std::fs::read(&path).map_err(|error| {
             CoreError::io(error, "raw_markdown_reconcile", Some(&input.relative_path))
         })?;
-        let (external_body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        let (external_body, layout) = split_raw_bytes(&bytes)?;
+        let (uses_crlf, has_bom) = (layout.uses_crlf, layout.has_bom);
         let current = RawMarkdownRead {
             relative_path: input.relative_path.clone(),
             body: external_body.clone(),
@@ -1749,7 +1751,8 @@ impl WorkspaceEngine {
         }
         let bytes = std::fs::read(&path)
             .map_err(|error| CoreError::io(error, "raw_markdown_save", Some(&relative)))?;
-        let (external_body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        let (external_body, layout) = split_raw_bytes(&bytes)?;
+        let (uses_crlf, has_bom) = (layout.uses_crlf, layout.has_bom);
         let current = RawMarkdownRead {
             relative_path: relative.clone(),
             body: external_body.clone(),
@@ -1780,7 +1783,7 @@ impl WorkspaceEngine {
                 }
             }
         };
-        let next_bytes = compose_raw_bytes(&merged_body, uses_crlf, has_bom);
+        let next_bytes = compose_raw_bytes(&merged_body, &layout);
         let next_relative = PathBuf::from(&relative);
         atomic_write_checked(
             &self.root,
@@ -1856,11 +1859,12 @@ impl WorkspaceEngine {
             }));
             return Err(error);
         }
-        let (external_body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
+        let (external_body, layout) = split_raw_bytes(&bytes)?;
+        let (uses_crlf, has_bom) = (layout.uses_crlf, layout.has_bom);
         match input.resolution {
             ConflictResolution::UseExternal => {
                 let segment = raw_history_dir(&relative);
-                let local_bytes = compose_raw_bytes(&input.local_body, uses_crlf, has_bom);
+                let local_bytes = compose_raw_bytes(&input.local_body, &layout);
                 write_snapshot(
                     &self.root,
                     "raw_markdown_resolve",
@@ -1892,7 +1896,7 @@ impl WorkspaceEngine {
                     "external",
                     &bytes,
                 )?;
-                let next_bytes = compose_raw_bytes(&input.local_body, uses_crlf, has_bom);
+                let next_bytes = compose_raw_bytes(&input.local_body, &layout);
                 let next_relative = PathBuf::from(&relative);
                 atomic_write_checked(
                     &self.root,
@@ -4048,22 +4052,135 @@ fn normalized_properties(
         .collect()
 }
 
-fn compose_raw_bytes(body: &str, uses_crlf: bool, has_bom: bool) -> Vec<u8> {
-    let text = if uses_crlf {
-        body.replace('\n', "\r\n")
-    } else {
-        body.to_owned()
-    };
-    let mut bytes = if has_bom {
+/// How a raw Markdown file was encoded: its BOM and the ending of each line.
+/// Saves write unchanged lines back with their own ending, so an edit never
+/// rewrites the endings of lines it did not touch.
+#[derive(Debug, Clone)]
+struct RawLayout {
+    /// The file's text with every CRLF turned into LF.
+    body: String,
+    /// For each line of `body` (as split by `split_inclusive('\n')`), whether
+    /// it ended in CRLF on disk.
+    crlf: Vec<bool>,
+    /// The ending most lines use, for lines an edit adds. Ties go to LF.
+    uses_crlf: bool,
+    has_bom: bool,
+}
+
+impl RawLayout {
+    /// A layout where every line ends the same way.
+    fn uniform(body: &str, uses_crlf: bool, has_bom: bool) -> Self {
+        Self {
+            body: body.to_owned(),
+            crlf: body.split_inclusive('\n').map(|_| uses_crlf).collect(),
+            uses_crlf,
+            has_bom,
+        }
+    }
+
+    /// Whether any line ended in CRLF.
+    fn any_crlf(&self) -> bool {
+        self.crlf.iter().any(|crlf| *crlf)
+    }
+}
+
+fn compose_raw_bytes(body: &str, layout: &RawLayout) -> Vec<u8> {
+    let mut bytes = if layout.has_bom {
         b"\xEF\xBB\xBF".to_vec()
     } else {
         Vec::new()
     };
-    bytes.extend_from_slice(text.as_bytes());
+    let any_crlf = layout.any_crlf();
+    let all_crlf = layout
+        .body
+        .split_inclusive('\n')
+        .zip(&layout.crlf)
+        .all(|(line, crlf)| *crlf || !line.ends_with('\n'));
+    if !any_crlf {
+        // Every line ends in LF, and so do new ones.
+        bytes.extend_from_slice(body.as_bytes());
+        return bytes;
+    }
+    if all_crlf && layout.uses_crlf {
+        bytes.extend_from_slice(body.replace('\n', "\r\n").as_bytes());
+        return bytes;
+    }
+    let lines = body.split_inclusive('\n').collect::<Vec<_>>();
+    let matches = match_unchanged_lines(&layout.body, &lines);
+    for (line, original) in lines.into_iter().zip(matches) {
+        match line.strip_suffix('\n') {
+            Some(text) => {
+                let crlf = original.map_or(layout.uses_crlf, |index| layout.crlf[index]);
+                bytes.extend_from_slice(text.as_bytes());
+                bytes.extend_from_slice(if crlf { b"\r\n" } else { b"\n" });
+            }
+            None => bytes.extend_from_slice(line.as_bytes()),
+        }
+    }
     bytes
 }
 
-fn split_raw_bytes(bytes: &[u8]) -> Result<(String, bool, bool)> {
+/// For each line of the new text, the index of the same unchanged line in
+/// `original`, found with a line diff. Lines are compared with their LF.
+fn match_unchanged_lines(original: &str, lines: &[&str]) -> Vec<Option<usize>> {
+    let old = original.split_inclusive('\n').collect::<Vec<_>>();
+    let mut matches = vec![None; lines.len()];
+    // The shared start and end match line for line; only the middle is diffed.
+    let prefix = old
+        .iter()
+        .zip(lines)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(lines[prefix..].iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    for (index, slot) in matches.iter_mut().enumerate().take(prefix) {
+        *slot = Some(index);
+    }
+    for offset in 0..suffix {
+        matches[lines.len() - 1 - offset] = Some(old.len() - 1 - offset);
+    }
+    let old_middle = &old[prefix..old.len() - suffix];
+    let new_middle = &lines[prefix..lines.len() - suffix];
+    if old_middle.is_empty() || new_middle.is_empty() {
+        return matches;
+    }
+    let old_text = old_middle.concat();
+    let new_text = new_middle.concat();
+    // A context longer than both texts keeps the whole middle in one hunk,
+    // so its lines list every old and new line in order.
+    let mut options = diffy::DiffOptions::new();
+    options.set_context_len(old_middle.len() + new_middle.len() + 1);
+    let patch = options.create_patch(&old_text, &new_text);
+    let mut paired = Vec::with_capacity(new_middle.len());
+    let (mut old_index, mut new_index) = (0, 0);
+    for hunk in patch.hunks() {
+        for line in hunk.lines() {
+            match line {
+                diffy::Line::Context(_) => {
+                    paired.push((new_index, old_index));
+                    old_index += 1;
+                    new_index += 1;
+                }
+                diffy::Line::Delete(_) => old_index += 1,
+                diffy::Line::Insert(_) => new_index += 1,
+            }
+        }
+    }
+    // Trust the pairing only when it accounts for every line; otherwise the
+    // middle lines take the file's usual ending.
+    if patch.hunks().len() == 1 && old_index == old_middle.len() && new_index == new_middle.len() {
+        for (new_line, old_line) in paired {
+            matches[prefix + new_line] = Some(prefix + old_line);
+        }
+    }
+    matches
+}
+
+fn split_raw_bytes(bytes: &[u8]) -> Result<(String, RawLayout)> {
     let (has_bom, text_bytes) = if bytes.starts_with(b"\xEF\xBB\xBF") {
         (true, &bytes[3..])
     } else {
@@ -4077,9 +4194,33 @@ fn split_raw_bytes(bytes: &[u8]) -> Result<(String, bool, bool)> {
             "raw_markdown_read",
         )
     })?;
-    let uses_crlf = text.contains("\r\n");
-    let body = text.replace("\r\n", "\n");
-    Ok((body, uses_crlf, has_bom))
+    let mut body = String::with_capacity(text.len());
+    let mut crlf = Vec::new();
+    let (mut crlf_lines, mut lf_lines) = (0usize, 0usize);
+    for line in text.split_inclusive('\n') {
+        match line.strip_suffix("\r\n") {
+            Some(stripped) => {
+                body.push_str(stripped);
+                body.push('\n');
+                crlf.push(true);
+                crlf_lines += 1;
+            }
+            None => {
+                body.push_str(line);
+                crlf.push(false);
+                if line.ends_with('\n') {
+                    lf_lines += 1;
+                }
+            }
+        }
+    }
+    let layout = RawLayout {
+        body: body.clone(),
+        crlf,
+        uses_crlf: crlf_lines > lf_lines,
+        has_bom,
+    };
+    Ok((body, layout))
 }
 
 fn validate_raw_markdown_path(root: &Path, relative: &str) -> Result<PathBuf> {
@@ -4642,6 +4783,79 @@ mod tests {
     use super::*;
     use serde::Deserialize;
     use tempfile::tempdir;
+
+    fn round_trip(bytes: &[u8]) -> Vec<u8> {
+        let (body, layout) = split_raw_bytes(bytes).unwrap();
+        compose_raw_bytes(&body, &layout)
+    }
+
+    fn edit(bytes: &[u8], change: impl FnOnce(&str) -> String) -> Vec<u8> {
+        let (body, layout) = split_raw_bytes(bytes).unwrap();
+        compose_raw_bytes(&change(&body), &layout)
+    }
+
+    #[test]
+    fn unchanged_raw_text_round_trips_byte_for_byte() {
+        for bytes in [
+            &b""[..],
+            b"no newline",
+            b"lf\nonly\n",
+            b"crlf\r\nonly\r\n",
+            b"mixed\r\nendings\nhere\r\n",
+            b"mixed\nendings\r\nno final newline",
+            b"\xEF\xBB\xBFbom\r\nand lf\n",
+            b"lone\rcarriage return\r\nthen lf\n",
+            b"\r\n\n\r\n\n",
+            b"trailing cr\r",
+        ] {
+            assert_eq!(
+                round_trip(bytes),
+                bytes,
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn edits_keep_the_endings_of_lines_they_do_not_touch() {
+        // Mostly CRLF: edited and new lines take CRLF, the LF line stays LF.
+        let bytes = b"one\r\ntwo\nthree\r\nfour\r\n";
+        assert_eq!(
+            edit(bytes, |body| body.replace("three", "THREE")),
+            b"one\r\ntwo\nTHREE\r\nfour\r\n"
+        );
+        assert_eq!(
+            edit(bytes, |body| body.replace("two\n", "two\nadded\n")),
+            b"one\r\ntwo\nadded\r\nthree\r\nfour\r\n"
+        );
+        assert_eq!(
+            edit(bytes, |body| body.replace("one\n", "")),
+            b"two\nthree\r\nfour\r\n"
+        );
+        // Mostly LF: new lines take LF, the CRLF line keeps CRLF.
+        let bytes = b"a\nb\r\nc\nd\n";
+        assert_eq!(
+            edit(bytes, |body| format!("start\n{body}end\n")),
+            b"start\na\nb\r\nc\nd\nend\n"
+        );
+        assert_eq!(
+            edit(bytes, |body| body.replace("c\n", "c\nc\n")),
+            b"a\nb\r\nc\nc\nd\n"
+        );
+    }
+
+    #[test]
+    fn uniform_files_keep_their_ending_for_new_lines() {
+        assert_eq!(
+            edit(b"a\r\nb\r\n", |body| format!("{body}c\n")),
+            b"a\r\nb\r\nc\r\n"
+        );
+        assert_eq!(edit(b"a\nb\n", |body| format!("{body}c\n")), b"a\nb\nc\n");
+        let (_, layout) = split_raw_bytes(b"a\r\nb\nc\n").unwrap();
+        assert!(!layout.uses_crlf);
+        assert!(layout.any_crlf());
+    }
 
     #[derive(Deserialize)]
     struct ConformanceFixture {
