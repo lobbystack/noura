@@ -61,11 +61,21 @@ Generates a Svelte Playground link with the provided code. After completing the 
 - `packages/plugin-sdk` contains capability contracts and the trusted first-party plugin host. Plugins must not import SQLite or Rust internals.
 - `packages/editor` contains headless CodeMirror 6/Yjs configuration and Markdown safety checks. Visual editor components belong in `apps/app`.
 - `packages/ai` contains provider-neutral TypeScript context and tool registries. Secrets stay behind the native boundary.
+- `packages/workspace-format-wasm` loads the WebAssembly build of `crates/workspace-format` and exposes it to TypeScript. It adds no format rules.
+- `packages/sync-key-envelope` contains the browser WebCrypto implementation of the `noura.sync.key.web` key envelope and browser device formats. It must pass the same shared fixtures as `crates/sync-key-envelope`.
+- `packages/browser-storage` contains the browser build's workspace storage over the origin private file system (OPFS), using `@noura/workspace-format-wasm` for parsing and serialization.
+- `packages/browser-workspace` contains the browser workspace worker, its protocol, and the typed client transport for the browser build.
+- `packages/browser-sync` contains browser device custody, enrollment, key delivery, operation encryption, and recovery kits for experimental encrypted sync.
+- `packages/browser-sync-engine` contains the browser replica engine for experimental encrypted sync: outbox, push and pull, and conflict handling. It holds no keys and performs no cryptography.
 - `plugins/*` contains first-party domain adapters built against the same public capabilities intended for future plugins.
+- `crates/workspace-format` owns platform-independent parsing, validation, and canonical serialization of workspace files, with no filesystem, database, or credential dependencies.
+- `crates/workspace-format-wasm` exposes `crates/workspace-format` to WebAssembly and contains no format rules.
+- `crates/sync-key-envelope` owns the native and portable implementation of the `noura.sync.key.web` key envelope and browser device formats.
 - `crates/local-core` owns canonical parsing, deterministic serialization, filesystem safety, atomic writes, indexing, watching, reconciliation, credentials, and domain operations.
 - `crates/mcp-server` adapts MCP tools to local-core services and must not duplicate business logic.
 - `src-tauri` owns the desktop process and typed IPC/event bridge.
 - `apps/server` contains the experimental encrypted sync service built with Bun, TypeScript, and Hono. It must not become a dependency of local features. It serves the browser build of `apps/app`, which includes the account pages and encrypted share viewer.
+- `apps/website` contains the static marketing site and legal pages for noura.app. It uses no other workspace package.
 
 ### Workspace schema ownership
 

@@ -1,31 +1,41 @@
 name: Release
 
 # Push a tag such as v0.2.0 to build signed installers for macOS, Windows, and
-# Linux. The release stays a draft until every platform uploads, so installed
-# apps never see a partial latest.json.
+# Linux. The tag must point to a commit on main that passed CI. The release
+# stays a draft until every platform uploads, so installed apps never see a
+# partial latest.json.
+#
+# The build job reads the updater signing key from the `release` environment.
+# docs/releasing.md explains the one-time setup.
 on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  create-release:
+  verify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      actions: read
+      contents: read
     outputs:
-      release_id: ${{ steps.release.outputs.id }}
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Check that the tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to $GITHUB_SHA, which is not on main."
+            exit 1
+          fi
       - name: Check that the tag matches the app version
         id: version
         run: |
@@ -37,20 +47,62 @@ jobs:
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Wait for CI to pass on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # CI runs on every push to main. Wait up to 60 minutes for that run.
+          for attempt in $(seq 1 60); do
+            run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+              --event push --commit "$GITHUB_SHA" --limit 1 \
+              --json status,conclusion,url --jq '.[0] // empty')"
+            if [ -n "$run" ]; then
+              status="$(jq -r .status <<<"$run")"
+              conclusion="$(jq -r .conclusion <<<"$run")"
+              url="$(jq -r .url <<<"$run")"
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then
+                  echo "CI passed: $url"
+                  exit 0
+                fi
+                echo "::error::CI finished with '$conclusion' for $GITHUB_SHA: $url"
+                exit 1
+              fi
+              echo "CI is $status ($url). Checking again in 60 seconds."
+            else
+              echo "No CI run for $GITHUB_SHA on main yet. Checking again in 60 seconds."
+            fi
+            sleep 60
+          done
+          echo "::error::CI did not finish on $GITHUB_SHA within 60 minutes."
+          exit 1
+
+  create-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+      tag: ${{ needs.verify.outputs.tag }}
+    steps:
       - name: Create a draft release
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ needs.verify.outputs.tag }}
         run: |
           if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
-              --title "Noura ${TAG#v}" --generate-notes
+              --title "noura ${TAG#v}" --generate-notes
           fi
           echo "id=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json databaseId -q .databaseId)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: create-release
+    # The `release` environment holds TAURI_SIGNING_PRIVATE_KEY. A required
+    # reviewer on that environment approves each release before it signs.
+    environment: release
     permissions:
       contents: write
     strategy:
@@ -58,15 +110,21 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            platform: macos
             args: --target universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
+            license-targets: --target aarch64-apple-darwin --target x86_64-apple-darwin
           - os: windows-latest
+            platform: windows
             args: ''
             rust-targets: wasm32-unknown-unknown
+            license-targets: --target x86_64-pc-windows-msvc
           # The oldest supported Ubuntu keeps the AppImage compatible with older glibc.
           - os: ubuntu-22.04
+            platform: linux
             args: ''
             rust-targets: wasm32-unknown-unknown
+            license-targets: --target x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -84,6 +142,14 @@ jobs:
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # tauri.release.conf.json bundles this file. The frontend build records
+      # which npm packages it ships; cargo metadata lists the linked crates.
+      - name: Generate the bundled third-party license file
+        shell: bash
+        run: |
+          bun run --cwd apps/app build
+          bun scripts/generate-third-party-licenses.ts \
+            --out src-tauri/THIRD_PARTY_LICENSES.txt ${{ matrix.license-targets }}
       # Apple signing is optional. Without a Developer ID certificate the app is
       # ad-hoc signed, and macOS asks users to approve it on first launch.
       - name: Load Apple signing credentials when configured
@@ -116,21 +182,34 @@ jobs:
           args: --config ${{ github.workspace }}/src-tauri/tauri.release.conf.json ${{ matrix.args }}
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+      - name: Attach the license file to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          name="third-party-licenses-${{ matrix.platform }}.txt"
+          cp src-tauri/THIRD_PARTY_LICENSES.txt "$name"
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$name"
 
   publish:
     needs: [create-release, build]
     runs-on: ubuntu-latest
     permissions:
+      attestations: write
       contents: write
+      id-token: write
     steps:
-      - name: Add stable download names and publish
+      - name: Download the draft release and add stable download names
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.create-release.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist \
-            -p '*_universal.dmg' -p '*-setup.exe' -p '*.AppImage' -p '*_amd64.deb' -p 'latest.json'
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist
+          # A rerun finds the stable copies from the last attempt. Drop them so
+          # each pattern below matches one versioned file.
+          rm -f dist/Noura-*
           test -s dist/latest.json
 
           # The website links to releases/latest/download/<stable name>.
@@ -147,6 +226,19 @@ jobs:
           stable '*-setup.exe' Noura-Windows-Setup.exe
           stable '*.AppImage' Noura-Linux.AppImage
           stable '*_amd64.deb' Noura-Linux.deb
-
+      # Anyone can then check a download with
+      # `gh attestation verify <file> -R lobbystack/noura`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*
+            stable/*
+      - name: Upload stable names and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          set -euo pipefail
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber stable/*
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest

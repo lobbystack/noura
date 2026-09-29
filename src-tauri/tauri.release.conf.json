@@ -2,6 +2,7 @@
 	"$schema": "https://schema.tauri.app/config/2",
 	"bundle": {
 		"createUpdaterArtifacts": true,
+		"resources": ["Assets.car", "THIRD_PARTY_LICENSES.txt"],
 		"macOS": {
 			"signingIdentity": "-"
 		}

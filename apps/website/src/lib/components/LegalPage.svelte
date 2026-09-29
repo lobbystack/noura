@@ -9,6 +9,11 @@
 		children,
 	}: { title: string; description: string; path: string; children: Snippet } =
 		$props();
+
+	const effectiveDate = siteConfig.legal.effectiveDate;
+	const effectiveLabel = new Date(
+		`${effectiveDate}T00:00:00Z`,
+	).toLocaleDateString('en-US', { dateStyle: 'long', timeZone: 'UTC' });
 </script>
 
 <svelte:head>
@@ -21,7 +26,9 @@
 	<header>
 		<p class="kicker">Legal</p>
 		<h1>{title}</h1>
-		<p class="updated">Effective {siteConfig.legal.effectiveDate}</p>
+		<p class="updated">
+			Effective <time datetime={effectiveDate}>{effectiveLabel}</time>
+		</p>
 	</header>
 	<article>
 		{@render children()}

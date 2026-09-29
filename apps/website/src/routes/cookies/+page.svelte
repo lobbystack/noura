@@ -9,7 +9,7 @@
 
 <LegalPage
 	title="Cookie policy"
-	description="The cookies and browser storage noura uses, and how to control them."
+	description="The cookies and browser storage noura.app uses, and how to control them."
 	path="cookies/"
 >
 	<p class="note">
@@ -48,44 +48,6 @@
 		</ul>
 	{/if}
 
-	<h2>On noura Sync pages</h2>
-	<p>
-		If you sign in to noura Sync in your browser, the service uses essential
-		storage to make that work:
-	</p>
-	<table>
-		<thead>
-			<tr><th>What</th><th>Type</th><th>Purpose</th><th>Kept for</th></tr>
-		</thead>
-		<tbody>
-			<tr>
-				<td>Session cookie</td>
-				<td>Cookie, essential</td>
-				<td>Keeps you signed in</td>
-				<td>7 days, or until you sign out</td>
-			</tr>
-			<tr>
-				<td>Sign-in challenge</td>
-				<td>Cookie, essential</td>
-				<td>Completes a passkey sign-in securely</td>
-				<td>A few minutes</td>
-			</tr>
-			<tr>
-				<td>Browser workspace and device keys</td>
-				<td>Browser file storage and local storage, essential</td>
-				<td>
-					Holds your browser workspace, its encryption keys, and your plugin
-					order on your device
-				</td>
-				<td>Until you remove the workspace or clear your browser data</td>
-			</tr>
-		</tbody>
-	</table>
-	<p>
-		Your browser sends the cookies only to noura Sync. The browser workspace
-		stays on your device, and we can't read the encrypted data it syncs.
-	</p>
-
 	<h2>Other sites</h2>
 	<p>
 		Links to GitHub and other sites take you to services with their own cookie
@@ -98,8 +60,8 @@
 		<button type="button" class="link" onclick={openCookieSettings}
 			>Open cookie settings</button
 		> to review your choice. You can also block or delete cookies and local storage
-		in your browser settings. If you block essential storage, noura Sync sign-in won't
-		work.
+		in your browser settings. If you block local storage, the site asks for your choice
+		again on each visit.
 	</p>
 
 	<h2>Questions</h2>

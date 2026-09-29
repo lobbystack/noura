@@ -4,7 +4,7 @@ export interface SiteConfig {
 	marketingUrl: string;
 	githubUrl: string;
 	releasesUrl: string;
-	/** Legal details shown in the policies. Replace every bracketed value before launch. */
+	/** Legal details shown in the policies. */
 	legal: {
 		entity: string;
 		address: string;
@@ -12,8 +12,7 @@ export interface SiteConfig {
 		privacyOfficer: string;
 		governingLaw: string;
 		websiteHost: string;
-		syncHost: string;
-		emailProvider: string;
+		/** ISO date (YYYY-MM-DD) the current policies took effect. Update it when they change. */
 		effectiveDate: string;
 	};
 	/**
@@ -34,6 +33,8 @@ export interface SiteConfig {
 		detail: string;
 		url: string;
 		alternate?: { label: string; url: string };
+		/** One short line about a first-launch warning the platform shows. */
+		installNote?: string;
 	}>;
 }
 
@@ -45,15 +46,13 @@ export const siteConfig: SiteConfig = {
 	githubUrl,
 	releasesUrl: `${githubUrl}/releases`,
 	legal: {
-		entity: '[Legal entity name]',
-		address: '[Mailing address]',
-		contactEmail: '[privacy contact email]',
-		privacyOfficer: '[Name and title of the person in charge of privacy]',
-		governingLaw: '[the Province of Québec, Canada]',
-		websiteHost: '[website hosting provider]',
-		syncHost: '[sync hosting provider]',
-		emailProvider: '[email delivery provider]',
-		effectiveDate: '[Effective date]',
+		entity: 'Lobbystack Inc.',
+		address: 'Saint-Nicolas, Québec, Canada',
+		contactEmail: 'hello@noura.app',
+		privacyOfficer: 'Raphaël Morency, President',
+		governingLaw: 'the Province of Québec, Canada',
+		websiteHost: 'Railway',
+		effectiveDate: '2026-09-28',
 	},
 	optionalCookies: [],
 	downloads: [
@@ -61,11 +60,15 @@ export const siteConfig: SiteConfig = {
 			platform: 'macOS',
 			detail: 'Apple silicon and Intel',
 			url: `${latest}/Noura-macOS.dmg`,
+			installNote:
+				'The app isn’t notarized yet. If macOS blocks the first launch, open System Settings > Privacy & Security and choose Open Anyway.',
 		},
 		{
 			platform: 'Windows',
 			detail: 'Windows 10 and 11',
 			url: `${latest}/Noura-Windows-Setup.exe`,
+			installNote:
+				'If Windows SmartScreen warns you, choose More info, then Run anyway.',
 		},
 		{
 			platform: 'Linux',
