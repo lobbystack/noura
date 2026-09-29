@@ -6,9 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 	&& rm -rf /var/lib/apt/lists/* \
 	&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91 --profile minimal \
 	&& rustup target add wasm32-unknown-unknown
-RUN --mount=type=cache,target=/root/.cargo/registry \
-	--mount=type=cache,target=/root/.cargo/git \
-	cargo install wasm-bindgen-cli --version 0.2.127 --locked
+# No BuildKit cache mounts: Railway rejects them unless their id names the
+# Railway service, which would tie this file to one deployment.
+RUN cargo install wasm-bindgen-cli --version 0.2.127 --locked
 COPY . .
 RUN bun install --frozen-lockfile
 RUN bun run --filter @noura/server build:release
