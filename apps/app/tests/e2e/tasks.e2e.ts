@@ -121,7 +121,7 @@ test.describe('tasks', () => {
 		expect(await app.messages()).toEqual([]);
 	});
 
-	test.fixme('changing properties while typing keeps both', async ({ app, page }) => {
+	test('changing properties while typing keeps both', async ({ app, page }) => {
 		const path = await newTask(app, 'Plan trip');
 		const body = app.editor('Task body');
 		await body.click();

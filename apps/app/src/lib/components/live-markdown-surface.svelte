@@ -251,7 +251,7 @@
 <div class="flex h-full min-h-0 flex-1 flex-col">
 	{#if showToolbar && !readOnly}
 		<div
-			class="flex min-h-11 items-center gap-1 overflow-x-auto px-5 py-1.5"
+			class="flex min-h-11 flex-wrap items-center gap-1 px-5 py-1.5"
 			role="toolbar"
 			aria-label="Formatting"
 		>
