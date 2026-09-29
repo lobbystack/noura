@@ -34,7 +34,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 slug.workspace = true
-sync-key-envelope = { version = "0.1.0", path = "../sync-key-envelope" }
+sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -42,7 +42,7 @@ ts-rs.workspace = true
 ulid = { workspace = true, features = ["std"] }
 uuid.workspace = true
 url.workspace = true
-workspace-format = { version = "0.1.0", path = "../workspace-format" }
+workspace-format = { version = "0.2.0", path = "../workspace-format" }
 x25519-dalek.workspace = true
 
 [dev-dependencies]

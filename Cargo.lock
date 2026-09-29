@@ -3349,7 +3349,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "age",
@@ -3632,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "noura-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "local-core",
@@ -3660,7 +3660,7 @@ dependencies = [
 
 [[package]]
 name = "noura-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "local-core",
  "rmcp",
@@ -5763,7 +5763,7 @@ dependencies = [
 
 [[package]]
 name = "sync-key-envelope"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -7773,7 +7773,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workspace-format"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "diffy",
@@ -7789,7 +7789,7 @@ dependencies = [
 
 [[package]]
 name = "workspace-format-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "js-sys",
  "serde",

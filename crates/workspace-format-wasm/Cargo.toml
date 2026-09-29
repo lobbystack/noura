@@ -14,4 +14,4 @@ serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen.workspace = true
 ulid.workspace = true
-workspace-format = { version = "0.1.0", path = "../workspace-format" }
+workspace-format = { version = "0.2.0", path = "../workspace-format" }

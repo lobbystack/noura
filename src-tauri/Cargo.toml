@@ -7,8 +7,8 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
-local-core = { version = "0.1.0", path = "../crates/local-core" }
-noura-mcp = { version = "0.1.0", path = "../crates/mcp-server" }
+local-core = { version = "0.2.0", path = "../crates/local-core" }
+noura-mcp = { version = "0.2.0", path = "../crates/mcp-server" }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }
