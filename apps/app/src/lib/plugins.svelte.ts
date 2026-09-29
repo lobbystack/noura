@@ -12,6 +12,7 @@ import {
 	type NavigationId,
 } from './plugin-order';
 import { getNouraClient, getPluginRuntime, workspace } from './state.svelte';
+import { flushPendingDrafts } from './editor/pending-drafts.svelte';
 
 const PLUGIN_ORDER_STORAGE_PREFIX = 'noura.plugin-order.v1:';
 
@@ -205,6 +206,12 @@ class PluginStore {
 	async setEnabled(pluginId: string, enabled: boolean) {
 		const reason = this.unavailableReason(pluginId);
 		if (reason) throw new Error(reason);
+		// Turning sync off closes collaboration sessions. Their pending edits
+		// must reach disk first, or the switch stays on.
+		if (pluginId === 'sync' && !enabled && !(await flushPendingDrafts()))
+			throw new Error(
+				'noura couldn’t save some open documents, so Sync stays on. Try again.',
+			);
 		const client = getNouraClient();
 		const manifest = await client.manifest.read();
 		const next = enabled

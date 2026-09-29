@@ -7,7 +7,12 @@ import {
 	type CoreTransport,
 } from './index';
 import { PluginRuntime, createPluginHostServices } from './plugin-runtime';
-import type { PluginContext, PluginDefinition } from '@noura/plugin-sdk';
+import { CollaborationProviderSlot } from './collaboration-slot';
+import {
+	definePlugin,
+	type PluginContext,
+	type PluginDefinition,
+} from '@noura/plugin-sdk';
 
 function harness(initialEnabled: Array<string>) {
 	const store = new Map<string, unknown>();
@@ -307,6 +312,102 @@ describe('plugin runtime', () => {
 			owner: 'adapter',
 			category: 'instructions',
 		});
+	});
+});
+
+describe('collaboration provider slot', () => {
+	const provider: PluginDefinition = definePlugin({
+		manifest: {
+			id: 'relay',
+			name: 'Relay',
+			version: '0.1.0',
+			capabilities: ['workspace.collaboration'],
+		},
+		activate(context) {
+			context.collaboration.registerProvider(context.collaboration.service);
+		},
+	});
+
+	test('fills and empties with the manifest', async () => {
+		const { client, calls, state } = harness(['relay']);
+		const runtime = new PluginRuntime(client, {
+			plugins: [provider],
+			trustedPlugins: [provider],
+		});
+		const seen: Array<number> = [];
+		runtime.collaboration.subscribe((snapshot) =>
+			seen.push(snapshot.generation),
+		);
+		expect(runtime.collaboration.provider).toBeNull();
+		await runtime.syncWithManifest();
+		expect(runtime.collaboration.owner).toBe('relay');
+		await runtime.collaboration.provider!.open({ relativePath: 'note.md' });
+		expect(calls.at(-1)).toEqual({
+			command: 'collaboration_open',
+			payload: { input: { relativePath: 'note.md' } },
+		});
+		state.enabled = [];
+		await runtime.syncWithManifest();
+		expect(runtime.collaboration.provider).toBeNull();
+		state.enabled = ['relay'];
+		await runtime.syncWithManifest();
+		await runtime.deactivateAll();
+		expect(runtime.collaboration.provider).toBeNull();
+		expect(seen).toEqual([0, 1, 2, 3, 4]);
+	});
+
+	test('the first-party sync plugin fills the slot on desktop only', async () => {
+		const desktop = harness(['notes', 'sync']);
+		const runtime = new PluginRuntime(desktop.client);
+		await runtime.syncWithManifest();
+		expect(runtime.collaboration.owner).toBe('sync');
+		desktop.state.enabled = ['notes'];
+		await runtime.syncWithManifest();
+		expect(runtime.collaboration.provider).toBeNull();
+
+		const web = harness(['notes', 'sync']);
+		const browser = new PluginRuntime(web.client, {
+			platform: 'web',
+			supportedCapabilities: browserPluginCapabilities,
+		});
+		const result = await browser.syncWithManifest();
+		expect(result.activated).toEqual(['notes', 'sync']);
+		expect(browser.collaboration.provider).toBeNull();
+	});
+
+	test('rejects a provider plugin the runtime does not trust', async () => {
+		const { client } = harness(['relay']);
+		const runtime = new PluginRuntime(client, { plugins: [provider] });
+		await expect(runtime.syncWithManifest()).rejects.toMatchObject({
+			code: 'plugin_capability_untrusted',
+		});
+		expect(runtime.collaboration.provider).toBeNull();
+	});
+
+	test('keeps one provider at a time', () => {
+		const slot = new CollaborationProviderSlot();
+		const { client } = harness([]);
+		const dispose = slot.register(client.collaboration, 'first');
+		expect(() => slot.register(client.collaboration, 'second')).toThrow(
+			'already registered',
+		);
+		expect(dispose()).toBe(true);
+		expect(dispose()).toBe(false);
+		expect(slot.generation).toBe(2);
+	});
+
+	test('host services route the native service through the slot', () => {
+		const { client } = harness([]);
+		const slot = new CollaborationProviderSlot();
+		const services = createPluginHostServices(client, slot);
+		expect(services.collaboration.service).toBe(client.collaboration);
+		const dispose = services.collaboration.registerProvider(
+			client.collaboration,
+			{ owner: 'relay' },
+		);
+		expect(slot.provider).toBe(client.collaboration);
+		dispose();
+		expect(slot.provider).toBeNull();
 	});
 });
 

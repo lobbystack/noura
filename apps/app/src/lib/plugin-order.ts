@@ -5,6 +5,7 @@ export const PLUGIN_IDS = [
 	'calendar',
 	'projects',
 	'folders',
+	'sync',
 ] as const;
 
 export const SIDEBAR_PLUGIN_IDS = [

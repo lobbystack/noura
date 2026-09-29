@@ -6,6 +6,7 @@ import {
 	type PluginHostServices,
 } from '@noura/plugin-sdk';
 import { firstPartyPlugins } from './first-party';
+import { CollaborationProviderSlot } from './collaboration-slot';
 import type { NouraClient } from './client';
 
 /**
@@ -22,10 +23,12 @@ export const browserPluginCapabilities: readonly PluginCapability[] = [
 /**
  * Adapter from the typed workspace client to the capability-gated
  * plugin services. Pass-through only: plugins see the same public
- * contracts the UI consumes, never transport internals.
+ * contracts the UI consumes, never transport internals. A registered
+ * collaboration provider lands in `slot`.
  */
 export function createPluginHostServices(
 	client: NouraClient,
+	slot: CollaborationProviderSlot = new CollaborationProviderSlot(),
 ): PluginHostServices {
 	return {
 		files: {
@@ -48,6 +51,11 @@ export function createPluginHostServices(
 				client.ai.registerContextProvider(definition, registration),
 			registerInstructionProvider: (definition, registration) =>
 				client.ai.registerInstructionProvider(definition, registration),
+		},
+		collaboration: {
+			service: client.collaboration,
+			registerProvider: (provider, registration) =>
+				slot.register(provider, registration.owner),
 		},
 	};
 }
@@ -132,6 +140,8 @@ export interface PluginRuntimeOptions extends PluginHostOptions {
 export class PluginRuntime {
 	readonly host: PluginHost;
 	readonly registry: PluginRegistry;
+	/** The workspace collaboration provider, filled by an active sync plugin. */
+	readonly collaboration = new CollaborationProviderSlot();
 	#client: NouraClient;
 	#plugins: readonly PluginDefinition[];
 	#corePluginIds: readonly string[];
@@ -150,7 +160,11 @@ export class PluginRuntime {
 		this.#corePluginIds = options.corePluginIds ?? CORE_PLUGIN_IDS;
 		this.host =
 			configuredHost ??
-			new PluginHost(createPluginHostServices(client), options);
+			new PluginHost(createPluginHostServices(client, this.collaboration), {
+				...options,
+				// Trusted capabilities stay with the bundled first-party plugins.
+				trustedPlugins: options.trustedPlugins ?? firstPartyPlugins,
+			});
 	}
 
 	async syncWithManifest(): Promise<PluginSyncResult> {

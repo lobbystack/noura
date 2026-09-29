@@ -158,3 +158,15 @@ test('failed rollback is not presented as success and runtime access fails close
 	expect(h.model.snapshot().isEnabled('notes')).toBe(false);
 	await h.model.dispose();
 });
+
+test('browser workspaces turn sync on without native collaboration', async () => {
+	const h = harness();
+	await h.model.init();
+	expect(h.model.snapshot().isSupported('sync')).toBe(true);
+	expect(h.model.snapshot().isEnabled('sync')).toBe(false);
+	await h.model.snapshot().setEnabled('sync', true);
+	expect(h.enabled).toContain('sync');
+	expect(h.model.snapshot().isEnabled('sync')).toBe(true);
+	expect(h.runtime.collaboration.provider).toBeNull();
+	await h.model.dispose();
+});

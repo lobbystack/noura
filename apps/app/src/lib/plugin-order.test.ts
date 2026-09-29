@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { PLUGIN_IDS, movePlugin, normalizePluginOrder } from './plugin-order';
+import {
+	PLUGIN_IDS,
+	SIDEBAR_PLUGIN_IDS,
+	movePlugin,
+	normalizePluginOrder,
+} from './plugin-order';
 
 describe('plugin order', () => {
 	test('ignores stale entries and restores every first-party plugin', () => {
@@ -13,6 +18,7 @@ describe('plugin order', () => {
 			'tasks',
 			'calendar',
 			'folders',
+			'sync',
 		]);
 	});
 
@@ -25,6 +31,7 @@ describe('plugin order', () => {
 			'tasks',
 			'calendar',
 			'folders',
+			'sync',
 		]);
 	});
 
@@ -37,7 +44,13 @@ describe('plugin order', () => {
 			'projects',
 			'ai',
 			'folders',
+			'sync',
 		]);
+	});
+
+	test('sync is a plugin without a sidebar entry', () => {
+		expect(PLUGIN_IDS).toContain('sync');
+		expect(SIDEBAR_PLUGIN_IDS as readonly string[]).not.toContain('sync');
 	});
 
 	test('keeps Inbox in its saved position', () => {
@@ -50,6 +63,7 @@ describe('plugin order', () => {
 			'calendar',
 			'projects',
 			'folders',
+			'sync',
 		]);
 		expect(normalizePluginOrder(moved)).toEqual(moved);
 	});

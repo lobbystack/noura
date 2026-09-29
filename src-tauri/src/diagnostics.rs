@@ -56,9 +56,13 @@ pub fn app_diagnostics(app: AppHandle, state: State<AppState>) -> Result<String,
         Some(engine) => {
             let workspace = engine.state();
             report.push_str(&format!(
-                "Workspace: open, {} indexed files, sync {}\n",
+                "Workspace: open, {} indexed files, sync plugin {}\n",
                 workspace.indexed_files,
-                if workspace.sync_enabled { "on" } else { "off" }
+                if engine.sync_plugin_enabled() {
+                    "on"
+                } else {
+                    "off"
+                }
             ));
             let mut codes = workspace
                 .diagnostics

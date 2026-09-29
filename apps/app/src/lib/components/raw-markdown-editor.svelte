@@ -2,10 +2,7 @@
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import type { CollaborationSession } from '@noura/editor';
-	import {
-		acquireNativeCollaboration,
-		openNativeCollaboration,
-	} from '$lib/editor/native-collaboration';
+	import { getCollaborationAccess } from '$lib/editor/workspace-collaboration';
 	import type { CollaborationLease } from '$lib/editor/collaboration-registry';
 	import CollaborativeTextSurface from '$lib/components/collaborative-text-surface.svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
@@ -146,6 +143,8 @@
 	}
 
 	async function activateCollaboration(objectIds: string[]) {
+		// Without the sync plugin, documents stay plain local files.
+		if (!getCollaborationAccess().available) return;
 		if (collaboration || activationInProgress || activationNeedsReview) return;
 		if (collaborationOpening) {
 			activationRequested = objectIds;
@@ -156,7 +155,7 @@
 		session?.autosave.pause();
 		let lease: CollaborationLease | null = null;
 		try {
-			lease = await acquireNativeCollaboration(path);
+			lease = await getCollaborationAccess().acquire(path);
 			if (editorDisposed) {
 				await lease?.release();
 				lease = null;
@@ -328,7 +327,8 @@
 			? getNouraClient().files.readRawMarkdown({ relativePath: path })
 			: null;
 		read?.catch(() => {});
-		void openNativeCollaboration(path)
+		void getCollaborationAccess()
+			.acquire(path)
 			.then(async (lease) => {
 				if (disposed) {
 					await lease?.release();

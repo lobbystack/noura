@@ -1,18 +1,6 @@
 import { createContext } from 'svelte';
-
-export type SettingsSection =
-	| 'general'
-	| 'editor'
-	| 'shortcuts'
-	| 'account'
-	| 'workspace'
-	| 'plugins'
-	| 'ai'
-	| 'external-tools'
-	| 'sync'
-	| 'people'
-	| 'files'
-	| 'about';
+import type { SettingsSectionId } from '$lib/settings-sections';
+export type SettingsSection = SettingsSectionId;
 
 /** Transient settings UI, scoped to the app layout. */
 export class SettingsDialog {
@@ -32,6 +20,10 @@ export class SettingsDialog {
 
 	showSync() {
 		this.show('sync');
+	}
+
+	showAccount() {
+		this.show('account');
 	}
 
 	/** Open settings, on a given section when one is named. */

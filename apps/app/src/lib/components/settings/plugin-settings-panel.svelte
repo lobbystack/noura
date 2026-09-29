@@ -6,10 +6,12 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Separator } from '$lib/components/ui/separator';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import Sparkle from 'phosphor-svelte/lib/Sparkle';
 	import Checks from 'phosphor-svelte/lib/Checks';
 	import Calendar from 'phosphor-svelte/lib/Calendar';
 	import Kanban from 'phosphor-svelte/lib/Kanban';
+	import ArrowsClockwise from 'phosphor-svelte/lib/ArrowsClockwise';
 	import CaretRight from 'phosphor-svelte/lib/CaretRight';
 	import ArrowLeft from 'phosphor-svelte/lib/ArrowLeft';
 	let {
@@ -47,6 +49,12 @@
 			description: 'Tasks by date',
 			icon: Calendar,
 		},
+		{
+			id: 'sync',
+			name: 'Sync',
+			description: 'Encrypted sync and live editing across devices',
+			icon: ArrowsClockwise,
+		},
 	];
 	// Files and notes are part of noura itself, so they have no switch here.
 	let selectedId = $state<string | null>(null);
@@ -66,6 +74,37 @@
 	onMount(() => {
 		void plugins.sync();
 	});
+
+	/** Plugins that ask before they turn off. */
+	const disableConfirmations: Record<
+		string,
+		{ title: string; description: string; action: string }
+	> = {
+		sync: {
+			title: 'Turn off Sync?',
+			description:
+				'Sync stops on this device. Your files and sync setup are kept.',
+			action: 'Turn off',
+		},
+	};
+	let confirming = $state<string | null>(null);
+	const confirmation = $derived(
+		confirming ? disableConfirmations[confirming] : undefined,
+	);
+
+	function requestEnabled(id: string, enabled: boolean) {
+		if (!enabled && disableConfirmations[id]) {
+			confirming = id;
+			return;
+		}
+		void setEnabled(id, enabled);
+	}
+
+	function confirmDisable() {
+		const id = confirming;
+		confirming = null;
+		if (id) void setEnabled(id, false);
+	}
 
 	async function setEnabled(id: string, enabled: boolean) {
 		toggling = id;
@@ -124,7 +163,7 @@
 				aria-label="Enable {selected.name}"
 				bind:checked={
 					() => plugins.enabledIds.includes(selected.id),
-					(enabled) => setEnabled(selected.id, enabled)
+					(enabled) => requestEnabled(selected.id, enabled)
 				}
 				aria-describedby={plugins.unavailableReason(selected.id)
 					? 'selected-plugin-availability'
@@ -192,7 +231,7 @@
 						aria-label="Enable {plugin.name}"
 						bind:checked={
 							() => plugins.enabledIds.includes(plugin.id),
-							(enabled) => setEnabled(plugin.id, enabled)
+							(enabled) => requestEnabled(plugin.id, enabled)
 						}
 						aria-describedby={reason
 							? `plugin-availability-${plugin.id}`
@@ -204,3 +243,25 @@
 		</div>
 	</div>
 {/if}
+
+<AlertDialog.Root
+	open={confirmation !== undefined}
+	onOpenChange={(open) => {
+		if (!open) confirming = null;
+	}}
+>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>{confirmation?.title}</AlertDialog.Title>
+			<AlertDialog.Description
+				>{confirmation?.description}</AlertDialog.Description
+			>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action onclick={confirmDisable}
+				>{confirmation?.action}</AlertDialog.Action
+			>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

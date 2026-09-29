@@ -179,6 +179,7 @@ impl WorkspaceSyncCoordinator {
         connection: &DeviceConnection,
         store: &impl SyncCredentials,
     ) -> Result<Vec<SyncDevice>> {
+        engine.require_sync_plugin("sync_devices")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -203,6 +204,7 @@ impl WorkspaceSyncCoordinator {
         device_id: &str,
         fingerprint: &str,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_approve_device")?;
         let mut config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -244,6 +246,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         role: SyncInvitationRole,
     ) -> Result<SyncInvitationLink> {
+        engine.require_sync_plugin("sync_create_invitation")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -260,6 +263,7 @@ impl WorkspaceSyncCoordinator {
         connection: &DeviceConnection,
         store: &impl SyncCredentials,
     ) -> Result<Vec<SyncInvitation>> {
+        engine.require_sync_plugin("sync_invitations")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -296,6 +300,7 @@ impl WorkspaceSyncCoordinator {
         device_id: &str,
         fingerprint: &str,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_approve_invited_device")?;
         identifier(invitation_id)?;
         let invitation = Self::invitations(engine, connection, store)
             .await?
@@ -337,6 +342,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         invitation_id: &str,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_revoke_invitation")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -354,6 +360,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         invitation_id: &str,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_finalize_invitation")?;
         identifier(invitation_id)?;
         let config = engine
             .sync_configuration()?

@@ -20,6 +20,7 @@
 		"@noura/plugin-notes": "workspace:*",
 		"@noura/plugin-projects": "workspace:*",
 		"@noura/plugin-sdk": "workspace:*",
+		"@noura/plugin-sync": "workspace:*",
 		"@noura/plugin-tasks": "workspace:*",
 		"@noura/shared": "workspace:*",
 		"@tauri-apps/api": "^2",

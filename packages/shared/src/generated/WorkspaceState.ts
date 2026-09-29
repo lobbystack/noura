@@ -2,9 +2,4 @@
 import type { Diagnostic } from "./Diagnostic";
 import type { WorkspacePhase } from "./WorkspacePhase";
 
-export type WorkspaceState = { phase: WorkspacePhase, workspaceId: string | null, rootPath: string | null, indexedFiles: bigint, diagnostics: Array<Diagnostic>, 
-/**
- * Whether this workspace has sync set up. Local-only workspaces skip
- * collaboration entirely.
- */
-syncEnabled: boolean, };
+export type WorkspaceState = { phase: WorkspacePhase, workspaceId: string | null, rootPath: string | null, indexedFiles: bigint, diagnostics: Array<Diagnostic>, };

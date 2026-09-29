@@ -91,6 +91,7 @@ export { isCoreError } from '@noura/shared';
 export { AiRegistry } from '@noura/ai';
 export {
 	PluginHost,
+	type CollaborationProvider,
 	type PluginHostServices,
 	type PluginManifest,
 } from '@noura/plugin-sdk';
@@ -120,6 +121,10 @@ export {
 	type PendingAppUpdate,
 } from './app-updater';
 export { firstPartyPlugins } from './first-party';
+export {
+	CollaborationProviderSlot,
+	type CollaborationSlotSnapshot,
+} from './collaboration-slot';
 export {
 	PluginRuntime,
 	PluginRegistry,

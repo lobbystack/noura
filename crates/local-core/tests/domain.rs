@@ -2099,12 +2099,6 @@ fn expired_chats_go_to_the_system_trash_as_one_folder() {
 }
 
 #[test]
-fn a_new_workspace_reports_sync_as_off() {
-    let (_workspace, _app_data, engine) = engine();
-    assert!(!engine.state().sync_enabled);
-}
-
-#[test]
 fn moving_a_file_renames_it_and_keeps_a_managed_id() {
     let (workspace, _app_data, engine) = engine();
     std::fs::write(workspace.path().join("plain.md"), "# Plain\n").unwrap();

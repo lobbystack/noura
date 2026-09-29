@@ -24,6 +24,11 @@
 	import PluginSettingsPanel from './settings/plugin-settings-panel.svelte';
 	import BrowserSyncSettings from './browser-sync-settings.svelte';
 	import {
+		hasBrowserSyncBinding,
+		openBrowserSyncPluginMarker,
+	} from '$lib/browser-sync';
+	import { migrateBrowserSyncPlugin } from '$lib/browser-sync-plugin';
+	import {
 		assertBackupActionAllowed,
 		assertFreshIdentity,
 		decodeBackup,
@@ -225,9 +230,29 @@
 		due = typeof note?.properties.due === 'string' ? note.properties.due : '';
 		editing = note !== null;
 	}
+	/**
+	 * Workspaces this browser already syncs keep syncing: the sync plugin
+	 * turns on once. A failure never blocks opening; the next refresh retries.
+	 */
+	async function migrateSyncPlugin(state: WorkspaceState | null) {
+		const id = state?.phase === 'ready' ? state.workspaceId : null;
+		if (!id || !runtime) return;
+		try {
+			const marker = await openBrowserSyncPluginMarker(id);
+			if (!marker) return;
+			await migrateBrowserSyncPlugin({
+				hasBinding: () => hasBrowserSyncBinding(id),
+				marker,
+				registry: runtime.plugins.registry,
+			});
+		} catch {
+			// Retried on the next refresh.
+		}
+	}
 	async function refresh() {
 		workspace = await runtime!.client.workspaces.current();
 		workspaces = await runtime!.client.workspaces.listRecent();
+		await migrateSyncPlugin(workspace);
 		await pluginModel!.sync();
 		const calendarEnabled = !!plugins?.isEnabled('calendar');
 		notes = plugins?.isEnabled('notes')
@@ -598,12 +623,18 @@
 		{#if settingsRoute && plugins}
 			<section aria-label="Browser sync" class="flex flex-col gap-3">
 				<h2>Sync</h2>
-				{#key workspace?.workspaceId ?? ''}
-					<BrowserSyncSettings
-						workspaceId={workspace?.workspaceId ?? null}
-						workspaceFiles={runtime?.files ?? null}
-					/>
-				{/key}
+				{#if plugins.isEnabled('sync')}
+					{#key workspace?.workspaceId ?? ''}
+						<BrowserSyncSettings
+							workspaceId={workspace?.workspaceId ?? null}
+							workspaceFiles={runtime?.files ?? null}
+						/>
+					{/key}
+				{:else}
+					<p class="text-sm text-muted-foreground">
+						Turn on the Sync plugin to sync this workspace.
+					</p>
+				{/if}
 			</section>
 			<section aria-label="Plugin settings">
 				<h2>Plugins</h2>
@@ -910,7 +941,7 @@
 								</Field.Group>
 							</form>
 						{/if}
-						{#if !projectRoute && !taskRoute && selected}
+						{#if !projectRoute && !taskRoute && selected && plugins?.isEnabled('sync')}
 							{#key selected.id}
 								<BrowserAttachments
 									noteId={selected.id}

@@ -2,10 +2,7 @@
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import type { CollaborationSession } from '@noura/editor';
-	import {
-		acquireNativeCollaboration,
-		openNativeCollaboration,
-	} from '$lib/editor/native-collaboration';
+	import { getCollaborationAccess } from '$lib/editor/workspace-collaboration';
 	import type { CollaborationLease } from '$lib/editor/collaboration-registry';
 	import CollaborativeTextSurface from '$lib/components/collaborative-text-surface.svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
@@ -163,6 +160,8 @@
 	}
 
 	async function activateCollaboration() {
+		// Without the sync plugin, documents stay plain local files.
+		if (!getCollaborationAccess().available) return;
 		if (
 			collaboration ||
 			activationInProgress ||
@@ -180,7 +179,7 @@
 		let lease: CollaborationLease | null = null;
 		try {
 			const target = currentNote;
-			lease = await acquireNativeCollaboration(target.relativePath);
+			lease = await getCollaborationAccess().acquire(target.relativePath);
 			if (editorDisposed) {
 				await lease?.release();
 				lease = null;
@@ -194,7 +193,9 @@
 				});
 				await lease.release();
 				lease = null;
-				lease = await acquireNativeCollaboration(result.value.relativePath);
+				lease = await getCollaborationAccess().acquire(
+					result.value.relativePath,
+				);
 				if (!lease)
 					throw new Error(
 						'Your changes were saved, but sharing couldn’t start. Reopen this note.',
@@ -378,7 +379,8 @@
 				)
 			: () => {};
 		if (currentNote) {
-			void openNativeCollaboration(currentNote.relativePath)
+			void getCollaborationAccess()
+				.acquire(currentNote.relativePath)
 				.then(async (lease) => {
 					if (disposed) {
 						await lease?.release();

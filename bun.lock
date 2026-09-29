@@ -233,6 +233,7 @@
         "@noura/plugin-notes": "workspace:*",
         "@noura/plugin-projects": "workspace:*",
         "@noura/plugin-sdk": "workspace:*",
+        "@noura/plugin-sync": "workspace:*",
         "@noura/plugin-tasks": "workspace:*",
         "@noura/shared": "workspace:*",
         "@tauri-apps/api": "^2",
@@ -311,6 +312,16 @@
       "dependencies": {
         "@noura/plugin-sdk": "workspace:*",
         "zod": "latest",
+      },
+      "devDependencies": {
+        "typescript": "^5.9.3",
+      },
+    },
+    "plugins/sync": {
+      "name": "@noura/plugin-sync",
+      "version": "0.1.0",
+      "dependencies": {
+        "@noura/plugin-sdk": "workspace:*",
       },
       "devDependencies": {
         "typescript": "^5.9.3",
@@ -711,6 +722,8 @@
     "@noura/plugin-projects": ["@noura/plugin-projects@workspace:plugins/projects"],
 
     "@noura/plugin-sdk": ["@noura/plugin-sdk@workspace:packages/plugin-sdk"],
+
+    "@noura/plugin-sync": ["@noura/plugin-sync@workspace:plugins/sync"],
 
     "@noura/plugin-tasks": ["@noura/plugin-tasks@workspace:plugins/tasks"],
 

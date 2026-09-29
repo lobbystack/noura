@@ -248,6 +248,11 @@ pub(crate) fn current_engine(
         .ok_or_else(|| workspace_not_open(operation))
 }
 
+/// The engine installed right now, without waiting for a launch restore.
+pub(crate) fn installed_engine(state: &AppState) -> Option<Arc<WorkspaceEngine>> {
+    state.engine.lock().ok().and_then(|engine| engine.clone())
+}
+
 /// Install a newly opened engine and route its events to the window.
 fn install_engine(
     app: &AppHandle,
@@ -256,12 +261,14 @@ fn install_engine(
     operation: &str,
 ) -> Result<Arc<WorkspaceEngine>, CoreError> {
     let engine = Arc::new(engine);
-    state.sync_cancel.notify_one();
-    state.sync_wake.notify_one();
     *state
         .engine
         .lock()
         .map_err(|_| state_unavailable(operation))? = Some(engine.clone());
+    // Wake the sync loop only after the new engine is visible, so a parked
+    // loop never wakes, sees no engine, and parks again.
+    state.sync_cancel.notify_one();
+    state.sync_wake.notify_one();
     forward_events(app.clone(), engine.clone());
     Ok(engine)
 }
@@ -296,6 +303,13 @@ fn forward_events(app: AppHandle, engine: Arc<WorkspaceEngine>) {
                         .is_some_and(|value| Arc::ptr_eq(value, &engine))
                     {
                         break;
+                    }
+                    // Turning the sync plugin on or off must reach the sync
+                    // loop, whether it is parked or mid-pass.
+                    if sync_commands::wakes_sync(&event) {
+                        let state = app.state::<AppState>();
+                        state.sync_cancel.notify_one();
+                        state.sync_wake.notify_one();
                     }
                     if let Err(error) = app.emit("noura://core-event", event) {
                         log::warn!("could not deliver a workspace event: {error}");
@@ -498,7 +512,6 @@ fn workspace_state(state: State<AppState>) -> Result<WorkspaceState, CoreError> 
             root_path: None,
             indexed_files: 0,
             diagnostics: Vec::new(),
-            sync_enabled: false,
         },
         |workspace| workspace.state(),
     ))
@@ -635,24 +648,42 @@ fn objects_get(state: State<AppState>, id: String) -> Result<WorkspaceObject, Co
         })
     })
 }
+/// Run an object mutation on a blocking thread with the shared routing rule.
+/// The device connection is read only when the mutation collaborates.
+async fn route_object_mutation<T: Send + 'static>(
+    app: AppHandle,
+    operation: &'static str,
+    mutation: impl FnOnce(
+        &WorkspaceEngine,
+        &dyn Fn() -> Result<Option<local_core::sync::DeviceConnection>, CoreError>,
+    ) -> Result<T, CoreError>
+    + Send
+    + 'static,
+) -> Result<T, CoreError> {
+    let engine = current_engine(&app.state::<AppState>(), operation)?;
+    blocking(operation, move || {
+        let state = app.state::<AppState>();
+        // The account lock keeps the stored connection consistent with an
+        // in-flight sign-in, as in `stored_sync_connection`.
+        let connection = || {
+            let _account = state.sync_account.blocking_lock();
+            local_core::sync::SyncAccountService::stored_connection(
+                &local_core::sync::OsSyncCredentials,
+            )
+        };
+        mutation(&engine, &connection)
+    })
+    .await
+}
 #[tauri::command]
 async fn objects_create(
-    state: State<'_, AppState>,
+    app: AppHandle,
     input: CreateObjectInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = current_engine(&state, "objects_create")?;
-    let local = engine.clone();
-    if blocking("objects_create", move || local.sync_configuration())
-        .await?
-        .is_none()
-    {
-        return blocking("objects_create", move || engine.create_object(input)).await;
-    }
-    let connection = sync_connection(&state, "objects_create").await?;
-    blocking("objects_create", move || {
-        local_core::sync::WorkspaceSyncCoordinator::collaboration_create_object(
-            &engine,
-            &connection,
+    route_object_mutation(app, "objects_create", move |engine, connection| {
+        local_core::sync::route_create_object(
+            engine,
+            connection,
             &local_core::sync::OsSyncCredentials,
             input,
         )
@@ -661,27 +692,18 @@ async fn objects_create(
 }
 #[tauri::command]
 async fn objects_update(
-    state: State<'_, AppState>,
+    app: AppHandle,
     id: String,
     patch: ObjectPatch,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = current_engine(&state, "objects_update")?;
-    let (local, object) = (engine.clone(), id.clone());
-    if !blocking("objects_update", move || {
-        local.collaboration_object_is_active(&object)
-    })
-    .await?
-    {
-        return blocking("objects_update", move || engine.update_object(&id, patch)).await;
-    }
-    let connection = sync_connection(&state, "objects_update").await?;
-    blocking("objects_update", move || {
-        local_core::sync::WorkspaceSyncCoordinator::collaboration_update_object(
-            &engine,
-            &connection,
+    route_object_mutation(app, "objects_update", move |engine, connection| {
+        local_core::sync::route_update_object(
+            engine,
+            connection,
             &local_core::sync::OsSyncCredentials,
             &id,
             patch,
+            None,
         )
     })
     .await
@@ -1030,26 +1052,13 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 #[tauri::command]
 async fn objects_move(
-    state: State<'_, AppState>,
+    app: AppHandle,
     input: MoveInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = current_engine(&state, "objects_move")?;
-    let (local, object) = (engine.clone(), input.id.clone());
-    if !blocking("objects_move", move || {
-        local.collaboration_object_is_active(&object)
-    })
-    .await?
-    {
-        return blocking("objects_move", move || {
-            engine.move_object(&input.id, &input.relative_path, &input.expected_revision)
-        })
-        .await;
-    }
-    let connection = sync_connection(&state, "objects_move").await?;
-    blocking("objects_move", move || {
-        local_core::sync::WorkspaceSyncCoordinator::collaboration_move_object(
-            &engine,
-            &connection,
+    route_object_mutation(app, "objects_move", move |engine, connection| {
+        local_core::sync::route_move_object(
+            engine,
+            connection,
             &local_core::sync::OsSyncCredentials,
             &input.id,
             &input.relative_path,
@@ -1060,26 +1069,13 @@ async fn objects_move(
 }
 #[tauri::command]
 async fn objects_delete(
-    state: State<'_, AppState>,
+    app: AppHandle,
     input: DeleteInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = current_engine(&state, "objects_delete")?;
-    let (local, object) = (engine.clone(), input.id.clone());
-    if !blocking("objects_delete", move || {
-        local.collaboration_object_is_active(&object)
-    })
-    .await?
-    {
-        return blocking("objects_delete", move || {
-            engine.delete_object(&input.id, &input.expected_revision)
-        })
-        .await;
-    }
-    let connection = sync_connection(&state, "objects_delete").await?;
-    blocking("objects_delete", move || {
-        local_core::sync::WorkspaceSyncCoordinator::collaboration_delete_object(
-            &engine,
-            &connection,
+    route_object_mutation(app, "objects_delete", move |engine, connection| {
+        local_core::sync::route_delete_object(
+            engine,
+            connection,
             &local_core::sync::OsSyncCredentials,
             &input.id,
             &input.expected_revision,

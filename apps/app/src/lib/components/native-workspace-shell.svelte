@@ -169,6 +169,13 @@
 		void saveBeforeLeaving(proceed).then((saved) => saved && proceed());
 	});
 
+	// Sign-in state lives in the credential store. Read it at startup only
+	// when this workspace syncs; Settings reads it on demand otherwise.
+	$effect(() => {
+		if (plugins.isEnabled('sync'))
+			void getNouraClient().sync.signIn.initialize();
+	});
+
 	// Modules own their sidebar: routes with a contributing module get one
 	// (workspace name plus that module's section); everything else renders
 	// full-width, so a module can simply opt out.
@@ -182,10 +189,10 @@
 		const unsubscribeSignIn = signIn.subscribe((value) => {
 			if (value.returnCount > returnCount) {
 				returnCount = value.returnCount;
-				settingsDialog.showSync();
+				if (plugins.isEnabled('sync')) settingsDialog.showSync();
+				else settingsDialog.showAccount();
 			}
 		});
-		void signIn.initialize();
 		let disposed = false;
 		let unlistenClose: (() => void) | undefined;
 		void workspace.init();
