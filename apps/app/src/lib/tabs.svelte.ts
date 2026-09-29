@@ -142,6 +142,7 @@ class TabsStore {
 				? { ...tab, objectId: nextObjectId, title }
 				: tab,
 		);
+		this.#save();
 	}
 
 	renameObject(objectId: string, title: string) {
