@@ -50,7 +50,9 @@ class PluginStore {
 		if (!this.platform)
 			return 'Native platform could not be detected. Start or build through the Tauri CLI.';
 		if (!this.isSupported(id))
-			return `Not available on ${platformLabels[this.platform]}.`;
+			return this.platform === 'web'
+				? 'Not available in the browser.'
+				: `Not available on ${platformLabels[this.platform]}.`;
 		if (!workspace.isReady) return 'Open a workspace to manage this plugin.';
 		if (!this.synced) return 'Loading workspace plugin preferences…';
 		if (this.lastError)
@@ -99,7 +101,7 @@ class PluginStore {
 	 */
 	async init() {
 		if (this.#initialized) return;
-		if (this.platform === 'web' || !this.platform) {
+		if (!this.platform) {
 			this.synced = true;
 			return;
 		}
@@ -134,7 +136,7 @@ class PluginStore {
 	}
 
 	async #runSync() {
-		if (this.platform === 'web' || !this.platform) {
+		if (!this.platform) {
 			this.activeManifests = [];
 			this.enabledIds = [];
 			this.synced = true;
@@ -226,12 +228,3 @@ class PluginStore {
 }
 
 export const plugins = new PluginStore();
-
-/** Routes backed by a first-party plugin, mapped to the plugin's id. */
-export const PLUGIN_ROUTES: ReadonlyArray<readonly [string, string]> = [
-	['ai', '/ai'],
-	['notes', '/files'],
-	['tasks', '/tasks'],
-	['calendar', '/calendar'],
-	['projects', '/projects'],
-];

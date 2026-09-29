@@ -1,9 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import { visibleSettingsSections } from './settings-sections';
 
-const ids = (enabled: string[], signedIn = false, desktop = true): string[] =>
+const ids = (
+	enabled: string[],
+	signedIn = false,
+	desktop = true,
+	web = false,
+): string[] =>
 	visibleSettingsSections({
 		desktop,
+		web,
 		enabledPluginIds: new Set(enabled),
 		signedIn,
 	}).map((section) => section.id);
@@ -45,6 +51,19 @@ describe('settings sections', () => {
 			'sync',
 			'people',
 			'files',
+			'about',
+		]);
+	});
+
+	test('the browser shows its storage section and hides native ones', () => {
+		expect(ids(['sync'], true, false, true)).toEqual([
+			'general',
+			'editor',
+			'shortcuts',
+			'storage',
+			'workspace',
+			'plugins',
+			'sync',
 			'about',
 		]);
 	});

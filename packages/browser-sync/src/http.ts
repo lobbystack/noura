@@ -119,3 +119,41 @@ export function ensureResponseOk(response: Response): void {
 		{ status: response.status },
 	);
 }
+
+/**
+ * Only same-origin requests are allowed. The hosted app is served by the sync
+ * server, so a relative URL and the page origin address the same service.
+ *
+ * Redirects are refused (`redirect: 'error'`): checking only the initial URL
+ * would let a malicious sync server answer with a 30x to an arbitrary origin.
+ */
+export function createSameOriginFetch(
+	base: string = globalThis.location?.origin ?? '',
+	fetchImpl: FetchLike = globalThis.fetch,
+): FetchLike {
+	return (input, init) => {
+		if (base && !isSameOrigin(input, base)) {
+			return Promise.reject(
+				new BrowserSyncError(
+					BrowserSyncErrorCode.RequestFailed,
+					'Browser sync only uses same-origin requests',
+				),
+			);
+		}
+		return fetchImpl(input, { ...init, redirect: 'error' });
+	};
+}
+
+function isSameOrigin(input: RequestInfo | URL, base: string): boolean {
+	try {
+		const resolved =
+			typeof input === 'string'
+				? new URL(input, base)
+				: input instanceof URL
+					? input
+					: new URL(input.url, base);
+		return resolved.origin === new URL(base).origin;
+	} catch {
+		return false;
+	}
+}

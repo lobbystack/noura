@@ -12,9 +12,15 @@
 	import { RouteSidebar, setRouteSidebar } from '$lib/route-sidebar.svelte';
 	import { commandPalette } from '$lib/command-palette.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
-	import { workspace, getNouraClient } from '$lib/state.svelte';
+	import {
+		workspace,
+		getNouraClient,
+		getPluginRuntime,
+	} from '$lib/state.svelte';
 	import { sidebarModuleFor } from '$lib/sidebar-modules';
-	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
+	import { plugins } from '$lib/plugins.svelte';
+	import { routePlugin } from '$lib/plugin-routes';
+	import { getAppPlatform } from '$lib/platform';
 	import { FILES_ROUTE } from '$lib/navigation-targets';
 	import { whenIdle } from '$lib/idle';
 	import {
@@ -34,6 +40,10 @@
 	import { Toaster } from '$lib/components/ui/sonner/index.js';
 
 	let { children } = $props<{ children: Snippet }>();
+
+	// The desktop app and the browser render this same shell. The browser keeps
+	// workspaces in its own storage and has no window chrome or device account.
+	const web = getAppPlatform() === 'web';
 
 	const settingsDialog = new SettingsDialog();
 	setSettingsDialog(settingsDialog);
@@ -104,11 +114,27 @@
 		if (settledKey) void plugins.sync();
 	});
 
-	// Ephemeral chats expire in the background, once per workspace and then
-	// hourly. It is housekeeping: nothing waits for it.
+	// Workspaces this browser already syncs keep syncing: the sync plugin
+	// turns on once. A failure never blocks opening; the next open retries.
 	$effect(() => {
 		const id = readyWorkspaceId;
-		if (!id) return;
+		if (!web || !id) return;
+		void import('$lib/browser-sync')
+			.then(({ keepBrowserSyncOn }) =>
+				keepBrowserSyncOn(id, getPluginRuntime().registry),
+			)
+			.then((changed) => {
+				if (changed) void plugins.sync();
+			})
+			.catch(() => {});
+	});
+
+	// Ephemeral chats expire in the background, once per workspace and then
+	// hourly. It is housekeeping: nothing waits for it. Chats need the AI
+	// plugin, which only the desktop app runs.
+	$effect(() => {
+		const id = readyWorkspaceId;
+		if (web || !id) return;
 		const expire = () =>
 			whenIdle(() => {
 				if (workspace.state?.workspaceId !== id) return;
@@ -141,13 +167,9 @@
 	// disabled plugin fall back to Home instead of rendering a dead surface.
 	$effect(() => {
 		if (!plugins.synced) return;
-		const path = page.url.pathname;
-		for (const [pluginId, route] of PLUGIN_ROUTES) {
-			if (path.startsWith(route) && !plugins.isEnabled(pluginId)) {
-				void goto('/inbox', { replaceState: true });
-				return;
-			}
-		}
+		const pluginId = routePlugin(page.url.pathname);
+		if (pluginId && !plugins.isEnabled(pluginId))
+			void goto('/inbox', { replaceState: true });
 	});
 
 	let allowedNavigation: string | null = null;
@@ -172,7 +194,7 @@
 	// Sign-in state lives in the credential store. Read it at startup only
 	// when this workspace syncs; Settings reads it on demand otherwise.
 	$effect(() => {
-		if (plugins.isEnabled('sync'))
+		if (!web && plugins.isEnabled('sync'))
 			void getNouraClient().sync.signIn.initialize();
 	});
 
@@ -197,13 +219,15 @@
 		let unlistenClose: (() => void) | undefined;
 		void workspace.init();
 		void plugins.init();
-		const host = createTauriHostLifecycle();
-		void installPendingDraftCloseGuard(host, () =>
-			saveBeforeLeaving(() => host.forceClose()),
-		).then((unlisten) => {
-			if (disposed) unlisten();
-			else unlistenClose = unlisten;
-		});
+		if (!web) {
+			const host = createTauriHostLifecycle();
+			void installPendingDraftCloseGuard(host, () =>
+				saveBeforeLeaving(() => host.forceClose()),
+			).then((unlisten) => {
+				if (disposed) unlisten();
+				else unlistenClose = unlisten;
+			});
+		}
 		return () => {
 			disposed = true;
 			unsubscribeSignIn();
@@ -218,7 +242,17 @@
 	<title>{workspace.name}</title>
 </svelte:head>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window
+	onkeydown={handleKeydown}
+	onbeforeunload={(event) => {
+		// A browser tab can't save on close the way the desktop app does, so
+		// it asks before losing typed changes.
+		if (web && hasPendingDrafts()) {
+			void flushPendingDrafts();
+			event.preventDefault();
+		}
+	}}
+/>
 
 <div
 	class="flex h-svh min-h-0 flex-col overflow-hidden"

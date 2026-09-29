@@ -1,8 +1,6 @@
 import type { CoreEvent, WorkspaceState } from '@noura/shared';
 import {
-	browserPluginCapabilities,
 	createNouraClient,
-	PluginRuntime,
 	type CoreTransport,
 	type NouraClient,
 } from '@noura/workspace/browser';
@@ -150,33 +148,39 @@ export function createBrowserWorkspaceFiles(
 	transport: CoreTransport,
 ): BrowserWorkspaceFiles {
 	return {
-		list: () => transport.request<string[]>('files_list'),
+		list: () => transport.request<string[]>('storage_files_list'),
 		listObjects: () =>
-			transport.request<BrowserWorkspaceObjectCard[]>('objects_list'),
+			transport.request<BrowserWorkspaceObjectCard[]>('storage_objects_list'),
 		async read(path) {
 			const value = await transport.request<{
 				revision: string;
 				bytes: string;
-			} | null>('files_read', { path });
+			} | null>('storage_files_read', { path });
 			return value === null
 				? null
 				: { revision: value.revision, bytes: decodeBase64(value.bytes) };
 		},
 		write: (input) =>
-			transport.request<{ path: string; revision: string }>('files_write', {
-				path: input.path,
-				bytes: encodeBase64(input.bytes),
-				expectedRevision: input.expectedRevision,
-			}),
+			transport.request<{ path: string; revision: string }>(
+				'storage_files_write',
+				{
+					path: input.path,
+					bytes: encodeBase64(input.bytes),
+					expectedRevision: input.expectedRevision,
+				},
+			),
 		move: (input) =>
-			transport.request<{ path: string; revision: string }>('files_move', {
-				from: input.from,
-				to: input.to,
-				expectedRevision: input.expectedRevision,
-				expectedDestinationRevision: input.expectedDestinationRevision,
-			}),
+			transport.request<{ path: string; revision: string }>(
+				'storage_files_move',
+				{
+					from: input.from,
+					to: input.to,
+					expectedRevision: input.expectedRevision,
+					expectedDestinationRevision: input.expectedDestinationRevision,
+				},
+			),
 		async delete(input) {
-			await transport.request('files_delete', {
+			await transport.request('storage_files_delete', {
 				path: input.path,
 				expectedRevision: input.expectedRevision,
 			});
@@ -201,12 +205,6 @@ function decodeBase64(value: string): Uint8Array {
 /** Creates the normal typed Noura client over a browser worker transport. */
 export function createBrowserWorkspaceClient(worker: BrowserWorkerEndpoint): {
 	client: NouraClient;
-	/**
-	 * Capability-limited plugin runtime. It can activate notes, tasks,
-	 * projects, and the read-only calendar view; it never grants browser
-	 * plugins AI, file, search, or cache services.
-	 */
-	plugins: PluginRuntime;
 	transport: CoreTransport & { dispose(): void };
 	/** Raw canonical file operations on the active workspace. */
 	files: BrowserWorkspaceFiles;
@@ -219,10 +217,6 @@ export function createBrowserWorkspaceClient(worker: BrowserWorkerEndpoint): {
 	const client = createNouraClient(transport);
 	return {
 		client,
-		plugins: new PluginRuntime(client, {
-			platform: 'web',
-			supportedCapabilities: browserPluginCapabilities,
-		}),
 		transport,
 		files: createBrowserWorkspaceFiles(transport),
 		exportWorkspace: () =>

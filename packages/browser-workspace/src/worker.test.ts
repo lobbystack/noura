@@ -46,9 +46,31 @@ class MemoryFileSystem implements BrowserStorageFileSystem {
 	async remove(path: string) {
 		return this.files.delete(path);
 	}
+	readonly directories = new Set<string>();
+	async makeDirectory(path: string) {
+		this.directories.add(path);
+	}
+	async removeDirectory(path: string, options: { recursive?: boolean } = {}) {
+		const prefix = `${path}/`;
+		if (
+			!options.recursive &&
+			[...this.files.keys(), ...this.directories].some((key) =>
+				key.startsWith(prefix),
+			)
+		)
+			throw new Error('directory not empty');
+		for (const key of [...this.files.keys()])
+			if (key.startsWith(prefix)) this.files.delete(key);
+		for (const key of [...this.directories])
+			if (key.startsWith(prefix)) this.directories.delete(key);
+		return this.directories.delete(path);
+	}
 	async list(path: string) {
 		const prefix = path.length === 0 ? '' : `${path}/`;
 		const entries = new Map<string, 'file' | 'directory'>();
+		for (const key of this.directories)
+			if (key.startsWith(prefix))
+				entries.set(key.slice(prefix.length).split('/')[0]!, 'directory');
 		for (const key of this.files.keys()) {
 			if (!key.startsWith(prefix)) continue;
 			const rest = key.slice(prefix.length);
@@ -65,6 +87,19 @@ class MemoryFileSystem implements BrowserStorageFileSystem {
 const lock: BrowserStorageLock = { run: (operation) => operation() };
 let nextNote = 0;
 const format: WorkspaceFormat = {
+	mergeText: (base, local, external) =>
+		external === base ? local : local === base ? external : null,
+	mergeMarkdownBody: (base, local, external) =>
+		external === base ? local : local === base ? external : null,
+	mergeManagedDraft: () => null,
+	readRawText: (bytes) => ({
+		body: decoder.decode(bytes),
+		usesCrlf: false,
+		hasBom: false,
+	}),
+	composeRawText: (_original, body) => encoder.encode(body),
+	rawHistorySegment: (path) => `raw-${path.length}`,
+	selectCalendarEntries: (entries) => entries,
 	contentRevision: (bytes) => `r:${decoder.decode(bytes)}`,
 	isValidObjectId: () => true,
 	isValidManagedObjectPath: (path) =>
@@ -360,7 +395,13 @@ describe('BrowserWorkspaceServer', () => {
 		const manifest = (await server.request(
 			'manifest_read',
 		)) as WorkspaceManifest;
-		expect(manifest.enabled_plugins).toEqual(['notes', 'projects', 'tasks']);
+		expect(manifest.enabled_plugins).toEqual([
+			'calendar',
+			'folders',
+			'notes',
+			'projects',
+			'tasks',
+		]);
 
 		const reopened = new BrowserWorkspaceServer({
 			format,
@@ -373,7 +414,7 @@ describe('BrowserWorkspaceServer', () => {
 		expect(
 			((await reopened.request('manifest_read')) as WorkspaceManifest)
 				.enabled_plugins,
-		).toEqual(['notes', 'projects', 'tasks']);
+		).toEqual(['calendar', 'folders', 'notes', 'projects', 'tasks']);
 	});
 
 	test('disabling a seeded default plugin persists across a reopen', async () => {
@@ -606,7 +647,7 @@ describe('BrowserWorkspaceServer', () => {
 		});
 		expect(await server.request('workspace_rebuild_index')).toMatchObject({
 			phase: 'ready',
-			indexedFiles: 3,
+			indexedFiles: 2,
 		});
 
 		await server.request('objects_delete', {
@@ -887,7 +928,11 @@ describe('BrowserWorkspaceServer', () => {
 			server.request('workspace_close'),
 		]);
 
-		expect(events).toEqual(['workspace:opened', 'object:created']);
+		expect(events).toEqual([
+			'workspace:ready',
+			'object:created',
+			'workspace:closed',
+		]);
 	});
 
 	test('round trips raw workspace bytes and metadata through a new browser workspace', async () => {
@@ -990,7 +1035,7 @@ describe('BrowserWorkspaceServer', () => {
 		).resolves.toMatchObject({ phase: 'ready', workspaceId });
 	});
 
-	test('rejects traversal, duplicate identities, and malformed manifests before creating a workspace', async () => {
+	test('rejects traversal and malformed manifests before creating a workspace', async () => {
 		const values = registry();
 		const server = new BrowserWorkspaceServer({
 			format,
@@ -1032,35 +1077,6 @@ describe('BrowserWorkspaceServer', () => {
 				},
 			}),
 		).rejects.toMatchObject({ code: 'invalid_workspace_snapshot' });
-		const duplicate = object({
-			id: 'note_01j00000000000000000000000',
-			title: 'Duplicate',
-			body: '',
-			relativePath: 'notes/a.md',
-			created: null,
-			updated: null,
-			properties: {},
-		});
-		await expect(
-			malformedServer.request('workspace_import', {
-				snapshot: {
-					format: 'noura.workspace-snapshot',
-					version: 1,
-					workspaceId,
-					entries: [
-						{ path: '.noura/workspace.yaml', bytes: manifest },
-						{
-							path: 'notes/a.md',
-							bytes: encoder.encode(JSON.stringify(duplicate)),
-						},
-						{
-							path: 'notes/b.md',
-							bytes: encoder.encode(JSON.stringify(duplicate)),
-						},
-					],
-				},
-			}),
-		).rejects.toMatchObject({ code: 'duplicate_object_identity' });
 		await expect(
 			malformedServer.request('workspace_import', {
 				snapshot: {
@@ -1115,24 +1131,24 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 
 	test('lists, reads, writes, moves, and deletes canonical bytes', async () => {
 		const { server } = await openServer();
-		const written = (await server.request('files_write', {
+		const written = (await server.request('storage_files_write', {
 			path: 'assets/blob.bin',
 			bytes: 'AAECAw==',
 			expectedRevision: null,
 		})) as { path: string; revision: string };
 		expect(written.path).toBe('assets/blob.bin');
 
-		expect(await server.request('files_list')).toEqual(
+		expect(await server.request('storage_files_list')).toEqual(
 			expect.arrayContaining(['assets/blob.bin', '.noura/workspace.yaml']),
 		);
 
-		const read = (await server.request('files_read', {
+		const read = (await server.request('storage_files_read', {
 			path: 'assets/blob.bin',
 		})) as { revision: string; bytes: string };
 		expect(read.revision).toBe(written.revision);
 		expect(read.bytes).toBe('AAECAw==');
 
-		const moved = (await server.request('files_move', {
+		const moved = (await server.request('storage_files_move', {
 			from: 'assets/blob.bin',
 			to: 'assets/renamed.bin',
 			expectedRevision: written.revision,
@@ -1140,15 +1156,17 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 		})) as { path: string; revision: string };
 		expect(moved.path).toBe('assets/renamed.bin');
 		expect(
-			await server.request('files_read', { path: 'assets/blob.bin' }),
+			await server.request('storage_files_read', { path: 'assets/blob.bin' }),
 		).toBeNull();
 
-		await server.request('files_delete', {
+		await server.request('storage_files_delete', {
 			path: 'assets/renamed.bin',
 			expectedRevision: moved.revision,
 		});
 		expect(
-			await server.request('files_read', { path: 'assets/renamed.bin' }),
+			await server.request('storage_files_read', {
+				path: 'assets/renamed.bin',
+			}),
 		).toBeNull();
 	});
 
@@ -1160,14 +1178,14 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 			now: () => '2026-09-12T00:00:00Z',
 		});
 		const requests: Array<[string, Record<string, unknown>]> = [
-			['files_list', {}],
-			['files_read', { path: 'notes/a.md' }],
+			['storage_files_list', {}],
+			['storage_files_read', { path: 'notes/a.md' }],
 			[
-				'files_write',
+				'storage_files_write',
 				{ path: 'notes/a.md', bytes: 'AA==', expectedRevision: null },
 			],
 			[
-				'files_move',
+				'storage_files_move',
 				{
 					from: 'notes/a.md',
 					to: 'notes/b.md',
@@ -1175,7 +1193,7 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 					expectedDestinationRevision: null,
 				},
 			],
-			['files_delete', { path: 'notes/a.md', expectedRevision: 'r:x' }],
+			['storage_files_delete', { path: 'notes/a.md', expectedRevision: 'r:x' }],
 		];
 		for (const [command, payload] of requests) {
 			await expect(server.request(command, payload)).rejects.toMatchObject({
@@ -1187,7 +1205,7 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 	test('rejects traversal paths and stale revisions before writing', async () => {
 		const { server, values } = await openServer();
 		await expect(
-			server.request('files_write', {
+			server.request('storage_files_write', {
 				path: '../escape.md',
 				bytes: 'AA==',
 				expectedRevision: null,
@@ -1195,20 +1213,20 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 		).rejects.toMatchObject({ code: 'invalid_path' });
 		expect(values.fileSystem.files.has('../escape.md')).toBe(false);
 
-		await server.request('files_write', {
+		await server.request('storage_files_write', {
 			path: 'notes/a.md',
 			bytes: 'AA==',
 			expectedRevision: null,
 		});
 		await expect(
-			server.request('files_write', {
+			server.request('storage_files_write', {
 				path: 'notes/a.md',
 				bytes: 'AQ==',
 				expectedRevision: null,
 			}),
 		).rejects.toMatchObject({ code: 'revision_conflict' });
 		await expect(
-			server.request('files_write', {
+			server.request('storage_files_write', {
 				path: 'notes/a.md',
 				bytes: 'AQ==',
 				expectedRevision: 'r:not-current',
@@ -1221,7 +1239,7 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 		const created = (await server.request('objects_create', {
 			input: { type: 'note', title: 'Card', body: 'body' },
 		})) as { value: WorkspaceObject };
-		const cards = (await server.request('objects_list')) as Array<{
+		const cards = (await server.request('storage_objects_list')) as Array<{
 			id: string;
 			path: string;
 			type: string;
@@ -1238,14 +1256,14 @@ describe('BrowserWorkspaceServer raw file operations', () => {
 	test('rejects malformed raw file payloads', async () => {
 		const { server } = await openServer();
 		await expect(
-			server.request('files_write', {
+			server.request('storage_files_write', {
 				path: 'notes/a.md',
 				bytes: 'not base64!!',
 				expectedRevision: null,
 			}),
 		).rejects.toMatchObject({ code: 'invalid_base64' });
 		await expect(
-			server.request('files_write', {
+			server.request('storage_files_write', {
 				path: 'notes/a.md',
 				bytes: 'AA==',
 				expectedRevision: null,

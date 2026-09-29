@@ -3,6 +3,9 @@ use std::{collections::HashMap, path::Path};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use workspace_format::calendar::{
+    CalendarError, CalendarItem, select_calendar_entries, validate_calendar_range,
+};
 
 use crate::{
     CoreError, ErrorCategory, ParseStatus, ParsedMarkdown, Result, UnmanagedFile, WorkspaceObject,
@@ -599,7 +602,7 @@ impl IndexStore {
     }
 
     pub fn calendar(&self, range_start: &str, range_end: &str) -> Result<Vec<CalendarEntry>> {
-        let range = CalendarRange::parse(range_start, range_end)?;
+        validate_calendar_range(range_start, range_end).map_err(calendar_error)?;
         let mut statement = self.connection.prepare_cached("SELECT o.stable_id,o.object_type,o.title,p.property_name,p.value_text,e.value_text,f.hash FROM object_properties p JOIN objects o ON o.file_id=p.file_id JOIN files f ON f.id=p.file_id LEFT JOIN object_properties e ON e.file_id=p.file_id AND e.property_name='end' WHERE p.property_name IN ('due','date','start')").map_err(|error| CoreError::index(error,"calendar_query"))?;
         let rows = statement
             .query_map([], |row| {
@@ -616,19 +619,10 @@ impl IndexStore {
                 })
             })
             .map_err(|error| CoreError::index(error, "calendar_query"))?;
-        let mut entries = rows
+        let entries = rows
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| CoreError::index(error, "calendar_query"))?;
-        entries.retain(|entry| calendar_entry_overlaps(entry, range));
-        entries.sort_by(|left, right| {
-            calendar_instant(&left.start)
-                .ok()
-                .cmp(&calendar_instant(&right.start).ok())
-                .then_with(|| left.title.cmp(&right.title))
-                .then_with(|| left.source_id.cmp(&right.source_id))
-                .then_with(|| left.property.cmp(&right.property))
-        });
-        Ok(entries)
+        select_calendar_entries(entries, range_start, range_end).map_err(calendar_error)
     }
 
     /// Read one plugin-local state value. The value is derived cache state:
@@ -891,112 +885,39 @@ fn parse_plugin_state_value(json: &str, operation: &str) -> Result<serde_json::V
     })
 }
 
-fn calendar_instant(value: &str) -> Result<jiff::Timestamp> {
-    let normalized = if value.len() == 10 {
-        format!("{value}T00:00:00Z")
-    } else {
-        value.to_owned()
-    };
-    normalized.parse::<jiff::Timestamp>().map_err(|_| {
-        CoreError::validation(
-            "invalid_calendar_date",
-            "Calendar values must use YYYY-MM-DD or RFC 3339 with an explicit offset",
-            "calendar_query",
-        )
-    })
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CalendarRange {
-    start_instant: jiff::Timestamp,
-    end_instant: jiff::Timestamp,
-    start_date: jiff::civil::Date,
-    end_date: jiff::civil::Date,
-}
-
-impl CalendarRange {
-    fn parse(start: &str, end: &str) -> Result<Self> {
-        let start_instant = calendar_instant(start)?;
-        let end_instant = calendar_instant(end)?;
-        if start_instant >= end_instant {
-            return Err(CoreError::validation(
-                "invalid_calendar_range",
-                "The calendar range end must be after its start",
-                "calendar_query",
-            ));
-        }
-        let start_date = calendar_date(start)?;
-        let mut end_date = calendar_date(end)?;
-        if !calendar_boundary_is_midnight(end) {
-            end_date = end_date.tomorrow().map_err(|_| {
-                CoreError::validation(
-                    "invalid_calendar_date",
-                    "Calendar values must use YYYY-MM-DD or RFC 3339 with an explicit offset",
-                    "calendar_query",
-                )
-            })?;
-        }
-        Ok(Self {
-            start_instant,
-            end_instant,
-            start_date,
-            end_date,
-        })
+impl CalendarItem for CalendarEntry {
+    fn start(&self) -> &str {
+        &self.start
+    }
+    fn end(&self) -> Option<&str> {
+        self.end.as_deref()
+    }
+    fn all_day(&self) -> bool {
+        self.all_day
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn source_id(&self) -> &str {
+        &self.source_id
+    }
+    fn property(&self) -> &str {
+        &self.property
     }
 }
 
-fn calendar_date(value: &str) -> Result<jiff::civil::Date> {
-    value
-        .get(..10)
-        .and_then(|date| date.parse::<jiff::civil::Date>().ok())
-        .ok_or_else(|| {
-            CoreError::validation(
-                "invalid_calendar_date",
-                "Calendar values must use YYYY-MM-DD or RFC 3339 with an explicit offset",
-                "calendar_query",
-            )
-        })
-}
-
-fn calendar_boundary_is_midnight(value: &str) -> bool {
-    value.len() == 10
-        || value.get(11..).is_some_and(|time_and_offset| {
-            let offset = time_and_offset
-                .find(['Z', '+', '-'])
-                .unwrap_or(time_and_offset.len());
-            time_and_offset[..offset]
-                .parse::<jiff::civil::Time>()
-                .is_ok_and(|time| time == jiff::civil::Time::midnight())
-        })
-}
-
-fn calendar_entry_overlaps(entry: &CalendarEntry, range: CalendarRange) -> bool {
-    if entry.all_day {
-        let Ok(start) = calendar_date(&entry.start) else {
-            return false;
-        };
-        let end = entry
-            .end
-            .as_deref()
-            .filter(|value| value.len() == 10)
-            .and_then(|value| calendar_date(value).ok())
-            .filter(|end| *end > start)
-            .or_else(|| start.tomorrow().ok());
-        end.is_some_and(|end| start < range.end_date && end > range.start_date)
-    } else {
-        let Ok(start) = calendar_instant(&entry.start) else {
-            return false;
-        };
-        let end = entry
-            .end
-            .as_deref()
-            .filter(|value| value.len() != 10)
-            .and_then(|value| calendar_instant(value).ok())
-            .filter(|end| *end > start);
-        end.map_or_else(
-            || start >= range.start_instant && start < range.end_instant,
-            |end| start < range.end_instant && end > range.start_instant,
-        )
+fn calendar_error(error: CalendarError) -> CoreError {
+    match error {
+        CalendarError::InvalidDate => CoreError::validation(
+            "invalid_calendar_date",
+            "Calendar values must use YYYY-MM-DD or RFC 3339 with an explicit offset",
+            "calendar_query",
+        ),
+        CalendarError::InvalidRange => CoreError::validation(
+            "invalid_calendar_range",
+            "The calendar range end must be after its start",
+            "calendar_query",
+        ),
     }
 }
 
@@ -1317,114 +1238,6 @@ mod tests {
             .calendar("2026-08-31T22:00:00Z", "2026-08-31T23:00:00Z")
             .unwrap();
         assert_eq!(entries.len(), 1);
-    }
-
-    fn calendar_entry(start: &str, end: Option<&str>) -> CalendarEntry {
-        CalendarEntry {
-            source_id: "task_example".into(),
-            source_type: "task".into(),
-            title: "Example".into(),
-            property: "due".into(),
-            start: start.into(),
-            end: end.map(str::to_owned),
-            all_day: start.len() == 10,
-            revision: "revision".into(),
-        }
-    }
-
-    #[test]
-    fn calendar_point_entries_use_half_open_range_boundaries() {
-        let range = CalendarRange::parse("2026-09-04T12:00:00Z", "2026-09-04T13:00:00Z").unwrap();
-
-        assert!(calendar_entry_overlaps(
-            &calendar_entry("2026-09-04T12:00:00Z", None),
-            range
-        ));
-        assert!(!calendar_entry_overlaps(
-            &calendar_entry("2026-09-04T11:59:59Z", None),
-            range
-        ));
-        assert!(!calendar_entry_overlaps(
-            &calendar_entry("2026-09-04T13:00:00Z", None),
-            range
-        ));
-    }
-
-    #[test]
-    fn calendar_timed_intervals_overlap_by_instant() {
-        let range = CalendarRange::parse("2026-09-04T12:00:00Z", "2026-09-04T13:00:00Z").unwrap();
-
-        assert!(calendar_entry_overlaps(
-            &calendar_entry(
-                "2026-09-04T13:30:00+02:00",
-                Some("2026-09-04T14:30:00+02:00")
-            ),
-            range
-        ));
-        assert!(!calendar_entry_overlaps(
-            &calendar_entry("2026-09-04T11:00:00Z", Some("2026-09-04T12:00:00Z")),
-            range
-        ));
-        assert!(!calendar_entry_overlaps(
-            &calendar_entry("2026-09-04T13:00:00Z", Some("2026-09-04T14:00:00Z")),
-            range
-        ));
-    }
-
-    #[test]
-    fn calendar_all_day_intervals_overlap_as_civil_dates() {
-        let range =
-            CalendarRange::parse("2026-09-06T00:00:00-04:00", "2026-09-07T00:00:00-04:00").unwrap();
-
-        assert!(calendar_entry_overlaps(
-            &calendar_entry("2026-09-04", Some("2026-09-07")),
-            range
-        ));
-        assert!(!calendar_entry_overlaps(
-            &calendar_entry("2026-09-03", Some("2026-09-06")),
-            range
-        ));
-        assert!(!calendar_entry_overlaps(
-            &calendar_entry("2026-09-07", None),
-            range
-        ));
-    }
-
-    #[test]
-    fn calendar_invalid_mixed_and_non_increasing_ends_fall_back_to_points() {
-        let timed_range =
-            CalendarRange::parse("2026-09-04T12:00:00Z", "2026-09-04T13:00:00Z").unwrap();
-        let day_range = CalendarRange::parse("2026-09-04", "2026-09-05").unwrap();
-
-        for end in [
-            Some("not-a-date"),
-            Some("2026-09-04"),
-            Some("2026-09-04T11:00:00Z"),
-        ] {
-            assert!(calendar_entry_overlaps(
-                &calendar_entry("2026-09-04T12:30:00Z", end),
-                timed_range
-            ));
-        }
-        for end in [
-            Some("not-a-date"),
-            Some("2026-09-04T18:00:00Z"),
-            Some("2026-09-04"),
-        ] {
-            assert!(calendar_entry_overlaps(
-                &calendar_entry("2026-09-04", end),
-                day_range
-            ));
-        }
-    }
-
-    #[test]
-    fn calendar_malformed_starts_are_excluded() {
-        let range = CalendarRange::parse("2026-09-04", "2026-09-05").unwrap();
-        assert!(!calendar_entry_overlaps(
-            &calendar_entry("not-a-date", None),
-            range
-        ));
     }
 
     #[test]

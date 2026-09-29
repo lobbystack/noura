@@ -77,6 +77,11 @@ describe('typed client', () => {
 		await expect(client.app.capabilities()).resolves.toEqual({
 			openTerminal: false,
 			revealSelectsFile: true,
+			revealInFileManager: true,
+			openWithDefaultApp: true,
+			systemTrash: true,
+			workspaceFolders: true,
+			mcp: true,
 		});
 		expect(
 			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,

@@ -18,6 +18,7 @@
 		"marked": "18.0.11",
 		"@noura/ai": "workspace:*",
 		"@noura/browser-sync": "workspace:*",
+		"@noura/browser-sync-client": "workspace:*",
 		"@noura/browser-sync-engine": "workspace:*",
 		"@noura/browser-workspace": "workspace:*",
 		"@noura/browser-storage": "workspace:*",

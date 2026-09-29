@@ -45,7 +45,7 @@ describe('browser JSON backup', () => {
 					throw new Error();
 				},
 			} as unknown as Blob),
-		).rejects.toThrow('96 MiB');
+		).rejects.toThrow('96 MB');
 		expect(read).toBe(false);
 	});
 	test('rejects hostile shapes, paths, duplicate paths, metadata and encodings', async () => {
@@ -105,7 +105,7 @@ describe('browser JSON backup', () => {
 		])
 			expect(() =>
 				encodeBackup(value as unknown as BrowserWorkspaceSnapshot),
-			).toThrow('Invalid or unsupported');
+			).toThrow('isn’t a noura backup');
 	});
 	test('rejects oversized entries before binary decode', async () => {
 		const source = await wire();
@@ -126,11 +126,11 @@ describe('browser JSON backup', () => {
 		).rejects.toThrow();
 	});
 	test('guards drafts and identity conflicts without altering IDs', () => {
-		expect(() => assertBackupActionAllowed(true)).toThrow('unsaved draft');
+		expect(() => assertBackupActionAllowed(true)).toThrow('Save your changes');
 		expect(() => assertBackupActionAllowed(false)).not.toThrow();
 		const existing = [{ workspaceId: 'same' }];
 		expect(() => assertFreshIdentity('same', existing)).toThrow(
-			'Nothing was overwritten',
+			'already in this browser',
 		);
 		expect(() => assertFreshIdentity('fresh', existing)).not.toThrow();
 		expect(existing).toEqual([{ workspaceId: 'same' }]);

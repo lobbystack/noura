@@ -123,11 +123,9 @@
 	}
 </script>
 
-{#if !workspaceReady || plugins.platform === 'web'}
+{#if !workspaceReady}
 	<p class="mb-4 text-sm text-muted-foreground">
-		{#if !workspaceReady}Open a workspace to manage plugins.{/if}
-		{#if plugins.platform === 'web'}In the browser, some plugin features only
-			work in the desktop app.{/if}
+		Open a workspace to manage plugins.
 	</p>
 {/if}
 {#if error || plugins.lastError}<p

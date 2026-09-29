@@ -28,9 +28,12 @@
  *
  * `BrowserWorkspaceStorage` can back {@link BrowserSyncStorage} through the
  * concrete {@link createWorkspaceStorageAdapter} (which derives `list` from
- * `rebuild()`) or the lower-level {@link createBrowserStorageAdapter}; OPFS
- * wiring, key rotation application, recovery kits, and UI remain outstanding.
- * See `docs/architecture/browser-sync.md`.
+ * `rebuild()`) or the lower-level {@link createBrowserStorageAdapter}. The
+ * workspace worker's raw file operations go through
+ * {@link createWorkerWorkspaceStorage} and {@link createWorkspaceSyncStorage},
+ * which keep unguarded conflict writes working. The controller, keys, and OPFS
+ * stores live in `@noura/browser-sync-client`. See
+ * `docs/architecture/browser-sync.md`.
  */
 export {
 	BrowserSyncEngineError,
@@ -63,6 +66,12 @@ export {
 	createWorkspaceStorageAdapter,
 	memoryRevision,
 } from './storage';
+export {
+	createWorkerWorkspaceStorage,
+	createWorkspaceSyncStorage,
+	isSyncablePath,
+} from './workspace-files';
+export type { WorkspaceFileOperations } from './workspace-files';
 export type {
 	BrowserWorkspaceStorageLike,
 	WorkspaceRebuildResult,

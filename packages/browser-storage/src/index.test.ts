@@ -3,7 +3,6 @@ import type { WorkspaceFormat } from '@noura/workspace-format-wasm';
 import {
 	BrowserStorageError,
 	BrowserWorkspaceStorage,
-	DuplicateObjectIdentityError,
 	type BrowserStorageFileSystem,
 	type BrowserStorageLock,
 } from './index';
@@ -13,6 +12,9 @@ const decoder = new TextDecoder();
 
 class FakeFileSystem implements BrowserStorageFileSystem {
 	readonly files = new Map<string, Uint8Array>();
+	readonly directories = new Set<string>();
+	reads = 0;
+	lists = 0;
 	#interruptAfterWrite: string | null = null;
 	#interruptAfterRemove: string | null = null;
 
@@ -25,6 +27,7 @@ class FakeFileSystem implements BrowserStorageFileSystem {
 	}
 
 	async read(path: string, maxBytes?: number) {
+		this.reads += 1;
 		const value = this.files.get(path);
 		if (value && maxBytes !== undefined && value.byteLength > maxBytes)
 			throw new BrowserStorageError(
@@ -51,9 +54,31 @@ class FakeFileSystem implements BrowserStorageFileSystem {
 		return removed;
 	}
 
+	async makeDirectory(path: string) {
+		this.directories.add(path);
+	}
+
+	async removeDirectory(path: string, options: { recursive?: boolean } = {}) {
+		const prefix = `${path}/`;
+		const nested = [...this.files.keys(), ...this.directories].some((key) =>
+			key.startsWith(prefix),
+		);
+		if (nested && !options.recursive) throw new Error('directory not empty');
+		for (const key of [...this.files.keys()])
+			if (key.startsWith(prefix)) this.files.delete(key);
+		for (const key of [...this.directories])
+			if (key.startsWith(prefix)) this.directories.delete(key);
+		return this.directories.delete(path);
+	}
+
 	async list(path: string) {
+		this.lists += 1;
 		const prefix = path.length === 0 ? '' : `${path}/`;
 		const entries = new Map<string, 'file' | 'directory'>();
+		for (const key of this.directories) {
+			if (!key.startsWith(prefix)) continue;
+			entries.set(key.slice(prefix.length).split('/')[0]!, 'directory');
+		}
 		for (const key of this.files.keys()) {
 			if (!key.startsWith(prefix)) continue;
 			const remainder = key.slice(prefix.length);
@@ -249,14 +274,173 @@ describe('BrowserWorkspaceStorage', () => {
 		expect(rebuilt.managed.map((file) => file.id)).toEqual(['note_first']);
 	});
 
-	test('rebuilds from files and rejects duplicate stable identities', async () => {
+	test('reports duplicate stable identities and leaves their files alone', async () => {
 		const { fileSystem, storage } = createStorage();
 		await fileSystem.write('notes/a.md', encoder.encode('id:note_same'));
 		await fileSystem.write('notes/b.md', encoder.encode('id:note_same'));
 		await fileSystem.write('notes/bad.md', encoder.encode('malformed'));
+		await fileSystem.write('notes/c.md', encoder.encode('id:note_other'));
 
-		await expect(storage.rebuild()).rejects.toBeInstanceOf(
-			DuplicateObjectIdentityError,
+		const rebuilt = await storage.rebuild();
+		expect(rebuilt.duplicates).toEqual([
+			{ id: 'note_same', paths: ['notes/a.md', 'notes/b.md'] },
+		]);
+		expect(rebuilt.managed.map((file) => file.relativePath)).toEqual([
+			'notes/a.md',
+			'notes/b.md',
+			'notes/c.md',
+		]);
+		expect(rebuilt.malformedMarkdown).toEqual([
+			{ path: 'notes/bad.md', error: 'bad yaml' },
+		]);
+		expect(decoder.decode(fileSystem.files.get('notes/a.md'))).toBe(
+			'id:note_same',
+		);
+		expect(decoder.decode(fileSystem.files.get('notes/b.md'))).toBe(
+			'id:note_same',
+		);
+	});
+
+	test('reads the files once and keeps the projection in step with writes', async () => {
+		const { fileSystem, storage } = createStorage();
+		await fileSystem.write('notes/a.md', encoder.encode('id:note_a'));
+		await fileSystem.write('notes/b.md', encoder.encode('id:note_b'));
+		await storage.rebuild();
+		const readsAfterFirstScan = fileSystem.reads;
+
+		await storage.rebuild();
+		await storage.rebuild();
+		expect(fileSystem.reads).toBe(readsAfterFirstScan);
+
+		const b = await storage.read('notes/b.md');
+		await storage.write({
+			path: 'notes/c.md',
+			bytes: encoder.encode('id:note_c'),
+			expectedRevision: null,
+		});
+		await storage.move({
+			from: 'notes/b.md',
+			to: 'archive/b.md',
+			expectedRevision: b!.revision,
+			expectedDestinationRevision: null,
+		});
+		await storage.delete({
+			path: 'notes/a.md',
+			expectedRevision: 'revision:id:note_a',
+		});
+		const rebuilt = await storage.rebuild();
+		expect(rebuilt.managed.map((file) => [file.id, file.relativePath])).toEqual(
+			[
+				['note_b', 'archive/b.md'],
+				['note_c', 'notes/c.md'],
+			],
+		);
+		expect(rebuilt.folders).toEqual(['archive', 'notes']);
+	});
+
+	test('sees changes from another context only after invalidation', async () => {
+		const { fileSystem, storage } = createStorage();
+		await fileSystem.write('notes/a.md', encoder.encode('id:note_a'));
+		await storage.rebuild();
+
+		await fileSystem.write('notes/a.md', encoder.encode('id:note_changed'));
+		await fileSystem.write('notes/new.md', encoder.encode('id:note_new'));
+		expect((await storage.rebuild()).managed.map((file) => file.id)).toEqual([
+			'note_a',
+		]);
+
+		await storage.invalidate(['notes/a.md', 'notes/new.md']);
+		expect((await storage.rebuild()).managed.map((file) => file.id)).toEqual([
+			'note_changed',
+			'note_new',
+		]);
+
+		fileSystem.files.delete('notes/new.md');
+		await storage.invalidate();
+		expect((await storage.rebuild()).managed.map((file) => file.id)).toEqual([
+			'note_changed',
+		]);
+	});
+
+	test('only visible workspace files define live objects', async () => {
+		const { fileSystem, storage } = createStorage();
+		await fileSystem.write('notes/a.md', encoder.encode('id:note_a'));
+		await fileSystem.write('.obsidian/a.md', encoder.encode('id:note_a'));
+		await fileSystem.write('.noura/trash/t/a.md', encoder.encode('id:note_a'));
+		await fileSystem.write('node_modules/x.md', encoder.encode('id:note_x'));
+		await fileSystem.write('notes/.hidden.md', encoder.encode('id:note_h'));
+
+		const rebuilt = await storage.rebuild();
+		expect(rebuilt.managed.map((file) => file.relativePath)).toEqual([
+			'notes/a.md',
+		]);
+		expect(rebuilt.duplicates).toEqual([]);
+		expect(rebuilt.files).toHaveLength(5);
+	});
+
+	test('creates, moves and removes folders with everything inside', async () => {
+		const { fileSystem, storage } = createStorage();
+		await storage.createFolder('Projects/Empty');
+		await storage.write({
+			path: 'Projects/plan.md',
+			bytes: encoder.encode('id:note_plan'),
+			expectedRevision: null,
+		});
+		await expect(storage.createFolder('Projects')).rejects.toMatchObject({
+			code: 'path_exists',
+		});
+
+		const moves = await storage.movePath({ from: 'Projects', to: 'Archive/P' });
+		expect(moves).toEqual([
+			{ from: 'Projects/plan.md', to: 'Archive/P/plan.md' },
+		]);
+		expect(fileSystem.files.has('Projects/plan.md')).toBe(false);
+		expect(decoder.decode(fileSystem.files.get('Archive/P/plan.md'))).toBe(
+			'id:note_plan',
+		);
+		const rebuilt = await storage.rebuild();
+		expect(rebuilt.folders).toEqual([
+			'Archive',
+			'Archive/P',
+			'Archive/P/Empty',
+		]);
+		expect(rebuilt.managed[0]?.relativePath).toBe('Archive/P/plan.md');
+
+		await expect(
+			storage.movePath({ from: 'Archive', to: 'Archive/P/x' }),
+		).rejects.toMatchObject({ code: 'invalid_path' });
+		await expect(storage.removeEmptyFolder('Archive/P')).rejects.toMatchObject({
+			code: 'folder_not_empty',
+		});
+		await storage.removeEmptyFolder('Archive/P/Empty');
+		expect((await storage.rebuild()).folders).toEqual(['Archive', 'Archive/P']);
+	});
+
+	test('finishes an interrupted folder move on the next start', async () => {
+		const fileSystem = new FakeFileSystem();
+		const first = new BrowserWorkspaceStorage({ fileSystem, format, lock });
+		await first.write({
+			path: 'A/one.md',
+			bytes: encoder.encode('one'),
+			expectedRevision: null,
+		});
+		await first.write({
+			path: 'A/two.md',
+			bytes: encoder.encode('two'),
+			expectedRevision: null,
+		});
+		fileSystem.interruptOnceAfterRemoving('A/one.md');
+		await expect(first.movePath({ from: 'A', to: 'B' })).rejects.toThrow(
+			'interrupted',
+		);
+
+		const reloaded = new BrowserWorkspaceStorage({ fileSystem, format, lock });
+		await reloaded.recover();
+		expect(
+			[...fileSystem.files.keys()].filter((key) => !key.startsWith('.')).sort(),
+		).toEqual(['B/one.md', 'B/two.md']);
+		expect(await fileSystem.list('.noura/browser-storage/journals')).toEqual(
+			[],
 		);
 	});
 

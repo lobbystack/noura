@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { getNouraClient, getPluginRuntime } from '$lib/state.svelte';
+	import { plugins } from '$lib/plugins.svelte';
+	import { getAppPlatform } from '$lib/platform';
+	import { getBrowserWorkspace } from '$lib/browser-workspace';
 	import { isPlainTextPath } from '$lib/editor/text-files';
 	import { workspaceTree } from '$lib/workspace-tree.svelte';
 	import { findTreeNode, NOT_DOWNLOADED_MESSAGE } from '$lib/workspace-tree';
@@ -26,6 +29,7 @@
 		parseStatus: UnmanagedFile['parseStatus'] | null;
 	};
 
+	const web = getAppPlatform() === 'web';
 	let selected = $state<Note | null>(null);
 	let selectedRaw = $state<RawFile | null>(null);
 	/** Stays the same when an open file is renamed, so the editor stays put. */
@@ -226,4 +230,18 @@
 			{/if}
 		{/key}
 	</div>
+	{#if web && selected && plugins.isEnabled('sync')}
+		<!-- Browser sync sends attachments per note; the desktop app syncs files. -->
+		{#await import('$lib/components/browser-attachments.svelte') then { default: Attachments }}
+			{#key selected.id}
+				<div class="shrink-0 border-t border-border px-6 py-4">
+					<Attachments
+						noteId={selected.id}
+						notePath={selected.relativePath}
+						workspaceFiles={getBrowserWorkspace().files}
+					/>
+				</div>
+			{/key}
+		{/await}
+	{/if}
 </div>

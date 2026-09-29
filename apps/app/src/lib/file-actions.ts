@@ -4,6 +4,7 @@ import { toast } from 'svelte-sonner';
 import { isCoreError } from '@noura/workspace';
 import { flushPendingDrafts } from './editor/pending-drafts.svelte';
 import { getNouraClient, workspace } from './state.svelte';
+import { hostCapabilities } from './host-capabilities.svelte';
 import { tabsStore } from './tabs.svelte';
 import {
 	baseName,
@@ -305,6 +306,10 @@ export async function revealTreeNode(node: WorkspaceTreeNode) {
 }
 
 export async function openWithDefaultApp(node: WorkspaceTreeNode) {
+	if (!hostCapabilities.current.openWithDefaultApp) {
+		toast(`${quoted(node)} can’t open here.`);
+		return;
+	}
 	try {
 		await getNouraClient().files.openWithDefaultApp({
 			relativePath: node.relativePath,

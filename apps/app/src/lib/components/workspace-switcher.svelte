@@ -2,6 +2,7 @@
 	import { toast } from 'svelte-sonner';
 	import { getSettingsDialog } from '$lib/settings.svelte';
 	import { workspace } from '$lib/state.svelte';
+	import { hostCapabilities } from '$lib/host-capabilities.svelte';
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '$lib/components/ui/field/index.js';
@@ -14,6 +15,8 @@
 	import X from 'phosphor-svelte/lib/X';
 
 	const settings = getSettingsDialog();
+	// Desktop workspaces are folders; browser workspaces live in the browser.
+	const folders = $derived(hostCapabilities.current.workspaceFolders);
 
 	let menuOpen = $state(false);
 	let createOpen = $state(false);
@@ -75,7 +78,7 @@
 		const name = newName.trim();
 		if (!name) return;
 		createOpen = false;
-		await workspace.pickAndCreate(name);
+		await workspace.createNamed(name);
 		if (workspace.error)
 			toast.error('Could not create the workspace', {
 				description: workspace.error,
@@ -120,9 +123,11 @@
 					<FolderOpen />
 					<span class="flex min-w-0 flex-1 flex-col gap-0.5">
 						<span class="truncate font-medium">{recent.name}</span>
-						<span class="truncate text-xs text-muted-foreground"
-							>{recent.path}</span
-						>
+						{#if folders}
+							<span class="truncate text-xs text-muted-foreground"
+								>{recent.path}</span
+							>
+						{/if}
 					</span>
 					{#if active}
 						<Check aria-label="Current workspace" weight="bold" />
@@ -133,16 +138,18 @@
 
 		<DropdownMenu.Separator />
 		<DropdownMenu.Group>
-			<DropdownMenu.Item
-				disabled={workspace.isLoading}
-				onSelect={() => {
-					menuOpen = false;
-					void workspace.pickAndOpen();
-				}}
-			>
-				<FolderOpen />
-				Open folder…
-			</DropdownMenu.Item>
+			{#if folders}
+				<DropdownMenu.Item
+					disabled={workspace.isLoading}
+					onSelect={() => {
+						menuOpen = false;
+						void workspace.pickAndOpen();
+					}}
+				>
+					<FolderOpen />
+					Open folder…
+				</DropdownMenu.Item>
+			{/if}
 			<DropdownMenu.Item
 				disabled={workspace.isLoading}
 				onSelect={() => {
@@ -153,11 +160,13 @@
 				<FolderPlus />
 				New workspace…
 			</DropdownMenu.Item>
-			<DropdownMenu.Item onSelect={() => void reveal()}>
-				<ArrowSquareOut />
-				Show in {fileManager}
-			</DropdownMenu.Item>
-			{#if others.length > 0}
+			{#if folders}
+				<DropdownMenu.Item onSelect={() => void reveal()}>
+					<ArrowSquareOut />
+					Show in {fileManager}
+				</DropdownMenu.Item>
+			{/if}
+			{#if folders && others.length > 0}
 				<DropdownMenu.Sub>
 					<DropdownMenu.SubTrigger>
 						<X />
@@ -185,7 +194,9 @@
 	<Dialog.Content class="sm:max-w-sm">
 		<Dialog.Header>
 			<Dialog.Title>New workspace</Dialog.Title>
-			<Dialog.Description>Name it, then choose its folder.</Dialog.Description>
+			<Dialog.Description>
+				{folders ? 'Name it, then choose its folder.' : 'Name it.'}
+			</Dialog.Description>
 		</Dialog.Header>
 		<form class="flex flex-col gap-4" onsubmit={createWorkspace}>
 			<Field.Group>
@@ -202,7 +213,7 @@
 				<Button
 					type="submit"
 					disabled={workspace.isLoading || newName.trim().length === 0}
-					>Choose folder…</Button
+					>{folders ? 'Choose folder…' : 'Create'}</Button
 				>
 			</Dialog.Footer>
 		</form>

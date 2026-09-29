@@ -1,6 +1,13 @@
 import type { Diagnostic, WorkspaceState } from '@noura/workspace';
+import type { BrowserWorkspaceSnapshot } from '@noura/browser-workspace';
 import { createNouraClient, createTauriTransport } from '@noura/workspace';
 import { AppPluginRuntime } from './app-plugin-runtime';
+import {
+	getBrowserWorkspace,
+	lastBrowserWorkspace,
+	NEW_BROWSER_WORKSPACE_PATH,
+	rememberBrowserWorkspace,
+} from './browser-workspace';
 import { shareEventSubscription } from './live-refresh';
 import { getAppPlatform } from './platform';
 
@@ -26,12 +33,13 @@ export function getNouraClient() {
 		throw new Error(
 			'Native platform could not be detected. Start or build the frontend through the Tauri CLI.',
 		);
-	if (getAppPlatform() === 'web')
-		throw new Error(
-			'Local workspaces are not available in the web browser. Open noura in the desktop app.',
-		);
 	if (!client) {
-		const transport = createTauriTransport();
+		// The browser keeps workspaces in its own storage behind the same
+		// typed client the desktop app uses.
+		const transport =
+			getAppPlatform() === 'web'
+				? getBrowserWorkspace().transport
+				: createTauriTransport();
 		client = createNouraClient({
 			...transport,
 			subscribe: shareEventSubscription(transport.subscribe),
@@ -149,6 +157,18 @@ class WorkspaceStore {
 			// The transition poll in #adopt still settles the state.
 		}
 		await Promise.all([this.refresh(), this.refreshRecents()]);
+		if (getAppPlatform() === 'web') await this.#reopenBrowserWorkspace();
+	}
+
+	/**
+	 * The desktop app reopens the last workspace itself. A browser tab starts
+	 * with none open, so open the one this browser used last.
+	 */
+	async #reopenBrowserWorkspace() {
+		if (this.data?.phase !== 'idle') return;
+		const last = lastBrowserWorkspace();
+		const recent = this.recentItems.find((item) => item.workspaceId === last);
+		if (recent) await this.open(recent.path);
 	}
 
 	async refresh() {
@@ -232,6 +252,16 @@ class WorkspaceStore {
 		}, undefined);
 	}
 
+	/**
+	 * Create a workspace called `name`: in a folder the user picks on desktop,
+	 * or in this browser's storage on the web.
+	 */
+	async createNamed(name: string) {
+		if (getAppPlatform() === 'web')
+			await this.create(NEW_BROWSER_WORKSPACE_PATH, name);
+		else await this.pickAndCreate(name);
+	}
+
 	async pickAndCreate(name: string) {
 		await this.#run(async (isCurrent) => {
 			const path = await getNouraClient().workspaces.pickFolder({
@@ -243,6 +273,24 @@ class WorkspaceStore {
 			this.#adopt(data);
 			void this.refreshRecents();
 		}, undefined);
+	}
+
+	/**
+	 * Open a restored browser backup as a new workspace. Rejects without
+	 * changing anything when the backup can't be restored here.
+	 */
+	async importBrowserBackup(snapshot: BrowserWorkspaceSnapshot) {
+		const requestSequence = ++this.#requestSequence;
+		this.#actions += 1;
+		this.loadingState = true;
+		try {
+			const data = await getBrowserWorkspace().importWorkspace(snapshot);
+			if (requestSequence === this.#requestSequence) this.#adopt(data);
+			void this.refreshRecents();
+		} finally {
+			this.#actions -= 1;
+			if (requestSequence === this.#requestSequence) this.loadingState = false;
+		}
 	}
 
 	/** Runs a user action as the newest owner of the visible projection. */
@@ -268,6 +316,12 @@ class WorkspaceStore {
 
 	#adopt(data: WorkspaceState) {
 		this.data = data;
+		if (
+			getAppPlatform() === 'web' &&
+			data.phase === 'ready' &&
+			data.workspaceId
+		)
+			rememberBrowserWorkspace(data.workspaceId);
 		diagnostics.adopt(data);
 		clearTimeout(this.#pollTimer);
 		// A background open reports progress through events. Poll as well, so

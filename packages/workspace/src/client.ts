@@ -358,7 +358,31 @@ export interface AppCapabilities {
 	openTerminal: boolean;
 	/** Revealing a file selects it in the file manager. */
 	revealSelectsFile: boolean;
+	/** Files and folders can be shown in the system file manager. */
+	revealInFileManager: boolean;
+	/** Files can open in the system's default app. */
+	openWithDefaultApp: boolean;
+	/** Deleted files go to the system trash rather than `.noura/trash`. */
+	systemTrash: boolean;
+	/** Workspaces are folders on disk that the user picks and can reveal. */
+	workspaceFolders: boolean;
+	/** An MCP client can reach the open workspace through this app. */
+	mcp: boolean;
 }
+
+/**
+ * What a native host can do unless it says otherwise. Older native builds
+ * report only `openTerminal` and `revealSelectsFile`.
+ */
+const NATIVE_CAPABILITIES: AppCapabilities = {
+	openTerminal: false,
+	revealSelectsFile: false,
+	revealInFileManager: true,
+	openWithDefaultApp: true,
+	systemTrash: true,
+	workspaceFolders: true,
+	mcp: true,
+};
 
 export interface AppService {
 	/**
@@ -684,7 +708,12 @@ export function createNouraClient(
 		openLink: (url) => transport.request('app_open_link', { url }),
 		app: {
 			diagnostics: () => transport.request('app_diagnostics'),
-			capabilities: () => transport.request('app_capabilities'),
+			capabilities: async () => ({
+				...NATIVE_CAPABILITIES,
+				...(await transport.request<Partial<AppCapabilities>>(
+					'app_capabilities',
+				)),
+			}),
 		},
 		objects: objectService,
 		manifest: manifestService,

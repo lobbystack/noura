@@ -9,19 +9,22 @@
  * plugin-runtime.md); a future views.register capability can replace these
  * hardcoded entries without changing the renderer.
  */
+import { routeMatches, routePlugin } from './plugin-routes';
+
 export interface SidebarModule {
 	id: string;
-	/** Plugin whose enabled state gates this contribution; null = always. */
-	pluginId: string | null;
-	/** Route pathnames (prefix-matched) where the section appears. */
+	/**
+	 * Route pathnames (prefix-matched) where the section appears. The plugin
+	 * that owns the route gates the section.
+	 */
 	routes: readonly string[];
 }
 
 export const SIDEBAR_MODULES: readonly SidebarModule[] = [
-	{ id: 'projects', pluginId: 'projects', routes: ['/projects'] },
-	{ id: 'tasks-views', pluginId: 'tasks', routes: ['/tasks'] },
+	{ id: 'projects', routes: ['/projects'] },
+	{ id: 'tasks-views', routes: ['/tasks'] },
 	// Files are core, so the file tree has no plugin gate.
-	{ id: 'file-browser', pluginId: null, routes: ['/files', '/pdf'] },
+	{ id: 'file-browser', routes: ['/files', '/pdf'] },
 ];
 
 /**
@@ -40,10 +43,6 @@ export function showsFileTree(pathname: string): boolean {
 	return FILE_TREE_ROUTES.some((route) => routeMatches(pathname, route));
 }
 
-function routeMatches(pathname: string, route: string): boolean {
-	return pathname === route || pathname.startsWith(`${route}/`);
-}
-
 /**
  * The sidebar module for one route, or null when the route gets no sidebar
  * at all. The module with the longer route prefix wins on shared prefixes;
@@ -55,8 +54,10 @@ export function sidebarModuleFor(
 ): SidebarModule | null {
 	let best: SidebarModule | null = null;
 	for (const module of SIDEBAR_MODULES) {
-		if (module.pluginId && !enabledPluginIds.has(module.pluginId)) continue;
-		if (!module.routes.some((route) => routeMatches(pathname, route))) continue;
+		const route = module.routes.find((value) => routeMatches(pathname, value));
+		if (!route) continue;
+		const pluginId = routePlugin(route);
+		if (pluginId && !enabledPluginIds.has(pluginId)) continue;
 		if (
 			best === null ||
 			Math.max(...best.routes.map((route) => route.length)) <

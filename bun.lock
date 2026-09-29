@@ -23,6 +23,7 @@
         "@noura/ai": "workspace:*",
         "@noura/browser-storage": "workspace:*",
         "@noura/browser-sync": "workspace:*",
+        "@noura/browser-sync-client": "workspace:*",
         "@noura/browser-sync-engine": "workspace:*",
         "@noura/browser-workspace": "workspace:*",
         "@noura/editor": "workspace:*",
@@ -134,6 +135,21 @@
         "@noura/shared": "workspace:*",
         "@noura/sync-key-envelope": "workspace:*",
         "@noura/workspace-schema": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.9.3",
+      },
+    },
+    "packages/browser-sync-client": {
+      "name": "@noura/browser-sync-client",
+      "version": "0.1.0",
+      "dependencies": {
+        "@noura/browser-storage": "workspace:*",
+        "@noura/browser-sync": "workspace:*",
+        "@noura/browser-sync-engine": "workspace:*",
+        "@noura/browser-workspace": "workspace:*",
+        "@noura/shared": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -707,6 +723,8 @@
     "@noura/browser-storage": ["@noura/browser-storage@workspace:packages/browser-storage"],
 
     "@noura/browser-sync": ["@noura/browser-sync@workspace:packages/browser-sync"],
+
+    "@noura/browser-sync-client": ["@noura/browser-sync-client@workspace:packages/browser-sync-client"],
 
     "@noura/browser-sync-engine": ["@noura/browser-sync-engine@workspace:packages/browser-sync-engine"],
 
