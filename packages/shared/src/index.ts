@@ -68,6 +68,9 @@ export type { MarkdownLinkTarget } from './generated/MarkdownLinkTarget';
 export type { UnmanagedFile } from './generated/UnmanagedFile';
 export type { WorkspaceEntry } from './generated/WorkspaceEntry';
 export type { WorkspaceEntryKind } from './generated/WorkspaceEntryKind';
+export type { ObjectSummary } from './generated/ObjectSummary';
+export type { ObjectSummaryOrder } from './generated/ObjectSummaryOrder';
+export type { ObjectSummaryQuery } from './generated/ObjectSummaryQuery';
 
 export interface WorkspaceManifest {
 	id: string;
@@ -129,6 +132,8 @@ export interface MutationResult<T> {
 	durability: 'committed';
 	indexStatus: 'updated' | 'repair-pending';
 	warnings: CoreWarning[];
+	/** Chat message mutations: the chat revision after the commit. */
+	chatRevision?: string;
 }
 export interface CoreEvent<T = unknown> {
 	eventId: string;

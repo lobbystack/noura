@@ -2261,6 +2261,7 @@ impl WorkspaceEngine {
                 durability: "committed".into(),
                 index_status: IndexStatus::Updated,
                 warnings: Vec::new(),
+                chat_revision: None,
             });
         }
         let transaction = CollaborativeTransaction {
@@ -2306,6 +2307,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status: IndexStatus::Updated,
             warnings: Vec::new(),
+            chat_revision: None,
         })
     }
 
@@ -2389,6 +2391,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status: IndexStatus::Updated,
             warnings: Vec::new(),
+            chat_revision: None,
         })
     }
 
@@ -2470,6 +2473,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status: IndexStatus::Updated,
             warnings: Vec::new(),
+            chat_revision: None,
         })
     }
 

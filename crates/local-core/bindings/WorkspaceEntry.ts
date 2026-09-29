@@ -2,4 +2,9 @@
 import type { ParseStatus } from "./ParseStatus";
 import type { WorkspaceEntryKind } from "./WorkspaceEntryKind";
 
-export type WorkspaceEntry = { relativePath: string, name: string, kind: WorkspaceEntryKind, parseStatus: ParseStatus | null, objectId: string | null, objectType: string | null, revision: string | null, };
+export type WorkspaceEntry = { relativePath: string, name: string, kind: WorkspaceEntryKind, parseStatus: ParseStatus | null, objectId: string | null, objectType: string | null, revision: string | null, 
+/**
+ * The file lives only in cloud storage (for example iCloud) and has
+ * not been downloaded to this device yet.
+ */
+notDownloaded?: boolean, };

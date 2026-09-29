@@ -94,6 +94,13 @@ impl SyncAccountService {
     }
 
     pub fn connection(&self, store: &impl SyncCredentials) -> Result<Option<DeviceConnection>> {
+        Self::stored_connection(store)
+    }
+
+    /// Read and validate the saved device connection. It touches only the
+    /// credential store, so a host can run it on a blocking thread without
+    /// borrowing the service.
+    pub fn stored_connection(store: &impl SyncCredentials) -> Result<Option<DeviceConnection>> {
         let Some(value) = store.read_optional(CONNECTION)? else {
             return Ok(None);
         };
