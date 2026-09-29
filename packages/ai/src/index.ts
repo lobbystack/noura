@@ -61,12 +61,6 @@ export interface AiInstructionProvider {
 	risk?: AiRiskCategory;
 }
 
-export { createPiRuntimeSpike } from './pi-runtime-spike';
-export {
-	createNativePiRuntimeSpike,
-	type PiRuntimeSpikeFrame,
-	type PiRuntimeSpikeTransport,
-} from './pi-native-runtime-spike';
 export {
 	buildSystemPrompt,
 	PiChatController,
