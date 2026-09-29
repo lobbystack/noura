@@ -3,6 +3,7 @@ import calendar from '@noura/plugin-calendar';
 import folders from '@noura/plugin-folders';
 import notes from '@noura/plugin-notes';
 import projects from '@noura/plugin-projects';
+import sync from '@noura/plugin-sync';
 import tasks from '@noura/plugin-tasks';
 
 /**
@@ -17,4 +18,5 @@ export const firstPartyPlugins = [
 	tasks,
 	calendar,
 	projects,
+	sync,
 ] as const;

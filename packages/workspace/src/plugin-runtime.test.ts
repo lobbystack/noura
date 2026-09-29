@@ -335,6 +335,25 @@ describe('collaboration provider slot', () => {
 		expect(seen).toEqual([0, 1, 2, 3, 4]);
 	});
 
+	test('the first-party sync plugin fills the slot on desktop only', async () => {
+		const desktop = harness(['notes', 'sync']);
+		const runtime = new PluginRuntime(desktop.client);
+		await runtime.syncWithManifest();
+		expect(runtime.collaboration.owner).toBe('sync');
+		desktop.state.enabled = ['notes'];
+		await runtime.syncWithManifest();
+		expect(runtime.collaboration.provider).toBeNull();
+
+		const web = harness(['notes', 'sync']);
+		const browser = new PluginRuntime(web.client, {
+			platform: 'web',
+			supportedCapabilities: browserPluginCapabilities,
+		});
+		const result = await browser.syncWithManifest();
+		expect(result.activated).toEqual(['notes', 'sync']);
+		expect(browser.collaboration.provider).toBeNull();
+	});
+
 	test('rejects a provider plugin the runtime does not trust', async () => {
 		const { client } = harness(['relay']);
 		const runtime = new PluginRuntime(client, { plugins: [provider] });

@@ -39,6 +39,7 @@ describe('typed client', () => {
 			'tasks',
 			'calendar',
 			'projects',
+			'sync',
 		]);
 	});
 	test('delegates native workspace folder selection through the typed boundary', async () => {

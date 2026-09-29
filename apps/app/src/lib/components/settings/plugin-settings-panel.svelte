@@ -13,6 +13,7 @@
 	import Checks from 'phosphor-svelte/lib/Checks';
 	import Calendar from 'phosphor-svelte/lib/Calendar';
 	import Kanban from 'phosphor-svelte/lib/Kanban';
+	import ArrowsClockwise from 'phosphor-svelte/lib/ArrowsClockwise';
 	import CaretRight from 'phosphor-svelte/lib/CaretRight';
 	import ArrowLeft from 'phosphor-svelte/lib/ArrowLeft';
 	let {
@@ -61,6 +62,12 @@
 			name: 'Folders',
 			description: 'Workspace files',
 			icon: FolderOpen,
+		},
+		{
+			id: 'sync',
+			name: 'Sync',
+			description: 'Encrypted sync and live editing across devices',
+			icon: ArrowsClockwise,
 		},
 	];
 	let selectedId = $state<string | null>(null);
