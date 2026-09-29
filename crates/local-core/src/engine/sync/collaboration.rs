@@ -1072,9 +1072,23 @@ impl WorkspaceEngine {
         ))
     }
 
-    /// Legacy file mutations must never bypass a signed collaborative generation.
+    /// Local file mutations must not bypass a signed collaborative generation
+    /// while the sync plugin is on. With the plugin off, local files stay
+    /// editable like any other file: the workspace is local-first, and turning
+    /// sync off must not lock you out of your own documents. When the plugin
+    /// comes back, the sync scan captures those edits like external edits.
     /// Called with the engine write lock already held.
     pub(crate) fn collaboration_guard_file_mutation(&self, path: &str) -> Result<()> {
+        if !self.sync_plugin_enabled() {
+            return Ok(());
+        }
+        self.collaboration_guard_sync_change(path)
+    }
+
+    /// Sync's own whole-file changes never bypass a signed collaborative
+    /// generation, whatever the plugin state.
+    /// Called with the engine write lock already held.
+    pub(crate) fn collaboration_guard_sync_change(&self, path: &str) -> Result<()> {
         let journal = self.sync_journal()?;
         let Some((id, _)) = journal.objects.iter().find(|(_, value)| value.path == path) else {
             return Ok(());
@@ -3673,6 +3687,7 @@ mod tests {
             directory.path().join("app"),
         )
         .unwrap();
+        engine.enable_sync_plugin().unwrap();
         let device = DeviceKeys::create(&Credentials).unwrap();
         let key = ObjectKey::generate();
         let policy = AccessPolicy::sign(
@@ -3749,6 +3764,7 @@ mod tests {
             directory.path().join("app"),
         )
         .unwrap();
+        engine.enable_sync_plugin().unwrap();
         let device = DeviceKeys::create(&Credentials).unwrap();
         let key = ObjectKey::generate();
         let policy = AccessPolicy::sign(
@@ -5681,5 +5697,186 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    const MANAGED_ID: &str = "note_01j00000000000000000000000";
+
+    fn body_patch(body: &str, expected_revision: &str) -> ObjectPatch {
+        ObjectPatch {
+            title: None,
+            body: Some(body.into()),
+            properties: BTreeMap::new(),
+            remove_properties: Vec::new(),
+            expected_revision: expected_revision.into(),
+        }
+    }
+
+    fn disable_sync_plugin(engine: &WorkspaceEngine) {
+        let mut plugins = engine.read_manifest().unwrap().enabled_plugins;
+        plugins.retain(|id| id != crate::SYNC_PLUGIN_ID);
+        engine
+            .manifest_update(ManifestUpdateInput {
+                enabled_plugins: Some(plugins),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    fn connection() -> crate::sync::DeviceConnection {
+        crate::sync::DeviceConnection {
+            origin: "https://sync.example.com".into(),
+            device_id: "device".into(),
+            account_id: "account".into(),
+            token_reference: "token".into(),
+        }
+    }
+
+    #[test]
+    fn disabled_plugin_allows_local_writes_to_collaborative_documents() {
+        let mut f = managed_fixture();
+        f.engine.rebuild_index().unwrap();
+        let revision = f.engine.get_object(MANAGED_ID).unwrap().unwrap().revision;
+        assert_eq!(
+            f.engine
+                .update_object(MANAGED_ID, body_patch("Offline body\n", &revision))
+                .unwrap_err()
+                .code,
+            "collaboration_transaction_required"
+        );
+        disable_sync_plugin(&f.engine);
+        f.engine
+            .update_object(MANAGED_ID, body_patch("Offline body\n", &revision))
+            .unwrap();
+        assert!(f.engine.sync_outbox().unwrap().is_empty());
+        // Turning the plugin back on captures the offline edit like an external one.
+        f.engine.enable_sync_plugin().unwrap();
+        f.engine
+            .sync_capture_workspace(&f.device, &mut f.secrets)
+            .unwrap();
+        let operation = f.engine.sync_outbox().unwrap().pop().unwrap();
+        assert_eq!(operation.kind, Some(OperationKind::Metadata));
+        let reopened = open(&f);
+        assert_eq!(
+            TextDocument::restore(&reopened.update)
+                .unwrap()
+                .text()
+                .trim_end(),
+            "Offline body"
+        );
+    }
+
+    #[test]
+    fn route_helpers_bypass_collaboration_when_disabled() {
+        let f = managed_fixture();
+        f.engine.rebuild_index().unwrap();
+        let revision = f.engine.get_object(MANAGED_ID).unwrap().unwrap().revision;
+        let signed_out = crate::sync::route_update_object(
+            &f.engine,
+            || Ok(None),
+            &Credentials,
+            MANAGED_ID,
+            body_patch("Routed\n", &revision),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(signed_out.code, "sync_sign_in_required");
+        disable_sync_plugin(&f.engine);
+        let no_connection = || -> Result<Option<crate::sync::DeviceConnection>> {
+            panic!("a local write must not ask for the device connection")
+        };
+        let updated = crate::sync::route_update_object(
+            &f.engine,
+            no_connection,
+            &Credentials,
+            MANAGED_ID,
+            body_patch("Routed\n", &revision),
+            Some("note"),
+        )
+        .unwrap();
+        assert_eq!(updated.value.body, "Routed\n");
+        let moved = crate::sync::route_move_object(
+            &f.engine,
+            no_connection,
+            &Credentials,
+            MANAGED_ID,
+            "moved.md",
+            &updated.revision,
+        )
+        .unwrap();
+        crate::sync::route_delete_object(
+            &f.engine,
+            no_connection,
+            &Credentials,
+            MANAGED_ID,
+            &moved.revision,
+        )
+        .unwrap();
+        crate::sync::route_create_object(
+            &f.engine,
+            no_connection,
+            &Credentials,
+            crate::CreateObjectInput {
+                object_type: "note".into(),
+                title: "Local".into(),
+                body: String::new(),
+                relative_path: None,
+                properties: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        assert!(f.engine.sync_outbox().unwrap().is_empty());
+    }
+
+    #[test]
+    fn coordinator_rejects_when_plugin_disabled() {
+        let f = fixture();
+        disable_sync_plugin(&f.engine);
+        let connection = connection();
+        let errors = [
+            crate::sync::WorkspaceSyncCoordinator::conflicts(&f.engine, &connection, &Credentials)
+                .unwrap_err(),
+            crate::sync::WorkspaceSyncCoordinator::collaboration_open(
+                &f.engine,
+                &connection,
+                &Credentials,
+                CollaborationOpenInput {
+                    relative_path: "note.md".into(),
+                },
+            )
+            .unwrap_err(),
+            crate::sync::WorkspaceSyncCoordinator::collaboration_flush(
+                &f.engine,
+                &connection,
+                &Credentials,
+                "session",
+            )
+            .unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(error.code, "sync_plugin_disabled");
+            assert_eq!(
+                error.details,
+                Some(serde_json::json!({ "pluginId": "sync" }))
+            );
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let pass = runtime
+            .block_on(crate::sync::WorkspaceSyncCoordinator::pass(
+                &f.engine,
+                &connection,
+                &Credentials,
+            ))
+            .unwrap_err();
+        assert_eq!(pass.code, "sync_plugin_disabled");
+        let enable = runtime
+            .block_on(crate::sync::WorkspaceSyncCoordinator::enable(
+                &f.engine,
+                &connection,
+                &Credentials,
+            ))
+            .unwrap_err();
+        assert_eq!(enable.code, "sync_plugin_disabled");
     }
 }

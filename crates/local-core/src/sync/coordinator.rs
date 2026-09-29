@@ -137,6 +137,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         session_id: &str,
     ) -> Result<()> {
+        engine.require_sync_plugin("collaboration_flush")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -150,6 +151,7 @@ impl WorkspaceSyncCoordinator {
         connection: &DeviceConnection,
         store: &impl SyncCredentials,
     ) -> Result<Vec<super::SyncConflict>> {
+        engine.require_sync_plugin("sync_conflicts")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -165,6 +167,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         input: &super::ResolveSyncConflict,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_resolve_conflict")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -196,6 +199,7 @@ impl WorkspaceSyncCoordinator {
         connection: &DeviceConnection,
         store: &impl SyncCredentials,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_enable")?;
         let device = DeviceKeys::load(store, &connection.device_id)?;
         if let Some(config) = engine.sync_configuration()? {
             Self::check_connection(&config, connection, &device)?;
@@ -256,6 +260,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         wait: bool,
     ) -> Result<SyncPass> {
+        engine.require_sync_plugin("sync_pass")?;
         let persisted = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -371,6 +376,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         input: super::collaboration::CollaborationOpenInput,
     ) -> Result<Option<super::collaboration::CollaborationSession>> {
+        engine.require_sync_plugin("collaboration_open")?;
         let Some(config) = engine.sync_configuration()? else {
             return Ok(None);
         };
@@ -392,6 +398,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         input: super::collaboration::CollaborationSubmitInput,
     ) -> Result<super::collaboration::CollaborationReceipt> {
+        engine.require_sync_plugin("collaboration_submit")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -415,6 +422,7 @@ impl WorkspaceSyncCoordinator {
         id: &str,
         patch: crate::ObjectPatch,
     ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        engine.require_sync_plugin("collaboration_update_object")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -437,6 +445,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         input: crate::CreateObjectInput,
     ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        engine.require_sync_plugin("collaboration_create_object")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -477,6 +486,7 @@ impl WorkspaceSyncCoordinator {
         destination: &str,
         expected_revision: &str,
     ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        engine.require_sync_plugin("collaboration_move_object")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -500,6 +510,7 @@ impl WorkspaceSyncCoordinator {
         id: &str,
         expected_revision: &str,
     ) -> Result<crate::MutationResult<crate::WorkspaceObject>> {
+        engine.require_sync_plugin("collaboration_delete_object")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;

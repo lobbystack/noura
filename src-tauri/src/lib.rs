@@ -304,6 +304,13 @@ fn forward_events(app: AppHandle, engine: Arc<WorkspaceEngine>) {
                     {
                         break;
                     }
+                    // Turning the sync plugin on or off must reach the sync
+                    // loop, whether it is parked or mid-pass.
+                    if sync_commands::wakes_sync(&event) {
+                        let state = app.state::<AppState>();
+                        state.sync_cancel.notify_one();
+                        state.sync_wake.notify_one();
+                    }
                     let _ = app.emit("noura://core-event", event);
                 }
                 // A bounded broadcast channel may drop a burst. Keep the bridge
@@ -642,61 +649,70 @@ fn objects_get(state: State<AppState>, id: String) -> Result<WorkspaceObject, Co
         })
     })
 }
-#[tauri::command]
-async fn objects_create(
-    state: State<'_, AppState>,
-    input: CreateObjectInput,
-) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
+/// Run an object mutation on a blocking thread with the shared routing rule.
+/// The device connection is read only when the mutation collaborates.
+async fn route_object_mutation<T: Send + 'static>(
+    app: AppHandle,
+    operation: &'static str,
+    mutation: impl FnOnce(
+        &WorkspaceEngine,
+        &dyn Fn() -> Result<Option<local_core::sync::DeviceConnection>, CoreError>,
+    ) -> Result<T, CoreError>
+    + Send
+    + 'static,
+) -> Result<T, CoreError> {
+    let engine = app
+        .state::<AppState>()
         .engine
         .lock()
-        .map_err(|_| unavailable("objects_create"))?
+        .map_err(|_| unavailable(operation))?
         .clone()
-        .ok_or_else(|| unavailable("objects_create"))?;
-    if engine.sync_configuration()?.is_none() {
-        return engine.create_object(input);
-    }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_create_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        input,
-    )
+        .ok_or_else(|| unavailable(operation))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let connection = || {
+            state
+                .sync_account
+                .blocking_lock()
+                .connection(&local_core::sync::OsSyncCredentials)
+        };
+        mutation(&engine, &connection)
+    })
+    .await
+    .map_err(|_| unavailable(operation))?
+}
+#[tauri::command]
+async fn objects_create(
+    app: AppHandle,
+    input: CreateObjectInput,
+) -> Result<MutationResult<WorkspaceObject>, CoreError> {
+    route_object_mutation(app, "objects_create", move |engine, connection| {
+        local_core::sync::route_create_object(
+            engine,
+            connection,
+            &local_core::sync::OsSyncCredentials,
+            input,
+        )
+    })
+    .await
 }
 #[tauri::command]
 async fn objects_update(
-    state: State<'_, AppState>,
+    app: AppHandle,
     id: String,
     patch: ObjectPatch,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("objects_update"))?
-        .clone()
-        .ok_or_else(|| unavailable("objects_update"))?;
-    if !engine.collaboration_object_is_active(&id)? {
-        return engine.update_object(&id, patch);
-    }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_update_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        &id,
-        patch,
-    )
+    route_object_mutation(app, "objects_update", move |engine, connection| {
+        local_core::sync::route_update_object(
+            engine,
+            connection,
+            &local_core::sync::OsSyncCredentials,
+            &id,
+            patch,
+            None,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1017,60 +1033,36 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 #[tauri::command]
 async fn objects_move(
-    state: State<'_, AppState>,
+    app: AppHandle,
     input: MoveInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("objects_move"))?
-        .clone()
-        .ok_or_else(|| unavailable("objects_move"))?;
-    if !engine.collaboration_object_is_active(&input.id)? {
-        return engine.move_object(&input.id, &input.relative_path, &input.expected_revision);
-    }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_move_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        &input.id,
-        &input.relative_path,
-        &input.expected_revision,
-    )
+    route_object_mutation(app, "objects_move", move |engine, connection| {
+        local_core::sync::route_move_object(
+            engine,
+            connection,
+            &local_core::sync::OsSyncCredentials,
+            &input.id,
+            &input.relative_path,
+            &input.expected_revision,
+        )
+    })
+    .await
 }
 #[tauri::command]
 async fn objects_delete(
-    state: State<'_, AppState>,
+    app: AppHandle,
     input: DeleteInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("objects_delete"))?
-        .clone()
-        .ok_or_else(|| unavailable("objects_delete"))?;
-    if !engine.collaboration_object_is_active(&input.id)? {
-        return engine.delete_object(&input.id, &input.expected_revision);
-    }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_delete_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        &input.id,
-        &input.expected_revision,
-    )
+    route_object_mutation(app, "objects_delete", move |engine, connection| {
+        local_core::sync::route_delete_object(
+            engine,
+            connection,
+            &local_core::sync::OsSyncCredentials,
+            &input.id,
+            &input.expected_revision,
+        )
+    })
+    .await
 }
 #[tauri::command]
 fn objects_adopt(

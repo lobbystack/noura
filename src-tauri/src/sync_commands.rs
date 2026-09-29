@@ -64,11 +64,22 @@ fn current_engine(
         .ok_or_else(|| crate::unavailable("sync"))
 }
 
+/// The open workspace, when its `sync` plugin is on. Workspace sync and
+/// collaboration commands fail with `sync_plugin_disabled` otherwise.
+fn sync_engine(
+    state: &AppState,
+    operation: &str,
+) -> Result<std::sync::Arc<local_core::WorkspaceEngine>, CoreError> {
+    let engine = current_engine(state)?;
+    engine.require_sync_plugin(operation)?;
+    Ok(engine)
+}
+
 #[tauri::command]
 pub async fn sync_workspace_conflicts(
     state: State<'_, AppState>,
 ) -> Result<Vec<local_core::sync::SyncConflict>, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_conflicts")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -86,7 +97,7 @@ pub async fn sync_workspace_resolve_conflict(
     state: State<'_, AppState>,
     input: local_core::sync::ResolveSyncConflict,
 ) -> Result<(), CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_resolve_conflict")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -103,7 +114,7 @@ pub async fn sync_workspace_resolve_conflict(
 pub async fn sync_workspace_devices(
     state: State<'_, AppState>,
 ) -> Result<Vec<local_core::sync::SyncDevice>, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_devices")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -192,7 +203,7 @@ pub async fn sync_workspace_approve_device(
     device_id: String,
     fingerprint: String,
 ) -> Result<(), CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_approve_device")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -216,7 +227,7 @@ pub async fn sync_workspace_approve_device(
 pub async fn sync_workspace_invitations(
     state: State<'_, AppState>,
 ) -> Result<Vec<local_core::sync::SyncInvitation>, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_invitations")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -234,7 +245,7 @@ pub async fn sync_workspace_create_invitation(
     state: State<'_, AppState>,
     role: SyncInvitationRole,
 ) -> Result<local_core::sync::SyncInvitationLink, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_create_invitation")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -255,7 +266,7 @@ pub async fn sync_workspace_approve_invited_device(
     device_id: String,
     fingerprint: String,
 ) -> Result<(), CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_approve_invited_device")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -281,7 +292,7 @@ pub async fn sync_workspace_finalize_invitation(
     state: State<'_, AppState>,
     invitation_id: String,
 ) -> Result<(), CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_finalize_invitation")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -305,7 +316,7 @@ pub async fn sync_workspace_revoke_invitation(
     state: State<'_, AppState>,
     invitation_id: String,
 ) -> Result<(), CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_revoke_invitation")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -325,7 +336,7 @@ pub async fn sync_workspace_revoke_invitation(
 }
 
 fn status(state: &AppState) -> Result<WorkspaceSyncStatus, CoreError> {
-    status_for_engine(state, current_engine(state)?.as_ref())
+    status_for_engine(state, sync_engine(state, "sync_workspace_status")?.as_ref())
 }
 
 fn status_for_engine(
@@ -357,7 +368,7 @@ pub fn sync_workspace_status(state: State<'_, AppState>) -> Result<WorkspaceSync
 pub async fn sync_workspace_enable(
     state: State<'_, AppState>,
 ) -> Result<WorkspaceSyncStatus, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_enable")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -381,7 +392,7 @@ pub async fn sync_workspace_enable(
 pub async fn sync_workspace_pause(
     state: State<'_, AppState>,
 ) -> Result<WorkspaceSyncStatus, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_pause")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -393,7 +404,7 @@ pub async fn sync_workspace_pause(
 pub async fn sync_workspace_resume(
     state: State<'_, AppState>,
 ) -> Result<WorkspaceSyncStatus, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "sync_workspace_resume")?;
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
@@ -681,7 +692,44 @@ async fn realtime_wait(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopAction {
+    /// No workspace, or its sync plugin is off: wait for a wake-up only.
+    Park,
+    /// The workspace's sync plugin is on: run the sync loop.
+    Run,
+}
+
+/// Whether the sync loop may do any work for `engine`.
+pub(crate) fn loop_action(engine: Option<&local_core::WorkspaceEngine>) -> LoopAction {
+    match engine {
+        Some(engine) if engine.sync_plugin_enabled() => LoopAction::Run,
+        _ => LoopAction::Park,
+    }
+}
+
+/// Events that must wake a parked sync loop or cancel a running pass.
+pub(crate) fn wakes_sync(event: &local_core::CoreEvent) -> bool {
+    event.event_type == "workspace:manifest-updated"
+}
+
+/// Drop every live sync projection while the loop is parked, so nothing about
+/// sync lingers for a workspace whose plugin is off.
+fn park(state: &AppState, engine: Option<&local_core::WorkspaceEngine>) {
+    if let Ok(mut status) = state.sync_status.lock() {
+        *status = None;
+    }
+    if let Ok(mut realtime) = state.sync_realtime.lock() {
+        *realtime = None;
+    }
+    if let Some(engine) = engine {
+        let _ = engine.collaboration_close_all();
+    }
+}
+
 /// The native host owns the loop; leaving Settings does not interrupt synchronization.
+/// Without a workspace whose sync plugin is on, the loop parks: no timer, no
+/// configuration read, no credential access, and no network until a wake-up.
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut delay = std::time::Duration::from_secs(1);
@@ -689,6 +737,17 @@ pub fn start(app: AppHandle) {
         let mut realtime_retry_at: Option<tokio::time::Instant> = None;
         loop {
             let state = app.state::<AppState>();
+            let current = current_engine(&state).ok();
+            if loop_action(current.as_deref()) == LoopAction::Park {
+                park(&state, current.as_deref());
+                drop(current);
+                state.sync_wake.notified().await;
+                delay = std::time::Duration::ZERO;
+                reconnect_attempt = 0;
+                realtime_retry_at = None;
+                continue;
+            }
+            drop(current);
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {},
                 _ = state.sync_wake.notified() => {},
@@ -697,6 +756,9 @@ pub fn start(app: AppHandle) {
             let Ok(engine) = current_engine(&state) else {
                 continue;
             };
+            if loop_action(Some(&engine)) == LoopAction::Park {
+                continue;
+            }
             if reconnect_attempt > 0 {
                 let _ = engine.collaboration_transport_status(
                     local_core::sync::collaboration::CollaborationStatus::Reconnecting,
@@ -1031,7 +1093,7 @@ pub async fn collaboration_open(
     state: State<'_, AppState>,
     input: local_core::sync::collaboration::CollaborationOpenInput,
 ) -> Result<Option<local_core::sync::collaboration::CollaborationSession>, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "collaboration_open")?;
     // Most files aren't collaborative. Answer from the sync journal before
     // reading credentials from the keychain or decrypting workspace keys.
     if engine.sync_configuration()?.is_none()
@@ -1054,7 +1116,7 @@ pub async fn collaboration_submit_updates(
     state: State<'_, AppState>,
     input: local_core::sync::collaboration::CollaborationSubmitInput,
 ) -> Result<local_core::sync::collaboration::CollaborationReceipt, CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "collaboration_submit_updates")?;
     let connection = state
         .sync_account
         .lock()
@@ -1082,7 +1144,7 @@ pub async fn collaboration_flush(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), CoreError> {
-    let engine = current_engine(&state)?;
+    let engine = sync_engine(&state, "collaboration_flush")?;
     let connection = state
         .sync_account
         .lock()
@@ -1102,7 +1164,9 @@ pub async fn collaboration_set_presence(
     state: State<'_, AppState>,
     input: local_core::sync::CollaborationPresenceInput,
 ) -> Result<(), CoreError> {
-    let root = current_engine(&state)?.root().to_path_buf();
+    let root = sync_engine(&state, "collaboration_set_presence")?
+        .root()
+        .to_path_buf();
     let handle = state
         .sync_realtime
         .lock()
@@ -1125,7 +1189,44 @@ pub async fn collaboration_set_presence(
 
 #[cfg(test)]
 mod tests {
-    use super::{pull_fallback_delay, realtime_url, reconnect_delay};
+    use super::{
+        LoopAction, loop_action, pull_fallback_delay, realtime_url, reconnect_delay, wakes_sync,
+    };
+
+    fn workspace(name: &str) -> (tempfile::TempDir, local_core::WorkspaceEngine) {
+        let directory = tempfile::TempDir::new().unwrap();
+        let engine = local_core::WorkspaceEngine::create_with_app_data(
+            directory.path().join("workspace"),
+            name,
+            directory.path().join("app"),
+        )
+        .unwrap();
+        (directory, engine)
+    }
+
+    #[test]
+    fn the_loop_parks_without_a_workspace_or_the_sync_plugin() {
+        assert_eq!(loop_action(None), LoopAction::Park);
+        let (_directory, engine) = workspace("Loop");
+        assert_eq!(loop_action(Some(&engine)), LoopAction::Park);
+        engine.enable_sync_plugin().unwrap();
+        assert_eq!(loop_action(Some(&engine)), LoopAction::Run);
+    }
+
+    #[test]
+    fn a_manifest_update_wakes_sync() {
+        let (_directory, engine) = workspace("Wake");
+        let mut events = engine.subscribe();
+        engine.enable_sync_plugin().unwrap();
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.event_type, "workspace:manifest-updated");
+        assert!(wakes_sync(&event));
+        let other = local_core::CoreEvent {
+            event_type: "file:changed".into(),
+            ..event
+        };
+        assert!(!wakes_sync(&other));
+    }
 
     #[test]
     fn reconnect_backoff_is_jittered_and_bounded() {

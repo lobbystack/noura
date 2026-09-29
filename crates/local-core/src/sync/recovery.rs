@@ -116,6 +116,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         destination: &Path,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_export_recovery_kit")?;
         let config = engine
             .sync_configuration()?
             .ok_or_else(|| invalid("sync_not_enabled"))?;
@@ -157,6 +158,7 @@ impl WorkspaceSyncCoordinator {
         store: &impl SyncCredentials,
         source: &Path,
     ) -> Result<()> {
+        engine.require_sync_plugin("sync_import_recovery_kit")?;
         let kit = RecoveryKit::load(source)?;
         let reader = kit.reader()?;
         if kit.config.workspace_id != engine.manifest().id
@@ -813,6 +815,7 @@ mod tests {
             directory.path().join("app"),
         )
         .unwrap();
+        engine.enable_sync_plugin().unwrap();
         let credentials = Memory::default();
         let device = DeviceKeys::create(&credentials).unwrap();
         let connection = DeviceConnection {

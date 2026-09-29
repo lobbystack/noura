@@ -19,6 +19,10 @@ pub(crate) use crypto::decode;
 mod keys;
 mod presence;
 mod recovery;
+mod routing;
+pub use routing::{
+    route_create_object, route_delete_object, route_move_object, route_update_object,
+};
 mod signin;
 mod transport;
 pub use access::{
