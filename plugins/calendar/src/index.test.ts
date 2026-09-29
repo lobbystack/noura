@@ -51,6 +51,18 @@ function services(
 			},
 			registerInstructionProvider: () => () => true,
 		},
+		collaboration: {
+			service: {
+				open: async () => null,
+				submitUpdates: async () => {
+					throw new Error('not used');
+				},
+				flush: async () => {},
+				close: async () => {},
+				setPresence: async () => {},
+			},
+			registerProvider: () => () => true,
+		},
 	};
 }
 

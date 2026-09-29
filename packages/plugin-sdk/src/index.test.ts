@@ -5,6 +5,7 @@ import {
 	PluginRuntimeError,
 	requireCapability,
 	supportsPlatform,
+	type CollaborationProvider,
 	type PluginHostServices,
 } from './index';
 import { AiRegistry } from '@noura/ai';
@@ -202,6 +203,10 @@ test('plugin host denies undeclared object access', async () => {
 			registerContextProvider: () => () => true,
 			registerInstructionProvider: () => () => true,
 		},
+		collaboration: {
+			service: collaborationService(),
+			registerProvider: () => () => true,
+		},
 	} satisfies PluginHostServices;
 	const host = new PluginHost(services);
 	await expect(
@@ -254,6 +259,10 @@ test('plugin host guards non-managed Markdown discovery', async () => {
 			registerTool: () => () => true,
 			registerContextProvider: () => () => true,
 			registerInstructionProvider: () => () => true,
+		},
+		collaboration: {
+			service: collaborationService(),
+			registerProvider: () => () => true,
 		},
 	} satisfies PluginHostServices;
 	const host = new PluginHost(services);
@@ -327,6 +336,10 @@ test('plugin host deactivation runs the cleanup and updates active state', async
 			registerTool: () => () => true,
 			registerContextProvider: () => () => true,
 			registerInstructionProvider: () => () => true,
+		},
+		collaboration: {
+			service: collaborationService(),
+			registerProvider: () => () => true,
 		},
 	} satisfies PluginHostServices);
 	await host.activate(
@@ -422,6 +435,10 @@ test('plugin host snapshots a raw definition manifest at activation', async () =
 			registerContextProvider: () => () => true,
 			registerInstructionProvider: () => () => true,
 		},
+		collaboration: {
+			service: collaborationService(),
+			registerProvider: () => () => true,
+		},
 	} satisfies PluginHostServices);
 	const raw = {
 		manifest: {
@@ -483,6 +500,10 @@ test('AI instruction registrations are capability-gated, owned, and removed on d
 			registerInstructionProvider: (definition, registration) =>
 				registry.registerInstructionProvider(definition, registration),
 		},
+		collaboration: {
+			service: collaborationService(),
+			registerProvider: () => () => true,
+		},
 	} satisfies PluginHostServices);
 	await host.activate({
 		manifest: {
@@ -504,4 +525,111 @@ test('AI instruction registrations are capability-gated, owned, and removed on d
 	});
 	await host.deactivate('instructions');
 	expect(registry.instructionEntries()).toEqual([]);
+});
+
+function collaborationService(): CollaborationProvider {
+	return {
+		open: async () => null,
+		submitUpdates: async () => ({ revision: 'rev' }) as never,
+		flush: async () => {},
+		close: async () => {},
+		setPresence: async () => {},
+	};
+}
+
+function collaborationHost(
+	trustedPlugins: Iterable<ReturnType<typeof definePlugin>>,
+	log: string[],
+) {
+	let provider: CollaborationProvider | null = null;
+	const service = collaborationService();
+	const host = new PluginHost(
+		{
+			collaboration: {
+				service,
+				registerProvider: (
+					value: CollaborationProvider,
+					registration: { owner: string },
+				) => {
+					log.push(`register:${registration.owner}`);
+					provider = value;
+					return () => {
+						log.push(`dispose:${registration.owner}`);
+						const had = provider === value;
+						if (had) provider = null;
+						return had;
+					};
+				},
+			},
+		} as unknown as PluginHostServices,
+		{ trustedPlugins },
+	);
+	return { host, service, provider: () => provider };
+}
+
+function syncLikePlugin(log: string[]) {
+	return definePlugin({
+		manifest: {
+			id: 'sync',
+			name: 'Sync',
+			version: '0.1.0',
+			capabilities: ['workspace.collaboration'],
+		},
+		activate(context) {
+			log.push('activate');
+			context.collaboration.registerProvider(context.collaboration.service);
+		},
+		async deactivate() {
+			log.push('deactivate');
+			await Promise.resolve();
+		},
+	});
+}
+
+test('an untrusted plugin cannot hold the collaboration capability', async () => {
+	const log: string[] = [];
+	const plugin = syncLikePlugin(log);
+	const { host, provider } = collaborationHost([], log);
+	expect(host.activationError(plugin)).toMatchObject({
+		code: 'plugin_capability_untrusted',
+		operation: 'plugin_activate',
+		details: { pluginId: 'sync', capability: 'workspace.collaboration' },
+	});
+	await expect(host.activate(plugin)).rejects.toMatchObject({
+		code: 'plugin_capability_untrusted',
+	});
+	// A copy of a trusted definition is a different plugin.
+	const trusted = collaborationHost([plugin], log);
+	await expect(
+		trusted.host.activate({ ...plugin, activate: plugin.activate }),
+	).rejects.toMatchObject({ code: 'plugin_capability_untrusted' });
+	expect(log).toEqual([]);
+	expect(provider()).toBeNull();
+});
+
+test('a trusted plugin registers the collaboration provider', async () => {
+	const log: string[] = [];
+	const plugin = syncLikePlugin(log);
+	const { host, provider } = collaborationHost([plugin], log);
+	expect(host.activationError(plugin)).toBeNull();
+	await host.activate(plugin);
+	expect(log).toEqual(['activate', 'register:sync']);
+	expect(provider()).not.toBeNull();
+	expect(await provider()!.open({ relativePath: 'note.md' })).toBeNull();
+});
+
+test('the collaboration provider is disposed before an async deactivate runs', async () => {
+	const log: string[] = [];
+	const plugin = syncLikePlugin(log);
+	const { host, provider } = collaborationHost([plugin], log);
+	await host.activate(plugin);
+	const deactivation = host.deactivate('sync');
+	expect(provider()).toBeNull();
+	expect(log).toEqual([
+		'activate',
+		'register:sync',
+		'dispose:sync',
+		'deactivate',
+	]);
+	expect(await deactivation).toBe(true);
 });
