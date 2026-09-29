@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-local-core = { path = "../local-core" }
+local-core = { version = "0.1.0", path = "../local-core" }
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

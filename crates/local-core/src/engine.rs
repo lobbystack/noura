@@ -1,9 +1,12 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::UNIX_EPOCH,
 };
 
@@ -310,10 +313,65 @@ pub struct ManifestUpdateInput {
     pub expected_updated: Option<String>,
 }
 
+/// What one walk of the workspace found.
+#[derive(Default)]
 struct WorkspaceScan {
+    /// Markdown files whose bytes changed since they were indexed.
     changed: Vec<MarkdownIndexEntry>,
-    seen: std::collections::HashSet<String>,
+    /// Markdown paths that still exist, including files that could not be
+    /// read and files that iCloud has not downloaded.
+    seen: HashSet<String>,
+    /// Folders the walk could not enter. Indexed files below them are kept.
+    unreadable_folders: Vec<String>,
+    /// The walk failed somewhere it could not attribute to a path, so it
+    /// must not treat missing files as deleted.
+    incomplete: bool,
+    diagnostics: Vec<crate::Diagnostic>,
+    /// Markdown paths whose content lives only in the cloud for now.
+    not_downloaded: BTreeSet<String>,
+    /// Every visible file and folder, when the caller asked for a listing.
+    entries: Vec<ScannedEntry>,
+    /// Markdown paths whose index rows this walk replaced or removed.
+    touched: Vec<String>,
 }
+
+impl WorkspaceScan {
+    /// Indexed paths the walk proved absent.
+    fn removed(&self, indexed: &HashMap<String, (i64, i64)>) -> Vec<String> {
+        if self.incomplete {
+            return Vec::new();
+        }
+        indexed
+            .keys()
+            .filter(|path| {
+                !self.seen.contains(*path)
+                    && !self
+                        .unreadable_folders
+                        .iter()
+                        .any(|folder| path.starts_with(&format!("{folder}/")))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+struct ScannedEntry {
+    relative_path: String,
+    name: String,
+    is_folder: bool,
+    not_downloaded: bool,
+}
+
+/// Findings of the last full walk that do not live in the index.
+#[derive(Default)]
+struct ScanState {
+    diagnostics: Vec<crate::Diagnostic>,
+    not_downloaded: BTreeSet<String>,
+}
+
+/// More object changes than this in one reconciliation go out as a single
+/// `objects:changed` event, so bulk edits cannot flood the event channel.
+const OBJECT_EVENT_BATCH_LIMIT: usize = 32;
 
 struct CollaborationPresenceCacheEntry {
     object_id: String,
@@ -325,7 +383,9 @@ struct CollaborationPresenceCacheEntry {
 }
 
 mod copy;
+mod scan;
 mod sync;
+use scan::*;
 mod trash;
 pub use trash::{SystemTrash, os_trash};
 
@@ -337,7 +397,14 @@ pub struct WorkspaceEngine {
     lock_path: PathBuf,
     event_sender: tokio::sync::broadcast::Sender<CoreEvent>,
     watcher: WatchCoordinator,
-    self_writes: Mutex<HashMap<String, String>>,
+    /// Paths this engine wrote, with the revision it wrote. Shared with the
+    /// watcher thread so our own writes do not mark the index dirty.
+    self_writes: Arc<Mutex<HashMap<String, String>>>,
+    /// Set by the watcher thread when a visible path changes and cleared when
+    /// a workspace walk starts. Reads skip the walk while it stays clear.
+    dirty: Arc<AtomicBool>,
+    /// What the last full walk found beyond the index itself.
+    scan_state: Mutex<ScanState>,
     chat_mutation_fault: Mutex<Option<ChatMutationFault>>,
     #[cfg(test)]
     collaboration_mutation_fault: Mutex<Option<u8>>,
@@ -505,7 +572,12 @@ impl WorkspaceEngine {
         let index_path = local_dir.join("index.sqlite");
         let index = IndexStore::open(&index_path)?;
         let (event_sender, _) = tokio::sync::broadcast::channel(256);
-        let watcher = WatchCoordinator::new(&root)?;
+        let self_writes = Arc::new(Mutex::new(HashMap::new()));
+        let dirty = Arc::new(AtomicBool::new(false));
+        let watcher = WatchCoordinator::new(
+            &root,
+            dirty_marker(root.clone(), self_writes.clone(), dirty.clone()),
+        );
         let engine = Self {
             root,
             manifest: std::sync::RwLock::new(manifest),
@@ -514,7 +586,9 @@ impl WorkspaceEngine {
             lock_path: local_dir.join("workspace.lock"),
             event_sender,
             watcher,
-            self_writes: Mutex::new(HashMap::new()),
+            self_writes,
+            dirty,
+            scan_state: Mutex::new(ScanState::default()),
             chat_mutation_fault: Mutex::new(None),
             #[cfg(test)]
             collaboration_mutation_fault: Mutex::new(None),
@@ -569,13 +643,16 @@ impl WorkspaceEngine {
         self.event_sender.subscribe()
     }
     pub fn state(&self) -> WorkspaceState {
-        let (indexed_files, diagnostics) =
+        let (indexed_files, mut diagnostics) =
             self.index.lock().ok().map_or((0, Vec::new()), |index| {
                 (
                     index.file_count().unwrap_or(0),
                     index.diagnostics().unwrap_or_default(),
                 )
             });
+        if let Ok(scan) = self.scan_state.lock() {
+            diagnostics.extend(scan.diagnostics.iter().cloned());
+        }
         WorkspaceState {
             phase: WorkspacePhase::Ready,
             workspace_id: Some(self.current_workspace_id()),
@@ -792,63 +869,166 @@ impl WorkspaceEngine {
         Ok(())
     }
 
+    /// Walk the whole workspace and bring the index in line with the files.
     pub fn reconcile(&self) -> Result<()> {
-        self.reconcile_forced_with_source(&std::collections::HashSet::new(), "reconciliation")
+        self.reconcile_forced_with_source(&HashSet::new(), "reconciliation")
     }
 
-    fn reconcile_forced(&self, forced: &std::collections::HashSet<String>) -> Result<()> {
-        self.reconcile_forced_with_source(forced, "reconciliation")
+    /// Whether a read must walk the workspace before trusting the index:
+    /// the watcher is down, or it saw a change nobody reconciled yet.
+    fn needs_reconcile(&self) -> bool {
+        !self.watcher.is_available() || self.dirty.load(Ordering::SeqCst)
     }
 
-    fn reconcile_forced_with_source(
+    /// Reconcile only when the watcher reported a change since the last
+    /// walk. Reads use this; mutations that move files walk unconditionally.
+    fn reconcile_if_needed(&self) -> Result<()> {
+        if self.needs_reconcile() {
+            self.reconcile()
+        } else {
+            self.recover_pending_chat_mutations()
+        }
+    }
+
+    pub(crate) fn reconcile_forced_with_source(
         &self,
-        forced: &std::collections::HashSet<String>,
+        forced: &HashSet<String>,
         source: &str,
     ) -> Result<()> {
+        self.reconcile_walk(forced, source, false).map(|_| ())
+    }
+
+    /// One walk that updates the index, records what could not be read, and
+    /// optionally lists every visible entry for the file browser.
+    fn reconcile_walk(
+        &self,
+        forced: &HashSet<String>,
+        source: &str,
+        list_entries: bool,
+    ) -> Result<WorkspaceScan> {
         self.recover_pending_chat_mutations()?;
-        let before = self
-            .index
-            .lock()
-            .map_err(|_| lock_error("workspace_reconcile"))?
-            .query_objects(None)?
-            .into_iter()
-            .map(|object| (object.id.clone(), object))
-            .collect::<HashMap<_, _>>();
+        // Clear before walking: a change that lands mid-walk marks it again.
+        self.dirty.store(false, Ordering::SeqCst);
         let metadata = self
             .index
             .lock()
             .map_err(|_| lock_error("workspace_reconcile"))?
             .file_metadata()?;
-        let scan = scan_changes(&self.root, &self.current_ignore(), &metadata, forced)?;
-        let removed = metadata
-            .keys()
-            .filter(|path| !scan.seen.contains(*path))
-            .cloned()
-            .collect::<Vec<_>>();
-        if scan.changed.is_empty() && removed.is_empty() {
+        let mut scan = scan_workspace(
+            &self.root,
+            &self.current_ignore(),
+            Some((&metadata, forced)),
+            list_entries,
+        )?;
+        let removed = scan.removed(&metadata);
+        self.store_scan_state(&scan);
+        let changed = std::mem::take(&mut scan.changed);
+        scan.touched = changed
+            .iter()
+            .map(|(path, ..)| path.clone())
+            .chain(removed.iter().cloned())
+            .collect();
+        if let Err(error) = self.apply_index_changes(changed, removed, source) {
+            self.dirty.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
+        Ok(scan)
+    }
+
+    fn store_scan_state(&self, scan: &WorkspaceScan) {
+        if let Ok(mut state) = self.scan_state.lock() {
+            state.diagnostics = scan.diagnostics.clone();
+            state.not_downloaded = scan.not_downloaded.clone();
+        }
+    }
+
+    /// Re-read specific Markdown files and update only their index rows.
+    /// A missing file counts as removed unless iCloud still holds it.
+    fn reconcile_paths(&self, paths: &[String], source: &str) -> Result<()> {
+        let mut changed = Vec::new();
+        let mut removed = Vec::new();
+        for relative in paths {
+            let path = self.root.join(relative);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() => {
+                    if is_dataless(&metadata) {
+                        continue;
+                    }
+                    match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            let parsed = markdown::parse_markdown(relative, &bytes);
+                            changed.push((relative.clone(), bytes, modified_ns(&metadata), parsed));
+                        }
+                        Err(error) => {
+                            tracing::warn!(path = %relative, %error, "a Markdown file could not be read");
+                        }
+                    }
+                }
+                Ok(_) => removed.push(relative.clone()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if !icloud_placeholder(&path).exists() {
+                        removed.push(relative.clone());
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(path = %relative, %error, "a Markdown file could not be inspected");
+                }
+            }
+        }
+        self.apply_index_changes(changed, removed, source)
+    }
+
+    /// Write scanned changes into the index and announce the objects whose
+    /// identity, location, or revision changed. Only the touched stable IDs
+    /// are compared, so a small change costs the same in a large workspace.
+    fn apply_index_changes(
+        &self,
+        changed: Vec<MarkdownIndexEntry>,
+        removed: Vec<String>,
+        source: &str,
+    ) -> Result<()> {
+        if changed.is_empty() && removed.is_empty() {
             return Ok(());
         }
         let mut index = self
             .index
             .lock()
             .map_err(|_| lock_error("workspace_reconcile"))?;
-        index.reconcile_markdown(&scan.changed, &removed)?;
+        let touched = changed
+            .iter()
+            .map(|(path, ..)| path.clone())
+            .chain(removed.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut ids = index.stable_ids_at_paths(&touched)?;
+        ids.extend(changed.iter().filter_map(|(_, _, _, parsed)| match parsed {
+            ParsedMarkdown::Managed(object) => Some(object.id.clone()),
+            _ => None,
+        }));
+        let before = index.object_heads(&ids)?;
+        index.reconcile_markdown(&changed, &removed)?;
+        let after = index.object_heads(&ids)?;
         drop(index);
-        let after = self
-            .index
-            .lock()
-            .map_err(|_| lock_error("workspace_reconcile"))?
-            .query_objects(None)?
-            .into_iter()
-            .map(|object| (object.id.clone(), object))
-            .collect::<HashMap<_, _>>();
-        self.emit_reconciled_object_events(&before, &after, source);
+        self.emit_object_changes(&before, &after, source);
         self.emit("search:index-updated", source, serde_json::json!({}));
         Ok(())
     }
 
     pub fn poll_external_changes(&self, wait: std::time::Duration) -> Result<Vec<String>> {
         let paths = self.watcher.drain_coalesced(wait)?;
+        if self.watcher.take_overflow() {
+            // Events were lost, so the paths are incomplete: walk everything.
+            self.sync_external_manifest(&[self.root.join(WORKSPACE_MANIFEST_PATH)])?;
+            let scan = self.reconcile_walk(&HashSet::new(), "external", false)?;
+            if let Ok(mut journal) = self.self_writes.lock() {
+                journal.clear();
+            }
+            self.emit(
+                "file:changed",
+                "external",
+                serde_json::json!({ "paths": scan.touched, "rescanned": true }),
+            );
+            return Ok(scan.touched);
+        }
         self.process_external_changes(paths)
     }
 
@@ -874,7 +1054,12 @@ impl WorkspaceEngine {
                 // an object and must never surface as an external change.
                 continue;
             }
-            if !is_visible_workspace_path(relative, path.is_dir(), &ignores) {
+            // Dot paths (.DS_Store, .obsidian/workspace.json, editor swap
+            // files) are not workspace content; only iCloud placeholders for
+            // Markdown files matter.
+            if !is_index_candidate(relative)
+                || !is_visible_workspace_path(relative, path.is_dir(), &ignores)
+            {
                 continue;
             }
             let relative = relative
@@ -1151,6 +1336,7 @@ impl WorkspaceEngine {
                     durability: "committed".into(),
                     index_status: IndexStatus::Updated,
                     warnings: Vec::new(),
+                    chat_revision: None,
                 })
             }
             ConflictResolution::ReplaceExternal => {
@@ -1358,8 +1544,20 @@ impl WorkspaceEngine {
     /// is returned as-is; the editor owns complete raw contents.
     pub fn read_raw_markdown(&self, relative_path: &str) -> Result<RawMarkdownRead> {
         let path = validate_raw_markdown_path(&self.root, relative_path)?;
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "raw_markdown_read", Some(relative_path)))?;
+        let bytes = std::fs::read(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound && icloud_placeholder(&path).exists() {
+                let mut error = CoreError::new(
+                    "file_not_downloaded",
+                    ErrorCategory::Filesystem,
+                    "This file is still in iCloud. Download it in Finder, then open it again.",
+                    "raw_markdown_read",
+                );
+                error.retryable = true;
+                error.path = Some(relative_path.to_owned());
+                return error;
+            }
+            CoreError::io(error, "raw_markdown_read", Some(relative_path))
+        })?;
         let (body, uses_crlf, has_bom) = split_raw_bytes(&bytes)?;
         Ok(RawMarkdownRead {
             relative_path: relative_path.to_owned(),
@@ -1580,7 +1778,7 @@ impl WorkspaceEngine {
             &self.root,
             &next_relative,
             &next_bytes,
-            None,
+            Some(&current.revision),
             "raw_markdown_save",
         )?;
         if let Ok(mut journal) = self.self_writes.lock() {
@@ -1692,7 +1890,7 @@ impl WorkspaceEngine {
                     &self.root,
                     &next_relative,
                     &next_bytes,
-                    None,
+                    Some(&input.current_revision),
                     "raw_markdown_resolve",
                 )?;
                 if let Ok(mut journal) = self.self_writes.lock() {
@@ -1752,6 +1950,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: None,
         })
     }
 
@@ -1791,6 +1990,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: None,
         })
     }
 
@@ -1813,11 +2013,12 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: None,
         })
     }
 
     pub fn list_chats(&self) -> Result<Vec<Chat>> {
-        self.reconcile()?;
+        self.reconcile_if_needed()?;
         let objects = self.query_objects(Some("chat"))?;
         let mut chats = Vec::with_capacity(objects.len());
         for object in objects {
@@ -1838,37 +2039,47 @@ impl WorkspaceEngine {
 
     pub fn read_chat(&self, id: &str) -> Result<ChatRead> {
         let chat = self.read_canonical_chat(id, "chat_read")?;
-        let mut messages = self
-            .query_objects(Some("chat-message"))?
-            .into_iter()
-            .filter(|object| {
-                object
-                    .properties
-                    .get("chat_id")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(id)
-            })
-            .map(|object| {
-                let path = resolve_for_write(&self.root, &object.relative_path, "chat_read")?;
-                let bytes = std::fs::read(path).map_err(|error| {
-                    CoreError::io(error, "chat_read", Some(&object.relative_path))
-                })?;
-                let message = parse_chat_message(&object.relative_path, &bytes)?;
-                Ok((
-                    parse_chat_timestamp(&message.created, "chat_read")?,
-                    message,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let messages = match self.read_chat_messages(id) {
+            Ok(messages) => messages,
+            // The index pointed at a message file that moved or vanished
+            // before the watcher reported it: walk once and read again.
+            Err(error) if error.code == "filesystem_error" => {
+                self.reconcile()?;
+                self.read_chat_messages(id)?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(ChatRead { chat, messages })
+    }
+
+    /// Messages of one chat, found through the index's `chat_id` relation and
+    /// read from their files, oldest first.
+    fn read_chat_messages(&self, id: &str) -> Result<Vec<ChatMessage>> {
+        let paths = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("chat_read"))?
+            .chat_message_paths(id)?;
+        let mut messages = Vec::with_capacity(paths.len());
+        for relative in paths {
+            let path = resolve_for_write(&self.root, &relative, "chat_read")?;
+            let bytes = std::fs::read(path)
+                .map_err(|error| CoreError::io(error, "chat_read", Some(&relative)))?;
+            let message = parse_chat_message(&relative, &bytes)?;
+            if message.chat_id != id {
+                continue;
+            }
+            messages.push((
+                parse_chat_timestamp(&message.created, "chat_read")?,
+                message,
+            ));
+        }
         messages.sort_by(|left, right| {
             left.0
                 .cmp(&right.0)
                 .then_with(|| left.1.id.cmp(&right.1.id))
         });
-        Ok(ChatRead {
-            chat,
-            messages: messages.into_iter().map(|(_, message)| message).collect(),
-        })
+        Ok(messages.into_iter().map(|(_, message)| message).collect())
     }
 
     pub fn append_chat_user_message(
@@ -2148,6 +2359,35 @@ impl WorkspaceEngine {
             .map_err(|_| lock_error("object_query"))?
             .query_objects(object_type)
     }
+    /// Objects matching exact-value filters, filtered in SQL.
+    pub fn query_objects_filtered(
+        &self,
+        filter: &crate::ObjectFilter,
+    ) -> Result<Vec<WorkspaceObject>> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("object_query"))?
+            .query_objects_filtered(filter)
+    }
+    /// Body-free, bounded object summaries for overview screens.
+    pub fn query_object_summaries(
+        &self,
+        query: &crate::ObjectSummaryQuery,
+    ) -> Result<Vec<crate::ObjectSummary>> {
+        if let Some(date) = &query.due_on_or_before
+            && date.parse::<jiff::civil::Date>().is_err()
+        {
+            return Err(CoreError::validation(
+                "invalid_date",
+                "dueOnOrBefore must be a YYYY-MM-DD date",
+                "object_summaries",
+            ));
+        }
+        self.index
+            .lock()
+            .map_err(|_| lock_error("object_summaries"))?
+            .query_object_summaries(query)
+    }
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
         self.index
             .lock()
@@ -2293,6 +2533,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: None,
         })
     }
 
@@ -2336,6 +2577,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: None,
         })
     }
 
@@ -2346,126 +2588,96 @@ impl WorkspaceEngine {
     }
 
     pub fn list_folders(&self) -> Result<Vec<crate::FolderEntry>> {
-        let mut folders = Vec::new();
-        for entry in workspace_walker(&self.root, &self.current_ignore())? {
-            let entry = entry.map_err(|error| {
-                CoreError::new(
-                    "scan_error",
-                    ErrorCategory::Filesystem,
-                    error.to_string(),
-                    "folders_list",
-                )
-            })?;
-            if entry.path() == self.root || !entry.file_type().is_some_and(|kind| kind.is_dir()) {
-                continue;
-            }
-            folders.push(crate::FolderEntry {
-                relative_path: normalized_relative_path(&self.root, entry.path(), "folders_list")?,
-                name: entry
-                    .file_name()
-                    .to_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| {
-                        CoreError::validation(
-                            "non_utf8_path",
-                            "A workspace folder name is not UTF-8",
-                            "folders_list",
-                        )
-                    })?,
-            });
-        }
+        let scan = scan_workspace(&self.root, &self.current_ignore(), None, true)?;
+        let mut folders = scan
+            .entries
+            .into_iter()
+            .filter(|entry| entry.is_folder)
+            .map(|entry| crate::FolderEntry {
+                relative_path: entry.relative_path,
+                name: entry.name,
+            })
+            .collect::<Vec<_>>();
         folders.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         Ok(folders)
     }
 
+    /// Every visible file and folder with its index status, from one walk.
+    /// The walk also reconciles when the watcher reported changes.
     pub fn list_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
-        self.reconcile()?;
-        let metadata = self
+        let scan = if self.needs_reconcile() {
+            self.reconcile_walk(&HashSet::new(), "reconciliation", true)?
+        } else {
+            self.recover_pending_chat_mutations()?;
+            scan_workspace(&self.root, &self.current_ignore(), None, true)?
+        };
+        let mut metadata = self
             .index
             .lock()
             .map_err(|_| lock_error("files_list"))?
             .workspace_entry_metadata()?;
-        let mut entries = Vec::new();
-        for entry in workspace_walker(&self.root, &self.current_ignore())? {
-            let entry = entry.map_err(|error| {
-                CoreError::new(
-                    "scan_error",
-                    ErrorCategory::Filesystem,
-                    error.to_string(),
-                    "files_list",
-                )
-            })?;
-            if entry.path() == self.root {
-                continue;
-            }
-            let file_type = entry.file_type();
-            if !file_type.is_some_and(|kind| kind.is_dir() || kind.is_file()) {
-                continue;
-            }
-            let relative_path = normalized_relative_path(&self.root, entry.path(), "files_list")?;
-            // Dot-prefixed paths are normal workspace files, but are hidden from
-            // the user-facing file browser (including their descendants).
-            if relative_path
-                .split('/')
-                .any(|component| component.starts_with('.'))
-            {
-                continue;
-            }
-            let name = entry
-                .file_name()
-                .to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    CoreError::validation(
-                        "non_utf8_path",
-                        "A workspace entry name is not UTF-8",
-                        "files_list",
-                    )
-                })?;
-            if file_type.is_some_and(|kind| kind.is_dir()) {
-                entries.push(WorkspaceEntry {
-                    relative_path,
-                    name,
-                    kind: WorkspaceEntryKind::Folder,
-                    parse_status: None,
-                    object_id: None,
-                    object_type: None,
-                    revision: None,
-                });
-                continue;
-            }
-            let markdown = entry.path().extension().and_then(|value| value.to_str()) == Some("md");
-            let indexed = if markdown {
-                metadata.get(&relative_path)
-            } else {
-                None
-            };
-            if markdown && indexed.is_none() {
-                return Err(CoreError::new(
-                    "index_entry_missing",
-                    ErrorCategory::Index,
-                    "A Markdown file is missing from the local index",
-                    "files_list",
-                ));
-            }
-            entries.push(WorkspaceEntry {
-                relative_path,
-                name,
-                kind: WorkspaceEntryKind::File,
-                parse_status: indexed
-                    .map(|value| value.parse_status)
-                    .or(Some(ParseStatus::Binary)),
-                object_id: indexed.and_then(|value| value.object_id.clone()),
-                object_type: indexed.and_then(|value| value.object_type.clone()),
-                revision: indexed.map(|value| value.revision.clone()),
-            });
+        let unindexed = scan
+            .entries
+            .iter()
+            .filter(|entry| {
+                !entry.is_folder
+                    && !entry.not_downloaded
+                    && is_markdown_path(&entry.relative_path)
+                    && !metadata.contains_key(&entry.relative_path)
+            })
+            .map(|entry| entry.relative_path.clone())
+            .collect::<Vec<_>>();
+        if !unindexed.is_empty() {
+            // A file appeared before its watcher event arrived. Index just
+            // those files instead of failing the listing.
+            self.reconcile_paths(&unindexed, "reconciliation")?;
+            metadata = self
+                .index
+                .lock()
+                .map_err(|_| lock_error("files_list"))?
+                .workspace_entry_metadata()?;
         }
+        let mut entries = scan
+            .entries
+            .into_iter()
+            .map(|entry| {
+                if entry.is_folder {
+                    return WorkspaceEntry {
+                        relative_path: entry.relative_path,
+                        name: entry.name,
+                        kind: WorkspaceEntryKind::Folder,
+                        parse_status: None,
+                        object_id: None,
+                        object_type: None,
+                        revision: None,
+                        not_downloaded: false,
+                    };
+                }
+                let indexed = metadata.get(&entry.relative_path);
+                let markdown = is_markdown_path(&entry.relative_path);
+                WorkspaceEntry {
+                    parse_status: match indexed {
+                        Some(value) => Some(value.parse_status),
+                        None if markdown => None,
+                        None => Some(ParseStatus::Binary),
+                    },
+                    object_id: indexed.and_then(|value| value.object_id.clone()),
+                    object_type: indexed.and_then(|value| value.object_type.clone()),
+                    revision: indexed.map(|value| value.revision.clone()),
+                    relative_path: entry.relative_path,
+                    name: entry.name,
+                    kind: WorkspaceEntryKind::File,
+                    not_downloaded: entry.not_downloaded,
+                }
+            })
+            .collect::<Vec<_>>();
         entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        entries.dedup_by(|right, left| left.relative_path == right.relative_path);
         Ok(entries)
     }
 
     pub fn list_non_managed_markdown(&self) -> Result<Vec<UnmanagedFile>> {
-        self.reconcile()?;
+        self.reconcile_if_needed()?;
         self.index
             .lock()
             .map_err(|_| lock_error("files_list_non_managed"))?
@@ -2597,6 +2809,16 @@ impl WorkspaceEngine {
         if let Ok(mut journal) = self.self_writes.lock() {
             journal.insert(object.relative_path.clone(), revision.clone());
         }
+        // Serialization normalizes the title and body (for example it trims
+        // trailing blank lines). Index and return what the file now says, so
+        // a client's next save starts from the canonical text instead of
+        // conflicting with it.
+        if let ParsedMarkdown::Managed(mut canonical) =
+            markdown::parse_markdown(&object.relative_path, &bytes)
+        {
+            canonical.relative_path = object.relative_path.clone();
+            object = canonical;
+        }
         object.revision = revision.clone();
         let parsed = ParsedMarkdown::Managed(object.clone());
         let result = self
@@ -2619,6 +2841,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: None,
         })
     }
 
@@ -2630,20 +2853,16 @@ impl WorkspaceEngine {
                 operation,
             ));
         }
-        self.reconcile()?;
-        let object = self.get_object(id)?.ok_or_else(|| {
-            CoreError::validation("chat_not_found", "The chat does not exist", operation)
-        })?;
-        if object.object_type != "chat" {
+        let Some((object, bytes)) = self
+            .read_canonical_file(id, operation)?
+            .filter(|(object, _)| object.object_type == "chat")
+        else {
             return Err(CoreError::validation(
                 "chat_not_found",
                 "The chat does not exist",
                 operation,
             ));
-        }
-        let path = resolve_for_write(&self.root, &object.relative_path, operation)?;
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, operation, Some(&object.relative_path)))?;
+        };
         parse_chat(&object.relative_path, &bytes)
     }
 
@@ -2655,24 +2874,16 @@ impl WorkspaceEngine {
                 operation,
             ));
         }
-        self.reconcile()?;
-        let object = self.get_object(id)?.ok_or_else(|| {
-            CoreError::validation(
-                "chat_message_not_found",
-                "The chat message does not exist",
-                operation,
-            )
-        })?;
-        if object.object_type != "chat-message" {
+        let Some((object, bytes)) = self
+            .read_canonical_file(id, operation)?
+            .filter(|(object, _)| object.object_type == "chat-message")
+        else {
             return Err(CoreError::validation(
                 "chat_message_not_found",
                 "The chat message does not exist",
                 operation,
             ));
-        }
-        let path = resolve_for_write(&self.root, &object.relative_path, operation)?;
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, operation, Some(&object.relative_path)))?;
+        };
         parse_chat_message(&object.relative_path, &bytes)
     }
 
@@ -2801,6 +3012,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: Some(chat.revision),
         })
     }
 
@@ -2897,6 +3109,7 @@ impl WorkspaceEngine {
             durability: "committed".into(),
             index_status,
             warnings,
+            chat_revision: Some(chat.revision),
         })
     }
 
@@ -3016,8 +3229,20 @@ impl WorkspaceEngine {
     }
 
     fn recover_pending_chat_mutations(&self) -> Result<()> {
-        let _guard = self.write_lock("chat_mutation_recover")?;
+        // Most calls find nothing to recover: check without the
+        // cross-process lock first, then re-list under it.
         let directory = resolve_for_write(&self.root, CHAT_MUTATION_DIR, "chat_mutation_recover")?;
+        let pending = std::fs::read_dir(&directory).is_ok_and(|mut entries| {
+            entries.any(|entry| {
+                entry.is_ok_and(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+                })
+            })
+        });
+        if !pending {
+            return Ok(());
+        }
+        let _guard = self.write_lock("chat_mutation_recover")?;
         if !directory.exists() {
             return Ok(());
         }
@@ -3394,36 +3619,86 @@ impl WorkspaceEngine {
                 operation,
             ));
         }
-        let mut forced = std::collections::HashSet::new();
-        if let Some(indexed) = self.get_object(id)? {
-            forced.insert(indexed.relative_path);
-        }
-        self.reconcile_forced(&forced)?;
-        let indexed = self.get_object(id)?.ok_or_else(|| {
+        self.read_canonical_file(id, operation)?.ok_or_else(|| {
             CoreError::validation("object_not_found", "The object does not exist", operation)
-        })?;
-        let destination = resolve_for_write(&self.root, &indexed.relative_path, operation)?;
-        let bytes = std::fs::read(&destination)
-            .map_err(|error| CoreError::io(error, operation, Some(&indexed.relative_path)))?;
-        let ParsedMarkdown::Managed(object) =
-            markdown::parse_markdown(&indexed.relative_path, &bytes)
-        else {
-            return Err(CoreError::new(
-                "object_parse_failed",
-                ErrorCategory::Parse,
-                "The canonical Markdown file cannot be reconciled safely",
-                operation,
-            ));
-        };
-        if object.id != id {
-            return Err(CoreError::new(
-                "object_identity_changed",
-                ErrorCategory::Identity,
-                "The canonical file no longer has the expected stable ID",
-                operation,
-            ));
+        })
+    }
+
+    /// Read the file that holds `id` and return its parsed object and bytes.
+    ///
+    /// Autosaves and chat steps call this on every write, so it checks only
+    /// the one target file: when its bytes differ from the index, it
+    /// re-indexes that file alone. It walks the workspace only when the
+    /// watcher reported unreconciled changes, or when the indexed path no
+    /// longer holds the object (an external move, delete, or ID edit).
+    fn read_canonical_file(
+        &self,
+        id: &str,
+        operation: &str,
+    ) -> Result<Option<(WorkspaceObject, Vec<u8>)>> {
+        self.reconcile_if_needed()?;
+        let mut walked = false;
+        loop {
+            let location = self
+                .index
+                .lock()
+                .map_err(|_| lock_error(operation))?
+                .object_location(id)?;
+            let Some((relative, indexed_revision)) = location else {
+                if walked {
+                    return Ok(None);
+                }
+                self.reconcile()?;
+                walked = true;
+                continue;
+            };
+            let destination = resolve_for_write(&self.root, &relative, operation)?;
+            let bytes = match std::fs::read(&destination) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && !walked => {
+                    self.reconcile()?;
+                    walked = true;
+                    continue;
+                }
+                Err(error) => return Err(CoreError::io(error, operation, Some(&relative))),
+            };
+            let parsed = markdown::parse_markdown(&relative, &bytes);
+            let object = match parsed {
+                ParsedMarkdown::Managed(ref object) if object.id == id => object.clone(),
+                _ if !walked => {
+                    self.reconcile()?;
+                    walked = true;
+                    continue;
+                }
+                ParsedMarkdown::Managed(_) => {
+                    return Err(CoreError::new(
+                        "object_identity_changed",
+                        ErrorCategory::Identity,
+                        "The canonical file no longer has the expected stable ID",
+                        operation,
+                    ));
+                }
+                _ => {
+                    return Err(CoreError::new(
+                        "object_parse_failed",
+                        ErrorCategory::Parse,
+                        "The canonical Markdown file cannot be reconciled safely",
+                        operation,
+                    ));
+                }
+            };
+            if markdown::revision(&bytes) != indexed_revision {
+                let modified = std::fs::metadata(&destination)
+                    .map(|metadata| modified_ns(&metadata))
+                    .unwrap_or(0);
+                self.apply_index_changes(
+                    vec![(relative, bytes.clone(), modified, parsed)],
+                    Vec::new(),
+                    "reconciliation",
+                )?;
+            }
+            return Ok(Some((object, bytes)));
         }
-        Ok((object, bytes))
     }
 
     fn snapshot_bytes(&self, id: &str, kind: &str, bytes: &[u8]) -> Result<()> {
@@ -3467,52 +3742,62 @@ impl WorkspaceEngine {
         });
     }
 
-    fn emit_reconciled_object_events(
+    /// Announce object changes found by reconciliation. A handful go out as
+    /// individual `object:*` events; a bulk change (a sync pull, a git
+    /// checkout, a first index) goes out as one `objects:changed` event whose
+    /// `changes` list carries the same payloads plus their `event` type.
+    fn emit_object_changes(
         &self,
-        before: &HashMap<String, WorkspaceObject>,
-        after: &HashMap<String, WorkspaceObject>,
+        before: &HashMap<String, crate::index::ObjectHead>,
+        after: &HashMap<String, crate::index::ObjectHead>,
         source: &str,
     ) {
-        for (id, object) in after {
-            let Some(previous) = before.get(id) else {
-                self.emit_object_event("object:created", object, source, None);
-                continue;
-            };
-            if previous.relative_path != object.relative_path {
-                self.emit_object_event(
-                    "object:moved",
-                    object,
-                    source,
-                    Some(&previous.relative_path),
-                );
-            } else if previous.revision != object.revision {
-                self.emit_object_event("object:updated", object, source, None);
+        let mut changes = Vec::new();
+        for (id, head) in after {
+            match before.get(id) {
+                None => changes.push(("object:created", head, None)),
+                Some(previous) if previous.relative_path != head.relative_path => {
+                    changes.push(("object:moved", head, Some(previous.relative_path.as_str())))
+                }
+                Some(previous) if previous.revision != head.revision => {
+                    changes.push(("object:updated", head, None));
+                }
+                Some(_) => {}
             }
         }
-        for (id, object) in before {
+        for (id, head) in before {
             if !after.contains_key(id) {
-                self.emit_object_event("object:deleted", object, source, None);
+                changes.push(("object:deleted", head, None));
             }
         }
-    }
-
-    fn emit_object_event(
-        &self,
-        event_type: &str,
-        object: &WorkspaceObject,
-        source: &str,
-        previous_path: Option<&str>,
-    ) {
-        self.emit(
-            event_type,
-            source,
+        changes.sort_by(|left, right| left.1.id.cmp(&right.1.id));
+        let payload = |head: &crate::index::ObjectHead, previous_path: Option<&str>| {
             serde_json::json!({
-                "id": object.id,
-                "type": object.object_type,
-                "path": object.relative_path,
+                "id": head.id,
+                "type": head.object_type,
+                "path": head.relative_path,
                 "previousPath": previous_path,
-                "revision": object.revision,
-            }),
+                "revision": head.revision,
+            })
+        };
+        if changes.len() <= OBJECT_EVENT_BATCH_LIMIT {
+            for (event_type, head, previous_path) in changes {
+                self.emit(event_type, source, payload(head, previous_path));
+            }
+            return;
+        }
+        let changes = changes
+            .into_iter()
+            .map(|(event_type, head, previous_path)| {
+                let mut value = payload(head, previous_path);
+                value["event"] = serde_json::Value::String(event_type.into());
+                value
+            })
+            .collect::<Vec<_>>();
+        self.emit(
+            "objects:changed",
+            source,
+            serde_json::json!({ "changes": changes }),
         );
     }
 
@@ -3543,65 +3828,6 @@ impl Drop for WorkspaceLock {
     fn drop(&mut self) {
         let _ = self.0.unlock();
     }
-}
-
-fn scan_into(root: &Path, ignore_patterns: &[String], index: &mut IndexStore) -> Result<()> {
-    let scan = scan_changes(
-        root,
-        ignore_patterns,
-        &HashMap::new(),
-        &std::collections::HashSet::new(),
-    )?;
-    index.replace_markdown(&scan.changed)
-}
-
-fn scan_changes(
-    root: &Path,
-    ignore_patterns: &[String],
-    indexed: &HashMap<String, (i64, i64)>,
-    forced: &std::collections::HashSet<String>,
-) -> Result<WorkspaceScan> {
-    let walker = workspace_walker(root, ignore_patterns)?;
-    let mut changed = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for entry in walker {
-        let entry = entry.map_err(|error| {
-            CoreError::new(
-                "scan_error",
-                ErrorCategory::Filesystem,
-                error.to_string(),
-                "workspace_scan",
-            )
-        })?;
-        if !entry.file_type().is_some_and(|kind| kind.is_file())
-            || entry.path().extension().and_then(|value| value.to_str()) != Some("md")
-        {
-            continue;
-        }
-        let relative = normalized_relative_path(root, entry.path(), "workspace_scan")?;
-        seen.insert(relative.clone());
-        let size = entry
-            .metadata()
-            .map_err(|error| {
-                CoreError::new(
-                    "scan_error",
-                    ErrorCategory::Filesystem,
-                    error.to_string(),
-                    "workspace_scan",
-                )
-            })?
-            .len()
-            .min(i64::MAX as u64) as i64;
-        let modified = mtime_ns(entry.path());
-        if !forced.contains(&relative) && indexed.get(&relative) == Some(&(size, modified)) {
-            continue;
-        }
-        let bytes = std::fs::read(entry.path())
-            .map_err(|error| CoreError::io(error, "workspace_scan", Some(&relative)))?;
-        let parsed = markdown::parse_markdown(&relative, &bytes);
-        changed.push((relative, bytes, modified, parsed));
-    }
-    Ok(WorkspaceScan { changed, seen })
 }
 
 fn compile_workspace_ignores(
@@ -4933,7 +5159,8 @@ mod tests {
                 resolution: ConflictResolution::ReplaceExternal,
             })
             .unwrap();
-        assert_eq!(replaced.value.body, "local\n");
+        // Mutations return the canonical parse of the written file.
+        assert_eq!(replaced.value.body, "local");
         let snapshots = std::fs::read_dir(
             workspace
                 .path()

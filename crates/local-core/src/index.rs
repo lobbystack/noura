@@ -9,8 +9,16 @@ use crate::{
     markdown::revision,
 };
 
+/// How long a connection waits for another process (the MCP server shares
+/// this index) to release a lock before it reports `index_error`.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+// The index is derived from workspace files and can always be rebuilt, so
+// WAL with synchronous=NORMAL trades the last transactions on power loss for
+// fewer fsyncs. Canonical files keep their own full durability.
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES(1);
@@ -53,6 +61,75 @@ pub(crate) struct IndexedFileMetadata {
     pub object_id: Option<String>,
     pub object_type: Option<String>,
     pub revision: String,
+}
+
+/// Identity, location, and revision of one indexed object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObjectHead {
+    pub id: String,
+    pub object_type: String,
+    pub relative_path: String,
+    pub revision: String,
+}
+
+/// Exact-match filters for object queries, applied in SQL.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ObjectFilter {
+    #[serde(rename = "type")]
+    pub object_type: Option<String>,
+    pub project: Option<String>,
+    pub status: Option<String>,
+    pub priority: Option<String>,
+    pub path_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum ObjectSummaryOrder {
+    #[default]
+    UpdatedDesc,
+    DueAsc,
+}
+
+/// A bounded, body-free object query for overview screens such as Home.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ObjectSummaryQuery {
+    #[serde(rename = "type")]
+    #[ts(optional)]
+    pub object_type: Option<String>,
+    /// Leave out objects whose `status` property equals this value.
+    #[ts(optional)]
+    pub status_not: Option<String>,
+    /// Keep objects whose `due` date (its first ten characters) is on or
+    /// before this `YYYY-MM-DD` date.
+    #[ts(optional)]
+    pub due_on_or_before: Option<String>,
+    #[ts(optional)]
+    pub order: Option<ObjectSummaryOrder>,
+    /// At most this many results; defaults to 50 and never exceeds 500.
+    #[ts(optional)]
+    pub limit: Option<u32>,
+}
+
+/// An indexed object without its body.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectSummary {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub object_type: String,
+    pub title: String,
+    pub relative_path: String,
+    pub revision: String,
+    pub created: Option<String>,
+    pub updated: Option<String>,
+    #[ts(type = "Record<string, unknown>")]
+    pub properties: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
@@ -101,18 +178,23 @@ impl IndexStore {
         }
         let connection =
             Connection::open(path).map_err(|error| CoreError::index(error, "index_open"))?;
-        connection
-            .execute_batch(SCHEMA)
-            .map_err(|error| CoreError::index(error, "index_migrate"))?;
-        Ok(Self { connection })
+        Self::prepare(connection)
     }
 
     pub fn in_memory() -> Result<Self> {
         let connection =
             Connection::open_in_memory().map_err(|error| CoreError::index(error, "index_open"))?;
+        Self::prepare(connection)
+    }
+
+    fn prepare(connection: Connection) -> Result<Self> {
+        connection
+            .busy_timeout(BUSY_TIMEOUT)
+            .map_err(|error| CoreError::index(error, "index_open"))?;
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| CoreError::index(error, "index_migrate"))?;
+        connection.set_prepared_statement_cache_capacity(64);
         Ok(Self { connection })
     }
 
@@ -132,8 +214,10 @@ impl IndexStore {
             .connection
             .transaction()
             .map_err(|error| CoreError::index(error, "index_upsert"))?;
-        upsert_markdown_tx(&tx, relative_path, bytes, mtime_ns, parsed)?;
-        update_identity_status(&tx).map_err(|error| CoreError::index(error, "index_identity"))?;
+        let mut affected = std::collections::BTreeSet::new();
+        upsert_markdown_tx(&tx, relative_path, bytes, mtime_ns, parsed, &mut affected)?;
+        update_identity_status(&tx, &affected)
+            .map_err(|error| CoreError::index(error, "index_identity"))?;
         tx.commit()
             .map_err(|error| CoreError::index(error, "index_upsert"))
     }
@@ -141,7 +225,7 @@ impl IndexStore {
     pub fn file_metadata(&self) -> Result<HashMap<String, (i64, i64)>> {
         let mut statement = self
             .connection
-            .prepare("SELECT relative_path,size,mtime_ns FROM files")
+            .prepare_cached("SELECT relative_path,size,mtime_ns FROM files")
             .map_err(|error| CoreError::index(error, "index_metadata"))?;
         let rows = statement
             .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
@@ -159,26 +243,34 @@ impl IndexStore {
             .connection
             .transaction()
             .map_err(|error| CoreError::index(error, "index_reconcile"))?;
+        let mut affected = std::collections::BTreeSet::new();
         for relative_path in removed {
-            let file_id: Option<i64> = tx
-                .query_row(
-                    "SELECT id FROM files WHERE relative_path=?1",
-                    [relative_path],
-                    |row| row.get(0),
+            let row: Option<(i64, Option<String>)> = tx
+                .prepare_cached(
+                    "SELECT f.id,o.stable_id FROM files f LEFT JOIN objects o ON o.file_id=f.id \
+                     WHERE f.relative_path=?1",
                 )
-                .optional()
+                .and_then(|mut statement| {
+                    statement
+                        .query_row([relative_path], |row| Ok((row.get(0)?, row.get(1)?)))
+                        .optional()
+                })
                 .map_err(|error| CoreError::index(error, "index_reconcile"))?;
-            if let Some(file_id) = file_id {
-                tx.execute("DELETE FROM object_fts WHERE rowid=?1", [file_id])
+            if let Some((file_id, stable_id)) = row {
+                affected.extend(stable_id);
+                tx.prepare_cached("DELETE FROM object_fts WHERE rowid=?1")
+                    .and_then(|mut statement| statement.execute([file_id]))
                     .map_err(|error| CoreError::index(error, "index_reconcile"))?;
-                tx.execute("DELETE FROM files WHERE id=?1", [file_id])
+                tx.prepare_cached("DELETE FROM files WHERE id=?1")
+                    .and_then(|mut statement| statement.execute([file_id]))
                     .map_err(|error| CoreError::index(error, "index_reconcile"))?;
             }
         }
         for (relative_path, bytes, mtime_ns, parsed) in changed {
-            upsert_markdown_tx(&tx, relative_path, bytes, *mtime_ns, parsed)?;
+            upsert_markdown_tx(&tx, relative_path, bytes, *mtime_ns, parsed, &mut affected)?;
         }
-        update_identity_status(&tx).map_err(|error| CoreError::index(error, "index_identity"))?;
+        update_identity_status(&tx, &affected)
+            .map_err(|error| CoreError::index(error, "index_identity"))?;
         tx.commit()
             .map_err(|error| CoreError::index(error, "index_reconcile"))
     }
@@ -189,6 +281,196 @@ impl IndexStore {
     ) -> Result<()> {
         let existing = self.file_metadata()?.into_keys().collect::<Vec<_>>();
         self.reconcile_markdown(files, &existing)
+    }
+
+    /// Stable IDs currently indexed at these paths, whatever their identity
+    /// status. Reconciliation uses them to diff only the objects it touches.
+    pub(crate) fn stable_ids_at_paths(
+        &self,
+        paths: &[String],
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT o.stable_id FROM objects o JOIN files f ON f.id=o.file_id \
+                 WHERE f.relative_path=?1",
+            )
+            .map_err(|error| CoreError::index(error, "index_lookup"))?;
+        for path in paths {
+            let found: Option<String> = statement
+                .query_row([path], |row| row.get(0))
+                .optional()
+                .map_err(|error| CoreError::index(error, "index_lookup"))?;
+            ids.extend(found);
+        }
+        Ok(ids)
+    }
+
+    /// Location and revision of each uniquely identified object among `ids`.
+    /// Bodies stay in SQLite: event diffs only need identity and revision.
+    pub(crate) fn object_heads(
+        &self,
+        ids: &std::collections::BTreeSet<String>,
+    ) -> Result<HashMap<String, ObjectHead>> {
+        let mut heads = HashMap::with_capacity(ids.len());
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT o.stable_id,o.object_type,f.relative_path,f.hash FROM objects o \
+                 JOIN files f ON f.id=o.file_id WHERE o.stable_id=?1 AND o.identity_status='unique'",
+            )
+            .map_err(|error| CoreError::index(error, "index_lookup"))?;
+        for id in ids {
+            let head = statement
+                .query_row([id], |row| {
+                    Ok(ObjectHead {
+                        id: row.get(0)?,
+                        object_type: row.get(1)?,
+                        relative_path: row.get(2)?,
+                        revision: row.get(3)?,
+                    })
+                })
+                .optional()
+                .map_err(|error| CoreError::index(error, "index_lookup"))?;
+            if let Some(head) = head {
+                heads.insert(head.id.clone(), head);
+            }
+        }
+        Ok(heads)
+    }
+
+    /// Path and revision recorded for one stable ID, without loading the body.
+    pub(crate) fn object_location(&self, id: &str) -> Result<Option<(String, String)>> {
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT f.relative_path,f.hash,o.identity_status FROM objects o \
+                 JOIN files f ON f.id=o.file_id WHERE o.stable_id=?1",
+            )
+            .map_err(|error| CoreError::index(error, "object_get"))?;
+        let rows = statement
+            .query_map([id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| CoreError::index(error, "object_get"))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "object_get"))?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [(path, revision, _)] => Ok(Some((path.clone(), revision.clone()))),
+            _ => Err(CoreError::new(
+                "identity_conflict",
+                crate::ErrorCategory::Identity,
+                "More than one file uses this stable ID",
+                "object_get",
+            )),
+        }
+    }
+
+    /// Paths of the chat messages that belong to one chat, found through the
+    /// derived `chat_id` relation instead of loading every message.
+    pub(crate) fn chat_message_paths(&self, chat_id: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT f.relative_path FROM object_links l \
+                 JOIN files f ON f.id=l.source_file_id JOIN objects o ON o.file_id=f.id \
+                 WHERE l.relation='chat' AND l.target_stable_id=?1 \
+                 AND o.object_type='chat-message' AND o.identity_status='unique' \
+                 ORDER BY f.relative_path",
+            )
+            .map_err(|error| CoreError::index(error, "chat_read"))?;
+        let rows = statement
+            .query_map([chat_id], |row| row.get(0))
+            .map_err(|error| CoreError::index(error, "chat_read"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "chat_read"))
+    }
+
+    /// Objects matching `filter`, filtered and ordered in SQL.
+    pub fn query_objects_filtered(&self, filter: &ObjectFilter) -> Result<Vec<WorkspaceObject>> {
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT o.stable_id,o.object_type,o.title,o.body,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json \
+                 FROM objects o JOIN files f ON f.id=o.file_id \
+                 WHERE (?1 IS NULL OR o.object_type=?1) AND o.identity_status='unique' \
+                 AND (?2 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name='project' AND p.value_type='string' AND p.value_text=?2)) \
+                 AND (?3 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name='status' AND p.value_type='string' AND p.value_text=?3)) \
+                 AND (?4 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name='priority' AND p.value_type='string' AND p.value_text=?4)) \
+                 AND (?5 IS NULL OR substr(f.relative_path,1,length(?5))=?5) \
+                 ORDER BY o.updated DESC,o.title",
+            )
+            .map_err(|error| CoreError::index(error, "object_query"))?;
+        let rows = statement
+            .query_map(
+                params![
+                    filter.object_type,
+                    filter.project,
+                    filter.status,
+                    filter.priority,
+                    filter.path_prefix
+                ],
+                row_to_object,
+            )
+            .map_err(|error| CoreError::index(error, "object_query"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "object_query"))
+    }
+
+    /// Bounded object summaries without bodies, for overview screens.
+    pub fn query_object_summaries(&self, query: &ObjectSummaryQuery) -> Result<Vec<ObjectSummary>> {
+        let order = match query.order.unwrap_or_default() {
+            ObjectSummaryOrder::UpdatedDesc => "o.updated DESC,o.title",
+            ObjectSummaryOrder::DueAsc => "due.value_text ASC,o.updated DESC,o.title",
+        };
+        let sql = format!(
+            "SELECT o.stable_id,o.object_type,o.title,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json \
+             FROM objects o JOIN files f ON f.id=o.file_id \
+             LEFT JOIN object_properties due ON due.file_id=o.file_id AND due.property_name='due' AND due.value_type='string' \
+             LEFT JOIN object_properties status ON status.file_id=o.file_id AND status.property_name='status' AND status.value_type='string' \
+             WHERE o.identity_status='unique' AND (?1 IS NULL OR o.object_type=?1) \
+             AND (?2 IS NULL OR status.value_text IS NULL OR status.value_text<>?2) \
+             AND (?3 IS NULL OR (due.value_text IS NOT NULL AND substr(due.value_text,1,10)<=?3)) \
+             ORDER BY {order} LIMIT ?4"
+        );
+        let limit = query.limit.unwrap_or(50).min(500);
+        let mut statement = self
+            .connection
+            .prepare_cached(&sql)
+            .map_err(|error| CoreError::index(error, "object_summaries"))?;
+        let rows = statement
+            .query_map(
+                params![
+                    query.object_type,
+                    query.status_not,
+                    query.due_on_or_before,
+                    limit
+                ],
+                |row| {
+                    let json: String = row.get(7)?;
+                    let properties: std::collections::BTreeMap<String, serde_json::Value> =
+                        serde_json::from_str(&json).unwrap_or_default();
+                    Ok(ObjectSummary {
+                        id: row.get(0)?,
+                        object_type: row.get(1)?,
+                        title: row.get(2)?,
+                        relative_path: row.get(3)?,
+                        revision: row.get(4)?,
+                        created: row.get(5)?,
+                        updated: row.get(6)?,
+                        properties,
+                    })
+                },
+            )
+            .map_err(|error| CoreError::index(error, "object_summaries"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "object_summaries"))
     }
 
     pub fn remove_path(&mut self, relative_path: &str) -> Result<()> {
@@ -219,7 +501,7 @@ impl IndexStore {
         let sql = "SELECT o.stable_id,o.object_type,o.title,o.body,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json FROM objects o JOIN files f ON f.id=o.file_id WHERE (?1 IS NULL OR o.object_type=?1) AND o.identity_status='unique' ORDER BY o.updated DESC,o.title";
         let mut statement = self
             .connection
-            .prepare(sql)
+            .prepare_cached(sql)
             .map_err(|error| CoreError::index(error, "object_query"))?;
         let rows = statement
             .query_map([object_type], row_to_object)
@@ -231,7 +513,7 @@ impl IndexStore {
     pub(crate) fn workspace_entry_metadata(&self) -> Result<HashMap<String, IndexedFileMetadata>> {
         let mut statement = self
             .connection
-            .prepare(
+            .prepare_cached(
                 "SELECT f.relative_path,f.parse_status,o.stable_id,o.object_type,f.hash \
                  FROM files f LEFT JOIN objects o ON o.file_id=f.id",
             )
@@ -257,7 +539,7 @@ impl IndexStore {
     pub fn query_non_managed_markdown(&self) -> Result<Vec<UnmanagedFile>> {
         let mut statement = self
             .connection
-            .prepare(
+            .prepare_cached(
                 "SELECT f.relative_path,fts.title,fts.body,f.hash,f.parse_status,f.parse_error \
                  FROM files f JOIN object_fts fts ON fts.rowid=f.id \
                  WHERE f.parse_status IN ('unmanaged','malformed') \
@@ -292,7 +574,7 @@ impl IndexStore {
         if tokens.is_empty() {
             return Ok(Vec::new());
         }
-        let mut statement = self.connection.prepare("SELECT NULLIF(fts.stable_id,''),o.object_type,fts.relative_path,fts.title,snippet(object_fts,4,'','', ' … ',18),bm25(object_fts,0.0,2.0,4.0,8.0,1.0,3.0),f.hash FROM object_fts fts JOIN files f ON f.id=fts.rowid LEFT JOIN objects o ON o.file_id=f.id WHERE object_fts MATCH ?1 AND (?2 IS NULL OR o.object_type=?2) AND (?3 IS NULL OR fts.relative_path LIKE ?3 || '%') ORDER BY 6 LIMIT ?4").map_err(|error| CoreError::index(error,"search_query"))?;
+        let mut statement = self.connection.prepare_cached("SELECT NULLIF(fts.stable_id,''),o.object_type,fts.relative_path,fts.title,snippet(object_fts,4,'','', ' … ',18),bm25(object_fts,0.0,2.0,4.0,8.0,1.0,3.0),f.hash FROM object_fts fts JOIN files f ON f.id=fts.rowid LEFT JOIN objects o ON o.file_id=f.id WHERE object_fts MATCH ?1 AND (?2 IS NULL OR o.object_type=?2) AND (?3 IS NULL OR fts.relative_path LIKE ?3 || '%') ORDER BY 6 LIMIT ?4").map_err(|error| CoreError::index(error,"search_query"))?;
         let rows = statement
             .query_map(
                 params![
@@ -320,7 +602,7 @@ impl IndexStore {
 
     pub fn calendar(&self, range_start: &str, range_end: &str) -> Result<Vec<CalendarEntry>> {
         let range = CalendarRange::parse(range_start, range_end)?;
-        let mut statement = self.connection.prepare("SELECT o.stable_id,o.object_type,o.title,p.property_name,p.value_text,e.value_text,f.hash FROM object_properties p JOIN objects o ON o.file_id=p.file_id JOIN files f ON f.id=p.file_id LEFT JOIN object_properties e ON e.file_id=p.file_id AND e.property_name='end' WHERE p.property_name IN ('due','date','start')").map_err(|error| CoreError::index(error,"calendar_query"))?;
+        let mut statement = self.connection.prepare_cached("SELECT o.stable_id,o.object_type,o.title,p.property_name,p.value_text,e.value_text,f.hash FROM object_properties p JOIN objects o ON o.file_id=p.file_id JOIN files f ON f.id=p.file_id LEFT JOIN object_properties e ON e.file_id=p.file_id AND e.property_name='end' WHERE p.property_name IN ('due','date','start')").map_err(|error| CoreError::index(error,"calendar_query"))?;
         let rows = statement
             .query_map([], |row| {
                 let start: String = row.get(4)?;
@@ -412,7 +694,9 @@ impl IndexStore {
         let mut values = Vec::new();
         let mut malformed = self
             .connection
-            .prepare("SELECT relative_path,parse_error FROM files WHERE parse_error IS NOT NULL")
+            .prepare_cached(
+                "SELECT relative_path,parse_error FROM files WHERE parse_error IS NOT NULL",
+            )
             .map_err(|error| CoreError::index(error, "diagnostics"))?;
         for row in malformed
             .query_map([], |row| {
@@ -428,7 +712,7 @@ impl IndexStore {
                 object_id: None,
             });
         }
-        let mut conflicts=self.connection.prepare("SELECT stable_id,group_concat(f.relative_path, ', ') FROM objects o JOIN files f ON f.id=o.file_id WHERE o.identity_status='conflict' GROUP BY stable_id").map_err(|error|CoreError::index(error,"diagnostics"))?;
+        let mut conflicts=self.connection.prepare_cached("SELECT stable_id,group_concat(f.relative_path, ', ') FROM objects o JOIN files f ON f.id=o.file_id WHERE o.identity_status='conflict' GROUP BY stable_id").map_err(|error|CoreError::index(error,"diagnostics"))?;
         for row in conflicts
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -443,7 +727,7 @@ impl IndexStore {
                 object_id: Some(id),
             });
         }
-        let mut broken=self.connection.prepare("SELECT o.stable_id,f.relative_path,l.target_stable_id FROM object_links l JOIN objects o ON o.file_id=l.source_file_id JOIN files f ON f.id=l.source_file_id LEFT JOIN objects target ON target.stable_id=l.target_stable_id WHERE target.stable_id IS NULL").map_err(|error|CoreError::index(error,"diagnostics"))?;
+        let mut broken=self.connection.prepare_cached("SELECT o.stable_id,f.relative_path,l.target_stable_id FROM object_links l JOIN objects o ON o.file_id=l.source_file_id JOIN files f ON f.id=l.source_file_id LEFT JOIN objects target ON target.stable_id=l.target_stable_id WHERE target.stable_id IS NULL").map_err(|error|CoreError::index(error,"diagnostics"))?;
         for row in broken
             .query_map([], |row| {
                 Ok((
@@ -472,47 +756,84 @@ fn upsert_markdown_tx(
     bytes: &[u8],
     mtime_ns: i64,
     parsed: &ParsedMarkdown,
+    affected: &mut std::collections::BTreeSet<String>,
 ) -> Result<()> {
+    let run = |sql: &str, values: &[&dyn rusqlite::ToSql]| {
+        tx.prepare_cached(sql)
+            .and_then(|mut statement| statement.execute(values))
+            .map_err(|error| CoreError::index(error, "index_upsert"))
+    };
     let (status, parse_error) = match parsed {
         ParsedMarkdown::Managed(_) => ("managed", None),
         ParsedMarkdown::Unmanaged { .. } => ("unmanaged", None),
         ParsedMarkdown::Malformed { error, .. } => ("malformed", Some(error.as_str())),
     };
-    tx.execute("INSERT INTO files(relative_path,kind,size,mtime_ns,hash,parse_status,parse_error,indexed_at) VALUES(?1,'markdown',?2,?3,?4,?5,?6,?7) ON CONFLICT(relative_path) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,hash=excluded.hash,parse_status=excluded.parse_status,parse_error=excluded.parse_error,indexed_at=excluded.indexed_at",
-        params![relative_path, bytes.len() as i64, mtime_ns, revision(bytes), status, parse_error, crate::now_rfc3339()]).map_err(|error| CoreError::index(error, "index_upsert"))?;
-    let file_id: i64 = tx
-        .query_row(
-            "SELECT id FROM files WHERE relative_path=?1",
-            [relative_path],
-            |row| row.get(0),
+    run(
+        "INSERT INTO files(relative_path,kind,size,mtime_ns,hash,parse_status,parse_error,indexed_at) VALUES(?1,'markdown',?2,?3,?4,?5,?6,?7) ON CONFLICT(relative_path) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,hash=excluded.hash,parse_status=excluded.parse_status,parse_error=excluded.parse_error,indexed_at=excluded.indexed_at",
+        params![
+            relative_path,
+            bytes.len() as i64,
+            mtime_ns,
+            revision(bytes),
+            status,
+            parse_error,
+            crate::now_rfc3339()
+        ],
+    )?;
+    let (file_id, previous_id): (i64, Option<String>) = tx
+        .prepare_cached(
+            "SELECT f.id,o.stable_id FROM files f LEFT JOIN objects o ON o.file_id=f.id \
+             WHERE f.relative_path=?1",
         )
+        .and_then(|mut statement| {
+            statement.query_row([relative_path], |row| Ok((row.get(0)?, row.get(1)?)))
+        })
         .map_err(|error| CoreError::index(error, "index_upsert"))?;
-    tx.execute("DELETE FROM object_fts WHERE rowid=?1", [file_id])
-        .map_err(|error| CoreError::index(error, "index_upsert"))?;
-    tx.execute(
+    affected.extend(previous_id);
+    run("DELETE FROM object_fts WHERE rowid=?1", params![file_id])?;
+    run(
         "DELETE FROM object_links WHERE source_file_id=?1",
-        [file_id],
-    )
-    .map_err(|error| CoreError::index(error, "index_upsert"))?;
-    tx.execute("DELETE FROM object_properties WHERE file_id=?1", [file_id])
-        .map_err(|error| CoreError::index(error, "index_upsert"))?;
-    tx.execute("DELETE FROM objects WHERE file_id=?1", [file_id])
-        .map_err(|error| CoreError::index(error, "index_upsert"))?;
+        params![file_id],
+    )?;
+    run(
+        "DELETE FROM object_properties WHERE file_id=?1",
+        params![file_id],
+    )?;
+    run("DELETE FROM objects WHERE file_id=?1", params![file_id])?;
     match parsed {
         ParsedMarkdown::Managed(object) => {
+            affected.insert(object.id.clone());
             let frontmatter =
                 serde_json::to_string(&object.properties).unwrap_or_else(|_| "{}".into());
-            tx.execute("INSERT INTO objects(file_id,stable_id,object_type,title,body,frontmatter_json,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![file_id, object.id, object.object_type, object.title, object.body, frontmatter, object.created, object.updated]).map_err(|error| CoreError::index(error, "index_upsert"))?;
+            run(
+                "INSERT INTO objects(file_id,stable_id,object_type,title,body,frontmatter_json,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    file_id,
+                    object.id,
+                    object.object_type,
+                    object.title,
+                    object.body,
+                    frontmatter,
+                    object.created,
+                    object.updated
+                ],
+            )?;
             for (key, value) in &object.properties {
                 let (value_type, value_text) = scalar(value);
-                tx.execute("INSERT INTO object_properties(file_id,property_name,value_text,value_type) VALUES(?1,?2,?3,?4)", params![file_id,key,value_text,value_type]).map_err(|error| CoreError::index(error, "index_upsert"))?;
+                run(
+                    "INSERT INTO object_properties(file_id,property_name,value_text,value_type) VALUES(?1,?2,?3,?4)",
+                    params![file_id, key, value_text, value_type],
+                )?;
                 if let Some(relation) = match key.as_str() {
                     "project" => Some("project"),
                     "chat_id" => Some("chat"),
                     _ => None,
                 } && let Some(target) = value.as_str()
                 {
-                    tx.execute("INSERT OR IGNORE INTO object_links(source_file_id,relation,target_stable_id) VALUES(?1,?2,?3)", params![file_id,relation,target]).map_err(|error| CoreError::index(error,"index_upsert"))?;
+                    run(
+                        "INSERT OR IGNORE INTO object_links(source_file_id,relation,target_stable_id) VALUES(?1,?2,?3)",
+                        params![file_id, relation, target],
+                    )?;
                 }
             }
             let metadata = object
@@ -521,11 +842,25 @@ fn upsert_markdown_tx(
                 .map(value_text)
                 .collect::<Vec<_>>()
                 .join(" ");
-            tx.execute("INSERT INTO object_fts(rowid,stable_id,relative_path,filename,title,body,metadata) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![file_id,object.id,relative_path,filename(relative_path),object.title,object.body,metadata]).map_err(|error| CoreError::index(error,"index_upsert"))?;
+            run(
+                "INSERT INTO object_fts(rowid,stable_id,relative_path,filename,title,body,metadata) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    file_id,
+                    object.id,
+                    relative_path,
+                    filename(relative_path),
+                    object.title,
+                    object.body,
+                    metadata
+                ],
+            )?;
         }
         ParsedMarkdown::Unmanaged { title, body, .. }
         | ParsedMarkdown::Malformed { title, body, .. } => {
-            tx.execute("INSERT INTO object_fts(rowid,stable_id,relative_path,filename,title,body,metadata) VALUES(?1,'',?2,?3,?4,?5,'')", params![file_id,relative_path,filename(relative_path),title,body]).map_err(|error| CoreError::index(error,"index_upsert"))?;
+            run(
+                "INSERT INTO object_fts(rowid,stable_id,relative_path,filename,title,body,metadata) VALUES(?1,'',?2,?3,?4,?5,'')",
+                params![file_id, relative_path, filename(relative_path), title, body],
+            )?;
         }
     }
     Ok(())
@@ -698,8 +1033,18 @@ fn scalar(value: &serde_json::Value) -> (&'static str, String) {
     };
     (kind, value_text(value))
 }
-fn update_identity_status(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute("UPDATE objects SET identity_status=CASE WHEN (SELECT COUNT(*) FROM objects b WHERE b.stable_id=objects.stable_id)>1 THEN 'conflict' ELSE 'unique' END",[])?;
+/// Recompute duplicate-ID status for the stable IDs a transaction touched.
+/// Other rows cannot change status because their ID groups did not change.
+fn update_identity_status(
+    connection: &Connection,
+    affected: &std::collections::BTreeSet<String>,
+) -> rusqlite::Result<()> {
+    let mut statement = connection.prepare_cached(
+        "UPDATE objects SET identity_status=CASE WHEN (SELECT COUNT(*) FROM objects b WHERE b.stable_id=?1)>1 THEN 'conflict' ELSE 'unique' END WHERE stable_id=?1",
+    )?;
+    for id in affected {
+        statement.execute([id])?;
+    }
     Ok(())
 }
 fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceObject> {
@@ -1134,6 +1479,204 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(actual, expected);
+    }
+
+    fn put(index: &mut IndexStore, object: &WorkspaceObject) {
+        let bytes = serialize_object(object).unwrap();
+        index
+            .upsert_markdown(
+                &object.relative_path,
+                &bytes,
+                1,
+                &parse_markdown(&object.relative_path, &bytes),
+            )
+            .unwrap();
+    }
+
+    fn task(path: &str, updated: &str, properties: serde_json::Value) -> WorkspaceObject {
+        WorkspaceObject {
+            id: new_object_id("task"),
+            object_type: "task".into(),
+            title: path.into(),
+            body: "a long body that summaries leave out".into(),
+            relative_path: path.into(),
+            revision: String::new(),
+            created: Some(updated.into()),
+            updated: Some(updated.into()),
+            properties: serde_json::from_value(properties).unwrap(),
+        }
+    }
+
+    #[test]
+    fn summaries_filter_order_and_limit_in_sql() {
+        let mut index = IndexStore::in_memory().unwrap();
+        for object in [
+            task(
+                "late.md",
+                "2026-09-01T00:00:00Z",
+                serde_json::json!({"status": "todo", "due": "2026-09-30"}),
+            ),
+            task(
+                "soon.md",
+                "2026-09-02T00:00:00Z",
+                serde_json::json!({"status": "todo", "due": "2026-09-28T09:00:00-04:00"}),
+            ),
+            task(
+                "done.md",
+                "2026-09-03T00:00:00Z",
+                serde_json::json!({"status": "done", "due": "2026-09-20"}),
+            ),
+            task(
+                "undated.md",
+                "2026-09-04T00:00:00Z",
+                serde_json::json!({"status": "todo"}),
+            ),
+        ] {
+            put(&mut index, &object);
+        }
+        let due = index
+            .query_object_summaries(&ObjectSummaryQuery {
+                object_type: Some("task".into()),
+                status_not: Some("done".into()),
+                due_on_or_before: Some("2026-09-29".into()),
+                order: Some(ObjectSummaryOrder::DueAsc),
+                limit: Some(10),
+            })
+            .unwrap();
+        assert_eq!(
+            due.iter()
+                .map(|value| value.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["soon.md"]
+        );
+        let recent = index
+            .query_object_summaries(&ObjectSummaryQuery {
+                object_type: Some("task".into()),
+                limit: Some(2),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            recent
+                .iter()
+                .map(|value| value.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["undated.md", "done.md"]
+        );
+        let json = serde_json::to_value(&recent[0]).unwrap();
+        assert!(json.get("body").is_none());
+        assert_eq!(json["type"], "task");
+    }
+
+    #[test]
+    fn filtered_queries_match_exact_string_properties() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let project = new_object_id("project");
+        put(
+            &mut index,
+            &task(
+                "work/a.md",
+                "2026-09-01T00:00:00Z",
+                serde_json::json!({"status": "todo", "project": project}),
+            ),
+        );
+        put(
+            &mut index,
+            &task(
+                "home/b.md",
+                "2026-09-02T00:00:00Z",
+                serde_json::json!({"status": "done"}),
+            ),
+        );
+        let by_project = index
+            .query_objects_filtered(&ObjectFilter {
+                object_type: Some("task".into()),
+                project: Some(project),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_project.len(), 1);
+        assert_eq!(by_project[0].relative_path, "work/a.md");
+        let by_prefix = index
+            .query_objects_filtered(&ObjectFilter {
+                path_prefix: Some("home/".into()),
+                status: Some("done".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_prefix.len(), 1);
+        assert!(
+            index
+                .query_objects_filtered(&ObjectFilter {
+                    priority: Some("high".into()),
+                    ..Default::default()
+                })
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn duplicate_ids_conflict_and_recover_when_one_copy_goes_away() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let original = task("a.md", "2026-09-01T00:00:00Z", serde_json::json!({}));
+        let mut copy = original.clone();
+        copy.relative_path = "b.md".into();
+        let other = task("c.md", "2026-09-01T00:00:00Z", serde_json::json!({}));
+        put(&mut index, &original);
+        put(&mut index, &other);
+        put(&mut index, &copy);
+        assert!(index.get_object(&original.id).is_err());
+        assert!(index.get_object(&other.id).unwrap().is_some());
+        assert_eq!(index.query_objects(Some("task")).unwrap().len(), 1);
+        index.remove_path("b.md").unwrap();
+        assert!(index.get_object(&original.id).unwrap().is_some());
+        assert_eq!(index.query_objects(Some("task")).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn chat_message_paths_follow_the_chat_relation() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let now = now_rfc3339();
+        let chat_id = new_object_id("chat");
+        let other_chat = new_object_id("chat");
+        for (chat, path) in [
+            (&chat_id, "chats/a/messages/2026-09-02/one.md"),
+            (&other_chat, "chats/b/messages/2026-09-02/two.md"),
+            (&chat_id, "chats/a/messages/2026-09-03/three.md"),
+        ] {
+            let message = ChatMessage {
+                id: new_object_id("chat-message"),
+                chat_id: chat.clone(),
+                run_id: "run_example".into(),
+                kind: ChatMessageKind::User,
+                status: ChatMessageStatus::Completed,
+                content_type: "text/markdown".into(),
+                content: "hello".into(),
+                relative_path: path.into(),
+                revision: String::new(),
+                created: now.clone(),
+                updated: now.clone(),
+                provider_id: None,
+                model_id: None,
+                tool_call_id: None,
+                tool_name: None,
+                error_code: None,
+                summarizes_through_message_id: None,
+                properties: BTreeMap::new(),
+            };
+            let bytes = serialize_chat_message(&message).unwrap();
+            index
+                .upsert_markdown(path, &bytes, 1, &parse_markdown(path, &bytes))
+                .unwrap();
+        }
+        assert_eq!(
+            index.chat_message_paths(&chat_id).unwrap(),
+            vec![
+                "chats/a/messages/2026-09-02/one.md".to_owned(),
+                "chats/a/messages/2026-09-03/three.md".to_owned(),
+            ]
+        );
     }
 
     #[test]

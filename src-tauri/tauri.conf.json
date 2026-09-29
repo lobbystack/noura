@@ -17,6 +17,7 @@
 				"height": 720,
 				"titleBarStyle": "Overlay",
 				"hiddenTitle": true,
+				"backgroundColor": "#ffffff",
 				"trafficLightPosition": {
 					"x": 12,
 					"y": 18

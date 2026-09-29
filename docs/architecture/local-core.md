@@ -41,6 +41,16 @@ The watcher coalesces native paths and treats each event as a hint. It suppresse
 
 An invalid partial manifest edit keeps the last valid snapshot. A later filesystem event retries the read.
 
+A walk that can't open a folder or read a file keeps going. The engine keeps the index rows under that path, adds a plain `unreadable_folder` or `unreadable_file` diagnostic to the workspace state, and writes the operating system's reason to the log. An iCloud placeholder or a dataless file keeps its row and lists as not downloaded, because reading it would block on a download. When the watcher can't start, for example when Linux runs out of inotify watches, the workspace runs on the periodic rescan alone.
+
+## Reconcile only what changed
+
+The watcher thread marks the index dirty when a visible path changes, skipping paths this engine just wrote. Reads such as the file list and chat list walk the workspace only while that flag is set or the watcher is down. Autosaves and chat steps check just their own file: they re-read it and re-index it when its revision differs from the index. They walk everything only when the file moved or lost its ID.
+
+One walk updates the index and builds the file list. Reconciliation compares only the stable IDs whose files changed, so a small edit costs the same in a large workspace. Up to 32 object changes go out as `object:created`, `object:updated`, `object:moved`, and `object:deleted` events. A larger batch, such as a git checkout or a sync pull, goes out as one `objects:changed` event. Its `changes` list carries the same payloads plus an `event` field. When the watcher queue overflows, the next poll walks the whole workspace and reports the changed paths in `file:changed` with `rescanned: true`.
+
+The index runs SQLite in WAL mode with `synchronous=NORMAL`: the files stay canonical, and a rebuild restores anything the last transactions lost. A busy timeout lets the MCP server share the index file.
+
 ## Refresh desktop projections
 
 Desktop projections share one refresh lifecycle. Object mutations, external changes, index updates, workspace readiness, and manifest changes schedule a coalesced typed-client read.

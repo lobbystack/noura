@@ -82,6 +82,8 @@ import type {
 	RawConflictResolveInput,
 	RawConflictResolveResult,
 	MarkdownLinkTarget,
+	ObjectSummary,
+	ObjectSummaryQuery,
 	RenameChatInput,
 } from '@noura/shared';
 export type * from '@noura/shared';
@@ -338,6 +340,28 @@ export interface GenericObjectService {
 	): Promise<MutationResult<WorkspaceObject>>;
 	/** Open this object's enclosing folder in the OS file manager. */
 	showInFolder(id: string): Promise<void>;
+	/**
+	 * Bounded summaries without bodies, filtered and ordered by the index.
+	 * Use for overviews that show a few items, such as Home.
+	 */
+	summaries(query: ObjectSummaryQuery): Promise<ObjectSummary[]>;
+}
+
+/** What the host can do on this system, so the interface can hide actions. */
+export interface AppCapabilities {
+	/** "Open in Terminal" works here. */
+	openTerminal: boolean;
+	/** Revealing a file selects it in the file manager. */
+	revealSelectsFile: boolean;
+}
+
+export interface AppService {
+	/**
+	 * A plain-text report for bug reports: version, platform, workspace
+	 * health, and recent log lines with paths and quoted text removed.
+	 */
+	diagnostics(): Promise<string>;
+	capabilities(): Promise<AppCapabilities>;
 }
 
 export interface ManifestService {
@@ -403,6 +427,7 @@ export interface NouraClient {
 	workspaces: WorkspaceService;
 	/** Open an HTTP or HTTPS link in the default browser. */
 	openLink(url: string): Promise<void>;
+	app: AppService;
 	objects: GenericObjectService;
 	manifest: ManifestService;
 	pluginState: PluginStateService;
@@ -465,6 +490,7 @@ function genericObjects(transport: CoreTransport): GenericObjectService {
 		update: (id, patch) => transport.request('objects_update', { id, patch }),
 		showInFolder: (id) =>
 			transport.request('object_show_in_folder', { input: { id } }),
+		summaries: (query) => transport.request('objects_summaries', { query }),
 	};
 }
 
@@ -654,6 +680,10 @@ export function createNouraClient(
 			testMcpConnection: () => transport.request('mcp_test_connection'),
 		},
 		openLink: (url) => transport.request('app_open_link', { url }),
+		app: {
+			diagnostics: () => transport.request('app_diagnostics'),
+			capabilities: () => transport.request('app_capabilities'),
+		},
 		objects: objectService,
 		manifest: manifestService,
 		pluginState: pluginStateService,

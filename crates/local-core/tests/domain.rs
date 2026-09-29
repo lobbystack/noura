@@ -1292,6 +1292,7 @@ fn external_delete_disappears_from_entries_and_index() {
 fn non_managed_markdown_query_is_stable_across_index_rebuild() {
     let (workspace, _app_data, engine) = engine();
     std::fs::write(workspace.path().join("draft.md"), "# Draft\n\nBody\n").unwrap();
+    engine.reconcile().unwrap();
     let before = engine.list_non_managed_markdown().unwrap();
 
     engine.rebuild_index().unwrap();
@@ -2179,4 +2180,38 @@ fn trashing_a_path_sends_files_and_folders_to_the_system_trash() {
     assert!(engine.trash_path("").is_err());
     assert!(engine.trash_path("../elsewhere").is_err());
     assert!(engine.trash_path(".noura/workspace.yaml").is_err());
+}
+
+#[test]
+fn chat_message_mutations_return_the_next_chat_revision() {
+    let (_workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Chained".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let mut revision = chat.revision;
+    for content in ["one", "two", "three"] {
+        let appended = engine
+            .append_chat_user_message(AppendChatUserMessageInput {
+                chat_id: chat.value.id.clone(),
+                expected_chat_revision: revision.clone(),
+                run_id: "run_chain".into(),
+                content: content.into(),
+            })
+            .unwrap();
+        // The next call can use the returned revision without a read.
+        revision = appended.chat_revision.unwrap();
+    }
+    let read = engine.read_chat(&chat.value.id).unwrap();
+    assert_eq!(read.chat.revision, revision);
+    assert_eq!(
+        read.messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["one", "two", "three"]
+    );
 }

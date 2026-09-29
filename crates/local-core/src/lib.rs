@@ -33,7 +33,10 @@ pub use engine::{
     RawSaveResult, ResolveConflictInput, SystemTrash, WorkspaceEngine, os_trash,
 };
 pub use error::{CoreError, ErrorCategory, Result};
-pub use index::{CalendarEntry, IndexStore, SearchInput, SearchResult};
+pub use index::{
+    CalendarEntry, IndexStore, ObjectFilter, ObjectSummary, ObjectSummaryOrder, ObjectSummaryQuery,
+    SearchInput, SearchResult,
+};
 pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object};
 pub use model::*;
 pub use watcher::WatchCoordinator;

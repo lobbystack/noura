@@ -74,6 +74,11 @@ pub struct WorkspaceEntry {
     pub object_id: Option<String>,
     pub object_type: Option<String>,
     pub revision: Option<String>,
+    /// The file lives only in cloud storage (for example iCloud) and has
+    /// not been downloaded to this device yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub not_downloaded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -130,6 +135,30 @@ pub struct MutationResult<T> {
     pub durability: String,
     pub index_status: IndexStatus,
     pub warnings: Vec<CoreWarning>,
+    /// For chat message mutations: the chat file's revision after the
+    /// commit, so a client can make its next call without re-reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub chat_revision: Option<String>,
+}
+
+impl<T> MutationResult<T> {
+    /// A mutation whose canonical file write completed.
+    pub fn committed(
+        value: T,
+        revision: String,
+        index_status: IndexStatus,
+        warnings: Vec<CoreWarning>,
+    ) -> Self {
+        Self {
+            value,
+            revision,
+            durability: "committed".into(),
+            index_status,
+            warnings,
+            chat_revision: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
