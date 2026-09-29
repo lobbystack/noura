@@ -36,7 +36,7 @@ function problem(error: unknown, fallback: string): string {
 			return 'Something with that name is already there.';
 		if (error.code === 'open_not_allowed') return error.message;
 		if (error.code === 'collaboration_transaction_required')
-			return 'This file is shared for live editing, so it can’t be changed from here.';
+			return 'noura can’t rename, move or delete a file while it’s open for live editing.';
 	}
 	return fallback;
 }
@@ -206,7 +206,7 @@ export async function renameTreeNode(
 			}
 			tabsStore.renameObject(node.objectId, name);
 		} catch {
-			toast.error('The file was renamed, but its title couldn’t be updated.');
+			toast.error('noura renamed the file but couldn’t update its title.');
 		}
 	}
 	return true;

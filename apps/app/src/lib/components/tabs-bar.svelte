@@ -63,10 +63,31 @@
 		}
 	}
 
-	// Typing in the open document keeps its preview tab open.
+	// Typing in the open document keeps its preview tab open. Key presses
+	// count too: editors built on EditContext fire no input events.
+	function isTypingKey(event: KeyboardEvent) {
+		if (event.metaKey || event.ctrlKey || event.altKey) return false;
+		return (
+			event.key.length === 1 ||
+			event.key === 'Backspace' ||
+			event.key === 'Delete' ||
+			event.key === 'Enter'
+		);
+	}
+
 	function keepEditedTab(event: Event) {
 		const target = event.target;
-		if (!(target instanceof Element) || !target.closest('main')) return;
+		if (!(target instanceof HTMLElement) || !target.closest('main')) return;
+		if (
+			event instanceof KeyboardEvent &&
+			(!isTypingKey(event) ||
+				!(
+					target.isContentEditable ||
+					target instanceof HTMLInputElement ||
+					target instanceof HTMLTextAreaElement
+				))
+		)
+			return;
 		if (target.closest('[role="tablist"]')) return;
 		const active = tabsStore.active;
 		if (!active?.preview) return;
@@ -75,7 +96,7 @@
 	}
 </script>
 
-<svelte:document oninput={keepEditedTab} />
+<svelte:document oninput={keepEditedTab} onkeydown={keepEditedTab} />
 
 <div aria-hidden="true" class="h-0" {@attach followContent}></div>
 
