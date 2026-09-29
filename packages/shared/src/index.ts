@@ -110,8 +110,6 @@ export interface WorkspaceState {
 	rootPath?: string | null;
 	indexedFiles: number;
 	diagnostics: Diagnostic[];
-	/** Whether the workspace has sync set up; absent when the host can't tell. */
-	syncEnabled?: boolean;
 }
 export interface Diagnostic {
 	code: string;

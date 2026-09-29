@@ -2096,9 +2096,3 @@ fn expired_chats_go_to_the_system_trash_as_one_folder() {
     assert_eq!(received.lock().unwrap().len(), 1);
     assert!(bin.path().join("0/chat.md").is_file());
 }
-
-#[test]
-fn a_new_workspace_reports_sync_as_off() {
-    let (_workspace, _app_data, engine) = engine();
-    assert!(!engine.state().sync_enabled);
-}

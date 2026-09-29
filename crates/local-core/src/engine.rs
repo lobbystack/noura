@@ -590,7 +590,6 @@ impl WorkspaceEngine {
             root_path: self.root.to_str().map(str::to_owned),
             indexed_files,
             diagnostics,
-            sync_enabled: self.root.join(".noura/sync/config.json").is_file(),
         }
     }
 
