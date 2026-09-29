@@ -209,6 +209,8 @@ Behavior:
 
 ### App host wiring (`apps/app`)
 
+Browser sync runs only while the workspace's `sync` plugin is on. The browser shell renders the sync settings and synced attachments only then. A workspace that already has a binding in this browser turns the plugin on once; the marker `.noura-adapter/browser-sync/plugin/<workspace>.json` keeps a later “off” in place, and writing a binding also writes it. Like the other adapter files, the marker is never exported or synchronized. See [the plugin runtime](plugin-runtime.md#host-backed-plugins-sync).
+
 `apps/app/src/lib/browser-sync.ts` is the controller that binds the packages above to the hosted app. It reconciles **per object**, not through one shared sync object:
 
 - The workspace worker exposes `objects_list`, a minimal managed-object projection `{id, path, type}` derived from `BrowserWorkspaceStorage.rebuild()`; `BrowserWorkspaceFiles.listObjects()` wraps it.

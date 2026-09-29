@@ -2,6 +2,10 @@
 
 This document defines the implemented file-change payload and its local durable journal. It does not change canonical Markdown serialization. Rust in `crates/local-core` owns serialization; the TypeScript workspace-schema package only validates the shared `fixtures/sync-v1.json` conformance cases.
 
+## Plugin switch
+
+Sync runs for a replica only while `sync` is in `enabled_plugins` in `.noura/workspace.yaml`. With it off, the native coordinator rejects workspace sync operations with `sync_plugin_disabled` and the files under `.noura/sync/` stay untouched. `.noura/sync/plugin.json` contains `{"version":1}`. The application writes it the first time it adds `sync` to the manifest of a replica that already had `.noura/sync/config.json`, and whenever it saves that configuration. With the marker present, the application never adds `sync` on its own again. See [the plugin runtime](../architecture/plugin-runtime.md#host-backed-plugins-sync).
+
 ## File changes
 
 An encrypted operation contains one UTF-8 JSON object with exactly these fields, serialized in this order:
