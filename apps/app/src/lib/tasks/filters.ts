@@ -51,7 +51,7 @@ export function taskIsUpcoming(task: Task, now: Date): boolean {
 	return time !== null && time > endOfDay(now);
 }
 
-export function taskInProject(task: Task, projectId: string): boolean {
+function taskInProject(task: Task, projectId: string): boolean {
 	return task.properties?.project === projectId;
 }
 
@@ -87,7 +87,7 @@ const PRIORITY_WEIGHT: Record<TaskPriority, number> = {
 	low: 3,
 };
 
-export function orderTasks(tasks: Task[]): Task[] {
+function orderTasks(tasks: Task[]): Task[] {
 	return [...tasks].sort((left, right) => {
 		const doneLeft = isDone(left) ? 1 : 0;
 		const doneRight = isDone(right) ? 1 : 0;

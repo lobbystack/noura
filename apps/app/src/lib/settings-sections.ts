@@ -32,7 +32,7 @@ export interface SettingsSection {
 	webOnly?: boolean;
 }
 
-export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
+const SETTINGS_SECTIONS: readonly SettingsSection[] = [
 	{ id: 'general', group: 'device', pluginId: null },
 	{ id: 'editor', group: 'device', pluginId: null },
 	{ id: 'shortcuts', group: 'device', pluginId: null },
@@ -69,7 +69,7 @@ export interface SettingsVisibility {
 	signedIn: boolean;
 }
 
-export function settingsSectionVisible(
+function settingsSectionVisible(
 	section: SettingsSection,
 	visibility: SettingsVisibility,
 ): boolean {

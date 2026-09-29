@@ -17,7 +17,7 @@ export const SIDEBAR_PLUGIN_IDS = [
 	'projects',
 ] as const;
 
-export type PluginId = (typeof PLUGIN_IDS)[number];
+type PluginId = (typeof PLUGIN_IDS)[number];
 export type NavigationId = PluginId | 'inbox';
 
 function isPluginId(id: string): id is NavigationId {

@@ -1,7 +1,7 @@
 import type { CoreEvent } from '@noura/workspace';
 
 /** Events the native side emits for one managed object. */
-export const OBJECT_EVENT_TYPES: ReadonlySet<string> = new Set([
+const OBJECT_EVENT_TYPES: ReadonlySet<string> = new Set([
 	'object:created',
 	'object:updated',
 	'object:deleted',

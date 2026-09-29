@@ -16,10 +16,6 @@ export interface CommandView {
 	dispatch(spec: TransactionSpec): void;
 }
 
-export interface FormattingCommand {
-	(view: CommandView): void;
-}
-
 type InlineKind = 'bold' | 'italic' | 'strikethrough' | 'code';
 
 const INLINE: Record<

@@ -3,6 +3,64 @@
 
 use super::*;
 
+pub(super) type MarkdownIndexEntry = (String, Vec<u8>, i64, ParsedMarkdown);
+
+/// What one walk of the workspace found.
+#[derive(Default)]
+pub(super) struct WorkspaceScan {
+    /// Markdown files whose bytes changed since they were indexed.
+    pub(super) changed: Vec<MarkdownIndexEntry>,
+    /// Markdown paths that still exist, including files that could not be
+    /// read and files that iCloud has not downloaded.
+    pub(super) seen: HashSet<String>,
+    /// Folders the walk could not enter. Indexed files below them are kept.
+    pub(super) unreadable_folders: Vec<String>,
+    /// The walk failed somewhere it could not attribute to a path, so it
+    /// must not treat missing files as deleted.
+    pub(super) incomplete: bool,
+    pub(super) diagnostics: Vec<crate::Diagnostic>,
+    /// Markdown paths whose content lives only in the cloud for now.
+    pub(super) not_downloaded: BTreeSet<String>,
+    /// Every visible file and folder, when the caller asked for a listing.
+    pub(super) entries: Vec<ScannedEntry>,
+    /// Markdown paths whose index rows this walk replaced or removed.
+    pub(super) touched: Vec<String>,
+}
+
+impl WorkspaceScan {
+    /// Indexed paths the walk proved absent.
+    pub(super) fn removed(&self, indexed: &HashMap<String, (i64, i64)>) -> Vec<String> {
+        if self.incomplete {
+            return Vec::new();
+        }
+        indexed
+            .keys()
+            .filter(|path| {
+                !self.seen.contains(*path)
+                    && !self
+                        .unreadable_folders
+                        .iter()
+                        .any(|folder| path.starts_with(&format!("{folder}/")))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+pub(super) struct ScannedEntry {
+    pub(super) relative_path: String,
+    pub(super) name: String,
+    pub(super) is_folder: bool,
+    pub(super) not_downloaded: bool,
+}
+
+/// Findings of the last full walk that do not live in the index.
+#[derive(Default)]
+pub(super) struct ScanState {
+    pub(super) diagnostics: Vec<crate::Diagnostic>,
+    pub(super) not_downloaded: BTreeSet<String>,
+}
+
 pub(super) fn scan_into(
     root: &Path,
     ignore_patterns: &[String],
@@ -335,9 +393,81 @@ pub(super) fn dirty_marker(
     }
 }
 
+pub(super) fn compile_workspace_ignores(
+    root: &Path,
+    patterns: &[String],
+) -> Result<ignore::gitignore::Gitignore> {
+    let mut builder = GitignoreBuilder::new(root);
+    for pattern in patterns {
+        builder.add_line(None, pattern).map_err(|error| {
+            tracing::warn!(pattern, %error, "a workspace ignore pattern is invalid");
+            let mut value = CoreError::validation(
+                "invalid_ignore_pattern",
+                "A workspace ignore pattern is invalid",
+                "workspace_open",
+            );
+            value.details = Some(serde_json::json!({ "pattern": pattern }));
+            value
+        })?;
+    }
+    builder.build().map_err(|error| {
+        tracing::warn!(%error, "the workspace ignore patterns could not be compiled");
+        CoreError::validation(
+            "invalid_ignore_pattern",
+            "The workspace ignore patterns are invalid",
+            "workspace_open",
+        )
+    })
+}
+
+pub(super) fn workspace_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk> {
+    let ignores = compile_workspace_ignores(root, ignore_patterns)?;
+    let filter_root = root.to_owned();
+    Ok(WalkBuilder::new(root)
+        .hidden(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
+        .filter_entry(move |entry| {
+            let relative = entry
+                .path()
+                .strip_prefix(&filter_root)
+                .unwrap_or(entry.path());
+            is_visible_workspace_path(
+                relative,
+                entry.file_type().is_some_and(|kind| kind.is_dir()),
+                &ignores,
+            )
+        })
+        .build())
+}
+
+pub(super) fn is_visible_workspace_path(
+    relative: &Path,
+    is_directory: bool,
+    ignores: &ignore::gitignore::Gitignore,
+) -> bool {
+    if relative.as_os_str().is_empty() {
+        return true;
+    }
+    if relative.starts_with(".noura")
+        || relative.starts_with(".git")
+        || relative.starts_with("node_modules")
+        || relative.starts_with("target")
+    {
+        return false;
+    }
+    !ignores
+        .matched_path_or_any_parents(relative, is_directory)
+        .is_ignore()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::reconcile::OBJECT_EVENT_BATCH_LIMIT;
     use crate::{CreateObjectInput, ManagedDraftInput, ManagedDraftResult};
     use tempfile::tempdir;
 

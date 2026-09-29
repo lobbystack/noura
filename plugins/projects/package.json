@@ -9,8 +9,7 @@
 		"lint": "prettier --check src"
 	},
 	"dependencies": {
-		"@noura/plugin-sdk": "workspace:*",
-		"zod": "latest"
+		"@noura/plugin-sdk": "workspace:*"
 	},
 	"devDependencies": {
 		"typescript": "^5.9.3"

@@ -14,8 +14,7 @@
 		"@earendil-works/pi-agent-core": "0.84.4",
 		"@earendil-works/pi-ai": "0.84.4",
 		"@noura/shared": "workspace:*",
-		"typebox": "1.3.7",
-		"zod": "latest"
+		"typebox": "1.3.7"
 	},
 	"devDependencies": {
 		"typescript": "^5.9.3"

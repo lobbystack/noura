@@ -24,7 +24,7 @@ export interface RouteMemory {
 	write(workspaceId: string, route: string): void;
 }
 
-export const localRouteMemory: RouteMemory = {
+const localRouteMemory: RouteMemory = {
 	read(workspaceId) {
 		try {
 			const saved = localStorage.getItem(`${STORAGE_PREFIX}${workspaceId}`);

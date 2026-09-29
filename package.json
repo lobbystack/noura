@@ -26,15 +26,12 @@
 		"tauri": "bun --cwd src-tauri ../apps/app/node_modules/@tauri-apps/cli/tauri.js"
 	},
 	"devDependencies": {
-		"@eslint/js": "latest",
 		"@types/bun": "latest",
-		"eslint": "latest",
 		"license-checker-rseidelsohn": "5.0.1",
 		"prettier": "latest",
 		"prettier-plugin-svelte": "latest",
 		"railway": "^3.11.0",
-		"typescript": "^5.9.3",
-		"typescript-eslint": "latest"
+		"typescript": "^5.9.3"
 	},
 	"patchedDependencies": {
 		"better-auth@1.7.2": "patches/better-auth@1.7.2.patch"
