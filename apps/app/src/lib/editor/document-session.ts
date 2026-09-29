@@ -25,7 +25,17 @@ export interface TextBase {
 }
 
 export type SessionSaveResult<Canonical> =
-	| { status: 'saved'; base: TextBase; canonical: Canonical }
+	| {
+			status: 'saved';
+			base: TextBase;
+			canonical: Canonical;
+			/**
+			 * The save folded in an edit made outside the editor. Without one, the
+			 * file holds this editor's text, possibly normalized, and the text on
+			 * screen stays as typed.
+			 */
+			merged?: boolean;
+	  }
 	| { status: 'conflict'; current: Canonical };
 
 export interface DocumentSessionOptions<Canonical> {
@@ -215,7 +225,10 @@ export class DocumentSession<Canonical> {
 			return 'paused';
 		}
 		this.#base = result.base;
-		if (result.base.body !== body) {
+		// Only a real merge changes the text on screen. Saving can normalize
+		// what was typed, such as a trailing space or a final blank line;
+		// replacing the editor's text with that would undo the keystroke.
+		if (result.merged && result.base.body !== body) {
 			this.#editor?.rebase(body, result.base.body);
 			options.onMerged?.();
 		}

@@ -593,9 +593,12 @@ pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError
     }
     let yaml = serde_yaml_ng::to_string(&ordered).map_err(|_| FormatError::ObjectSerialization)?;
     let mut result = format!("---\n{}---\n\n# {}\n", yaml, object.title.trim());
-    if !object.body.trim().is_empty() {
+    // Only line breaks at the end are normalized. Trailing spaces stay: two
+    // of them are a Markdown line break, and the editor may be mid-typing.
+    let body = object.body.trim_end_matches(['\n', '\r']);
+    if !body.trim().is_empty() {
         result.push('\n');
-        result.push_str(object.body.trim_end());
+        result.push_str(body);
         result.push('\n');
     }
     Ok(result.into_bytes())
@@ -725,6 +728,37 @@ mod tests {
         };
         let second = serialize_object(&parsed).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn managed_bodies_keep_trailing_spaces_and_drop_trailing_line_breaks() {
+        let object = |body: &str| WorkspaceObject {
+            id: "note_01j00000000000000000000000".into(),
+            object_type: "note".into(),
+            title: "Example".into(),
+            body: body.into(),
+            relative_path: "notes/example.md".into(),
+            revision: String::new(),
+            created: Some("2026-08-27T12:00:00Z".into()),
+            updated: Some("2026-08-27T12:00:00Z".into()),
+            properties: BTreeMap::new(),
+        };
+        let body_after_round_trip = |body: &str| {
+            let bytes = serialize_object(&object(body)).unwrap();
+            let ParsedMarkdown::Managed(parsed) = parse_markdown("notes/example.md", &bytes) else {
+                panic!("managed object expected")
+            };
+            parsed.body
+        };
+        // A trailing space, or two for a Markdown line break, survives a save.
+        assert_eq!(body_after_round_trip("Typing "), "Typing ");
+        assert_eq!(body_after_round_trip("Line  \nnext"), "Line  \nnext");
+        // Line breaks at the end are normalized; the file ends with one.
+        assert_eq!(body_after_round_trip("Text\n\n"), "Text");
+        let bytes = serialize_object(&object("Text\n\n")).unwrap();
+        assert!(bytes.ends_with(b"Text\n"));
+        // A body of only whitespace is written as no body.
+        assert_eq!(body_after_round_trip("  \n"), "");
     }
 
     #[test]

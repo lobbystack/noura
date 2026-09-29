@@ -252,10 +252,12 @@ export class ManagedDraftSession<Canonical extends ManagedCanonical> {
 					}
 				: draftOf(result.current);
 		this.#base = result.current;
-		if (!sameDraft(local, saved)) {
+		// Only a merged save changes what is on screen. A plain save can
+		// normalize the draft (a trailing space, a final blank line), and
+		// replacing the fields with that would undo what was just typed.
+		if (result.status === 'merged' && !sameDraft(local, saved)) {
 			this.#port?.rebase(local, saved);
-			if (result.status === 'merged' && result.body !== local.body)
-				this.#options.onMerged?.();
+			if (result.body !== local.body) this.#options.onMerged?.();
 		}
 		this.#options.onCanonical?.(result.current);
 	}

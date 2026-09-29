@@ -112,6 +112,7 @@
 				return {
 					status: 'saved',
 					base: baseOf(result.current),
+					merged: result.status === 'merged',
 					canonical: {
 						read: result.current,
 						managedObject: result.managedObject,

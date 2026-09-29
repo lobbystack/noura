@@ -4,7 +4,7 @@ import type { Note } from '@noura/workspace';
 import { reconcileNoteTitle } from './title-reconciliation';
 
 export type NoteSaveResult =
-	| { status: 'saved'; value: Note }
+	| { status: 'saved'; value: Note; merged: boolean }
 	| { status: 'conflict'; draft: NoteDraft; current: Note };
 
 export interface NoteDraft {
@@ -26,6 +26,7 @@ export async function saveNoteWithReconciliation(
 	let currentBaseBody = base.body;
 	let currentBaseTitle = base.title;
 	let currentBaseRevision = base.revision;
+	let merged = false;
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		const reconciliation = await getNouraClient().notes.reconcileDraft({
 			id: note.id,
@@ -40,6 +41,7 @@ export async function saveNoteWithReconciliation(
 				current: reconciliation.current as Note,
 			};
 		}
+		if (reconciliation.status === 'merged') merged = true;
 		const canonical = reconciliation.current as Note;
 		const title = reconcileNoteTitle(
 			currentBaseTitle,
@@ -59,7 +61,7 @@ export async function saveNoteWithReconciliation(
 				title: currentDraft.title,
 				body: currentDraft.body,
 			});
-			return { status: 'saved', value: result.value as Note };
+			return { status: 'saved', value: result.value as Note, merged };
 		} catch (error) {
 			if (
 				!isCoreError(error) ||

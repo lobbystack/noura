@@ -110,6 +110,7 @@
 						status: 'saved',
 						base: baseOf(result.value),
 						canonical: result.value,
+						merged: result.merged,
 					};
 				},
 				read: async () => {
