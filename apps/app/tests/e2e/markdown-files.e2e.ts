@@ -127,3 +127,49 @@ test.describe('plain Markdown files', () => {
 		expect(await app.messages()).toEqual([MERGED_MESSAGE]);
 	});
 });
+
+test.describe('notes written by another app', () => {
+	test('editing a note keeps its other properties and text', async ({
+		app,
+		page,
+	}) => {
+		const header = [
+			'---',
+			'id: note_01j00000000000000000000001',
+			'type: note',
+			'aliases:',
+			'- Plan',
+			'rating: 4',
+			'source: https://example.com/a?b=c',
+			'tags:',
+			'- work',
+			'- q3',
+			'created: 2026-09-01T10:00:00Z',
+			'updated: 2026-09-01T10:00:00Z',
+			'---',
+			// Notes put a blank line after the header, as the format writes it.
+			'',
+			'',
+		].join('\n');
+		const body = RICH.slice(RICH.indexOf('# Plain file'))
+			.replace('# Plain file', '# Imported')
+			.replace(/\n$/, '');
+		await app.openFiles();
+		await app.writeOutside('Imported.md', `${header}${body}\n`);
+		await app.treeItem('Imported').click();
+		await expect(app.fileName).toHaveValue('Imported');
+		const shown = await app.doc();
+		await app.caretAfter('Edit here');
+		await page.keyboard.type(' now');
+		await expect
+			.poll(() => app.stored('Imported.md'))
+			.toContain('Edit here now');
+		const stored = (await app.stored('Imported.md'))!;
+		// Only the edit and the updated time differ.
+		const expected = `${header}${body}\n`
+			.replace('Edit here', 'Edit here now')
+			.replace(/^updated: .*$/m, stored.match(/^updated: .*$/m)![0]);
+		expect(stored).toBe(expected);
+		expect(await app.doc()).toBe(shown.replace('Edit here', 'Edit here now'));
+	});
+});
