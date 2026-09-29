@@ -3358,7 +3358,6 @@ dependencies = [
  "base64 0.22.1",
  "bech32",
  "blake3",
- "diffy",
  "directories",
  "ed25519-dalek",
  "fs2",
@@ -7775,6 +7774,7 @@ name = "workspace-format"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "diffy",
  "jiff",
  "serde",
  "serde_json",
