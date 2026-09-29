@@ -4,6 +4,7 @@
 		SidebarMenuItem,
 	} from '$lib/components/ui/sidebar';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import {
 		displayName,
 		treeTargetFor,
@@ -111,36 +112,53 @@
 			/>
 		</div>
 	{:else}
-		<SidebarMenuButton
-			role="treeitem"
-			size="sm"
-			isActive={active}
-			tabindex={tabbable ? 0 : -1}
-			aria-level={row.depth + 1}
-			aria-setsize={row.siblingCount}
-			aria-posinset={row.position}
-			aria-expanded={node.kind === 'folder' ? expanded : undefined}
-			aria-selected={selected}
-			data-tree-path={node.relativePath}
-			class={cn(
-				'justify-start text-left select-none',
-				selected && !active && 'bg-sidebar-accent/50',
-				!opensHere && 'text-muted-foreground',
-				dropTarget && 'bg-sidebar-accent ring-2 ring-sidebar-ring',
-				dragging && 'opacity-50',
-			)}
-			style={indent}
-		>
-			<Icon class="shrink-0 text-muted-foreground" />
-			<span class="truncate">{displayName(node)}</span>
-			{#if node.kind === 'folder'}
-				<CaretRight
-					class={cn(
-						'ml-auto shrink-0 text-muted-foreground transition-transform',
-						expanded && 'rotate-90',
-					)}
-				/>
-			{/if}
-		</SidebarMenuButton>
+		{#if node.notDownloaded}
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					{#snippet child({ props })}
+						{@render button(props)}
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content side="right">Not downloaded</Tooltip.Content>
+			</Tooltip.Root>
+		{:else}
+			{@render button({})}
+		{/if}
 	{/if}
 </SidebarMenuItem>
+
+{#snippet button(props: Record<string, unknown>)}
+	<SidebarMenuButton
+		{...props}
+		role="treeitem"
+		size="sm"
+		isActive={active}
+		tabindex={tabbable ? 0 : -1}
+		aria-level={row.depth + 1}
+		aria-setsize={row.siblingCount}
+		aria-posinset={row.position}
+		aria-expanded={node.kind === 'folder' ? expanded : undefined}
+		aria-selected={selected}
+		data-tree-path={node.relativePath}
+		class={cn(
+			'justify-start text-left select-none',
+			selected && !active && 'bg-sidebar-accent/50',
+			(!opensHere || node.notDownloaded) && 'text-muted-foreground',
+			dropTarget && 'bg-sidebar-accent ring-2 ring-sidebar-ring',
+			dragging && 'opacity-50',
+		)}
+		style={indent}
+	>
+		<Icon class="shrink-0 text-muted-foreground" />
+		<span class="truncate">{displayName(node)}</span>
+		{#if node.notDownloaded}<span class="sr-only">, not downloaded</span>{/if}
+		{#if node.kind === 'folder'}
+			<CaretRight
+				class={cn(
+					'ml-auto shrink-0 text-muted-foreground transition-transform',
+					expanded && 'rotate-90',
+				)}
+			/>
+		{/if}
+	</SidebarMenuButton>
+{/snippet}

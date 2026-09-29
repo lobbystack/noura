@@ -2,8 +2,12 @@
 	import { getNouraClient, getPluginRuntime } from '$lib/state.svelte';
 	import { isPlainTextPath } from '$lib/editor/text-files';
 	import { workspaceTree } from '$lib/workspace-tree.svelte';
-	import { findTreeNode } from '$lib/workspace-tree';
-	import type { UnmanagedFile, WorkspaceObject } from '@noura/workspace';
+	import { findTreeNode, NOT_DOWNLOADED_MESSAGE } from '$lib/workspace-tree';
+	import {
+		isCoreError,
+		type UnmanagedFile,
+		type WorkspaceObject,
+	} from '@noura/workspace';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { saveBeforeLeaving } from '$lib/editor/unsaved-changes';
 	import { splitFileName } from '$lib/editor/rename';
@@ -55,6 +59,17 @@
 			title: splitFileName(relativePath).stem,
 			parseStatus: node?.parseStatus ?? null,
 		};
+	}
+
+	/**
+	 * A cloud placeholder opens only once the system downloads it. Tabs,
+	 * links and search can still point at one, so check before opening.
+	 */
+	function notDownloaded(relativePath: string) {
+		if (!findTreeNode(workspaceTree.tree, relativePath)?.notDownloaded)
+			return false;
+		toast(NOT_DOWNLOADED_MESSAGE);
+		return true;
 	}
 
 	/** Save the open editor first; false when the user has to decide. */
@@ -116,6 +131,7 @@
 				if (selectedId !== null) {
 					const note = await findNote(selectedId);
 					if (generation !== selectionGeneration || key !== appliedKey) return;
+					if (note && notDownloaded(note.relativePath)) return;
 					if (note) {
 						// Param-driven selection comes from the sidebar tree; a
 						// pristine "Untitled" empty note is a fresh creation via
@@ -131,6 +147,7 @@
 					}
 				} else if (rawPath !== null) {
 					const file = rawFileAt(rawPath);
+					if (file && notDownloaded(file.relativePath)) return;
 					if (file) {
 						await selectRaw(file, generation);
 					} else {
@@ -138,9 +155,12 @@
 					}
 				}
 			} catch (error) {
-				toast.error(
-					error instanceof Error ? error.message : 'Couldn’t open the file',
-				);
+				if (isCoreError(error) && error.code === 'file_not_downloaded')
+					toast(NOT_DOWNLOADED_MESSAGE);
+				else
+					toast.error(
+						error instanceof Error ? error.message : 'Couldn’t open the file',
+					);
 			}
 		})();
 	});

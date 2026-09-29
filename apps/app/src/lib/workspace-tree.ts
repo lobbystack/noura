@@ -8,6 +8,8 @@ export interface WorkspaceTreeNode {
 	objectId: string | null;
 	objectType: string | null;
 	parseStatus: WorkspaceEntry['parseStatus'];
+	/** The file is a cloud placeholder (such as iCloud) not on this device yet. */
+	notDownloaded: boolean;
 	children: WorkspaceTreeNode[];
 }
 
@@ -45,6 +47,7 @@ function folderNode(path: string): WorkspaceTreeNode {
 		objectId: null,
 		objectType: null,
 		parseStatus: null,
+		notDownloaded: false,
 		children: [],
 	};
 }
@@ -83,6 +86,7 @@ export function buildWorkspaceTree(
 			objectId: entry.objectId,
 			objectType: entry.objectType,
 			parseStatus: entry.parseStatus,
+			notDownloaded: entry.notDownloaded === true,
 			children: [],
 		});
 	}
@@ -236,6 +240,10 @@ export function findTreeNode(
 	}
 	return null;
 }
+
+/** What to tell someone who tries to open a file that isn't downloaded. */
+export const NOT_DOWNLOADED_MESSAGE =
+	'This file isn’t downloaded yet. Try again once it is.';
 
 /** One object change as the tree sees it. */
 export interface TreeObjectChange {

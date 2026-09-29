@@ -15,6 +15,7 @@ import {
 	movedIntoPath,
 	nameProblem,
 	nextUntitledPath,
+	NOT_DOWNLOADED_MESSAGE,
 	parentPathOf,
 	remapPath,
 	renamedPath,
@@ -35,6 +36,7 @@ function problem(error: unknown, fallback: string): string {
 		if (error.code === 'path_exists')
 			return 'Something with that name is already there.';
 		if (error.code === 'open_not_allowed') return error.message;
+		if (error.code === 'file_not_downloaded') return NOT_DOWNLOADED_MESSAGE;
 		if (error.code === 'collaboration_transaction_required')
 			return 'noura can’t rename, move or delete a file while it’s open for live editing.';
 	}
@@ -68,6 +70,12 @@ export async function openTreeNode(
 	const href = treeTargetHref(treeTargetFor(node));
 	if (!href) {
 		await openWithDefaultApp(node);
+		return;
+	}
+	// A cloud placeholder has no content to edit until the system downloads
+	// it; the tree updates once it does.
+	if (node.notDownloaded) {
+		toast(NOT_DOWNLOADED_MESSAGE);
 		return;
 	}
 	const objectId = tabObjectId(node);

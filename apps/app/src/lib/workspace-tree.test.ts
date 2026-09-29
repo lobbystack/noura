@@ -31,6 +31,7 @@ function entry(
 		objectId: string;
 		objectType: string;
 		parseStatus: 'managed' | 'unmanaged' | 'malformed';
+		notDownloaded: boolean;
 	}> = {},
 ) {
 	return {
@@ -201,6 +202,7 @@ test('PDF files open in the PDF route even before indexing', () => {
 			parseStatus: null,
 			objectId: null,
 			objectType: null,
+			notDownloaded: false,
 			children: [],
 		}),
 	).toEqual({ route: '/pdf', query: { path: 'course/Lecture.PDF' } });
@@ -412,5 +414,18 @@ describe('objectChangesKeepTree', () => {
 				]),
 			).toBe(false);
 		expect(objectChangesKeepTree(tree, [])).toBe(false);
+	});
+});
+
+describe('cloud placeholders', () => {
+	test('files that are not downloaded keep the flag in the tree', () => {
+		const tree = buildWorkspaceTree([
+			entry('Journal', 'folder'),
+			entry('Journal/today.md', 'file', { notDownloaded: true }),
+			entry('Journal/later.md'),
+		]);
+		expect(findTreeNode(tree, 'Journal/today.md')?.notDownloaded).toBe(true);
+		expect(findTreeNode(tree, 'Journal/later.md')?.notDownloaded).toBe(false);
+		expect(findTreeNode(tree, 'Journal')?.notDownloaded).toBe(false);
 	});
 });
