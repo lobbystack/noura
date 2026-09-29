@@ -2332,3 +2332,27 @@ fn file_operations_report_their_changes_as_the_apps_own() {
         );
     }
 }
+
+#[test]
+fn moving_a_folder_allows_a_case_only_rename() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+    std::fs::write(workspace.path().join("notes/a.md"), "a").unwrap();
+    engine.reconcile().unwrap();
+    engine.move_folder("notes", "Notes").unwrap();
+    let names: Vec<_> = std::fs::read_dir(workspace.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    assert_eq!(names, ["Notes"]);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("Notes/a.md")).unwrap(),
+        "a"
+    );
+    std::fs::create_dir_all(workspace.path().join("other")).unwrap();
+    assert_eq!(
+        engine.move_folder("other", "Notes").unwrap_err().code,
+        "path_exists"
+    );
+}

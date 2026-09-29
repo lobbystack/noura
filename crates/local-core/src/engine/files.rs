@@ -149,7 +149,9 @@ impl WorkspaceEngine {
     pub fn move_folder(&self, from: &str, to: &str) -> Result<()> {
         let source = resolve_for_write(&self.root, from, "folder_move")?;
         let destination = resolve_for_write(&self.root, to, "folder_move")?;
-        let _guard = self.write_lock("folder_move")?;
+        let guard = self.write_lock("folder_move")?;
+        self.collaboration_guard_tree_mutation(from)?;
+        self.collaboration_guard_tree_mutation(to)?;
         if !source.is_dir() {
             return Err(CoreError::validation(
                 "folder_not_found",
@@ -157,7 +159,8 @@ impl WorkspaceEngine {
                 "folder_move",
             ));
         }
-        if destination.exists() {
+        // A case-only rename names the same folder on case-insensitive volumes.
+        if std::fs::symlink_metadata(&destination).is_ok() && !same_file(&source, &destination) {
             return Err(CoreError::new(
                 "path_exists",
                 ErrorCategory::Conflict,
@@ -169,9 +172,10 @@ impl WorkspaceEngine {
             std::fs::create_dir_all(parent)
                 .map_err(|error| CoreError::io(error, "folder_move", Some(to)))?;
         }
-        std::fs::rename(source, destination)
+        std::fs::rename(&source, &destination)
             .map_err(|error| CoreError::io(error, "folder_move", Some(to)))?;
-        drop(_guard);
+        sync_rename_parents(&source, &destination, "folder_move")?;
+        drop(guard);
         self.reconcile_as_application()?;
         Ok(())
     }
@@ -226,7 +230,7 @@ impl WorkspaceEngine {
             ));
         }
         let guard = self.write_lock(operation)?;
-        self.collaboration_guard_file_mutation(relative_path)?;
+        self.collaboration_guard_tree_mutation(relative_path)?;
         std::fs::symlink_metadata(&source)
             .map_err(|error| CoreError::io(error, operation, Some(relative_path)))?;
         let trashed = self.discard(&source, relative_path, operation)?;

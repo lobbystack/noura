@@ -2235,3 +2235,27 @@ fn coordinator_rejects_when_plugin_disabled() {
         .unwrap_err();
     assert_eq!(enable.code, "sync_plugin_disabled");
 }
+
+#[test]
+fn folder_moves_and_trash_refuse_to_bypass_a_collaborative_document_inside() {
+    let f = fixture();
+    let workspace = f.directory.path().join("workspace");
+    // Place the collaborative note inside a folder, as a signed move would.
+    std::fs::create_dir_all(workspace.join("docs")).unwrap();
+    std::fs::rename(workspace.join("note.md"), workspace.join("docs/note.md")).unwrap();
+    let state = workspace.join(".noura/sync/state.json");
+    let journal = std::fs::read_to_string(&state)
+        .unwrap()
+        .replace("\"path\":\"note.md\"", "\"path\":\"docs/note.md\"");
+    assert!(journal.contains("docs/note.md"));
+    std::fs::write(&state, journal).unwrap();
+
+    for error in [
+        f.engine.trash_path("docs").unwrap_err(),
+        f.engine.move_folder("docs", "archive").unwrap_err(),
+    ] {
+        assert_eq!(error.code, "collaboration_transaction_required");
+    }
+    assert!(workspace.join("docs/note.md").is_file());
+    assert!(!workspace.join("archive").exists());
+}

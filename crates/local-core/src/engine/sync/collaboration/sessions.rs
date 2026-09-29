@@ -71,6 +71,23 @@ impl WorkspaceEngine {
         self.collaboration_guard_sync_change(path)
     }
 
+    /// Guard a file, or every synced file inside a folder, before a move or
+    /// delete. Only files the sync journal tracks can be collaborative.
+    pub(crate) fn collaboration_guard_tree_mutation(&self, path: &str) -> Result<()> {
+        self.collaboration_guard_file_mutation(path)?;
+        if !self.sync_plugin_enabled() {
+            return Ok(());
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let journal = self.sync_journal()?;
+        for object in journal.objects.values() {
+            if object.path.starts_with(&prefix) {
+                self.collaboration_guard_sync_change(&object.path)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Sync's own whole-file changes never bypass a signed collaborative
     /// generation, whatever the plugin state.
     /// Called with the engine write lock already held.
