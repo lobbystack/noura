@@ -189,7 +189,8 @@ describe.skipIf(format === null)('browser raw Markdown', () => {
 				localBody: '# Loose\n\nfirst, edited\nmiddle\nsecond\n',
 			},
 		})) as { status: string; current: RawMarkdownRead };
-		expect(saved.status).toBe('saved');
+		// The other tab's edit was folded in, so the save reports a merge.
+		expect(saved.status).toBe('merged');
 		expect(decoder.decode(files.files.get('Loose.md'))).toBe(
 			'# Loose\r\n\r\nfirst, edited\r\nmiddle\r\nsecond, changed\r\n',
 		);

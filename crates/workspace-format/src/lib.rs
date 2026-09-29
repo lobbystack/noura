@@ -786,6 +786,15 @@ mod tests {
         object_id: Vec<ObjectIdFixture>,
         task_properties: Vec<TaskPropertiesFixture>,
         project_properties: Vec<TaskPropertiesFixture>,
+        object_body: Vec<ObjectBodyFixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct ObjectBodyFixture {
+        name: String,
+        body: String,
+        expected_body: String,
+        file_ends_with: String,
     }
 
     #[derive(Deserialize)]
@@ -836,6 +845,35 @@ mod tests {
                 && task_properties_match
                 && project_properties_match
         );
+    }
+
+    #[test]
+    fn object_bodies_round_trip_as_the_shared_fixtures_say() {
+        let fixtures: Fixtures = serde_json::from_str(include_str!(
+            "../../../docs/workspace-format/fixtures/conformance-v1.json"
+        ))
+        .unwrap();
+        for fixture in fixtures.object_body {
+            let object = WorkspaceObject {
+                id: "note_01j00000000000000000000000".into(),
+                object_type: "note".into(),
+                title: "Example".into(),
+                body: fixture.body,
+                relative_path: "notes/example.md".into(),
+                revision: String::new(),
+                created: Some("2026-08-27T12:00:00Z".into()),
+                updated: Some("2026-08-27T12:00:00Z".into()),
+                properties: BTreeMap::new(),
+            };
+            let bytes = serialize_object(&object).unwrap();
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(text.ends_with(&fixture.file_ends_with), "{}", fixture.name);
+            let ParsedMarkdown::Managed(parsed) = parse_markdown(&object.relative_path, &bytes)
+            else {
+                panic!("{}: managed object expected", fixture.name)
+            };
+            assert_eq!(parsed.body, fixture.expected_body, "{}", fixture.name);
+        }
     }
 
     #[test]

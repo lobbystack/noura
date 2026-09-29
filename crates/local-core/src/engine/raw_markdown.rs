@@ -309,6 +309,9 @@ impl WorkspaceEngine {
                 }
             }
         };
+        // The editor only replaces its text when another program's edit was
+        // folded in; a changed revision alone doesn't mean the body differs.
+        let external_merged = merged_body != input.local_body;
         let next_bytes = compose_raw_bytes(&merged_body, &layout);
         let next_relative = PathBuf::from(&relative);
         atomic_write_checked(
@@ -336,15 +339,23 @@ impl WorkspaceEngine {
             ParsedMarkdown::Managed(object) => Some(object),
             _ => None,
         };
-        Ok(RawSaveResult::Saved {
-            current: RawMarkdownRead {
-                relative_path: relative,
-                body: merged_body,
-                revision: markdown::revision(&next_bytes),
-                uses_crlf,
-                has_bom,
-            },
-            managed_object,
+        let current = RawMarkdownRead {
+            relative_path: relative,
+            body: merged_body,
+            revision: markdown::revision(&next_bytes),
+            uses_crlf,
+            has_bom,
+        };
+        Ok(if external_merged {
+            RawSaveResult::Merged {
+                current,
+                managed_object,
+            }
+        } else {
+            RawSaveResult::Saved {
+                current,
+                managed_object,
+            }
         })
     }
 

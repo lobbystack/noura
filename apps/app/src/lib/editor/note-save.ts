@@ -41,7 +41,13 @@ export async function saveNoteWithReconciliation(
 				current: reconciliation.current as Note,
 			};
 		}
-		if (reconciliation.status === 'merged') merged = true;
+		// A changed revision can be a title or property edit; only an outside
+		// change to the body means the text on screen must follow the file.
+		if (
+			reconciliation.status === 'merged' &&
+			reconciliation.body !== currentDraft.body
+		)
+			merged = true;
 		const canonical = reconciliation.current as Note;
 		const title = reconcileNoteTitle(
 			currentBaseTitle,

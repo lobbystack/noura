@@ -1449,7 +1449,7 @@ fn raw_markdown_save_keeps_mixed_line_endings() {
             local_body: current.body.replace("# Mixed\n", "# Mixed today\n"),
         })
         .unwrap();
-    assert!(matches!(saved, RawSaveResult::Saved { .. }), "{saved:?}");
+    assert!(matches!(saved, RawSaveResult::Merged { .. }), "{saved:?}");
     assert_eq!(
         std::fs::read(&path).unwrap(),
         b"# Mixed today\r\n\r\nfrom windows\r\nfrom unix\nexternal\nlast\r\nadded\r\n"
@@ -2355,4 +2355,38 @@ fn moving_a_folder_allows_a_case_only_rename() {
         engine.move_folder("other", "Notes").unwrap_err().code,
         "path_exists"
     );
+}
+
+#[test]
+fn raw_saves_report_a_merge_only_when_another_edit_changed_the_text() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("doc.md"), "one\n\ntwo\n").unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("doc.md").unwrap();
+
+    // Another program edits the other end of the file before the save.
+    std::fs::write(workspace.path().join("doc.md"), "one\n\ntwo edited\n").unwrap();
+    let merged = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "doc.md".into(),
+            base_revision: base.revision.clone(),
+            base_body: base.body.clone(),
+            local_body: "one local\n\ntwo\n".into(),
+        })
+        .unwrap();
+    let RawSaveResult::Merged { current, .. } = merged else {
+        panic!("a merge with another edit must say so: {merged:?}")
+    };
+    assert_eq!(current.body, "one local\n\ntwo edited\n");
+
+    // A plain save of the current revision is not a merge.
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "doc.md".into(),
+            base_revision: current.revision.clone(),
+            base_body: current.body.clone(),
+            local_body: "one local \n\ntwo edited\n".into(),
+        })
+        .unwrap();
+    assert!(matches!(saved, RawSaveResult::Saved { .. }), "{saved:?}");
 }
