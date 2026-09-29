@@ -2262,8 +2262,34 @@ fn chat_message_mutations_return_the_next_chat_revision() {
             })
             .unwrap();
         // The next call can use the returned revision without a read.
-        revision = appended.chat_revision.unwrap();
+        revision = appended.chat_revision.clone().unwrap();
+        // The app reads this field as `chatRevision`.
+        let json = serde_json::to_value(&appended).unwrap();
+        assert_eq!(json["chatRevision"], serde_json::json!(revision));
     }
+    // Starting and finishing a reply chain the same way.
+    let begun = engine
+        .begin_chat_assistant(BeginChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_chain".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            expected_chat_revision: revision.clone(),
+        })
+        .unwrap();
+    revision = begun.chat_revision.clone().unwrap();
+    let finished = engine
+        .finish_chat_assistant(FinishChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            message_id: begun.value.id.clone(),
+            content: "reply".into(),
+            status: ChatMessageStatus::Completed,
+            error_code: None,
+            expected_chat_revision: revision,
+            expected_message_revision: begun.revision.clone(),
+        })
+        .unwrap();
+    revision = finished.chat_revision.unwrap();
     let read = engine.read_chat(&chat.value.id).unwrap();
     assert_eq!(read.chat.revision, revision);
     assert_eq!(
@@ -2271,6 +2297,6 @@ fn chat_message_mutations_return_the_next_chat_revision() {
             .iter()
             .map(|message| message.content.as_str())
             .collect::<Vec<_>>(),
-        vec!["one", "two", "three"]
+        vec!["one", "two", "three", "reply"]
     );
 }

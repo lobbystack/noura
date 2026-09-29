@@ -3,6 +3,7 @@ import {
 	chatTitle,
 	nativeToolDefinitions,
 	nativeTransportMessages,
+	nextChatRevision,
 	providerStreamFrame,
 	rehydratedTransportMessages,
 	transportMessages,
@@ -165,5 +166,16 @@ describe('AI chat projection', () => {
 			{ role: 'user', content: [{ type: 'text', text: 'Current question' }] },
 		]);
 		expect(nativeTransportMessages('   ', [], [])).toEqual([]);
+	});
+});
+
+describe('nextChatRevision', () => {
+	test('uses the revision the native side reports', () => {
+		expect(nextChatRevision({ chatRevision: 'rev-2' })).toBe('rev-2');
+	});
+
+	test('fails instead of reading the chat again when it is missing', () => {
+		expect(() => nextChatRevision({})).toThrow();
+		expect(() => nextChatRevision({ chatRevision: '' })).toThrow();
 	});
 });

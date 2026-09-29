@@ -15,6 +15,7 @@ import {
 	chatTitle,
 	nativeToolDefinitions,
 	nativeTransportMessages,
+	nextChatRevision,
 	providerStreamFrame,
 } from './chat-projection';
 import { AI_POLICY_VERSION } from './policy';
@@ -56,16 +57,6 @@ function chatIdFromEvent(payload: unknown): string | null {
 	if (!payload || typeof payload !== 'object' || !('id' in payload))
 		return null;
 	return typeof payload.id === 'string' ? payload.id : null;
-}
-
-/**
- * The chat revision a mutation returned, when the native side reports it.
- * Older builds do not, so the caller falls back to reading the chat.
- */
-function reportedChatRevision(result: unknown): string | null {
-	if (!result || typeof result !== 'object' || !('chatRevision' in result))
-		return null;
-	return typeof result.chatRevision === 'string' ? result.chatRevision : null;
 }
 
 /**
@@ -508,12 +499,6 @@ class AiChatStore {
 			this.running = false;
 			return;
 		}
-		// Each persisted step returns the chat revision when the native side
-		// reports it; otherwise read the chat once to learn it.
-		const chatRevision = async (result: unknown, chatId: string) =>
-			reportedChatRevision(result) ??
-			(await client.chats.read(chatId)).chat.revision;
-
 		const controller = new PiChatController({
 			model,
 			systemPrompt,
@@ -559,7 +544,7 @@ class AiChatStore {
 							this.#lastMessage.chatId === input.chatId
 						)
 							this.#lastMessage.userMessageId = appended.value.id;
-						const revision = await chatRevision(appended, input.chatId);
+						const revision = nextChatRevision(appended);
 						// The first message names a new chat. The expected revision
 						// makes any change from elsewhere win over the derived title.
 						if (nameFirstMessage) {
@@ -585,7 +570,7 @@ class AiChatStore {
 					try {
 						const result = await client.chats.beginAssistant(input);
 						return {
-							chatRevision: await chatRevision(result, input.chatId),
+							chatRevision: nextChatRevision(result),
 							message: { id: result.value.id, revision: result.value.revision },
 						};
 					} catch (error) {
@@ -596,7 +581,7 @@ class AiChatStore {
 					try {
 						const result = await client.chats.beginToolCall(input);
 						return {
-							chatRevision: await chatRevision(result, input.chatId),
+							chatRevision: nextChatRevision(result),
 							message: { id: result.value.id, revision: result.value.revision },
 						};
 					} catch (error) {
@@ -607,7 +592,7 @@ class AiChatStore {
 					try {
 						const result = await client.chats.appendToolResult(input);
 						return {
-							chatRevision: await chatRevision(result, input.chatId),
+							chatRevision: nextChatRevision(result),
 						};
 					} catch (error) {
 						throw controllerError(error, input.expectedChatRevision);
@@ -620,7 +605,7 @@ class AiChatStore {
 							errorCode: input.errorCode ?? null,
 						});
 						return {
-							chatRevision: await chatRevision(result, input.chatId),
+							chatRevision: nextChatRevision(result),
 						};
 					} catch (error) {
 						throw controllerError(error, input.expectedChatRevision);
@@ -633,7 +618,7 @@ class AiChatStore {
 							errorCode: input.errorCode ?? null,
 						});
 						return {
-							chatRevision: await chatRevision(result, input.chatId),
+							chatRevision: nextChatRevision(result),
 						};
 					} catch (error) {
 						throw controllerError(error, input.expectedChatRevision);
@@ -643,7 +628,7 @@ class AiChatStore {
 					try {
 						const result = await client.chats.appendContextSummary(input);
 						return {
-							chatRevision: await chatRevision(result, input.chatId),
+							chatRevision: nextChatRevision(result),
 							message: { id: result.value.id, revision: result.value.revision },
 						};
 					} catch (error) {

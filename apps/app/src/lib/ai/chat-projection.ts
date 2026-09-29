@@ -262,3 +262,14 @@ export function chatTitle(message: string): string {
 	const firstLine = message.trim().split('\n')[0] ?? '';
 	return Array.from(firstLine).slice(0, 64).join('') || 'New chat';
 }
+
+/**
+ * The chat revision a chat message mutation returned. The native side sends
+ * it with every message change (`MutationResult.chatRevision`), so the next
+ * step of a run can go ahead without reading the chat again.
+ */
+export function nextChatRevision(result: { chatRevision?: string }): string {
+	if (typeof result.chatRevision === 'string' && result.chatRevision)
+		return result.chatRevision;
+	throw new Error('The chat was saved, but its new revision is missing.');
+}
