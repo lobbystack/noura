@@ -56,6 +56,36 @@ describe('typed client', () => {
 			payload: { title: 'Open a Noura workspace' },
 		});
 	});
+	test('reads body-free summaries and host diagnostics through native commands', async () => {
+		const mock = transport({
+			objects_summaries: [],
+			app_diagnostics: 'noura 0.1.0',
+			app_capabilities: { openTerminal: false, revealSelectsFile: true },
+		});
+		const client = createNouraClient(mock);
+		const query = {
+			type: 'task',
+			statusNot: 'done',
+			dueOnOrBefore: '2026-09-29',
+			order: 'due-asc' as const,
+			limit: 50,
+		};
+
+		await client.objects.summaries(query);
+		await expect(client.app.diagnostics()).resolves.toBe('noura 0.1.0');
+		await expect(client.app.capabilities()).resolves.toEqual({
+			openTerminal: false,
+			revealSelectsFile: true,
+		});
+		expect(
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> })
+				.calls,
+		).toEqual([
+			{ command: 'objects_summaries', payload: { query } },
+			{ command: 'app_diagnostics' },
+			{ command: 'app_capabilities' },
+		]);
+	});
 	test('delegates AI streaming and cancellation through the typed boundary', async () => {
 		const operationId = '7cd5ab0c-b143-4ae7-9e99-867e20b8cd73';
 		const frames = [
