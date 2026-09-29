@@ -6,17 +6,17 @@ Report suspected vulnerabilities privately. Do not open a public issue.
 
 Use [GitHub’s private vulnerability reporting](https://github.com/lobbystack/noura/security/advisories/new).
 
-If you cannot use GitHub, email `hello@lobbystack.com`. Include a description, reproduction steps, and the affected version or commit.
+If you can't use GitHub, email [hello@noura.app](mailto:hello@noura.app). Include a description, reproduction steps, and the affected version or commit.
 
 We acknowledge reports within a few business days. Allow time for a fix before public disclosure.
 
 ## In scope
 
-Noura is local-first and stores durable workspace state in ordinary files. Review these areas:
+noura is local-first and stores durable workspace state in ordinary files. Review these areas:
 
 - Parsing, validation, normalization, and deterministic serialization of workspace files
 - Path handling across the Rust/TypeScript boundary: traversal, absolute paths, symlink escapes, and non-UTF-8 paths
-- Credential storage and the encrypted synchronization service
+- Credential storage and the experimental encrypted synchronization service
 - Plugin input, workspace frontmatter, MCP arguments, and AI provider output
 
 ## What to include
