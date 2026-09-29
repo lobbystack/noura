@@ -1,9 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
-	chatTitle,
 	nativeToolDefinitions,
 	nativeTransportMessages,
-	nextChatRevision,
 	providerStreamFrame,
 	rehydratedTransportMessages,
 	transportMessages,
@@ -20,14 +18,6 @@ describe('AI chat projection', () => {
 		).toEqual([
 			{ role: 'system', content: [{ type: 'text', text: 'Instructions' }] },
 		]);
-	});
-
-	test('derives a bounded chat title from the first line', () => {
-		expect(chatTitle('  Plan the release\nwith risks  ')).toBe(
-			'Plan the release',
-		);
-		expect(chatTitle('   ')).toBe('New chat');
-		expect(chatTitle(`${'🙂'.repeat(65)} first message`)).toBe('🙂'.repeat(64));
 	});
 
 	test('round-trips native tool calls and results through provider history', () => {
@@ -166,16 +156,5 @@ describe('AI chat projection', () => {
 			{ role: 'user', content: [{ type: 'text', text: 'Current question' }] },
 		]);
 		expect(nativeTransportMessages('   ', [], [])).toEqual([]);
-	});
-});
-
-describe('nextChatRevision', () => {
-	test('uses the revision the native side reports', () => {
-		expect(nextChatRevision({ chatRevision: 'rev-2' })).toBe('rev-2');
-	});
-
-	test('fails instead of reading the chat again when it is missing', () => {
-		expect(() => nextChatRevision({})).toThrow();
-		expect(() => nextChatRevision({ chatRevision: '' })).toThrow();
 	});
 });

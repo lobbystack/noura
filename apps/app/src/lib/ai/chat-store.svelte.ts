@@ -1,5 +1,9 @@
 import {
+	CHAT_CHANGED_MESSAGE,
+	createChatPersistence,
 	isCoreError,
+	namesChat,
+	NEW_CHAT_TITLE,
 	type AiProviderConfig,
 	type Chat,
 	type ChatRead,
@@ -12,10 +16,8 @@ import type {
 import { getNouraClient, workspace } from '$lib/state.svelte';
 import { LiveRefresh } from '$lib/live-refresh';
 import {
-	chatTitle,
 	nativeToolDefinitions,
 	nativeTransportMessages,
-	nextChatRevision,
 	providerStreamFrame,
 } from './chat-projection';
 import { AI_POLICY_VERSION } from './policy';
@@ -31,17 +33,6 @@ function errorMessage(error: unknown) {
 
 function operationId() {
 	return crypto.randomUUID();
-}
-
-const CHAT_CHANGED_MESSAGE =
-	'This chat changed outside noura. Reload it before trying again.';
-
-function controllerError(error: unknown, expectedRevision: string): unknown {
-	if (!isCoreError(error) || error.code !== 'revision_conflict') return error;
-	return Object.assign(new Error(CHAT_CHANGED_MESSAGE), {
-		code: 'revision-conflict' as const,
-		expectedRevision,
-	});
 }
 
 export interface PendingToolApproval {
@@ -355,7 +346,7 @@ class AiChatStore {
 		this.error = null;
 		try {
 			const result = await getNouraClient().chats.create({
-				title: 'New chat',
+				title: NEW_CHAT_TITLE,
 				retention,
 			});
 			if (!this.#isCurrentWorkspace(workspaceId)) return;
@@ -461,10 +452,11 @@ class AiChatStore {
 			return;
 		}
 		const runId = `run_${operationId()}`;
-		const nameFirstMessage =
-			!resumeUserMessageId &&
-			chat.title === 'New chat' &&
-			!this.read?.messages.some((item) => item.kind === 'user');
+		const nameFirstMessage = namesChat(
+			chat,
+			this.read?.messages ?? [],
+			Boolean(resumeUserMessageId),
+		);
 		this.#lastMessage = {
 			workspaceId,
 			chatId: chat.id,
@@ -509,133 +501,20 @@ class AiChatStore {
 				requestToolUse: (request) =>
 					this.#requestToolApproval(workspaceId, request),
 			},
-			persistence: {
-				rehydrate: async ({ chatId }) => {
-					const canonical = await client.chats.read(chatId);
-					return {
-						chatRevision: canonical.chat.revision,
-						messages: canonical.messages.map((item) => ({
-							id: item.id,
-							kind: item.kind,
-							status: item.status,
-							content: item.content,
-							toolCallId: item.toolCallId,
-							toolName: item.toolName,
-						})),
-						summaries: canonical.messages.flatMap((item) =>
-							item.kind === 'context-summary' && item.summarizesThroughMessageId
-								? [
-										{
-											summarizesThroughMessageId:
-												item.summarizesThroughMessageId,
-											content: item.content,
-										},
-									]
-								: [],
-						),
-					};
+			persistence: createChatPersistence(client.chats, {
+				nameFromFirstMessage: nameFirstMessage,
+				onUserMessage: (appended, input) => {
+					persistedUserMessageId = appended.id;
+					if (
+						this.#lastMessage?.runId === input.runId &&
+						this.#lastMessage.chatId === input.chatId
+					)
+						this.#lastMessage.userMessageId = appended.id;
 				},
-				appendUser: async (input) => {
-					try {
-						const appended = await client.chats.appendUserMessage(input);
-						persistedUserMessageId = appended.value.id;
-						if (
-							this.#lastMessage?.runId === input.runId &&
-							this.#lastMessage.chatId === input.chatId
-						)
-							this.#lastMessage.userMessageId = appended.value.id;
-						const revision = nextChatRevision(appended);
-						// The first message names a new chat. The expected revision
-						// makes any change from elsewhere win over the derived title.
-						if (nameFirstMessage) {
-							try {
-								const renamed = await client.chats.rename({
-									chatId: input.chatId,
-									title: chatTitle(input.content),
-									expectedChatRevision: revision,
-								});
-								if (this.#isCurrentWorkspace(workspaceId))
-									this.#adoptChat(renamed.value);
-								return { chatRevision: renamed.value.revision };
-							} catch {
-								// Title derivation must not block a run.
-							}
-						}
-						return { chatRevision: revision };
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
+				onRenamed: (renamed) => {
+					if (this.#isCurrentWorkspace(workspaceId)) this.#adoptChat(renamed);
 				},
-				beginAssistant: async (input) => {
-					try {
-						const result = await client.chats.beginAssistant(input);
-						return {
-							chatRevision: nextChatRevision(result),
-							message: { id: result.value.id, revision: result.value.revision },
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				beginToolCall: async (input) => {
-					try {
-						const result = await client.chats.beginToolCall(input);
-						return {
-							chatRevision: nextChatRevision(result),
-							message: { id: result.value.id, revision: result.value.revision },
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				appendToolResult: async (input) => {
-					try {
-						const result = await client.chats.appendToolResult(input);
-						return {
-							chatRevision: nextChatRevision(result),
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				finishToolCall: async (input) => {
-					try {
-						const result = await client.chats.finishToolCall({
-							...input,
-							errorCode: input.errorCode ?? null,
-						});
-						return {
-							chatRevision: nextChatRevision(result),
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				finishAssistant: async (input) => {
-					try {
-						const result = await client.chats.finishAssistant({
-							...input,
-							errorCode: input.errorCode ?? null,
-						});
-						return {
-							chatRevision: nextChatRevision(result),
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				appendContextSummary: async (input) => {
-					try {
-						const result = await client.chats.appendContextSummary(input);
-						return {
-							chatRevision: nextChatRevision(result),
-							message: { id: result.value.id, revision: result.value.revision },
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-			},
+			}),
 			providerTransport: {
 				stream: async (input, onFrame) => {
 					let nextSequence = 1;
