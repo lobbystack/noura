@@ -3,7 +3,6 @@
 	const routeSidebar = getRouteSidebar();
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
 	import { afterNavigate, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
@@ -14,9 +13,15 @@
 		Task,
 		WorkspaceEntry,
 	} from '@noura/workspace';
-	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import {
+		getNouraClient,
+		getPluginRuntime,
+		workspace,
+	} from '$lib/state.svelte';
 	import { LiveProjection } from '$lib/live-refresh';
+	import { isProjectStatus, type ProjectStatus } from '@noura/shared';
 	import { formatCalendarBoundary } from '$lib/calendar';
+	import { dueLabel } from '$lib/dashboard-dates';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
 	import ProjectOverview from '$lib/components/project-overview.svelte';
@@ -38,6 +43,8 @@
 	type Summary = Awaited<
 		ReturnType<ReturnType<typeof getNouraClient>['projects']['listSummaries']>
 	>[number];
+	// Note editors reopen when the sync plugin adds or removes collaboration.
+	const collaborationSlot = getPluginRuntime().collaboration;
 	let summaries = $state<Summary[]>([]);
 	let selectedId = $state<string | null>(null);
 	let selectedProjectSnapshot = $state.raw<Project | null>(null);
@@ -201,8 +208,7 @@
 	afterNavigate(() => {
 		const generation = ++requestedProjectGeneration;
 		const requestedId = requestedProjectId;
-		if (!browser || loading || !requestedId || requestedId === selectedId)
-			return;
+		if (loading || !requestedId || requestedId === selectedId) return;
 		void (async () => {
 			// Search and external filesystem changes can discover a project after
 			// this page's lookup projection was loaded. Refresh before resolving it.
@@ -264,14 +270,28 @@
 		replaceSelectedProjectInUrl(selectedId);
 	}
 
+	/** "on-hold" reads as "On hold". */
+	function statusLabel(status: unknown, fallback: string): string {
+		const value = typeof status === 'string' && status ? status : fallback;
+		const words = value.replaceAll('-', ' ');
+		return words.charAt(0).toUpperCase() + words.slice(1);
+	}
+
+	const statusVariants: Record<
+		ProjectStatus,
+		'default' | 'secondary' | 'outline'
+	> = {
+		planned: 'secondary',
+		active: 'default',
+		'on-hold': 'outline',
+		completed: 'secondary',
+		cancelled: 'secondary',
+	};
 	function statusVariant(status: unknown): 'default' | 'secondary' | 'outline' {
-		if (status === 'active') return 'default';
-		if (status === 'on-hold') return 'outline';
-		return 'secondary';
+		return isProjectStatus(status) ? statusVariants[status] : 'secondary';
 	}
 
 	onMount(() => {
-		if (!browser) return;
 		const coordinator = new LiveProjection({
 			refresh: load,
 			subscribe: (handler) => getNouraClient().events.subscribe(handler),
@@ -338,8 +358,9 @@
 									<Badge
 										class="max-w-20 shrink-0 truncate"
 										variant={statusVariant(summary.project.properties.status)}
-										>{String(
-											summary.project.properties.status ?? 'planned',
+										>{statusLabel(
+											summary.project.properties.status,
+											'planned',
 										)}</Badge
 									>
 								</Sidebar.SidebarMenuButton>
@@ -356,12 +377,8 @@
 	class="flex min-h-0 flex-1"
 	{@attach () => routeSidebar.mount(projectSidebar)}
 >
-	<main class="flex min-w-0 flex-1 flex-col">
-		{#if !selected}<EmptyState
-				icon={FolderOpen}
-				title="Select a project"
-				description="Choose a project or create a new one."
-			/>
+	<div class="flex min-w-0 flex-1 flex-col">
+		{#if !selected}<EmptyState icon={FolderOpen} title="Select a project" />
 		{:else}
 			<header class="flex min-h-16 items-center gap-3 px-6">
 				<div class="min-w-0 flex-1">
@@ -416,7 +433,7 @@
 									><span class="block truncate text-sm font-medium"
 										>{task.title}</span
 									><span class="text-xs text-muted-foreground"
-										>{String(task.properties.status ?? 'todo')}</span
+										>{statusLabel(task.properties.status, 'todo')}</span
 									></button
 								>{:else}<p class="p-4 text-sm text-muted-foreground">
 									No tasks in this project.
@@ -431,7 +448,6 @@
 								/>{/key}{:else}<EmptyState
 								icon={FolderOpen}
 								title="Select a task"
-								description="Choose a project task to edit it."
 							/>{/if}
 					</section></Tabs.Content
 				>
@@ -457,10 +473,12 @@
 										void openTask(task);
 									}
 								}}
-								><time class="w-32 text-xs text-muted-foreground"
-									>{entry.start}</time
+								><time
+									class="w-32 text-xs text-muted-foreground"
+									datetime={entry.start}
+									>{dueLabel(entry.start, new Date())}</time
 								><span class="text-sm font-medium">{entry.title}</span><Badge
-									variant="secondary">{entry.property}</Badge
+									variant="secondary">{statusLabel(entry.property, '')}</Badge
 								></button
 							>{:else}<p class="p-6 text-sm text-muted-foreground">
 								No dated project work this month.
@@ -486,18 +504,17 @@
 										>{note.relativePath}</span
 									></button
 								>{:else}<p class="p-4 text-sm text-muted-foreground">
-									No managed notes are in this project folder.
+									No notes in this project folder.
 								</p>{/each}
 						</div>
 					</section>
 					<section class="flex min-w-0 flex-1">
-						{#if selectedNote}{#key selectedNote.id}<NoteEditor
+						{#if selectedNote}{#key `${$collaborationSlot.generation}:${selectedNote.id}`}<NoteEditor
 									note={selectedNote}
 									onsaved={handleNoteSaved}
 								/>{/key}{:else}<EmptyState
 								icon={NotePencil}
 								title="Select a note"
-								description="Choose a project note to edit it."
 							/>{/if}
 					</section></Tabs.Content
 				>
@@ -508,16 +525,16 @@
 							>
 								<span class="min-w-0 flex-1 truncate text-sm">{file.name}</span
 								><span class="truncate text-xs text-muted-foreground"
-									>In project folder · {file.relativePath}</span
+									>{file.relativePath}</span
 								>
 							</div>{:else}<p class="p-6 text-sm text-muted-foreground">
-								This project folder contains no files.
+								No files in this project folder.
 							</p>{/each}
 					</div></Tabs.Content
 				>
 			</Tabs.Root>
 		{/if}
-	</main>
+	</div>
 </div>
 
 <AlertDialog.Root bind:open={deleteOpen}
@@ -525,8 +542,7 @@
 		><AlertDialog.Header
 			><AlertDialog.Title>Delete this project?</AlertDialog.Title
 			><AlertDialog.Description
-				>Noura moves only the project file to trash. Tasks linked to this
-				project remain in the workspace.</AlertDialog.Description
+				>The project file moves to the trash. Its tasks stay where they are.</AlertDialog.Description
 			></AlertDialog.Header
 		><AlertDialog.Footer
 			><AlertDialog.Cancel>Cancel</AlertDialog.Cancel><AlertDialog.Action

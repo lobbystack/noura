@@ -53,7 +53,7 @@
 	}
 </script>
 
-<svelte:head><title>Workspace invitation · Noura</title></svelte:head>
+<svelte:head><title>Workspace invitation · noura</title></svelte:head>
 
 <h1 class="text-base font-semibold">Workspace invitation</h1>
 {#if loading}
@@ -67,7 +67,7 @@
 	</p>
 	{#if accepted}
 		<p role="status">
-			Invitation accepted. Connect or open a Noura desktop or browser device on
+			Invitation accepted. Connect or open a noura desktop or browser device on
 			this account, then ask the workspace owner to verify its fingerprint and
 			finish granting access.
 		</p>

@@ -13,8 +13,14 @@ export interface AppUpdaterAdapter {
 	restart(): Promise<void>;
 }
 
+/** The result of the most recent check that found nothing to install. */
+export interface AppUpdateCheck {
+	outcome: 'current' | 'failed';
+	at: Date;
+}
+
 export type AppUpdateState =
-	| { status: 'idle' }
+	| { status: 'idle'; lastCheck?: AppUpdateCheck | undefined }
 	| { status: 'checking' }
 	| { status: 'downloading'; version: string }
 	| {
@@ -66,7 +72,11 @@ export function createAppUpdater(
 			set({ status: 'checking' });
 			try {
 				const update = await adapter.check();
-				if (!update) return set({ status: 'idle' });
+				if (!update)
+					return set({
+						status: 'idle',
+						lastCheck: { outcome: 'current', at: new Date() },
+					});
 				set({ status: 'downloading', version: update.version });
 				await update.download();
 				pending = update;
@@ -77,7 +87,10 @@ export function createAppUpdater(
 				});
 			} catch {
 				pending = null;
-				return set({ status: 'idle' });
+				return set({
+					status: 'idle',
+					lastCheck: { outcome: 'failed', at: new Date() },
+				});
 			}
 		},
 

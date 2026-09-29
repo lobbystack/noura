@@ -3,6 +3,7 @@
 	"version": "0.1.0",
 	"type": "module",
 	"exports": "./src/index.ts",
+	"sideEffects": false,
 	"scripts": {
 		"check": "tsc --noEmit",
 		"build": "tsc",
@@ -12,8 +13,8 @@
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "0.84.4",
 		"@earendil-works/pi-ai": "0.84.4",
-		"typebox": "1.3.7",
-		"zod": "latest"
+		"@noura/shared": "workspace:*",
+		"typebox": "1.3.7"
 	},
 	"devDependencies": {
 		"typescript": "^5.9.3"

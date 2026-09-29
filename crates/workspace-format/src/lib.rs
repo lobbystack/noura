@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
+pub mod calendar;
+pub mod merge;
+pub mod raw_text;
+
 /// Canonical workspace-relative location of Noura's durable manifest.
 pub const WORKSPACE_MANIFEST_PATH: &str = ".noura/workspace.yaml";
 
@@ -102,26 +106,33 @@ pub struct WorkspaceObject {
 }
 
 /// The portable input used to create a note without depending on a filesystem.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateNoteInput {
     pub title: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
+    #[ts(optional = nullable)]
     pub relative_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(type = "Record<string, unknown>")]
     pub properties: BTreeMap<String, serde_json::Value>,
     pub now: String,
 }
 
 /// The portable edit shape for a managed note.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateNoteInput {
+    #[ts(optional = nullable)]
     pub title: Option<String>,
+    #[ts(optional = nullable)]
     pub body: Option<String>,
+    #[ts(optional, type = "Record<string, unknown> | null")]
     pub properties: Option<BTreeMap<String, serde_json::Value>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remove_properties: Vec<String>,
     pub now: String,
 }
@@ -139,13 +150,15 @@ pub type CreateProjectInput = CreateNoteInput;
 pub type UpdateProjectInput = UpdateNoteInput;
 
 /// The result of parsing a Markdown file without reading it from a filesystem.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, TS)]
+#[ts(export)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ParsedMarkdown {
     Managed(WorkspaceObject),
     Unmanaged {
         title: String,
         body: String,
+        #[ts(type = "Record<string, unknown> | null")]
         frontmatter: Option<BTreeMap<String, serde_json::Value>>,
     },
     Malformed {

@@ -5,25 +5,9 @@ confidence-threshold = 0.8
 [advisories]
 yanked = "deny"
 ignore = [
-  # Tauri's supported Linux WebView stack currently uses gtk-rs GTK3.
-  "RUSTSEC-2024-0411",
-  "RUSTSEC-2024-0412",
-  "RUSTSEC-2024-0413",
-  "RUSTSEC-2024-0414",
-  "RUSTSEC-2024-0415",
-  "RUSTSEC-2024-0416",
-  "RUSTSEC-2024-0417",
-  "RUSTSEC-2024-0418",
-  "RUSTSEC-2024-0419",
-  "RUSTSEC-2024-0420",
   # Transitive unmaintained notices with no safe upgrade in the locked stack.
   "RUSTSEC-2024-0436",
   "RUSTSEC-2024-0370",
-  "RUSTSEC-2025-0075",
-  "RUSTSEC-2025-0080",
-  "RUSTSEC-2025-0081",
-  "RUSTSEC-2025-0098",
-  "RUSTSEC-2025-0100",
   # yrs 0.26.0 enables `small-client` for Yjs interoperability and currently
   # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
   # not a reported vulnerability; decoder isolation remains a release gate.

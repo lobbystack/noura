@@ -60,6 +60,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         "Key test",
         directory.path().join("app"),
     )?;
+    // Sync is a plugin that new workspaces start with turned off.
+    engine.enable_sync_plugin()?;
     let workspace = engine.manifest().id;
     let key = ObjectKey::generate();
     let envelopes = [&owner, &reader, &editor, &viewer]

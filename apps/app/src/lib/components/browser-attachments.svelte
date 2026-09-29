@@ -8,7 +8,9 @@
 	} from '$lib/browser-sync';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
+	import { Progress } from '$lib/components/ui/progress';
 	import * as Field from '$lib/components/ui/field';
+	import { errorText } from './browser-sync/copy';
 
 	let {
 		noteId,
@@ -32,13 +34,11 @@
 		MAX_BROWSER_ATTACHMENT_BYTES / (1024 * 1024),
 	)} MB`;
 
-	function percent(): number {
-		if (!progress || progress.total === 0) return 0;
-		return Math.min(
-			100,
-			Math.round((progress.uploaded / progress.total) * 100),
-		);
-	}
+	const percent = $derived(
+		!progress || progress.total === 0
+			? 0
+			: Math.min(100, Math.round((progress.uploaded / progress.total) * 100)),
+	);
 
 	async function load() {
 		const value = controller;
@@ -65,10 +65,10 @@
 			await load();
 		})().catch((cause) => {
 			if (!disposed) {
-				error =
-					cause instanceof Error
-						? cause.message
-						: 'Attachments are unavailable in this browser.';
+				error = errorText(
+					cause,
+					"Attachments aren't available in this browser.",
+				);
 				loading = false;
 			}
 		});
@@ -84,7 +84,7 @@
 		const value = controller;
 		if (!file || !value || busy) return;
 		if (file.size > MAX_BROWSER_ATTACHMENT_BYTES) {
-			error = `This file is larger than the ${limitLabel} browser attachment limit.`;
+			error = `This file is over the ${limitLabel} limit.`;
 			return;
 		}
 		busy = true;
@@ -92,37 +92,32 @@
 		status = '';
 		progress = { uploaded: 0, total: file.size };
 		try {
-			const bytes = new Uint8Array(await file.arrayBuffer());
-			const send = () =>
-				value.sendAttachment({
-					noteId,
-					notePath,
-					name: file.name,
-					bytes,
-					onProgress: (uploaded, total) => {
-						progress = { uploaded, total };
-					},
-				});
-			let result = await send();
-			// A note created since the last reconcile has no remote object yet.
-			// Provision it through the normal sync pass, then retry once.
-			if (!result.ok && result.code === 'object_not_found') {
-				await value.syncNow();
-				result = await send();
-			}
+			const result = await value.attachAndSync({
+				noteId,
+				notePath,
+				name: file.name,
+				bytes: new Uint8Array(await file.arrayBuffer()),
+				onProgress: (uploaded, total) => {
+					progress = { uploaded, total };
+				},
+				onUploaded: () => {
+					status = `Uploaded “${file.name}”. Syncing…`;
+				},
+			});
 			if (!result.ok) {
+				status = '';
 				error = result.message;
 				return;
 			}
-			status = `Uploaded “${file.name}”. Publishing…`;
-			const outcome = await value.syncNow();
+			const sync = result.value.sync;
 			status =
-				outcome.status === 'synced'
-					? `“${file.name}” attached and published.`
-					: `“${file.name}” uploaded and queued. ${outcome.message}`;
+				sync.status === 'synced'
+					? `Attached “${file.name}”.`
+					: `Uploaded “${file.name}”, but sync didn't finish. ${sync.message}`;
 			await load();
 		} catch (cause) {
-			error = cause instanceof Error ? cause.message : 'The attachment failed.';
+			status = '';
+			error = errorText(cause, 'The upload failed.');
 		} finally {
 			busy = false;
 			progress = null;
@@ -157,8 +152,7 @@
 <section class="mt-4 flex flex-col gap-2" aria-label="Attachments">
 	<h2 class="text-sm font-medium">Attachments</h2>
 	<p class="text-sm text-muted-foreground">
-		Files are encrypted with this note's object key and synchronized. Browser
-		limit: {limitLabel} per file.
+		noura encrypts each file before upload, up to {limitLabel}.
 	</p>
 	<Field.Field>
 		<Field.Label for={`note-attachment-${noteId}`}>Attach a file</Field.Label>
@@ -170,16 +164,19 @@
 		/>
 	</Field.Field>
 	{#if progress}
-		<p role="status" class="text-sm text-muted-foreground">
-			Uploading… {percent()}% ({progress.uploaded} of {progress.total} bytes)
-		</p>
+		<div class="flex flex-col gap-1">
+			<Progress value={percent} aria-label="Upload progress" />
+			<p role="status" class="text-sm text-muted-foreground">
+				Uploading… {percent}%
+			</p>
+		</div>
 	{/if}
 	{#if loading}
 		<p class="text-sm text-muted-foreground" role="status">
 			Loading attachments…
 		</p>
 	{:else if items.length === 0}
-		<p class="text-sm text-muted-foreground">No attachments for this note.</p>
+		<p class="text-sm text-muted-foreground">No attachments yet.</p>
 	{:else}
 		<ul class="flex flex-col gap-1">
 			{#each items as item (item.path)}
@@ -198,8 +195,8 @@
 			{/each}
 		</ul>
 	{/if}
-	{#if status}<p class="text-sm text-muted-foreground" role="status">
-			{status}
-		</p>{/if}
+	{#if status}
+		<p class="text-sm text-muted-foreground" role="status">{status}</p>
+	{/if}
 	{#if error}<p class="text-sm text-destructive" role="alert">{error}</p>{/if}
 </section>

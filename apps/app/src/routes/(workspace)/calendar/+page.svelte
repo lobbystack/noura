@@ -24,7 +24,6 @@
 	import CalendarBlank from 'phosphor-svelte/lib/CalendarBlank';
 	import { onMount } from 'svelte';
 	import { SvelteDate, SvelteMap } from 'svelte/reactivity';
-	import { browser } from '$app/environment';
 
 	type CalendarEntry = Awaited<
 		ReturnType<ReturnType<typeof getNouraClient>['calendar']['queryRange']>
@@ -79,9 +78,10 @@
 			: 'Could not load the calendar';
 	}
 
+	// Only the first read shows the skeleton. Later reads (navigation, file
+	// changes) keep the current month on screen until the new one arrives.
 	async function load() {
 		try {
-			loading = true;
 			const range =
 				mode === 'week'
 					? calendarWeekRange(cursor)
@@ -205,7 +205,6 @@
 	}
 
 	onMount(() => {
-		if (!browser) return;
 		const coordinator = new LiveProjection({
 			refresh: load,
 			subscribe: (handler) => getNouraClient().events.subscribe(handler),

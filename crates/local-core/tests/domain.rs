@@ -1292,6 +1292,7 @@ fn external_delete_disappears_from_entries_and_index() {
 fn non_managed_markdown_query_is_stable_across_index_rebuild() {
     let (workspace, _app_data, engine) = engine();
     std::fs::write(workspace.path().join("draft.md"), "# Draft\n\nBody\n").unwrap();
+    engine.reconcile().unwrap();
     let before = engine.list_non_managed_markdown().unwrap();
 
     engine.rebuild_index().unwrap();
@@ -1388,6 +1389,71 @@ fn raw_markdown_save_preserves_crlf_and_bom_and_reindexes() {
     assert_eq!(current.body, "# Scratch\n\nlorem\n\nmore\n");
     let bytes = std::fs::read(workspace.path().join("scratch.md")).unwrap();
     assert_eq!(bytes, b"\xEF\xBB\xBF# Scratch\r\n\r\nlorem\r\n\r\nmore\r\n");
+}
+
+#[test]
+fn raw_markdown_save_keeps_mixed_line_endings() {
+    let (workspace, _app_data, engine) = engine();
+    let path = workspace.path().join("mixed.md");
+    let original = b"# Mixed\r\n\r\nfrom windows\r\nfrom unix\nlast\r\n";
+    std::fs::write(&path, original).unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("mixed.md").unwrap();
+    assert!(base.uses_crlf);
+
+    // Saving the text unchanged writes the same bytes.
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "mixed.md".into(),
+            base_revision: base.revision.clone(),
+            base_body: base.body.clone(),
+            local_body: base.body.clone(),
+        })
+        .unwrap();
+    let RawSaveResult::Saved { current, .. } = saved else {
+        panic!("expected a save, got {saved:?}");
+    };
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(current.revision, base.revision);
+
+    // An edit changes one line; every other line keeps its ending, and the
+    // new line takes the ending most lines use.
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "mixed.md".into(),
+            base_revision: current.revision.clone(),
+            base_body: current.body.clone(),
+            local_body: current.body.replace("last\n", "last\nadded\n"),
+        })
+        .unwrap();
+    let RawSaveResult::Saved { current, .. } = saved else {
+        panic!("expected a save, got {saved:?}");
+    };
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"# Mixed\r\n\r\nfrom windows\r\nfrom unix\nlast\r\nadded\r\n"
+    );
+
+    // An external edit merges with a local one, and both keep their lines'
+    // endings.
+    std::fs::write(
+        &path,
+        b"# Mixed\r\n\r\nfrom windows\r\nfrom unix\nexternal\nlast\r\nadded\r\n",
+    )
+    .unwrap();
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "mixed.md".into(),
+            base_revision: current.revision.clone(),
+            base_body: current.body.clone(),
+            local_body: current.body.replace("# Mixed\n", "# Mixed today\n"),
+        })
+        .unwrap();
+    assert!(matches!(saved, RawSaveResult::Saved { .. }), "{saved:?}");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"# Mixed today\r\n\r\nfrom windows\r\nfrom unix\nexternal\nlast\r\nadded\r\n"
+    );
 }
 
 #[test]
@@ -1898,5 +1964,395 @@ fn pdf_links_resolve_page_fragments_and_encoded_names_without_managing_files() {
     assert_eq!(
         first.length,
         engine.inspect_pdf("course/moved.pdf").unwrap().length
+    );
+}
+
+fn create_note(
+    engine: &WorkspaceEngine,
+    title: &str,
+) -> local_core::MutationResult<local_core::WorkspaceObject> {
+    engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: title.into(),
+            body: "Body text.".into(),
+            relative_path: None,
+            properties: BTreeMap::new(),
+        })
+        .unwrap()
+}
+
+/// A stand-in for the operating system trash that moves each path into its
+/// own folder and records what it received.
+fn fake_system_trash() -> (
+    tempfile::TempDir,
+    std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
+    local_core::SystemTrash,
+) {
+    let bin = tempdir().unwrap();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let destination = bin.path().to_owned();
+    let log = received.clone();
+    let trash: local_core::SystemTrash = std::sync::Arc::new(move |path: &std::path::Path| {
+        let mut log = log.lock().unwrap();
+        let target = destination.join(log.len().to_string());
+        std::fs::rename(path, target)?;
+        log.push(path.to_owned());
+        Ok(())
+    });
+    (bin, received, trash)
+}
+
+#[test]
+fn deleting_an_object_moves_it_to_the_system_trash() {
+    let (workspace, _app_data, engine) = engine();
+    let (bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    let mut events = engine.subscribe();
+    let note = create_note(&engine, "Launch brief");
+    let original = workspace.path().join(&note.value.relative_path);
+    let bytes = std::fs::read(&original).unwrap();
+
+    engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap();
+    // The file left the workspace before the call returned.
+    assert!(!original.exists());
+    // The engine works on the canonical root, which resolves /var to /private/var on macOS.
+    let canonical = std::fs::canonicalize(workspace.path())
+        .unwrap()
+        .join(&note.value.relative_path);
+    assert_eq!(*received.lock().unwrap(), [canonical]);
+    assert_eq!(std::fs::read(bin.path().join("0")).unwrap(), bytes);
+    assert!(
+        std::fs::read_dir(workspace.path().join(".noura/trash"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(engine.get_object(&note.value.id).unwrap().is_none());
+    let deleted = std::iter::from_fn(|| events.try_recv().ok())
+        .find(|event| event.event_type == "object:deleted")
+        .unwrap();
+    assert!(deleted.payload["trashPath"].is_null());
+}
+
+#[test]
+fn deleting_falls_back_to_the_workspace_trash_when_the_system_refuses() {
+    let (workspace, _app_data, engine) = engine();
+    engine.set_system_trash(Some(std::sync::Arc::new(|_: &std::path::Path| {
+        Err(std::io::Error::other("no trash on this volume"))
+    })));
+    let note = create_note(&engine, "Launch brief");
+    let original = workspace.path().join(&note.value.relative_path);
+    let bytes = std::fs::read(&original).unwrap();
+
+    engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap();
+    assert!(!original.exists());
+    let batch = std::fs::read_dir(workspace.path().join(".noura/trash"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(
+        std::fs::read(batch.join(&note.value.relative_path)).unwrap(),
+        bytes
+    );
+    assert!(engine.get_object(&note.value.id).unwrap().is_none());
+}
+
+#[test]
+fn deleting_reports_a_system_trash_failure_that_already_removed_the_file() {
+    let (workspace, _app_data, engine) = engine();
+    let elsewhere = tempdir().unwrap();
+    let destination = elsewhere.path().join("moved.md");
+    engine.set_system_trash(Some(std::sync::Arc::new(move |path: &std::path::Path| {
+        std::fs::rename(path, &destination)?;
+        Err(std::io::Error::other("trash metadata write failed"))
+    })));
+    let note = create_note(&engine, "Launch brief");
+
+    assert!(
+        engine
+            .delete_object(&note.value.id, &note.revision)
+            .is_err()
+    );
+    // Nothing lands in the workspace trash as if the move had failed cleanly.
+    assert!(
+        std::fs::read_dir(workspace.path().join(".noura/trash"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(elsewhere.path().join("moved.md").is_file());
+}
+
+#[test]
+fn deleting_a_stale_revision_leaves_the_file_and_the_system_trash_alone() {
+    let (workspace, _app_data, engine) = engine();
+    let (_bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    let note = create_note(&engine, "Launch brief");
+    let original = workspace.path().join(&note.value.relative_path);
+    let edited = std::fs::read_to_string(&original)
+        .unwrap()
+        .replace("Body text.", "Edited outside noura.");
+    std::fs::write(&original, &edited).unwrap();
+
+    let error = engine
+        .delete_object(&note.value.id, &note.revision)
+        .unwrap_err();
+    assert_eq!(error.code, "revision_conflict");
+    assert_eq!(std::fs::read_to_string(&original).unwrap(), edited);
+    assert!(received.lock().unwrap().is_empty());
+}
+
+#[test]
+fn deleted_objects_stay_gone_after_an_index_rebuild() {
+    let (workspace, app_data, engine) = engine();
+    let (_bin, _received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    let kept = create_note(&engine, "Kept");
+    let deleted = create_note(&engine, "Deleted");
+    engine
+        .delete_object(&deleted.value.id, &deleted.revision)
+        .unwrap();
+
+    let index_path = engine.index_path().to_owned();
+    drop(engine);
+    std::fs::remove_file(index_path).unwrap();
+    let rebuilt = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+    assert!(rebuilt.get_object(&deleted.value.id).unwrap().is_none());
+    assert_eq!(
+        rebuilt
+            .get_object(&kept.value.id)
+            .unwrap()
+            .unwrap()
+            .relative_path,
+        kept.value.relative_path
+    );
+}
+
+#[test]
+fn expired_chats_go_to_the_system_trash_as_one_folder() {
+    let (workspace, _app_data, engine) = engine();
+    let (bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    let expiring = engine
+        .create_chat(CreateChatInput {
+            title: "Expire safely".into(),
+            retention: Some(ChatRetention::Ephemeral),
+            retention_days: Some(30),
+        })
+        .unwrap()
+        .value;
+    let directory = workspace
+        .path()
+        .join(&expiring.relative_path)
+        .parent()
+        .unwrap()
+        .to_owned();
+
+    let expired = engine.expire_chats("2031-01-01T00:00:00Z").unwrap();
+    assert_eq!(expired, vec![expiring.id]);
+    assert!(!directory.exists());
+    assert_eq!(received.lock().unwrap().len(), 1);
+    assert!(bin.path().join("0/chat.md").is_file());
+}
+
+#[test]
+fn moving_a_file_renames_it_and_keeps_a_managed_id() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("plain.md"), "# Plain\n").unwrap();
+    engine.reconcile().unwrap();
+    engine.move_file("plain.md", "archive/renamed.md").unwrap();
+    assert!(!workspace.path().join("plain.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("archive/renamed.md")).unwrap(),
+        "# Plain\n"
+    );
+
+    let note = create_note(&engine, "Launch brief");
+    engine
+        .move_file(&note.value.relative_path, "Launch brief.md")
+        .unwrap();
+    let moved = engine.get_object(&note.value.id).unwrap().unwrap();
+    assert_eq!(moved.relative_path, "Launch brief.md");
+}
+
+#[test]
+fn moving_a_file_never_overwrites_or_escapes() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("a.md"), "a").unwrap();
+    std::fs::write(workspace.path().join("b.md"), "b").unwrap();
+    engine.reconcile().unwrap();
+    assert_eq!(
+        engine.move_file("a.md", "b.md").unwrap_err().code,
+        "path_exists"
+    );
+    assert!(engine.move_file("a.md", "../outside.md").is_err());
+    assert!(engine.move_file("a.md", ".noura/a.md").is_err());
+    assert!(engine.move_file("missing.md", "c.md").is_err());
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("b.md")).unwrap(),
+        "b"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("a.md")).unwrap(),
+        "a"
+    );
+}
+
+#[test]
+fn moving_a_file_allows_a_case_only_rename() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("note.md"), "x").unwrap();
+    engine.reconcile().unwrap();
+    engine.move_file("note.md", "Note.md").unwrap();
+    let names: Vec<_> = std::fs::read_dir(workspace.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".md"))
+        .collect();
+    assert_eq!(names, ["Note.md"]);
+}
+
+#[test]
+fn trashing_a_path_sends_files_and_folders_to_the_system_trash() {
+    let (workspace, _app_data, engine) = engine();
+    let (bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    std::fs::create_dir_all(workspace.path().join("drafts")).unwrap();
+    std::fs::write(workspace.path().join("drafts/one.md"), "one").unwrap();
+    std::fs::write(workspace.path().join("loose.pdf"), "%PDF").unwrap();
+    engine.reconcile().unwrap();
+
+    assert_eq!(engine.trash_path("loose.pdf").unwrap(), None);
+    assert_eq!(engine.trash_path("drafts").unwrap(), None);
+    assert!(!workspace.path().join("loose.pdf").exists());
+    assert!(!workspace.path().join("drafts").exists());
+    assert_eq!(received.lock().unwrap().len(), 2);
+    assert!(bin.path().join("1/one.md").is_file());
+    assert!(engine.trash_path("").is_err());
+    assert!(engine.trash_path("../elsewhere").is_err());
+    assert!(engine.trash_path(".noura/workspace.yaml").is_err());
+}
+
+#[test]
+fn chat_message_mutations_return_the_next_chat_revision() {
+    let (_workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Chained".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let mut revision = chat.revision;
+    for content in ["one", "two", "three"] {
+        let appended = engine
+            .append_chat_user_message(AppendChatUserMessageInput {
+                chat_id: chat.value.id.clone(),
+                expected_chat_revision: revision.clone(),
+                run_id: "run_chain".into(),
+                content: content.into(),
+            })
+            .unwrap();
+        // The next call can use the returned revision without a read.
+        revision = appended.chat_revision.clone().unwrap();
+        // The app reads this field as `chatRevision`.
+        let json = serde_json::to_value(&appended).unwrap();
+        assert_eq!(json["chatRevision"], serde_json::json!(revision));
+    }
+    // Starting and finishing a reply chain the same way.
+    let begun = engine
+        .begin_chat_assistant(BeginChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_chain".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            expected_chat_revision: revision.clone(),
+        })
+        .unwrap();
+    revision = begun.chat_revision.clone().unwrap();
+    let finished = engine
+        .finish_chat_assistant(FinishChatAssistantInput {
+            chat_id: chat.value.id.clone(),
+            message_id: begun.value.id.clone(),
+            content: "reply".into(),
+            status: ChatMessageStatus::Completed,
+            error_code: None,
+            expected_chat_revision: revision,
+            expected_message_revision: begun.revision.clone(),
+        })
+        .unwrap();
+    revision = finished.chat_revision.unwrap();
+    let read = engine.read_chat(&chat.value.id).unwrap();
+    assert_eq!(read.chat.revision, revision);
+    assert_eq!(
+        read.messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["one", "two", "three", "reply"]
+    );
+}
+
+#[test]
+fn file_operations_report_their_changes_as_the_apps_own() {
+    let (_workspace, _app_data, engine) = engine();
+    let note = create_note(&engine, "Launch brief");
+    let mut events = engine.subscribe();
+    engine
+        .move_file(&note.value.relative_path, "Renamed.md")
+        .unwrap();
+    engine.trash_path("Renamed.md").unwrap();
+    let changes: Vec<_> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter(|event| event.event_type.starts_with("object:"))
+        .collect();
+    assert!(
+        changes
+            .iter()
+            .any(|event| event.event_type == "object:moved")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|event| event.event_type == "object:deleted")
+    );
+    for event in changes {
+        assert_eq!(
+            event.source,
+            local_core::EventSource::Application,
+            "{}",
+            event.event_type
+        );
+    }
+}
+
+#[test]
+fn moving_a_folder_allows_a_case_only_rename() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+    std::fs::write(workspace.path().join("notes/a.md"), "a").unwrap();
+    engine.reconcile().unwrap();
+    engine.move_folder("notes", "Notes").unwrap();
+    let names: Vec<_> = std::fs::read_dir(workspace.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    assert_eq!(names, ["Notes"]);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("Notes/a.md")).unwrap(),
+        "a"
+    );
+    std::fs::create_dir_all(workspace.path().join("other")).unwrap();
+    assert_eq!(
+        engine.move_folder("other", "Notes").unwrap_err().code,
+        "path_exists"
     );
 }

@@ -6,14 +6,12 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Separator } from '$lib/components/ui/separator';
-	import PluginPlatforms from './plugin-platforms.svelte';
-	import { platformLabels } from '$lib/platform';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import Sparkle from 'phosphor-svelte/lib/Sparkle';
-	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
-	import NotePencil from 'phosphor-svelte/lib/NotePencil';
 	import Checks from 'phosphor-svelte/lib/Checks';
 	import Calendar from 'phosphor-svelte/lib/Calendar';
 	import Kanban from 'phosphor-svelte/lib/Kanban';
+	import ArrowsClockwise from 'phosphor-svelte/lib/ArrowsClockwise';
 	import CaretRight from 'phosphor-svelte/lib/CaretRight';
 	import ArrowLeft from 'phosphor-svelte/lib/ArrowLeft';
 	let {
@@ -34,12 +32,6 @@
 			icon: Sparkle,
 		},
 		{
-			id: 'notes',
-			name: 'Notes',
-			description: 'Markdown notes',
-			icon: NotePencil,
-		},
-		{
 			id: 'tasks',
 			name: 'Tasks',
 			description: 'Tasks and due dates',
@@ -58,12 +50,13 @@
 			icon: Calendar,
 		},
 		{
-			id: 'folders',
-			name: 'Folders',
-			description: 'Workspace files',
-			icon: FolderOpen,
+			id: 'sync',
+			name: 'Sync',
+			description: 'Encrypted sync and live editing across devices',
+			icon: ArrowsClockwise,
 		},
 	];
+	// Files and notes are part of noura itself, so they have no switch here.
 	let selectedId = $state<string | null>(null);
 	let toggling = $state('');
 	let error = $state('');
@@ -82,6 +75,37 @@
 		void plugins.sync();
 	});
 
+	/** Plugins that ask before they turn off. */
+	const disableConfirmations: Record<
+		string,
+		{ title: string; description: string; action: string }
+	> = {
+		sync: {
+			title: 'Turn off Sync?',
+			description:
+				'Sync stops on this device. Your files and sync setup are kept.',
+			action: 'Turn off',
+		},
+	};
+	let confirming = $state<string | null>(null);
+	const confirmation = $derived(
+		confirming ? disableConfirmations[confirming] : undefined,
+	);
+
+	function requestEnabled(id: string, enabled: boolean) {
+		if (!enabled && disableConfirmations[id]) {
+			confirming = id;
+			return;
+		}
+		void setEnabled(id, enabled);
+	}
+
+	function confirmDisable() {
+		const id = confirming;
+		confirming = null;
+		if (id) void setEnabled(id, false);
+	}
+
 	async function setEnabled(id: string, enabled: boolean) {
 		toggling = id;
 		error = '';
@@ -99,14 +123,11 @@
 	}
 </script>
 
-<p class="mb-4 text-sm text-muted-foreground">
-	Current platform: {plugins.platform
-		? platformLabels[plugins.platform]
-		: 'Unknown native platform'}.
-	{#if !workspaceReady}Open a workspace to manage plugins.{/if}
-	{#if plugins.platform === 'web'}Browser plugins have objects, commands and
-		events only. Native-only features remain unavailable.{/if}
-</p>
+{#if !workspaceReady}
+	<p class="mb-4 text-sm text-muted-foreground">
+		Open a workspace to manage plugins.
+	</p>
+{/if}
 {#if error || plugins.lastError}<p
 		role="alert"
 		class="text-sm text-destructive"
@@ -135,42 +156,35 @@
 			<div class="flex min-w-0 flex-1 flex-col gap-1">
 				<h2 class="text-base font-semibold">{selected.name}</h2>
 				<p class="text-sm text-muted-foreground">{selected.description}</p>
-				<PluginPlatforms {manifest} />
 			</div>
 			<Switch
 				aria-label="Enable {selected.name}"
 				bind:checked={
 					() => plugins.enabledIds.includes(selected.id),
-					(enabled) => setEnabled(selected.id, enabled)
+					(enabled) => requestEnabled(selected.id, enabled)
 				}
-				aria-describedby="selected-plugin-availability"
+				aria-describedby={plugins.unavailableReason(selected.id)
+					? 'selected-plugin-availability'
+					: undefined}
 				disabled={toggling !== '' || !!plugins.unavailableReason(selected.id)}
 			/>
 		</div>
-		<p id="selected-plugin-availability" class="text-xs text-muted-foreground">
-			{plugins.unavailableReason(selected.id) ??
-				(plugins.isEnabled(selected.id)
-					? 'Active on this device.'
-					: 'Disabled.')}
-			{#if plugins.enabledIds.includes(selected.id) && !plugins.isSupported(selected.id)}Enabled
-				in workspace preferences, but inactive on this device.{/if}
-			{manifest ? ` · Version ${manifest.version}` : ''}
-		</p>
-		<Separator />
 		{#if plugins.unavailableReason(selected.id)}
-			<p class="text-sm text-muted-foreground">
-				Plugin actions and configuration are unavailable here. Workspace
-				preferences are unchanged.
+			<p
+				id="selected-plugin-availability"
+				class="text-xs text-muted-foreground"
+			>
+				{plugins.unavailableReason(selected.id)}
 			</p>
-		{:else if configuration}
+		{/if}
+		<Separator />
+		{#if configuration && !plugins.unavailableReason(selected.id)}
 			{@render configuration(selected.id)}
-		{:else}
-			<p class="text-sm text-muted-foreground">No additional settings.</p>
 		{/if}
 		{#if manifest?.capabilities.length}
 			<details class="text-sm">
 				<summary class="cursor-pointer text-muted-foreground"
-					>Plugin capabilities</summary
+					>What this plugin can use · version {manifest.version}</summary
 				>
 				<div class="flex flex-wrap gap-2 pt-3">
 					{#each manifest.capabilities as capability (capability)}<Badge
@@ -201,30 +215,25 @@
 							><span class="font-medium">{plugin.name}</span><span
 								class="text-sm leading-relaxed text-muted-foreground"
 								>{plugin.description}</span
-							><PluginPlatforms
-								manifest={plugins.catalog.find(
-									(manifest) => manifest.id === plugin.id,
-								)}
-							/>
-							<span
-								id="plugin-availability-{plugin.id}"
-								class="text-xs text-muted-foreground"
-								>{reason ??
-									(plugins.isEnabled(plugin.id)
-										? 'Active on this device.'
-										: 'Disabled.')}{#if plugins.enabledIds.includes(plugin.id) && !plugins.isSupported(plugin.id)}
-									Enabled in workspace preferences, but inactive on this device.{/if}</span
-							></span
-						>
+							>
+							{#if reason}
+								<span
+									id="plugin-availability-{plugin.id}"
+									class="text-xs text-muted-foreground">{reason}</span
+								>
+							{/if}
+						</span>
 						<CaretRight class="size-4 shrink-0 text-muted-foreground" />
 					</button>
 					<Switch
 						aria-label="Enable {plugin.name}"
 						bind:checked={
 							() => plugins.enabledIds.includes(plugin.id),
-							(enabled) => setEnabled(plugin.id, enabled)
+							(enabled) => requestEnabled(plugin.id, enabled)
 						}
-						aria-describedby="plugin-availability-{plugin.id}"
+						aria-describedby={reason
+							? `plugin-availability-${plugin.id}`
+							: undefined}
 						disabled={toggling !== '' || !!reason}
 					/>
 				</div>
@@ -232,3 +241,25 @@
 		</div>
 	</div>
 {/if}
+
+<AlertDialog.Root
+	open={confirmation !== undefined}
+	onOpenChange={(open) => {
+		if (!open) confirming = null;
+	}}
+>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>{confirmation?.title}</AlertDialog.Title>
+			<AlertDialog.Description
+				>{confirmation?.description}</AlertDialog.Description
+			>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action onclick={confirmDisable}
+				>{confirmation?.action}</AlertDialog.Action
+			>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

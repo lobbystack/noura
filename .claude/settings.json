@@ -1,4 +1,12 @@
 {
+  "extraKnownMarketplaces": {
+    "svelte": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/sveltejs/ai-tools.git"
+      }
+    }
+  },
   "enabledPlugins": {
     "svelte@svelte": true
   }

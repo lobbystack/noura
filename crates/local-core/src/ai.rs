@@ -28,8 +28,16 @@ use crate::{
 };
 use crate::{CoreError, ErrorCategory, Result};
 
-const STREAM_BUFFER_CAPACITY: usize = 32;
-const STREAM_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(5);
+mod genai_streamer;
+mod operations;
+mod providers;
+mod validation;
+
+use operations::*;
+use providers::*;
+use validation::*;
+
+pub use genai_streamer::GenAiStreamer;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
@@ -39,7 +47,9 @@ pub struct AiProviderConfig {
     pub kind: String,
     pub display_name: String,
     pub model: String,
+    #[ts(optional = nullable)]
     pub endpoint: Option<String>,
+    #[ts(optional = nullable)]
     pub credential_ref: Option<String>,
     pub enabled: bool,
 }
@@ -170,6 +180,8 @@ pub enum AiStreamEvent {
 #[serde(rename_all = "camelCase")]
 pub struct AiStreamFrame {
     pub operation_id: String,
+    /// Serialized as a JSON number; a stream never approaches 2^53 frames.
+    #[ts(type = "number")]
     pub sequence: u64,
     pub event: AiStreamEvent,
 }
@@ -206,150 +218,6 @@ pub trait AiStreamer: Send + Sync + 'static {
         &self,
         request: ResolvedAiStreamRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>>;
-}
-
-pub struct GenAiStreamer;
-impl AiStreamer for GenAiStreamer {
-    fn stream(
-        &self,
-        request: ResolvedAiStreamRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>> {
-        Box::pin(async move {
-            let client = provider_client(
-                &request.provider,
-                request.credential.as_deref(),
-                "ai_stream",
-            )?;
-            let messages = request
-                .messages
-                .into_iter()
-                .map(|message| message_from_parts(message, "ai_stream"))
-                .collect::<Result<Vec<_>>>()?;
-            let tools: Vec<Tool> = request
-                .tools
-                .into_iter()
-                .map(tool_from_definition)
-                .collect();
-            let options = ChatOptions::default()
-                .with_capture_usage(true)
-                .with_capture_tool_calls(true);
-            let response = client
-                .exec_chat_stream(
-                    request.provider.model,
-                    ChatRequest::new(messages).with_tools(tools),
-                    Some(&options),
-                )
-                .await
-                .map_err(|_| provider_error("ai_stream"))?;
-            let stream = response.stream.filter_map(|event| async move {
-                match event {
-                    Ok(ChatStreamEvent::Chunk(chunk)) => {
-                        Some(Ok(AiProviderStreamEvent::TextDelta(chunk.content)))
-                    }
-                    Ok(ChatStreamEvent::End(end)) => {
-                        let tool_calls = end
-                            .captured_tool_calls()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(tool_call_from_genai)
-                            .collect();
-                        Some(Ok(AiProviderStreamEvent::Completed {
-                            usage: end.captured_usage.map(|usage| AiUsage {
-                                prompt_tokens: usage.prompt_tokens,
-                                completion_tokens: usage.completion_tokens,
-                                total_tokens: usage.total_tokens,
-                            }),
-                            stop_reason: end.captured_stop_reason.map(stop_reason),
-                            tool_calls,
-                        }))
-                    }
-                    Ok(_) => None,
-                    Err(_) => Some(Err(provider_error("ai_stream"))),
-                }
-            });
-            let stream: AiProviderEventStream = Box::pin(stream);
-            Ok(stream)
-        })
-    }
-}
-
-struct AiOperationRegistry {
-    operations: Mutex<HashMap<String, ActiveAiOperation>>,
-}
-
-struct ActiveAiOperation {
-    cancellation: watch::Sender<()>,
-    consent_key: AiConsentKey,
-}
-
-impl AiOperationRegistry {
-    fn start(
-        self: &Arc<Self>,
-        operation_id: String,
-        consent_key: AiConsentKey,
-    ) -> Result<AiOperation> {
-        let (cancellation, receiver) = watch::channel(());
-        let mut operations = self
-            .operations
-            .lock()
-            .map_err(|_| operation_lock_error("ai_stream"))?;
-        match operations.entry(operation_id.clone()) {
-            Entry::Vacant(entry) => {
-                entry.insert(ActiveAiOperation {
-                    cancellation,
-                    consent_key,
-                });
-            }
-            Entry::Occupied(_) => {
-                return Err(CoreError::validation(
-                    "ai_operation_in_progress",
-                    "An AI operation with this identifier is already running",
-                    "ai_stream",
-                ));
-            }
-        }
-        Ok(AiOperation {
-            registry: self.clone(),
-            operation_id,
-            cancellation: receiver,
-        })
-    }
-
-    fn cancel(&self, operation_id: &str) -> Result<bool> {
-        let operations = self
-            .operations
-            .lock()
-            .map_err(|_| operation_lock_error("ai_stream_cancel"))?;
-        Ok(operations
-            .get(operation_id)
-            .is_some_and(|operation| operation.cancellation.send(()).is_ok()))
-    }
-
-    fn cancel_matching(&self, consent_key: &AiConsentKey) -> Result<u32> {
-        let operations = self
-            .operations
-            .lock()
-            .map_err(|_| operation_lock_error("ai_consent_revoke"))?;
-        Ok(operations
-            .values()
-            .filter(|operation| &operation.consent_key == consent_key)
-            .filter(|operation| operation.cancellation.send(()).is_ok())
-            .count() as u32)
-    }
-}
-
-struct AiOperation {
-    registry: Arc<AiOperationRegistry>,
-    operation_id: String,
-    cancellation: watch::Receiver<()>,
-}
-
-impl Drop for AiOperation {
-    fn drop(&mut self) {
-        if let Ok(mut operations) = self.registry.operations.lock() {
-            operations.remove(&self.operation_id);
-        }
-    }
 }
 
 pub struct AiStreamOperation {
@@ -403,6 +271,7 @@ impl AiFoundation {
 
     pub fn save_provider(&self, provider: AiProviderConfig) -> Result<()> {
         validate_provider(&provider, "ai_provider_save")?;
+        ensure_secure_endpoint(&provider, "ai_provider_save")?;
         // A stream must use either the provider configuration that consented to
         // it or the replacement configuration, never a snapshot raced with a
         // provider update. The same gate also protects consent revocation.
@@ -555,8 +424,9 @@ impl AiFoundation {
         validate_transport_messages(&input.messages, "ai_stream")?;
         validate_tools(input.tools.as_deref().unwrap_or_default(), "ai_stream")?;
         let policy_version = input.policy_version.as_deref().ok_or_else(|| {
-            CoreError::validation(
+            CoreError::new(
                 "ai_consent_required",
+                ErrorCategory::Permission,
                 "Explicit consent is required before sending workspace content to an AI provider",
                 "ai_stream",
             )
@@ -570,6 +440,7 @@ impl AiFoundation {
             .lock()
             .map_err(|_| operation_lock_error("ai_stream"))?;
         let provider = self.provider(&input.model.provider_id, "ai_stream")?;
+        ensure_secure_endpoint(&provider, "ai_stream")?;
         if provider.model != input.model.model {
             return Err(CoreError::validation(
                 "model_not_found",
@@ -647,495 +518,6 @@ impl AiFoundation {
     }
 }
 
-async fn run_stream<S: AiStreamer>(
-    mut operation: AiOperation,
-    sender: mpsc::Sender<AiStreamFrame>,
-    model: AiModelRef,
-    request: ResolvedAiStreamRequest,
-    streamer: Arc<S>,
-) {
-    let mut sequence = 1;
-    if !send_stream_frame(
-        &sender,
-        &mut operation.cancellation,
-        &operation.operation_id,
-        &mut sequence,
-        AiStreamEvent::Started {
-            model: model.clone(),
-        },
-    )
-    .await
-    {
-        let _ = send_stream_frame(
-            &sender,
-            &mut operation.cancellation,
-            &operation.operation_id,
-            &mut sequence,
-            AiStreamEvent::Cancelled,
-        )
-        .await;
-        return;
-    }
-    let stream_result = tokio::select! {
-        changed = operation.cancellation.changed() => {
-            if changed.is_ok() {
-                let _ = send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::Cancelled).await;
-            }
-            return;
-        }
-        result = streamer.stream(request) => result,
-    };
-    let mut stream = match stream_result {
-        Ok(stream) => stream,
-        Err(error) => {
-            let _ = send_stream_frame(
-                &sender,
-                &mut operation.cancellation,
-                &operation.operation_id,
-                &mut sequence,
-                AiStreamEvent::Error { error },
-            )
-            .await;
-            return;
-        }
-    };
-    loop {
-        tokio::select! {
-            changed = operation.cancellation.changed() => {
-                if changed.is_ok() {
-                    let _ = send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::Cancelled).await;
-                }
-                return;
-            }
-            event = stream.next() => match event {
-                Some(Ok(AiProviderStreamEvent::TextDelta(text))) => {
-                    if !send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::TextDelta { text }).await {
-                        return;
-                    }
-                }
-                Some(Ok(AiProviderStreamEvent::Completed { usage, stop_reason, tool_calls })) => {
-                    for call in tool_calls {
-                        if !send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::ToolCall { call }).await {
-                            return;
-                        }
-                    }
-                    let _ = send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::Completed {
-                        summary: AiStreamSummary { model, usage, stop_reason },
-                    }).await;
-                    return;
-                }
-                Some(Err(error)) => {
-                    let _ = send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::Error { error }).await;
-                    return;
-                }
-                None => {
-                    let _ = send_stream_frame(
-                        &sender,
-                        &mut operation.cancellation,
-                        &operation.operation_id,
-                        &mut sequence,
-                        AiStreamEvent::Error {
-                            error: incomplete_stream_error(),
-                        },
-                    )
-                    .await;
-                    return;
-                }
-            }
-        }
-    }
-}
-
-async fn send_stream_frame(
-    sender: &mpsc::Sender<AiStreamFrame>,
-    cancellation: &mut watch::Receiver<()>,
-    operation_id: &str,
-    sequence: &mut u64,
-    event: AiStreamEvent,
-) -> bool {
-    let frame = AiStreamFrame {
-        operation_id: operation_id.into(),
-        sequence: *sequence,
-        event,
-    };
-    let sent = if matches!(&frame.event, AiStreamEvent::Cancelled) {
-        matches!(
-            tokio::time::timeout(STREAM_BACKPRESSURE_TIMEOUT, sender.send(frame)).await,
-            Ok(Ok(()))
-        )
-    } else {
-        tokio::select! {
-            changed = cancellation.changed() => changed.is_err(),
-            result = tokio::time::timeout(STREAM_BACKPRESSURE_TIMEOUT, sender.send(frame)) => matches!(result, Ok(Ok(()))),
-        }
-    };
-    if sent {
-        *sequence += 1;
-    }
-    sent
-}
-
-fn provider_client(
-    provider: &AiProviderConfig,
-    credential: Option<&str>,
-    operation: &str,
-) -> Result<Client> {
-    let adapter = AdapterKind::from_lower_str(&provider.kind).ok_or_else(|| {
-        CoreError::validation(
-            "provider_kind_invalid",
-            "The AI provider kind is not supported",
-            operation,
-        )
-    })?;
-    let endpoint = provider.endpoint.clone();
-    let credential = credential.map(str::to_owned);
-    let resolver = ServiceTargetResolver::from_resolver_fn(move |target: ServiceTarget| {
-        let model = ModelIden::new(adapter, target.model.model_name);
-        let endpoint = endpoint
-            .as_ref()
-            .map_or(target.endpoint, |value| Endpoint::from_owned(value.clone()));
-        let auth = credential
-            .as_ref()
-            .map_or(AuthData::None, |value| AuthData::from_single(value.clone()));
-        Ok(ServiceTarget {
-            endpoint,
-            auth,
-            model,
-        })
-    });
-    Ok(Client::builder()
-        .with_service_target_resolver(resolver)
-        .build())
-}
-
-fn message_from_parts(message: AiTransportMessage, operation: &str) -> Result<ChatMessage> {
-    let parts = message
-        .content
-        .into_iter()
-        .map(|part| match part {
-            AiContentPart::Text { text } => ContentPart::Text(text),
-            AiContentPart::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } => ContentPart::ToolCall(ToolCall {
-                call_id,
-                fn_name: name,
-                fn_arguments: arguments,
-                thought_signatures: None,
-            }),
-            AiContentPart::ToolResult {
-                call_id,
-                name,
-                content,
-            } => ContentPart::ToolResponse(ToolResponse {
-                call_id,
-                fn_name: name,
-                content,
-            }),
-        })
-        .collect::<Vec<_>>();
-    let content = MessageContent::from_parts(parts);
-    match message.role.as_str() {
-        "system" => Ok(ChatMessage::system(content)),
-        "assistant" => Ok(ChatMessage::assistant(content)),
-        "user" => Ok(ChatMessage::user(content)),
-        "tool" => Ok(ChatMessage::tool(content)),
-        _ => Err(CoreError::validation(
-            "message_role_invalid",
-            "The AI message role is not supported",
-            operation,
-        )),
-    }
-}
-
-fn validate_transport_messages(messages: &[AiTransportMessage], operation: &str) -> Result<()> {
-    if messages.is_empty() {
-        return Err(CoreError::validation(
-            "messages_empty",
-            "At least one AI message is required",
-            operation,
-        ));
-    }
-    for message in messages {
-        if !matches!(
-            message.role.as_str(),
-            "system" | "user" | "assistant" | "tool"
-        ) {
-            return Err(CoreError::validation(
-                "message_role_invalid",
-                "The AI message role is not supported",
-                operation,
-            ));
-        }
-        if message.content.is_empty() {
-            return Err(CoreError::validation(
-                "message_content_empty",
-                "AI messages require content",
-                operation,
-            ));
-        }
-        for part in &message.content {
-            match part {
-                AiContentPart::Text { text } if !text.is_empty() => {
-                    if message.role == "tool" {
-                        return Err(invalid_message_content(operation));
-                    }
-                }
-                AiContentPart::ToolCall { call_id, name, .. } if message.role == "assistant" => {
-                    validate_tool_identifier(call_id, "tool call IDs", operation)?;
-                    validate_tool_identifier(name, "tool names", operation)?;
-                }
-                AiContentPart::ToolResult {
-                    call_id,
-                    name,
-                    content,
-                } if message.role == "tool" && !content.is_empty() => {
-                    validate_tool_identifier(call_id, "tool call IDs", operation)?;
-                    if let Some(name) = name {
-                        validate_tool_identifier(name, "tool names", operation)?;
-                    }
-                }
-                _ => return Err(invalid_message_content(operation)),
-            }
-        }
-    }
-    Ok(())
-}
-
-fn tool_from_definition(tool: AiToolDefinition) -> Tool {
-    Tool {
-        name: tool.name.into(),
-        description: tool.description,
-        schema: Some(tool.input_schema),
-        strict: None,
-        config: None,
-    }
-}
-
-fn tool_call_from_genai(call: &ToolCall) -> AiToolCall {
-    AiToolCall {
-        call_id: call.call_id.clone(),
-        name: call.fn_name.clone(),
-        arguments: call.fn_arguments.clone(),
-    }
-}
-
-fn validate_tools(tools: &[AiToolDefinition], operation: &str) -> Result<()> {
-    let mut names = std::collections::HashSet::new();
-    for tool in tools {
-        validate_tool_identifier(&tool.name, "tool names", operation)?;
-        if !names.insert(&tool.name)
-            || !(tool.input_schema.is_object() || tool.input_schema.is_boolean())
-        {
-            return Err(CoreError::validation(
-                "tool_definition_invalid",
-                "AI tool definitions must have unique names and a JSON Schema input schema",
-                operation,
-            ));
-        }
-        if let Some(description) = &tool.description
-            && (description.is_empty()
-                || description.len() > 8_192
-                || description.chars().any(char::is_control))
-        {
-            return Err(CoreError::validation(
-                "tool_definition_invalid",
-                "AI tool descriptions must be plain text",
-                operation,
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_tool_identifier(value: &str, field: &str, operation: &str) -> Result<()> {
-    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
-        return Err(CoreError::validation(
-            "tool_content_invalid",
-            format!("AI {field} must be non-empty plain text"),
-            operation,
-        ));
-    }
-    Ok(())
-}
-
-fn invalid_message_content(operation: &str) -> CoreError {
-    CoreError::validation(
-        "message_content_invalid",
-        "AI message content does not match its role",
-        operation,
-    )
-}
-
-fn provider_fingerprint(provider: &AiProviderConfig) -> String {
-    let mut fingerprint = blake3::Hasher::new();
-    for value in [
-        &provider.kind,
-        provider.endpoint.as_deref().unwrap_or(""),
-        &provider.model,
-    ] {
-        fingerprint.update(&(value.len() as u64).to_le_bytes());
-        fingerprint.update(value.as_bytes());
-    }
-    fingerprint.finalize().to_hex().to_string()
-}
-
-fn validate_operation_id(operation_id: &str, operation: &str) -> Result<()> {
-    uuid::Uuid::parse_str(operation_id).map_err(|_| {
-        CoreError::validation(
-            "ai_operation_invalid",
-            "The AI operation identifier is invalid",
-            operation,
-        )
-    })?;
-    Ok(())
-}
-
-fn stop_reason(reason: StopReason) -> AiStopReason {
-    match reason {
-        StopReason::Completed(raw) => AiStopReason::Completed { raw },
-        StopReason::MaxTokens(raw) => AiStopReason::MaxTokens { raw },
-        StopReason::ToolCall(raw) => AiStopReason::ToolCall { raw },
-        StopReason::ContentFilter(raw) => AiStopReason::ContentFilter { raw },
-        StopReason::StopSequence(raw) => AiStopReason::StopSequence { raw },
-        StopReason::Other(raw) => AiStopReason::Other { raw },
-    }
-}
-
-fn credential_for(provider: &AiProviderConfig, operation: &str) -> Result<Option<String>> {
-    provider
-        .credential_ref
-        .as_ref()
-        .map(|reference| {
-            keyring::Entry::new("org.noura.ai", reference)
-                .and_then(|entry| entry.get_password())
-                .map_err(|_| credential_error(operation))
-        })
-        .transpose()
-}
-
-fn validate_provider(provider: &AiProviderConfig, operation: &str) -> Result<()> {
-    if provider.id.is_empty()
-        || provider.id.len() > 128
-        || provider.id.chars().any(char::is_control)
-        || provider.model.trim().is_empty()
-        || provider.model.len() > 256
-        || provider.model.chars().any(char::is_control)
-    {
-        return Err(CoreError::validation(
-            "provider_invalid",
-            "Provider ID and model are required",
-            operation,
-        ));
-    }
-    if AdapterKind::from_lower_str(&provider.kind).is_none() {
-        return Err(CoreError::validation(
-            "provider_kind_invalid",
-            "The AI provider kind is not supported",
-            operation,
-        ));
-    }
-    if let Some(endpoint) = &provider.endpoint {
-        let url = url::Url::parse(endpoint).map_err(|_| {
-            CoreError::validation(
-                "endpoint_invalid",
-                "The provider endpoint must be a valid URL",
-                operation,
-            )
-        })?;
-        if !matches!(url.scheme(), "https" | "http") {
-            return Err(CoreError::validation(
-                "endpoint_invalid",
-                "Provider endpoints use HTTP or HTTPS",
-                operation,
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_provider_configs(providers: &[AiProviderConfig], operation: &str) -> Result<()> {
-    let mut ids = std::collections::HashSet::with_capacity(providers.len());
-    for provider in providers {
-        validate_provider(provider, operation)?;
-        if !ids.insert(&provider.id) {
-            return Err(CoreError::new(
-                "provider_config_invalid",
-                ErrorCategory::Parse,
-                "AI provider settings contain duplicate provider IDs",
-                operation,
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn provider_lock_error(operation: &str) -> CoreError {
-    CoreError::new(
-        "provider_lock_unavailable",
-        ErrorCategory::Transient,
-        "AI provider settings are unavailable",
-        operation,
-    )
-}
-
-fn operation_lock_error(operation: &str) -> CoreError {
-    CoreError::new(
-        "ai_operation_lock_unavailable",
-        ErrorCategory::Transient,
-        "The AI operation state is unavailable",
-        operation,
-    )
-}
-
-fn provider_error(operation: &str) -> CoreError {
-    CoreError::new(
-        "provider_request_failed",
-        ErrorCategory::Provider,
-        "The AI provider request failed",
-        operation,
-    )
-}
-
-fn incomplete_stream_error() -> CoreError {
-    let mut error = CoreError::new(
-        "provider_stream_incomplete",
-        ErrorCategory::Transient,
-        "The AI provider stream ended without a terminal response",
-        "ai_stream",
-    );
-    error.retryable = true;
-    error
-}
-
-fn credential_error(operation: &str) -> CoreError {
-    CoreError::new(
-        "credential_store_error",
-        ErrorCategory::Credential,
-        "The operating system credential store operation failed",
-        operation,
-    )
-}
-
-fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| CoreError::io(error, "ai_provider_save", parent.to_str()))?;
-    }
-    let bytes = serde_json::to_vec_pretty(value).map_err(|_| {
-        CoreError::new(
-            "provider_serialize_failed",
-            ErrorCategory::Parse,
-            "AI provider settings could not be serialized",
-            "ai_provider_save",
-        )
-    })?;
-    crate::durable_settings::write(path, &bytes)
-        .map_err(|error| CoreError::io(error, "ai_provider_save", path.to_str()))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,6 +589,33 @@ mod tests {
             endpoint: Some("https://example.test/v1/".into()),
             credential_ref: None,
             enabled: true,
+        }
+    }
+
+    #[test]
+    fn plain_http_endpoints_are_limited_to_this_computer() {
+        for (endpoint, allowed) in [
+            ("https://api.example.com/v1/", true),
+            ("http://localhost:11434/v1/", true),
+            ("http://LOCALHOST:1234/", true),
+            ("http://127.0.0.1:1234/", true),
+            ("http://127.8.0.1/", true),
+            ("http://[::1]:8080/", true),
+            ("http://api.example.com/v1/", false),
+            ("http://192.168.1.20:11434/", false),
+            ("http://localhost.example.com/", false),
+            ("ftp://localhost/", false),
+            ("file:///tmp/model", false),
+        ] {
+            let mut provider = enabled_provider();
+            provider.endpoint = Some(endpoint.into());
+            assert_eq!(
+                validate_provider(&provider, "ai_provider_save")
+                    .and_then(|()| ensure_secure_endpoint(&provider, "ai_provider_save"))
+                    .is_ok(),
+                allowed,
+                "{endpoint}"
+            );
         }
     }
 

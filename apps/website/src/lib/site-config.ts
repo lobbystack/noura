@@ -4,6 +4,26 @@ export interface SiteConfig {
 	marketingUrl: string;
 	githubUrl: string;
 	releasesUrl: string;
+	/** Legal details shown in the policies. */
+	legal: {
+		entity: string;
+		address: string;
+		contactEmail: string;
+		privacyOfficer: string;
+		governingLaw: string;
+		websiteHost: string;
+		/** ISO date (YYYY-MM-DD) the current policies took effect. Update it when they change. */
+		effectiveDate: string;
+	};
+	/**
+	 * Optional cookie categories that need consent. Keep this empty while the
+	 * site sets no analytics or marketing cookies; the banner then only informs.
+	 */
+	optionalCookies: ReadonlyArray<{
+		id: string;
+		label: string;
+		purpose: string;
+	}>;
 	/**
 	 * Installers per platform. The release workflow uploads each file under a
 	 * stable name, so these links always serve the latest published release.
@@ -13,6 +33,8 @@ export interface SiteConfig {
 		detail: string;
 		url: string;
 		alternate?: { label: string; url: string };
+		/** One short line about a first-launch warning the platform shows. */
+		installNote?: string;
 	}>;
 }
 
@@ -23,16 +45,30 @@ export const siteConfig: SiteConfig = {
 	marketingUrl: 'https://noura.app/',
 	githubUrl,
 	releasesUrl: `${githubUrl}/releases`,
+	legal: {
+		entity: 'Lobbystack Inc.',
+		address: 'Saint-Nicolas, Québec, Canada',
+		contactEmail: 'hello@noura.app',
+		privacyOfficer: 'Raphaël Morency, President',
+		governingLaw: 'the Province of Québec, Canada',
+		websiteHost: 'Railway',
+		effectiveDate: '2026-09-28',
+	},
+	optionalCookies: [],
 	downloads: [
 		{
 			platform: 'macOS',
 			detail: 'Apple silicon and Intel',
 			url: `${latest}/Noura-macOS.dmg`,
+			installNote:
+				'The app isn’t notarized yet. If macOS blocks the first launch, open System Settings > Privacy & Security and choose Open Anyway.',
 		},
 		{
 			platform: 'Windows',
 			detail: 'Windows 10 and 11',
 			url: `${latest}/Noura-Windows-Setup.exe`,
+			installNote:
+				'If Windows SmartScreen warns you, choose More info, then Run anyway.',
 		},
 		{
 			platform: 'Linux',

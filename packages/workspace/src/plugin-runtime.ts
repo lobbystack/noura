@@ -6,6 +6,7 @@ import {
 	type PluginHostServices,
 } from '@noura/plugin-sdk';
 import { firstPartyPlugins } from './first-party';
+import { CollaborationProviderSlot } from './collaboration-slot';
 import type { NouraClient } from './client';
 
 /**
@@ -22,10 +23,12 @@ export const browserPluginCapabilities: readonly PluginCapability[] = [
 /**
  * Adapter from the typed workspace client to the capability-gated
  * plugin services. Pass-through only: plugins see the same public
- * contracts the UI consumes, never transport internals.
+ * contracts the UI consumes, never transport internals. A registered
+ * collaboration provider lands in `slot`.
  */
 export function createPluginHostServices(
 	client: NouraClient,
+	slot: CollaborationProviderSlot = new CollaborationProviderSlot(),
 ): PluginHostServices {
 	return {
 		files: {
@@ -49,6 +52,11 @@ export function createPluginHostServices(
 			registerInstructionProvider: (definition, registration) =>
 				client.ai.registerInstructionProvider(definition, registration),
 		},
+		collaboration: {
+			service: client.collaboration,
+			registerProvider: (provider, registration) =>
+				slot.register(provider, registration.owner),
+		},
 	};
 }
 
@@ -57,7 +65,10 @@ export interface PluginSyncResult {
 	deactivated: Array<string>;
 	/** Enabled manifests this host intentionally cannot activate. */
 	unavailablePluginIds: Array<string>;
-	/** Verbatim from .noura/workspace.yaml; may include unknown future plugin ids. */
+	/**
+	 * The ids from .noura/workspace.yaml (which may include unknown future
+	 * plugin ids) followed by any core plugin the manifest does not list.
+	 */
 	enabledPluginIds: Array<string>;
 }
 
@@ -77,7 +88,7 @@ export class PluginRegistry {
 	async read(): Promise<PluginRegistrySnapshot> {
 		const manifest = await this.client.manifest.read();
 		return {
-			enabledPluginIds: manifest.enabledPlugins,
+			enabledPluginIds: manifest.enabled_plugins,
 			updated: manifest.updated,
 		};
 	}
@@ -88,7 +99,7 @@ export class PluginRegistry {
 		expectedUpdated: string,
 	): Promise<PluginRegistrySnapshot> {
 		const current = await this.client.manifest.read();
-		const enabledPluginIds = new Set(current.enabledPlugins);
+		const enabledPluginIds = new Set(current.enabled_plugins);
 		if (enabled) enabledPluginIds.add(pluginId);
 		else enabledPluginIds.delete(pluginId);
 		const manifest = await this.client.manifest.update({
@@ -96,14 +107,28 @@ export class PluginRegistry {
 			expectedUpdated,
 		});
 		return {
-			enabledPluginIds: manifest.enabledPlugins,
+			enabledPluginIds: manifest.enabled_plugins,
 			updated: manifest.updated,
 		};
 	}
 }
 
+/**
+ * Plugins that are part of the core app rather than optional features. Files
+ * and Markdown editing always work, so these activate whatever
+ * `enabled_plugins` says. Their ids may still appear in older manifests; that
+ * is harmless and the manifest is never rewritten to add or drop them.
+ */
+export const CORE_PLUGIN_IDS: readonly string[] = ['folders', 'notes'];
+
+export function isCorePlugin(id: string): boolean {
+	return CORE_PLUGIN_IDS.includes(id);
+}
+
 export interface PluginRuntimeOptions extends PluginHostOptions {
 	plugins?: readonly PluginDefinition[];
+	/** Plugin ids that activate regardless of the manifest. */
+	corePluginIds?: readonly string[];
 }
 
 /**
@@ -115,8 +140,11 @@ export interface PluginRuntimeOptions extends PluginHostOptions {
 export class PluginRuntime {
 	readonly host: PluginHost;
 	readonly registry: PluginRegistry;
+	/** The workspace collaboration provider, filled by an active sync plugin. */
+	readonly collaboration = new CollaborationProviderSlot();
 	#client: NouraClient;
 	#plugins: readonly PluginDefinition[];
+	#corePluginIds: readonly string[];
 
 	constructor(
 		client: NouraClient,
@@ -129,14 +157,22 @@ export class PluginRuntime {
 		this.#client = client;
 		this.registry = new PluginRegistry(client);
 		this.#plugins = options.plugins ?? firstPartyPlugins;
+		this.#corePluginIds = options.corePluginIds ?? CORE_PLUGIN_IDS;
 		this.host =
 			configuredHost ??
-			new PluginHost(createPluginHostServices(client), options);
+			new PluginHost(createPluginHostServices(client, this.collaboration), {
+				...options,
+				// Trusted capabilities stay with the bundled first-party plugins.
+				trustedPlugins: options.trustedPlugins ?? firstPartyPlugins,
+			});
 	}
 
 	async syncWithManifest(): Promise<PluginSyncResult> {
 		const manifest = await this.#client.manifest.read();
-		const enabled = new Set(manifest.enabledPlugins);
+		const enabled = new Set([
+			...manifest.enabled_plugins,
+			...this.#corePluginIds,
+		]);
 		const deactivated: Array<string> = [];
 		for (const active of this.host.activeManifests()) {
 			if (!enabled.has(active.id)) {
@@ -167,7 +203,7 @@ export class PluginRuntime {
 			activated,
 			deactivated,
 			unavailablePluginIds,
-			enabledPluginIds: manifest.enabledPlugins,
+			enabledPluginIds: [...enabled],
 		};
 	}
 

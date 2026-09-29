@@ -5,6 +5,7 @@ export const PLUGIN_IDS = [
 	'calendar',
 	'projects',
 	'folders',
+	'sync',
 ] as const;
 
 export const SIDEBAR_PLUGIN_IDS = [
@@ -16,7 +17,7 @@ export const SIDEBAR_PLUGIN_IDS = [
 	'projects',
 ] as const;
 
-export type PluginId = (typeof PLUGIN_IDS)[number];
+type PluginId = (typeof PLUGIN_IDS)[number];
 export type NavigationId = PluginId | 'inbox';
 
 function isPluginId(id: string): id is NavigationId {

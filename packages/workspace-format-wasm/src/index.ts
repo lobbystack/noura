@@ -1,34 +1,19 @@
-export type WorkspaceManifest = {
-	id: string;
-	format_version: 1;
-	name: string;
-	created: string;
-	updated: string;
-	enabled_plugins: string[];
-	ignore: string[];
-};
+import type {
+	CreateNoteInput,
+	ManifestUpdateInput as CoreManifestUpdateInput,
+	ParsedMarkdown,
+	UpdateNoteInput,
+	WorkspaceManifest,
+	WorkspaceObject,
+} from '@noura/shared';
 
-export type WorkspaceObject = {
-	id: string;
-	type: string;
-	title: string;
-	body: string;
-	relativePath: string;
-	revision: string;
-	created: string | null;
-	updated: string | null;
-	properties: Record<string, unknown>;
+export type {
+	CreateNoteInput,
+	ParsedMarkdown,
+	UpdateNoteInput,
+	WorkspaceManifest,
+	WorkspaceObject,
 };
-
-export type ParsedMarkdown =
-	| ({ kind: 'managed' } & WorkspaceObject)
-	| {
-			kind: 'unmanaged';
-			title: string;
-			body: string;
-			frontmatter: Record<string, unknown> | null;
-	  }
-	| { kind: 'malformed'; title: string; body: string; error: string };
 
 export type WorkspaceFormatErrorCode =
 	| 'invalid_input'
@@ -46,6 +31,9 @@ export type WorkspaceFormatErrorCode =
 	| 'invalid_field'
 	| 'invalid_date'
 	| 'invalid_project_id'
+	| 'invalid_utf8'
+	| 'invalid_calendar_date'
+	| 'invalid_calendar_range'
 	| 'internal_error';
 
 const errorMessages: Record<WorkspaceFormatErrorCode, string> = {
@@ -68,6 +56,10 @@ const errorMessages: Record<WorkspaceFormatErrorCode, string> = {
 	invalid_field: 'Task metadata is invalid',
 	invalid_date: 'due must use YYYY-MM-DD or RFC 3339 with an explicit offset',
 	invalid_project_id: 'Task project references use a stable project ID',
+	invalid_utf8: 'The raw Markdown file is not UTF-8',
+	invalid_calendar_date:
+		'Calendar values must use YYYY-MM-DD or RFC 3339 with an explicit offset',
+	invalid_calendar_range: 'The calendar range end must be after its start',
 	internal_error: 'The workspace format operation could not be completed',
 };
 
@@ -98,6 +90,24 @@ type RawWorkspaceFormatBindings = {
 	update_task(task: WorkspaceObject, input: UpdateTaskInput): unknown;
 	create_project(input: CreateProjectInput): unknown;
 	update_project(project: WorkspaceObject, input: UpdateProjectInput): unknown;
+	merge_text(base: string, local: string, external: string): string | undefined;
+	merge_markdown_body(
+		base: string,
+		local: string,
+		external: string,
+	): string | undefined;
+	merge_managed_draft(
+		input: ManagedDraftMergeInput,
+		canonical: WorkspaceObject,
+	): unknown;
+	read_raw_text(bytes: Uint8Array): unknown;
+	compose_raw_text(original: Uint8Array, body: string): Uint8Array;
+	raw_history_segment(relativePath: string): string;
+	select_calendar_entries(
+		entries: CalendarEntry[],
+		start: string,
+		end: string,
+	): unknown;
 };
 
 type RawWorkspaceFormatModule = RawWorkspaceFormatBindings & {
@@ -129,22 +139,57 @@ export type WorkspaceFormat = {
 		project: WorkspaceObject,
 		input: UpdateProjectInput,
 	): WorkspaceObject;
+	/** Line merge. Returns null when both sides changed the same lines. */
+	mergeText(base: string, local: string, external: string): string | null;
+	/** Line merge that also refuses Markdown needing manual review. */
+	mergeMarkdownBody(
+		base: string,
+		local: string,
+		external: string,
+	): string | null;
+	/** Field-by-field managed draft merge. Returns null on conflict. */
+	mergeManagedDraft(
+		input: ManagedDraftMergeInput,
+		canonical: WorkspaceObject,
+	): WorkspaceObject | null;
+	readRawText(bytes: Uint8Array): RawText;
+	/** Encodes LF text with the BOM and line endings of `original`. */
+	composeRawText(original: Uint8Array, body: string): Uint8Array;
+	rawHistorySegment(relativePath: string): string;
+	/** Keeps entries overlapping [start, end), in native calendar order. */
+	selectCalendarEntries(
+		entries: CalendarEntry[],
+		start: string,
+		end: string,
+	): CalendarEntry[];
 };
 
-export type CreateNoteInput = {
+export type ManagedDraftMergeInput = {
+	baseTitle: string;
+	localTitle: string;
+	baseBody: string;
+	localBody: string;
+	baseProperties: Record<string, unknown>;
+	localProperties: Record<string, unknown>;
+};
+
+export type RawText = {
+	/** The file's text with every CRLF turned into LF. */
+	body: string;
+	/** Whether most lines end in CRLF. */
+	usesCrlf: boolean;
+	hasBom: boolean;
+};
+
+export type CalendarEntry = {
+	sourceId: string;
+	sourceType: string;
 	title: string;
-	body?: string;
-	relativePath?: string | null;
-	properties?: Record<string, unknown>;
-	now: string;
-};
-
-export type UpdateNoteInput = {
-	title?: string;
-	body?: string;
-	properties?: Record<string, unknown>;
-	removeProperties?: string[];
-	now: string;
+	property: string;
+	start: string;
+	end: string | null;
+	allDay: boolean;
+	revision: string;
 };
 
 export type CreateTaskInput = CreateNoteInput;
@@ -152,11 +197,11 @@ export type UpdateTaskInput = UpdateNoteInput;
 export type CreateProjectInput = CreateNoteInput;
 export type UpdateProjectInput = UpdateNoteInput;
 
-export type ManifestUpdateInput = {
-	name?: string | null;
-	enabledPlugins?: string[] | null;
-	ignore?: string[] | null;
-};
+/** The optimistic `expectedUpdated` check belongs to the caller, not the format. */
+export type ManifestUpdateInput = Omit<
+	CoreManifestUpdateInput,
+	'expectedUpdated'
+>;
 
 function asFormatError(error: unknown): WorkspaceFormatError {
 	if (
@@ -224,6 +269,33 @@ function createWorkspaceFormat(
 			call(() => bindings.create_project(input) as WorkspaceObject),
 		updateProject: (project, input) =>
 			call(() => bindings.update_project(project, input) as WorkspaceObject),
+		mergeText: (base, local, external) =>
+			call(() => bindings.merge_text(base, local, external) ?? null),
+		mergeMarkdownBody: (base, local, external) =>
+			call(() => bindings.merge_markdown_body(base, local, external) ?? null),
+		mergeManagedDraft: (input, canonical) =>
+			call(
+				() =>
+					bindings.merge_managed_draft(
+						input,
+						canonical,
+					) as WorkspaceObject | null,
+			),
+		readRawText: (bytes) =>
+			call(() => bindings.read_raw_text(bytes) as RawText),
+		composeRawText: (original, body) =>
+			call(() => new Uint8Array(bindings.compose_raw_text(original, body))),
+		rawHistorySegment: (relativePath) =>
+			call(() => bindings.raw_history_segment(relativePath)),
+		selectCalendarEntries: (entries, start, end) =>
+			call(
+				() =>
+					bindings.select_calendar_entries(
+						entries,
+						start,
+						end,
+					) as CalendarEntry[],
+			),
 	};
 }
 

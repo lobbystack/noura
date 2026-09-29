@@ -1,10 +1,12 @@
 import type { Task, TaskPriority } from '@noura/workspace';
 
-export type TaskViewId = 'today' | 'upcoming' | 'all' | 'completed' | 'folder';
+export type TaskViewId =
+	'today' | 'upcoming' | 'all' | 'completed' | 'folder' | 'project';
 
 export interface TaskView {
 	mode: TaskViewId;
 	folderPath?: string;
+	projectId?: string;
 }
 
 function dueDate(task: Task): string | null {
@@ -49,6 +51,10 @@ export function taskIsUpcoming(task: Task, now: Date): boolean {
 	return time !== null && time > endOfDay(now);
 }
 
+function taskInProject(task: Task, projectId: string): boolean {
+	return task.properties?.project === projectId;
+}
+
 export function taskInFolder(task: Task, folderPath: string): boolean {
 	const normalized = folderPath.replace(/\/+$/, '');
 	return task.relativePath.startsWith(normalized + '/');
@@ -66,6 +72,10 @@ export function filterTasks(tasks: Task[], view: TaskView, now: Date): Task[] {
 		selected = tasks.filter((entry) =>
 			taskInFolder(entry, view.folderPath ?? ''),
 		);
+	} else if (view.mode === 'project') {
+		selected = tasks.filter((entry) =>
+			taskInProject(entry, view.projectId ?? ''),
+		);
 	}
 	return orderTasks(selected);
 }
@@ -77,7 +87,7 @@ const PRIORITY_WEIGHT: Record<TaskPriority, number> = {
 	low: 3,
 };
 
-export function orderTasks(tasks: Task[]): Task[] {
+function orderTasks(tasks: Task[]): Task[] {
 	return [...tasks].sort((left, right) => {
 		const doneLeft = isDone(left) ? 1 : 0;
 		const doneRight = isDone(right) ? 1 : 0;

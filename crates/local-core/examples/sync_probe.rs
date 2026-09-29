@@ -28,6 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Native sync test",
         dir.path().join("app1"),
     )?;
+    // Sync is a plugin that new workspaces start with turned off.
+    first.enable_sync_plugin()?;
     transport.create_workspace(&first.manifest().id).await?;
     let sentinel = "native-plaintext-sentinel-private-path";
     std::fs::write(first.root().join("private-note.md"), sentinel)?;

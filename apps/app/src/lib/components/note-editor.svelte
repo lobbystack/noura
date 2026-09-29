@@ -1,23 +1,30 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import type { CollaborationSession } from '@noura/editor';
-	import { acquireNativeCollaboration } from '$lib/editor/native-collaboration';
+	import { getCollaborationAccess } from '$lib/editor/workspace-collaboration';
+	import { editorObjectEvent } from '$lib/object-events';
 	import type { CollaborationLease } from '$lib/editor/collaboration-registry';
 	import CollaborativeTextSurface from '$lib/components/collaborative-text-surface.svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
 	import type { CoreEvent, Note } from '@noura/workspace';
 	import { isCoreError } from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
-	import { AutosaveCoordinator } from '$lib/editor/autosave';
 	import {
 		saveNoteWithReconciliation,
-		saveCollaborativeNoteTitle,
 		type NoteDraft,
 	} from '$lib/editor/note-save';
+	import { DocumentSession, type TextBase } from '$lib/editor/document-session';
+	import { saveErrorMessage } from '$lib/editor/messages';
+	import {
+		renameErrorMessage,
+		renamedPath,
+		splitFileName,
+	} from '$lib/editor/rename';
 	import { registerPendingDraft } from '$lib/editor/pending-drafts.svelte';
 	import MarkdownPreview from '$lib/components/markdown-preview.svelte';
 	import LiveMarkdownSurface from '$lib/components/live-markdown-surface.svelte';
+	import DocumentHeader from '$lib/components/document-header.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
@@ -33,22 +40,17 @@
 		autofocusTitle = false,
 	}: {
 		note: Note | null;
+		/** A new version of the note is on disk (saved, merged, or renamed). */
 		onsaved?: (updated: Note) => void;
-		/** Freshly created notes start with the title focused and selected. */
+		/** Freshly created notes start with the name selected for typing. */
 		autofocusTitle?: boolean;
 	} = $props();
-
-	let titleFocused = false;
 
 	type ConflictState = { draft: NoteDraft; file: Note; deleted?: boolean };
 	type Resolution = 'use-external' | 'replace-external';
 
 	const initialNote = () => note;
 	let currentNote = $state.raw<Note | null>(initialNote());
-	let draftTitle = $state(initialNote()?.title ?? '');
-	let baseBody = $state(initialNote()?.body ?? '');
-	let baseTitle = $state(initialNote()?.title ?? '');
-	let baseRevision = $state(initialNote()?.revision ?? '');
 	let collaboration = $state.raw<CollaborationSession | null>(null);
 	let collaborationOpening = $state(true);
 	let collaborationFailed = $state(false);
@@ -59,7 +61,6 @@
 	let editorDisposed = false;
 
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
-	let coordinator = $state.raw<AutosaveCoordinator<NoteDraft> | null>(null);
 	let autosaveError = $state<unknown | null>(null);
 	let conflict = $state.raw<ConflictState | null>(null);
 	let reviewOpen = $state(false);
@@ -67,16 +68,10 @@
 	let pendingResolution = $state<Resolution | null>(null);
 	let resolving = $state(false);
 	let transientMessage = $state<string | null>(null);
-	let editorCleanup: (() => void) | null = null;
 	let clearMessageTimer: ReturnType<typeof setTimeout> | null = null;
 
-	function errorMessage(error: unknown) {
-		if (error instanceof Error) return error.message;
-		if (error && typeof error === 'object' && 'message' in error) {
-			return String(error.message);
-		}
-		return 'Noura could not save this note.';
-	}
+	const fileName = () =>
+		currentNote ? splitFileName(currentNote.relativePath).stem : 'Untitled';
 
 	function showMessage(message: string) {
 		transientMessage = message;
@@ -87,60 +82,59 @@
 		}, 2400);
 	}
 
-	function currentDraft(): NoteDraft {
-		return {
-			title: draftTitle,
-			body:
-				collaboration?.text.toString() ??
-				editor?.doc() ??
-				coordinator?.getDraft()?.body ??
-				baseBody,
-		};
-	}
-
-	function replaceEditorBody(body: string) {
-		editor?.setText(body);
-	}
-
-	function setCanonical(value: Note) {
+	function adoptNote(value: Note) {
 		currentNote = value;
-		baseBody = value.body;
-		baseTitle = value.title;
-		baseRevision = value.revision;
 		onsaved?.(value);
 	}
 
-	async function persistDraft(draft: NoteDraft, generation: number) {
-		if (activationInProgress || activationNeedsReview) return 'paused' as const;
-		const target = currentNote;
-		if (!target) return;
-		const result = collaboration
-			? await saveCollaborativeNoteTitle(target, baseTitle, draft.title)
-			: await saveNoteWithReconciliation(
-					target,
-					{ revision: baseRevision, title: baseTitle, body: baseBody },
-					draft,
-				);
-		if (activationInProgress || activationNeedsReview) return 'paused' as const;
-		if (result.status === 'conflict') {
-			openConflict(result.draft, result.current);
-			return 'paused' as const;
-		}
+	const baseOf = (value: Note): TextBase => ({
+		revision: value.revision,
+		body: value.body,
+	});
 
-		const merged = result.value.body !== draft.body;
-		setCanonical(result.value);
-		if (coordinator?.currentGeneration === generation) {
-			draftTitle = result.value.title;
-			replaceEditorBody(result.value.body);
-		}
-		if (merged) showMessage('External changes merged');
+	/** Autosave for the local editor; collaboration saves on its own. */
+	const session = initialNote()
+		? new DocumentSession<Note>({
+				base: baseOf(initialNote()!),
+				blocked: () => activationInProgress || activationNeedsReview,
+				save: async (base, body) => {
+					const target = currentNote!;
+					const result = await saveNoteWithReconciliation(
+						target,
+						{ revision: base.revision, title: target.title, body: base.body },
+						{ title: target.title, body },
+					);
+					if (result.status === 'conflict')
+						return { status: 'conflict', current: result.current };
+					return {
+						status: 'saved',
+						base: baseOf(result.value),
+						canonical: result.value,
+					};
+				},
+				read: async () => {
+					const latest = await getNouraClient().notes.get(currentNote!.id);
+					return { base: baseOf(latest), canonical: latest };
+				},
+				onCanonical: adoptNote,
+				onConflict: ({ localBody, current }) =>
+					openConflict({ title: fileName(), body: localBody }, current),
+				onMerged: () => showMessage('Merged changes from another app'),
+				onStateChange: (state) => {
+					autosaveError = state.error;
+				},
+			})
+		: null;
+
+	function currentBody() {
+		return collaboration?.text.toString() ?? session?.text() ?? '';
 	}
 
 	async function flushNow() {
 		if (activationInProgress || activationNeedsReview) return false;
 		try {
 			await collaboration?.flush();
-			return (await coordinator?.flush()) ?? !collaborationFailed;
+			return (await session?.flush()) ?? !collaborationFailed;
 		} catch (error) {
 			autosaveError = error;
 			return false;
@@ -148,55 +142,27 @@
 	}
 
 	function connectEditor(handle: LiveMarkdownEditor | null) {
-		editorCleanup?.();
-		editorCleanup = null;
 		editor = handle;
-		if ((!handle && !collaboration) || !currentNote) return;
-		const localCoordinator = new AutosaveCoordinator({
-			write: persistDraft,
-			onStateChange: (state) => {
-				autosaveError = state.error;
-			},
-		});
-		coordinator = localCoordinator;
-		const unregister = registerPendingDraft(
-			currentNote.id,
-			() => flushNow(),
-			() =>
-				activationInProgress ||
-				activationNeedsReview ||
-				localCoordinator.pendingEdits > 0 ||
-				localCoordinator.isWriting ||
-				localCoordinator.error !== null,
+		session?.attach(
+			handle
+				? {
+						text: () => handle.doc(),
+						setText: (text) => handle.setText(text),
+						rebase: (base, target) => handle.rebase(base, target),
+					}
+				: null,
 		);
-
-		editorCleanup = () => {
-			unregister();
-			localCoordinator.destroy();
-			if (coordinator === localCoordinator) coordinator = null;
-		};
-	}
-
-	function handleEditorEdit(body: string) {
-		coordinator?.noteEdit({ title: draftTitle, body });
 	}
 
 	function openConflict(draft: NoteDraft, file: Note, deleted = false) {
 		conflict = { draft, file, deleted };
 		reviewOpen = true;
-		coordinator?.pause();
+		session?.autosave.pause();
 	}
 
-	function hasActivationDraft() {
-		return Boolean(
-			coordinator?.pendingEdits ||
-			coordinator?.isWriting ||
-			coordinator?.error ||
-			draftTitle !== baseTitle ||
-			(editor && editor.doc() !== baseBody),
-		);
-	}
 	async function activateCollaboration() {
+		// Without the sync plugin, documents stay plain local files.
+		if (!getCollaborationAccess().available) return;
 		if (
 			collaboration ||
 			activationInProgress ||
@@ -209,51 +175,45 @@
 			return;
 		}
 		activationInProgress = true;
-		const retainedDraft = hasActivationDraft() ? currentDraft() : null;
-		coordinator?.pause();
+		const retainedBody = session?.hasPendingWork ? session.text() : null;
+		session?.autosave.pause();
 		let lease: CollaborationLease | null = null;
 		try {
 			const target = currentNote;
-			lease = await acquireNativeCollaboration(target.relativePath);
+			lease = await getCollaborationAccess().acquire(target.relativePath);
 			if (editorDisposed) {
 				await lease?.release();
 				lease = null;
 				return;
 			}
-			if (!lease)
-				throw new Error(
-					'Collaboration activation is not ready. Reopen this document.',
-				);
-			if (retainedDraft) {
+			if (!lease) throw new Error('Sharing isn’t ready yet. Reopen this note.');
+			if (retainedBody !== null) {
 				const result = await getNouraClient().notes.update(target.id, {
 					expectedRevision: lease.session.revision,
-					title: retainedDraft.title,
-					body: retainedDraft.body,
+					body: retainedBody,
 				});
 				await lease.release();
 				lease = null;
-				lease = await acquireNativeCollaboration(result.value.relativePath);
+				lease = await getCollaborationAccess().acquire(
+					result.value.relativePath,
+				);
 				if (!lease)
 					throw new Error(
-						'The retained draft was saved locally, but the collaboration session could not reopen.',
+						'Your changes were saved, but sharing couldn’t start. Reopen this note.',
 					);
 				if (editorDisposed) {
 					await lease.release();
 					lease = null;
 					return;
 				}
-				setCanonical(result.value as Note);
-				draftTitle = result.value.title;
-				coordinator?.acceptDurable();
+				adoptNote(result.value as Note);
 			}
-			editorCleanup?.();
-			editorCleanup = null;
+			session?.discard();
 			collaborationLease = lease;
 			collaboration = lease.session;
 			lease = null;
 			autosaveError = null;
 			collaborationFailed = false;
-			connectEditor(null);
 		} catch (error) {
 			await lease?.release().catch(() => {});
 			autosaveError = error;
@@ -271,93 +231,83 @@
 				await activateCollaboration();
 			return;
 		}
-		if (activationInProgress || activationNeedsReview) return;
+		if (activationInProgress || activationNeedsReview || !target) return;
+		// A move or rename made in this app (from the file tree) only changes
+		// where the note lives, so keep editing and show the new name.
+		const moved = event.payload as { id?: string; path?: string };
 		if (
-			!target ||
-			(!collaboration &&
-				event.source !== 'external' &&
-				event.source !== 'reconciliation') ||
-			!['object:updated', 'object:moved', 'object:deleted'].includes(event.type)
-		)
+			event.source === 'application' &&
+			event.type === 'object:moved' &&
+			moved.id === target.id &&
+			moved.path &&
+			moved.path !== target.relativePath
+		) {
+			adoptNote({ ...target, relativePath: moved.path });
 			return;
-		const payload = event.payload as { id?: string };
-		if (payload.id !== target.id) return;
+		}
+		// A bulk external change carries this note among many others.
+		const own = editorObjectEvent(event, target.id, {
+			includeApplication: !!collaboration,
+		});
+		if (!own) return;
 		if (collaboration) {
-			if (event.type === 'object:deleted') {
+			if (own.type === 'object:deleted') {
 				autosaveError = new Error(
-					'This document was deleted. Your collaboration draft is preserved.',
+					'This note’s file was deleted. Your shared text is still here.',
 				);
 				return;
 			}
 			try {
-				const latest = await getNouraClient().notes.get(target.id);
-				const titleWasClean = draftTitle === baseTitle;
-				if (titleWasClean) draftTitle = latest.title;
-				currentNote = latest;
-				baseBody = latest.body;
-				baseRevision = latest.revision;
-				if (titleWasClean) baseTitle = latest.title;
-				onsaved?.(latest);
+				adoptNote(await getNouraClient().notes.get(target.id));
 			} catch (error) {
 				autosaveError = error;
 			}
 			return;
 		}
-		if (event.type === 'object:deleted') {
-			openConflict(currentDraft(), target, true);
+		if (own.type === 'object:deleted') {
+			openConflict({ title: fileName(), body: currentBody() }, target, true);
 			return;
 		}
-
 		try {
-			const latest = await getNouraClient().notes.get(target.id);
-			if (!coordinator?.pendingEdits && !coordinator?.isWriting) {
-				setCanonical(latest);
-				draftTitle = latest.title;
-				replaceEditorBody(latest.body);
-				return;
-			}
-			const draft = currentDraft();
-			const reconciliation = await getNouraClient().notes.reconcileDraft({
-				id: target.id,
-				baseRevision,
-				baseBody,
-				localBody: draft.body,
-			});
-			if (reconciliation.status === 'conflict') {
-				openConflict(draft, reconciliation.current as Note);
-				return;
-			}
-			const canonical = reconciliation.current as Note;
-			let mergedTitle = canonical.title;
-			if (draft.title !== baseTitle && canonical.title === baseTitle) {
-				mergedTitle = draft.title;
-			} else if (
-				draft.title !== baseTitle &&
-				canonical.title !== baseTitle &&
-				draft.title !== canonical.title
-			) {
-				openConflict(draft, canonical);
-				return;
-			}
-			currentNote = canonical;
-			baseBody = canonical.body;
-			baseTitle = canonical.title;
-			baseRevision = canonical.revision;
-			draftTitle = mergedTitle;
-			if (reconciliation.status === 'merged') {
-				const mergedBody = reconciliation.body;
-				replaceEditorBody(mergedBody);
-				showMessage('External changes merged');
-			}
-			coordinator?.noteEdit(currentDraft());
+			await session?.externalChange();
 		} catch (error) {
 			if (isCoreError(error) && error.code === 'object_not_found') {
-				// The file disappeared between the event and the fetch; show the
+				// The file disappeared between the event and the read; show the
 				// same review surface the deleted event would.
-				openConflict(currentDraft(), target, true);
+				openConflict({ title: fileName(), body: currentBody() }, target, true);
 				return;
 			}
 			autosaveError = error;
+		}
+	}
+
+	async function rename(name: string) {
+		const target = currentNote;
+		if (!target) return;
+		const to = renamedPath(target.relativePath, name);
+		if (!to) return;
+		const client = getNouraClient();
+		const move = async () => {
+			await client.files.move({ from: target.relativePath, to });
+			// Notes keep a title in their properties; keep it in step.
+			let latest = await client.notes.get(target.id);
+			if (latest.title !== name) {
+				latest = (
+					await client.notes.update(target.id, {
+						expectedRevision: latest.revision,
+						title: name,
+					})
+				).value as Note;
+			}
+			return latest;
+		};
+		try {
+			const latest = session ? await session.exclusive(move) : await move();
+			session?.adoptRevision(baseOf(latest));
+			adoptNote(latest);
+		} catch (error) {
+			toast.error(renameErrorMessage(error));
+			throw error;
 		}
 	}
 
@@ -372,60 +322,28 @@
 		if (pendingConflict.deleted && pendingResolution === 'use-external') return;
 		resolving = true;
 		try {
-			const localDraft = pendingConflict.draft;
-			if (collaboration) {
-				if (pendingResolution === 'use-external') {
-					draftTitle = pendingConflict.file.title;
-					baseTitle = pendingConflict.file.title;
-				} else {
-					const result = await saveCollaborativeNoteTitle(
-						currentNote,
-						pendingConflict.file.title,
-						localDraft.title,
-					);
-					if (result.status === 'conflict') {
-						openConflict(result.draft, result.current);
-						return;
-					}
-					setCanonical(result.value);
-					draftTitle = result.value.title;
-				}
-				coordinator?.acceptDurable();
-				coordinator?.resume();
-				conflict = null;
-				reviewOpen = false;
-				confirmOpen = false;
-				pendingResolution = null;
-				return;
-			}
+			const resolution = pendingResolution;
 			const resolved = (await getNouraClient().notes.resolveManagedConflict({
 				id: currentNote.id,
 				currentRevision: pendingConflict.file.revision,
 				relativePath: currentNote.relativePath,
 				created: currentNote.created,
-				localTitle: localDraft.title,
-				localBody: localDraft.body,
+				localTitle: currentNote.title,
+				localBody: pendingConflict.draft.body,
 				localProperties: currentNote.properties,
-				resolution: pendingResolution,
+				resolution,
 			})) as Note;
-			setCanonical(resolved);
-			if (pendingResolution === 'use-external') {
-				draftTitle = resolved.title;
-				replaceEditorBody(resolved.body);
-			} else {
-				draftTitle = localDraft.title;
-			}
-			coordinator?.acceptDurable();
-			coordinator?.resume();
+			adoptNote(resolved);
+			session?.resolved(baseOf(resolved), resolution === 'use-external');
 			conflict = null;
 			reviewOpen = false;
 			confirmOpen = false;
 			showMessage(
 				pendingConflict.deleted
-					? 'Note restored'
-					: pendingResolution === 'use-external'
-						? 'File version restored'
-						: 'File replaced',
+					? 'File restored'
+					: resolution === 'use-external'
+						? 'Switched to the file’s version'
+						: 'Saved your version',
 			);
 			pendingResolution = null;
 		} catch (error) {
@@ -442,19 +360,36 @@
 		}
 	}
 
-	function focusTitle(input: HTMLInputElement) {
-		if (autofocusTitle && !collaborationOpening && !titleFocused) {
-			titleFocused = true;
-			input.focus();
-			input.select();
-		}
-	}
-
 	onMount(() => {
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
+		const unregister = currentNote
+			? registerPendingDraft(
+					currentNote.id,
+					() => flushNow(),
+					() =>
+						activationInProgress ||
+						activationNeedsReview ||
+						(session?.hasPendingWork ?? false),
+					{
+						label: fileName,
+						problem: () =>
+							conflict
+								? 'The file changed in another app.'
+								: autosaveError
+									? saveErrorMessage(autosaveError)
+									: null,
+						discard: () => {
+							session?.discard();
+							activationNeedsReview = false;
+							conflict = null;
+						},
+					},
+				)
+			: () => {};
 		if (currentNote) {
-			void acquireNativeCollaboration(currentNote.relativePath)
+			void getCollaborationAccess()
+				.acquire(currentNote.relativePath)
 				.then(async (lease) => {
 					if (disposed) {
 						await lease?.release();
@@ -462,8 +397,8 @@
 					}
 					collaborationLease = lease;
 					collaboration = lease?.session ?? null;
+					if (collaboration) session?.discard();
 					collaborationOpening = false;
-					if (collaboration) connectEditor(null);
 					if (activationRequested && !collaboration) {
 						activationRequested = false;
 						void activateCollaboration();
@@ -477,20 +412,19 @@
 					}
 				});
 		} else collaborationOpening = false;
-		if (browser) {
-			void getNouraClient()
-				.events.subscribe((event) => void handleExternalEvent(event))
-				.then((unlisten) => {
-					if (disposed) unlisten();
-					else unsubscribe = unlisten;
-				});
-		}
+		void getNouraClient()
+			.events.subscribe((event) => void handleExternalEvent(event))
+			.then((unlisten) => {
+				if (disposed) unlisten();
+				else unsubscribe = unlisten;
+			});
 		return () => {
 			disposed = true;
 			editorDisposed = true;
 			unsubscribe?.();
+			unregister();
 			if (clearMessageTimer) clearTimeout(clearMessageTimer);
-			editorCleanup?.();
+			session?.destroy();
 			void collaborationLease?.release().catch((error) => {
 				autosaveError = error;
 			});
@@ -503,46 +437,38 @@
 {#if !currentNote}
 	<EmptyState
 		icon={NotePencil}
-		title="No document open"
-		description="Pick a document from the sidebar, or create a new note."
+		title="No file open"
+		description="Pick a file from the sidebar, or create a new note."
 	/>
 {:else}
 	<div class="flex min-h-0 flex-1 flex-col">
-		<header class="flex min-h-16 items-center px-6">
-			<input
-				{@attach focusTitle}
-				bind:value={draftTitle}
-				disabled={collaborationOpening ||
-					collaborationFailed ||
-					activationInProgress ||
-					activationNeedsReview ||
-					collaboration?.bootstrap.readOnly}
-				oninput={() => coordinator?.noteEdit(currentDraft())}
-				onblur={() => void flushNow()}
-				aria-label="Note title"
-				placeholder="Untitled"
-				class="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none placeholder:text-muted-foreground"
-			/>
-		</header>
+		<DocumentHeader
+			relativePath={currentNote.relativePath}
+			autofocus={autofocusTitle && !collaborationOpening}
+			disabled={collaborationOpening ||
+				activationInProgress ||
+				collaboration?.bootstrap.readOnly}
+			onrename={rename}
+			ondone={() => editor?.focus()}
+		/>
 		<Separator />
 
 		{#if activationNeedsReview}
 			<div class="px-6 pt-4">
 				<Alert.Root>
-					<Warning /><Alert.Title>Needs review</Alert.Title>
+					<Warning /><Alert.Title
+						>Sharing started while you had unsaved changes</Alert.Title
+					>
 					<Alert.Description
-						>Sharing became live while this editor had a draft. Your draft
-						remains here and autosave is paused so it cannot replace shared
-						changes. Copy it before reviewing the shared document.</Alert.Description
+						>Autosave is paused so your changes don’t overwrite the shared
+						version. Copy your text, then reopen the note.</Alert.Description
 					>
 					<Alert.Action
 						><Button
 							variant="outline"
 							size="sm"
-							onclick={() =>
-								void navigator.clipboard.writeText(
-									`${draftTitle}\n\n${currentDraft().body}`,
-								)}>Copy draft</Button
+							onclick={() => void navigator.clipboard.writeText(currentBody())}
+							>Copy text</Button
 						></Alert.Action
 					>
 				</Alert.Root>
@@ -553,18 +479,14 @@
 				<Alert.Root>
 					<Warning />
 					<Alert.Title
-						>{collaboration
-							? 'This title changed on another device'
-							: conflict.deleted
-								? 'This note file was deleted'
-								: 'This note changed in another app'}</Alert.Title
+						>{conflict.deleted
+							? 'This file was deleted'
+							: 'This file changed in another app'}</Alert.Title
 					>
 					<Alert.Description>
-						{collaboration
-							? 'Your title is preserved. Choose which title to keep; the shared body continues updating.'
-							: conflict.deleted
-								? 'Your draft is safe and can restore the deleted Markdown file.'
-								: 'Your draft is safe. Review both versions before choosing which one to keep.'}
+						{conflict.deleted
+							? 'Your text is still here. You can put the file back.'
+							: 'Your text is still here. Compare both versions and choose one.'}
 					</Alert.Description>
 					<Alert.Action>
 						<Button
@@ -572,7 +494,7 @@
 							size="sm"
 							onclick={() => (reviewOpen = true)}
 						>
-							Review conflict
+							{conflict.deleted ? 'Restore' : 'Compare'}
 						</Button>
 					</Alert.Action>
 				</Alert.Root>
@@ -583,11 +505,13 @@
 			<div class="px-6 pt-4">
 				<Alert.Root variant="destructive">
 					<Warning />
-					<Alert.Title>Changes could not be saved</Alert.Title>
-					<Alert.Description>{errorMessage(autosaveError)}</Alert.Description>
+					<Alert.Title>Changes aren’t saved</Alert.Title>
+					<Alert.Description
+						>{saveErrorMessage(autosaveError)}</Alert.Description
+					>
 					<Alert.Action>
 						<Button variant="outline" size="sm" onclick={() => void flushNow()}>
-							Retry
+							Try again
 						</Button>
 					</Alert.Action>
 				</Alert.Root>
@@ -609,15 +533,21 @@
 					onerror={(error) => (autosaveError = error)}
 				/>
 			{:else if collaborationOpening}
-				<p class="p-6 text-sm text-muted-foreground" role="status">
-					Opening document…
+				<!-- Fast opens finish before this fades in, so they never flash it. -->
+				<p
+					class="p-6 text-sm text-muted-foreground animate-in fade-in fill-mode-backwards delay-300"
+					role="status"
+				>
+					Opening…
 				</p>
-			{:else if !collaborationFailed}
+			{:else if !collaborationFailed && session}
 				<LiveMarkdownSurface
-					value={baseBody}
+					value={session.base.body}
 					sourceRelativePath={currentNote.relativePath}
-					label="Note body"
-					onedit={handleEditorEdit}
+					label="Note text"
+					memoryKey={`note:${currentNote.id}`}
+					autofocus={!autofocusTitle}
+					onchange={() => session.edited()}
 					onready={connectEditor}
 				/>
 			{/if}
@@ -628,16 +558,14 @@
 		<Sheet.Content class="sm:max-w-2xl">
 			<Sheet.Header>
 				<Sheet.Title
-					>{collaboration
-						? 'Review title conflict'
-						: 'Review note conflict'}</Sheet.Title
+					>{conflict?.deleted
+						? 'Restore the file'
+						: 'Choose a version'}</Sheet.Title
 				>
 				<Sheet.Description>
-					{collaboration
-						? 'Choose which title to keep. Shared text is unaffected.'
-						: conflict?.deleted
-							? 'The Markdown file was deleted outside Noura. Restore it from your preserved draft.'
-							: 'Noura preserved both versions. Choose which note should remain in the Markdown file.'}
+					{conflict?.deleted
+						? 'The file was deleted outside noura. Your text can put it back.'
+						: 'Both versions are kept until you choose.'}
 				</Sheet.Description>
 			</Sheet.Header>
 			{#if conflict}
@@ -647,46 +575,32 @@
 						: 'grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]'}"
 				>
 					<section class="min-w-0">
-						<h2 class="mb-3 text-sm font-medium">Your draft</h2>
-						<p class="mb-4 truncate text-base font-semibold">
-							{conflict.draft.title || 'Untitled'}
-						</p>
-						{#if !collaboration}<MarkdownPreview
-								markdown={conflict.draft.body}
-							/>{/if}
+						<h2 class="mb-3 text-sm font-medium">Your version</h2>
+						<MarkdownPreview markdown={conflict.draft.body} />
 					</section>
 					{#if !conflict.deleted}
 						<Separator orientation="vertical" />
 						<section class="min-w-0">
-							<h2 class="mb-3 text-sm font-medium">File version</h2>
-							<p class="mb-4 truncate text-base font-semibold">
-								{conflict.file.title || 'Untitled'}
-							</p>
-							{#if !collaboration}<MarkdownPreview
-									markdown={conflict.file.body}
-								/>{/if}
+							<h2 class="mb-3 text-sm font-medium">The file’s version</h2>
+							<MarkdownPreview markdown={conflict.file.body} />
 						</section>
 					{/if}
 				</div>
 			{/if}
 			<Sheet.Footer>
 				<Button variant="outline" onclick={() => (reviewOpen = false)}>
-					Cancel and continue reviewing
+					Keep editing
 				</Button>
 				{#if !conflict?.deleted}
 					<Button
 						variant="outline"
 						onclick={() => requestResolution('use-external')}
 					>
-						{collaboration ? 'Use current title' : 'Use file version'}
+						Use the file’s version
 					</Button>
 				{/if}
 				<Button onclick={() => requestResolution('replace-external')}>
-					{collaboration
-						? 'Keep my title'
-						: conflict?.deleted
-							? 'Restore note file'
-							: 'Replace file with my version'}
+					{conflict?.deleted ? 'Restore file' : 'Use my version'}
 				</Button>
 			</Sheet.Footer>
 		</Sheet.Content>
@@ -696,22 +610,18 @@
 		<AlertDialog.Content>
 			<AlertDialog.Header>
 				<AlertDialog.Title>
-					{collaboration
-						? 'Resolve the title conflict?'
-						: conflict?.deleted
-							? 'Restore the note file?'
-							: pendingResolution === 'use-external'
-								? 'Use the file version?'
-								: 'Replace the file version?'}
+					{conflict?.deleted
+						? 'Restore the file?'
+						: pendingResolution === 'use-external'
+							? 'Use the file’s version?'
+							: 'Use your version?'}
 				</AlertDialog.Title>
 				<AlertDialog.Description>
-					{collaboration
-						? 'Only the title changes. The shared document body is preserved.'
-						: conflict?.deleted
-							? 'Your preserved draft will be written back to its original Markdown path.'
-							: pendingResolution === 'use-external'
-								? 'Your visible draft will be saved to recovery history before the file version replaces it.'
-								: 'The current file version will be saved to recovery history before your draft replaces it.'}
+					{conflict?.deleted
+						? 'Your text is written back to the same place.'
+						: pendingResolution === 'use-external'
+							? 'Your version is kept as a backup first.'
+							: 'The file’s version is kept as a backup first.'}
 				</AlertDialog.Description>
 			</AlertDialog.Header>
 			<AlertDialog.Footer>

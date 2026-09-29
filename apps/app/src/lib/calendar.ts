@@ -17,7 +17,7 @@ export function addCalendarDays(value: Date, days: number): Date {
 	);
 }
 
-export function startOfWeek(value: Date): Date {
+function startOfWeek(value: Date): Date {
 	return addCalendarDays(value, -value.getDay());
 }
 

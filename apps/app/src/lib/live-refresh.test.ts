@@ -4,6 +4,8 @@ import {
 	LiveProjection,
 	LiveRefresh,
 	isLiveRefreshEvent,
+	objectTypeEvents,
+	shareEventSubscription,
 } from './live-refresh';
 
 class FakeClock {
@@ -168,6 +170,111 @@ describe('isLiveRefreshEvent', () => {
 			expect(isLiveRefreshEvent(coreEvent(type), 'workspace-a')).toBe(true);
 		}
 	});
+
+	test('invalidates projections for a bulk object change', () => {
+		expect(
+			isLiveRefreshEvent(coreEvent('objects:changed'), 'workspace-a'),
+		).toBe(true);
+	});
+});
+
+describe('objectTypeEvents', () => {
+	const tasks = objectTypeEvents(['task', 'project']);
+
+	test('ignores object events for other types', () => {
+		expect(tasks({ ...coreEvent(), payload: { type: 'note' } })).toBe(false);
+		expect(tasks({ ...coreEvent(), payload: { type: 'task' } })).toBe(true);
+		expect(
+			tasks({ ...coreEvent('object:deleted'), payload: { type: 'project' } }),
+		).toBe(true);
+	});
+
+	test('keeps untyped object events and external file changes', () => {
+		expect(tasks(coreEvent('object:moved'))).toBe(true);
+		expect(tasks(coreEvent('file:changed'))).toBe(true);
+		expect(tasks({ ...coreEvent('file:changed'), source: 'application' })).toBe(
+			false,
+		);
+	});
+
+	test('counts a bulk change when any of its changes matches', () => {
+		const bulk = (types: string[]) => ({
+			...coreEvent('objects:changed'),
+			payload: {
+				changes: types.map((type, index) => ({
+					event: 'object:updated',
+					id: `object-${index}`,
+					type,
+				})),
+			},
+		});
+		expect(tasks(bulk(['note', 'note']))).toBe(false);
+		expect(tasks(bulk(['note', 'task']))).toBe(true);
+		expect(tasks(bulk([]))).toBe(true);
+	});
+
+	test('ignores search index hints and chat events', () => {
+		expect(tasks(coreEvent('search:index-updated'))).toBe(false);
+		expect(tasks(coreEvent('chat:message-appended'))).toBe(false);
+		expect(tasks(coreEvent('workspace:ready'))).toBe(true);
+		expect(tasks(coreEvent('workspace:manifest-updated'))).toBe(true);
+	});
+});
+
+describe('shareEventSubscription', () => {
+	test('attaches one host listener for many subscribers', async () => {
+		let attaches = 0;
+		let emit: ((event: CoreEvent) => void) | undefined;
+		const subscribe = shareEventSubscription(async (handler) => {
+			attaches += 1;
+			emit = handler;
+			return () => {};
+		});
+		const seen: string[] = [];
+		const stopA = await subscribe(() => seen.push('a'));
+		await subscribe(() => seen.push('b'));
+		expect(attaches).toBe(1);
+		emit?.(coreEvent());
+		expect(seen).toEqual(['a', 'b']);
+		stopA();
+		emit?.(coreEvent());
+		expect(seen).toEqual(['a', 'b', 'b']);
+	});
+
+	test('keeps delivering when one subscriber throws', async () => {
+		let emit: ((event: CoreEvent) => void) | undefined;
+		const subscribe = shareEventSubscription(async (handler) => {
+			emit = handler;
+			return () => {};
+		});
+		const originalError = console.error;
+		console.error = () => {};
+		try {
+			let delivered = false;
+			await subscribe(() => {
+				throw new Error('broken subscriber');
+			});
+			await subscribe(() => {
+				delivered = true;
+			});
+			emit?.(coreEvent());
+			expect(delivered).toBe(true);
+		} finally {
+			console.error = originalError;
+		}
+	});
+
+	test('retries after the host listener fails to attach', async () => {
+		let attempts = 0;
+		const subscribe = shareEventSubscription(async () => {
+			attempts += 1;
+			if (attempts === 1) throw new Error('bridge not ready');
+			return () => {};
+		});
+		await expect(subscribe(() => {})).rejects.toThrow('bridge not ready');
+		await subscribe(() => {});
+		expect(attempts).toBe(2);
+	});
 });
 
 function coreEvent(
@@ -215,6 +322,7 @@ describe('LiveProjection', () => {
 	});
 
 	test('recovers missed events on focus and visible transitions', async () => {
+		const clock = new FakeClock();
 		const focus = new EventTarget();
 		const visibility = new FakeVisibilitySource();
 		let calls = 0;
@@ -226,21 +334,70 @@ describe('LiveProjection', () => {
 			workspaceId: () => 'workspace-a',
 			focusSource: focus,
 			visibilitySource: visibility,
+			schedule: clock.schedule,
 		});
 
 		await projection.start();
 		focus.dispatchEvent(new Event('focus'));
-		await Promise.resolve();
-		await Promise.resolve();
+		await clock.advance(250);
 		expect(calls).toBe(2);
 		visibility.dispatchEvent(new Event('visibilitychange'));
-		await Promise.resolve();
+		await clock.advance(250);
 		expect(calls).toBe(2);
 		visibility.visibilityState = 'visible';
 		visibility.dispatchEvent(new Event('visibilitychange'));
-		await Promise.resolve();
-		await Promise.resolve();
+		await clock.advance(250);
 		expect(calls).toBe(3);
+	});
+
+	test('coalesces focus and visibility into one refresh', async () => {
+		const clock = new FakeClock();
+		const focus = new EventTarget();
+		const visibility = new FakeVisibilitySource();
+		visibility.visibilityState = 'visible';
+		let calls = 0;
+		const projection = new LiveProjection({
+			refresh: async () => {
+				calls += 1;
+			},
+			subscribe: async () => () => {},
+			workspaceId: () => 'workspace-a',
+			focusSource: focus,
+			visibilitySource: visibility,
+			schedule: clock.schedule,
+		});
+
+		await projection.start();
+		visibility.dispatchEvent(new Event('visibilitychange'));
+		focus.dispatchEvent(new Event('focus'));
+		await clock.advance(250);
+		expect(calls).toBe(2);
+	});
+
+	test('applies a projection event filter', async () => {
+		const clock = new FakeClock();
+		let handler: ((event: CoreEvent) => void) | undefined;
+		let calls = 0;
+		const projection = new LiveProjection({
+			refresh: async () => {
+				calls += 1;
+			},
+			subscribe: async (next) => {
+				handler = next;
+				return () => {};
+			},
+			workspaceId: () => 'workspace-a',
+			events: objectTypeEvents(['task']),
+			schedule: clock.schedule,
+		});
+
+		await projection.start();
+		handler?.({ ...coreEvent('object:updated'), payload: { type: 'note' } });
+		await clock.advance(250);
+		expect(calls).toBe(1);
+		handler?.({ ...coreEvent('object:updated'), payload: { type: 'task' } });
+		await clock.advance(250);
+		expect(calls).toBe(2);
 	});
 
 	test('retries a failed subscription with an explicit refresh', async () => {

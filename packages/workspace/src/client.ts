@@ -58,7 +58,7 @@ import type {
 	MutationResult,
 	Note,
 	ObjectPatch,
-	ObjectQuery,
+	ObjectFilter,
 	ObjectType,
 	Project,
 	SearchInput,
@@ -82,6 +82,8 @@ import type {
 	RawConflictResolveInput,
 	RawConflictResolveResult,
 	MarkdownLinkTarget,
+	ObjectSummary,
+	ObjectSummaryQuery,
 	RenameChatInput,
 } from '@noura/shared';
 export type * from '@noura/shared';
@@ -89,6 +91,7 @@ export { isCoreError } from '@noura/shared';
 export { AiRegistry } from '@noura/ai';
 export {
 	PluginHost,
+	type CollaborationProvider,
 	type PluginHostServices,
 	type PluginManifest,
 } from '@noura/plugin-sdk';
@@ -113,13 +116,20 @@ export {
 	createAppUpdater,
 	type AppUpdater,
 	type AppUpdaterAdapter,
+	type AppUpdateCheck,
 	type AppUpdateState,
 	type PendingAppUpdate,
 } from './app-updater';
 export { firstPartyPlugins } from './first-party';
 export {
+	CollaborationProviderSlot,
+	type CollaborationSlotSnapshot,
+} from './collaboration-slot';
+export {
 	PluginRuntime,
 	PluginRegistry,
+	CORE_PLUGIN_IDS,
+	isCorePlugin,
 	browserPluginCapabilities,
 	createPluginHostServices,
 	type PluginRegistrySnapshot,
@@ -137,9 +147,23 @@ export interface WorkspaceService {
 	listRecent(): Promise<
 		Array<{ path: string; name: string; workspaceId: string }>
 	>;
+	/** Remove a workspace from the recent list; its folder is untouched. */
+	forgetRecent(input: {
+		workspaceId: string;
+	}): Promise<Array<{ path: string; name: string; workspaceId: string }>>;
+	/** Open the workspace folder in the file manager. */
+	showInFolder(folder: 'root'): Promise<void>;
+	/** How an MCP client launches this app to reach the open workspace. */
+	mcpConnection(): Promise<McpConnection>;
+	/** Launch the MCP command as a client would; true when it answers. */
+	testMcpConnection(): Promise<boolean>;
+}
+export interface McpConnection {
+	command: string;
+	args: string[];
 }
 export interface ObjectService<T extends WorkspaceObject> {
-	list(query?: ObjectQuery): Promise<T[]>;
+	list(query?: ObjectFilter): Promise<T[]>;
 	get(id: string): Promise<T>;
 	create(input: {
 		title: string;
@@ -287,10 +311,31 @@ export interface FileService {
 		sourceRelativePath: string;
 		target: string;
 	}): Promise<{ dataUrl: string }>;
+	/**
+	 * Download a remote image the user chose to load, as a data URL. The
+	 * desktop page may not load remote images itself.
+	 */
+	fetchRemoteImage(input: { url: string }): Promise<{ dataUrl: string }>;
+	/** Rename or move a file. Managed objects keep their ID. */
+	move(input: { from: string; to: string }): Promise<void>;
+	/**
+	 * Move a file or folder to the system trash. Resolves to the
+	 * `.noura/trash` path when the system trash was unavailable.
+	 */
+	trash(input: { relativePath: string }): Promise<string | null>;
+	/**
+	 * Duplicate a file. A note, task or project copy gets a new ID. Refuses to
+	 * overwrite (`path_exists`).
+	 */
+	copy(input: { from: string; to: string }): Promise<void>;
+	/** Show a file or folder in the system file manager. */
+	reveal(input: { relativePath: string }): Promise<void>;
+	/** Open a file with the system's default app. Refuses apps and scripts. */
+	openWithDefaultApp(input: { relativePath: string }): Promise<void>;
 }
 
 export interface GenericObjectService {
-	list(query?: ObjectQuery): Promise<WorkspaceObject[]>;
+	list(query?: ObjectFilter): Promise<WorkspaceObject[]>;
 	get(id: string): Promise<WorkspaceObject>;
 	create(input: {
 		type: ObjectType;
@@ -303,6 +348,54 @@ export interface GenericObjectService {
 		id: string,
 		patch: ObjectPatch,
 	): Promise<MutationResult<WorkspaceObject>>;
+	/** Open this object's enclosing folder in the OS file manager. */
+	showInFolder(id: string): Promise<void>;
+	/**
+	 * Bounded summaries without bodies, filtered and ordered by the index.
+	 * Use for overviews that show a few items, such as Home.
+	 */
+	summaries(query: ObjectSummaryQuery): Promise<ObjectSummary[]>;
+}
+
+/** What the host can do on this system, so the interface can hide actions. */
+export interface AppCapabilities {
+	/** "Open in Terminal" works here. */
+	openTerminal: boolean;
+	/** Revealing a file selects it in the file manager. */
+	revealSelectsFile: boolean;
+	/** Files and folders can be shown in the system file manager. */
+	revealInFileManager: boolean;
+	/** Files can open in the system's default app. */
+	openWithDefaultApp: boolean;
+	/** Deleted files go to the system trash rather than `.noura/trash`. */
+	systemTrash: boolean;
+	/** Workspaces are folders on disk that the user picks and can reveal. */
+	workspaceFolders: boolean;
+	/** An MCP client can reach the open workspace through this app. */
+	mcp: boolean;
+}
+
+/**
+ * What a native host can do unless it says otherwise. Older native builds
+ * report only `openTerminal` and `revealSelectsFile`.
+ */
+const NATIVE_CAPABILITIES: AppCapabilities = {
+	openTerminal: false,
+	revealSelectsFile: false,
+	revealInFileManager: true,
+	openWithDefaultApp: true,
+	systemTrash: true,
+	workspaceFolders: true,
+	mcp: true,
+};
+
+export interface AppService {
+	/**
+	 * A plain-text report for bug reports: version, platform, workspace
+	 * health, and recent log lines with paths and quoted text removed.
+	 */
+	diagnostics(): Promise<string>;
+	capabilities(): Promise<AppCapabilities>;
 }
 
 export interface ManifestService {
@@ -366,6 +459,9 @@ export interface NouraClient {
 		disconnect(): Promise<void>;
 	};
 	workspaces: WorkspaceService;
+	/** Open an HTTP or HTTPS link in the default browser. */
+	openLink(url: string): Promise<void>;
+	app: AppService;
 	objects: GenericObjectService;
 	manifest: ManifestService;
 	pluginState: PluginStateService;
@@ -426,6 +522,9 @@ function genericObjects(transport: CoreTransport): GenericObjectService {
 		get: (id) => transport.request('objects_get', { id }),
 		create: (input) => transport.request('objects_create', { input }),
 		update: (id, patch) => transport.request('objects_update', { id, patch }),
+		showInFolder: (id) =>
+			transport.request('object_show_in_folder', { input: { id } }),
+		summaries: (query) => transport.request('objects_summaries', { query }),
 	};
 }
 
@@ -443,9 +542,9 @@ function objects<T extends WorkspaceObject>(
 		move: (input) => transport.request('objects_move', { input }),
 		delete: (input) => transport.request('objects_delete', { input }),
 		showInFolder: (id: string) =>
-			transport.request('object_show_in_folder', { id }),
+			transport.request('object_show_in_folder', { input: { id } }),
 		openTerminal: (id: string) =>
-			transport.request('object_open_terminal', { id }),
+			transport.request('object_open_terminal', { input: { id } }),
 	};
 }
 
@@ -482,19 +581,16 @@ export function createNouraClient(
 	const projectObjects = objects<Project>(transport, 'project');
 	const objectService = genericObjects(transport);
 	const manifestService: ManifestService = {
-		read: async () =>
-			toManifest(await transport.request<ManifestDto>('manifest_read')),
-		update: async (input) =>
-			toManifest(
-				await transport.request<ManifestDto>('manifest_update', {
-					input: {
-						name: input.name ?? null,
-						enabledPlugins: input.enabledPlugins ?? null,
-						ignore: input.ignore ?? null,
-						expectedUpdated: input.expectedUpdated ?? null,
-					},
-				}),
-			),
+		read: () => transport.request('manifest_read'),
+		update: (input) =>
+			transport.request('manifest_update', {
+				input: {
+					name: input.name ?? null,
+					enabledPlugins: input.enabledPlugins ?? null,
+					ignore: input.ignore ?? null,
+					expectedUpdated: input.expectedUpdated ?? null,
+				},
+			}),
 	};
 	const pluginStateService: PluginStateService = {
 		get: async (pluginId, key) => {
@@ -605,6 +701,24 @@ export function createNouraClient(
 			current: () => transport.request('workspace_state'),
 			rebuildIndex: () => transport.request('workspace_rebuild_index'),
 			listRecent: () => transport.request('workspace_list_recent'),
+			forgetRecent: (input) =>
+				transport.request('workspace_forget_recent', {
+					workspaceId: input.workspaceId,
+				}),
+			showInFolder: (folder) =>
+				transport.request('workspace_show_in_folder', { input: { folder } }),
+			mcpConnection: () => transport.request('mcp_connection'),
+			testMcpConnection: () => transport.request('mcp_test_connection'),
+		},
+		openLink: (url) => transport.request('app_open_link', { url }),
+		app: {
+			diagnostics: () => transport.request('app_diagnostics'),
+			capabilities: async () => ({
+				...NATIVE_CAPABILITIES,
+				...(await transport.request<Partial<AppCapabilities>>(
+					'app_capabilities',
+				)),
+			}),
 		},
 		objects: objectService,
 		manifest: manifestService,
@@ -637,6 +751,14 @@ export function createNouraClient(
 				transport.request('files_resolve_markdown_link', { input }),
 			readLocalAsset: (input) =>
 				transport.request('files_read_local_asset', { input }),
+			fetchRemoteImage: (input) =>
+				transport.request('files_fetch_remote_image', { input }),
+			move: (input) => transport.request('files_move', { input }),
+			trash: (input) => transport.request('files_trash', { input }),
+			copy: (input) => transport.request('files_copy', { input }),
+			reveal: (input) => transport.request('files_reveal', { input }),
+			openWithDefaultApp: (input) =>
+				transport.request('files_open_default', { input }),
 		},
 		notes: {
 			...noteObjects,
@@ -715,12 +837,7 @@ export function createNouraClient(
 				transport.request('managed_conflict_resolve', { input }),
 		},
 		search: {
-			query: async (input) => {
-				const values = await transport.request<
-					Array<Omit<SearchResult, 'highlights'>>
-				>('search_query', { input });
-				return values.map((value) => ({ ...value, highlights: [] }));
-			},
+			query: (input) => transport.request('search_query', { input }),
 		},
 		calendar: { queryRange: calendarQuery },
 		chats: {
@@ -818,38 +935,17 @@ export function createNouraClient(
 	};
 }
 
-/**
- * The Rust manifest DTO keeps snake_case frontmatter names on the wire; the
- * public TypeScript contract is camelCase. Fields keep their identities so
- * no durability decision depends on this mapping.
- */
-interface ManifestDto {
-	id: string;
-	format_version: number;
-	name: string;
-	created: string;
-	updated: string;
-	enabled_plugins: Array<string>;
-	ignore: Array<string>;
-}
-
-function toManifest(value: ManifestDto): WorkspaceManifest {
-	return {
-		id: value.id,
-		formatVersion: value.format_version,
-		name: value.name,
-		created: value.created,
-		updated: value.updated,
-		enabledPlugins: value.enabled_plugins,
-		ignore: value.ignore,
-	};
-}
-
 export function createWorkspaceStateStore(
 	client: NouraClient,
 ): Readable<WorkspaceState> {
 	return readable<WorkspaceState>(
-		{ phase: 'idle', indexedFiles: 0, diagnostics: [] },
+		{
+			phase: 'idle',
+			workspaceId: null,
+			rootPath: null,
+			indexedFiles: 0,
+			diagnostics: [],
+		},
 		(set) => {
 			let disposed = false;
 			let unsubscribe: undefined | (() => void);

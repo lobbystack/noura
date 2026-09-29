@@ -21,7 +21,7 @@ pub enum ErrorCategory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Error, TS)]
-#[ts(export)]
+#[ts(export, optional_fields = nullable)]
 #[error("{message}")]
 #[serde(rename_all = "camelCase")]
 pub struct CoreError {
@@ -33,7 +33,7 @@ pub struct CoreError {
     pub workspace_id: Option<String>,
     pub object_id: Option<String>,
     pub path: Option<String>,
-    #[ts(type = "Record<string, unknown> | undefined")]
+    #[ts(optional, type = "Record<string, unknown> | null")]
     pub details: Option<serde_json::Value>,
 }
 

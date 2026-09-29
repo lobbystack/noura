@@ -29,6 +29,10 @@ export default defineConfig({
 			'/v1': 'http://127.0.0.1:1900',
 		},
 	},
+	// Icons are imported one file each. Pre-bundling them made Vite discover
+	// new icons mid-session, re-optimize, and fail the page that asked for
+	// them with "Outdated Optimize Dep". They are plain Svelte modules.
+	optimizeDeps: { exclude: ['phosphor-svelte'] },
 	ssr: { noExternal: ['@noura/ai'] },
 	build: {
 		assetsInlineLimit: 0,

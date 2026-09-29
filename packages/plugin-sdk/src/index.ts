@@ -6,10 +6,15 @@ import type {
 	AiToolDefinition,
 } from '@noura/ai';
 import type {
+	CollaborationOpenInput,
+	CollaborationPresenceInput,
+	CollaborationReceipt,
+	CollaborationSession,
+	CollaborationSubmitInput,
 	CoreEvent,
 	MutationResult,
 	ObjectPatch,
-	ObjectQuery,
+	ObjectFilter,
 	SearchInput,
 	SearchResult,
 	UnmanagedFile,
@@ -24,6 +29,7 @@ export const capabilitySchema = z.enum([
 	'workspace.commands',
 	'workspace.events',
 	'workspace.storage',
+	'workspace.collaboration',
 	'ai.tools',
 	'ai.context',
 	'ai.instructions',
@@ -37,7 +43,9 @@ const platformActivationCapabilitiesSchema = z
 	})
 	.strict();
 export const pluginManifestSchema = z.object({
-	id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+	// Matches the workspace manifest rule, so an enabled plugin ID is always
+	// valid in .noura/workspace.yaml.
+	id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
 	name: z.string().min(1),
 	version: z.string(),
 	capabilities: z.array(capabilitySchema),
@@ -50,6 +58,27 @@ export type PluginCapability = z.infer<typeof capabilitySchema>;
 export type PluginPlatform = z.infer<typeof pluginPlatformSchema>;
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
 export type { AiContextProvider, AiInstructionProvider, AiToolDefinition };
+
+/**
+ * Capabilities only trusted first-party plugins may hold. They reach native
+ * services that handle credentials or encrypted workspace keys.
+ */
+export const trustedCapabilities: ReadonlySet<PluginCapability> = new Set([
+	'workspace.collaboration',
+]);
+
+/**
+ * Live text collaboration for one workspace. Editors reach it only through
+ * the provider a plugin registers; with no provider, documents open as plain
+ * local files and nothing asks the native side about collaboration.
+ */
+export interface CollaborationProvider {
+	open(input: CollaborationOpenInput): Promise<CollaborationSession | null>;
+	submitUpdates(input: CollaborationSubmitInput): Promise<CollaborationReceipt>;
+	flush(input: { sessionId: string }): Promise<void>;
+	close(input: { sessionId: string }): Promise<void>;
+	setPresence(input: CollaborationPresenceInput): Promise<void>;
+}
 export interface PluginContext {
 	/** The host platform for this activation. */
 	platform: PluginPlatform;
@@ -70,7 +99,7 @@ export interface PluginContext {
 		removeEmptyFolder(relativePath: string): Promise<void>;
 	};
 	objects: {
-		list(query?: ObjectQuery): Promise<WorkspaceObject[]>;
+		list(query?: ObjectFilter): Promise<WorkspaceObject[]>;
 		get(id: string): Promise<WorkspaceObject>;
 		create(input: unknown): Promise<MutationResult<WorkspaceObject>>;
 		update(
@@ -94,6 +123,13 @@ export interface PluginContext {
 		registerInstructionProvider(
 			definition: AiInstructionProvider,
 		): () => boolean;
+	};
+	/** Trusted: requires `workspace.collaboration`. */
+	collaboration: {
+		/** The host's native collaboration service. */
+		service: CollaborationProvider;
+		/** Make `provider` the workspace's collaboration provider until disposed. */
+		registerProvider(provider: CollaborationProvider): () => boolean;
 	};
 }
 export interface PluginCommand {
@@ -139,6 +175,13 @@ export interface PluginHostServices {
 		registerInstructionProvider(
 			definition: AiInstructionProvider,
 			registration: AiContributionRegistration,
+		): () => boolean;
+	};
+	collaboration: {
+		service: CollaborationProvider;
+		registerProvider(
+			provider: CollaborationProvider,
+			registration: { owner: string },
 		): () => boolean;
 	};
 }
@@ -202,6 +245,11 @@ export interface PluginHostOptions {
 	 * code receives an unavailable service.
 	 */
 	supportedCapabilities?: Iterable<PluginCapability>;
+	/**
+	 * Plugin definitions allowed to hold trusted capabilities, matched by
+	 * object identity. Omit to trust none.
+	 */
+	trustedPlugins?: Iterable<PluginDefinition>;
 }
 
 export class PluginRuntimeError extends Error {
@@ -212,7 +260,8 @@ export class PluginRuntimeError extends Error {
 			| 'plugin_already_active'
 			| 'plugin_platform_unsupported'
 			| 'plugin_capability_unsupported'
-			| 'plugin_capability_not_declared',
+			| 'plugin_capability_not_declared'
+			| 'plugin_capability_untrusted',
 		message: string,
 		readonly operation: 'plugin_activate' | 'plugin_capability',
 		readonly details: Record<string, unknown>,
@@ -238,6 +287,7 @@ export class PluginHost {
 	#disposers = new Map<string, Set<() => boolean>>();
 	private readonly services: PluginHostServices;
 	private readonly supportedCapabilities: ReadonlySet<PluginCapability> | null;
+	private readonly trustedPlugins: ReadonlySet<PluginDefinition>;
 	readonly platform: PluginPlatform;
 	constructor(services: PluginHostServices, options: PluginHostOptions = {}) {
 		this.services = services;
@@ -245,27 +295,44 @@ export class PluginHost {
 		this.supportedCapabilities = options.supportedCapabilities
 			? new Set(options.supportedCapabilities)
 			: null;
+		this.trustedPlugins = new Set(options.trustedPlugins ?? []);
 	}
 	activationError(definition: PluginDefinition): PluginRuntimeError | null {
-		pluginManifestSchema.parse(definition.manifest);
-		if (!supportsPlatform(definition.manifest, this.platform)) {
+		return this.#activationError(definition, definition.manifest);
+	}
+	#activationError(
+		definition: PluginDefinition,
+		manifest: PluginManifest,
+	): PluginRuntimeError | null {
+		pluginManifestSchema.parse(manifest);
+		if (!this.trustedPlugins.has(definition)) {
+			const capability = manifest.capabilities.find((value) =>
+				trustedCapabilities.has(value),
+			);
+			if (capability) {
+				return new PluginRuntimeError(
+					'plugin_capability_untrusted',
+					`Plugin ${manifest.id} cannot hold trusted ${capability}`,
+					'plugin_activate',
+					{ pluginId: manifest.id, capability },
+				);
+			}
+		}
+		if (!supportsPlatform(manifest, this.platform)) {
 			return new PluginRuntimeError(
 				'plugin_platform_unsupported',
-				`Plugin ${definition.manifest.id} does not support ${this.platform}`,
+				`Plugin ${manifest.id} does not support ${this.platform}`,
 				'plugin_activate',
-				{ pluginId: definition.manifest.id, platform: this.platform },
+				{ pluginId: manifest.id, platform: this.platform },
 			);
 		}
-		for (const capability of activationCapabilities(
-			definition.manifest,
-			this.platform,
-		)) {
-			if (!definition.manifest.capabilities.includes(capability)) {
+		for (const capability of activationCapabilities(manifest, this.platform)) {
+			if (!manifest.capabilities.includes(capability)) {
 				return new PluginRuntimeError(
 					'plugin_capability_not_declared',
-					`Plugin ${definition.manifest.id} activates with undeclared ${capability}`,
+					`Plugin ${manifest.id} activates with undeclared ${capability}`,
 					'plugin_activate',
-					{ pluginId: definition.manifest.id, capability },
+					{ pluginId: manifest.id, capability },
 				);
 			}
 			if (
@@ -274,10 +341,10 @@ export class PluginHost {
 			) {
 				return new PluginRuntimeError(
 					'plugin_capability_unsupported',
-					`Plugin ${definition.manifest.id} requires unavailable ${capability}`,
+					`Plugin ${manifest.id} requires unavailable ${capability}`,
 					'plugin_activate',
 					{
-						pluginId: definition.manifest.id,
+						pluginId: manifest.id,
 						capability,
 						platform: this.platform,
 					},
@@ -295,10 +362,13 @@ export class PluginHost {
 				'plugin_activate',
 				{ pluginId: manifest.id },
 			);
-		const activationError = this.activationError({ ...definition, manifest });
+		const activationError = this.#activationError(definition, manifest);
 		if (activationError) throw activationError;
 		this.#disposers.set(manifest.id, new Set());
-		const context = this.contextFor(manifest);
+		const context = this.contextFor(
+			manifest,
+			this.trustedPlugins.has(definition),
+		);
 		try {
 			await definition.activate(context);
 			this.#active.set(manifest.id, { definition, manifest });
@@ -328,7 +398,10 @@ export class PluginHost {
 	activeManifests(): PluginManifest[] {
 		return [...this.#active.values()].map((active) => active.manifest);
 	}
-	private contextFor(manifest: PluginManifest): PluginContext {
+	private contextFor(
+		manifest: PluginManifest,
+		trusted: boolean,
+	): PluginContext {
 		const granted = new Set(
 			activationCapabilities(manifest, this.platform).filter(
 				(capability) =>
@@ -338,6 +411,14 @@ export class PluginHost {
 			),
 		);
 		const guard = (capability: PluginCapability) => {
+			if (trustedCapabilities.has(capability) && !trusted) {
+				throw new PluginRuntimeError(
+					'plugin_capability_untrusted',
+					`Plugin ${manifest.id} cannot use trusted ${capability}`,
+					'plugin_capability',
+					{ pluginId: manifest.id, capability },
+				);
+			}
 			if (!manifest.capabilities.includes(capability)) {
 				throw new PluginRuntimeError(
 					'plugin_capability_not_declared',
@@ -462,6 +543,39 @@ export class PluginHost {
 					return this.#track(
 						manifest.id,
 						this.services.ai.registerInstructionProvider(definition, {
+							owner: manifest.id,
+						}),
+					);
+				},
+			},
+			collaboration: {
+				service: {
+					open: (input) => {
+						guard('workspace.collaboration');
+						return this.services.collaboration.service.open(input);
+					},
+					submitUpdates: (input) => {
+						guard('workspace.collaboration');
+						return this.services.collaboration.service.submitUpdates(input);
+					},
+					flush: (input) => {
+						guard('workspace.collaboration');
+						return this.services.collaboration.service.flush(input);
+					},
+					close: (input) => {
+						guard('workspace.collaboration');
+						return this.services.collaboration.service.close(input);
+					},
+					setPresence: (input) => {
+						guard('workspace.collaboration');
+						return this.services.collaboration.service.setPresence(input);
+					},
+				},
+				registerProvider: (provider) => {
+					guard('workspace.collaboration');
+					return this.#track(
+						manifest.id,
+						this.services.collaboration.registerProvider(provider, {
 							owner: manifest.id,
 						}),
 					);

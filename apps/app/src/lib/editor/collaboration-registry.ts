@@ -1,8 +1,8 @@
-import {
+import type {
+	CollaborationBootstrap,
+	CollaborationBatch,
+	CollaborationEvent,
 	CollaborationSession,
-	type CollaborationBootstrap,
-	type CollaborationBatch,
-	type CollaborationEvent,
 } from '@noura/editor';
 
 export interface NativeCollaborationClient {
@@ -90,6 +90,9 @@ export class CollaborationRegistry {
 		};
 	}
 	private async open(relativePath: string): Promise<RecordEntry | null> {
+		// Yjs loads with the first shared document, not with every editor.
+		const sessions = import('@noura/editor/collaboration');
+		sessions.catch(() => {});
 		// Subscribe before bootstrap so an update racing open cannot be lost.
 		let handler: ((event: CollaborationEvent) => void) | undefined;
 		const buffered: { objectId: string; event: CollaborationEvent }[] = [];
@@ -118,6 +121,7 @@ export class CollaborationRegistry {
 			}
 		});
 		try {
+			const { CollaborationSession } = await sessions;
 			const bootstrap = await this.client.collaboration.open({ relativePath });
 			if (!bootstrap) {
 				unlisten();

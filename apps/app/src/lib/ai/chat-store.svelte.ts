@@ -1,19 +1,21 @@
-import { browser } from '$app/environment';
 import {
+	CHAT_CHANGED_MESSAGE,
+	createChatPersistence,
 	isCoreError,
+	namesChat,
+	NEW_CHAT_TITLE,
 	type AiProviderConfig,
 	type Chat,
 	type ChatRead,
 } from '@noura/workspace';
-import {
-	PiChatController,
-	type AiChatRun,
-	type AiToolConsentRequest,
-	type PiChatControllerOptions,
+import type {
+	AiChatRun,
+	AiToolConsentRequest,
+	PiChatControllerOptions,
 } from '@noura/ai';
 import { getNouraClient, workspace } from '$lib/state.svelte';
+import { LiveRefresh } from '$lib/live-refresh';
 import {
-	chatTitle,
 	nativeToolDefinitions,
 	nativeTransportMessages,
 	providerStreamFrame,
@@ -33,20 +35,7 @@ function operationId() {
 	return crypto.randomUUID();
 }
 
-function controllerError(error: unknown, expectedRevision: string): unknown {
-	if (!isCoreError(error) || error.code !== 'revision_conflict') return error;
-	return Object.assign(
-		new Error(
-			'This chat changed outside Noura. Reload the transcript before retrying.',
-		),
-		{
-			code: 'revision-conflict' as const,
-			expectedRevision,
-		},
-	);
-}
-
-export interface PendingToolApproval {
+interface PendingToolApproval {
 	workspaceId: string;
 	chatId: string;
 	runId: string;
@@ -59,6 +48,26 @@ function chatIdFromEvent(payload: unknown): string | null {
 	if (!payload || typeof payload !== 'object' || !('id' in payload))
 		return null;
 	return typeof payload.id === 'string' ? payload.id : null;
+}
+
+/**
+ * Context and output limits for a provider. Provider settings do not store
+ * them yet, so these conservative defaults apply unless a provider entry
+ * carries its own values.
+ */
+function modelLimits(provider: AiProviderConfig) {
+	const configured = provider as AiProviderConfig & {
+		contextWindow?: unknown;
+		maxTokens?: unknown;
+	};
+	const positive = (value: unknown, fallback: number) =>
+		typeof value === 'number' && Number.isFinite(value) && value > 0
+			? value
+			: fallback;
+	return {
+		contextWindow: positive(configured.contextWindow, 8_192),
+		maxTokens: positive(configured.maxTokens, 1_024),
+	};
 }
 
 class AiChatStore {
@@ -77,6 +86,13 @@ class AiChatStore {
 	#initialized = false;
 	#initializing: Promise<void> | null = null;
 	#refreshSequence = 0;
+	#chatListSequence = 0;
+	/** Chat events arrive once per persisted step of a run. Read the list
+	 * once per burst, not once per event. */
+	#chatEvents = new LiveRefresh({
+		refresh: () => this.#refreshForChatEvents(),
+	});
+	#changedChatIds = new Set<string>();
 	#workspaceId: string | null = null;
 	#run: AiChatRun | null = null;
 	#resolveToolApproval: ((approved: boolean) => void) | null = null;
@@ -108,8 +124,10 @@ class AiChatStore {
 		return this.read?.chat.id ?? null;
 	}
 
+	/** Load providers and chats, then follow chat and workspace events. The
+	 * AI page and AI settings call this; nothing runs at app startup. */
 	async init() {
-		if (!browser || this.#initialized) return;
+		if (this.#initialized) return;
 		if (this.#initializing) return this.#initializing;
 		this.#initializing = (async () => {
 			await this.refresh();
@@ -123,8 +141,11 @@ class AiChatStore {
 					if (
 						event.type.startsWith('chat:') &&
 						event.workspaceId === this.#currentWorkspaceId()
-					)
-						void this.#refreshForChatEvent(chatIdFromEvent(event.payload));
+					) {
+						const chatId = chatIdFromEvent(event.payload);
+						if (chatId) this.#changedChatIds.add(chatId);
+						this.#chatEvents.invalidate();
+					}
 				});
 				this.#initialized = true;
 			} catch (error) {
@@ -138,16 +159,12 @@ class AiChatStore {
 	}
 
 	async refresh() {
-		if (!browser) return;
 		const refreshSequence = ++this.#refreshSequence;
 		const workspaceId = this.#currentWorkspaceId();
 		this.#reconcileWorkspace(workspaceId);
 		this.loading = true;
 		this.error = null;
 		const client = getNouraClient();
-		// Expiry is housekeeping: listing remains available when it cannot run.
-		if (workspaceId)
-			await client.chats.expire(new Date().toISOString()).catch(() => []);
 		const [providerResult, chatResult] = await Promise.all([
 			Promise.resolve()
 				.then(() => client.ai.listProviders())
@@ -200,18 +217,33 @@ class AiChatStore {
 		this.loading = false;
 	}
 
-	async #refreshForChatEvent(chatId: string | null) {
+	/** Re-list chats after a burst of chat events, and re-read the open
+	 * chat when something else changed it. A running reply keeps its own
+	 * transcript and re-reads once it finishes. */
+	async #refreshForChatEvents() {
+		const changed = new Set(this.#changedChatIds);
+		this.#changedChatIds.clear();
 		const workspaceId = this.#currentWorkspaceId();
-		await this.refresh();
-		if (
-			!chatId ||
-			this.running ||
-			!this.#isCurrentWorkspace(workspaceId) ||
-			this.selectedChatId !== chatId
-		)
-			return;
+		if (!workspaceId) return;
+		const sequence = ++this.#chatListSequence;
+		const client = getNouraClient();
 		try {
-			this.read = await getNouraClient().chats.read(chatId);
+			const chats = await client.chats.list();
+			if (
+				sequence !== this.#chatListSequence ||
+				!this.#isCurrentWorkspace(workspaceId)
+			)
+				return;
+			this.chats = chats;
+			if (this.read && !chats.some((chat) => chat.id === this.read?.chat.id))
+				this.read = null;
+			const selected = this.selectedChatId;
+			if (!selected || this.running || !changed.has(selected)) return;
+			const listed = chats.find((chat) => chat.id === selected);
+			if (listed?.revision === this.read?.chat.revision) return;
+			const read = await client.chats.read(selected);
+			if (this.#isCurrentWorkspace(workspaceId) && !this.running)
+				this.read = read;
 		} catch (error) {
 			if (this.#isCurrentWorkspace(workspaceId))
 				this.error = errorMessage(error);
@@ -310,16 +342,18 @@ class AiChatStore {
 
 	async create(retention: Chat['retention']) {
 		const workspaceId = this.#currentWorkspaceId();
-		if (!workspaceId) return;
+		if (!workspaceId || this.running) return;
 		this.error = null;
 		try {
 			const result = await getNouraClient().chats.create({
-				title: 'New chat',
+				title: NEW_CHAT_TITLE,
 				retention,
 			});
 			if (!this.#isCurrentWorkspace(workspaceId)) return;
-			await this.refresh();
-			if (!this.#isCurrentWorkspace(workspaceId)) return;
+			this.chats = [
+				result.value,
+				...this.chats.filter((chat) => chat.id !== result.value.id),
+			];
 			await this.select(result.value.id);
 		} catch (error) {
 			if (this.#isCurrentWorkspace(workspaceId))
@@ -334,22 +368,52 @@ class AiChatStore {
 		this.changingRetention = true;
 		this.error = null;
 		try {
-			await getNouraClient().chats.changeRetention({
+			const result = await getNouraClient().chats.changeRetention({
 				chatId: chat.id,
 				retention,
 				retentionDays: retention === 'ephemeral' ? 30 : null,
 				expectedChatRevision: chat.revision,
 			});
-			const read = await getNouraClient().chats.read(chat.id);
 			if (!this.#isCurrentWorkspace(workspaceId)) return;
-			this.read = read;
-			await this.refresh();
+			this.#adoptChat(result.value);
 		} catch (error) {
 			if (this.#isCurrentWorkspace(workspaceId))
 				this.error = errorMessage(error);
 		} finally {
 			this.changingRetention = false;
 		}
+	}
+
+	/** Rename a chat. Blank titles are ignored. */
+	async rename(chatId: string, title: string) {
+		const workspaceId = this.#currentWorkspaceId();
+		const chat =
+			this.chats.find((entry) => entry.id === chatId) ??
+			(this.read?.chat.id === chatId ? this.read.chat : undefined);
+		const next = title.trim();
+		if (!workspaceId || !chat || !next || next === chat.title) return;
+		this.error = null;
+		try {
+			const result = await getNouraClient().chats.rename({
+				chatId,
+				title: next,
+				expectedChatRevision: chat.revision,
+			});
+			if (this.#isCurrentWorkspace(workspaceId)) this.#adoptChat(result.value);
+		} catch (error) {
+			if (this.#isCurrentWorkspace(workspaceId))
+				this.error =
+					isCoreError(error) && error.code === 'revision_conflict'
+						? CHAT_CHANGED_MESSAGE
+						: errorMessage(error);
+		}
+	}
+
+	#adoptChat(chat: Chat) {
+		this.chats = this.chats.map((entry) =>
+			entry.id === chat.id ? chat : entry,
+		);
+		if (this.read?.chat.id === chat.id) this.read = { ...this.read, chat };
 	}
 
 	async send(message: string, resumeUserMessageId?: string) {
@@ -388,10 +452,11 @@ class AiChatStore {
 			return;
 		}
 		const runId = `run_${operationId()}`;
-		const nameFirstMessage =
-			!resumeUserMessageId &&
-			chat.title === 'New chat' &&
-			!this.read?.messages.some((item) => item.kind === 'user');
+		const nameFirstMessage = namesChat(
+			chat,
+			this.read?.messages ?? [],
+			Boolean(resumeUserMessageId),
+		);
 		this.#lastMessage = {
 			workspaceId,
 			chatId: chat.id,
@@ -410,10 +475,22 @@ class AiChatStore {
 			reasoning: false,
 			input: ['text'],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 8_192,
-			maxTokens: 1_024,
+			...modelLimits(provider),
 		} as PiChatControllerOptions['model'];
 
+		let PiChatController: typeof import('./chat-controller').PiChatController;
+		try {
+			({ PiChatController } = await import('./chat-controller'));
+		} catch (error) {
+			if (this.#isCurrentWorkspace(workspaceId))
+				this.error = errorMessage(error);
+			this.running = false;
+			return;
+		}
+		if (!this.#isCurrentWorkspace(workspaceId)) {
+			this.running = false;
+			return;
+		}
 		const controller = new PiChatController({
 			model,
 			systemPrompt,
@@ -424,143 +501,20 @@ class AiChatStore {
 				requestToolUse: (request) =>
 					this.#requestToolApproval(workspaceId, request),
 			},
-			persistence: {
-				rehydrate: async ({ chatId }) => {
-					const canonical = await client.chats.read(chatId);
-					return {
-						chatRevision: canonical.chat.revision,
-						messages: canonical.messages.map((item) => ({
-							id: item.id,
-							kind: item.kind,
-							status: item.status,
-							content: item.content,
-							toolCallId: item.toolCallId,
-							toolName: item.toolName,
-						})),
-						summaries: canonical.messages.flatMap((item) =>
-							item.kind === 'context-summary' && item.summarizesThroughMessageId
-								? [
-										{
-											summarizesThroughMessageId:
-												item.summarizesThroughMessageId,
-											content: item.content,
-										},
-									]
-								: [],
-						),
-					};
+			persistence: createChatPersistence(client.chats, {
+				nameFromFirstMessage: nameFirstMessage,
+				onUserMessage: (appended, input) => {
+					persistedUserMessageId = appended.id;
+					if (
+						this.#lastMessage?.runId === input.runId &&
+						this.#lastMessage.chatId === input.chatId
+					)
+						this.#lastMessage.userMessageId = appended.id;
 				},
-				appendUser: async (input) => {
-					try {
-						const appended = await client.chats.appendUserMessage(input);
-						persistedUserMessageId = appended.value.id;
-						if (
-							this.#lastMessage?.runId === input.runId &&
-							this.#lastMessage.chatId === input.chatId
-						)
-							this.#lastMessage.userMessageId = appended.value.id;
-						const canonical = await client.chats.read(input.chatId);
-						if (
-							nameFirstMessage &&
-							canonical.chat.title === 'New chat' &&
-							canonical.messages.filter((item) => item.kind === 'user')
-								.length === 1 &&
-							canonical.messages.some((item) => item.id === appended.value.id)
-						) {
-							try {
-								const renamed = await client.chats.rename({
-									chatId: input.chatId,
-									title: chatTitle(input.content),
-									expectedChatRevision: canonical.chat.revision,
-								});
-								return { chatRevision: renamed.value.revision };
-							} catch {
-								// An external rename wins; title derivation must not block a run.
-							}
-						}
-						return {
-							chatRevision: canonical.chat.revision,
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
+				onRenamed: (renamed) => {
+					if (this.#isCurrentWorkspace(workspaceId)) this.#adoptChat(renamed);
 				},
-				beginAssistant: async (input) => {
-					try {
-						const result = await client.chats.beginAssistant(input);
-						return {
-							chatRevision: (await client.chats.read(input.chatId)).chat
-								.revision,
-							message: { id: result.value.id, revision: result.value.revision },
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				beginToolCall: async (input) => {
-					try {
-						const result = await client.chats.beginToolCall(input);
-						return {
-							chatRevision: (await client.chats.read(input.chatId)).chat
-								.revision,
-							message: { id: result.value.id, revision: result.value.revision },
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				appendToolResult: async (input) => {
-					try {
-						await client.chats.appendToolResult(input);
-						return {
-							chatRevision: (await client.chats.read(input.chatId)).chat
-								.revision,
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				finishToolCall: async (input) => {
-					try {
-						await client.chats.finishToolCall({
-							...input,
-							errorCode: input.errorCode ?? null,
-						});
-						return {
-							chatRevision: (await client.chats.read(input.chatId)).chat
-								.revision,
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				finishAssistant: async (input) => {
-					try {
-						await client.chats.finishAssistant({
-							...input,
-							errorCode: input.errorCode ?? null,
-						});
-						return {
-							chatRevision: (await client.chats.read(input.chatId)).chat
-								.revision,
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-				appendContextSummary: async (input) => {
-					try {
-						const result = await client.chats.appendContextSummary(input);
-						return {
-							chatRevision: (await client.chats.read(input.chatId)).chat
-								.revision,
-							message: { id: result.value.id, revision: result.value.revision },
-						};
-					} catch (error) {
-						throw controllerError(error, input.expectedChatRevision);
-					}
-				},
-			},
+			}),
 			providerTransport: {
 				stream: async (input, onFrame) => {
 					let nextSequence = 1;
@@ -626,17 +580,14 @@ class AiChatStore {
 			const read = await client.chats.read(chat.id);
 			if (!this.#isCurrentWorkspace(workspaceId)) return;
 			this.read = read;
-			await this.refresh();
+			this.#adoptChat(read.chat);
 			if (result.status === 'completed') {
 				if (this.#lastMessage?.runId === result.runId) this.#lastMessage = null;
 			} else if (result.conflict) {
 				this.conflict = true;
-				this.error =
-					'This chat changed outside Noura. Reload the transcript before retrying.';
-			} else {
-				this.error =
-					result.error ??
-					`The AI request ${result.status === 'cancelled' ? 'was cancelled' : `ended ${result.status}`}.`;
+				this.error = CHAT_CHANGED_MESSAGE;
+			} else if (result.status !== 'cancelled') {
+				this.error = result.error ?? 'The reply did not finish.';
 			}
 		} catch (error) {
 			if (this.#isCurrentWorkspace(workspaceId))

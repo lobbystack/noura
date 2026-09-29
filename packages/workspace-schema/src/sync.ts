@@ -1,11 +1,6 @@
 import { z } from 'zod';
 
-const reserved = new Set([
-	'.noura',
-	'.git',
-	'node_modules',
-	'target',
-]);
+const reserved = new Set(['.noura', '.git', 'node_modules', 'target']);
 const portablePath = z
 	.string()
 	.refine(

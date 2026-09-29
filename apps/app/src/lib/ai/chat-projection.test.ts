@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import {
-	chatTitle,
 	nativeToolDefinitions,
 	nativeTransportMessages,
 	providerStreamFrame,
@@ -19,14 +18,6 @@ describe('AI chat projection', () => {
 		).toEqual([
 			{ role: 'system', content: [{ type: 'text', text: 'Instructions' }] },
 		]);
-	});
-
-	test('derives a bounded chat title from the first line', () => {
-		expect(chatTitle('  Plan the release\nwith risks  ')).toBe(
-			'Plan the release',
-		);
-		expect(chatTitle('   ')).toBe('New chat');
-		expect(chatTitle(`${'🙂'.repeat(65)} first message`)).toBe('🙂'.repeat(64));
 	});
 
 	test('round-trips native tool calls and results through provider history', () => {

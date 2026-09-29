@@ -30,10 +30,13 @@ pub use engine::{
     ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
     ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch, RawConflictResolveInput,
     RawConflictResolveResult, RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput,
-    RawSaveResult, ResolveConflictInput, WorkspaceEngine,
+    RawSaveResult, ResolveConflictInput, SYNC_PLUGIN_ID, SystemTrash, WorkspaceEngine, os_trash,
 };
 pub use error::{CoreError, ErrorCategory, Result};
-pub use index::{CalendarEntry, IndexStore, SearchInput, SearchResult};
+pub use index::{
+    CalendarEntry, IndexStore, ObjectFilter, ObjectSummary, ObjectSummaryOrder, ObjectSummaryQuery,
+    SearchInput, SearchResult,
+};
 pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object};
 pub use model::*;
 pub use watcher::WatchCoordinator;

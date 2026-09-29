@@ -78,7 +78,7 @@
 	});
 </script>
 
-<svelte:head><title>Shared item · Noura</title></svelte:head>
+<svelte:head><title>Shared item · noura</title></svelte:head>
 <p class="text-sm text-muted-foreground">Shared with you · Read only</p>
 {#if error}<p role="alert">{error}</p>
 {:else if payload}

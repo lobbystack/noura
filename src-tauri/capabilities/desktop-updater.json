@@ -1,8 +1,15 @@
 {
 	"$schema": "../gen/schemas/desktop-schema.json",
 	"identifier": "desktop-updater",
-	"description": "Lets the desktop window check for, download, and install signed Noura updates, then restart.",
+	"description": "Lets the desktop window read its version, check for, download, and install signed noura updates, restart, and manage launch at login.",
 	"windows": ["main"],
 	"platforms": ["macOS", "windows", "linux"],
-	"permissions": ["updater:default", "process:allow-restart"]
+	"permissions": [
+		"core:app:allow-version",
+		"updater:default",
+		"process:allow-restart",
+		"autostart:allow-enable",
+		"autostart:allow-disable",
+		"autostart:allow-is-enabled"
+	]
 }

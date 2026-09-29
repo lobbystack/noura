@@ -43,9 +43,12 @@ describe('app plugin runtime', () => {
 			];
 			const { runtime, calls, state } = harness(platform, enabled);
 			expect(runtime.host.platform).toBe(platform);
+			const active =
+				platform === 'web'
+					? ['notes', 'tasks', 'calendar', 'projects', 'sync']
+					: ['sync'];
 			expect(await runtime.syncWithManifest()).toEqual({
-				activated:
-					platform === 'web' ? ['notes', 'tasks', 'calendar', 'projects'] : [],
+				activated: active,
 				deactivated: [],
 				unavailablePluginIds: firstPartyPlugins
 					.filter((plugin) => !plugin.manifest.platforms?.includes(platform))
@@ -53,8 +56,10 @@ describe('app plugin runtime', () => {
 				enabledPluginIds: enabled,
 			});
 			expect(runtime.host.activeManifests().map((plugin) => plugin.id)).toEqual(
-				platform === 'web' ? ['notes', 'tasks', 'calendar', 'projects'] : [],
+				active,
 			);
+			// Browsers keep sync without native collaboration.
+			expect(runtime.collaboration.provider === null).toBe(platform === 'web');
 			expect(state.enabled).toEqual(enabled);
 			expect(calls).toEqual(['manifest_read']);
 		});
@@ -67,23 +72,29 @@ describe('app plugin runtime', () => {
 			'future-plugin',
 		]);
 		expect(runtime.host.platform).toBe('desktop');
+		// Files and notes are core: they activate even without a manifest entry.
 		expect((await runtime.syncWithManifest()).activated).toEqual([
+			'folders',
 			'notes',
 			'tasks',
 		]);
 		expect((await runtime.syncWithManifest()).activated).toEqual([]);
-		state.enabled = ['notes', 'future-plugin'];
+		state.enabled = ['future-plugin'];
 		expect((await runtime.syncWithManifest()).deactivated).toEqual(['tasks']);
-		expect(await runtime.deactivateAll()).toEqual(['notes']);
+		expect(await runtime.deactivateAll()).toEqual(['folders', 'notes']);
 		expect(runtime.host.activeManifests()).toEqual([]);
 	});
 
-	test('only notes, tasks, calendar and projects advertise web support', () => {
+	test('only notes, tasks, calendar, projects and sync advertise web support', () => {
 		for (const plugin of firstPartyPlugins)
 			expect(plugin.manifest.platforms).toEqual(
-				['notes', 'tasks', 'calendar', 'projects'].includes(plugin.manifest.id)
-					? ['desktop', 'web']
-					: ['desktop'],
+				plugin.manifest.id === 'sync'
+					? ['desktop', 'mobile', 'web']
+					: ['notes', 'tasks', 'calendar', 'projects'].includes(
+								plugin.manifest.id,
+						  )
+						? ['desktop', 'web']
+						: ['desktop'],
 			);
 	});
 });

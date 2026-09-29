@@ -1,15 +1,55 @@
 import type { CoreEvent } from '@noura/workspace';
+import { BULK_OBJECT_EVENT, objectEvents } from './object-events';
 
-export const LIVE_REFRESH_EVENT_TYPES = new Set([
+/**
+ * Events that can change what a projection shows. `search:index-updated`
+ * is left out on purpose: the engine emits it next to an object or file
+ * event, so listening to both doubled the work behind every save.
+ */
+const LIVE_REFRESH_EVENT_TYPES = new Set([
 	'object:created',
 	'object:updated',
 	'object:deleted',
 	'object:moved',
+	BULK_OBJECT_EVENT,
 	'file:changed',
-	'search:index-updated',
 	'workspace:ready',
 	'workspace:manifest-updated',
 ]);
+
+/** Decides whether a core event can change one projection. */
+export type LiveEventFilter = (event: CoreEvent) => boolean;
+
+function payloadObjectType(payload: unknown): string | null {
+	if (!payload || typeof payload !== 'object' || !('type' in payload))
+		return null;
+	return typeof payload.type === 'string' ? payload.type : null;
+}
+
+/**
+ * A filter for projections built from typed objects. Object events count
+ * only for the listed types, so a note autosave no longer reloads tasks. A
+ * bulk `objects:changed` event counts when any of its changes does.
+ * External file changes still count: they may arrive batched, without a
+ * per-object event.
+ */
+export function objectTypeEvents(types: readonly string[]): LiveEventFilter {
+	const accepted = new Set(types);
+	return (event) => {
+		const changes = objectEvents(event);
+		if (changes.length > 0)
+			return changes.some((change) => {
+				const type = payloadObjectType(change.payload);
+				return type === null || accepted.has(type);
+			});
+		if (event.type === BULK_OBJECT_EVENT) return true;
+		if (event.type === 'file:changed') return event.source !== 'application';
+		return (
+			event.type === 'workspace:ready' ||
+			event.type === 'workspace:manifest-updated'
+		);
+	};
+}
 
 type Schedule = (callback: () => void, delayMs: number) => () => void;
 
@@ -34,6 +74,9 @@ type VisibilitySource = EventSource & { visibilityState: string };
 export interface LiveProjectionOptions extends LiveRefreshOptions {
 	subscribe: (handler: (event: CoreEvent) => void) => Promise<() => void>;
 	workspaceId: () => string | null | undefined;
+	/** Which events can change this projection. Defaults to every event in
+	 * LIVE_REFRESH_EVENT_TYPES. */
+	events?: LiveEventFilter;
 	focusSource?: EventSource;
 	visibilitySource?: VisibilitySource;
 }
@@ -95,6 +138,7 @@ export class LiveProjection {
 	readonly #coordinator: LiveRefresh;
 	readonly #subscribe: LiveProjectionOptions['subscribe'];
 	readonly #workspaceId: LiveProjectionOptions['workspaceId'];
+	readonly #events: LiveEventFilter | undefined;
 	readonly #focusSource?: EventSource;
 	readonly #visibilitySource?: VisibilitySource;
 	readonly #onError?: (error: unknown) => void;
@@ -106,6 +150,7 @@ export class LiveProjection {
 	constructor(options: LiveProjectionOptions) {
 		this.#subscribe = options.subscribe;
 		this.#workspaceId = options.workspaceId;
+		this.#events = options.events;
 		this.#focusSource = options.focusSource;
 		this.#visibilitySource = options.visibilitySource;
 		this.#onError = options.onError;
@@ -152,7 +197,10 @@ export class LiveProjection {
 		if (this.#disposed || this.#subscription || this.#subscriptionPending)
 			return;
 		this.#subscriptionPending = this.#subscribe((event) => {
-			if (isLiveRefreshEvent(event, this.#workspaceId())) {
+			if (
+				isLiveRefreshEvent(event, this.#workspaceId(), this.#events) &&
+				!this.#disposed
+			) {
 				this.#coordinator.invalidate();
 			}
 		})
@@ -168,10 +216,12 @@ export class LiveProjection {
 			});
 	}
 
+	// Focus and visibilitychange both fire when the window comes back, so
+	// recovery goes through the debounced path and runs one read, not two.
 	#recover = () => {
 		if (this.#disposed) return;
 		this.#ensureSubscribed();
-		void this.#coordinator.refreshNow().catch(() => {});
+		this.#coordinator.invalidate();
 	};
 
 	#recoverWhenVisible = () => {
@@ -182,11 +232,51 @@ export class LiveProjection {
 export function isLiveRefreshEvent(
 	event: CoreEvent,
 	workspaceId: string | null | undefined,
+	events?: LiveEventFilter,
 ): boolean {
+	const relevant = events
+		? events(event)
+		: LIVE_REFRESH_EVENT_TYPES.has(event.type);
 	return (
-		LIVE_REFRESH_EVENT_TYPES.has(event.type) &&
+		relevant &&
 		(workspaceId === null ||
 			workspaceId === undefined ||
 			event.workspaceId === workspaceId)
 	);
+}
+
+type Subscribe = (handler: (event: CoreEvent) => void) => Promise<() => void>;
+
+/**
+ * Shares one host event listener between every subscriber. Each Tauri
+ * listener costs an IPC round trip and its own delivery, and the app had
+ * six to ten of them. The shared listener stays for the app's lifetime;
+ * a failed attach is retried by the next subscriber.
+ */
+export function shareEventSubscription(subscribe: Subscribe): Subscribe {
+	const handlers = new Set<(event: CoreEvent) => void>();
+	let attached: Promise<unknown> | null = null;
+	const dispatch = (event: CoreEvent) => {
+		for (const handler of [...handlers]) {
+			try {
+				handler(event);
+			} catch (error) {
+				// One failing subscriber must not starve the others.
+				console.error(error);
+			}
+		}
+	};
+	return async (handler) => {
+		attached ??= subscribe(dispatch).catch((error: unknown) => {
+			attached = null;
+			throw error;
+		});
+		await attached;
+		// A wrapper keeps each registration distinct, even for a reused handler.
+		const registration = (event: CoreEvent) => handler(event);
+		handlers.add(registration);
+		return () => {
+			handlers.delete(registration);
+		};
+	};
 }

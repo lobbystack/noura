@@ -2,4 +2,14 @@
 import type { CoreWarning } from "./CoreWarning";
 import type { IndexStatus } from "./IndexStatus";
 
-export type MutationResult<T> = { value: T, revision: string, durability: string, indexStatus: IndexStatus, warnings: Array<CoreWarning>, };
+export type MutationResult<T> = { value: T, revision: string, 
+/**
+ * Always `committed`: a mutation only returns after its canonical file
+ * write completes.
+ */
+durability: "committed", indexStatus: IndexStatus, warnings: Array<CoreWarning>, 
+/**
+ * For chat message mutations: the chat file's revision after the
+ * commit, so a client can make its next call without re-reading.
+ */
+chatRevision?: string, };

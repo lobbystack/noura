@@ -1,4 +1,3 @@
-import { browser } from '$app/environment';
 import {
 	firstPartyPlugins,
 	isCoreError,
@@ -13,6 +12,7 @@ import {
 	type NavigationId,
 } from './plugin-order';
 import { getNouraClient, getPluginRuntime, workspace } from './state.svelte';
+import { flushPendingDrafts } from './editor/pending-drafts.svelte';
 
 const PLUGIN_ORDER_STORAGE_PREFIX = 'noura.plugin-order.v1:';
 
@@ -50,7 +50,9 @@ class PluginStore {
 		if (!this.platform)
 			return 'Native platform could not be detected. Start or build through the Tauri CLI.';
 		if (!this.isSupported(id))
-			return `Not available on ${platformLabels[this.platform]}.`;
+			return this.platform === 'web'
+				? 'Not available in the browser.'
+				: `Not available on ${platformLabels[this.platform]}.`;
 		if (!workspace.isReady) return 'Open a workspace to manage this plugin.';
 		if (!this.synced) return 'Loading workspace plugin preferences…';
 		if (this.lastError)
@@ -66,6 +68,7 @@ class PluginStore {
 
 	#initialized = false;
 	#syncChain: Promise<void> = Promise.resolve();
+	#queued: Promise<void> | null = null;
 	#unlisten: (() => void) | undefined;
 	#orderWorkspaceId: string | null = null;
 
@@ -91,24 +94,21 @@ class PluginStore {
 		);
 	}
 
+	/**
+	 * Listen for manifest changes. The shell runs `sync()` whenever the
+	 * workspace settles, so opening, closing and switching workspaces are
+	 * covered there; ordinary file changes never touch the manifest.
+	 */
 	async init() {
-		if (!browser || this.#initialized) return;
-		if (this.platform === 'web' || !this.platform) {
+		if (this.#initialized) return;
+		if (!this.platform) {
 			this.synced = true;
 			return;
 		}
 		this.#initialized = true;
-		await this.sync();
 		try {
 			this.#unlisten = await getNouraClient().events.subscribe((event) => {
-				if (
-					event.type === 'workspace:ready' ||
-					event.type === 'workspace:manifest-updated' ||
-					event.type === 'workspace:closed' ||
-					event.type === 'file:changed'
-				) {
-					void this.sync();
-				}
+				if (event.type === 'workspace:manifest-updated') void this.sync();
 			});
 		} catch {
 			this.#initialized = false;
@@ -120,17 +120,23 @@ class PluginStore {
 	 * bursts and the explicit sync after `setEnabled` chain onto one
 	 * in-flight run, so two overlapping reconciliations can never both
 	 * pass the activation checks and double-activate a plugin (whose
-	 * lifecycle may await, per the plugin-sdk contract).
+	 * lifecycle may await, per the plugin-sdk contract). Requests that
+	 * arrive while a run is queued share that queued run.
 	 */
 	async sync() {
-		const run = this.#syncChain.then(() => this.#runSync());
+		if (this.#queued) return this.#queued;
+		const run = this.#syncChain.then(() => {
+			this.#queued = null;
+			return this.#runSync();
+		});
+		this.#queued = run;
 		// Keep the chain resolvable even if a run ever rejects.
 		this.#syncChain = run.then(undefined, () => undefined);
 		await run;
 	}
 
 	async #runSync() {
-		if (this.platform === 'web' || !this.platform) {
+		if (!this.platform) {
 			this.activeManifests = [];
 			this.enabledIds = [];
 			this.synced = true;
@@ -166,7 +172,7 @@ class PluginStore {
 		const next = movePlugin(this.pluginOrder, pluginId, targetPluginId, after);
 		if (next.every((id, index) => id === this.pluginOrder[index])) return;
 		this.pluginOrder = next;
-		if (browser && this.#orderWorkspaceId) {
+		if (this.#orderWorkspaceId) {
 			try {
 				localStorage.setItem(
 					`${PLUGIN_ORDER_STORAGE_PREFIX}${this.#orderWorkspaceId}`,
@@ -181,7 +187,7 @@ class PluginStore {
 	#loadPluginOrder(workspaceId: string | null) {
 		if (workspaceId === this.#orderWorkspaceId) return;
 		this.#orderWorkspaceId = workspaceId;
-		if (!browser || !workspaceId) {
+		if (!workspaceId) {
 			this.pluginOrder = normalizePluginOrder();
 			return;
 		}
@@ -202,11 +208,17 @@ class PluginStore {
 	async setEnabled(pluginId: string, enabled: boolean) {
 		const reason = this.unavailableReason(pluginId);
 		if (reason) throw new Error(reason);
+		// Turning sync off closes collaboration sessions. Their pending edits
+		// must reach disk first, or the switch stays on.
+		if (pluginId === 'sync' && !enabled && !(await flushPendingDrafts()))
+			throw new Error(
+				'noura couldn’t save some open documents, so Sync stays on. Try again.',
+			);
 		const client = getNouraClient();
 		const manifest = await client.manifest.read();
 		const next = enabled
-			? [...new Set([...manifest.enabledPlugins, pluginId])].sort()
-			: manifest.enabledPlugins.filter((id) => id !== pluginId);
+			? [...new Set([...manifest.enabled_plugins, pluginId])].sort()
+			: manifest.enabled_plugins.filter((id) => id !== pluginId);
 		await client.manifest.update({
 			enabledPlugins: next,
 			expectedUpdated: manifest.updated,
@@ -216,12 +228,3 @@ class PluginStore {
 }
 
 export const plugins = new PluginStore();
-
-/** Routes backed by a first-party plugin, mapped to the plugin's id. */
-export const PLUGIN_ROUTES: ReadonlyArray<readonly [string, string]> = [
-	['ai', '/ai'],
-	['notes', '/notes'],
-	['tasks', '/tasks'],
-	['calendar', '/calendar'],
-	['projects', '/projects'],
-];

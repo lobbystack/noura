@@ -34,7 +34,11 @@ describe('app updater', () => {
 		const { adapter, calls } = fakeAdapter(null);
 		const updater = createAppUpdater(adapter, { flush: async () => true });
 
-		await expect(updater.check()).resolves.toEqual({ status: 'idle' });
+		const state = await updater.check();
+		expect(state).toMatchObject({
+			status: 'idle',
+			lastCheck: { outcome: 'current' },
+		});
 		expect(calls).toEqual(['check']);
 	});
 
@@ -66,7 +70,10 @@ describe('app updater', () => {
 			{ flush: async () => true },
 		);
 
-		await expect(updater.check()).resolves.toEqual({ status: 'idle' });
+		await expect(updater.check()).resolves.toMatchObject({
+			status: 'idle',
+			lastCheck: { outcome: 'failed' },
+		});
 	});
 
 	test('returns to idle when a download fails signature verification', async () => {
@@ -77,8 +84,11 @@ describe('app updater', () => {
 		});
 		const updater = createAppUpdater(adapter, { flush: async () => true });
 
-		await expect(updater.check()).resolves.toEqual({ status: 'idle' });
-		await expect(updater.installAndRestart()).resolves.toEqual({
+		await expect(updater.check()).resolves.toMatchObject({
+			status: 'idle',
+			lastCheck: { outcome: 'failed' },
+		});
+		await expect(updater.installAndRestart()).resolves.toMatchObject({
 			status: 'idle',
 		});
 	});

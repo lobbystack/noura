@@ -16,7 +16,7 @@ Svelte projection → workspace client → Pi controller → typed native stream
 - Native code owns provider requests, endpoint and credential resolution, cancellation registry, backpressure, public error redaction, and all durable workspace mutations.
 - Desktop startup does not load provider or consent files. The native AI foundation initializes on the first AI command and retries after a load failure; failures return the safe, retryable `ai_unavailable` error without configuration or OS details.
 - `packages/ai` is transport-neutral. It must not depend on `packages/workspace`.
-- `packages/workspace` supplies typed adapters to the Noura client and native commands. Svelte components and stores never call raw Tauri commands.
+- `packages/workspace` supplies typed adapters to the Noura client and native commands. Svelte components and stores never call raw Tauri commands. `createChatPersistence` in `packages/workspace/src/chat-persistence.ts` adapts the chat service to the Pi controller and names a new chat from its first message. The app chat store in `apps/app/src/lib/ai/chat-store.svelte.ts` keeps only reactive state.
 - Providers receive plaintext only on an authorized client after device-local consent. Credential values and references never cross IPC, enter workspace files, or appear in errors or logs.
 
 ## Authoritative inputs

@@ -5,8 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use local_core::sync::{OsSyncCredentials, SyncAccountService, WorkspaceSyncCoordinator};
-use local_core::{CreateObjectInput, ObjectPatch, SearchInput, WorkspaceEngine};
+use local_core::sync::{OsSyncCredentials, SyncAccountService};
+use local_core::{CreateObjectInput, ObjectFilter, ObjectPatch, SearchInput, WorkspaceEngine};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -159,22 +159,13 @@ impl NouraMcp {
         &self,
         Parameters(input): Parameters<TaskListParams>,
     ) -> Result<String, String> {
-        let mut values = self.with_engine(|engine| engine.query_objects(Some("task")))?;
-        values.retain(|value| {
-            input.status.as_ref().is_none_or(|status| {
-                value
-                    .properties
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(status)
-            }) && input.project.as_ref().is_none_or(|project| {
-                value
-                    .properties
-                    .get("project")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(project)
-            })
-        });
+        let filter = ObjectFilter {
+            object_type: Some("task".into()),
+            status: input.status,
+            project: input.project,
+            ..ObjectFilter::default()
+        };
+        let values = self.with_engine(|engine| engine.query_objects_filtered(&filter))?;
         serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
     }
     #[tool(name = "tasks.create", description = "Create a Markdown Task")]
@@ -215,7 +206,11 @@ impl NouraMcp {
     }
     #[tool(name = "projects.list", description = "List managed Projects")]
     async fn projects_list(&self) -> Result<String, String> {
-        let values = self.with_engine(|engine| engine.query_objects(Some("project")))?;
+        let filter = ObjectFilter {
+            object_type: Some("project".into()),
+            ..ObjectFilter::default()
+        };
+        let values = self.with_engine(|engine| engine.query_objects_filtered(&filter))?;
         serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
     }
 
@@ -235,21 +230,9 @@ impl NouraMcp {
             properties,
         };
         let value = self.with_engine(|engine| {
-            if engine.sync_configuration()?.is_none() {
-                return engine.create_object(input);
-            }
-            let connection = SyncAccountService::default()
-                .connection(&OsSyncCredentials)?
-                .ok_or_else(|| {
-                    local_core::CoreError::validation(
-                        "sync_sign_in_required",
-                        "Sign in before changing a shared workspace",
-                        "mcp_create",
-                    )
-                })?;
-            WorkspaceSyncCoordinator::collaboration_create_object(
+            local_core::sync::route_create_object(
                 engine,
-                &connection,
+                || SyncAccountService::default().connection(&OsSyncCredentials),
                 &OsSyncCredentials,
                 input,
             )
@@ -280,24 +263,13 @@ impl NouraMcp {
                 remove_properties: Vec::new(),
                 expected_revision: input.expected_revision,
             };
-            if !engine.collaboration_object_is_active(&input.id)? {
-                return engine.update_object_typed(&input.id, expected_type, patch);
-            }
-            let connection = SyncAccountService::default()
-                .connection(&OsSyncCredentials)?
-                .ok_or_else(|| {
-                    local_core::CoreError::validation(
-                        "sync_sign_in_required",
-                        "Sign in before changing a shared workspace",
-                        "mcp_update",
-                    )
-                })?;
-            WorkspaceSyncCoordinator::collaboration_update_object(
+            local_core::sync::route_update_object(
                 engine,
-                &connection,
+                || SyncAccountService::default().connection(&OsSyncCredentials),
                 &OsSyncCredentials,
                 &input.id,
                 patch,
+                Some(expected_type),
             )
         })?;
         serde_json::to_string(&value).map_err(|_| "response serialization failed".into())
@@ -307,10 +279,120 @@ impl NouraMcp {
 #[tool_handler(router=self.tool_router)]
 impl ServerHandler for NouraMcp {}
 
+/// Serve the workspace at `workspace` over stdio until the client disconnects.
+/// Both the standalone `noura-mcp` binary and the desktop app's `mcp` mode use
+/// this, so external tools get the same services either way.
+pub async fn serve_stdio(workspace: String) -> Result<(), Box<dyn std::error::Error>> {
+    use rmcp::ServiceExt;
+    let engine = WorkspaceEngine::open(workspace)?;
+    engine.set_system_trash(local_core::os_trash());
+    let handler = NouraMcp::new(engine);
+    tokio::spawn(handler.clone().run_reconciliation());
+    let server = handler.serve(rmcp::transport::stdio()).await?;
+    server.waiting().await?;
+    Ok(())
+}
+
+/// Read `--workspace <path>` from command-line arguments.
+pub fn workspace_argument(arguments: &[String]) -> Option<String> {
+    arguments
+        .windows(2)
+        .find(|pair| pair[0] == "--workspace")
+        .map(|pair| pair[1].clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use local_core::sync::{
+        AccessMember, AccessObject, AccessPolicy, DeviceKeys, DocumentDescriptor, DocumentMode,
+        SyncCredentials, WorkspaceRole,
+    };
     use tempfile::tempdir;
+
+    #[derive(Default)]
+    struct Memory(std::sync::Mutex<std::collections::BTreeMap<String, String>>);
+    impl SyncCredentials for Memory {
+        fn read(&self, key: &str) -> local_core::Result<zeroize::Zeroizing<String>> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .map(zeroize::Zeroizing::new)
+                .ok_or_else(|| local_core::CoreError::validation("test_missing", "missing", "test"))
+        }
+        fn write(&self, key: &str, value: &str) -> local_core::Result<()> {
+            self.0.lock().unwrap().insert(key.into(), value.into());
+            Ok(())
+        }
+    }
+
+    /// A note whose signed access policy makes it a collaborative text document.
+    fn collaborative_note(engine: &WorkspaceEngine) -> (String, String) {
+        let note = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Shared".into(),
+                body: "Body".into(),
+                relative_path: Some("note.md".into()),
+                properties: std::collections::BTreeMap::new(),
+            })
+            .unwrap();
+        let device = DeviceKeys::create(&Memory::default()).unwrap();
+        let policy = AccessPolicy::sign(
+            &engine.manifest().id,
+            "1",
+            None,
+            &device,
+            vec![AccessMember {
+                account_id: "owner".into(),
+                role: WorkspaceRole::Owner,
+            }],
+            vec![AccessObject {
+                object_id: note.value.id.clone(),
+                epoch: 2,
+                grants: vec![],
+                envelopes: vec![],
+                document: Some(DocumentDescriptor {
+                    generation: "generation-one".into(),
+                    mode: DocumentMode::Text,
+                }),
+            }],
+        )
+        .unwrap();
+        engine
+            .sync_accept_access_policy("0", None, &policy)
+            .unwrap();
+        (note.value.id, note.revision)
+    }
+
+    #[tokio::test]
+    async fn updating_a_collaborative_note_with_sync_off_writes_locally() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "MCP", app_data.path())
+                .unwrap();
+        let (id, revision) = collaborative_note(&engine);
+        assert!(engine.collaboration_object_is_active(&id).unwrap());
+        assert!(!engine.sync_plugin_enabled());
+        let server = NouraMcp::new(engine);
+        let output = server
+            .notes_update(Parameters(UpdateParams {
+                id: id.clone(),
+                title: None,
+                body: Some("Edited through MCP\n".into()),
+                properties: None,
+                expected_revision: revision,
+            }))
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(result["value"]["body"], "Edited through MCP");
+        let on_disk = std::fs::read_to_string(workspace.path().join("note.md")).unwrap();
+        assert!(on_disk.contains("Edited through MCP"));
+    }
     #[test]
     fn tool_catalog_exposes_the_initial_shared_service_adapters() {
         let workspace = tempdir().unwrap();
@@ -494,6 +576,17 @@ mod tests {
             .unwrap();
         let created: serde_json::Value = serde_json::from_str(&created).unwrap();
         let second_id = created["value"]["id"].as_str().unwrap().to_owned();
+
+        let listed = server
+            .tasks_list(Parameters(TaskListParams {
+                status: Some("todo".into()),
+                project: Some(project.id.clone()),
+            }))
+            .await
+            .unwrap();
+        let listed: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["id"], second_id);
 
         let mut reconciled_paths = Vec::new();
         for _ in 0..10 {

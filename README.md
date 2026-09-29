@@ -1,18 +1,18 @@
-# Noura
+# noura
 
 The open workspace for humans and AI.
 
-Noura is an open-source, local-first desktop workspace where everything is a plugin. Combine notes, tasks, projects, and AI chat in one workspace. Keep your work in ordinary files you can edit, back up, and use without Noura.
+noura is an open-source, local-first desktop workspace for notes, tasks, projects, and AI chat. Keep your work in ordinary files you can edit, back up, and use without noura.
 
 [![Status: Local Alpha](https://img.shields.io/badge/status-Local%20Alpha-8b5cf6)](#try-noura) [![Continuous integration](https://github.com/lobbystack/noura/actions/workflows/ci.yml/badge.svg)](https://github.com/lobbystack/noura/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Try Noura](#try-noura) · [Documentation](#documentation) · [Contribute](#contributing)
+[Try noura](#try-noura) · [Documentation](#documentation) · [Contribute](#contributing)
 
 ## A workspace built from plugins
 
-Notes, tasks, projects, calendar, folders, and AI are first-party plugins. Choose the combination you need for each workspace in **Settings**.
+Files and the Markdown editor are always on. Tasks, projects, calendar, and AI are first-party plugins: choose the ones each workspace needs in **Settings**.
 
-Start with notes for writing, then add tasks and projects to organize the work around them. Turn plugins on or off without deleting their files. Plugins use [shared capabilities](docs/architecture/plugin-runtime.md#capabilities) to work with your files and contribute commands or AI context.
+Start with notes for writing, then add tasks and projects to organize the work around them. Turning a plugin off leaves its files in place. Plugins use [shared capabilities](docs/architecture/plugin-runtime.md#capabilities) to work with your files and contribute commands or AI context.
 
 ## Work in one workspace
 
@@ -22,22 +22,24 @@ Write project notes, track tasks, and give your AI assistant context from the sa
 - **Tasks and projects**: track priorities, due dates, and progress on project boards
 - **Calendar**: view scheduled work by month, week, or day
 - **Search**: find content across your workspace with full-text search
-- **AI chat**: connect your provider, choose workspace context, and approve tool actions
-- **External AI tools**: read and update notes and tasks through [Model Context Protocol (MCP)](https://modelcontextprotocol.io/docs/getting-started/intro)
+- **AI chat**: connect your provider, allow it to read workspace content, and approve each tool action
+- **External AI tools**: read and update notes and tasks through [Model Context Protocol (MCP)](https://modelcontextprotocol.io/docs/getting-started/intro). noura doesn't ask before each MCP action, so connect only tools you trust
 
 ## Keep control of your work
 
-Use Noura alongside your existing tools:
+Use noura alongside your existing tools:
 
 - **Open files**: keep notes, tasks, projects, and chat history as Markdown with structured metadata
-- **Local use**: read and edit your workspace offline, without a Noura account or hosted service
+- **Local use**: read and edit your workspace offline, without an account or hosted service
 - **External editing**: edit, move, and rename files with other tools; review conflicts when changes overlap
 - **AI permissions**: choose your provider and authorize sending workspace content before an in-app AI request
-- **Credentials**: Noura stores provider credentials in your operating system’s credential store
+- **Credentials**: noura stores provider credentials in your operating system’s credential store
 
-## Try Noura
+## Try noura
 
-Run the desktop app from source. Install these prerequisites:
+Download the installer for macOS, Windows, or Linux from [noura.app](https://noura.app/#download) or the [releases page](https://github.com/lobbystack/noura/releases). noura is an early alpha, so keep backups of important files.
+
+To run the desktop app from source, install these prerequisites:
 
 - [Bun](https://bun.sh/docs/installation) 1.3.14
 - [Rust](https://www.rust-lang.org/tools/install) 1.91 or newer
@@ -52,7 +54,7 @@ bun run tauri dev
 
 Create a workspace, add a note, and open the note’s Markdown file in your editor.
 
-## Develop Noura
+## Develop noura
 
 The browser workspace build also requires the Rust Wasm target and the wasm-bindgen CLI version that matches the Rust dependency:
 
@@ -80,15 +82,15 @@ bun run dev:website
 
 Open `http://127.0.0.1:5174` in your browser.
 
-## How Noura stores your workspace
+## How noura stores your workspace
 
 Your workspace is a folder with a [manifest](docs/workspace-format/v1.md#manifest) at `.noura/workspace.yaml`. Notes, tasks, projects, and chats use Markdown with structured metadata in [frontmatter](docs/workspace-format/v1.md#managed-markdown). You can move or rename a file without changing its stable identifier.
 
-Noura commits workspace files to disk before reporting a successful change. You can rebuild its SQLite search index and metadata cache from those files. The desktop app and MCP server use the same Rust services:
+noura commits workspace files to disk before reporting a successful change. You can rebuild its SQLite search index and metadata cache from those files. The desktop app and MCP server use the same Rust services:
 
 ```mermaid
 flowchart LR
-    desktop["Noura desktop"] --> core["Local core"]
+    desktop["noura desktop"] --> core["Local core"]
     tools["MCP tools"] --> core
     core <--> files["Workspace files"]
     core --> index["Rebuildable SQLite index"]
@@ -130,8 +132,8 @@ For workspace-format changes, update the shared [conformance fixtures](docs/work
 
 ## Support and security
 
-Use [GitHub issues](https://github.com/lobbystack/noura/issues) for questions, bug reports, and feature requests. Follow the [security policy](SECURITY.md) to report a vulnerability.
+Use [GitHub issues](https://github.com/lobbystack/noura/issues) for questions, bug reports, and feature requests. For anything else, email [hello@noura.app](mailto:hello@noura.app). Follow the [security policy](SECURITY.md) to report a vulnerability.
 
 ## License
 
-Noura uses the [MIT license](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency attributions.
+noura uses the [MIT license](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency attributions.

@@ -1,16 +1,13 @@
 export type {
 	EditorSelectionState,
+	EditorViewMemory,
+	LinkKind,
+	LinkOpenOptions,
+	LinkSuggestion,
 	LiveMarkdownEditor,
-	LiveMarkdownDocument,
 	LiveMarkdownOptions,
 	MarkdownFormat,
 } from './types';
-export { detectSuspiciousShrink, preserveLineMetadata } from './fidelity';
-export {
-	CollaborationSession,
-	encodeCollaborationUpdate,
-	decodeCollaborationUpdate,
-} from './collaboration';
 export type {
 	CollaborationBootstrap,
 	CollaborationBatch,
@@ -18,4 +15,5 @@ export type {
 	CollaborationPresence,
 	CollaborationProvider,
 	CollaborationStatus,
+	CollaborationSession,
 } from './collaboration';

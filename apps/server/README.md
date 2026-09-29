@@ -22,7 +22,7 @@ bun run start
 
 To include the account pages and public viewer, run `bun run build:release`, then `bun dist/main.js`. Docker packages this combined release automatically.
 
-`apps/app` builds the browser UI. Its `(account)` route group contains `/account`, `/account/device`, `/invite/[token]`, and `/share/[token]`, outside the `(workspace)` layout and its native initialization. Browser workspace routes run the hosted notes, tasks, and projects client over browser storage and encrypted sync. They remain experimental.
+`apps/app` builds the browser UI. Its `(account)` route group contains `/account`, `/account/device`, `/invite/[token]`, and `/share/[token]`, outside the `(workspace)` layout and its native initialization. Browser workspace routes render the same screens as the desktop app, over storage in the browser and optional encrypted sync. They remain experimental.
 
 `build:release` creates `apps/app/build-hosted`, verifies CSP hashes and the account routes’ static import boundary, generates bundled dependency notices, and copies the app to `dist/public`. Native builds use `apps/app/build` and Tauri’s CSP. Don’t substitute a native build for the hosted build: only the hosted build keeps the restrictive account and share CSP.
 

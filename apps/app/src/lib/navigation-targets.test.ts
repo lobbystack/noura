@@ -13,7 +13,6 @@ function result(extra: Partial<SearchResult>): SearchResult {
 		relativePath: 'notes/alpha.md',
 		title: 'Alpha',
 		snippet: 'a rare needle here',
-		highlights: [],
 		score: 1,
 		revision: 'rev-1',
 		...extra,
@@ -32,7 +31,7 @@ describe('search result navigation', () => {
 		expect(
 			searchResultTarget(result({ objectId: 'note_01k', objectType: 'note' })),
 		).toEqual({
-			route: '/notes',
+			route: '/files',
 			pluginId: 'notes',
 			query: { selected: 'note_01k' },
 		});
@@ -49,7 +48,7 @@ describe('search result navigation', () => {
 
 	test('idless markdown opens the source-backed editor', () => {
 		expect(searchResultTarget(result({ relativePath: 'draft.md' }))).toEqual({
-			route: '/notes',
+			route: '/files',
 			pluginId: 'notes',
 			query: { raw: 'draft.md' },
 		});
@@ -88,10 +87,10 @@ describe('search result navigation', () => {
 	test('navigationHref encodes query parameters', () => {
 		expect(
 			navigationHref({
-				route: '/notes',
+				route: '/files',
 				pluginId: 'notes',
 				query: { raw: 'a b.md' },
 			}),
-		).toBe('/notes?raw=a+b.md');
+		).toBe('/files?raw=a+b.md');
 	});
 });

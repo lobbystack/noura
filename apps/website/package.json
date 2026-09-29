@@ -5,8 +5,9 @@
 	"type": "module",
 	"scripts": {
 		"dev": "svelte-kit sync && vite dev",
-		"build": "vite build",
-		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"build": "bun run check:placeholders && vite build",
+		"check": "bun run check:placeholders && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:placeholders": "bun scripts/check-placeholders.ts",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''"
 	},

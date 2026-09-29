@@ -11,8 +11,13 @@ target/
 !.env.example
 index.sqlite*
 src-tauri/gen/
+# Written by scripts/generate-third-party-licenses.ts before release builds
+src-tauri/THIRD_PARTY_LICENSES.txt
 packages/workspace-format-wasm/wasm/
 crates/workspace-format/bindings/
 
 # Local agent/tooling artifacts
 .openchamber/
+
+# Agent worktrees
+.claude/worktrees/

@@ -61,6 +61,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let app_data = directory.path().join("app");
                 let engine =
                     WorkspaceEngine::create_with_app_data(&root, "Desktop sync", &app_data)?;
+                // Sync is a plugin that new workspaces start with turned off.
+                engine.enable_sync_plugin()?;
                 std::fs::write(root.join("external.txt"), b"canonical external edit")?;
                 assert!(transport.workspaces().await?.is_empty());
                 let mut unavailable = connection.clone();

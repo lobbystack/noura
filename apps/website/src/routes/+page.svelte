@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { asset } from '$app/paths';
 	import AiMockup from '$lib/components/AiMockup.svelte';
 	import HeroMockup from '$lib/components/HeroMockup.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -20,7 +21,7 @@
 		{
 			label: 'Own',
 			title: 'Plain files you can take anywhere',
-			body: 'noura saves each note, task, and project as a Markdown file in a folder you choose. Back it up, sync it, or open it in another editor.',
+			body: 'noura saves each note, task, and project as a Markdown file in a folder you choose. Back it up with the tools you already use, or open it in another editor.',
 			chips: ['Markdown', 'Works offline', 'Your folder'],
 		},
 		{
@@ -32,12 +33,10 @@
 	] as const;
 
 	const plugins = [
-		['Notes', true],
 		['Tasks', true],
 		['Projects', true],
-		['Calendar', true],
+		['Calendar', false],
 		['AI', true],
-		['Folders', false],
 	] as const;
 
 	const board = [
@@ -52,12 +51,12 @@
 			body: 'Connect the AI service you already use. noura keeps your API key in your system keychain.',
 		},
 		{
-			title: 'Your context',
-			body: 'Pick the notes the AI can read. noura asks before it sends any workspace content.',
+			title: 'Your permission',
+			body: 'The AI sees workspace content only after you allow it for that provider.',
 		},
 		{
 			title: 'Your approval',
-			body: 'The AI proposes changes to notes and tasks. Nothing changes until you approve.',
+			body: 'noura asks before each tool the AI runs, whether it reads a note or creates a task.',
 		},
 	] as const;
 
@@ -80,8 +79,8 @@
 			'Delete the search index and noura rebuilds it from your files.',
 		],
 		[
-			'Encrypted sync',
-			'Optional sync encrypts your workspace on your device. Our servers only store data they cannot read.',
+			'No tracking',
+			'The app sends us no analytics or crash reports. The website runs no analytics either.',
 		],
 	] as const;
 
@@ -92,7 +91,7 @@
 		],
 		[
 			'Is noura free?',
-			'Yes. The app is free to use, and the source code is open under the MIT license.',
+			'Yes. The app is free, and the source code is open under the MIT license.',
 		],
 		[
 			'Where does my data live?',
@@ -100,7 +99,7 @@
 		],
 		[
 			'How do updates work?',
-			'noura checks for a new version in the background and downloads it for you. When it is ready, you choose when to restart. noura saves your open drafts first, and every update is signed so your computer only installs releases from us.',
+			'noura checks for a new version in the background and downloads it for you. When it is ready, you choose when to restart. noura saves your open drafts first, and every update is signed so your computer only installs releases from us. The Linux .deb package is the exception: it doesn’t update itself, so install new versions from this page.',
 		],
 		[
 			'Can I edit my files outside noura?',
@@ -108,15 +107,15 @@
 		],
 		[
 			'Can AI read my workspace?',
-			'Only when you allow it. You choose the provider and the notes it can use, and noura asks before it sends workspace content. External tools connect through MCP with the same rules.',
+			'The AI chat in noura sees workspace content only after you allow it for your provider, and it asks before each tool the AI runs. AI assistants you connect through MCP work differently: noura doesn’t ask before they read or change your workspace, so connect only assistants you trust.',
 		],
 		[
 			'Do I need an account?',
-			'No. noura works offline without an account. Sync between devices is optional, and it encrypts your workspace before anything leaves your device.',
+			'No. noura works offline, and there’s nothing to sign up for.',
 		],
 		[
 			'Which platforms does noura support?',
-			'noura runs on macOS, Windows, and Linux. Download the installer for your computer, and noura keeps itself up to date from there.',
+			'noura runs on macOS, Windows, and Linux. Download the installer for your computer from this page.',
 		],
 	] as const;
 
@@ -161,34 +160,7 @@ bun run tauri dev`;
 	<meta name="twitter:title" content={title} />
 	<meta name="twitter:description" content={description} />
 	<meta property="og:image" content={`${siteConfig.marketingUrl}logo.png`} />
-	<link rel="icon" href="/favicon.png" type="image/png" />
-	<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 </svelte:head>
-
-<a class="skip-link" href="#main">Skip to content</a>
-
-<header class="site-header">
-	<div class="header-inner">
-		<a class="brand" href="#top" aria-label="noura home">
-			<img src="/logo.png" alt="" width="30" height="30" />
-			<span>noura</span>
-		</a>
-		<nav aria-label="Primary navigation">
-			<a class="nav-link" href="#features">Features</a>
-			<a class="nav-link" href="#ai">AI</a>
-			<a class="nav-link" href="#privacy">Privacy</a>
-			<a class="nav-link" href="#faq">FAQ</a>
-			<a
-				class="nav-icon"
-				href={siteConfig.githubUrl}
-				aria-label="noura on GitHub"
-			>
-				<Icon name="github" size={20} />
-			</a>
-			<a class="pill pill-dark" href="#download">Download</a>
-		</nav>
-	</div>
-</header>
 
 <main id="main">
 	<section class="dark-world" id="top" aria-labelledby="hero-heading">
@@ -258,9 +230,9 @@ bun run tauri dev`;
 				Turn on what you need. <em>Leave out the rest.</em>
 			</h2>
 			<p>
-				Notes, tasks, projects, calendar, and AI are all plugins. Pick the set
-				that fits each workspace. Turning one off hides it and leaves its files
-				where they are.
+				Your files and the Markdown editor are always there. Tasks, projects,
+				calendar, and AI are plugins: pick the ones each workspace needs.
+				Turning one off hides it and leaves its files where they are.
 			</p>
 		</div>
 
@@ -270,7 +242,7 @@ bun run tauri dev`;
 			aria-label="noura plugin settings next to a project board"
 		>
 			<div class="mini-sidebar" aria-hidden="true">
-				<img class="mini-brand" src="/logo.png" alt="" />
+				<img class="mini-brand" src={asset('/logo.png')} alt="" />
 				<i class="active"></i><i></i><i></i><i></i>
 			</div>
 
@@ -339,7 +311,8 @@ bun run tauri dev`;
 				<span>
 					Already use an AI assistant? Connect it through the
 					<a href="https://modelcontextprotocol.io/">Model Context Protocol</a>
-					and let it read and update your notes and tasks.
+					and let it read and update your notes and tasks. noura doesn't ask before
+					each of its actions, so connect only assistants you trust.
 				</span>
 			</p>
 		</div>
@@ -396,9 +369,10 @@ bun run tauri dev`;
 					Start with a folder. <em>Keep it forever.</em>
 				</h2>
 				<p>
-					noura is free. Install it once, and it updates itself when a new
-					version ships. It's still an alpha, so tell us what breaks.
+					noura is free and open source. Install it once, and it updates itself
+					when a new version ships.
 				</p>
+				<p class="alpha-note">Early alpha. Keep backups of important files.</p>
 			</div>
 
 			<div class="download-grid">
@@ -423,6 +397,9 @@ bun run tauri dev`;
 										>
 									{/if}
 								</p>
+								{#if download.installNote}
+									<p class="install-note">{download.installNote}</p>
+								{/if}
 							</div>
 							<a class="pill pill-light" href={download.url}>Download</a>
 						</div>
@@ -430,7 +407,8 @@ bun run tauri dev`;
 					<p class="update-note">
 						<Icon name="check" size={16} />
 						<span>
-							Automatic, signed updates.
+							Signed updates download in the background, except with the .deb
+							package.
 							<a href={siteConfig.releasesUrl}>See all releases</a>.
 						</span>
 					</p>
@@ -459,95 +437,7 @@ bun run tauri dev`;
 	</section>
 </main>
 
-<footer>
-	<div class="footer-brand">
-		<span><img src="/logo.png" alt="" width="26" height="26" />noura</span>
-		<p>The open workspace for humans and AI.</p>
-	</div>
-	<nav aria-label="Footer navigation">
-		<a href="#features">Features</a>
-		<a href="#privacy">Privacy</a>
-		<a href="#faq">FAQ</a>
-		<a href={siteConfig.githubUrl}>GitHub</a>
-		<a href={`${siteConfig.githubUrl}/blob/main/LICENSE`}>MIT License</a>
-		<a href={`${siteConfig.githubUrl}/blob/main/SECURITY.md`}>Security</a>
-	</nav>
-	<p class="copyright">
-		© {new Date().getFullYear()} noura. Free and open source.
-	</p>
-</footer>
-
 <style>
-	/* Header */
-	.skip-link {
-		position: absolute;
-		left: 16px;
-		top: -60px;
-		z-index: 100;
-		padding: 10px 16px;
-		border-radius: 999px;
-		background: var(--ink);
-		color: white;
-		text-decoration: none;
-	}
-	.skip-link:focus {
-		top: 12px;
-	}
-	.site-header {
-		position: sticky;
-		top: 0;
-		z-index: 50;
-		background: rgba(255, 255, 255, 0.82);
-		backdrop-filter: saturate(1.4) blur(14px);
-		-webkit-backdrop-filter: saturate(1.4) blur(14px);
-	}
-	.header-inner {
-		height: 72px;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		max-width: 1440px;
-		margin: 0 auto;
-		padding: 0 32px;
-	}
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: 9px;
-		text-decoration: none;
-		font-size: 17px;
-		font-weight: 760;
-		letter-spacing: -0.03em;
-	}
-	.brand img {
-		display: block;
-		width: 30px;
-		height: 30px;
-	}
-	.site-header nav {
-		display: flex;
-		align-items: center;
-		gap: 26px;
-	}
-	.nav-link {
-		text-decoration: none;
-		font-size: 14px;
-		font-weight: 620;
-		color: #3c3b41;
-		transition: color 160ms ease;
-	}
-	.nav-link:hover {
-		color: var(--ink);
-	}
-	.nav-icon {
-		display: grid;
-		place-items: center;
-		color: #3c3b41;
-	}
-	.nav-icon:hover {
-		color: var(--ink);
-	}
-
 	/* Buttons */
 	.pill {
 		display: inline-flex;
@@ -572,10 +462,6 @@ bun run tauri dev`;
 		min-height: 48px;
 		padding: 0 26px;
 		font-size: 15px;
-	}
-	.pill-dark {
-		background: var(--ink);
-		color: white;
 	}
 	.pill-light {
 		background: #f6f7f4;
@@ -1194,12 +1080,22 @@ bun run tauri dev`;
 	.download-intro {
 		max-width: 760px;
 	}
-	.download-intro > p:last-child {
+	.download-intro > p:not(.kicker) {
 		max-width: 600px;
 		margin: 22px 0 0;
 		color: #aaa7af;
 		font-size: 18px;
 		line-height: 1.6;
+	}
+	.download-intro > p.alpha-note {
+		display: inline-block;
+		margin-top: 18px;
+		padding: 6px 14px;
+		border-radius: 999px;
+		background: rgba(147, 145, 254, 0.16);
+		color: #d7d6ff;
+		font-size: 14px;
+		font-weight: 650;
 	}
 	.download-grid {
 		display: grid;
@@ -1224,6 +1120,7 @@ bun run tauri dev`;
 		justify-content: space-between;
 		gap: 16px;
 		min-height: 84px;
+		padding: 16px 0;
 		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 	}
 	.platform-row h3 {
@@ -1246,6 +1143,13 @@ bun run tauri dev`;
 		font-weight: 650;
 		letter-spacing: 0;
 		vertical-align: 2px;
+	}
+	.platform-row p.install-note {
+		max-width: 420px;
+		margin-top: 6px;
+		color: #aaa7af;
+		font-size: 13px;
+		line-height: 1.5;
 	}
 	.platform-row p a {
 		color: #c4c2ff;
@@ -1323,58 +1227,8 @@ bun run tauri dev`;
 		white-space: nowrap;
 	}
 
-	/* Footer */
-	footer {
-		margin: 0 24px 24px;
-		padding: 48px;
-		border-radius: 28px;
-		background: #f6f5f8;
-		display: grid;
-		grid-template-columns: 1fr auto;
-		gap: 40px 70px;
-	}
-	.footer-brand span {
-		display: inline-flex;
-		align-items: center;
-		gap: 10px;
-		font-size: 20px;
-		font-weight: 780;
-		letter-spacing: -0.04em;
-	}
-	.footer-brand p {
-		margin: 8px 0 0;
-		color: #6f6d76;
-		font-size: 14px;
-	}
-	footer nav {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 12px 28px;
-		align-items: start;
-	}
-	footer nav a {
-		text-decoration: none;
-		color: #3c3b41;
-		font-size: 14px;
-		font-weight: 620;
-	}
-	footer nav a:hover {
-		color: var(--ink);
-	}
-	.copyright {
-		grid-column: 1/-1;
-		margin: 0;
-		padding-top: 24px;
-		border-top: 1px solid #e0dfe4;
-		color: #86848c;
-		font-size: 13px;
-	}
-
 	/* Responsive */
 	@media (max-width: 1080px) {
-		.nav-link {
-			display: none;
-		}
 		.ai {
 			grid-template-columns: 1fr;
 			gap: 56px;
@@ -1395,9 +1249,6 @@ bun run tauri dev`;
 		}
 		.dark-world {
 			padding-top: 64px;
-		}
-		.header-inner {
-			padding: 0 18px;
 		}
 		.open-copy,
 		.product-followup {
@@ -1438,14 +1289,8 @@ bun run tauri dev`;
 		.download-inner {
 			padding: 84px 24px 64px;
 		}
-		footer {
-			grid-template-columns: 1fr;
-		}
 	}
 	@media (max-width: 600px) {
-		.header-inner {
-			height: 64px;
-		}
 		.pill {
 			min-height: 38px;
 			padding: 0 16px;
@@ -1569,15 +1414,6 @@ bun run tauri dev`;
 		}
 		pre {
 			font-size: 12.5px;
-		}
-		footer {
-			margin: 0 10px 10px;
-			padding: 32px 24px;
-		}
-		footer nav {
-			display: grid;
-			grid-template-columns: 1fr 1fr;
-			gap: 16px;
 		}
 	}
 </style>

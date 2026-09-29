@@ -74,6 +74,11 @@ pub struct WorkspaceEntry {
     pub object_id: Option<String>,
     pub object_type: Option<String>,
     pub revision: Option<String>,
+    /// The file lives only in cloud storage (for example iCloud) and has
+    /// not been downloaded to this device yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub not_downloaded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -96,6 +101,8 @@ pub struct WorkspaceState {
     pub phase: WorkspacePhase,
     pub workspace_id: Option<String>,
     pub root_path: Option<String>,
+    /// Serialized as a JSON number; workspaces never approach 2^53 files.
+    #[ts(type = "number")]
     pub indexed_files: u64,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -124,9 +131,36 @@ pub enum IndexStatus {
 pub struct MutationResult<T> {
     pub value: T,
     pub revision: String,
+    /// Always `committed`: a mutation only returns after its canonical file
+    /// write completes.
+    #[ts(type = "\"committed\"")]
     pub durability: String,
     pub index_status: IndexStatus,
     pub warnings: Vec<CoreWarning>,
+    /// For chat message mutations: the chat file's revision after the
+    /// commit, so a client can make its next call without re-reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub chat_revision: Option<String>,
+}
+
+impl<T> MutationResult<T> {
+    /// A mutation whose canonical file write completed.
+    pub fn committed(
+        value: T,
+        revision: String,
+        index_status: IndexStatus,
+        warnings: Vec<CoreWarning>,
+    ) -> Self {
+        Self {
+            value,
+            revision,
+            durability: "committed".into(),
+            index_status,
+            warnings,
+            chat_revision: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -145,6 +179,21 @@ pub struct FolderEntry {
     pub name: String,
 }
 
+/// What caused a core event.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum EventSource {
+    /// A mutation made through this application.
+    Application,
+    /// A change another program made to workspace files.
+    External,
+    /// An index walk that found changes already on disk.
+    Reconciliation,
+    /// A change pulled from managed sync.
+    Sync,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -154,7 +203,7 @@ pub struct CoreEvent {
     pub event_type: String,
     pub workspace_id: String,
     pub occurred_at: String,
-    pub source: String,
+    pub source: EventSource,
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
 }

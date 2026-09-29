@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Note, Project, Task, WorkspaceObject } from '@noura/workspace';
 	import { getNouraClient as getClient } from '$lib/state.svelte';
+	import { hostCapabilities } from '$lib/host-capabilities.svelte';
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
@@ -20,6 +21,9 @@
 		object: WorkspaceObject | Task | Note | Project | null;
 		onclose?: () => void;
 	} = $props();
+
+	// Only some hosts can reveal files or open a terminal; hide them elsewhere.
+	const capabilities = $derived(hostCapabilities.current);
 
 	const taskProps = $derived(
 		object?.properties as Record<string, unknown> | undefined,
@@ -79,9 +83,7 @@
 			<div class="space-y-4 px-4">
 				{#if object.properties && Object.keys(object.properties).length > 0}
 					<div>
-						<h4
-							class="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
-						>
+						<h4 class="mb-2 text-xs font-medium text-muted-foreground">
 							Properties
 						</h4>
 						<div class="space-y-1.5">
@@ -108,9 +110,7 @@
 
 				<div>
 					<div class="mb-2 flex items-center justify-between">
-						<h4
-							class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
-						>
+						<h4 class="text-xs font-medium text-muted-foreground">
 							File & history
 						</h4>
 						<Badge variant="outline" class="gap-1 text-xs">
@@ -167,24 +167,28 @@
 								<Copy data-icon="inline-start" />
 								Copy path
 							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								class="h-7 flex-1 text-xs"
-								onclick={revealInFolder}
-							>
-								<FolderOpen data-icon="inline-start" />
-								Reveal
-							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								class="h-7 flex-1 text-xs"
-								onclick={openTerminal}
-							>
-								<Terminal data-icon="inline-start" />
-								Terminal
-							</Button>
+							{#if capabilities.revealInFileManager}
+								<Button
+									variant="outline"
+									size="sm"
+									class="h-7 flex-1 text-xs"
+									onclick={revealInFolder}
+								>
+									<FolderOpen data-icon="inline-start" />
+									Reveal
+								</Button>
+							{/if}
+							{#if capabilities.openTerminal}
+								<Button
+									variant="outline"
+									size="sm"
+									class="h-7 flex-1 text-xs"
+									onclick={openTerminal}
+								>
+									<Terminal data-icon="inline-start" />
+									Terminal
+								</Button>
+							{/if}
 						</div>
 					</div>
 				</div>

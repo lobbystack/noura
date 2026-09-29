@@ -73,8 +73,8 @@
 	--chart-5: oklch(0.269 0 0);
 	--sidebar: oklch(0.205 0 0);
 	--sidebar-foreground: oklch(0.985 0 0);
-	--sidebar-primary: oklch(0.488 0.243 264.376);
-	--sidebar-primary-foreground: oklch(0.985 0 0);
+	--sidebar-primary: oklch(0.922 0 0);
+	--sidebar-primary-foreground: oklch(0.205 0 0);
 	--sidebar-accent: oklch(0.269 0 0);
 	--sidebar-accent-foreground: oklch(0.985 0 0);
 	--sidebar-border: oklch(1 0 0 / 10%);
@@ -84,7 +84,7 @@
 @theme inline {
 	--font-sans: 'Public Sans Variable', sans-serif;
 	--font-heading: 'Public Sans Variable', sans-serif;
-	/* Noura's complete UI type scale: supporting, body, and title. */
+	/* The complete UI type scale: supporting, body, and title. */
 	--text-xs: 0.75rem;
 	--text-xs--line-height: 1rem;
 	--text-sm: 0.875rem;
@@ -135,6 +135,19 @@
 	* {
 		@apply border-border outline-ring/50;
 	}
+	/* Honor reduced motion: dialogs, menus and sheets appear without
+	sliding, zooming or fading, and chevrons stop rotating. Spinners keep
+	turning, because a still spinner reads as a frozen app. */
+	@media (prefers-reduced-motion: reduce) {
+		*:not(.animate-spin),
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+			scroll-behavior: auto !important;
+		}
+	}
 	body {
 		@apply bg-background text-foreground;
 	}
@@ -146,6 +159,11 @@
 /* Live Preview (CodeMirror) — editorial typography, separate from UI chrome. */
 .live-md {
 	font-size: var(--content-text-size);
+	/* Headings scale with the text size chosen in Settings. */
+	--content-heading-4-size: calc(var(--content-text-size) * 1.125);
+	--content-heading-3-size: calc(var(--content-text-size) * 1.25);
+	--content-heading-2-size: calc(var(--content-text-size) * 1.5);
+	--content-heading-1-size: calc(var(--content-text-size) * 2);
 }
 .live-md .cm-editor {
 	background: transparent;
@@ -158,6 +176,9 @@
 .live-md .cm-content {
 	caret-color: var(--foreground);
 	padding: 0.5rem 1.5rem;
+	width: 100%;
+	max-width: var(--content-max-width, none);
+	margin-inline: auto;
 }
 .live-md .cm-line {
 	padding: 0.1rem 0;
@@ -306,4 +327,17 @@
 }
 .live-md .cm-editor.cm-focused {
 	outline: none;
+}
+
+/* Loading indicators appear only when loading takes long enough to notice. */
+.loading-delayed {
+	animation: loading-delayed-in 150ms ease-out 400ms both;
+}
+@keyframes loading-delayed-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
 }

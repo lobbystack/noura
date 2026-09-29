@@ -4,7 +4,7 @@ export interface AutosaveState {
 	error: unknown | null;
 }
 
-export type AutosaveWriteResult = void | 'paused';
+type AutosaveWriteResult = void | 'paused';
 
 export interface AutosaveOptions<Draft> {
 	debounceDelayMs?: number;
@@ -85,7 +85,9 @@ export class AutosaveCoordinator<Draft> {
 		this.pendingCount += 1;
 		this.generation += 1;
 		this.dirtySince ??= this.now();
-		if (!this.paused && this.failure === null) this.armTimers();
+		// A new edit is a new chance to save, even after a failed write: a
+		// failure must not silently stop autosave for the rest of the session.
+		if (!this.paused) this.armTimers();
 		this.notify();
 	}
 
@@ -102,7 +104,7 @@ export class AutosaveCoordinator<Draft> {
 	resume() {
 		if (this.destroyed || !this.paused) return;
 		this.paused = false;
-		if (this.pendingDraft !== null && this.failure === null) this.armTimers();
+		if (this.pendingDraft !== null) this.armTimers();
 	}
 
 	/** Mark the current editor body as durable and discard queued transactions. */
@@ -143,7 +145,7 @@ export class AutosaveCoordinator<Draft> {
 	}
 
 	private armTimers() {
-		if (this.destroyed || this.paused || this.failure !== null) return;
+		if (this.destroyed || this.paused) return;
 		this.cancelDebounce?.();
 		this.cancelDebounce = this.schedule(() => {
 			this.cancelDebounce = null;

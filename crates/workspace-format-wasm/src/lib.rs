@@ -3,8 +3,20 @@
 //! This crate intentionally contains no format rules. It only translates the
 //! JavaScript boundary to the platform-independent `workspace-format` crate.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wasm_bindgen::prelude::*;
+use workspace_format::calendar::{
+    CalendarError, CalendarItem, select_calendar_entries as select_canonical_calendar_entries,
+};
+use workspace_format::merge::{
+    ManagedDraftFields, merge_managed_fields, merge_markdown_body as merge_canonical_markdown_body,
+    merge_text as merge_canonical_text,
+};
+use workspace_format::raw_text::{
+    compose_raw_bytes, raw_history_dir, split_raw_bytes as split_canonical_raw_bytes,
+};
 use workspace_format::{
     CreateNoteInput, CreateProjectInput, CreateTaskInput, FormatError, UpdateNoteInput,
     UpdateProjectInput, UpdateTaskInput, WorkspaceManifest, WorkspaceObject,
@@ -291,6 +303,145 @@ pub fn update_project(project: JsValue, input: JsValue) -> Result<JsValue, JsVal
     let project = from_js::<WorkspaceObject>(project)?;
     let input = from_js::<UpdateProjectInput>(input)?;
     to_js(&update_canonical_project(project, input).map_err(format_error)?)
+}
+
+/// Merges text line by line. Returns `undefined` when both sides changed the
+/// same lines.
+#[wasm_bindgen]
+pub fn merge_text(base: &str, local: &str, external: &str) -> Option<String> {
+    merge_canonical_text(base, local, external)
+}
+
+/// Merges a note body line by line, refusing Markdown that needs manual
+/// review. Returns `undefined` on conflict.
+#[wasm_bindgen]
+pub fn merge_markdown_body(base: &str, local: &str, external: &str) -> Option<String> {
+    merge_canonical_markdown_body(base, local, external)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedDraftMergeInput {
+    base_title: String,
+    local_title: String,
+    base_body: String,
+    local_body: String,
+    base_properties: BTreeMap<String, serde_json::Value>,
+    local_properties: BTreeMap<String, serde_json::Value>,
+}
+
+/// Merges a managed draft field by field against the canonical object.
+/// Returns `null` on conflict.
+#[wasm_bindgen]
+pub fn merge_managed_draft(input: JsValue, canonical: JsValue) -> Result<JsValue, JsValue> {
+    let input = from_js::<ManagedDraftMergeInput>(input)?;
+    let canonical = from_js::<WorkspaceObject>(canonical)?;
+    let draft = ManagedDraftFields {
+        base_title: &input.base_title,
+        local_title: &input.local_title,
+        base_body: &input.base_body,
+        local_body: &input.local_body,
+        base_properties: &input.base_properties,
+        local_properties: &input.local_properties,
+    };
+    match merge_managed_fields(draft, &canonical) {
+        Ok(merged) => to_js(&merged),
+        Err(_) => Ok(JsValue::NULL),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawText {
+    body: String,
+    uses_crlf: bool,
+    has_bom: bool,
+}
+
+fn invalid_utf8() -> JsValue {
+    public_error("invalid_utf8", "The raw Markdown file is not UTF-8")
+}
+
+/// Decodes raw Markdown bytes into LF text plus its line-ending summary.
+#[wasm_bindgen]
+pub fn read_raw_text(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let (body, layout) = split_canonical_raw_bytes(bytes).map_err(|_| invalid_utf8())?;
+    to_js(&RawText {
+        body,
+        uses_crlf: layout.uses_crlf,
+        has_bom: layout.has_bom,
+    })
+}
+
+/// Encodes LF text with the BOM and line endings of the original bytes.
+#[wasm_bindgen]
+pub fn compose_raw_text(original: &[u8], body: &str) -> Result<Vec<u8>, JsValue> {
+    let (_, layout) = split_canonical_raw_bytes(original).map_err(|_| invalid_utf8())?;
+    Ok(compose_raw_bytes(body, &layout))
+}
+
+/// Returns the history directory segment for a raw Markdown path.
+#[wasm_bindgen]
+pub fn raw_history_segment(relative_path: &str) -> String {
+    raw_history_dir(relative_path)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarEntry {
+    source_id: String,
+    source_type: String,
+    title: String,
+    property: String,
+    start: String,
+    end: Option<String>,
+    all_day: bool,
+    revision: String,
+}
+
+impl CalendarItem for CalendarEntry {
+    fn start(&self) -> &str {
+        &self.start
+    }
+    fn end(&self) -> Option<&str> {
+        self.end.as_deref()
+    }
+    fn all_day(&self) -> bool {
+        self.all_day
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn source_id(&self) -> &str {
+        &self.source_id
+    }
+    fn property(&self) -> &str {
+        &self.property
+    }
+}
+
+fn calendar_error(error: CalendarError) -> JsValue {
+    match error {
+        CalendarError::InvalidDate => public_error(
+            "invalid_calendar_date",
+            "Calendar values must use YYYY-MM-DD or RFC 3339 with an explicit offset",
+        ),
+        CalendarError::InvalidRange => public_error(
+            "invalid_calendar_range",
+            "The calendar range end must be after its start",
+        ),
+    }
+}
+
+/// Keeps the calendar entries that overlap `[start, end)`, in native order.
+#[wasm_bindgen]
+pub fn select_calendar_entries(
+    entries: JsValue,
+    start: &str,
+    end: &str,
+) -> Result<JsValue, JsValue> {
+    let entries = from_js::<Vec<CalendarEntry>>(entries)?;
+    to_js(&select_canonical_calendar_entries(entries, start, end).map_err(calendar_error)?)
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { workspace } from '$lib/state.svelte';
+	import { hostCapabilities } from '$lib/host-capabilities.svelte';
+	import { restoreWorkspaceBackup } from '$lib/browser-backup-actions';
 	import * as Empty from '$lib/components/ui/empty/index.js';
 	import * as Field from '$lib/components/ui/field/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -7,34 +9,125 @@
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { Spinner } from '$lib/components/ui/spinner/index.js';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
+	import UploadSimple from 'phosphor-svelte/lib/UploadSimple';
+	import Warning from 'phosphor-svelte/lib/Warning';
 
+	let {
+		problem = null,
+	}: {
+		/** Why the last workspace could not open. Shows a retry action. */
+		problem?: string | null;
+	} = $props();
+
+	// Desktop workspaces are folders; browser workspaces live in the browser.
+	const folders = $derived(hostCapabilities.current.workspaceFolders);
+	let creating = $state(false);
 	let workspaceName = $state('');
+	let restoreError = $state('');
+	let fileInput: HTMLInputElement | undefined;
 
 	async function createWorkspace(event: SubmitEvent) {
 		event.preventDefault();
 		const name = workspaceName.trim();
-		if (name) await workspace.pickAndCreate(name);
+		if (name) await workspace.createNamed(name);
+	}
+
+	async function restore(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		if (!file) return;
+		restoreError = '';
+		try {
+			await restoreWorkspaceBackup(file);
+		} catch (cause) {
+			restoreError =
+				cause instanceof Error ? cause.message : 'Couldn’t restore the backup.';
+		}
 	}
 </script>
 
+{#snippet createForm()}
+	<form class="flex flex-col gap-3" onsubmit={createWorkspace}>
+		<Field.Group>
+			<Field.Field>
+				<Field.Label for="new-workspace-name">New workspace</Field.Label>
+				<div class="flex gap-2">
+					<Input
+						id="new-workspace-name"
+						bind:value={workspaceName}
+						placeholder="Name"
+						autocomplete="off"
+						{@attach (node: HTMLInputElement) => node.focus()}
+					/>
+					<Button
+						type="submit"
+						variant={folders ? 'outline' : 'default'}
+						disabled={workspace.isLoading || workspaceName.trim().length === 0}
+					>
+						{folders ? 'Choose folder…' : 'Create'}
+					</Button>
+				</div>
+			</Field.Field>
+		</Field.Group>
+	</form>
+{/snippet}
+
 <main class="flex min-h-0 flex-1 items-center justify-center px-6 py-12">
-	<Empty.Root class="w-full max-w-2xl">
+	<Empty.Root class="w-full max-w-lg">
 		<Empty.Header>
 			<Empty.Media variant="icon">
-				<FolderOpen />
+				{#if problem}<Warning />{:else}<FolderOpen />{/if}
 			</Empty.Media>
-			<Empty.Title>Open your workspace</Empty.Title>
-			<Empty.Description>
-				Noura works from an ordinary folder. Your Markdown files remain the
-				durable source of truth.
-			</Empty.Description>
+			{#if problem}
+				<Empty.Title>Can’t open the workspace</Empty.Title>
+				<Empty.Description>{problem}</Empty.Description>
+			{:else if folders}
+				<Empty.Title>Open a folder</Empty.Title>
+				<Empty.Description>
+					noura adds a small .noura folder. Your files stay as they are.
+				</Empty.Description>
+			{:else}
+				<Empty.Title>Create a workspace</Empty.Title>
+				<Empty.Description>
+					Your workspaces live in this browser on this device.
+				</Empty.Description>
+			{/if}
 		</Empty.Header>
 
-		<Empty.Content class="max-w-lg items-stretch">
+		<Empty.Content class="items-stretch">
+			{#if folders || problem}
+				<div class="flex flex-col gap-2 sm:flex-row sm:justify-center">
+					{#if folders}
+						<Button
+							disabled={workspace.isLoading}
+							onclick={() => workspace.pickAndOpen()}
+						>
+							{#if workspace.isLoading}<Spinner
+									data-icon="inline-start"
+								/>{:else}<FolderOpen data-icon="inline-start" />{/if}
+							Open folder…
+						</Button>
+					{/if}
+					{#if problem}
+						<Button
+							variant="outline"
+							disabled={workspace.isLoading}
+							onclick={() => workspace.retry()}>Try again</Button
+						>
+					{/if}
+				</div>
+			{/if}
+
+			{#if !folders}
+				{@render createForm()}
+			{/if}
+
 			{#if workspace.recents.length > 0}
+				<Separator />
 				<div class="flex flex-col gap-1">
-					<p class="px-1 text-xs font-medium text-muted-foreground">
-						Recent workspaces
+					<p class="px-2 text-xs text-muted-foreground">
+						{folders ? 'Recent' : 'Your workspaces'}
 					</p>
 					{#each workspace.recents as recent (recent.workspaceId)}
 						<Button
@@ -44,68 +137,58 @@
 							onclick={() => workspace.open(recent.path)}
 						>
 							<span class="flex min-w-0 flex-col items-start">
-								<span class="truncate font-medium">{recent.name}</span>
-								<span
-									class="max-w-full truncate text-xs font-normal text-muted-foreground"
-									>{recent.path}</span
+								<span class="max-w-full truncate font-medium"
+									>{recent.name}</span
 								>
+								{#if folders}
+									<span
+										class="max-w-full truncate text-xs font-normal text-muted-foreground"
+										>{recent.path}</span
+									>
+								{/if}
 							</span>
 						</Button>
 					{/each}
 				</div>
-				<Separator />
 			{/if}
 
-			<div class="flex flex-col gap-2">
-				<p class="text-sm text-muted-foreground">
-					Choose an existing folder that contains a Noura workspace.
-				</p>
-				<Button
-					type="button"
-					disabled={workspace.isLoading}
-					onclick={() => workspace.pickAndOpen()}
-				>
-					{#if workspace.isLoading}
-						<Spinner data-icon="inline-start" />
-					{:else}
-						<FolderOpen data-icon="inline-start" />
-					{/if}
-					Open workspace
-				</Button>
-			</div>
-
 			<Separator />
-
-			<form class="flex flex-col gap-3" onsubmit={createWorkspace}>
-				<Field.Group>
-					<Field.Field>
-						<Field.Label for="new-workspace-name">Workspace name</Field.Label>
-						<Input
-							id="new-workspace-name"
-							bind:value={workspaceName}
-							placeholder="My workspace"
-							autocomplete="off"
-						/>
-					</Field.Field>
-				</Field.Group>
-				<p class="text-sm text-muted-foreground">
-					You’ll choose or create its folder in Finder next.
-				</p>
+			{#if !folders}
+				<input
+					{@attach (node: HTMLInputElement) => {
+						fileInput = node;
+					}}
+					type="file"
+					accept=".json,application/json"
+					class="sr-only"
+					aria-label="Backup file"
+					onchange={restore}
+				/>
 				<Button
-					type="submit"
-					variant="outline"
-					disabled={workspace.isLoading || workspaceName.trim().length === 0}
+					variant="ghost"
+					size="sm"
+					class="self-center text-muted-foreground"
+					disabled={workspace.isLoading}
+					onclick={() => fileInput?.click()}
 				>
-					{#if workspace.isLoading}
-						<Spinner data-icon="inline-start" />
-					{:else}
-						<FolderOpen data-icon="inline-start" />
-					{/if}
-					Choose folder and create
+					<UploadSimple data-icon="inline-start" />
+					Restore backup…
 				</Button>
-			</form>
+				{#if restoreError}
+					<p class="text-sm text-destructive" role="alert">{restoreError}</p>
+				{/if}
+			{:else if creating}
+				{@render createForm()}
+			{:else}
+				<Button
+					variant="ghost"
+					size="sm"
+					class="self-center text-muted-foreground"
+					onclick={() => (creating = true)}>New workspace…</Button
+				>
+			{/if}
 
-			{#if workspace.error}
+			{#if workspace.error && !problem}
 				<p class="text-sm text-destructive" role="alert">{workspace.error}</p>
 			{/if}
 		</Empty.Content>

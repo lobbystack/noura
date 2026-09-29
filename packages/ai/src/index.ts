@@ -1,12 +1,4 @@
-export interface AiProviderConfig {
-	id: string;
-	kind: string;
-	displayName: string;
-	model: string;
-	endpoint?: string;
-	credentialRef?: string;
-	enabled: boolean;
-}
+export type { AiProviderConfig } from '@noura/shared';
 
 /** A JSON value accepted by a JSON Schema document. */
 export type JsonSchemaValue =
@@ -61,12 +53,6 @@ export interface AiInstructionProvider {
 	risk?: AiRiskCategory;
 }
 
-export { createPiRuntimeSpike } from './pi-runtime-spike';
-export {
-	createNativePiRuntimeSpike,
-	type PiRuntimeSpikeFrame,
-	type PiRuntimeSpikeTransport,
-} from './pi-native-runtime-spike';
 export {
 	buildSystemPrompt,
 	PiChatController,
