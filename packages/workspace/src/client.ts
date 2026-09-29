@@ -58,7 +58,7 @@ import type {
 	MutationResult,
 	Note,
 	ObjectPatch,
-	ObjectQuery,
+	ObjectFilter,
 	ObjectType,
 	Project,
 	SearchInput,
@@ -163,7 +163,7 @@ export interface McpConnection {
 	args: string[];
 }
 export interface ObjectService<T extends WorkspaceObject> {
-	list(query?: ObjectQuery): Promise<T[]>;
+	list(query?: ObjectFilter): Promise<T[]>;
 	get(id: string): Promise<T>;
 	create(input: {
 		title: string;
@@ -330,7 +330,7 @@ export interface FileService {
 }
 
 export interface GenericObjectService {
-	list(query?: ObjectQuery): Promise<WorkspaceObject[]>;
+	list(query?: ObjectFilter): Promise<WorkspaceObject[]>;
 	get(id: string): Promise<WorkspaceObject>;
 	create(input: {
 		type: ObjectType;
@@ -552,19 +552,16 @@ export function createNouraClient(
 	const projectObjects = objects<Project>(transport, 'project');
 	const objectService = genericObjects(transport);
 	const manifestService: ManifestService = {
-		read: async () =>
-			toManifest(await transport.request<ManifestDto>('manifest_read')),
-		update: async (input) =>
-			toManifest(
-				await transport.request<ManifestDto>('manifest_update', {
-					input: {
-						name: input.name ?? null,
-						enabledPlugins: input.enabledPlugins ?? null,
-						ignore: input.ignore ?? null,
-						expectedUpdated: input.expectedUpdated ?? null,
-					},
-				}),
-			),
+		read: () => transport.request('manifest_read'),
+		update: (input) =>
+			transport.request('manifest_update', {
+				input: {
+					name: input.name ?? null,
+					enabledPlugins: input.enabledPlugins ?? null,
+					ignore: input.ignore ?? null,
+					expectedUpdated: input.expectedUpdated ?? null,
+				},
+			}),
 	};
 	const pluginStateService: PluginStateService = {
 		get: async (pluginId, key) => {
@@ -804,12 +801,7 @@ export function createNouraClient(
 				transport.request('managed_conflict_resolve', { input }),
 		},
 		search: {
-			query: async (input) => {
-				const values = await transport.request<
-					Array<Omit<SearchResult, 'highlights'>>
-				>('search_query', { input });
-				return values.map((value) => ({ ...value, highlights: [] }));
-			},
+			query: (input) => transport.request('search_query', { input }),
 		},
 		calendar: { queryRange: calendarQuery },
 		chats: {
@@ -907,38 +899,17 @@ export function createNouraClient(
 	};
 }
 
-/**
- * The Rust manifest DTO keeps snake_case frontmatter names on the wire; the
- * public TypeScript contract is camelCase. Fields keep their identities so
- * no durability decision depends on this mapping.
- */
-interface ManifestDto {
-	id: string;
-	format_version: number;
-	name: string;
-	created: string;
-	updated: string;
-	enabled_plugins: Array<string>;
-	ignore: Array<string>;
-}
-
-function toManifest(value: ManifestDto): WorkspaceManifest {
-	return {
-		id: value.id,
-		formatVersion: value.format_version,
-		name: value.name,
-		created: value.created,
-		updated: value.updated,
-		enabledPlugins: value.enabled_plugins,
-		ignore: value.ignore,
-	};
-}
-
 export function createWorkspaceStateStore(
 	client: NouraClient,
 ): Readable<WorkspaceState> {
 	return readable<WorkspaceState>(
-		{ phase: 'idle', indexedFiles: 0, diagnostics: [] },
+		{
+			phase: 'idle',
+			workspaceId: null,
+			rootPath: null,
+			indexedFiles: 0,
+			diagnostics: [],
+		},
 		(set) => {
 			let disposed = false;
 			let unsubscribe: undefined | (() => void);

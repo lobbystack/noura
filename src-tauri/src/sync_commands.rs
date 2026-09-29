@@ -741,7 +741,7 @@ pub fn start(app: AppHandle) {
             let local_change = async {
                 loop {
                     match events.recv().await {
-                        Ok(event) if event.source == "sync" => continue,
+                        Ok(event) if event.source == local_core::EventSource::Sync => continue,
                         _ => break,
                     }
                 }

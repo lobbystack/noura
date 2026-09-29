@@ -215,8 +215,8 @@ class PluginStore {
 		const client = getNouraClient();
 		const manifest = await client.manifest.read();
 		const next = enabled
-			? [...new Set([...manifest.enabledPlugins, pluginId])].sort()
-			: manifest.enabledPlugins.filter((id) => id !== pluginId);
+			? [...new Set([...manifest.enabled_plugins, pluginId])].sort()
+			: manifest.enabled_plugins.filter((id) => id !== pluginId);
 		await client.manifest.update({
 			enabledPlugins: next,
 			expectedUpdated: manifest.updated,

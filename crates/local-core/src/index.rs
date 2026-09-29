@@ -73,7 +73,8 @@ pub(crate) struct ObjectHead {
 }
 
 /// Exact-match filters for object queries, applied in SQL.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, optional_fields)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ObjectFilter {
     #[serde(rename = "type")]
@@ -133,7 +134,7 @@ pub struct ObjectSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
-#[ts(export)]
+#[ts(export, optional_fields = nullable)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchInput {
     pub query: String,
@@ -163,6 +164,9 @@ pub struct CalendarEntry {
     pub source_id: String,
     pub source_type: String,
     pub title: String,
+    /// The date property this entry comes from; the calendar query only
+    /// reads `due`, `date`, and `start`.
+    #[ts(type = "\"due\" | \"date\" | \"start\"")]
     pub property: String,
     pub start: String,
     pub end: Option<String>,
@@ -498,16 +502,10 @@ impl IndexStore {
     }
 
     pub fn query_objects(&self, object_type: Option<&str>) -> Result<Vec<WorkspaceObject>> {
-        let sql = "SELECT o.stable_id,o.object_type,o.title,o.body,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json FROM objects o JOIN files f ON f.id=o.file_id WHERE (?1 IS NULL OR o.object_type=?1) AND o.identity_status='unique' ORDER BY o.updated DESC,o.title";
-        let mut statement = self
-            .connection
-            .prepare_cached(sql)
-            .map_err(|error| CoreError::index(error, "object_query"))?;
-        let rows = statement
-            .query_map([object_type], row_to_object)
-            .map_err(|error| CoreError::index(error, "object_query"))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| CoreError::index(error, "object_query"))
+        self.query_objects_filtered(&ObjectFilter {
+            object_type: object_type.map(str::to_owned),
+            ..ObjectFilter::default()
+        })
     }
 
     pub(crate) fn workspace_entry_metadata(&self) -> Result<HashMap<String, IndexedFileMetadata>> {
@@ -868,10 +866,11 @@ fn upsert_markdown_tx(
 
 fn encode_plugin_state_value(value: &serde_json::Value, operation: &str) -> Result<String> {
     let json = serde_json::to_string(value).map_err(|error| {
+        tracing::warn!(%error, "plugin state could not be encoded as JSON");
         CoreError::new(
             "plugin_state_unserializable",
             ErrorCategory::Parse,
-            format!("Plugin state is not representable as JSON: {error}"),
+            "Plugin state is not representable as JSON",
             operation,
         )
     })?;
@@ -882,10 +881,11 @@ fn encode_plugin_state_value(value: &serde_json::Value, operation: &str) -> Resu
 
 fn parse_plugin_state_value(json: &str, operation: &str) -> Result<serde_json::Value> {
     serde_json::from_str(json).map_err(|error| {
+        tracing::warn!(%error, "stored plugin state is not valid JSON");
         CoreError::new(
             "plugin_state_corrupt",
             ErrorCategory::Parse,
-            format!("Stored plugin state is not valid JSON: {error}"),
+            "Stored plugin state is not valid JSON",
             operation,
         )
     })

@@ -229,7 +229,13 @@ export class BrowserWorkspaceServer {
 
 	async #state(): Promise<WorkspaceState> {
 		if (!this.#current)
-			return { phase: 'idle', indexedFiles: 0, diagnostics: [] };
+			return {
+				phase: 'idle',
+				workspaceId: null,
+				rootPath: null,
+				indexedFiles: 0,
+				diagnostics: [],
+			};
 		const rebuilt = await this.#current.storage.rebuild();
 		return {
 			phase: 'ready',
@@ -240,6 +246,7 @@ export class BrowserWorkspaceServer {
 				code: 'malformed_markdown',
 				message: value.error,
 				relativePath: value.path,
+				objectId: null,
 			})),
 		};
 	}

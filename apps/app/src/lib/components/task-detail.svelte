@@ -5,6 +5,7 @@
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
 	import type { CoreEvent, Project, Task } from '@noura/workspace';
 	import { isCoreError } from '@noura/workspace';
+	import { TASK_PRIORITIES, TASK_STATUSES } from '@noura/shared';
 	import { getNouraClient } from '$lib/state.svelte';
 	import {
 		ManagedDraftSession,
@@ -38,8 +39,8 @@
 		properties: Record<string, unknown>;
 	};
 	type Conflict = { draft: Draft; file: Task; deleted?: boolean };
-	const statuses = ['todo', 'in-progress', 'done', 'cancelled'] as const;
-	const priorities = ['low', 'medium', 'high', 'urgent'] as const;
+	const statuses = TASK_STATUSES;
+	const priorities = TASK_PRIORITIES;
 	const initialTask = () => task;
 
 	let current = $state.raw(initialTask());

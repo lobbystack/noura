@@ -88,7 +88,7 @@ export class PluginRegistry {
 	async read(): Promise<PluginRegistrySnapshot> {
 		const manifest = await this.client.manifest.read();
 		return {
-			enabledPluginIds: manifest.enabledPlugins,
+			enabledPluginIds: manifest.enabled_plugins,
 			updated: manifest.updated,
 		};
 	}
@@ -99,7 +99,7 @@ export class PluginRegistry {
 		expectedUpdated: string,
 	): Promise<PluginRegistrySnapshot> {
 		const current = await this.client.manifest.read();
-		const enabledPluginIds = new Set(current.enabledPlugins);
+		const enabledPluginIds = new Set(current.enabled_plugins);
 		if (enabled) enabledPluginIds.add(pluginId);
 		else enabledPluginIds.delete(pluginId);
 		const manifest = await this.client.manifest.update({
@@ -107,7 +107,7 @@ export class PluginRegistry {
 			expectedUpdated,
 		});
 		return {
-			enabledPluginIds: manifest.enabledPlugins,
+			enabledPluginIds: manifest.enabled_plugins,
 			updated: manifest.updated,
 		};
 	}
@@ -170,7 +170,7 @@ export class PluginRuntime {
 	async syncWithManifest(): Promise<PluginSyncResult> {
 		const manifest = await this.#client.manifest.read();
 		const enabled = new Set([
-			...manifest.enabledPlugins,
+			...manifest.enabled_plugins,
 			...this.#corePluginIds,
 		]);
 		const deactivated: Array<string> = [];

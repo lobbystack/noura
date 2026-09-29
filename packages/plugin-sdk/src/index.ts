@@ -14,7 +14,7 @@ import type {
 	CoreEvent,
 	MutationResult,
 	ObjectPatch,
-	ObjectQuery,
+	ObjectFilter,
 	SearchInput,
 	SearchResult,
 	UnmanagedFile,
@@ -43,7 +43,9 @@ const platformActivationCapabilitiesSchema = z
 	})
 	.strict();
 export const pluginManifestSchema = z.object({
-	id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+	// Matches the workspace manifest rule, so an enabled plugin ID is always
+	// valid in .noura/workspace.yaml.
+	id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
 	name: z.string().min(1),
 	version: z.string(),
 	capabilities: z.array(capabilitySchema),
@@ -97,7 +99,7 @@ export interface PluginContext {
 		removeEmptyFolder(relativePath: string): Promise<void>;
 	};
 	objects: {
-		list(query?: ObjectQuery): Promise<WorkspaceObject[]>;
+		list(query?: ObjectFilter): Promise<WorkspaceObject[]>;
 		get(id: string): Promise<WorkspaceObject>;
 		create(input: unknown): Promise<MutationResult<WorkspaceObject>>;
 		update(

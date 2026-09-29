@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use local_core::CoreError;
+use local_core::{CoreError, ErrorCategory};
 use serde::Deserialize;
 use tauri::State;
 
@@ -48,8 +48,9 @@ pub fn files_open_default(state: State<AppState>, input: FilePathInput) -> Resul
         let metadata = std::fs::metadata(&path)
             .map_err(|error| CoreError::io(error, operation, Some(&input.relative_path)))?;
         if !metadata.is_file() || could_run_code(&path, &metadata) {
-            return Err(CoreError::validation(
+            return Err(CoreError::new(
                 "open_not_allowed",
+                ErrorCategory::Permission,
                 "noura doesn't open apps or scripts. Show the file in the file manager to open it there.",
                 operation,
             ));

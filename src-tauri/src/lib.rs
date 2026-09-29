@@ -331,8 +331,9 @@ fn recent_path(app: &AppHandle) -> Result<std::path::PathBuf, CoreError> {
         .app_local_data_dir()
         .map(|path| path.join("recent-workspaces.json"))
         .map_err(|_| {
-            CoreError::validation(
+            CoreError::new(
                 "app_data_unavailable",
+                ErrorCategory::Filesystem,
                 "The application-data directory is unavailable",
                 "workspace_recent",
             )
@@ -378,8 +379,9 @@ fn restore_last_workspace(
     };
     let engine = open(last)?;
     if engine.manifest().id != last.workspace_id {
-        return Err(CoreError::validation(
+        return Err(CoreError::new(
             "workspace_identity_changed",
+            ErrorCategory::Identity,
             "The last workspace is no longer at its saved location",
             "workspace_restore",
         ));
@@ -411,8 +413,9 @@ fn save_recent(app: &AppHandle, workspace: &WorkspaceEngine) -> Result<(), CoreE
 
 fn write_recent(path: &Path, values: &[RecentWorkspace]) -> Result<(), CoreError> {
     let bytes = serde_json::to_vec_pretty(values).map_err(|_| {
-        CoreError::validation(
+        CoreError::new(
             "recent_serialize_failed",
+            ErrorCategory::Parse,
             "Recent workspaces could not be saved",
             "workspace_recent",
         )
@@ -459,8 +462,9 @@ fn workspace_open(
     let engine = WorkspaceEngine::open_or_initialize(&input.path, &name, workspace_id)?;
     engine.set_system_trash(local_core::os_trash());
     if workspace_id.is_some_and(|workspace_id| workspace_id != engine.manifest().id) {
-        return Err(CoreError::validation(
+        return Err(CoreError::new(
             "workspace_identity_changed",
+            ErrorCategory::Identity,
             "The selected workspace is no longer at its saved location",
             "workspace_open",
         ));
@@ -488,7 +492,7 @@ fn workspace_close(app: AppHandle, state: State<AppState>) -> Result<(), CoreErr
                 event_type: "workspace:closed".into(),
                 workspace_id: engine.manifest().id,
                 occurred_at: local_core::now_rfc3339(),
-                source: "application".into(),
+                source: local_core::EventSource::Application,
                 payload: serde_json::json!({}),
             },
         )
@@ -1343,8 +1347,9 @@ async fn mcp_test_connection(state: State<'_, AppState>) -> Result<bool, CoreErr
     tauri::async_runtime::spawn_blocking(move || {
         use std::io::{BufRead, Write};
         let failed = || {
-            CoreError::validation(
+            CoreError::new(
                 "mcp_unavailable",
+                ErrorCategory::Transient,
                 "The MCP server did not start",
                 "mcp_test_connection",
             )
@@ -1517,8 +1522,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let root = app.path().app_local_data_dir().map_err(|_| {
-                CoreError::validation(
+                CoreError::new(
                     "app_data_unavailable",
+                    ErrorCategory::Filesystem,
                     "The application-data directory is unavailable",
                     "ai_provider_load",
                 )

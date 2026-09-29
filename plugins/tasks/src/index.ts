@@ -1,27 +1,9 @@
 import { generateKeyBetween } from 'fractional-indexing';
-import { z } from 'zod';
 import { definePlugin, type PluginContext } from '@noura/plugin-sdk';
-import type { Task, TaskStatus } from '@noura/shared';
-export const taskPropertiesSchema = z
-	.object({
-		status: z
-			.enum(['todo', 'in-progress', 'done', 'cancelled'])
-			.default('todo'),
-		priority: z.enum(['low', 'medium', 'high', 'urgent']).default('medium'),
-		due: z.string().optional(),
-		project: z.string().optional(),
-		kanban_order: z.string().optional(),
-	})
-	.passthrough();
-export const taskStatuses: TaskStatus[] = [
-	'todo',
-	'in-progress',
-	'done',
-	'cancelled',
-];
+import { TASK_STATUSES, type Task } from '@noura/shared';
 export function projectKanban(tasks: Task[]) {
 	return {
-		groups: taskStatuses.map((status) => ({
+		groups: TASK_STATUSES.map((status) => ({
 			id: status,
 			title: status,
 			items: tasks

@@ -921,13 +921,13 @@ impl WorkspaceEngine {
         if let Some(delta) = delta {
             self.emit(
                 "collaboration:update",
-                "external",
+                EventSource::External,
                 serde_json::json!({"objectId":object_id,"generation":descriptor.generation,"update":delta,"revision":next.revision}),
             );
         }
         self.emit(
             "file:changed",
-            "external",
+            EventSource::External,
             serde_json::json!({"paths":[path]}),
         );
         Ok(true)
@@ -955,7 +955,7 @@ impl WorkspaceEngine {
         for (object, generation) in documents {
             self.emit(
                 "collaboration:status",
-                "sync",
+                EventSource::Sync,
                 serde_json::to_value(CollaborationStatusEvent {
                     object_id: object,
                     generation,
@@ -1583,7 +1583,7 @@ impl WorkspaceEngine {
         )?;
         self.emit(
             "collaboration:activated",
-            "sync",
+            EventSource::Sync,
             serde_json::json!({"objectIds":[state.object_id]}),
         );
         Ok(())
@@ -1717,7 +1717,7 @@ impl WorkspaceEngine {
         )?;
         self.emit(
             "collaboration:status",
-            "sync",
+            EventSource::Sync,
             serde_json::to_value(CollaborationStatusEvent {
                 object_id: object_id.into(),
                 generation: checkpoint.generation.clone(),
@@ -1727,7 +1727,7 @@ impl WorkspaceEngine {
         );
         self.emit(
             "collaboration:review",
-            "sync",
+            EventSource::Sync,
             serde_json::to_value(crate::sync::CollaborationConflictReview {
                 review_id: transition_id.into(),
                 object_id: object_id.into(),
@@ -1792,7 +1792,7 @@ impl WorkspaceEngine {
         self.sync_write(STATE_PATH, &journal)?;
         self.emit(
             "collaboration:status",
-            "sync",
+            EventSource::Sync,
             serde_json::to_value(CollaborationStatusEvent {
                 object_id: operation.object_id.clone(),
                 generation: generation.into(),
@@ -1802,7 +1802,7 @@ impl WorkspaceEngine {
         );
         self.emit(
             "collaboration:review",
-            "sync",
+            EventSource::Sync,
             serde_json::to_value(crate::sync::CollaborationConflictReview {
                 review_id: operation.operation_id.clone(),
                 object_id: operation.object_id.clone(),
@@ -1852,7 +1852,7 @@ impl WorkspaceEngine {
         )?;
         self.emit(
             "collaboration:status",
-            "external",
+            EventSource::External,
             serde_json::to_value(CollaborationStatusEvent {
                 object_id: state.object_id.clone(),
                 generation: state.generation.clone(),
@@ -1862,7 +1862,7 @@ impl WorkspaceEngine {
         );
         self.emit(
             "collaboration:review",
-            "external",
+            EventSource::External,
             serde_json::to_value(crate::sync::CollaborationConflictReview {
                 review_id,
                 object_id: state.object_id.clone(),
@@ -2199,7 +2199,7 @@ impl WorkspaceEngine {
         members.sort_by(|left, right| left.device_id.cmp(&right.device_id));
         self.emit(
             "collaboration:presence",
-            "sync",
+            EventSource::Sync,
             serde_json::to_value(crate::sync::CollaborationPresenceEvent {
                 object_id: object.into(),
                 generation: generation.into(),
@@ -2797,10 +2797,10 @@ impl WorkspaceEngine {
         if is_markdown(&next.path) {
             self.reindex_raw_markdown(&next.path, &bytes, "collaboration_apply")?;
         }
-        self.emit("collaboration:update", if outgoing { "application" } else { "sync" }, serde_json::json!({"objectId": next.object_id, "generation":next.generation,"update":delta,"revision":next.revision}));
+        self.emit("collaboration:update", if outgoing { EventSource::Application } else { EventSource::Sync }, serde_json::json!({"objectId": next.object_id, "generation":next.generation,"update":delta,"revision":next.revision}));
         self.emit(
             "file:changed",
-            "sync",
+            EventSource::Sync,
             serde_json::json!({"paths":[next.path]}),
         );
         Ok(next)
@@ -3020,7 +3020,7 @@ impl WorkspaceEngine {
         if let Some(delta) = delta {
             self.emit(
                 "collaboration:update",
-                if outgoing { "application" } else { "sync" },
+                if outgoing { EventSource::Application } else { EventSource::Sync },
                 serde_json::json!({"objectId": next.object_id, "generation": next.generation, "update": delta, "revision": next.revision}),
             );
         }
@@ -3032,12 +3032,12 @@ impl WorkspaceEngine {
             } else {
                 "object:moved"
             },
-            if outgoing { "application" } else { "sync" },
+            if outgoing { EventSource::Application } else { EventSource::Sync },
             serde_json::json!({"id":next.object_id,"path":next.path,"from":previous_path,"to":next.path,"revision":next.revision,"deleted":deleted,"trashPath":tombstone_path}),
         );
         self.emit(
             "file:changed",
-            "sync",
+            EventSource::Sync,
             serde_json::json!({"paths":[next.path]}),
         );
         Ok(next)

@@ -1,6 +1,7 @@
+import type { ObjectType } from '@noura/shared';
 import { pdfHref } from './pdf/navigation';
 
-export type ObjectType = 'note' | 'task' | 'project' | string;
+export type { ObjectType };
 
 export interface Tab {
 	id: string;

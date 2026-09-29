@@ -13,7 +13,6 @@ function result(extra: Partial<SearchResult>): SearchResult {
 		relativePath: 'notes/alpha.md',
 		title: 'Alpha',
 		snippet: 'a rare needle here',
-		highlights: [],
 		score: 1,
 		revision: 'rev-1',
 		...extra,

@@ -39,7 +39,9 @@ pub struct AiProviderConfig {
     pub kind: String,
     pub display_name: String,
     pub model: String,
+    #[ts(optional = nullable)]
     pub endpoint: Option<String>,
+    #[ts(optional = nullable)]
     pub credential_ref: Option<String>,
     pub enabled: bool,
 }
@@ -170,6 +172,8 @@ pub enum AiStreamEvent {
 #[serde(rename_all = "camelCase")]
 pub struct AiStreamFrame {
     pub operation_id: String,
+    /// Serialized as a JSON number; a stream never approaches 2^53 frames.
+    #[ts(type = "number")]
     pub sequence: u64,
     pub event: AiStreamEvent,
 }
@@ -556,8 +560,9 @@ impl AiFoundation {
         validate_transport_messages(&input.messages, "ai_stream")?;
         validate_tools(input.tools.as_deref().unwrap_or_default(), "ai_stream")?;
         let policy_version = input.policy_version.as_deref().ok_or_else(|| {
-            CoreError::validation(
+            CoreError::new(
                 "ai_consent_required",
+                ErrorCategory::Permission,
                 "Explicit consent is required before sending workspace content to an AI provider",
                 "ai_stream",
             )

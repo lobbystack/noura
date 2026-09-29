@@ -1,12 +1,4 @@
-export interface AiProviderConfig {
-	id: string;
-	kind: string;
-	displayName: string;
-	model: string;
-	endpoint?: string;
-	credentialRef?: string;
-	enabled: boolean;
-}
+export type { AiProviderConfig } from '@noura/shared';
 
 /** A JSON value accepted by a JSON Schema document. */
 export type JsonSchemaValue =

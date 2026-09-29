@@ -2,4 +2,8 @@
 import type { Diagnostic } from "./Diagnostic";
 import type { WorkspacePhase } from "./WorkspacePhase";
 
-export type WorkspaceState = { phase: WorkspacePhase, workspaceId: string | null, rootPath: string | null, indexedFiles: bigint, diagnostics: Array<Diagnostic>, };
+export type WorkspaceState = { phase: WorkspacePhase, workspaceId: string | null, rootPath: string | null, 
+/**
+ * Serialized as a JSON number; workspaces never approach 2^53 files.
+ */
+indexedFiles: number, diagnostics: Array<Diagnostic>, };
