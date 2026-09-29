@@ -141,10 +141,27 @@ export class App {
 		});
 	}
 
-	/** Put the caret at `offset` (or the end) with the keyboard. */
+	/** Put the caret at the end of the text with the keyboard. */
 	async caretToEnd(name = 'Note text') {
 		await this.editor(name).focus();
 		await this.page.keyboard.press('ControlOrMeta+End');
+	}
+
+	/**
+	 * Put the caret right after the first `anchor` in the text. Rendered
+	 * tables and code blocks make arrow keys and clicks land unpredictably,
+	 * so this sets the selection directly; typing still uses the keyboard.
+	 */
+	async caretAfter(anchor: string, name = 'Note text') {
+		await this.editor(name).focus();
+		await this.editor(name).evaluate((element, anchor) => {
+			const tile = (element as unknown as { cmTile?: EditorTile }).cmTile;
+			const view = tile?.root?.view;
+			if (!view) throw new Error('No editor view');
+			const offset = view.state.doc.toString().indexOf(anchor);
+			if (offset < 0) throw new Error(`No “${anchor}” in the editor`);
+			view.dispatch({ selection: { anchor: offset + anchor.length } });
+		}, anchor);
 	}
 
 	/** Messages from `recordMessages` seen so far. */
@@ -298,6 +315,7 @@ type EditorTile = {
 				doc: { toString(): string };
 				selection: { main: { head: number } };
 			};
+			dispatch(spec: { selection: { anchor: number } }): void;
 		};
 	};
 };

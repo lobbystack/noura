@@ -112,7 +112,9 @@
 				return {
 					status: 'saved',
 					base: baseOf(result.current),
-					merged: result.status === 'merged',
+					// A raw save reports no separate merge status. It writes the text
+					// as sent unless it folded in an edit made outside the app.
+					merged: result.current.body !== body,
 					canonical: {
 						read: result.current,
 						managedObject: result.managedObject,
