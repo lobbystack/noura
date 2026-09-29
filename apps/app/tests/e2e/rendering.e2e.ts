@@ -75,10 +75,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 				).toBeGreaterThanOrEqual(4.5);
 		});
 
-		test.fixme('a checked checkbox shows a check mark', async ({
-			app,
-			page,
-		}) => {
+		test('a checked checkbox shows a check mark', async ({ app, page }) => {
 			await openRendered(app);
 			const box = app
 				.editor('File text')

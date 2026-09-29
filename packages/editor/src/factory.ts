@@ -443,11 +443,6 @@ const editorTheme = EditorView.theme({
 		textTransform: 'capitalize',
 	},
 	'.cm-md-task-line .cm-md-checkbox': { verticalAlign: 'middle' },
-	'.cm-md-checkbox[data-checked="true"]': {
-		backgroundImage:
-			"url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E\")",
-		backgroundSize: '100% 100%',
-	},
 	'.cm-md-hr-line': {
 		backgroundImage: 'linear-gradient(var(--border), var(--border))',
 		backgroundSize: '100% 1px',
