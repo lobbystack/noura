@@ -364,13 +364,25 @@ function decorateBlockquote(cx: DecorationContext, node: SyntaxNode) {
 	eachLine(node.from, node.to, (from) => addLine(from, quoteClass));
 	if (!callout) return;
 	addLine(firstLine.from, 'cm-md-callout-title');
+	const marker = callout[2] ?? '';
 	const typeFrom = firstLine.from + (callout[1] ?? '').length;
-	const typeTo = typeFrom + (callout[2] ?? '').length;
-	if (revealed(firstLine.from, firstLine.to)) {
+	const typeTo = typeFrom + marker.length;
+	const lastLine = state.doc.lineAt(Math.max(node.from, node.to - 1));
+	// Like Obsidian, the source shows while the caret is anywhere in the
+	// callout; otherwise the `>` markers hide and `[!note]` reads "note".
+	if (revealed(firstLine.from, lastLine.to)) {
 		addMark(typeFrom, typeTo, 'cm-md-callout-type');
-	} else {
-		addReplace(typeFrom, typeTo + (callout[3] ?? '').length, {});
+		return;
 	}
+	eachLine(node.from, node.to, (from) => {
+		const quote = /^(\s*)>[ \t]?/.exec(state.doc.lineAt(from).text);
+		if (quote)
+			addReplace(from + (quote[1] ?? '').length, from + quote[0].length, {});
+	});
+	const close = marker.indexOf(']');
+	addReplace(typeFrom, typeFrom + 2, {});
+	addMark(typeFrom + 2, typeFrom + close, 'cm-md-callout-label');
+	addReplace(typeFrom + close, typeTo, {});
 }
 
 function linkParts(state: EditorState, node: SyntaxNode) {

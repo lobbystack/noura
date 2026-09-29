@@ -438,6 +438,10 @@ const editorTheme = EditorView.theme({
 	},
 	'.cm-md-callout-title': { fontWeight: '600' },
 	'.cm-md-callout-type': { color: 'var(--muted-foreground)' },
+	'.cm-md-callout-label': {
+		color: 'var(--muted-foreground)',
+		textTransform: 'capitalize',
+	},
 	'.cm-md-task-line .cm-md-checkbox': { verticalAlign: 'middle' },
 	'.cm-md-checkbox[data-checked="true"]': {
 		backgroundImage:
