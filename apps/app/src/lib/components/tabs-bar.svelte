@@ -14,21 +14,29 @@
 	let left = $state(MIN_LEFT);
 
 	// The bar sits in the title bar row, lined up with the content column
-	// below it, wherever the rail and sidebar currently end.
+	// below it, wherever the rail and sidebar currently end. Pages without a
+	// sidebar put the workspace switcher in the title bar; the bar starts
+	// after it.
 	const followContent: Attachment<HTMLElement> = (anchor) => {
 		const content = anchor.parentElement ?? anchor;
+		const titleBar = document.querySelector('header[data-tauri-drag-region]');
 		const measure = () => {
-			left = Math.max(
-				MIN_LEFT,
-				Math.round(anchor.getBoundingClientRect().left),
+			const occupied = [...(titleBar?.children ?? [])].map(
+				(child) => child.getBoundingClientRect().right,
+			);
+			left = Math.round(
+				Math.max(MIN_LEFT, anchor.getBoundingClientRect().left, ...occupied),
 			);
 		};
 		measure();
-		const observer = new ResizeObserver(measure);
-		observer.observe(content);
+		const resizes = new ResizeObserver(measure);
+		resizes.observe(content);
+		const changes = new MutationObserver(measure);
+		if (titleBar) changes.observe(titleBar, { childList: true });
 		window.addEventListener('resize', measure);
 		return () => {
-			observer.disconnect();
+			resizes.disconnect();
+			changes.disconnect();
 			window.removeEventListener('resize', measure);
 		};
 	};
