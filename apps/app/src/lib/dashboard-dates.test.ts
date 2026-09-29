@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { daypartGreeting, dueLabel, plusDays } from './dashboard-dates';
+import {
+	daypartGreeting,
+	dueLabel,
+	isOverdue,
+	plusDays,
+} from './dashboard-dates';
 
 describe('dashboard dates', () => {
 	test('plusDays keeps the clock time and adds calendar days', () => {
@@ -17,9 +22,34 @@ describe('dashboard dates', () => {
 		expect(dueLabel('2026-09-02', now)).toBe('Today');
 	});
 
-	test('all-day values on another day render the stored date', () => {
+	test('all-day values near today read as relative days', () => {
+		const now = new Date(2026, 8, 2, 15, 0); // Wednesday
+		expect(dueLabel('2026-09-03', now)).toBe('Tomorrow');
+		expect(dueLabel('2026-09-01', now)).toBe('Yesterday');
+		expect(dueLabel('2026-09-05', now)).toBe(
+			new Date(2026, 8, 5).toLocaleDateString(undefined, { weekday: 'long' }),
+		);
+	});
+
+	test('all-day values further out read as a short date', () => {
 		const now = new Date(2026, 8, 2, 15, 0);
-		expect(dueLabel('2026-09-05', now)).toBe('2026-09-05');
+		const label = dueLabel('2026-10-15', now);
+		expect(label).not.toContain('2026');
+		expect(label).toMatch(/15/);
+		expect(dueLabel('2027-01-04', now)).toMatch(/2027/);
+	});
+
+	test('unreadable values fall back to the stored text', () => {
+		const now = new Date(2026, 8, 2, 15, 0);
+		expect(dueLabel('someday', now)).toBe('someday');
+	});
+
+	test('overdue compares calendar days', () => {
+		const now = new Date(2026, 8, 2, 15, 0);
+		expect(isOverdue('2026-09-01', now)).toBe(true);
+		expect(isOverdue('2026-09-02', now)).toBe(false);
+		expect(isOverdue('2026-09-02T08:00:00', now)).toBe(false);
+		expect(isOverdue('not a date', now)).toBe(false);
 	});
 
 	test('timed values render their local clock time', () => {

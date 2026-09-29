@@ -2,7 +2,7 @@
 	import { page } from '$app/stores';
 	import { getSettingsDialog } from '$lib/settings.svelte';
 	const settings = getSettingsDialog();
-	import Tray from 'phosphor-svelte/lib/Tray';
+	import House from 'phosphor-svelte/lib/House';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
 	import Checks from 'phosphor-svelte/lib/Checks';
 	import Calendar from 'phosphor-svelte/lib/Calendar';
@@ -23,7 +23,7 @@
 	};
 
 	const pluginEntries: Partial<Record<NavigationId, PluginRailEntry>> = {
-		inbox: { label: 'Inbox', path: '/inbox', icon: Tray },
+		inbox: { label: 'Home', path: '/inbox', icon: House },
 		ai: { label: 'AI', path: '/ai', icon: Sparkle },
 		notes: { label: 'Notes', path: '/notes', icon: NotePencil },
 		tasks: { label: 'Tasks', path: '/tasks', icon: Checks },
