@@ -7,6 +7,7 @@
 	import { DebouncedSearch } from '$lib/debounced-search';
 	import { getNouraClient, workspace } from '$lib/state.svelte';
 	import { plugins } from '$lib/plugins.svelte';
+	import { routePlugin } from '$lib/plugin-routes';
 	import { workspaceTree } from '$lib/workspace-tree.svelte';
 	import {
 		collectFilePaths,
@@ -68,15 +69,17 @@
 		);
 	});
 
-	const NAV_ENTRIES: ReadonlyArray<readonly [string, string, string | null]> = [
-		['Home', '/inbox', null],
-		['Files', '/files', null],
-		['Tasks', '/tasks', 'tasks'],
-		['Calendar', '/calendar', 'calendar'],
-		['Projects', '/projects', 'projects'],
-		['AI', '/ai', 'ai'],
-		['Settings', '/settings', null],
-	];
+	const NAV_ENTRIES: ReadonlyArray<readonly [string, string, string | null]> = (
+		[
+			['Home', '/inbox'],
+			['Files', '/files'],
+			['Tasks', '/tasks'],
+			['Calendar', '/calendar'],
+			['Projects', '/projects'],
+			['AI', '/ai'],
+			['Settings', '/settings'],
+		] as const
+	).map(([label, path]) => [label, path, routePlugin(path)] as const);
 
 	const placeholder = $derived(
 		mode === 'files'

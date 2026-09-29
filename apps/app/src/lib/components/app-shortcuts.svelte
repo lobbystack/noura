@@ -10,6 +10,7 @@
 	import { getAppPlatform } from '$lib/platform';
 	import { plugins } from '$lib/plugins.svelte';
 	import { getSettingsDialog } from '$lib/settings.svelte';
+	import { routePlugin } from '$lib/plugin-routes';
 	import { showsFileTree } from '$lib/sidebar-modules';
 	import { closeActiveTab, cycleTab } from '$lib/tab-actions';
 	import { useSidebar } from '$lib/components/ui/sidebar/index.js';
@@ -18,13 +19,13 @@
 	const sidebar = useSidebar();
 	const os = hostOs();
 
-	const ROUTES: Partial<Record<AppMenuCommand, [string, string | null]>> = {
-		'go-home': ['/inbox', null],
-		'go-files': ['/files', null],
-		'go-tasks': ['/tasks', 'tasks'],
-		'go-calendar': ['/calendar', 'calendar'],
-		'go-projects': ['/projects', 'projects'],
-		'go-ai': ['/ai', 'ai'],
+	const ROUTES: Partial<Record<AppMenuCommand, string>> = {
+		'go-home': '/inbox',
+		'go-files': '/files',
+		'go-tasks': '/tasks',
+		'go-calendar': '/calendar',
+		'go-projects': '/projects',
+		'go-ai': '/ai',
 	};
 
 	// On a Mac the menu bar and the key press can both report one shortcut;
@@ -35,9 +36,9 @@
 		const now = performance.now();
 		if (now - (lastRun[command] ?? -Infinity) < 300) return;
 		lastRun[command] = now;
-		const route = ROUTES[command];
-		if (route) {
-			const [path, pluginId] = route;
+		const path = ROUTES[command];
+		if (path) {
+			const pluginId = routePlugin(path);
 			if (!pluginId || plugins.isEnabled(pluginId)) await goto(path);
 			return;
 		}
