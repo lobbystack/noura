@@ -62,6 +62,7 @@ export const APP_SHORTCUTS: ReadonlyArray<{
 	{ label: 'Open a file by name', keys: ['Mod', 'O'] },
 	{ label: 'Search file contents', keys: ['Mod', 'Shift', 'F'] },
 	{ label: 'Search and run commands', keys: ['Mod', 'K'] },
+	{ label: 'Rename the open file', keys: ['F2'] },
 	{ label: 'Close tab', keys: ['Mod', 'W'] },
 	{ label: 'Next tab', keys: ['Ctrl', 'Tab'] },
 	{ label: 'Previous tab', keys: ['Ctrl', 'Shift', 'Tab'] },
