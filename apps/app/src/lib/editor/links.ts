@@ -83,6 +83,7 @@ export function editorLinks(
 ): Pick<
 	LiveMarkdownOptions,
 	| 'resolveImage'
+	| 'loadRemoteImage'
 	| 'resolveLink'
 	| 'openLink'
 	| 'linkSuggestions'
@@ -102,6 +103,8 @@ export function editorLinks(
 		...assets,
 		resolveImage: (src) =>
 			WEB_LINK.test(src) ? src : (assets.resolveImage?.(locate(src)) ?? null),
+		loadRemoteImage: async (url) =>
+			(await getNouraClient().files.fetchRemoteImage({ url })).dataUrl,
 		resolveLink: (target) =>
 			assets.resolveLink?.(locate(target)) ??
 			Promise.resolve({ kind: 'unresolved' as const }),

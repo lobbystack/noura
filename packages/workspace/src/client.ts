@@ -311,6 +311,11 @@ export interface FileService {
 		sourceRelativePath: string;
 		target: string;
 	}): Promise<{ dataUrl: string }>;
+	/**
+	 * Download a remote image the user chose to load, as a data URL. The
+	 * desktop page may not load remote images itself.
+	 */
+	fetchRemoteImage(input: { url: string }): Promise<{ dataUrl: string }>;
 	/** Rename or move a file. Managed objects keep their ID. */
 	move(input: { from: string; to: string }): Promise<void>;
 	/**
@@ -746,6 +751,8 @@ export function createNouraClient(
 				transport.request('files_resolve_markdown_link', { input }),
 			readLocalAsset: (input) =>
 				transport.request('files_read_local_asset', { input }),
+			fetchRemoteImage: (input) =>
+				transport.request('files_fetch_remote_image', { input }),
 			move: (input) => transport.request('files_move', { input }),
 			trash: (input) => transport.request('files_trash', { input }),
 			copy: (input) => transport.request('files_copy', { input }),

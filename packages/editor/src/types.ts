@@ -62,6 +62,11 @@ export interface LiveMarkdownOptions {
 	label?: string;
 	readOnly?: boolean;
 	resolveImage?: (src: string) => string | null | Promise<string | null>;
+	/**
+	 * Download a remote image the user asked to load and return a URL the
+	 * page may show, such as a data URL. Without it the image loads directly.
+	 */
+	loadRemoteImage?: (url: string) => Promise<string>;
 	resolveLink?: (target: string) => Promise<{
 		kind: 'managed' | 'markdown' | 'asset' | 'pdf' | 'unresolved';
 		relativePath?: string;

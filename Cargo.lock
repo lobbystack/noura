@@ -3638,6 +3638,7 @@ dependencies = [
  "local-core",
  "log",
  "noura-mcp",
+ "reqwest",
  "serde",
  "serde_json",
  "tauri",
@@ -3653,6 +3654,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "url",
  "uuid",
 ]
 

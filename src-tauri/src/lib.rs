@@ -411,6 +411,7 @@ pub fn run() {
             raw_markdown::raw_markdown_reconcile,
             raw_markdown::raw_markdown_resolve,
             files::files_read_local_asset,
+            files::files_fetch_remote_image,
             files::files_inspect_pdf,
             files::files_read_pdf_range,
             files::files_open_pdf_link,

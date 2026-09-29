@@ -96,6 +96,87 @@ pub fn files_read_local_asset(
     })
 }
 
+#[derive(Deserialize)]
+pub struct RemoteImageInput {
+    url: String,
+}
+
+const MAX_REMOTE_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+/// Download one remote image the user chose to load and return it as a data
+/// URL. The page's content security policy blocks remote images, so a note
+/// can never load one on its own; only this explicit request fetches it.
+#[tauri::command]
+pub async fn files_fetch_remote_image(
+    input: RemoteImageInput,
+) -> Result<serde_json::Value, CoreError> {
+    let operation = "files_fetch_remote_image";
+    let unavailable = || {
+        CoreError::new(
+            "image_unavailable",
+            local_core::ErrorCategory::Transient,
+            "The image couldn't be downloaded",
+            operation,
+        )
+    };
+    let url = url::Url::parse(&input.url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "https" | "http"))
+        .filter(|url| url.username().is_empty() && url.password().is_none())
+        .ok_or_else(|| {
+            CoreError::validation(
+                "invalid_url",
+                "The image address isn't a web address",
+                operation,
+            )
+        })?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|_| unavailable())?;
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| unavailable())?
+        .error_for_status()
+        .map_err(|_| unavailable())?;
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| value.starts_with("image/") && value.len() <= 64)
+        .ok_or_else(|| {
+            CoreError::validation("not_an_image", "That address isn't an image", operation)
+        })?;
+    let too_large = || {
+        CoreError::validation(
+            "image_too_large",
+            "The image is larger than 20 MB",
+            operation,
+        )
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_REMOTE_IMAGE_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
+        if bytes.len() + chunk.len() > MAX_REMOTE_IMAGE_BYTES {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::json!({
+        "dataUrl": format!("data:{mime};base64,{}", base64_encode(&bytes)),
+    }))
+}
+
 #[tauri::command(async)]
 pub fn files_resolve_markdown_link(
     state: State<AppState>,

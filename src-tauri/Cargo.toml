@@ -18,6 +18,8 @@ tauri-plugin-log = "2"
 log = "0.4"
 tracing = { workspace = true, features = ["log"] }
 tokio.workspace = true
+reqwest.workspace = true
+url.workspace = true
 tokio-tungstenite.workspace = true
 futures.workspace = true
 uuid.workspace = true

@@ -93,6 +93,7 @@ export function markdownSupport(): Extension {
 
 interface PreviewSpecs {
 	resolveImage?: LiveMarkdownOptions['resolveImage'] | undefined;
+	loadRemoteImage?: LiveMarkdownOptions['loadRemoteImage'] | undefined;
 	resolveLink?: LiveMarkdownOptions['resolveLink'] | undefined;
 	openLink?: LiveMarkdownOptions['openLink'] | undefined;
 	openPdf?: LiveMarkdownOptions['openPdf'] | undefined;
@@ -105,7 +106,14 @@ function previewWidgetFactories(specs: PreviewSpecs) {
 			alt: string,
 			src: string,
 			options?: { width?: number | undefined; title?: string | undefined },
-		) => new ImageWidget(alt, src, options ?? {}, specs.resolveImage),
+		) =>
+			new ImageWidget(
+				alt,
+				src,
+				options ?? {},
+				specs.resolveImage,
+				specs.loadRemoteImage,
+			),
 		math: (source: string, displayMode: boolean) =>
 			new MathWidget(source, displayMode),
 		table: (
@@ -529,6 +537,7 @@ export function createLiveMarkdownEditor(
 		EditorView.lineWrapping,
 		createPreviewField({
 			resolveImage: options.resolveImage,
+			loadRemoteImage: options.loadRemoteImage,
 			resolveLink: options.resolveLink,
 			openLink: options.openLink,
 			openPdf: options.openPdf,

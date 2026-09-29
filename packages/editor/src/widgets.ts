@@ -15,6 +15,7 @@ export class ImageWidget extends WidgetType {
 		private readonly src: string,
 		private readonly options: ImageOptions,
 		private readonly resolve?: LiveMarkdownOptions['resolveImage'],
+		private readonly loadRemote?: LiveMarkdownOptions['loadRemoteImage'],
 	) {
 		super();
 	}
@@ -52,7 +53,17 @@ export class ImageWidget extends WidgetType {
 			button.type = 'button';
 			button.className = 'cm-md-image-load';
 			button.textContent = 'Load image';
-			button.addEventListener('click', () => show(this.src));
+			button.addEventListener('click', () => {
+				if (!this.loadRemote) return show(this.src);
+				button.disabled = true;
+				button.textContent = 'Loading…';
+				this.loadRemote(this.src)
+					.then(show)
+					.catch(() => {
+						button.disabled = false;
+						button.textContent = 'Couldn’t load image. Try again';
+					});
+			});
 			wrap.appendChild(button);
 			return wrap;
 		}
