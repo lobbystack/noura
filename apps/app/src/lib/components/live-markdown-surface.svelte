@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { markdownAssets } from '$lib/pdf/markdown';
+	import { untrack } from 'svelte';
+	import { editorLinks } from '$lib/editor/links';
 	import { createPointerSelectionTracker } from '$lib/editor/pointer-selection';
-	import { browser } from '$app/environment';
+	import { recallView, rememberView } from '$lib/editor/view-memory';
 	import { preferences } from '$lib/preferences.svelte';
-	import { fromAction } from 'svelte/attachments';
 	import type {
 		EditorSelectionState,
 		LiveMarkdownEditor,
@@ -25,15 +25,25 @@
 	import Checks from 'phosphor-svelte/lib/Checks';
 	import Quotes from 'phosphor-svelte/lib/Quotes';
 	import Code from 'phosphor-svelte/lib/Code';
+	import MagnifyingGlass from 'phosphor-svelte/lib/MagnifyingGlass';
 	import ArrowCounterClockwise from 'phosphor-svelte/lib/ArrowCounterClockwise';
 	import ArrowClockwise from 'phosphor-svelte/lib/ArrowClockwise';
 
+	/**
+	 * `value` seeds an editable surface once; after that the editor owns the
+	 * text and changes only through the handle passed to `onready`, so a
+	 * save finishing mid-typing can never reset what is on screen. Read-only
+	 * surfaces follow `value`.
+	 */
 	let {
 		value,
 		sourceRelativePath,
 		readOnly = false,
 		showToolbar = true,
 		label = 'Markdown editor',
+		autofocus = false,
+		memoryKey,
+		onchange,
 		onedit,
 		onready,
 	}: {
@@ -42,19 +52,33 @@
 		readOnly?: boolean;
 		showToolbar?: boolean;
 		label?: string;
+		/** Put the caret in the text once it opens. */
+		autofocus?: boolean;
+		/** Restore the caret and scroll position saved under this key. */
+		memoryKey?: string;
+		/** The user changed the text. Read it from the editor when needed. */
+		onchange?: () => void;
+		/** The user changed the text; receives the full text on every edit. */
 		onedit?: (value: string) => void;
 		onready?: (editor: LiveMarkdownEditor | null) => void;
 	} = $props();
 
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
+	let selection = $state.raw<EditorSelectionState | null>(null);
+	let selectingWithPointer = $state(false);
+	let mountFailed = $state(false);
+	let fallbackText = $state(untrack(() => value));
 
 	// Keep the mounted CodeMirror view in step with the Settings toggle.
 	$effect(() => {
 		editor?.setSpellcheck(preferences.spellcheck);
 	});
-	let selection = $state.raw<EditorSelectionState | null>(null);
-	let selectingWithPointer = $state(false);
-	let mountFailed = $state(false);
+
+	// Read-only previews follow their source text.
+	$effect(() => {
+		if (readOnly) editor?.setText(value);
+	});
+
 	let popoverOpen = $derived(
 		!readOnly &&
 			!selectingWithPointer &&
@@ -74,31 +98,81 @@
 	let blockStyleLabel = $derived(
 		blockStyles.find((option) => option.value === blockStyle)?.label ?? 'Text',
 	);
+	let formats = $derived(new Set(selection?.formats ?? []));
+	const inlineFormats = [
+		'bold',
+		'italic',
+		'underline',
+		'strikethrough',
+	] as const;
+	let pressedInline = $derived(
+		inlineFormats.filter((name) => formats.has(name)),
+	);
+
+	const isMac =
+		typeof navigator !== 'undefined' &&
+		/Mac|iPhone|iPad/.test(navigator.platform);
+	const mod = isMac ? '⌘' : 'Ctrl+';
+
+	const blockActions = [
+		{ command: 'link', label: 'Link', shortcut: `${mod}K`, icon: LinkSimple },
+		{ command: 'blockQuote', label: 'Quote', shortcut: '', icon: Quotes },
+		{ command: 'code', label: 'Inline code', shortcut: '', icon: Code },
+		{
+			command: 'bulletList',
+			label: 'Bulleted list',
+			shortcut: '',
+			icon: ListBullets,
+		},
+		{
+			command: 'numberedList',
+			label: 'Numbered list',
+			shortcut: '',
+			icon: ListNumbers,
+		},
+		{
+			command: 'checkList',
+			label: 'Checklist',
+			shortcut: `${mod}Enter`,
+			icon: Checks,
+		},
+	] as const;
 
 	function format(command: MarkdownFormat) {
 		editor?.format(command);
 		editor?.focus();
 	}
 
-	function mountEditor(node: HTMLDivElement, initialValue: string) {
-		if (!browser) return;
+	function mountEditor(node: HTMLDivElement) {
+		// Mount once: props read here must not re-run this attachment.
+		const initial = untrack(() => ({
+			value,
+			readOnly,
+			label,
+			autofocus,
+			memoryKey,
+			sourceRelativePath,
+			spellcheck: preferences.spellcheck,
+		}));
 		let disposed = false;
 		let cleanup: (() => void) | undefined;
-		let latestValue = initialValue;
 		void import('@noura/editor/runtime')
-			.then(({ createLiveMarkdownDocument, createLiveMarkdownEditor }) => {
+			.then(({ createLiveMarkdownEditor }) => {
 				if (disposed) return;
-				const document = createLiveMarkdownDocument('markdown', latestValue);
 				const pointerSelection = createPointerSelectionTracker(
 					(active) => (selectingWithPointer = active),
 				);
 				const handle = createLiveMarkdownEditor(node, {
-					ytext: document.ytext,
-					collaborative: !readOnly,
-					readOnly,
-					spellcheck: preferences.spellcheck,
-					...markdownAssets(sourceRelativePath),
-					onChange: () => onedit?.(handle.doc()),
+					text: initial.value,
+					label: initial.label,
+					readOnly: initial.readOnly,
+					spellcheck: initial.spellcheck,
+					restore: initial.memoryKey ? recallView(initial.memoryKey) : null,
+					...editorLinks(initial.sourceRelativePath),
+					onChange: () => {
+						onchange?.();
+						if (onedit) onedit(handle.doc());
+					},
 					onSelectionChange: (next) => {
 						selection = next;
 					},
@@ -123,7 +197,11 @@
 				window.addEventListener('blur', pointerSelection.cancel);
 				editor = handle;
 				onready?.(handle);
+				if (initial.autofocus && !initial.readOnly) handle.focus();
 				cleanup = () => {
+					// Read the key now: a renamed file keeps its place.
+					const key = untrack(() => memoryKey);
+					if (key) rememberView(key, handle.memory());
 					content.removeEventListener(
 						'pointerdown',
 						pointerSelection.pointerDown,
@@ -147,7 +225,6 @@
 					window.removeEventListener('blur', pointerSelection.cancel);
 					pointerSelection.cancel();
 					handle.destroy();
-					document.destroy();
 				};
 			})
 			.catch((error: unknown) => {
@@ -160,26 +237,24 @@
 					onready?.(null);
 				}
 			});
-		return {
-			update(next: string) {
-				latestValue = next;
-				if (editor && editor.doc() !== next) editor.setText(next);
-			},
-			destroy() {
-				disposed = true;
-				cleanup?.();
-				if (editor) {
-					editor = null;
-					onready?.(null);
-				}
-			},
+		return () => {
+			disposed = true;
+			cleanup?.();
+			if (editor) {
+				editor = null;
+				onready?.(null);
+			}
 		};
 	}
 </script>
 
 <div class="flex h-full min-h-0 flex-1 flex-col">
 	{#if showToolbar && !readOnly}
-		<div class="flex min-h-11 items-center gap-1 overflow-x-auto px-5 py-1.5">
+		<div
+			class="flex min-h-11 items-center gap-1 overflow-x-auto px-5 py-1.5"
+			role="toolbar"
+			aria-label="Formatting"
+		>
 			<Select.Root
 				type="single"
 				value={blockStyle}
@@ -203,30 +278,32 @@
 				type="multiple"
 				size="sm"
 				aria-label="Inline formatting"
+				bind:value={() => [...pressedInline], () => {}}
 			>
 				<ToggleGroup.Item
 					value="bold"
 					onclick={() => format('bold')}
-					aria-label="Bold"><TextB /></ToggleGroup.Item
+					aria-label="Bold ({mod}B)"><TextB /></ToggleGroup.Item
 				>
 				<ToggleGroup.Item
 					value="italic"
 					onclick={() => format('italic')}
-					aria-label="Italic"><TextItalic /></ToggleGroup.Item
+					aria-label="Italic ({mod}I)"><TextItalic /></ToggleGroup.Item
 				>
 				<ToggleGroup.Item
 					value="underline"
 					onclick={() => format('underline')}
-					aria-label="Underline"><TextUnderline /></ToggleGroup.Item
+					aria-label="Underline ({mod}U)"><TextUnderline /></ToggleGroup.Item
 				>
 				<ToggleGroup.Item
-					value="strike"
+					value="strikethrough"
 					onclick={() => format('strikethrough')}
-					aria-label="Strikethrough"><TextStrikethrough /></ToggleGroup.Item
+					aria-label="Strikethrough ({isMac ? '⇧⌘X' : 'Ctrl+Shift+X'})"
+					><TextStrikethrough /></ToggleGroup.Item
 				>
 			</ToggleGroup.Root>
 			<Separator orientation="vertical" class="mx-1 h-5" />
-			{#each [{ command: 'link', label: 'Link', icon: LinkSimple }, { command: 'blockQuote', label: 'Quote', icon: Quotes }, { command: 'code', label: 'Inline code', icon: Code }, { command: 'bulletList', label: 'Bulleted list', icon: ListBullets }, { command: 'numberedList', label: 'Numbered list', icon: ListNumbers }, { command: 'checkList', label: 'Checklist', icon: Checks }] as action (action.command)}
+			{#each blockActions as action (action.command)}
 				<Tooltip.Root>
 					<Tooltip.Trigger>
 						{#snippet child({ props })}
@@ -234,12 +311,18 @@
 								{...props}
 								variant="ghost"
 								size="icon-sm"
-								onclick={() => format(action.command as MarkdownFormat)}
+								class="aria-pressed:bg-accent aria-pressed:text-accent-foreground"
+								aria-pressed={formats.has(action.command)}
+								onclick={() => format(action.command)}
 								aria-label={action.label}><action.icon /></Button
 							>
 						{/snippet}
 					</Tooltip.Trigger>
-					<Tooltip.Content>{action.label}</Tooltip.Content>
+					<Tooltip.Content
+						>{action.label}{action.shortcut
+							? ` (${action.shortcut})`
+							: ''}</Tooltip.Content
+					>
 				</Tooltip.Root>
 			{/each}
 			<Separator orientation="vertical" class="mx-1 h-5" />
@@ -255,6 +338,13 @@
 				onclick={() => editor?.redo()}
 				aria-label="Redo"><ArrowClockwise /></Button
 			>
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				class="ml-auto"
+				onclick={() => editor?.find()}
+				aria-label="Find and replace ({mod}F)"><MagnifyingGlass /></Button
+			>
 		</div>
 		<Separator />
 	{/if}
@@ -265,16 +355,14 @@
 				class="live-md h-full w-full resize-none bg-transparent outline-none"
 				aria-label={label}
 				readonly={readOnly}
-				{value}
-				oninput={(event) => onedit?.(event.currentTarget.value)}></textarea>
+				bind:value={fallbackText}
+				oninput={(event) => {
+					onchange?.();
+					onedit?.(event.currentTarget.value);
+				}}></textarea>
 		{:else}
-			<div
-				class="live-md h-full"
-				role="textbox"
-				aria-label={label}
-				aria-readonly={readOnly}
-				{@attach fromAction(mountEditor, () => value)}
-			></div>
+			<!-- CodeMirror's content element is the labelled text box. -->
+			<div class="live-md h-full" {@attach mountEditor}></div>
 		{/if}
 		{#if popoverOpen && selection?.anchor}
 			<Popover.Root bind:open={() => popoverOpen, () => undefined}>

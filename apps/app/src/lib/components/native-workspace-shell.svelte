@@ -3,6 +3,7 @@
 	import { ModeWatcher } from 'mode-watcher';
 	import { beforeNavigate, goto, preloadCode } from '$app/navigation';
 	import { page } from '$app/state';
+	import { saveBeforeLeaving } from '$lib/editor/unsaved-changes';
 	import {
 		createTauriHostLifecycle,
 		installPendingDraftCloseGuard,
@@ -158,13 +159,14 @@
 		}
 		if (!hasPendingDrafts()) return;
 		navigation.cancel();
-		void flushPendingDrafts().then((saved) => {
-			if (!saved || !destination) return;
+		const proceed = () => {
+			if (!destination) return;
 			allowedNavigation = destination.href;
 			void goto(destination, {
 				replaceState: navigation.type === 'popstate',
 			});
-		});
+		};
+		void saveBeforeLeaving(proceed).then((saved) => saved && proceed());
 	});
 
 	// Modules own their sidebar: routes with a contributing module get one
@@ -188,9 +190,9 @@
 		let unlistenClose: (() => void) | undefined;
 		void workspace.init();
 		void plugins.init();
-		void installPendingDraftCloseGuard(
-			createTauriHostLifecycle(),
-			flushPendingDrafts,
+		const host = createTauriHostLifecycle();
+		void installPendingDraftCloseGuard(host, () =>
+			saveBeforeLeaving(() => host.forceClose()),
 		).then((unlisten) => {
 			if (disposed) unlisten();
 			else unlistenClose = unlisten;

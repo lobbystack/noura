@@ -1,16 +1,16 @@
 <script lang="ts">
-	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import { getNouraClient } from '$lib/state.svelte';
 	import { isPlainTextPath } from '$lib/editor/text-files';
 	import { workspaceTree } from '$lib/workspace-tree.svelte';
 	import { findTreeNode } from '$lib/workspace-tree';
-	import type { UnmanagedFile } from '@noura/workspace';
+	import type { UnmanagedFile, WorkspaceObject } from '@noura/workspace';
 	import { tabsStore } from '$lib/tabs.svelte';
-	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
+	import { saveBeforeLeaving } from '$lib/editor/unsaved-changes';
+	import { splitFileName } from '$lib/editor/rename';
 	import NoteEditor from '$lib/components/note-editor.svelte';
 	import RawMarkdownEditor from '$lib/components/raw-markdown-editor.svelte';
-	import { browser } from '$app/environment';
 	import { afterNavigate, goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { toast } from 'svelte-sonner';
 
 	type Note = Awaited<
@@ -24,6 +24,8 @@
 
 	let selected = $state<Note | null>(null);
 	let selectedRaw = $state<RawFile | null>(null);
+	/** Stays the same when an open file is renamed, so the editor stays put. */
+	let rawKey = $state(0);
 	let appliedKey: string | null = null;
 	let autofocusTitle = $state(false);
 	let selectionGeneration = 0;
@@ -46,12 +48,16 @@
 		if (!/\.md$/i.test(relativePath) && !isPlainTextPath(relativePath))
 			return null;
 		const node = findTreeNode(workspaceTree.tree, relativePath);
-		const name = relativePath.split('/').pop() ?? relativePath;
 		return {
 			relativePath,
-			title: name.replace(/\.md$/i, ''),
+			title: splitFileName(relativePath).stem,
 			parseStatus: node?.parseStatus ?? null,
 		};
+	}
+
+	/** Save the open editor first; false when the user has to decide. */
+	function leaveCurrent(proceed: () => void | Promise<void>) {
+		return saveBeforeLeaving(proceed);
 	}
 
 	async function select(
@@ -59,37 +65,41 @@
 		options?: { isNew?: boolean; selectionGeneration?: number },
 	) {
 		if (selected?.id === n.id) return;
-		if (!(await flushPendingDrafts())) return;
-		if (
-			options?.selectionGeneration !== undefined &&
-			options.selectionGeneration !== selectionGeneration
-		)
-			return;
-		autofocusTitle = options?.isNew ?? false;
-		selected = n;
-		selectedRaw = null;
-		tabsStore.open(n.id, 'note', n.title);
+		const show = () => {
+			if (
+				options?.selectionGeneration !== undefined &&
+				options.selectionGeneration !== selectionGeneration
+			)
+				return;
+			autofocusTitle = options?.isNew ?? false;
+			selected = n;
+			selectedRaw = null;
+			tabsStore.open(n.id, 'note', splitFileName(n.relativePath).stem);
+		};
+		if (await leaveCurrent(show)) show();
 	}
 
 	async function selectRaw(file: RawFile, requestedGeneration?: number) {
 		if (selectedRaw?.relativePath === file.relativePath) return;
-		if (!(await flushPendingDrafts())) return;
-		if (
-			requestedGeneration !== undefined &&
-			requestedGeneration !== selectionGeneration
-		)
-			return;
-		autofocusTitle = false;
-		selected = null;
-		selectedRaw = file;
-		tabsStore.open(`raw:${file.relativePath}`, 'markdown', file.title);
+		const show = () => {
+			if (
+				requestedGeneration !== undefined &&
+				requestedGeneration !== selectionGeneration
+			)
+				return;
+			autofocusTitle = false;
+			selected = null;
+			selectedRaw = file;
+			rawKey += 1;
+			tabsStore.open(`raw:${file.relativePath}`, 'markdown', file.title);
+		};
+		if (await leaveCurrent(show)) show();
 	}
 
 	// Selection is URL-driven: /files?selected=<id> or /files?raw=<path>.
 	// Plain /files keeps whatever is already open, like any editor surface.
 	afterNavigate(() => {
-		if (!browser) return;
-		const params = $page.url.searchParams;
+		const params = page.url.searchParams;
 		const selectedId = params.get('selected');
 		const rawPath = params.get('raw');
 		const key = `${selectedId ?? ''}|${rawPath ?? ''}`;
@@ -107,7 +117,7 @@
 					if (note) {
 						// Param-driven selection comes from the sidebar tree; a
 						// pristine "Untitled" empty note is a fresh creation via
-						// the tree context menu, so its title starts selected.
+						// the tree context menu, so its name starts selected.
 						const pristine =
 							note.title === 'Untitled' && note.body.trim().length === 0;
 						await select(note, {
@@ -122,14 +132,12 @@
 					if (file) {
 						await selectRaw(file, generation);
 					} else {
-						toast.error('That document is no longer in the workspace');
+						toast.error('That file is no longer in the workspace');
 					}
 				}
 			} catch (error) {
 				toast.error(
-					error instanceof Error
-						? error.message
-						: 'Could not open the document',
+					error instanceof Error ? error.message : 'Couldn’t open the file',
 				);
 			}
 		})();
@@ -137,12 +145,32 @@
 
 	function handleSaved(updated: Note) {
 		selected = updated;
-		tabsStore.renameObject(updated.id, updated.title);
+		tabsStore.renameObject(
+			updated.id,
+			splitFileName(updated.relativePath).stem,
+		);
 	}
 
-	async function handleManaged(
-		object: import('@noura/workspace').WorkspaceObject,
-	) {
+	async function handleRawRenamed(relativePath: string) {
+		const previous = selectedRaw;
+		if (!previous) return;
+		const title = splitFileName(relativePath).stem;
+		selectedRaw = { ...previous, relativePath, title };
+		tabsStore.retarget(
+			`raw:${previous.relativePath}`,
+			`raw:${relativePath}`,
+			title,
+		);
+		// Keep the address in step without reopening the editor.
+		appliedKey = `|${relativePath}`;
+		await goto(`?raw=${encodeURIComponent(relativePath)}`, {
+			replaceState: true,
+			keepFocus: true,
+			noScroll: true,
+		});
+	}
+
+	async function handleManaged(object: WorkspaceObject) {
 		// The raw-file service emits this identity only after the repaired bytes
 		// are durable and indexed. Transition directly instead of asking the same
 		// in-flight editor to flush again through the normal navigation guard.
@@ -164,9 +192,13 @@
 
 <div class="flex h-full flex-col">
 	<div class="flex min-h-0 flex-1 flex-col">
-		{#key selected?.id ?? `raw:${selectedRaw?.relativePath ?? ''}`}
+		{#key selected?.id ?? `raw:${selectedRaw ? rawKey : ''}`}
 			{#if selectedRaw}
-				<RawMarkdownEditor file={selectedRaw} onmanaged={handleManaged} />
+				<RawMarkdownEditor
+					file={selectedRaw}
+					onmanaged={handleManaged}
+					onrenamed={handleRawRenamed}
+				/>
 			{:else}
 				<NoteEditor note={selected} onsaved={handleSaved} {autofocusTitle} />
 			{/if}

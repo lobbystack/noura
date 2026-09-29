@@ -13,19 +13,17 @@ export class PdfWidget extends WidgetType {
 		private readonly target: string,
 		private readonly label: string,
 		private readonly embed: boolean,
-		private readonly from: number,
-		private readonly to: number,
 		private readonly callbacks: Callbacks,
 	) {
 		super();
 	}
+	// Positions come from the DOM on demand, so edits elsewhere never remount
+	// the viewer.
 	eq(other: PdfWidget) {
 		return (
 			other.target === this.target &&
 			other.label === this.label &&
-			other.embed === this.embed &&
-			other.from === this.from &&
-			other.to === this.to
+			other.embed === this.embed
 		);
 	}
 	toDOM(view: EditorView): HTMLElement {
@@ -45,7 +43,7 @@ export class PdfWidget extends WidgetType {
 			edit.textContent = 'Edit source';
 			edit.style.marginInlineStart = '0.5rem';
 			edit.onclick = () => {
-				view.dispatch({ selection: { anchor: this.from, head: this.to } });
+				view.dispatch({ selection: { anchor: view.posAtDOM(root) } });
 				view.focus();
 			};
 			root.append(edit);

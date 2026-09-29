@@ -5,7 +5,9 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./types": "./src/types.ts",
-		"./runtime": "./src/runtime.ts"
+		"./runtime": "./src/runtime.ts",
+		"./collaboration": "./src/collaboration.ts",
+		"./text-sync": "./src/text-sync.ts"
 	},
 	"scripts": {
 		"check": "tsc --noEmit",
@@ -14,14 +16,19 @@
 		"test": "bun test"
 	},
 	"dependencies": {
-		"@noura/shared": "workspace:*",
+		"@codemirror/autocomplete": "^6.20.3",
 		"@codemirror/commands": "^6.8.1",
 		"@codemirror/lang-markdown": "^6.3.2",
 		"@codemirror/language": "^6.11.0",
+		"@codemirror/language-data": "^6.5.2",
+		"@codemirror/merge": "^6.12.2",
+		"@codemirror/search": "^6.7.2",
 		"@codemirror/state": "^6.5.2",
 		"@codemirror/view": "^6.36.5",
 		"@lezer/common": "^1.2.3",
+		"@lezer/highlight": "^1.2.5",
 		"@lezer/markdown": "^1.4.3",
+		"@noura/shared": "workspace:*",
 		"katex": "0.16.22",
 		"y-codemirror.next": "0.3.6",
 		"yjs": "13.6.32"
