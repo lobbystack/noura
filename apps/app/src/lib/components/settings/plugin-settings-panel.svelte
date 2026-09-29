@@ -6,6 +6,7 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Separator } from '$lib/components/ui/separator';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import PluginPlatforms from './plugin-platforms.svelte';
 	import Sparkle from 'phosphor-svelte/lib/Sparkle';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
@@ -88,6 +89,37 @@
 		void plugins.sync();
 	});
 
+	/** Plugins that ask before they turn off. */
+	const disableConfirmations: Record<
+		string,
+		{ title: string; description: string; action: string }
+	> = {
+		sync: {
+			title: 'Turn off Sync?',
+			description:
+				'Sync stops on this device. Your files and sync setup are kept.',
+			action: 'Turn off',
+		},
+	};
+	let confirming = $state<string | null>(null);
+	const confirmation = $derived(
+		confirming ? disableConfirmations[confirming] : undefined,
+	);
+
+	function requestEnabled(id: string, enabled: boolean) {
+		if (!enabled && disableConfirmations[id]) {
+			confirming = id;
+			return;
+		}
+		void setEnabled(id, enabled);
+	}
+
+	function confirmDisable() {
+		const id = confirming;
+		confirming = null;
+		if (id) void setEnabled(id, false);
+	}
+
 	async function setEnabled(id: string, enabled: boolean) {
 		toggling = id;
 		error = '';
@@ -146,7 +178,7 @@
 				aria-label="Enable {selected.name}"
 				bind:checked={
 					() => plugins.enabledIds.includes(selected.id),
-					(enabled) => setEnabled(selected.id, enabled)
+					(enabled) => requestEnabled(selected.id, enabled)
 				}
 				aria-describedby="selected-plugin-availability"
 				disabled={toggling !== '' || !!plugins.unavailableReason(selected.id)}
@@ -225,7 +257,7 @@
 						aria-label="Enable {plugin.name}"
 						bind:checked={
 							() => plugins.enabledIds.includes(plugin.id),
-							(enabled) => setEnabled(plugin.id, enabled)
+							(enabled) => requestEnabled(plugin.id, enabled)
 						}
 						aria-describedby="plugin-availability-{plugin.id}"
 						disabled={toggling !== '' || !!reason}
@@ -235,3 +267,25 @@
 		</div>
 	</div>
 {/if}
+
+<AlertDialog.Root
+	open={confirmation !== undefined}
+	onOpenChange={(open) => {
+		if (!open) confirming = null;
+	}}
+>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>{confirmation?.title}</AlertDialog.Title>
+			<AlertDialog.Description
+				>{confirmation?.description}</AlertDialog.Description
+			>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action onclick={confirmDisable}
+				>{confirmation?.action}</AlertDialog.Action
+			>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

@@ -90,6 +90,13 @@
 			void plugins.sync();
 	});
 
+	// Sign-in state lives in the credential store. Read it at startup only
+	// when this workspace syncs; Settings reads it on demand otherwise.
+	$effect(() => {
+		if (browser && plugins.isEnabled('sync'))
+			void getNouraClient().sync.signIn.initialize();
+	});
+
 	// AI providers are global, while chats are workspace-scoped. Reconcile both
 	// projections from settled workspace state in case the host event bridge
 	// subscribed after a workspace transition.
@@ -115,10 +122,10 @@
 		const unsubscribeSignIn = signIn.subscribe((value) => {
 			if (value.returnCount > returnCount) {
 				returnCount = value.returnCount;
-				settingsDialog.showSync();
+				if (plugins.isEnabled('sync')) settingsDialog.showSync();
+				else settingsDialog.showAccount();
 			}
 		});
-		void signIn.initialize();
 		let disposed = false;
 		let unlistenClose: (() => void) | undefined;
 		if (browser) {

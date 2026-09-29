@@ -4,7 +4,10 @@
 	import { Button } from '$lib/components/ui/button';
 	import PluginSettingsPanel from './plugin-settings-panel.svelte';
 
-	let { onopenai }: { onopenai: () => void } = $props();
+	let {
+		onopenai,
+		onopensync,
+	}: { onopenai: () => void; onopensync: () => void } = $props();
 </script>
 
 <PluginSettingsPanel {plugins} workspaceReady={workspace.isReady}>
@@ -16,6 +19,18 @@
 				</p>
 				<Button variant="outline" size="sm" onclick={onopenai}
 					>Open AI settings</Button
+				>
+			</div>
+		{:else if id === 'sync'}
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<p class="text-sm text-muted-foreground">
+					Manage devices, people, and recovery kits in Sync settings.
+				</p>
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={!plugins.isEnabled('sync')}
+					onclick={onopensync}>Open sync settings</Button
 				>
 			</div>
 		{/if}

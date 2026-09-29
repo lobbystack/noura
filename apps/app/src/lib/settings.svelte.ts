@@ -3,11 +3,19 @@ import { createContext } from 'svelte';
 /** Transient settings UI, scoped to the app layout. */
 export class SettingsDialog {
 	open = $state(false);
-	requestedSection = $state<'sync' | null>(null);
+	requestedSection = $state<'sync' | 'account' | null>(null);
 	requestId = $state(0);
 
 	showSync() {
-		this.requestedSection = 'sync';
+		this.showSection('sync');
+	}
+
+	showAccount() {
+		this.showSection('account');
+	}
+
+	showSection(section: 'sync' | 'account') {
+		this.requestedSection = section;
 		this.requestId += 1;
 		this.show();
 	}

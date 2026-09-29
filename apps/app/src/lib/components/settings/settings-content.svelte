@@ -1,6 +1,12 @@
 <script lang="ts">
-	import { tick, type Component } from 'svelte';
+	import { onMount, tick, type Component } from 'svelte';
 	import { getSettingsDialog } from '$lib/settings.svelte';
+	import { plugins } from '$lib/plugins.svelte';
+	import { getNouraClient } from '$lib/state.svelte';
+	import {
+		visibleSettingsSections,
+		type SettingsSectionId,
+	} from '$lib/settings-sections';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { cn } from '$lib/utils';
@@ -32,134 +38,121 @@
 	const settings = getSettingsDialog();
 	const desktop = getAppPlatform() === 'desktop';
 
-	type Section =
-		| 'general'
-		| 'editor'
-		| 'shortcuts'
-		| 'account'
-		| 'workspace'
-		| 'plugins'
-		| 'ai'
-		| 'external-tools'
-		| 'sync'
-		| 'people'
-		| 'files'
-		| 'about';
 	type Entry = {
-		id: Section;
 		label: string;
 		/** Shown under the heading only when it tells the reader something new. */
 		description?: string;
 		icon: Component;
 		keywords?: string;
-		desktopOnly?: boolean;
 	};
-	const groups: { label: string; entries: Entry[] }[] = [
-		{
-			label: 'This computer',
-			entries: [
-				{
-					id: 'general',
-					label: 'General',
-					icon: GearSix,
-					keywords:
-						'appearance theme dark light system startup login updates version',
-				},
-				{
-					id: 'editor',
-					label: 'Editor',
-					description:
-						'These settings apply to every workspace on this computer.',
-					icon: TextAa,
-					keywords: 'text size font line width spelling spellcheck',
-				},
-				{
-					id: 'shortcuts',
-					label: 'Keyboard shortcuts',
-					icon: Keyboard,
-					keywords: 'keys',
-				},
-				{
-					id: 'account',
-					label: 'Account',
-					icon: UserCircle,
-					keywords: 'sign in log out disconnect server',
-				},
-			],
+	const entries: Record<SettingsSectionId, Entry> = {
+		general: {
+			label: 'General',
+			icon: GearSix,
+			keywords:
+				'appearance theme dark light system startup login updates version',
 		},
-		{
-			label: 'Workspace',
-			entries: [
-				{
-					id: 'workspace',
-					label: 'Name and location',
-					icon: FolderSimple,
-					keywords: 'rename folder path',
-				},
-				{
-					id: 'plugins',
-					label: 'Plugins',
-					description: 'Turn features on or off for this workspace.',
-					icon: PuzzlePiece,
-					keywords: 'notes tasks calendar projects folders',
-				},
-				{
-					id: 'ai',
-					label: 'AI',
-					description:
-						'Connect an AI provider and review what it can read in this workspace.',
-					icon: Sparkle,
-					keywords: 'providers models api keys permissions consent',
-				},
-				{
-					id: 'external-tools',
-					label: 'External tools',
-					icon: PlugsConnected,
-					keywords: 'mcp claude cursor assistant model context protocol',
-					desktopOnly: true,
-				},
-				{
-					id: 'sync',
-					label: 'Sync and devices',
-					icon: ArrowsClockwise,
-					keywords: 'encryption recovery conflicts join devices',
-				},
-				{
-					id: 'people',
-					label: 'People',
-					icon: Users,
-					keywords: 'invitations roles sharing access',
-				},
-				{
-					id: 'files',
-					label: 'Ignored files',
-					description:
-						'noura won’t index or show files that match these patterns. They follow the same rules as .gitignore.',
-					icon: Files,
-					keywords: 'ignore gitignore exclude hidden files',
-				},
-			],
+		editor: {
+			label: 'Editor',
+			description: 'These settings apply to every workspace on this computer.',
+			icon: TextAa,
+			keywords: 'text size font line width spelling spellcheck',
 		},
-		{
-			label: 'App',
-			entries: [
-				{
-					id: 'about',
-					label: 'About noura',
-					icon: Info,
-					keywords: 'version license privacy terms',
-				},
-			],
+		shortcuts: {
+			label: 'Keyboard shortcuts',
+			icon: Keyboard,
+			keywords: 'keys',
 		},
-	];
-	const visibleGroups = groups
-		.map((group) => ({
-			...group,
-			entries: group.entries.filter((entry) => desktop || !entry.desktopOnly),
-		}))
-		.filter((group) => group.entries.length);
+		account: {
+			label: 'Account',
+			icon: UserCircle,
+			keywords: 'sign in log out disconnect server',
+		},
+		workspace: {
+			label: 'Name and location',
+			icon: FolderSimple,
+			keywords: 'rename folder path',
+		},
+		plugins: {
+			label: 'Plugins',
+			description: 'Turn features on or off for this workspace.',
+			icon: PuzzlePiece,
+			keywords: 'notes tasks calendar projects folders sync',
+		},
+		ai: {
+			label: 'AI',
+			description:
+				'Connect an AI provider and review what it can read in this workspace.',
+			icon: Sparkle,
+			keywords: 'providers models api keys permissions consent',
+		},
+		'external-tools': {
+			label: 'External tools',
+			icon: PlugsConnected,
+			keywords: 'mcp claude cursor assistant model context protocol',
+		},
+		sync: {
+			label: 'Sync and devices',
+			icon: ArrowsClockwise,
+			keywords: 'encryption recovery conflicts join devices',
+		},
+		people: {
+			label: 'People',
+			icon: Users,
+			keywords: 'invitations roles sharing access',
+		},
+		files: {
+			label: 'Ignored files',
+			description:
+				'noura won’t index or show files that match these patterns. They follow the same rules as .gitignore.',
+			icon: Files,
+			keywords: 'ignore gitignore exclude hidden files',
+		},
+		about: {
+			label: 'About noura',
+			icon: Info,
+			keywords: 'version license privacy terms',
+		},
+	};
+	const groupLabels = {
+		device: 'This computer',
+		workspace: 'Workspace',
+		app: 'App',
+	} as const;
 
-	let selected = $derived.by<Section>(() => {
+	// Knowing whether this device is signed in reads the credential store,
+	// so it happens here, once Settings opens, rather than at startup.
+	let signedIn = $state(false);
+	onMount(() => {
+		const signIn = getNouraClient().sync.signIn;
+		const unsubscribe = signIn.subscribe((value) => {
+			signedIn = value.account !== null;
+		});
+		void signIn.initialize();
+		return unsubscribe;
+	});
+
+	const visibleEntries = $derived(
+		visibleSettingsSections({
+			desktop,
+			enabledPluginIds: new Set(plugins.activeIds),
+			signedIn,
+		}).map((section) => ({
+			...entries[section.id],
+			id: section.id,
+			group: section.group,
+		})),
+	);
+	const visibleGroups = $derived(
+		(['device', 'workspace', 'app'] as const)
+			.map((group) => ({
+				label: groupLabels[group],
+				entries: visibleEntries.filter((entry) => entry.group === group),
+			}))
+			.filter((group) => group.entries.length),
+	);
+
+	let selected = $derived.by<SettingsSectionId>(() => {
 		settings.requestId;
 		return settings.requestedSection ?? 'general';
 	});
@@ -167,10 +160,9 @@
 	let mobileContent = $state(true);
 	let content: HTMLDivElement;
 	let heading: HTMLHeadingElement;
+	// A section can disappear while selected, for example when Sync is turned off.
 	const current = $derived(
-		visibleGroups
-			.flatMap((group) => group.entries)
-			.find((entry) => entry.id === selected)!,
+		visibleEntries.find((entry) => entry.id === selected) ?? visibleEntries[0],
 	);
 	const filtered = $derived(
 		visibleGroups
@@ -185,7 +177,7 @@
 			.filter((group) => group.entries.length),
 	);
 
-	async function selectSection(id: Section) {
+	async function selectSection(id: SettingsSectionId) {
 		selected = id;
 		mobileContent = true;
 		await tick();
@@ -217,9 +209,9 @@
 				<p class="px-2 pb-1 text-xs text-muted-foreground">{group.label}</p>
 				{#each group.entries as entry (entry.id)}
 					<Button
-						variant={selected === entry.id ? 'secondary' : 'ghost'}
+						variant={current.id === entry.id ? 'secondary' : 'ghost'}
 						class="w-full justify-start gap-2"
-						aria-current={selected === entry.id ? 'page' : undefined}
+						aria-current={current.id === entry.id ? 'page' : undefined}
 						onclick={() => selectSection(entry.id)}
 					>
 						<entry.icon data-icon="inline-start" />
@@ -270,26 +262,29 @@
 				</p>
 			{/if}
 		</header>
-		{#if selected === 'general'}
+		{#if current.id === 'general'}
 			<GeneralSettings />
-		{:else if selected === 'editor'}
+		{:else if current.id === 'editor'}
 			<EditorSettings />
-		{:else if selected === 'shortcuts'}
+		{:else if current.id === 'shortcuts'}
 			<ShortcutsSettings />
-		{:else if selected === 'workspace'}
+		{:else if current.id === 'workspace'}
 			<WorkspaceGeneralSettings />
-		{:else if selected === 'plugins'}
-			<PluginsSettings onopenai={() => selectSection('ai')} />
-		{:else if selected === 'ai'}
+		{:else if current.id === 'plugins'}
+			<PluginsSettings
+				onopenai={() => selectSection('ai')}
+				onopensync={() => selectSection('sync')}
+			/>
+		{:else if current.id === 'ai'}
 			<AiSettings />
-		{:else if selected === 'external-tools'}
+		{:else if current.id === 'external-tools'}
 			<ExternalToolsSettings />
-		{:else if selected === 'files'}
+		{:else if current.id === 'files'}
 			<FilesSettings />
-		{:else if selected === 'about'}
+		{:else if current.id === 'about'}
 			<AboutSettings />
-		{:else if selected === 'account' || selected === 'sync' || selected === 'people'}
-			<SyncAccountSettings section={selected} />
+		{:else if current.id === 'account' || current.id === 'sync' || current.id === 'people'}
+			<SyncAccountSettings section={current.id} />
 		{/if}
 	</div>
 </div>

@@ -576,7 +576,8 @@
 			configuredOrigin = value.origin;
 		});
 		void signIn.initialize();
-		void refreshWorkspaceStatus();
+		// The account section shows device state only.
+		if (section !== 'account') void refreshWorkspaceStatus();
 		return () => {
 			disposed = true;
 			unsubscribe();
