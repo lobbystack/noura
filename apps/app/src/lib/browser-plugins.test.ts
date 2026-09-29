@@ -89,11 +89,12 @@ function harness(failure: 'none' | 'activation' | 'rollback' = 'none') {
 
 test('browser routes map to their gating plugin and include calendar', () => {
 	expect(browserRouteSupported('/calendar')).toBe(true);
-	expect(browserRouteSupported('/notes')).toBe(true);
+	expect(browserRouteSupported('/files')).toBe(true);
 	expect(browserRouteSupported('/search')).toBe(false);
 	expect(browserRoutePlugin('/calendar')).toBe('calendar');
 	expect(browserRoutePlugin('/')).toBe('notes');
 	expect(browserRoutePlugin('/inbox')).toBe('notes');
+	expect(browserRoutePlugin('/files')).toBe('notes');
 });
 
 test('active projection, scoped cleanup, unsupported preferences and disposal', async () => {

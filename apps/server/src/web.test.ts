@@ -25,7 +25,7 @@ describe('unified browser static routing', () => {
 		for (const path of [
 			'/',
 			'/inbox',
-			'/notes',
+			'/files',
 			'/tasks',
 			'/calendar',
 			'/projects',

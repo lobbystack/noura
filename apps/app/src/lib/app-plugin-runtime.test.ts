@@ -67,14 +67,16 @@ describe('app plugin runtime', () => {
 			'future-plugin',
 		]);
 		expect(runtime.host.platform).toBe('desktop');
+		// Files and notes are core: they activate even without a manifest entry.
 		expect((await runtime.syncWithManifest()).activated).toEqual([
+			'folders',
 			'notes',
 			'tasks',
 		]);
 		expect((await runtime.syncWithManifest()).activated).toEqual([]);
-		state.enabled = ['notes', 'future-plugin'];
+		state.enabled = ['future-plugin'];
 		expect((await runtime.syncWithManifest()).deactivated).toEqual(['tasks']);
-		expect(await runtime.deactivateAll()).toEqual(['notes']);
+		expect(await runtime.deactivateAll()).toEqual(['folders', 'notes']);
 		expect(runtime.host.activeManifests()).toEqual([]);
 	});
 

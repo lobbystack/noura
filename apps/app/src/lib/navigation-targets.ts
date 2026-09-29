@@ -1,7 +1,7 @@
 import type { SearchResult } from '@noura/workspace';
 
 /** The route that opens Markdown and text files. */
-export const FILES_ROUTE = '/notes';
+export const FILES_ROUTE = '/files';
 
 export interface NavigationTarget {
 	route: string;

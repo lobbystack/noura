@@ -20,8 +20,25 @@ export interface SidebarModule {
 export const SIDEBAR_MODULES: readonly SidebarModule[] = [
 	{ id: 'projects', pluginId: 'projects', routes: ['/projects'] },
 	{ id: 'tasks-views', pluginId: 'tasks', routes: ['/tasks'] },
-	{ id: 'file-browser', pluginId: 'folders', routes: ['/notes', '/pdf'] },
+	// Files are core, so the file tree has no plugin gate.
+	{ id: 'file-browser', pluginId: null, routes: ['/files', '/pdf'] },
 ];
+
+/**
+ * Routes that open workspace documents also keep the file tree in view, below
+ * their own section, so opening a task or project file from the tree never
+ * takes the tree away.
+ */
+const FILE_TREE_ROUTES: readonly string[] = [
+	'/files',
+	'/pdf',
+	'/tasks',
+	'/projects',
+];
+
+export function showsFileTree(pathname: string): boolean {
+	return FILE_TREE_ROUTES.some((route) => routeMatches(pathname, route));
+}
 
 function routeMatches(pathname: string, route: string): boolean {
 	return pathname === route || pathname.startsWith(`${route}/`);

@@ -1,42 +1,58 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
 	import { Kbd, KbdGroup } from '$lib/components/ui/kbd';
+	import { APP_SHORTCUTS } from '$lib/app-shortcuts';
+	import { hostOs, shortcutKeys } from '$lib/host-os';
 
-	// Display only: the handlers accept both Command and Control.
-	const mac =
-		import.meta.env.NOURA_TAURI_PLATFORM === 'darwin' ||
-		(browser && /Mac|iPhone|iPad/.test(navigator.userAgent));
-	const mod = mac ? '⌘' : 'Ctrl';
-	const shift = mac ? '⇧' : 'Shift';
+	const os = hostOs();
 
 	const groups: { label: string; shortcuts: [string, string[]][] }[] = [
 		{
 			label: 'Anywhere',
 			shortcuts: [
-				['Search and run commands', [mod, 'K']],
-				['Open settings', [mod, ',']],
+				...APP_SHORTCUTS.map(
+					({ label, keys }) => [label, keys] as [string, string[]],
+				),
 				['Close a dialog', ['Esc']],
+			],
+		},
+		{
+			label: 'File tree',
+			shortcuts: [
+				['Move up and down', ['↑', '↓']],
+				['Open or close a folder', ['←', '→']],
+				['Open a file', ['Enter']],
+				['Rename', ['F2']],
+				['Move to the trash', os === 'mac' ? ['Mod', 'Backspace'] : ['Delete']],
+				['Show the menu for a file', ['Shift', 'F10']],
+				['Jump to a name by typing it', ['A–Z']],
+			],
+		},
+		{
+			label: 'Tabs',
+			shortcuts: [
+				['Move between tabs', ['←', '→']],
+				['Close the focused tab', ['Delete']],
 			],
 		},
 		{
 			label: 'Writing',
 			shortcuts: [
-				['Save now', [mod, 'S']],
-				['Undo', [mod, 'Z']],
-				['Redo', [mod, shift, 'Z']],
+				['Save now', ['Mod', 'S']],
+				['Undo', ['Mod', 'Z']],
+				['Redo', ['Mod', 'Shift', 'Z']],
 				['Indent a list item', ['Tab']],
-				['Outdent a list item', [shift, 'Tab']],
+				['Outdent a list item', ['Shift', 'Tab']],
 			],
 		},
 		{
 			label: 'AI chat',
-			shortcuts: [['Send a message', [mod, 'Enter']]],
+			shortcuts: [['Send a message', ['Mod', 'Enter']]],
 		},
 		{
 			label: 'PDF search',
 			shortcuts: [
 				['Next match', ['Enter']],
-				['Previous match', [shift, 'Enter']],
+				['Previous match', ['Shift', 'Enter']],
 			],
 		},
 	];
@@ -52,7 +68,9 @@
 						<dt class="text-sm">{label}</dt>
 						<dd>
 							<KbdGroup>
-								{#each keys as key (key)}<Kbd>{key}</Kbd>{/each}
+								{#each shortcutKeys(keys, os) as key, index (index)}<Kbd
+										>{key}</Kbd
+									>{/each}
 							</KbdGroup>
 						</dd>
 					</div>

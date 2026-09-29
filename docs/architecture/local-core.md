@@ -21,6 +21,10 @@ Some systems have no trash, and some volumes refuse the move. In that case the e
 
 The desktop app and the MCP server turn the system trash on with `WorkspaceEngine::set_system_trash`. Other embedders and the tests use `.noura/trash` unless they opt in. Collaboration deletes keep their own recoverable copies under `.noura/trash/collaboration/`, because sync recovery reads them back.
 
+## Duplicate a file
+
+`WorkspaceEngine::copy_file` copies a file to a path that doesn't exist yet and refuses to overwrite. A copy of a note, task, or project gets a new ID and takes its title from the new file name, so both files keep their own identity. Other files, including Markdown without an ID, copy byte for byte. The copy reads the file on disk, so an edit the index hasn't seen yet still reaches the copy.
+
 ## Preserve durable writes
 
 The engine writes files before it updates SQLite. An index failure after a file commit returns `repair-pending`. The next reconciliation rebuilds the derived projection. Startup reconciliation and the rebuild command work without prior SQLite state.

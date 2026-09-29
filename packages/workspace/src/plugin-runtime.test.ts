@@ -85,7 +85,9 @@ function harness(initialEnabled: Array<string>) {
 		store,
 		state,
 		cleanupCalls,
-		runtime: new PluginRuntime(client),
+		// Core plugins are covered by their own test; the manifest-driven
+		// cases below check only what `enabled_plugins` asks for.
+		runtime: new PluginRuntime(client, { corePluginIds: [] }),
 	};
 }
 
@@ -124,6 +126,25 @@ describe('plugin runtime', () => {
 		expect(
 			runtime.host.activeManifests().map((manifest) => manifest.id),
 		).toEqual(['notes', 'tasks']);
+	});
+
+	test('always activates the core file and note plugins', async () => {
+		const { client, state } = harness(['tasks']);
+		const runtime = new PluginRuntime(client);
+		const result = await runtime.syncWithManifest();
+		expect(result.activated).toEqual(['folders', 'notes', 'tasks']);
+		expect(result.enabledPluginIds).toEqual(['tasks', 'folders', 'notes']);
+		state.enabled = [];
+		const shrank = await runtime.syncWithManifest();
+		expect(shrank.deactivated).toEqual(['tasks']);
+		expect(
+			runtime.host.activeManifests().map((manifest) => manifest.id),
+		).toEqual(['folders', 'notes']);
+		// Legacy manifests that still list them keep working unchanged.
+		state.enabled = ['folders', 'notes'];
+		const legacy = await runtime.syncWithManifest();
+		expect(legacy.activated).toEqual([]);
+		expect(legacy.deactivated).toEqual([]);
 	});
 
 	test('tolerates unknown plugin ids from future ecosystem plugins', async () => {
