@@ -112,7 +112,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 			const lines = app.editor('File text').locator('.cm-md-callout');
 			// What people see, with text-transform applied.
 			const shown = (index: number) =>
-				lines.nth(index).evaluate((element) => element.innerText);
+				lines.nth(index).evaluate((element: HTMLElement) => element.innerText);
 			await expect.poll(() => shown(0)).toBe('Note Remember');
 			await expect.poll(() => shown(1)).toBe('Callout body');
 			// With the caret inside, the source shows again.

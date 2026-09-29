@@ -46,7 +46,7 @@ test.describe('layout at a normal window width', () => {
 			.getByRole('link', { name: 'Home' })
 			.click();
 		const bar = page.getByRole('tablist', { name: 'Open files' });
-		const box = await bar.evaluate((element) => {
+		const box = await bar.evaluate((element: HTMLElement) => {
 			const header = document.querySelector('header')!.getBoundingClientRect();
 			const rect = element.getBoundingClientRect();
 			const tab = element

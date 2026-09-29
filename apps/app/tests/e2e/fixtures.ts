@@ -21,8 +21,11 @@ export function noteFileBody(typed: string): string {
 	return body.trim() ? `${body}\n` : '';
 }
 
-/** The built workspace worker, so tests can open a second one. */
-const workerUrl = (() => {
+/**
+ * The built workspace worker, so tests can open a second one. Looked up
+ * when first needed: the web server builds the app after tests load.
+ */
+function workerUrl(): string | null {
 	const directory = fileURLToPath(
 		new URL('../../build/_app/immutable/workers/', import.meta.url),
 	);
@@ -36,7 +39,7 @@ const workerUrl = (() => {
 		name = undefined;
 	}
 	return name ? `/_app/immutable/workers/${name}` : null;
-})();
+}
 
 declare global {
 	interface Window {
@@ -174,7 +177,8 @@ export class App {
 	}
 
 	async #outside<T>(command: string, payload: object = {}): Promise<T> {
-		if (!workerUrl)
+		const url = workerUrl();
+		if (!url)
 			throw new Error('Build the app first: the workspace worker is missing');
 		return (await this.page.evaluate(
 			async ({ url, command, payload }) => {
@@ -214,7 +218,7 @@ export class App {
 				}
 				return state.outside(command, payload);
 			},
-			{ url: workerUrl, command, payload },
+			{ url, command, payload },
 		)) as T;
 	}
 
