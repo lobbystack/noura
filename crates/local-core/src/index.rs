@@ -502,16 +502,10 @@ impl IndexStore {
     }
 
     pub fn query_objects(&self, object_type: Option<&str>) -> Result<Vec<WorkspaceObject>> {
-        let sql = "SELECT o.stable_id,o.object_type,o.title,o.body,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json FROM objects o JOIN files f ON f.id=o.file_id WHERE (?1 IS NULL OR o.object_type=?1) AND o.identity_status='unique' ORDER BY o.updated DESC,o.title";
-        let mut statement = self
-            .connection
-            .prepare_cached(sql)
-            .map_err(|error| CoreError::index(error, "object_query"))?;
-        let rows = statement
-            .query_map([object_type], row_to_object)
-            .map_err(|error| CoreError::index(error, "object_query"))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| CoreError::index(error, "object_query"))
+        self.query_objects_filtered(&ObjectFilter {
+            object_type: object_type.map(str::to_owned),
+            ..ObjectFilter::default()
+        })
     }
 
     pub(crate) fn workspace_entry_metadata(&self) -> Result<HashMap<String, IndexedFileMetadata>> {

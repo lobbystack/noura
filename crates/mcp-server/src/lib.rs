@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use local_core::sync::{OsSyncCredentials, SyncAccountService};
-use local_core::{CreateObjectInput, ObjectPatch, SearchInput, WorkspaceEngine};
+use local_core::{CreateObjectInput, ObjectFilter, ObjectPatch, SearchInput, WorkspaceEngine};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -159,22 +159,13 @@ impl NouraMcp {
         &self,
         Parameters(input): Parameters<TaskListParams>,
     ) -> Result<String, String> {
-        let mut values = self.with_engine(|engine| engine.query_objects(Some("task")))?;
-        values.retain(|value| {
-            input.status.as_ref().is_none_or(|status| {
-                value
-                    .properties
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(status)
-            }) && input.project.as_ref().is_none_or(|project| {
-                value
-                    .properties
-                    .get("project")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(project)
-            })
-        });
+        let filter = ObjectFilter {
+            object_type: Some("task".into()),
+            status: input.status,
+            project: input.project,
+            ..ObjectFilter::default()
+        };
+        let values = self.with_engine(|engine| engine.query_objects_filtered(&filter))?;
         serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
     }
     #[tool(name = "tasks.create", description = "Create a Markdown Task")]
@@ -215,7 +206,11 @@ impl NouraMcp {
     }
     #[tool(name = "projects.list", description = "List managed Projects")]
     async fn projects_list(&self) -> Result<String, String> {
-        let values = self.with_engine(|engine| engine.query_objects(Some("project")))?;
+        let filter = ObjectFilter {
+            object_type: Some("project".into()),
+            ..ObjectFilter::default()
+        };
+        let values = self.with_engine(|engine| engine.query_objects_filtered(&filter))?;
         serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
     }
 
@@ -581,6 +576,17 @@ mod tests {
             .unwrap();
         let created: serde_json::Value = serde_json::from_str(&created).unwrap();
         let second_id = created["value"]["id"].as_str().unwrap().to_owned();
+
+        let listed = server
+            .tasks_list(Parameters(TaskListParams {
+                status: Some("todo".into()),
+                project: Some(project.id.clone()),
+            }))
+            .await
+            .unwrap();
+        let listed: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["id"], second_id);
 
         let mut reconciled_paths = Vec::new();
         for _ in 0..10 {
