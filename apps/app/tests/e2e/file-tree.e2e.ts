@@ -165,7 +165,7 @@ test.describe('file tree', () => {
 		);
 	});
 
-	test.fixme('trashing the open note closes its editor and its tab', async ({
+	test('trashing the open note closes its editor and its tab', async ({
 		app,
 		page,
 	}) => {
@@ -178,16 +178,19 @@ test.describe('file tree', () => {
 		await expect(
 			page.getByRole('tab', { name: 'Doomed', exact: true }),
 		).toBeHidden();
-		// What the tab bar highlights and what the page shows agree.
+		// The tab that takes its place is the document on screen.
 		const selected = page.getByRole('tab', { selected: true });
-		if (await page.getByText('No file open').isVisible()) {
-			await expect(selected).toHaveCount(0);
-		} else {
-			await expect(selected).toHaveText('Keep');
-			await expect(app.fileName).toHaveValue('Keep');
-			expect(await app.doc()).toBe('kept');
-		}
-		await expect.poll(() => app.storedPaths()).not.toContain('Doomed.md');
+		await expect(selected).toHaveText('Keep');
+		await expect(app.fileName).toHaveValue('Keep');
+		expect(await app.doc()).toBe('kept');
+		await expect.poll(() => app.storedPaths()).toEqual(['Keep.md']);
+
+		// Trashing the last open document leaves nothing open or highlighted.
+		await app.treeItem('Keep').click({ button: 'right' });
+		await page.getByRole('menuitem', { name: 'Move to Trash' }).click();
+		await expect(page.getByText('No file open')).toBeVisible();
+		await expect(page.getByRole('tab', { selected: true })).toHaveCount(0);
+		await expect(app.editor()).toBeHidden();
 	});
 
 	test('keyboard navigation opens files and folders', async ({ app, page }) => {
