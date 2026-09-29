@@ -13,29 +13,29 @@
 >
 	<p class="note">
 		noura runs on your computer. Your notes, tasks, and projects stay in files
-		on your device. We don't see them, we don't run analytics in the app, and we
+		on your device. We don't receive them, the app sends us no analytics, and we
 		don't sell or rent personal information.
 	</p>
 
 	<h2>Who we are</h2>
 	<p>
-		{legal.entity} ("noura", "we", "us") publishes the noura website, the noura desktop
-		app, and the optional noura Sync service. Our mailing address is {legal.address}.
+		{legal.entity} ("noura", "we", "us") publishes the noura website and the noura
+		desktop app. We're based in {legal.address}.
 	</p>
 	<p>
-		{legal.privacyOfficer} is responsible for protecting personal information. Reach
-		them at <a href={`mailto:${legal.contactEmail}`}>{legal.contactEmail}</a>.
+		{legal.privacyOfficer}, is responsible for protecting personal information
+		and answers requests at
+		<a href={`mailto:${legal.contactEmail}`}>{legal.contactEmail}</a>.
 	</p>
 
 	<h2>What this policy covers</h2>
 	<ul>
 		<li>The website at noura.app</li>
 		<li>The noura desktop app for macOS, Windows, and Linux</li>
-		<li>
-			noura Sync, an optional service that stores an encrypted copy of your
-			workspace so you can use it on several devices
-		</li>
 	</ul>
+	<p>
+		noura has no accounts and no cloud service. You don't sign up to use it.
+	</p>
 
 	<h2>What we collect</h2>
 
@@ -56,9 +56,9 @@
 	<p>
 		GitHub hosts our installers and update files. When you download noura, or
 		when the app checks for an update, GitHub receives your IP address and basic
-		request details. The app checks for updates when it starts and every 6
-		hours. It sends no account, workspace, or usage data with that check. GitHub
-		handles this information under the
+		request details. The app checks shortly after it starts and every 6 hours.
+		The check sends no workspace or usage data. The Linux <code>.deb</code>
+		package doesn't check for updates. GitHub handles this information under the
 		<a
 			href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement"
 			>GitHub Privacy Statement</a
@@ -72,69 +72,36 @@
 	</p>
 	<ul>
 		<li>
-			<strong>AI features.</strong> If you connect an AI provider, noura sends the
-			content you choose directly from your device to that provider, and only after
-			you approve it. The provider's own privacy policy applies. We don't receive
-			that content.
+			<strong>AI chat.</strong> AI stays off until you connect an AI provider you
+			choose. When you chat, noura sends your messages from your device to that provider.
+			It sends workspace content only after you allow it for that provider, and it
+			asks before each tool the assistant wants to run. The provider's own privacy
+			policy applies. We don't receive any of it.
 		</li>
 		<li>
 			<strong>API keys.</strong> noura stores provider keys in your operating system's
 			credential store. They never reach us.
 		</li>
 		<li>
-			<strong>External tools.</strong> Tools you connect through the Model Context
-			Protocol read and change your workspace on your device, under your control.
+			<strong>External AI tools.</strong> If you connect an AI assistant to noura
+			through the Model Context Protocol (MCP), that assistant can read and change
+			your workspace on your device. noura doesn't ask before each of its actions.
+			The assistant's own privacy policy covers what it sends to its provider.
 		</li>
 	</ul>
 
-	<h3>When you use noura Sync</h3>
+	<h3>When you email us</h3>
 	<p>
-		Sync is optional and currently available by invitation. Your device encrypts
-		your workspace before it uploads anything, and we don't have the keys. We
-		can't read your notes, tasks, files, or file names. To run the service, we
-		store:
+		If you write to us, we receive your email address and your message. We use
+		them to reply.
 	</p>
-	<table>
-		<thead>
-			<tr><th>Information</th><th>Why we need it</th></tr>
-		</thead>
-		<tbody>
-			<tr>
-				<td>Your email address</td>
-				<td>To create your account and send sign-in links and invitations</td>
-			</tr>
-			<tr>
-				<td>Passkey public keys and device records</td>
-				<td>To sign you in and let you approve new devices</td>
-			</tr>
-			<tr>
-				<td>Session records, including IP address and browser or device type</td
-				>
-				<td>To keep you signed in, spot suspicious sign-ins, and limit abuse</td
-				>
-			</tr>
-			<tr>
-				<td>Encrypted workspace data</td>
-				<td>To sync your workspace between your devices</td>
-			</tr>
-			<tr>
-				<td>
-					Technical metadata: data sizes, timestamps, share links you create,
-					and which devices and accounts share a workspace
-				</td>
-				<td
-					>To deliver changes to the right devices and enforce storage limits</td
-				>
-			</tr>
-		</tbody>
-	</table>
 
 	<h2>How we use information</h2>
 	<p>We use personal information to:</p>
 	<ul>
-		<li>provide, secure, and fix the website, the app, and noura Sync</li>
-		<li>send messages you ask for, such as sign-in links and invitations</li>
-		<li>prevent fraud and abuse</li>
+		<li>run, secure, and fix the website and the app</li>
+		<li>answer your messages</li>
+		<li>prevent abuse</li>
 		<li>meet our legal obligations</li>
 	</ul>
 	<p>
@@ -142,18 +109,18 @@
 		about you.
 	</p>
 	<p>
-		If the GDPR applies to you, we rely on these legal bases: performing our
-		contract with you (running Sync), our legitimate interest in keeping our
-		services secure (logs and abuse prevention), and legal obligations.
+		If the GDPR applies to you, we rely on two legal bases: our legitimate
+		interest in running and securing the website and answering your messages,
+		and our legal obligations.
 	</p>
 
 	<h2>Who we share it with</h2>
 	<p>We share personal information only with:</p>
 	<ul>
 		<li>
-			service providers that run parts of noura for us: {legal.websiteHost} (website
-			hosting), {legal.syncHost} (Sync hosting), {legal.emailProvider} (email delivery),
-			and GitHub (downloads and updates)
+			service providers that run parts of noura for us: {legal.websiteHost} hosts
+			the website, GitHub hosts downloads and updates, and our email provider delivers
+			the messages you send us
 		</li>
 		<li>authorities, when the law requires it</li>
 		<li>
@@ -166,28 +133,22 @@
 	<h2>Where we store it</h2>
 	<p>
 		Our service providers may process information outside your province or
-		country, including in the United States. When that happens, we use contracts
-		and safeguards that protect your information as this policy describes.
+		country, including in the United States. When they do, we use contracts and
+		safeguards that protect your information as this policy describes.
 	</p>
 
 	<h2>How long we keep it</h2>
 	<ul>
-		<li>Server logs: [retention period, for example 30 days]</li>
-		<li>Sign-in sessions: 7 days, or until you sign out</li>
-		<li>
-			Sync account and encrypted data: until you delete your account. We then
-			delete it within [deletion period, for example 30 days], except where the
-			law requires us to keep it.
-		</li>
+		<li>Website server logs: 30 days</li>
+		<li>Emails you send us: as long as we need them to answer you</li>
 	</ul>
 
 	<h2>How we protect it</h2>
 	<p>
-		noura Sync encrypts your workspace end to end, uses encrypted connections,
-		and keeps your keys on your devices. We limit staff access to the systems
-		that hold personal information. No system is perfectly secure. If a breach
-		creates a risk of serious harm, we'll notify you and the relevant
-		authorities as the law requires.
+		We don't store your workspace, so our systems can't expose it. We limit
+		staff access to the systems that hold personal information, and the website
+		uses encrypted connections. If a breach creates a risk of serious harm,
+		we'll notify you and the relevant authorities as the law requires.
 	</p>
 
 	<h2>Your rights</h2>
@@ -218,8 +179,12 @@
 
 	<h2>Changes to this policy</h2>
 	<p>
-		We'll post updates on this page and change the effective date. If a change
-		affects how we use your information in a significant way, we'll tell Sync
-		users by email before it takes effect.
+		We'll post updates on this page and change the effective date at the top.
 	</p>
 </LegalPage>
+
+<style>
+	code {
+		font-size: 14px;
+	}
+</style>
