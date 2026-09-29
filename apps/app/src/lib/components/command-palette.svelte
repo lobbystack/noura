@@ -160,6 +160,8 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		// The editor takes Cmd-K for links; a handled key is not a shortcut.
+		if (event.defaultPrevented) return;
 		if (
 			(event.metaKey || event.ctrlKey) &&
 			!event.shiftKey &&

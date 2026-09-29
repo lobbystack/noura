@@ -82,7 +82,10 @@
 
 	// Until a lazy component is mounted it cannot hear its own shortcut.
 	// Once it is, it owns the key and this handler stays out of the way.
+	// A key the focused control already handled (Cmd-K adds a link in the
+	// editor) is not a shortcut.
 	function handleKeydown(event: KeyboardEvent) {
+		if (event.defaultPrevented) return;
 		if (!(event.metaKey || event.ctrlKey) || event.repeat) return;
 		const key = event.key.toLowerCase();
 		if (key === 'k' && !Palette) {
