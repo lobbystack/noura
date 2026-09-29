@@ -1,6 +1,7 @@
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { tabHref, tabsStore } from './tabs.svelte';
+import { saveBeforeLeaving } from './editor/unsaved-changes';
 
 /** Show a tab's document. */
 export async function activateTab(id: string): Promise<void> {
@@ -15,6 +16,17 @@ export async function activateTab(id: string): Promise<void> {
  * page with nothing open when it was the last tab.
  */
 export async function closeTab(id: string): Promise<void> {
+	// The tab on screen takes its editor with it: save what was typed first,
+	// or let the user decide when it can't be saved.
+	if (
+		tabsStore.activeId === id &&
+		!(await saveBeforeLeaving(() => removeTab(id)))
+	)
+		return;
+	await removeTab(id);
+}
+
+async function removeTab(id: string): Promise<void> {
 	const wasActive = tabsStore.activeId === id;
 	tabsStore.close(id);
 	if (!wasActive) return;

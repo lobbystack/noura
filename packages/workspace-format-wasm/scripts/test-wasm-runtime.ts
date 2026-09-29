@@ -14,6 +14,12 @@ type Fixtures = {
 		valid: boolean;
 		value: Record<string, unknown>;
 	}>;
+	object_body: Array<{
+		name: string;
+		body: string;
+		expected_body: string;
+		file_ends_with: string;
+	}>;
 };
 
 const wasmModule = new URL('../wasm/workspace_format_wasm.js', import.meta.url);
@@ -125,6 +131,26 @@ const bytes = format.serializeObject(object);
 const parsed = format.parseMarkdown(object.relativePath, bytes);
 assert.equal(parsed.kind, 'managed');
 assert.deepEqual(format.serializeObject(parsed), bytes);
+
+// Browser saves go through the same serializer, so bodies must round-trip
+// exactly as the shared fixtures say.
+const decoder = new TextDecoder();
+for (const fixture of fixtures.object_body) {
+	const fixtureBytes = format.serializeObject({
+		...object,
+		title: 'Example',
+		properties: {},
+		body: fixture.body,
+	});
+	assert.ok(
+		decoder.decode(fixtureBytes).endsWith(fixture.file_ends_with),
+		fixture.name,
+	);
+	const fixtureParsed = format.parseMarkdown(object.relativePath, fixtureBytes);
+	assert.equal(fixtureParsed.kind, 'managed', fixture.name);
+	if (fixtureParsed.kind === 'managed')
+		assert.equal(fixtureParsed.body, fixture.expected_body, fixture.name);
+}
 
 const created = format.createNote({
 	title: 'Created in Rust',

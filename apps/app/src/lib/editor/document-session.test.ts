@@ -36,13 +36,18 @@ class FakeFile {
 		this.body = body;
 		this.revision += 1;
 	}
+	/** How the file stores text; the note format drops trailing blank lines. */
+	normalize = (text: string) => text;
 	save(base: TextBase, local: string): SessionSaveResult<string> {
-		const merged =
-			base.revision === String(this.revision)
-				? local
-				: rebaseText(base.body, local, this.body);
-		this.writeExternally(merged);
-		return { status: 'saved', base: this.base, canonical: this.body };
+		const external = base.revision !== String(this.revision);
+		const merged = external ? rebaseText(base.body, local, this.body) : local;
+		this.writeExternally(this.normalize(merged));
+		return {
+			status: 'saved',
+			base: this.base,
+			canonical: this.body,
+			merged: external,
+		};
 	}
 }
 
@@ -58,6 +63,7 @@ function setup(initial: string) {
 	let gate: Promise<void> | null = null;
 	let readGate: Promise<void> | null = null;
 	const saved: string[] = [];
+	const merges = { count: 0 };
 	const session = new DocumentSession<string>({
 		base: file.base,
 		// Timers never fire on their own; tests flush explicitly.
@@ -76,6 +82,9 @@ function setup(initial: string) {
 		onConflict: () => {
 			throw new Error('unexpected conflict');
 		},
+		onMerged: () => {
+			merges.count += 1;
+		},
 	});
 	session.attach(editor);
 	return {
@@ -83,6 +92,7 @@ function setup(initial: string) {
 		editor,
 		session,
 		saved,
+		merges,
 		holdSaves() {
 			const hold = deferred();
 			gate = hold.promise;
@@ -135,6 +145,24 @@ describe('DocumentSession', () => {
 		expect(file.body).toBe('outside\nline\none two');
 	});
 
+	test('a save that normalizes the text leaves what was typed on screen', async () => {
+		const { editor, session, file, merges } = setup('Hello');
+		// Like the note format, which ends the file with one newline.
+		file.normalize = (text) => text.replace(/\s+$/, '');
+		editor.type(' ', session);
+		await session.flush();
+		expect(file.body).toBe('Hello');
+		expect(editor.value).toBe('Hello ');
+		editor.type('\n', session);
+		await session.flush();
+		expect(editor.value).toBe('Hello \n');
+		editor.type('world', session);
+		await session.flush();
+		expect(editor.value).toBe('Hello \nworld');
+		expect(file.body).toBe('Hello \nworld');
+		expect(merges.count).toBe(0);
+	});
+
 	test('a reload keeps text typed while the file was being read', async () => {
 		const { editor, session, file, holdReads } = setup('a\n');
 		file.writeExternally('a\nfrom outside\n');
@@ -181,5 +209,20 @@ describe('DocumentSession', () => {
 		editor.type('b', session);
 		const seen = await session.exclusive(async () => file.body);
 		expect(seen).toBe('ab');
+	});
+
+	test('a flush during an exclusive operation waits for it, then saves', async () => {
+		const { editor, session, file } = setup('a');
+		const rename = deferred();
+		const renaming = session.exclusive(() => rename.promise);
+		// Let the operation start, then type while it holds autosave.
+		await Promise.resolve();
+		await Promise.resolve();
+		editor.type('b', session);
+		const flushing = session.flush();
+		rename.resolve();
+		await renaming;
+		await expect(flushing).resolves.toBe(true);
+		expect(file.body).toBe('ab');
 	});
 });

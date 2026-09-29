@@ -3,7 +3,11 @@
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { subscribeAppMenu, type AppMenuCommand } from '@noura/workspace';
-	import { shortcutCommand } from '$lib/app-shortcuts';
+	import {
+		shortcutCommand,
+		shortcutOnce,
+		type ShortcutSource,
+	} from '$lib/app-shortcuts';
 	import { commandPalette } from '$lib/command-palette.svelte';
 	import { createFolder, createNote } from '$lib/file-actions';
 	import { hostOs } from '$lib/host-os';
@@ -29,13 +33,11 @@
 	};
 
 	// On a Mac the menu bar and the key press can both report one shortcut;
-	// run each command once.
-	const lastRun: Partial<Record<AppMenuCommand, number>> = {};
+	// run each press once.
+	const once = shortcutOnce();
 
-	async function run(command: AppMenuCommand) {
-		const now = performance.now();
-		if (now - (lastRun[command] ?? -Infinity) < 300) return;
-		lastRun[command] = now;
+	async function run(command: AppMenuCommand, source: ShortcutSource) {
+		if (!once(command, source, performance.now())) return;
 		const path = ROUTES[command];
 		if (path) {
 			const pluginId = routePlugin(path);
@@ -81,14 +83,14 @@
 		const command = shortcutCommand(event, os);
 		if (!command) return;
 		event.preventDefault();
-		void run(command);
+		void run(command, 'key');
 	}
 
 	onMount(() => {
 		if (getAppPlatform() !== 'desktop') return;
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
-		void subscribeAppMenu((command) => void run(command))
+		void subscribeAppMenu((command) => void run(command, 'menu'))
 			.then((stop) => {
 				if (disposed) stop();
 				else unsubscribe = stop;

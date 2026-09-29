@@ -11,11 +11,12 @@
 		type UnmanagedFile,
 		type WorkspaceObject,
 	} from '@noura/workspace';
-	import { tabsStore } from '$lib/tabs.svelte';
+	import { tabHref, tabsStore } from '$lib/tabs.svelte';
 	import { saveBeforeLeaving } from '$lib/editor/unsaved-changes';
 	import { splitFileName } from '$lib/editor/rename';
 	import NoteEditor from '$lib/components/note-editor.svelte';
 	import RawMarkdownEditor from '$lib/components/raw-markdown-editor.svelte';
+	import { onMount } from 'svelte';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { toast } from 'svelte-sonner';
@@ -128,9 +129,27 @@
 		if (await leaveCurrent(show)) show();
 	}
 
+	/**
+	 * Plain /files keeps whatever is already open, like any editor surface.
+	 * With nothing open it shows the active tab's document, so the page and
+	 * the highlighted tab agree.
+	 */
+	function showActiveTab() {
+		if (shownNote || shownRaw) return;
+		const active = tabsStore.active;
+		if (!active) return;
+		const href = tabHref(active);
+		if (new URL(href, page.url).pathname === page.url.pathname)
+			void goto(href, { replaceState: true });
+	}
+
 	// Selection is URL-driven: /files?selected=<id> or /files?raw=<path>.
-	// Plain /files keeps whatever is already open, like any editor surface.
-	afterNavigate(() => {
+	// The page mounts once the workspace is ready, after the navigation that
+	// opened the app, so it applies the address on mount too.
+	onMount(() => applyAddress());
+	afterNavigate(() => applyAddress());
+
+	function applyAddress() {
 		const params = page.url.searchParams;
 		const selectedId = params.get('selected');
 		const rawPath = params.get('raw');
@@ -138,7 +157,10 @@
 		if (key === appliedKey) return;
 		const generation = ++selectionGeneration;
 		appliedKey = key;
-		if (key === '|') return;
+		if (key === '|') {
+			showActiveTab();
+			return;
+		}
 		if (shownNote?.id === selectedId) return;
 		if (shownRaw?.relativePath === rawPath) return;
 		void (async () => {
@@ -178,7 +200,7 @@
 					);
 			}
 		})();
-	});
+	}
 
 	function handleSaved(updated: Note) {
 		selected = updated;

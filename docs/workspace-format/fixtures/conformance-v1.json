@@ -583,5 +583,37 @@
 				"updated": "2026-09-02T12:01:00Z"
 			}
 		}
+	],
+	"object_body": [
+		{
+			"name": "trailing space typed at the end stays",
+			"body": "Typing ",
+			"expected_body": "Typing ",
+			"file_ends_with": "Typing \n"
+		},
+		{
+			"name": "two trailing spaces keep a Markdown line break",
+			"body": "Line  \nnext",
+			"expected_body": "Line  \nnext",
+			"file_ends_with": "Line  \nnext\n"
+		},
+		{
+			"name": "trailing line breaks normalize to one final newline",
+			"body": "Text\n\n",
+			"expected_body": "Text",
+			"file_ends_with": "Text\n"
+		},
+		{
+			"name": "CRLF line breaks at the end normalize too",
+			"body": "Text\r\n",
+			"expected_body": "Text",
+			"file_ends_with": "Text\n"
+		},
+		{
+			"name": "a body of only whitespace is written as no body",
+			"body": "  \n",
+			"expected_body": "",
+			"file_ends_with": "# Example\n"
+		}
 	]
 }

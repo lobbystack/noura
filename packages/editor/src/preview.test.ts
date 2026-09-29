@@ -243,16 +243,36 @@ describe('blocks', () => {
 			expect(lineClasses(state, ranges, line)).toContain('cm-md-quote-line');
 	});
 
-	test('styles every line of a callout and hides the type marker', () => {
+	test('styles every line of a callout and hides its markers', () => {
 		const doc = '> [!note] Title\n> body\n\nafter\n';
 		const { state, ranges } = decorate(doc, doc.length);
 		expect(lineClasses(state, ranges, 1)).toContain('cm-md-callout');
 		expect(lineClasses(state, ranges, 2)).toContain('cm-md-callout');
+		const hidden = hiddenRanges(ranges).map((item) => [
+			item.from,
+			state.sliceDoc(item.from, item.to),
+		]);
+		// Both `>` markers, and the brackets around the type.
+		expect(hidden).toEqual([
+			[0, '> '],
+			[2, '[!'],
+			[8, ']'],
+			[16, '> '],
+		]);
+		// The type shows as a label.
 		expect(
-			hiddenRanges(ranges).some(
-				(item) => state.sliceDoc(item.from, item.to) === '[!note] ',
+			ranges.some(
+				(item) =>
+					item.spec.class === 'cm-md-callout-label' &&
+					state.sliceDoc(item.from, item.to) === 'note',
 			),
 		).toBe(true);
+	});
+
+	test('shows a callout’s source while the caret is in it', () => {
+		const doc = '> [!warning]- Careful\n> body\n\nafter\n';
+		const { ranges } = decorate(doc, doc.indexOf('body') + 2);
+		expect(hiddenRanges(ranges)).toHaveLength(0);
 	});
 
 	test('marks fenced code lines for styling', () => {

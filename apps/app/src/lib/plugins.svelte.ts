@@ -65,6 +65,12 @@ class PluginStore {
 	lastError = $state<string | null>(null);
 	/** True once the first sync for a workspace context has settled. */
 	synced = $state(false);
+	/**
+	 * The workspace whose manifest the plugins last synced with, or null
+	 * when none was open. A sync can settle while a workspace is still
+	 * opening; its empty plugin list does not describe that workspace.
+	 */
+	syncedWorkspaceId = $state<string | null>(null);
 
 	#initialized = false;
 	#syncChain: Promise<void> = Promise.resolve();
@@ -142,6 +148,7 @@ class PluginStore {
 			this.synced = true;
 			return;
 		}
+		const workspaceId = workspace.state?.workspaceId ?? null;
 		try {
 			const result = await getPluginRuntime().syncWithManifest();
 			const runtime = getPluginRuntime();
@@ -149,6 +156,7 @@ class PluginStore {
 			this.enabledIds = result.enabledPluginIds;
 			this.#loadPluginOrder(workspace.state?.workspaceId ?? null);
 			this.lastError = null;
+			this.syncedWorkspaceId = workspaceId;
 		} catch (error) {
 			if (isCoreError(error) && error.code === 'workspace_not_open') {
 				// Onboarding or a closed workspace: no manifest is scoped,
@@ -160,6 +168,7 @@ class PluginStore {
 				this.enabledIds = [];
 				this.#loadPluginOrder(null);
 				this.lastError = null;
+				this.syncedWorkspaceId = null;
 				return;
 			}
 			this.lastError = errorMessage(error);

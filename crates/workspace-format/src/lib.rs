@@ -593,9 +593,12 @@ pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError
     }
     let yaml = serde_yaml_ng::to_string(&ordered).map_err(|_| FormatError::ObjectSerialization)?;
     let mut result = format!("---\n{}---\n\n# {}\n", yaml, object.title.trim());
-    if !object.body.trim().is_empty() {
+    // Only line breaks at the end are normalized. Trailing spaces stay: two
+    // of them are a Markdown line break, and the editor may be mid-typing.
+    let body = object.body.trim_end_matches(['\n', '\r']);
+    if !body.trim().is_empty() {
         result.push('\n');
-        result.push_str(object.body.trim_end());
+        result.push_str(body);
         result.push('\n');
     }
     Ok(result.into_bytes())
@@ -728,6 +731,37 @@ mod tests {
     }
 
     #[test]
+    fn managed_bodies_keep_trailing_spaces_and_drop_trailing_line_breaks() {
+        let object = |body: &str| WorkspaceObject {
+            id: "note_01j00000000000000000000000".into(),
+            object_type: "note".into(),
+            title: "Example".into(),
+            body: body.into(),
+            relative_path: "notes/example.md".into(),
+            revision: String::new(),
+            created: Some("2026-08-27T12:00:00Z".into()),
+            updated: Some("2026-08-27T12:00:00Z".into()),
+            properties: BTreeMap::new(),
+        };
+        let body_after_round_trip = |body: &str| {
+            let bytes = serialize_object(&object(body)).unwrap();
+            let ParsedMarkdown::Managed(parsed) = parse_markdown("notes/example.md", &bytes) else {
+                panic!("managed object expected")
+            };
+            parsed.body
+        };
+        // A trailing space, or two for a Markdown line break, survives a save.
+        assert_eq!(body_after_round_trip("Typing "), "Typing ");
+        assert_eq!(body_after_round_trip("Line  \nnext"), "Line  \nnext");
+        // Line breaks at the end are normalized; the file ends with one.
+        assert_eq!(body_after_round_trip("Text\n\n"), "Text");
+        let bytes = serialize_object(&object("Text\n\n")).unwrap();
+        assert!(bytes.ends_with(b"Text\n"));
+        // A body of only whitespace is written as no body.
+        assert_eq!(body_after_round_trip("  \n"), "");
+    }
+
+    #[test]
     fn malformed_frontmatter_is_not_managed() {
         let ParsedMarkdown::Malformed { error, .. } =
             parse_markdown("bad.md", b"---\nid: [\n---\n# Bad")
@@ -752,6 +786,15 @@ mod tests {
         object_id: Vec<ObjectIdFixture>,
         task_properties: Vec<TaskPropertiesFixture>,
         project_properties: Vec<TaskPropertiesFixture>,
+        object_body: Vec<ObjectBodyFixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct ObjectBodyFixture {
+        name: String,
+        body: String,
+        expected_body: String,
+        file_ends_with: String,
     }
 
     #[derive(Deserialize)]
@@ -802,6 +845,35 @@ mod tests {
                 && task_properties_match
                 && project_properties_match
         );
+    }
+
+    #[test]
+    fn object_bodies_round_trip_as_the_shared_fixtures_say() {
+        let fixtures: Fixtures = serde_json::from_str(include_str!(
+            "../../../docs/workspace-format/fixtures/conformance-v1.json"
+        ))
+        .unwrap();
+        for fixture in fixtures.object_body {
+            let object = WorkspaceObject {
+                id: "note_01j00000000000000000000000".into(),
+                object_type: "note".into(),
+                title: "Example".into(),
+                body: fixture.body,
+                relative_path: "notes/example.md".into(),
+                revision: String::new(),
+                created: Some("2026-08-27T12:00:00Z".into()),
+                updated: Some("2026-08-27T12:00:00Z".into()),
+                properties: BTreeMap::new(),
+            };
+            let bytes = serialize_object(&object).unwrap();
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(text.ends_with(&fixture.file_ends_with), "{}", fixture.name);
+            let ParsedMarkdown::Managed(parsed) = parse_markdown(&object.relative_path, &bytes)
+            else {
+                panic!("{}: managed object expected", fixture.name)
+            };
+            assert_eq!(parsed.body, fixture.expected_body, "{}", fixture.name);
+        }
     }
 
     #[test]

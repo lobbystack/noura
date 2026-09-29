@@ -1426,7 +1426,14 @@ export class BrowserWorkspaceServer {
 			);
 			body = merged;
 		}
-		return this.#writeRaw(path, stored, body, operation, 'saved');
+		// Report a merge only when another edit changed the text saved.
+		return this.#writeRaw(
+			path,
+			stored,
+			body,
+			operation,
+			body === localBody ? 'saved' : 'merged',
+		);
 	}
 
 	async #writeRaw(
@@ -1434,7 +1441,7 @@ export class BrowserWorkspaceServer {
 		stored: { bytes: Uint8Array; revision: string },
 		body: string,
 		operation: string,
-		status: 'saved' | null,
+		status: 'saved' | 'merged' | null,
 	) {
 		const next = this.#format.composeRawText(stored.bytes, body);
 		const written = await this.#requireCurrent(operation).storage.write({

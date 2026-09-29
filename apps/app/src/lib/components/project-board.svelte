@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { choiceLabel } from '$lib/property-labels';
 	import { getNouraClient } from '$lib/state.svelte';
 	import { toast } from 'svelte-sonner';
 	import { tabsStore } from '$lib/tabs.svelte';
@@ -42,11 +43,7 @@
 	let dragOverColumn = $state<string | null>(null);
 	let dragOverTaskId = $state<string | null>(null);
 
-	const columnLabel = (id: string) =>
-		id
-			.split('-')
-			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-			.join(' ');
+	const columnLabel = choiceLabel;
 
 	const isEmpty = $derived(
 		groups.every((g: KanbanGroup) => g.items.length === 0),

@@ -110,6 +110,7 @@
 						status: 'saved',
 						base: baseOf(result.value),
 						canonical: result.value,
+						merged: result.merged,
 					};
 				},
 				read: async () => {
@@ -152,6 +153,20 @@
 					}
 				: null,
 		);
+		if (handle && focusWhenReady) {
+			focusWhenReady = false;
+			handle.focus();
+		}
+	}
+
+	/**
+	 * Enter in the name moves on to the text. The text editor may still be
+	 * loading then; it takes the caret as soon as it is ready.
+	 */
+	let focusWhenReady = false;
+	function focusText() {
+		if (editor) editor.focus();
+		else focusWhenReady = true;
 	}
 
 	function openConflict(draft: NoteDraft, file: Note, deleted = false) {
@@ -449,7 +464,7 @@
 				activationInProgress ||
 				collaboration?.bootstrap.readOnly}
 			onrename={rename}
-			ondone={() => editor?.focus()}
+			ondone={focusText}
 		/>
 		<Separator />
 

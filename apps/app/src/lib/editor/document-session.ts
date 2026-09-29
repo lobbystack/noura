@@ -25,7 +25,17 @@ export interface TextBase {
 }
 
 export type SessionSaveResult<Canonical> =
-	| { status: 'saved'; base: TextBase; canonical: Canonical }
+	| {
+			status: 'saved';
+			base: TextBase;
+			canonical: Canonical;
+			/**
+			 * The save folded in an edit made outside the editor. Without one, the
+			 * file holds this editor's text, possibly normalized, and the text on
+			 * screen stays as typed.
+			 */
+			merged?: boolean;
+	  }
 	| { status: 'conflict'; current: Canonical };
 
 export interface DocumentSessionOptions<Canonical> {
@@ -67,6 +77,7 @@ export class DocumentSession<Canonical> {
 	#base: TextBase;
 	#editor: EditorPort | null = null;
 	#discarded = false;
+	#exclusive: Promise<unknown> | null = null;
 	readonly #options: DocumentSessionOptions<Canonical>;
 
 	constructor(options: DocumentSessionOptions<Canonical>) {
@@ -117,8 +128,14 @@ export class DocumentSession<Canonical> {
 		);
 	}
 
-	flush(): Promise<boolean> {
-		if (this.#discarded) return Promise.resolve(true);
+	/**
+	 * Save every edit now. An exclusive operation (a rename) holds autosave
+	 * while it runs; the flush waits for it instead of failing, so closing a
+	 * note right after renaming it still saves what was typed.
+	 */
+	async flush(): Promise<boolean> {
+		while (this.#exclusive) await this.#exclusive.catch(() => {});
+		if (this.#discarded) return true;
 		return this.autosave.flush();
 	}
 
@@ -131,10 +148,18 @@ export class DocumentSession<Canonical> {
 			throw new Error('Save your changes before renaming.');
 		}
 		this.autosave.pause();
+		const running = (async () => {
+			try {
+				return await operation();
+			} finally {
+				this.autosave.resume();
+			}
+		})();
+		this.#exclusive = running;
 		try {
-			return await operation();
+			return await running;
 		} finally {
-			this.autosave.resume();
+			if (this.#exclusive === running) this.#exclusive = null;
 		}
 	}
 
@@ -215,7 +240,10 @@ export class DocumentSession<Canonical> {
 			return 'paused';
 		}
 		this.#base = result.base;
-		if (result.base.body !== body) {
+		// Only a real merge changes the text on screen. Saving can normalize
+		// what was typed, such as a trailing space or a final blank line;
+		// replacing the editor's text with that would undo the keystroke.
+		if (result.merged && result.base.body !== body) {
 			this.#editor?.rebase(body, result.base.body);
 			options.onMerged?.();
 		}

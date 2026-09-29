@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { getSettingsDialog } from '$lib/settings.svelte';
 	import { commandPalette } from '$lib/command-palette.svelte';
@@ -94,6 +94,24 @@
 		if (mode !== 'files') search.update(value);
 	}
 
+	let input = $state<HTMLInputElement | null>(null);
+
+	// The dialog focuses its field when it mounts. Opened again while it was
+	// still closing, it does not mount again, so focus the field here too.
+	$effect(() => {
+		if (!commandPalette.open || !input) return;
+		const field = input;
+		void tick().then(() => {
+			if (commandPalette.open && document.activeElement !== field)
+				field.focus();
+		});
+	});
+
+	// Keys typed before the field had focus start the query.
+	onMount(() =>
+		commandPalette.receiveTypedAhead((text) => setQuery(query + text)),
+	);
+
 	function close() {
 		commandPalette.close();
 		query = '';
@@ -160,6 +178,8 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		// The editor takes Cmd-K for links; a handled key is not a shortcut.
+		if (event.defaultPrevented) return;
 		if (
 			(event.metaKey || event.ctrlKey) &&
 			!event.shiftKey &&
@@ -178,7 +198,13 @@
 <Command.Dialog
 	contentProps={{
 		onCloseAutoFocus: (event) => {
-			if (settings.open) event.preventDefault();
+			// The palette released focus when it opened; give it back to where
+			// it was, unless Settings opened or the palette opened again.
+			event.preventDefault();
+			if (settings.open || commandPalette.open) return;
+			const previous = commandPalette.returnFocus;
+			commandPalette.returnFocus = null;
+			if (previous?.isConnected) previous.focus();
 		},
 	}}
 	bind:open={
@@ -193,7 +219,11 @@
 	description="Open files, search the workspace, or create something"
 	class="max-w-xl"
 >
-	<Command.Input bind:value={() => query, setQuery} {placeholder} />
+	<Command.Input
+		bind:ref={input}
+		bind:value={() => query, setQuery}
+		{placeholder}
+	/>
 	<Command.List
 		{@attach () => {
 			// Quick open needs the file list even before the tree was shown.

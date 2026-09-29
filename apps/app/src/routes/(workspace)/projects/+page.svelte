@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { choiceLabel } from '$lib/property-labels';
 	import { getRouteSidebar } from '$lib/route-sidebar.svelte';
 	const routeSidebar = getRouteSidebar();
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
@@ -273,8 +274,7 @@
 	/** "on-hold" reads as "On hold". */
 	function statusLabel(status: unknown, fallback: string): string {
 		const value = typeof status === 'string' && status ? status : fallback;
-		const words = value.replaceAll('-', ' ');
-		return words.charAt(0).toUpperCase() + words.slice(1);
+		return value ? choiceLabel(value) : '';
 	}
 
 	const statusVariants: Record<

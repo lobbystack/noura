@@ -1,5 +1,6 @@
 <script lang="ts">
 	import * as Select from '$lib/components/ui/select';
+	import { choiceLabel } from '$lib/property-labels';
 	let {
 		id,
 		label,
@@ -23,13 +24,13 @@
 
 <Select.Root type="single" {value} {disabled} onValueChange={onchange}>
 	<Select.Trigger {id} {size} class={className} aria-label={label}
-		>{value}</Select.Trigger
+		>{choiceLabel(value)}</Select.Trigger
 	>
 	<Select.Content
 		><Select.Group>
 			{#each options as option (option)}<Select.Item
 					value={option}
-					label={option}>{option}</Select.Item
+					label={choiceLabel(option)}>{choiceLabel(option)}</Select.Item
 				>{/each}
 		</Select.Group></Select.Content
 	>
