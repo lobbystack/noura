@@ -1726,7 +1726,7 @@ export function parseNativeRecoveryKit(file: unknown): ParsedNativeRecoveryKit {
 	if (format !== NATIVE_RECOVERY_DOMAIN) {
 		throw new BrowserSyncError(
 			BrowserSyncErrorCode.InvalidBundle,
-			'The file was not a native Noura recovery kit.',
+			'The file was not a native noura recovery kit.',
 		);
 	}
 	const recovery = kit.recovery;
@@ -1969,7 +1969,7 @@ export class BrowserSyncController {
 		if (!this.#origin) {
 			return failure(
 				'not_configured',
-				'This page is not served from a Noura sync origin, so sync cannot be enabled.',
+				'This page is not served from a noura sync origin, so sync cannot be enabled.',
 			);
 		}
 		try {
@@ -2534,7 +2534,7 @@ export class BrowserSyncController {
 		if (!this.#origin) {
 			return failure(
 				'not_configured',
-				'This page is not served from a Noura sync origin, so a browser device cannot enroll.',
+				'This page is not served from a noura sync origin, so a browser device cannot enroll.',
 			);
 		}
 		try {

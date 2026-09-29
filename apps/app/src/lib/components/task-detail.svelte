@@ -244,7 +244,7 @@
 		if (value instanceof Error) return value.message;
 		if (value && typeof value === 'object' && 'message' in value)
 			return String(value.message);
-		return 'Noura could not save this task.';
+		return 'noura could not save this task.';
 	}
 
 	function handleShortcut(event: KeyboardEvent) {
@@ -386,7 +386,7 @@
 				><Sheet.Description
 					>{conflict.deleted
 						? 'Restore the task file from your current draft.'
-						: 'Noura preserved both versions.'}</Sheet.Description
+						: 'noura preserved both versions.'}</Sheet.Description
 				></Sheet.Header
 			>
 			<div

@@ -10,7 +10,9 @@
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import type { KanbanGroup, Project, Task } from '@noura/workspace';
-	import { untrack } from 'svelte';
+	import { cn } from '$lib/utils';
+	import { dueLabel } from '$lib/dashboard-dates';
+	import DotsThree from 'phosphor-svelte/lib/DotsThree';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
 	import Plus from 'phosphor-svelte/lib/Plus';
 	import X from 'phosphor-svelte/lib/X';
@@ -23,7 +25,17 @@
 		onRefresh: () => Promise<void>;
 	}>();
 
-	let selectedTask = $state<Task | null>(null);
+	let selectedTaskId = $state<string | null>(null);
+	/** The task as last seen. It stays shown if the task disappears, since
+	 * TaskDetail owns the external-delete flow and may protect a draft. */
+	let selectedSnapshot = $state.raw<Task | null>(null);
+	const selectedTask = $derived(
+		(selectedTaskId &&
+			groups
+				.flatMap((group: KanbanGroup) => group.items)
+				.find((candidate: Task) => candidate.id === selectedTaskId)) ||
+			selectedSnapshot,
+	);
 	let detailOpen = $state(false);
 	let closingDetail = $state(false);
 	let dragTask = $state<Task | null>(null);
@@ -41,7 +53,8 @@
 	);
 
 	function select(task: Task) {
-		selectedTask = task;
+		selectedTaskId = task.id;
+		selectedSnapshot = task;
 		detailOpen = true;
 		tabsStore.open(task.id, 'task', task.title);
 	}
@@ -157,21 +170,6 @@
 		}
 		await onRefresh();
 	}
-
-	// Depend only on incoming canonical list data. Local selection and drag
-	// state must not rerun this effect, or starting a drag would cancel it.
-	$effect(() => {
-		const nextGroups = groups;
-		const task = untrack(() => selectedTask);
-		if (untrack(() => dragTask)) clearDrag();
-		if (!task) return;
-		const latest = nextGroups
-			.flatMap((group: KanbanGroup) => group.items)
-			.find((candidate: Task) => candidate.id === task.id);
-		if (latest) selectedTask = latest;
-		// When the task disappeared, keep its detail mounted. TaskDetail owns the
-		// external-delete conflict flow and may still need to protect a draft.
-	});
 </script>
 
 {#if isEmpty}
@@ -198,7 +196,10 @@
 	>
 		{#each groups as group (group.id)}
 			<section
-				class={`flex w-64 shrink-0 flex-col bg-background transition-colors ${dragOverColumn === group.id ? 'bg-muted/50' : ''}`}
+				class={cn(
+					'flex w-64 shrink-0 flex-col bg-background transition-colors',
+					dragOverColumn === group.id && 'bg-muted/50',
+				)}
 				ondragover={(event) => handleDragOver(event, group.id)}
 				ondragleave={() => handleDragLeave(group.id)}
 				ondrop={(event) => handleDrop(event, group.id)}
@@ -207,9 +208,7 @@
 				<header
 					class="flex items-center justify-between border-b border-border/60 px-3 py-2.5"
 				>
-					<h3
-						class="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-					>
+					<h3 class="text-xs font-medium text-muted-foreground">
 						{columnLabel(group.id)}
 					</h3>
 					<span class="text-xs text-muted-foreground">{group.items.length}</span
@@ -223,7 +222,12 @@
 						{@const priority = task.properties?.priority}
 						<div
 							role="listitem"
-							class={`flex items-start bg-background transition-colors hover:bg-muted/70 ${dragTask?.id === task.id ? 'opacity-40' : ''} ${dragOverTaskId === task.id ? 'ring-1 ring-inset ring-primary/40' : ''}`}
+							class={cn(
+								'flex items-start bg-background transition-colors hover:bg-muted/70',
+								dragTask?.id === task.id && 'opacity-40',
+								dragOverTaskId === task.id &&
+									'ring-1 ring-inset ring-primary/40',
+							)}
 							draggable="true"
 							ondragstart={(event) => handleDragStart(event, task)}
 							ondragend={clearDrag}
@@ -235,26 +239,32 @@
 								class="min-w-0 flex-1 px-3 py-2.5 text-left"
 								onclick={() => select(task)}
 								><span
-									class={`block text-sm font-medium ${done ? 'line-through text-muted-foreground' : ''}`}
-									>{task.title}</span
+									class={cn(
+										'block text-sm font-medium',
+										done && 'text-muted-foreground line-through',
+									)}>{task.title}</span
 								>{#if task.properties?.due || (typeof priority === 'string' && priority !== 'medium')}<span
 										class="mt-1 flex items-center gap-1.5"
 										>{#if task.properties?.due}<span
 												class="text-xs text-muted-foreground"
-												>{task.properties.due}</span
+												>{dueLabel(
+													String(task.properties.due),
+													new Date(),
+												)}</span
 											>{/if}{#if typeof priority === 'string' && priority !== 'medium'}<Badge
 												variant="secondary"
-												class="px-1 py-0 text-xs uppercase">{priority}</Badge
+												class="capitalize">{priority}</Badge
 											>{/if}</span
 									>{/if}</button
 							>
 							<DropdownMenu.Root
 								><DropdownMenu.Trigger
-									><Button
-										variant="ghost"
-										size="icon-sm"
-										aria-label="Move {task.title}">•••</Button
-									></DropdownMenu.Trigger
+									>{#snippet child({ props })}<Button
+											{...props}
+											variant="ghost"
+											size="icon-sm"
+											aria-label="Move {task.title}"><DotsThree /></Button
+										>{/snippet}</DropdownMenu.Trigger
 								><DropdownMenu.Content
 									><DropdownMenu.Group
 										><DropdownMenu.Label>Move to</DropdownMenu.Label

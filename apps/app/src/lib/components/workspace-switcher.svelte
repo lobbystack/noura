@@ -1,31 +1,86 @@
 <script lang="ts">
-	import { getSettingsDialog } from '$lib/settings.svelte';
-	import GearSix from 'phosphor-svelte/lib/GearSix';
-	const settings = getSettingsDialog();
-	import { workspace } from '$lib/state.svelte';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
-	import { Button } from '$lib/components/ui/button/index.js';
 	import { toast } from 'svelte-sonner';
+	import { getSettingsDialog } from '$lib/settings.svelte';
+	import { workspace } from '$lib/state.svelte';
+	import * as Dialog from '$lib/components/ui/dialog/index.js';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+	import * as Field from '$lib/components/ui/field/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
 	import Check from 'phosphor-svelte/lib/Check';
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
-	import Plus from 'phosphor-svelte/lib/Plus';
+	import FolderPlus from 'phosphor-svelte/lib/FolderPlus';
+	import ArrowSquareOut from 'phosphor-svelte/lib/ArrowSquareOut';
+	import X from 'phosphor-svelte/lib/X';
+
+	const settings = getSettingsDialog();
 
 	let menuOpen = $state(false);
+	let createOpen = $state(false);
+	let newName = $state('');
+
+	const others = $derived(
+		workspace.recents.filter(
+			(recent) => recent.workspaceId !== workspace.state?.workspaceId,
+		),
+	);
+
+	/** What the operating system calls its file manager. */
+	const fileManager = /Mac/i.test(navigator.userAgent)
+		? 'Finder'
+		: /Windows/i.test(navigator.userAgent)
+			? 'Explorer'
+			: 'file manager';
 
 	function handleOpenChange(open: boolean) {
 		menuOpen = open;
 		if (open) void workspace.refreshRecents();
 	}
 
-	async function switchWorkspace(path: string, name: string) {
+	async function forget(workspaceId: string, name: string) {
+		try {
+			await workspace.forgetRecent(workspaceId);
+		} catch {
+			toast.error(`Could not remove “${name}” from recents`);
+		}
+	}
+
+	async function switchWorkspace(
+		path: string,
+		name: string,
+		workspaceId: string,
+	) {
 		if (workspace.isLoading) return;
 		menuOpen = false;
 		if (await workspace.open(path)) return;
 		toast.error(`Could not open “${name}”`, {
-			description:
-				workspace.error ??
-				'The folder may no longer be available or may not be a Noura workspace.',
+			description: 'You may have moved or deleted its folder.',
+			action: {
+				label: 'Remove from recents',
+				onClick: () => void forget(workspaceId, name),
+			},
 		});
+	}
+
+	async function reveal() {
+		try {
+			await workspace.reveal();
+		} catch {
+			toast.error(`Could not open ${fileManager}`);
+		}
+	}
+
+	async function createWorkspace(event: SubmitEvent) {
+		event.preventDefault();
+		const name = newName.trim();
+		if (!name) return;
+		createOpen = false;
+		await workspace.pickAndCreate(name);
+		if (workspace.error)
+			toast.error('Could not create the workspace', {
+				description: workspace.error,
+			});
+		else newName = '';
 	}
 </script>
 
@@ -49,17 +104,18 @@
 		class="w-80"
 		align="start"
 		onCloseAutoFocus={(event) => {
-			if (settings.open) event.preventDefault();
+			if (settings.open || createOpen) event.preventDefault();
 		}}
 	>
-		<DropdownMenu.Label>Workspaces</DropdownMenu.Label>
 		<DropdownMenu.Group>
+			<DropdownMenu.Label>Workspaces</DropdownMenu.Label>
 			{#each workspace.recents as recent (recent.workspaceId)}
 				{@const active = recent.workspaceId === workspace.state?.workspaceId}
 				<DropdownMenu.Item
 					disabled={active || workspace.isLoading}
 					textValue={recent.name}
-					onSelect={() => switchWorkspace(recent.path, recent.name)}
+					onSelect={() =>
+						switchWorkspace(recent.path, recent.name, recent.workspaceId)}
 				>
 					<FolderOpen />
 					<span class="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -76,17 +132,6 @@
 		</DropdownMenu.Group>
 
 		<DropdownMenu.Separator />
-		<DropdownMenu.Group
-			><DropdownMenu.Item
-				onSelect={() => {
-					menuOpen = false;
-					settings.show();
-				}}
-				><GearSix />Settings<DropdownMenu.Shortcut>⌘,</DropdownMenu.Shortcut
-				></DropdownMenu.Item
-			></DropdownMenu.Group
-		>
-		<DropdownMenu.Separator />
 		<DropdownMenu.Group>
 			<DropdownMenu.Item
 				disabled={workspace.isLoading}
@@ -95,9 +140,71 @@
 					void workspace.pickAndOpen();
 				}}
 			>
-				<Plus />
-				Open another workspace…
+				<FolderOpen />
+				Open folder…
 			</DropdownMenu.Item>
+			<DropdownMenu.Item
+				disabled={workspace.isLoading}
+				onSelect={() => {
+					menuOpen = false;
+					createOpen = true;
+				}}
+			>
+				<FolderPlus />
+				New workspace…
+			</DropdownMenu.Item>
+			<DropdownMenu.Item onSelect={() => void reveal()}>
+				<ArrowSquareOut />
+				Show in {fileManager}
+			</DropdownMenu.Item>
+			{#if others.length > 0}
+				<DropdownMenu.Sub>
+					<DropdownMenu.SubTrigger>
+						<X />
+						Remove from recents
+					</DropdownMenu.SubTrigger>
+					<DropdownMenu.SubContent class="w-64">
+						<DropdownMenu.Group>
+							{#each others as recent (recent.workspaceId)}
+								<DropdownMenu.Item
+									textValue={recent.name}
+									onSelect={() => void forget(recent.workspaceId, recent.name)}
+								>
+									<span class="truncate">{recent.name}</span>
+								</DropdownMenu.Item>
+							{/each}
+						</DropdownMenu.Group>
+					</DropdownMenu.SubContent>
+				</DropdownMenu.Sub>
+			{/if}
 		</DropdownMenu.Group>
 	</DropdownMenu.Content>
 </DropdownMenu.Root>
+
+<Dialog.Root bind:open={createOpen}>
+	<Dialog.Content class="sm:max-w-sm">
+		<Dialog.Header>
+			<Dialog.Title>New workspace</Dialog.Title>
+			<Dialog.Description>Name it, then choose its folder.</Dialog.Description>
+		</Dialog.Header>
+		<form class="flex flex-col gap-4" onsubmit={createWorkspace}>
+			<Field.Group>
+				<Field.Field>
+					<Field.Label for="switcher-new-workspace">Name</Field.Label>
+					<Input
+						id="switcher-new-workspace"
+						bind:value={newName}
+						autocomplete="off"
+					/>
+				</Field.Field>
+			</Field.Group>
+			<Dialog.Footer>
+				<Button
+					type="submit"
+					disabled={workspace.isLoading || newName.trim().length === 0}
+					>Choose folder…</Button
+				>
+			</Dialog.Footer>
+		</form>
+	</Dialog.Content>
+</Dialog.Root>

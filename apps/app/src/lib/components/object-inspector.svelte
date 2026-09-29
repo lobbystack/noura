@@ -79,9 +79,7 @@
 			<div class="space-y-4 px-4">
 				{#if object.properties && Object.keys(object.properties).length > 0}
 					<div>
-						<h4
-							class="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
-						>
+						<h4 class="mb-2 text-xs font-medium text-muted-foreground">
 							Properties
 						</h4>
 						<div class="space-y-1.5">
@@ -108,9 +106,7 @@
 
 				<div>
 					<div class="mb-2 flex items-center justify-between">
-						<h4
-							class="text-xs font-medium uppercase tracking-wide text-muted-foreground"
-						>
+						<h4 class="text-xs font-medium text-muted-foreground">
 							File & history
 						</h4>
 						<Badge variant="outline" class="gap-1 text-xs">

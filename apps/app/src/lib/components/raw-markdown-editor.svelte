@@ -65,7 +65,7 @@
 		if (value instanceof Error) return value.message;
 		if (value && typeof value === 'object' && 'message' in value)
 			return String(value.message);
-		return 'Noura could not save this Markdown file.';
+		return 'noura could not save this Markdown file.';
 	}
 
 	async function persist(body: string, generation: number) {
@@ -369,7 +369,7 @@
 			<Alert.Root
 				><Warning /><Alert.Title>This file needs repair</Alert.Title
 				><Alert.Description
-					>Edit the complete Markdown source below. Noura will adopt its stable
+					>Edit the complete Markdown source below. noura will adopt its stable
 					identity after the frontmatter becomes valid.</Alert.Description
 				></Alert.Root
 			>
@@ -474,7 +474,7 @@
 		<Sheet.Content class="sm:max-w-2xl"
 			><Sheet.Header
 				><Sheet.Title>Review Markdown conflict</Sheet.Title><Sheet.Description
-					>Noura preserved both versions.</Sheet.Description
+					>noura preserved both versions.</Sheet.Description
 				></Sheet.Header
 			>
 			<div

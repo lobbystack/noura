@@ -1,19 +1,23 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import type { Task } from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
 	import { tasksData } from '$lib/tasks-data.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
+	import { dueLabel, isOverdue } from '$lib/dashboard-dates';
+	import { cn } from '$lib/utils';
 	import EmptyState from '$lib/components/empty-state.svelte';
+	import PageHeader from '$lib/components/page-header.svelte';
 	import TaskDetail from '$lib/components/task-detail.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import NotePencil from 'phosphor-svelte/lib/NotePencil';
+	import { Checkbox } from '$lib/components/ui/checkbox/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+	import Checks from 'phosphor-svelte/lib/Checks';
 	import Plus from 'phosphor-svelte/lib/Plus';
-	import CalendarBlank from 'phosphor-svelte/lib/CalendarBlank';
 	import { filterTasks, isDone, type TaskView } from '$lib/tasks/filters';
 	import { tabsStore } from '$lib/tabs.svelte';
 
@@ -21,25 +25,22 @@
 	let loading = $state(true);
 
 	// The view lives in the URL so the per-module sidebar section drives it
-	// and views stay linkable: /tasks?view=today, ?view=folder&folder=notes.
+	// and views stay linkable: /tasks?view=today, ?view=folder&folder=notes,
+	// ?view=project&project=<id>.
 	const view = $derived.by((): TaskView => {
-		const mode = page.url.searchParams.get('view') ?? 'today';
-		if (mode === 'folder') {
-			return {
-				mode: 'folder',
-				folderPath: page.url.searchParams.get('folder') ?? '',
-			};
-		}
-		if (mode === 'upcoming' || mode === 'all' || mode === 'completed') {
+		const params = page.url.searchParams;
+		const mode = params.get('view') ?? 'today';
+		if (mode === 'folder')
+			return { mode: 'folder', folderPath: params.get('folder') ?? '' };
+		if (mode === 'project')
+			return { mode: 'project', projectId: params.get('project') ?? '' };
+		if (mode === 'upcoming' || mode === 'all' || mode === 'completed')
 			return { mode };
-		}
 		return { mode: 'today' };
 	});
 
 	const projectsById = $derived(
-		Object.fromEntries(
-			tasksData.projects.map((project) => [project.id, project]),
-		),
+		new Map(tasksData.projects.map((project) => [project.id, project])),
 	);
 
 	const visibleTasks = $derived(filterTasks(tasksData.tasks, view, new Date()));
@@ -47,18 +48,20 @@
 		tasksData.tasks.find((task) => task.id === selectedId) ?? null,
 	);
 
-	function viewLabel(current: TaskView): string {
-		if (current.mode === 'folder') return current.folderPath ?? 'Folder';
-		return current.mode.charAt(0).toUpperCase() + current.mode.slice(1);
-	}
+	const viewLabel = $derived.by(() => {
+		if (view.mode === 'folder') return view.folderPath || 'Top level';
+		if (view.mode === 'project')
+			return projectsById.get(view.projectId ?? '')?.title ?? 'Project';
+		return view.mode.charAt(0).toUpperCase() + view.mode.slice(1);
+	});
 
-	function projectLabel(
-		properties: Record<string, unknown> | undefined,
-	): string {
+	function projectLabel(task: Task): string {
 		const projectId =
-			typeof properties?.project === 'string' ? properties.project : '';
-		if (!projectId) return '';
-		return projectsById[projectId]?.title ?? projectId;
+			typeof task.properties?.project === 'string'
+				? task.properties.project
+				: '';
+		if (!projectId || view.mode === 'project') return '';
+		return projectsById.get(projectId)?.title ?? '';
 	}
 
 	function adoptSelection(task: Task) {
@@ -82,20 +85,33 @@
 
 	async function toggleDone(task: Task) {
 		const done = isDone(task);
-		await getNouraClient().tasks[done ? 'reopen' : 'complete']({
-			id: task.id,
-			expectedRevision: task.revision ?? '',
-		});
+		try {
+			await getNouraClient().tasks[done ? 'reopen' : 'complete']({
+				id: task.id,
+				expectedRevision: task.revision ?? '',
+			});
+		} catch {
+			toast.error('Could not update the task', {
+				description: 'It changed elsewhere. Showing the latest version.',
+			});
+		}
 		await tasksData.load();
 	}
 
 	async function create() {
 		if (!(await flushPendingDrafts())) return;
-		const result = await getNouraClient().tasks.create({ title: 'New task' });
+		const properties =
+			view.mode === 'project' && view.projectId
+				? { project: view.projectId }
+				: undefined;
+		const result = await getNouraClient().tasks.create({
+			title: 'New task',
+			...(properties ? { properties } : {}),
+		});
 		await tasksData.load();
 		const created = result.value as Task;
-		// Move to All so the fresh task is visible regardless of its due date.
-		if (view.mode !== 'all') {
+		// Show the new task wherever its due date would hide it.
+		if (view.mode !== 'all' && view.mode !== 'project') {
 			await goto('/tasks?view=all');
 		}
 		adoptSelection(created);
@@ -103,7 +119,6 @@
 
 	// Tree and sidebar deep links land on /tasks?selected=<id>.
 	$effect(() => {
-		if (!browser) return;
 		const requested = page.url.searchParams.get('selected');
 		if (!requested || requested === selectedId) return;
 		const requestedTask = tasksData.tasks.find((task) => task.id === requested);
@@ -117,92 +132,93 @@
 	});
 </script>
 
-<div class="flex h-full flex-col">
-	<div
-		class="flex h-14 shrink-0 items-center justify-between border-b border-border px-6"
-	>
-		<div class="min-w-0">
-			<h1 class="text-sm font-semibold">Tasks</h1>
-			<p class="truncate text-xs text-muted-foreground">
-				{viewLabel(view)} · {visibleTasks.length} shown
-			</p>
-		</div>
-		<Button size="sm" onclick={() => void create()}>
-			<Plus data-icon="inline-start" />
-			New task
-		</Button>
-	</div>
+<div class="flex min-h-0 flex-1 flex-col">
+	<PageHeader title="Tasks" description={viewLabel}>
+		{#snippet actions()}
+			<Button size="sm" onclick={() => void create()}>
+				<Plus data-icon="inline-start" />
+				New task
+			</Button>
+		{/snippet}
+	</PageHeader>
 
 	<div class="flex min-h-0 flex-1">
-		<section class="flex w-96 shrink-0 flex-col border-r border-border">
+		<section
+			class="flex w-96 shrink-0 flex-col border-r border-border"
+			aria-label="Task list"
+		>
 			{#if loading && tasksData.tasks.length === 0}
-				<div class="flex-1 animate-pulse bg-muted/40" aria-hidden="true"></div>
-			{:else if visibleTasks.length === 0}
-				<div
-					class="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground"
-				>
-					Nothing here.
+				<div class="flex flex-col gap-2 p-4" aria-hidden="true">
+					{#each [0, 1, 2, 3] as row (row)}
+						<Skeleton class="h-10 w-full" />
+					{/each}
 				</div>
+			{:else if visibleTasks.length === 0}
+				<EmptyState icon={Checks} title="No tasks here" />
 			{:else}
-				<div class="min-h-0 flex-1 overflow-y-auto">
-					<div class="divide-y divide-border/60">
-						{#each visibleTasks as task (task.id)}
-							{@const done = isDone(task)}
+				<ul class="min-h-0 flex-1 divide-y divide-border/60 overflow-y-auto">
+					{#each visibleTasks as task (task.id)}
+						{@const done = isDone(task)}
+						{@const due =
+							typeof task.properties?.due === 'string'
+								? task.properties.due
+								: ''}
+						{@const priority = task.properties?.priority}
+						{@const project = projectLabel(task)}
+						<li
+							class={cn(
+								'flex items-center gap-3 px-4 hover:bg-muted/40',
+								selectedId === task.id && 'bg-muted/60',
+							)}
+						>
+							<Checkbox
+								checked={done}
+								onCheckedChange={() => void toggleDone(task)}
+								aria-label={done
+									? `Mark ${task.title} as not done`
+									: `Mark ${task.title} as done`}
+							/>
 							<button
-								class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/40 {selectedId ===
-								task.id
-									? 'bg-muted/60'
-									: ''}"
+								type="button"
+								class="min-w-0 flex-1 py-3 text-left"
+								aria-current={selectedId === task.id ? 'true' : undefined}
 								onclick={() => select(task)}
 							>
-								<input
-									type="checkbox"
-									checked={done}
-									class="size-4 rounded border-input"
-									onclick={(event) => {
-										event.stopPropagation();
-										void toggleDone(task);
-									}}
-									aria-label="Toggle {task.title}"
-								/>
-								<div class="min-w-0 flex-1">
+								<span
+									class={cn(
+										'block truncate text-sm font-medium',
+										done && 'text-muted-foreground line-through',
+									)}>{task.title}</span
+								>
+								{#if project || due || (priority && priority !== 'medium')}
 									<span
-										class="block truncate text-sm font-medium {done
-											? 'text-muted-foreground line-through'
-											: ''}">{task.title}</span
+										class="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground"
 									>
-									{#if projectLabel(task.properties) || task.properties?.due || (task.properties?.priority && task.properties.priority !== 'medium')}
-										<div
-											class="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground"
-										>
-											{#if projectLabel(task.properties)}<span class="truncate"
-													>{projectLabel(task.properties)}</span
-												>{/if}
-											{#if task.properties?.due}<CalendarBlank
-													class="size-3 shrink-0"
-												/><span>{task.properties.due}</span>{/if}
-											{#if task.properties?.priority && task.properties.priority !== 'medium'}<Badge
-													variant="secondary"
-													class="text-xs uppercase"
-													>{task.properties.priority}</Badge
-												>{/if}
-										</div>
-									{/if}
-								</div>
+										{#if project}<span class="truncate">{project}</span>{/if}
+										{#if due}<span
+												class={cn(
+													'shrink-0',
+													!done &&
+														isOverdue(due, new Date()) &&
+														'text-destructive',
+												)}>{dueLabel(due, new Date())}</span
+											>{/if}
+										{#if priority && priority !== 'medium'}<Badge
+												variant="secondary"
+												class="capitalize">{priority}</Badge
+											>{/if}
+									</span>
+								{/if}
 							</button>
-						{/each}
-					</div>
-				</div>
+						</li>
+					{/each}
+				</ul>
 			{/if}
 		</section>
 
-		<main class="flex min-w-0 flex-1 flex-col">
+		<div class="flex min-w-0 flex-1 flex-col">
 			{#if !selected}
-				<EmptyState
-					icon={NotePencil}
-					title="Select a task"
-					description="Choose a task from the list or create a new one."
-				/>
+				<EmptyState icon={Checks} title="Select a task" />
 			{:else}
 				{#key selected.id}
 					<TaskDetail
@@ -212,6 +228,6 @@
 					/>
 				{/key}
 			{/if}
-		</main>
+		</div>
 	</div>
 </div>

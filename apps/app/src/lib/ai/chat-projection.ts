@@ -227,7 +227,35 @@ export function messageLabel(message: ChatMessage): string {
 	if (message.kind === 'tool-result')
 		return `Tool result: ${message.toolName ?? 'unknown'}`;
 	if (message.kind === 'context-summary') return 'Context summary';
-	return message.kind === 'assistant' ? 'Noura' : 'You';
+	return message.kind === 'assistant' ? 'noura' : 'You';
+}
+
+const STATUS_LABELS: Record<ChatMessage['status'], string | null> = {
+	completed: null,
+	'in-progress': 'Writing…',
+	interrupted: 'Interrupted',
+	cancelled: 'Stopped',
+	failed: 'Failed',
+};
+
+/** A short status for an unfinished message, or null once it completed. */
+export function messageStatusLabel(message: ChatMessage): string | null {
+	return STATUS_LABELS[message.status] ?? null;
+}
+
+const ERROR_TEXT: Record<string, string> = {
+	cancelled: 'You stopped this reply.',
+	'plugin-disabled': 'A plugin this reply used was turned off.',
+	'tool-failed': 'A tool failed while noura was working.',
+};
+
+/**
+ * What went wrong with a message, in plain words. Error codes are stored
+ * for diagnosis and are never shown as they are.
+ */
+export function messageErrorText(message: ChatMessage): string | null {
+	if (!message.errorCode) return null;
+	return ERROR_TEXT[message.errorCode] ?? 'This reply did not finish.';
 }
 
 export function chatTitle(message: string): string {

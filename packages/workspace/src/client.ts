@@ -138,6 +138,10 @@ export interface WorkspaceService {
 	listRecent(): Promise<
 		Array<{ path: string; name: string; workspaceId: string }>
 	>;
+	/** Remove a workspace from the recent list; its folder is untouched. */
+	forgetRecent(input: {
+		workspaceId: string;
+	}): Promise<Array<{ path: string; name: string; workspaceId: string }>>;
 	/** Open the workspace folder in the file manager. */
 	showInFolder(folder: 'root'): Promise<void>;
 	/** How an MCP client launches this app to reach the open workspace. */
@@ -629,6 +633,10 @@ export function createNouraClient(
 			current: () => transport.request('workspace_state'),
 			rebuildIndex: () => transport.request('workspace_rebuild_index'),
 			listRecent: () => transport.request('workspace_list_recent'),
+			forgetRecent: (input) =>
+				transport.request('workspace_forget_recent', {
+					workspaceId: input.workspaceId,
+				}),
 			showInFolder: (folder) =>
 				transport.request('workspace_show_in_folder', { input: { folder } }),
 			mcpConnection: () => transport.request('mcp_connection'),

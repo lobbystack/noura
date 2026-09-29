@@ -397,15 +397,27 @@ fn save_recent(app: &AppHandle, workspace: &WorkspaceEngine) -> Result<(), CoreE
         },
     );
     values.truncate(20);
-    let bytes = serde_json::to_vec_pretty(&values).map_err(|_| {
+    write_recent(&path, &values)
+}
+
+fn write_recent(path: &Path, values: &[RecentWorkspace]) -> Result<(), CoreError> {
+    let bytes = serde_json::to_vec_pretty(values).map_err(|_| {
         CoreError::validation(
             "recent_serialize_failed",
             "Recent workspaces could not be saved",
             "workspace_recent",
         )
     })?;
-    std::fs::write(&path, bytes)
+    std::fs::write(path, bytes)
         .map_err(|error| CoreError::io(error, "workspace_recent", path.to_str()))
+}
+
+/// The recent list without one workspace. The workspace folder is untouched.
+fn without_recent(values: Vec<RecentWorkspace>, workspace_id: &str) -> Vec<RecentWorkspace> {
+    values
+        .into_iter()
+        .filter(|value| value.workspace_id != workspace_id)
+        .collect()
 }
 
 #[tauri::command]
@@ -570,6 +582,18 @@ fn plugin_state_delete(
 #[tauri::command]
 fn workspace_list_recent(app: AppHandle) -> Vec<RecentWorkspace> {
     load_recent(&app)
+}
+#[tauri::command(async)]
+fn workspace_forget_recent(
+    app: AppHandle,
+    workspace_id: String,
+) -> Result<Vec<RecentWorkspace>, CoreError> {
+    let path = recent_path(&app)?;
+    let values = without_recent(load_recent(&app), &workspace_id);
+    if path.exists() {
+        write_recent(&path, &values)?;
+    }
+    Ok(values)
 }
 #[tauri::command]
 async fn workspace_pick_folder(app: AppHandle, title: String) -> Result<Option<String>, CoreError> {
@@ -1592,6 +1616,7 @@ pub fn run() {
             workspace_state,
             workspace_rebuild_index,
             workspace_list_recent,
+            workspace_forget_recent,
             workspace_pick_folder,
             manifest_read,
             manifest_update,
@@ -1812,6 +1837,21 @@ mod workspace_restore_tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(engine.manifest().id, expected);
+    }
+    #[test]
+    fn forgetting_a_recent_workspace_keeps_the_others_in_order() {
+        let recent = |id: &str| RecentWorkspace {
+            path: format!("/tmp/{id}"),
+            name: id.to_owned(),
+            workspace_id: id.to_owned(),
+        };
+        let remaining = without_recent(vec![recent("a"), recent("b"), recent("c")], "b");
+        let ids: Vec<_> = remaining
+            .iter()
+            .map(|value| value.workspace_id.as_str())
+            .collect();
+        assert_eq!(ids, ["a", "c"]);
+        assert_eq!(without_recent(remaining, "missing").len(), 2);
     }
     #[test]
     fn first_launch_does_not_attempt_to_open_a_workspace() {

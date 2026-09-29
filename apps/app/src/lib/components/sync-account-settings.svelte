@@ -712,7 +712,7 @@
 
 <section
 	aria-label={section === 'account'
-		? 'Noura account'
+		? 'noura account'
 		: section === 'sync'
 			? 'Workspace synchronization'
 			: 'Workspace access'}

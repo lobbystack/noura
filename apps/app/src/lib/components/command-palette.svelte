@@ -42,7 +42,7 @@
 	);
 
 	const NAV_ENTRIES: ReadonlyArray<readonly [string, string, string | null]> = [
-		['Inbox', '/inbox', null],
+		['Home', '/inbox', null],
 		['Notes', '/notes', 'notes'],
 		['Tasks', '/tasks', 'tasks'],
 		['Calendar', '/calendar', 'calendar'],

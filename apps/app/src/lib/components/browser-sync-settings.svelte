@@ -422,7 +422,7 @@
 				downloadRecoveryKit(result.value);
 				kitPassphrase = '';
 				kitNotice =
-					'Recovery kit downloaded. It contains this browser’s device credentials; store it in an encrypted, private location. This browser kit is not the native Noura recovery format.';
+					'Recovery kit downloaded. It contains this browser’s device credentials; store it in an encrypted, private location. This browser kit is not the native noura recovery format.';
 			} catch (cause) {
 				kitError =
 					cause instanceof Error
@@ -522,7 +522,7 @@
 			nativeKitError =
 				cause instanceof Error
 					? cause.message
-					: 'That file is not a native Noura recovery kit.';
+					: 'That file is not a native noura recovery kit.';
 		}
 	}
 
@@ -555,7 +555,7 @@
 					parsed = JSON.parse(await file.text());
 				} catch {
 					nativeKitError =
-						'That file is not valid JSON. Choose the native kit exported by a Noura device.';
+						'That file is not valid JSON. Choose the native kit exported by a noura device.';
 					return;
 				}
 				const result = await value.importNativeRecoveryKit(parsed, {
@@ -626,7 +626,7 @@
 			</p>
 		{:else if status === 'unavailable'}
 			<p class="text-sm text-muted-foreground">
-				This browser does not provide the origin-private storage Noura needs to
+				This browser does not provide the origin-private storage noura needs to
 				protect a device key. Browser sync is unavailable here.
 			</p>
 		{:else}
@@ -761,7 +761,7 @@
 							credentials. It restores the same device identity, so it can
 							restore sync access on another browser. Treat it as a secret:
 							store it only in an encrypted, private location. This browser kit
-							format is not interchangeable with the native Noura recovery
+							format is not interchangeable with the native noura recovery
 							format.
 						</p>
 
@@ -873,7 +873,7 @@
 					<div class="flex flex-col gap-3 rounded-xl border p-4">
 						<h5 class="text-xs font-medium">Import a native recovery kit</h5>
 						<p class="text-xs text-muted-foreground">
-							This recovers object keys from a native Noura
+							This recovers object keys from a native noura
 							<code>noura.sync.recovery</code> kit and re-wraps them to this browser
 							device. It is not the browser kit above. The recovery identity is sensitive:
 							it is used only in this tab and is never stored or uploaded.
@@ -897,7 +897,7 @@
 								{#if nativeKitFile}
 									Selected {nativeKitFile.name}.
 								{:else}
-									Choose the JSON native recovery kit exported by a native Noura
+									Choose the JSON native recovery kit exported by a native noura
 									device.
 								{/if}
 							</p>

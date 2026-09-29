@@ -1,6 +1,5 @@
-import { browser } from '$app/environment';
 import type { Project, Task } from '@noura/workspace';
-import { LiveProjection } from './live-refresh';
+import { LiveProjection, objectTypeEvents } from './live-refresh';
 import { getNouraClient, workspace } from './state.svelte';
 
 /**
@@ -17,11 +16,13 @@ class TasksDataStore {
 	#loadSequence = 0;
 
 	async start(): Promise<void> {
-		if (!browser) return;
 		this.#projection ??= new LiveProjection({
 			refresh: () => this.load(),
 			subscribe: (handler) => getNouraClient().events.subscribe(handler),
 			workspaceId: () => workspace.state?.workspaceId,
+			// This store stays subscribed after the tasks page closes, so a
+			// note autosave elsewhere must not reload every task.
+			events: objectTypeEvents(['task', 'project']),
 			focusSource: window,
 			visibilitySource: document,
 		});
@@ -29,7 +30,6 @@ class TasksDataStore {
 	}
 
 	async load(): Promise<void> {
-		if (!browser) return;
 		const sequence = ++this.#loadSequence;
 		const workspaceId = workspace.state?.workspaceId;
 		this.loading = true;

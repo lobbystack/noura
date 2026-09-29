@@ -1,10 +1,12 @@
 import type { Task, TaskPriority } from '@noura/workspace';
 
-export type TaskViewId = 'today' | 'upcoming' | 'all' | 'completed' | 'folder';
+export type TaskViewId =
+	'today' | 'upcoming' | 'all' | 'completed' | 'folder' | 'project';
 
 export interface TaskView {
 	mode: TaskViewId;
 	folderPath?: string;
+	projectId?: string;
 }
 
 function dueDate(task: Task): string | null {
@@ -49,6 +51,10 @@ export function taskIsUpcoming(task: Task, now: Date): boolean {
 	return time !== null && time > endOfDay(now);
 }
 
+export function taskInProject(task: Task, projectId: string): boolean {
+	return task.properties?.project === projectId;
+}
+
 export function taskInFolder(task: Task, folderPath: string): boolean {
 	const normalized = folderPath.replace(/\/+$/, '');
 	return task.relativePath.startsWith(normalized + '/');
@@ -65,6 +71,10 @@ export function filterTasks(tasks: Task[], view: TaskView, now: Date): Task[] {
 	} else if (view.mode === 'folder') {
 		selected = tasks.filter((entry) =>
 			taskInFolder(entry, view.folderPath ?? ''),
+		);
+	} else if (view.mode === 'project') {
+		selected = tasks.filter((entry) =>
+			taskInProject(entry, view.projectId ?? ''),
 		);
 	}
 	return orderTasks(selected);
