@@ -157,7 +157,7 @@ test.describe('finding files', () => {
 		]);
 	});
 
-	test.fixme('quick open opens again right after opening a file', async ({
+	test('quick open opens again right after opening a file', async ({
 		app,
 		page,
 	}) => {
@@ -176,10 +176,7 @@ test.describe('finding files', () => {
 		}
 	});
 
-	test.fixme('a shortcut pressed twice quickly runs twice', async ({
-		app,
-		page,
-	}) => {
+	test('a shortcut pressed twice quickly runs twice', async ({ app, page }) => {
 		await writeNote(app, 'One', '1');
 		await writeNote(app, 'Two', '2');
 		await writeNote(app, 'Three', '3');

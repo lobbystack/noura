@@ -52,6 +52,26 @@ export function shortcutCommand(
 	return GO_TO[key] ?? null;
 }
 
+/** Where a command came from: a key press or the macOS menu bar. */
+export type ShortcutSource = 'key' | 'menu';
+
+/**
+ * On a Mac the menu bar and the key press can both report one shortcut.
+ * The returned check lets the second report of a pair through only when it
+ * comes from the same source, so pressing a shortcut twice quickly (Cmd-W
+ * to close two tabs) still runs it twice.
+ */
+export function shortcutOnce(windowMs = 300) {
+	const last = new Map<string, { at: number; source: ShortcutSource }>();
+	return (command: string, source: ShortcutSource, now: number): boolean => {
+		const previous = last.get(command);
+		if (previous && previous.source !== source && now - previous.at < windowMs)
+			return false;
+		last.set(command, { at: now, source });
+		return true;
+	};
+}
+
 /** Shortcuts as listed in Settings, in the order they are shown. */
 export const APP_SHORTCUTS: ReadonlyArray<{
 	label: string;
