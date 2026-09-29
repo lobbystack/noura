@@ -1,7 +1,7 @@
-import { browser } from '$app/environment';
-import type { WorkspaceState } from '@noura/workspace';
+import type { Diagnostic, WorkspaceState } from '@noura/workspace';
 import { createNouraClient, createTauriTransport } from '@noura/workspace';
 import { AppPluginRuntime } from './app-plugin-runtime';
+import { shareEventSubscription } from './live-refresh';
 import { getAppPlatform } from './platform';
 
 let client: ReturnType<typeof createNouraClient> | null = null;
@@ -28,9 +28,15 @@ export function getNouraClient() {
 		);
 	if (getAppPlatform() === 'web')
 		throw new Error(
-			'Local workspaces are not available in the web browser. Open Noura in the native app.',
+			'Local workspaces are not available in the web browser. Open noura in the desktop app.',
 		);
-	if (!client) client = createNouraClient(createTauriTransport());
+	if (!client) {
+		const transport = createTauriTransport();
+		client = createNouraClient({
+			...transport,
+			subscribe: shareEventSubscription(transport.subscribe),
+		});
+	}
 	return client;
 }
 
@@ -45,8 +51,28 @@ export function getPluginRuntime(): AppPluginRuntime {
 	return pluginRuntime;
 }
 
+/** Phases in which the engine is still opening or rebuilding a workspace. */
+const TRANSITIONAL_PHASES = new Set<WorkspaceState['phase']>([
+	'opening',
+	'scanning',
+	'indexing',
+	'rebuilding',
+]);
+const SETTLED_PHASES = new Set<WorkspaceState['phase']>([
+	'ready',
+	'idle',
+	'failed',
+]);
+/** Workspace lifecycle events that can change what `workspace_state` returns. */
+const LIFECYCLE_EVENTS = new Set([
+	'workspace:ready',
+	'workspace:closed',
+	'workspace:failed',
+]);
+const TRANSITION_POLL_MS = 400;
+
 class WorkspaceStore {
-	private data = $state<WorkspaceState | null>(null);
+	private data = $state.raw<WorkspaceState | null>(null);
 	private loadingState = $state(false);
 	private errorMessage = $state<string | null>(null);
 	private ready = $state(false);
@@ -54,6 +80,10 @@ class WorkspaceStore {
 	/** The newest workspace action owns the visible projection. */
 	#requestSequence = 0;
 	#recentRequestSequence = 0;
+	/** User actions in flight. Lifecycle events are ignored meanwhile: the
+	 * action's own result is newer than anything a refresh could read. */
+	#actions = 0;
+	#pollTimer: ReturnType<typeof setTimeout> | undefined;
 
 	get state() {
 		return this.data;
@@ -64,8 +94,12 @@ class WorkspaceStore {
 	get isIdle() {
 		return this.data?.phase === 'idle';
 	}
+	/** True while an action runs or the engine is still opening a workspace. */
 	get isLoading() {
-		return this.loadingState;
+		return (
+			this.loadingState ||
+			(this.data !== null && TRANSITIONAL_PHASES.has(this.data.phase))
+		);
 	}
 	get error() {
 		return this.errorMessage;
@@ -75,6 +109,15 @@ class WorkspaceStore {
 	}
 	get recents() {
 		return this.recentItems;
+	}
+	/**
+	 * Changes only when the workspace settles into another phase or ID.
+	 * Effects key on this instead of `state`, which is replaced on every read.
+	 */
+	get settledKey(): string | null {
+		const data = this.data;
+		if (!data || !SETTLED_PHASES.has(data.phase)) return null;
+		return `${data.phase}:${data.workspaceId ?? ''}`;
 	}
 	get name() {
 		const workspaceId = this.data?.workspaceId;
@@ -86,27 +129,35 @@ class WorkspaceStore {
 		const rootPath = this.data?.rootPath;
 		if (rootPath) {
 			const segments = rootPath.split(/[\\/]/).filter(Boolean);
-			return segments.at(-1) ?? 'Noura';
+			return segments.at(-1) ?? 'noura';
 		}
 
-		return 'Noura';
+		return 'noura';
 	}
 
 	async init() {
 		if (this.ready) return;
 		this.ready = true;
-		await this.refresh();
-		await this.refreshRecents();
+		// Subscribe before the first read so a workspace that finishes opening
+		// in the background cannot slip between the read and the listener.
+		try {
+			await getNouraClient().events.subscribe((event) => {
+				if (LIFECYCLE_EVENTS.has(event.type) && this.#actions === 0)
+					void this.refresh();
+			});
+		} catch {
+			// The transition poll in #adopt still settles the state.
+		}
+		await Promise.all([this.refresh(), this.refreshRecents()]);
 	}
 
 	async refresh() {
-		if (!browser) return;
 		const requestSequence = ++this.#requestSequence;
 		try {
 			this.loadingState = true;
 			this.errorMessage = null;
 			const data = await getNouraClient().workspaces.current();
-			if (requestSequence === this.#requestSequence) this.data = data;
+			if (requestSequence === this.#requestSequence) this.#adopt(data);
 		} catch (error) {
 			if (requestSequence === this.#requestSequence)
 				this.errorMessage = errorMessage(error);
@@ -116,7 +167,6 @@ class WorkspaceStore {
 	}
 
 	async refreshRecents() {
-		if (!browser) return;
 		const requestSequence = ++this.#recentRequestSequence;
 		try {
 			const recents = await getNouraClient().workspaces.listRecent();
@@ -128,101 +178,128 @@ class WorkspaceStore {
 		}
 	}
 
+	/** Remove a workspace from the recent list. Its folder stays as it is. */
+	async forgetRecent(workspaceId: string) {
+		const requestSequence = ++this.#recentRequestSequence;
+		const recents = await getNouraClient().workspaces.forgetRecent({
+			workspaceId,
+		});
+		if (requestSequence === this.#recentRequestSequence)
+			this.recentItems = recents;
+	}
+
+	/** Show the open workspace's folder in the system file manager. */
+	async reveal() {
+		await getNouraClient().workspaces.showInFolder('root');
+	}
+
+	/** Open the failed or last used workspace again. */
+	async retry() {
+		const path = this.data?.rootPath ?? this.recentItems[0]?.path;
+		if (path) await this.open(path);
+		else await this.refresh();
+	}
+
 	async open(path: string): Promise<boolean> {
-		const requestSequence = ++this.#requestSequence;
-		this.loadingState = true;
-		this.errorMessage = null;
-		try {
+		return this.#run(async (isCurrent) => {
 			const data = await getNouraClient().workspaces.open({ path });
-			if (requestSequence !== this.#requestSequence) return false;
-			this.data = data;
-			await this.refreshRecents();
+			if (!isCurrent()) return false;
+			this.#adopt(data);
+			void this.refreshRecents();
 			return true;
-		} catch (error) {
-			if (requestSequence === this.#requestSequence)
-				this.errorMessage = errorMessage(error);
-			return false;
-		} finally {
-			if (requestSequence === this.#requestSequence) this.loadingState = false;
-		}
+		}, false);
 	}
 
 	async pickAndOpen() {
-		const requestSequence = ++this.#requestSequence;
-		this.loadingState = true;
-		this.errorMessage = null;
-		try {
+		await this.#run(async (isCurrent) => {
 			const path = await getNouraClient().workspaces.pickFolder({
-				title: 'Open a Noura workspace',
+				title: 'Open a folder',
 			});
-			if (!path || requestSequence !== this.#requestSequence) return;
+			if (!path || !isCurrent()) return;
 			const data = await getNouraClient().workspaces.open({ path });
-			if (requestSequence === this.#requestSequence) {
-				this.data = data;
-				await this.refreshRecents();
-			}
-		} catch (error) {
-			if (requestSequence === this.#requestSequence)
-				this.errorMessage = errorMessage(error);
-		} finally {
-			if (requestSequence === this.#requestSequence) this.loadingState = false;
-		}
+			if (!isCurrent()) return;
+			this.#adopt(data);
+			void this.refreshRecents();
+		}, undefined);
 	}
 
 	async create(path: string, name: string) {
-		const requestSequence = ++this.#requestSequence;
-		this.loadingState = true;
-		this.errorMessage = null;
-		try {
+		await this.#run(async (isCurrent) => {
 			const data = await getNouraClient().workspaces.create({ path, name });
-			if (requestSequence === this.#requestSequence) {
-				this.data = data;
-				await this.refreshRecents();
-			}
-		} catch (error) {
-			if (requestSequence === this.#requestSequence)
-				this.errorMessage = errorMessage(error);
-		} finally {
-			if (requestSequence === this.#requestSequence) this.loadingState = false;
-		}
+			if (!isCurrent()) return;
+			this.#adopt(data);
+			void this.refreshRecents();
+		}, undefined);
 	}
 
 	async pickAndCreate(name: string) {
+		await this.#run(async (isCurrent) => {
+			const path = await getNouraClient().workspaces.pickFolder({
+				title: 'Choose a folder for the new workspace',
+			});
+			if (!path || !isCurrent()) return;
+			const data = await getNouraClient().workspaces.create({ path, name });
+			if (!isCurrent()) return;
+			this.#adopt(data);
+			void this.refreshRecents();
+		}, undefined);
+	}
+
+	/** Runs a user action as the newest owner of the visible projection. */
+	async #run<T>(
+		action: (isCurrent: () => boolean) => Promise<T>,
+		fallback: T,
+	): Promise<T> {
 		const requestSequence = ++this.#requestSequence;
+		const isCurrent = () => requestSequence === this.#requestSequence;
+		this.#actions += 1;
 		this.loadingState = true;
 		this.errorMessage = null;
 		try {
-			const path = await getNouraClient().workspaces.pickFolder({
-				title: 'Choose or create a workspace folder',
-			});
-			if (!path || requestSequence !== this.#requestSequence) return;
-			const data = await getNouraClient().workspaces.create({ path, name });
-			if (requestSequence === this.#requestSequence) {
-				this.data = data;
-				await this.refreshRecents();
-			}
+			return await action(isCurrent);
 		} catch (error) {
-			if (requestSequence === this.#requestSequence)
-				this.errorMessage = errorMessage(error);
+			if (isCurrent()) this.errorMessage = errorMessage(error);
+			return fallback;
 		} finally {
-			if (requestSequence === this.#requestSequence) this.loadingState = false;
+			this.#actions -= 1;
+			if (isCurrent()) this.loadingState = false;
 		}
+	}
+
+	#adopt(data: WorkspaceState) {
+		this.data = data;
+		diagnostics.adopt(data);
+		clearTimeout(this.#pollTimer);
+		// A background open reports progress through events. Poll as well, so
+		// a missed event can never leave the loading screen up.
+		if (TRANSITIONAL_PHASES.has(data.phase))
+			this.#pollTimer = setTimeout(() => {
+				if (this.#actions === 0) void this.refresh();
+			}, TRANSITION_POLL_MS);
 	}
 }
 
 export const workspace = new WorkspaceStore();
 
+/**
+ * Workspace diagnostics for the Home page. They are read on their own, so
+ * refreshing them never replaces `workspace.state`.
+ */
 class DiagnosticsStore {
-	async refresh() {
-		if (!browser) return;
-		await workspace.refresh();
-	}
+	private items = $state.raw<Diagnostic[]>([]);
 
 	get issues() {
-		return workspace.state?.diagnostics ?? [];
+		return this.items;
 	}
-	get all() {
-		return workspace.state?.diagnostics ?? [];
+
+	adopt(data: WorkspaceState) {
+		this.items = data.diagnostics;
+	}
+
+	async refresh() {
+		const data = await getNouraClient().workspaces.current();
+		if (data.workspaceId === workspace.state?.workspaceId)
+			this.items = data.diagnostics;
 	}
 }
 

@@ -1,53 +1,155 @@
 <script lang="ts">
+	import { onMount, type Component, type Snippet } from 'svelte';
 	import { ModeWatcher } from 'mode-watcher';
-	import { SettingsDialog, setSettingsDialog } from '$lib/settings.svelte';
-	import SettingsModal from '$lib/components/settings/settings-dialog.svelte';
-	const settingsDialog = new SettingsDialog();
-	setSettingsDialog(settingsDialog);
-	import { RouteSidebar, setRouteSidebar } from '$lib/route-sidebar.svelte';
-	setRouteSidebar(new RouteSidebar());
-	import TabsBar from '$lib/components/tabs-bar.svelte';
-	import { tabsStore } from '$lib/tabs.svelte';
-	import AppRail from '$lib/components/app-rail.svelte';
-	import AppSidebar from '$lib/components/app-sidebar.svelte';
-	import WorkspaceSwitcher from '$lib/components/workspace-switcher.svelte';
-	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
-	import { workspace, getNouraClient } from '$lib/state.svelte';
-	import { getAppPlatform } from '$lib/platform';
-	import { aiChats } from '$lib/ai/chat-store.svelte';
-	import { sidebarModuleFor } from '$lib/sidebar-modules';
-	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
-	import {
-		flushPendingDrafts,
-		hasPendingDrafts,
-	} from '$lib/editor/pending-drafts.svelte';
-	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
-	import { beforeNavigate, goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { beforeNavigate, goto, preloadCode } from '$app/navigation';
+	import { page } from '$app/state';
 	import {
 		createTauriHostLifecycle,
 		installPendingDraftCloseGuard,
 	} from '@noura/workspace';
-	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
-	import * as Empty from '$lib/components/ui/empty/index.js';
-	import { Button } from '$lib/components/ui/button/index.js';
-	import { Toaster } from '$lib/components/ui/sonner/index.js';
-	import { Spinner } from '$lib/components/ui/spinner/index.js';
-	import CommandPalette from '$lib/components/command-palette.svelte';
-	import AppUpdateNotice from '$lib/components/app-update-notice.svelte';
+	import { SettingsDialog, setSettingsDialog } from '$lib/settings.svelte';
+	import { RouteSidebar, setRouteSidebar } from '$lib/route-sidebar.svelte';
+	import { commandPalette } from '$lib/command-palette.svelte';
+	import { tabsStore } from '$lib/tabs.svelte';
+	import { workspace, getNouraClient } from '$lib/state.svelte';
+	import { sidebarModuleFor } from '$lib/sidebar-modules';
+	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
+	import { FILES_ROUTE } from '$lib/navigation-targets';
+	import { whenIdle } from '$lib/idle';
+	import {
+		flushPendingDrafts,
+		hasPendingDrafts,
+	} from '$lib/editor/pending-drafts.svelte';
 	import { AppUpdates, setAppUpdates } from '$lib/app-updates.svelte';
 	import { preferences } from '$lib/preferences.svelte';
-	import type { Snippet } from 'svelte';
+	import TabsBar from '$lib/components/tabs-bar.svelte';
+	import AppRail from '$lib/components/app-rail.svelte';
+	import AppSidebar from '$lib/components/app-sidebar.svelte';
+	import WorkspaceSwitcher from '$lib/components/workspace-switcher.svelte';
+	import WorkspaceOnboarding from '$lib/components/workspace-onboarding.svelte';
+	import WorkspaceLoading from '$lib/components/workspace-loading.svelte';
+	import AppUpdateNotice from '$lib/components/app-update-notice.svelte';
+	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import { Toaster } from '$lib/components/ui/sonner/index.js';
 
 	let { children } = $props<{ children: Snippet }>();
 
-	let allowedNavigation: string | null = null;
+	const settingsDialog = new SettingsDialog();
+	setSettingsDialog(settingsDialog);
+	setRouteSidebar(new RouteSidebar());
+	setAppUpdates(new AppUpdates());
+
+	/** How often ephemeral chats are checked for expiry while the app runs. */
+	const CHAT_EXPIRY_INTERVAL_MS = 60 * 60 * 1000;
+
+	// The settings dialog and the command palette load on first use. Neither
+	// is needed to show the workspace, and together they pull in the sync,
+	// AI and plugin settings code.
+	let SettingsModal = $state<Component | null>(null);
+	let Palette = $state<Component | null>(null);
+
+	function loadSettings() {
+		if (SettingsModal) return;
+		void import('$lib/components/settings/settings-dialog.svelte').then(
+			(module) => (SettingsModal = module.default),
+		);
+	}
+
+	function loadPalette() {
+		if (Palette) return;
+		void import('$lib/components/command-palette.svelte').then(
+			(module) => (Palette = module.default),
+		);
+	}
+
 	$effect(() => {
-		const id = workspace.state?.workspaceId;
-		tabsStore.setWorkspace(id);
+		if (settingsDialog.open) loadSettings();
+	});
+	$effect(() => {
+		if (commandPalette.open) loadPalette();
 	});
 
+	// Until a lazy component is mounted it cannot hear its own shortcut.
+	// Once it is, it owns the key and this handler stays out of the way.
+	function handleKeydown(event: KeyboardEvent) {
+		if (!(event.metaKey || event.ctrlKey) || event.repeat) return;
+		const key = event.key.toLowerCase();
+		if (key === 'k' && !Palette) {
+			event.preventDefault();
+			commandPalette.show();
+		} else if (key === ',' && !SettingsModal) {
+			event.preventDefault();
+			settingsDialog.show();
+		}
+	}
+
+	// Effects below key on these values, not on `workspace.state`, which is
+	// replaced on every read. Each runs once per workspace transition.
+	const workspaceId = $derived(workspace.state?.workspaceId);
+	const settledKey = $derived(workspace.settledKey);
+	const readyWorkspaceId = $derived(
+		workspace.isReady ? (workspace.state?.workspaceId ?? null) : null,
+	);
+
+	$effect(() => {
+		tabsStore.setWorkspace(workspaceId);
+	});
+
+	// The engine broadcasts workspace:ready before the host event bridge
+	// subscribes, so create/open flows would miss it. Reconcile plugins each
+	// time the workspace settles (ready, idle, failed) so toggles and
+	// navigation always match .noura/workspace.yaml.
+	$effect(() => {
+		if (settledKey) void plugins.sync();
+	});
+
+	// Ephemeral chats expire in the background, once per workspace and then
+	// hourly. It is housekeeping: nothing waits for it.
+	$effect(() => {
+		const id = readyWorkspaceId;
+		if (!id) return;
+		const expire = () =>
+			whenIdle(() => {
+				if (workspace.state?.workspaceId !== id) return;
+				void getNouraClient()
+					.chats.expire(new Date().toISOString())
+					.catch(() => {});
+			}, 10_000);
+		let cancel = expire();
+		const interval = setInterval(() => {
+			cancel();
+			cancel = expire();
+		}, CHAT_EXPIRY_INTERVAL_MS);
+		return () => {
+			cancel();
+			clearInterval(interval);
+		};
+	});
+
+	// Once the workspace shows, fetch the editor while the app is idle so the
+	// first file opens without waiting for it.
+	$effect(() => {
+		if (!readyWorkspaceId) return;
+		return whenIdle(() => {
+			void preloadCode(FILES_ROUTE).catch(() => {});
+			void import('@noura/editor').catch(() => {});
+		}, 5_000);
+	});
+
+	// Turned-off modules genuinely simplify the workspace: routes backed by a
+	// disabled plugin fall back to Home instead of rendering a dead surface.
+	$effect(() => {
+		if (!plugins.synced) return;
+		const path = page.url.pathname;
+		for (const [pluginId, route] of PLUGIN_ROUTES) {
+			if (path.startsWith(route) && !plugins.isEnabled(pluginId)) {
+				void goto('/inbox', { replaceState: true });
+				return;
+			}
+		}
+	});
+
+	let allowedNavigation: string | null = null;
 	beforeNavigate((navigation) => {
 		const destination = navigation.to?.url;
 		if (destination?.href === allowedNavigation) {
@@ -65,49 +167,12 @@
 		});
 	});
 
-	// Turned-off modules genuinely simplify the workspace: routes backed by a
-	// disabled plugin fall back to the inbox dashboard instead of rendering a
-	// dead surface.
-	$effect(() => {
-		if (!browser || !plugins.synced) return;
-		const path = $page.url.pathname;
-		for (const [pluginId, route] of PLUGIN_ROUTES) {
-			if (path.startsWith(route) && !plugins.isEnabled(pluginId)) {
-				void goto('/inbox', { replaceState: true });
-				return;
-			}
-		}
-	});
-
-	// The engine broadcasts workspace:ready before the host event bridge
-	// subscribes, so create/open flows would miss it. Reconcile plugins from
-	// the reactive workspace state on every settle (ready, idle, failed) so
-	// toggles and navigation always match .noura/workspace.yaml.
-	$effect(() => {
-		if (!browser) return;
-		const phase = workspace.state?.phase;
-		if (phase === 'ready' || phase === 'idle' || phase === 'failed')
-			void plugins.sync();
-	});
-
-	// AI providers are global, while chats are workspace-scoped. Reconcile both
-	// projections from settled workspace state in case the host event bridge
-	// subscribed after a workspace transition.
-	$effect(() => {
-		if (!browser) return;
-		const phase = workspace.state?.phase;
-		if (phase === 'ready' || phase === 'idle' || phase === 'failed')
-			void aiChats.refresh();
-	});
-
 	// Modules own their sidebar: routes with a contributing module get one
 	// (workspace name plus that module's section); everything else renders
-	// full-width — a module can simply opt out.
+	// full-width, so a module can simply opt out.
 	const showSidebar = $derived(
-		sidebarModuleFor($page.url.pathname, new Set(plugins.activeIds)) !== null,
+		sidebarModuleFor(page.url.pathname, new Set(plugins.activeIds)) !== null,
 	);
-
-	setAppUpdates(new AppUpdates());
 
 	onMount(() => {
 		let returnCount = 0;
@@ -121,18 +186,15 @@
 		void signIn.initialize();
 		let disposed = false;
 		let unlistenClose: (() => void) | undefined;
-		if (browser) {
-			void workspace.init();
-			void plugins.init();
-			void aiChats.init();
-			void installPendingDraftCloseGuard(
-				createTauriHostLifecycle(),
-				flushPendingDrafts,
-			).then((unlisten) => {
-				if (disposed) unlisten();
-				else unlistenClose = unlisten;
-			});
-		}
+		void workspace.init();
+		void plugins.init();
+		void installPendingDraftCloseGuard(
+			createTauriHostLifecycle(),
+			flushPendingDrafts,
+		).then((unlisten) => {
+			if (disposed) unlisten();
+			else unlistenClose = unlisten;
+		});
 		return () => {
 			disposed = true;
 			unsubscribeSignIn();
@@ -147,6 +209,8 @@
 	<title>{workspace.name}</title>
 </svelte:head>
 
+<svelte:window onkeydown={handleKeydown} />
+
 <div
 	class="flex h-svh min-h-0 flex-col overflow-hidden"
 	style:--content-text-size={preferences.textSizeValue}
@@ -156,7 +220,7 @@
 		class="flex h-(--app-titlebar-height) shrink-0 items-center border-b border-sidebar-border bg-sidebar"
 		data-tauri-drag-region
 	>
-		{#if !showSidebar}
+		{#if workspace.isReady && !showSidebar}
 			<div
 				class="ml-14 flex h-full w-56 shrink-0 items-center pr-2 pl-6"
 				data-tauri-drag-region
@@ -166,7 +230,7 @@
 		{/if}
 	</header>
 
-	{#if browser && workspace.isReady}
+	{#if workspace.isReady}
 		<Sidebar.Provider
 			class="min-h-0 flex-1 overflow-hidden"
 			style="--sidebar-width: 14rem;"
@@ -179,38 +243,23 @@
 				<TabsBar />
 				{@render children()}
 			</main>
-			<CommandPalette />
+			{#if Palette}
+				<Palette />
+			{/if}
 		</Sidebar.Provider>
-	{:else if !browser || !workspace.initialized || workspace.isLoading}
-		<div class="flex min-h-0 flex-1 items-center justify-center">
-			<div class="flex flex-col items-center gap-3">
-				<Spinner class="size-6" />
-				<p class="text-sm text-muted-foreground">Loading workspace…</p>
-			</div>
-		</div>
+	{:else if !workspace.initialized || workspace.isLoading}
+		<WorkspaceLoading />
 	{:else if workspace.isIdle}
 		<WorkspaceOnboarding />
 	{:else}
-		<Empty.Root class="min-h-0">
-			<Empty.Header>
-				<Empty.Title>Workspace unavailable</Empty.Title>
-				<Empty.Description
-					>{workspace.error ??
-						'Noura could not read the current workspace state.'}</Empty.Description
-				>
-			</Empty.Header>
-			<Empty.Content>
-				{#if getAppPlatform() && getAppPlatform() !== 'web'}
-					<Button onclick={() => workspace.refresh()}>Retry</Button>
-				{/if}
-				<Button variant="outline" onclick={() => settingsDialog.show()}
-					>Settings</Button
-				>
-			</Empty.Content>
-		</Empty.Root>
+		<WorkspaceOnboarding
+			problem={workspace.error ?? 'The workspace folder can’t be read.'}
+		/>
 	{/if}
 </div>
 
-<SettingsModal />
+{#if SettingsModal}
+	<SettingsModal />
+{/if}
 <Toaster />
 <AppUpdateNotice />

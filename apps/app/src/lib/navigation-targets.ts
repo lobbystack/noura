@@ -1,5 +1,8 @@
 import type { SearchResult } from '@noura/workspace';
 
+/** The route that opens Markdown and text files. */
+export const FILES_ROUTE = '/notes';
+
 export interface NavigationTarget {
 	route: string;
 	pluginId: string;
@@ -10,7 +13,7 @@ const TARGETS_BY_TYPE: Record<
 	string,
 	Pick<NavigationTarget, 'route' | 'pluginId'>
 > = {
-	note: { route: '/notes', pluginId: 'notes' },
+	note: { route: FILES_ROUTE, pluginId: 'notes' },
 	task: { route: '/tasks', pluginId: 'tasks' },
 	project: { route: '/projects', pluginId: 'projects' },
 };
@@ -30,12 +33,32 @@ export function searchResultTarget(
 	if (!result.objectId && !result.objectType) {
 		// Idless Markdown rows (unmanaged or malformed) search as raw content.
 		return {
-			route: '/notes',
+			route: FILES_ROUTE,
 			pluginId: 'notes',
 			query: { raw: result.relativePath },
 		};
 	}
 	return null;
+}
+
+/** Where a workspace object opens, or null for types without a page. */
+export function objectHref(
+	objectType: string,
+	objectId: string,
+): string | null {
+	const target = TARGETS_BY_TYPE[objectType];
+	return target
+		? navigationHref({ ...target, query: { selected: objectId } })
+		: null;
+}
+
+/** Opens a file by its workspace-relative path in the file editor. */
+export function fileHref(relativePath: string): string {
+	return navigationHref({
+		route: FILES_ROUTE,
+		pluginId: 'notes',
+		query: { raw: relativePath },
+	});
 }
 
 export function navigationHref(target: NavigationTarget): string {

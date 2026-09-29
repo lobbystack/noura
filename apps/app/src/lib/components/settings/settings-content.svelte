@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { tick, type Component } from 'svelte';
-	import { getSettingsDialog } from '$lib/settings.svelte';
+	import {
+		getSettingsDialog,
+		type SettingsSection as Section,
+	} from '$lib/settings.svelte';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { cn } from '$lib/utils';
@@ -32,19 +35,6 @@
 	const settings = getSettingsDialog();
 	const desktop = getAppPlatform() === 'desktop';
 
-	type Section =
-		| 'general'
-		| 'editor'
-		| 'shortcuts'
-		| 'account'
-		| 'workspace'
-		| 'plugins'
-		| 'ai'
-		| 'external-tools'
-		| 'sync'
-		| 'people'
-		| 'files'
-		| 'about';
 	type Entry = {
 		id: Section;
 		label: string;
@@ -68,8 +58,6 @@
 				{
 					id: 'editor',
 					label: 'Editor',
-					description:
-						'These settings apply to every workspace on this computer.',
 					icon: TextAa,
 					keywords: 'text size font line width spelling spellcheck',
 				},
