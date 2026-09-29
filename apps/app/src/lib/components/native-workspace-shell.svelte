@@ -17,10 +17,8 @@
 	import { aiChats } from '$lib/ai/chat-store.svelte';
 	import { sidebarModuleFor } from '$lib/sidebar-modules';
 	import { plugins, PLUGIN_ROUTES } from '$lib/plugins.svelte';
-	import {
-		flushPendingDrafts,
-		hasPendingDrafts,
-	} from '$lib/editor/pending-drafts.svelte';
+	import { hasPendingDrafts } from '$lib/editor/pending-drafts.svelte';
+	import { saveBeforeLeaving } from '$lib/editor/unsaved-changes';
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { beforeNavigate, goto } from '$app/navigation';
@@ -56,13 +54,14 @@
 		}
 		if (!hasPendingDrafts()) return;
 		navigation.cancel();
-		void flushPendingDrafts().then((saved) => {
-			if (!saved || !destination) return;
+		const proceed = () => {
+			if (!destination) return;
 			allowedNavigation = destination.href;
 			void goto(destination, {
 				replaceState: navigation.type === 'popstate',
 			});
-		});
+		};
+		void saveBeforeLeaving(proceed).then((saved) => saved && proceed());
 	});
 
 	// Turned-off modules genuinely simplify the workspace: routes backed by a
@@ -125,9 +124,9 @@
 			void workspace.init();
 			void plugins.init();
 			void aiChats.init();
-			void installPendingDraftCloseGuard(
-				createTauriHostLifecycle(),
-				flushPendingDrafts,
+			const host = createTauriHostLifecycle();
+			void installPendingDraftCloseGuard(host, () =>
+				saveBeforeLeaving(() => host.forceClose()),
 			).then((unlisten) => {
 				if (disposed) unlisten();
 				else unlistenClose = unlisten;
