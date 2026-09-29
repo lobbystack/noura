@@ -4,13 +4,10 @@
 	import { workspaceTree } from '$lib/workspace-tree.svelte';
 	import { findTreeNode } from '$lib/workspace-tree';
 	import type { UnmanagedFile } from '@noura/workspace';
-	import { plugins } from '$lib/plugins.svelte';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
 	import NoteEditor from '$lib/components/note-editor.svelte';
 	import RawMarkdownEditor from '$lib/components/raw-markdown-editor.svelte';
-	import { Button } from '$lib/components/ui/button/index.js';
-	import Plus from 'phosphor-svelte/lib/Plus';
 	import { browser } from '$app/environment';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -88,8 +85,8 @@
 		tabsStore.open(`raw:${file.relativePath}`, 'markdown', file.title);
 	}
 
-	// Selection is URL-driven: /notes?selected=<id> or /notes?raw=<path>.
-	// Plain /notes keeps whatever is already open, like any editor surface.
+	// Selection is URL-driven: /files?selected=<id> or /files?raw=<path>.
+	// Plain /files keeps whatever is already open, like any editor surface.
 	afterNavigate(() => {
 		if (!browser) return;
 		const params = $page.url.searchParams;
@@ -138,20 +135,6 @@
 		})();
 	});
 
-	async function create() {
-		if (!(await flushPendingDrafts())) return;
-		try {
-			const res = await getNouraClient().notes.create({ title: 'Untitled' });
-			if (res.value) {
-				await select(res.value as Note, { isNew: true });
-			}
-		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : 'Could not create the note',
-			);
-		}
-	}
-
 	function handleSaved(updated: Note) {
 		selected = updated;
 		tabsStore.renameObject(updated.id, updated.title);
@@ -180,18 +163,6 @@
 </script>
 
 <div class="flex h-full flex-col">
-	<div
-		class="flex h-14 shrink-0 items-center justify-between border-b border-border px-6"
-	>
-		<h1 class="text-sm font-semibold">Notes</h1>
-		{#if plugins.isEnabled('notes')}
-			<Button size="sm" onclick={create}>
-				<Plus data-icon="inline-start" />
-				New note
-			</Button>
-		{/if}
-	</div>
-
 	<div class="flex min-h-0 flex-1 flex-col">
 		{#key selected?.id ?? `raw:${selectedRaw?.relativePath ?? ''}`}
 			{#if selectedRaw}

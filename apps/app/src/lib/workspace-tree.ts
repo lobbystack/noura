@@ -12,7 +12,7 @@ export interface WorkspaceTreeNode {
 }
 
 const ROUTES_BY_TYPE: Record<string, string> = {
-	note: '/notes',
+	note: '/files',
 	task: '/tasks',
 	project: '/projects',
 };
@@ -194,9 +194,9 @@ export function treeTargetFor(node: WorkspaceTreeNode): TreeNavigationTarget {
 		return { route: null, query: {} };
 	}
 	if (node.parseStatus === 'unmanaged' || node.parseStatus === 'malformed') {
-		return { route: '/notes', query: { raw: node.relativePath } };
+		return { route: '/files', query: { raw: node.relativePath } };
 	}
 	if (isPlainTextPath(node.relativePath))
-		return { route: '/notes', query: { raw: node.relativePath } };
+		return { route: '/files', query: { raw: node.relativePath } };
 	return { route: null, query: {} };
 }

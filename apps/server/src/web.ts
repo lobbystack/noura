@@ -11,7 +11,7 @@ export function createBrowserApp(webRoot: string) {
 	const routes = [
 		'/',
 		'/inbox',
-		'/notes',
+		'/files',
 		'/tasks',
 		'/calendar',
 		'/projects',

@@ -118,7 +118,7 @@
 			: [],
 	);
 	function draftKey(path: string) {
-		return ['/', '/inbox', '/notes'].includes(path) ? '/notes' : path;
+		return ['/', '/inbox', '/files'].includes(path) ? '/files' : path;
 	}
 	function captureDraft() {
 		return {

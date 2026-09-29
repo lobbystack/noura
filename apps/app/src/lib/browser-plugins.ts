@@ -15,7 +15,7 @@ function message(cause: unknown): string {
 export const BROWSER_ROUTE_PLUGINS = {
 	'/': 'notes',
 	'/inbox': 'notes',
-	'/notes': 'notes',
+	'/files': 'notes',
 	'/tasks': 'tasks',
 	'/projects': 'projects',
 	'/calendar': 'calendar',
@@ -28,9 +28,10 @@ export function browserRouteSupported(pathname: string): boolean {
 
 /** The plugin whose enabled state gates `pathname`. */
 export function browserRoutePlugin(pathname: string): string {
-	return pathname === '/' || pathname === '/inbox'
-		? 'notes'
-		: pathname.slice(1);
+	return (
+		BROWSER_ROUTE_PLUGINS[pathname as keyof typeof BROWSER_ROUTE_PLUGINS] ??
+		pathname.slice(1)
+	);
 }
 
 /** UI projection only. Canonical preferences and activation belong to the shared runtime. */

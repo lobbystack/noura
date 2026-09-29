@@ -57,7 +57,10 @@ export interface PluginSyncResult {
 	deactivated: Array<string>;
 	/** Enabled manifests this host intentionally cannot activate. */
 	unavailablePluginIds: Array<string>;
-	/** Verbatim from .noura/workspace.yaml; may include unknown future plugin ids. */
+	/**
+	 * The ids from .noura/workspace.yaml (which may include unknown future
+	 * plugin ids) followed by any core plugin the manifest does not list.
+	 */
 	enabledPluginIds: Array<string>;
 }
 
@@ -102,8 +105,22 @@ export class PluginRegistry {
 	}
 }
 
+/**
+ * Plugins that are part of the core app rather than optional features. Files
+ * and Markdown editing always work, so these activate whatever
+ * `enabled_plugins` says. Their ids may still appear in older manifests; that
+ * is harmless and the manifest is never rewritten to add or drop them.
+ */
+export const CORE_PLUGIN_IDS: readonly string[] = ['folders', 'notes'];
+
+export function isCorePlugin(id: string): boolean {
+	return CORE_PLUGIN_IDS.includes(id);
+}
+
 export interface PluginRuntimeOptions extends PluginHostOptions {
 	plugins?: readonly PluginDefinition[];
+	/** Plugin ids that activate regardless of the manifest. */
+	corePluginIds?: readonly string[];
 }
 
 /**
@@ -117,6 +134,7 @@ export class PluginRuntime {
 	readonly registry: PluginRegistry;
 	#client: NouraClient;
 	#plugins: readonly PluginDefinition[];
+	#corePluginIds: readonly string[];
 
 	constructor(
 		client: NouraClient,
@@ -129,6 +147,7 @@ export class PluginRuntime {
 		this.#client = client;
 		this.registry = new PluginRegistry(client);
 		this.#plugins = options.plugins ?? firstPartyPlugins;
+		this.#corePluginIds = options.corePluginIds ?? CORE_PLUGIN_IDS;
 		this.host =
 			configuredHost ??
 			new PluginHost(createPluginHostServices(client), options);
@@ -136,7 +155,10 @@ export class PluginRuntime {
 
 	async syncWithManifest(): Promise<PluginSyncResult> {
 		const manifest = await this.#client.manifest.read();
-		const enabled = new Set(manifest.enabledPlugins);
+		const enabled = new Set([
+			...manifest.enabledPlugins,
+			...this.#corePluginIds,
+		]);
 		const deactivated: Array<string> = [];
 		for (const active of this.host.activeManifests()) {
 			if (!enabled.has(active.id)) {
@@ -167,7 +189,7 @@ export class PluginRuntime {
 			activated,
 			deactivated,
 			unavailablePluginIds,
-			enabledPluginIds: manifest.enabledPlugins,
+			enabledPluginIds: [...enabled],
 		};
 	}
 

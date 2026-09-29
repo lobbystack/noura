@@ -10,7 +10,7 @@ const TARGETS_BY_TYPE: Record<
 	string,
 	Pick<NavigationTarget, 'route' | 'pluginId'>
 > = {
-	note: { route: '/notes', pluginId: 'notes' },
+	note: { route: '/files', pluginId: 'notes' },
 	task: { route: '/tasks', pluginId: 'tasks' },
 	project: { route: '/projects', pluginId: 'projects' },
 };
@@ -30,7 +30,7 @@ export function searchResultTarget(
 	if (!result.objectId && !result.objectType) {
 		// Idless Markdown rows (unmanaged or malformed) search as raw content.
 		return {
-			route: '/notes',
+			route: '/files',
 			pluginId: 'notes',
 			query: { raw: result.relativePath },
 		};

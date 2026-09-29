@@ -97,11 +97,11 @@ describe('tree navigation targets', () => {
 		const byPath = (path: string) =>
 			treeTargetFor(tree.find((node) => node.name === path)!);
 		expect(byPath('draft.md')).toEqual({
-			route: '/notes',
+			route: '/files',
 			query: { raw: 'draft.md' },
 		});
 		expect(byPath('broken.md')).toEqual({
-			route: '/notes',
+			route: '/files',
 			query: { raw: 'broken.md' },
 		});
 	});
@@ -114,7 +114,7 @@ describe('tree navigation targets', () => {
 		]);
 		for (const node of tree)
 			expect(treeTargetFor(node)).toEqual({
-				route: '/notes',
+				route: '/files',
 				query: { raw: node.relativePath },
 			});
 	});

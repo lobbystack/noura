@@ -263,7 +263,7 @@
 								<h3 class="text-sm font-medium">Recent notes</h3>
 							</div>
 							<a
-								href="/notes"
+								href="/files"
 								class="text-xs text-muted-foreground underline-offset-4 hover:underline"
 							>
 								All notes
@@ -279,7 +279,7 @@
 							{:else}
 								{#each dashboard.recentNotes as note (note.id)}
 									<a
-										href="/notes"
+										href="/files"
 										class="block px-4 py-2.5 transition-colors hover:bg-accent"
 									>
 										<span class="block truncate text-sm">{note.title}</span>
