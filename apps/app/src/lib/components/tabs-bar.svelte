@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { tabHref, tabsStore } from '$lib/tabs.svelte';
 	import { activateTab, closeTab } from '$lib/tab-actions';
+	import { onMount } from 'svelte';
 	import { lastRoute } from '$lib/last-route';
 	import { workspace } from '$lib/state.svelte';
 	import { cn } from '$lib/utils.js';
@@ -41,10 +42,16 @@
 		};
 	};
 
-	afterNavigate(({ to }) => {
-		if (!to) return;
-		const redirect = lastRoute.arrived(workspace.state?.workspaceId, to.url);
+	function arrived(url: URL) {
+		const redirect = lastRoute.arrived(workspace.state?.workspaceId, url);
 		if (redirect) void goto(redirect, { replaceState: true });
+	}
+
+	// The bar mounts once the workspace is ready, after the navigation that
+	// opened the app has finished, so it handles that page on mount.
+	onMount(() => arrived(page.url));
+	afterNavigate(({ to }) => {
+		if (to) arrived(to.url);
 	});
 
 	function focusTab(index: number) {

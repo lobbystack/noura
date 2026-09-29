@@ -1,4 +1,4 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig } from '@playwright/test';
 
 const port = Number(process.env.NOURA_E2E_PORT ?? 4317);
 const baseURL = `http://localhost:${port}`;
@@ -26,8 +26,10 @@ export default defineConfig({
 	projects: [
 		{
 			name: 'chromium',
+			// Chromium's own user agent, not a device preset: the app reads the
+			// platform to pick Cmd or Ctrl, and so does ControlOrMeta.
 			use: {
-				...devices['Desktop Chrome'],
+				browserName: 'chromium',
 				viewport: { width: 1400, height: 900 },
 			},
 		},
