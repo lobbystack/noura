@@ -51,6 +51,9 @@ jobs:
       - run: bun run check
       - run: bun test
       - run: bun run build
+      # Release builds bundle this file. Generating it here catches breakage early.
+      - name: Generate the third-party license file
+        run: bun scripts/generate-third-party-licenses.ts --out "$RUNNER_TEMP/THIRD_PARTY_LICENSES.txt" --target x86_64-unknown-linux-gnu
 
   rust:
     strategy:
