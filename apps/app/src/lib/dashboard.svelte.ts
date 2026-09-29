@@ -118,7 +118,11 @@ class DashboardStore {
 	/** Create a task through the tasks plugin command, then refresh Today. */
 	async addTask(title: string): Promise<void> {
 		if (title.trim().length === 0) return;
-		await getNouraClient().commands.execute('tasks.create', { title });
+		// Home adds tasks for today; without a due date one would not show here.
+		await getNouraClient().commands.execute('tasks.create', {
+			title,
+			properties: { due: localDate(new Date()) },
+		});
 		await this.refresh({ tasks: true, calendar: false, notes: false });
 	}
 

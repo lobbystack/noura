@@ -62,12 +62,51 @@
 		}
 	}
 
+	let nameField: HTMLInputElement | null = null;
+
 	function focusName(input: HTMLInputElement) {
+		nameField = input;
 		if (!autofocus) return;
 		input.focus();
 		input.select();
 	}
+
+	/**
+	 * F2 renames the open document from anywhere, including its text: a
+	 * click in the file tree opens the file and puts the caret in the text,
+	 * where the tree's own F2 no longer applies. Other text fields and
+	 * dialogs keep the key.
+	 */
+	function renameShortcut(event: KeyboardEvent) {
+		if (
+			event.key !== 'F2' ||
+			event.defaultPrevented ||
+			event.metaKey ||
+			event.ctrlKey ||
+			event.altKey ||
+			event.shiftKey
+		)
+			return;
+		const field = nameField;
+		if (!field || field.disabled) return;
+		const target = event.target instanceof HTMLElement ? event.target : null;
+		const inText = target?.closest('.cm-editor') !== null;
+		if (
+			target &&
+			!inText &&
+			(target.closest('[role="dialog"], [role="alertdialog"]') ||
+				target instanceof HTMLInputElement ||
+				target instanceof HTMLTextAreaElement ||
+				target.isContentEditable)
+		)
+			return;
+		event.preventDefault();
+		field.focus();
+		field.select();
+	}
 </script>
+
+<svelte:window onkeydown={renameShortcut} />
 
 <header class="flex min-h-16 flex-col justify-center gap-0.5 px-6 py-2">
 	{#if crumbs.length > 0}

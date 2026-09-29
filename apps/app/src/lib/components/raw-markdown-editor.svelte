@@ -112,7 +112,9 @@
 				return {
 					status: 'saved',
 					base: baseOf(result.current),
-					merged: result.status === 'merged',
+					// A raw save reports no separate merge status. It writes the text
+					// as sent unless it folded in an edit made outside the app.
+					merged: result.current.body !== body,
 					canonical: {
 						read: result.current,
 						managedObject: result.managedObject,
@@ -236,6 +238,20 @@
 					}
 				: null,
 		);
+		if (handle && focusWhenReady) {
+			focusWhenReady = false;
+			handle.focus();
+		}
+	}
+
+	/**
+	 * Enter in the name moves on to the text. The text editor may still be
+	 * loading then; it takes the caret as soon as it is ready.
+	 */
+	let focusWhenReady = false;
+	function focusText() {
+		if (editor) editor.focus();
+		else focusWhenReady = true;
 	}
 
 	async function rename(name: string) {
@@ -396,7 +412,7 @@
 		relativePath={path}
 		disabled={collaborationOpening || activationInProgress}
 		onrename={rename}
-		ondone={() => editor?.focus()}
+		ondone={focusText}
 	/>
 	<Separator />
 	{#if parseStatus === 'malformed'}

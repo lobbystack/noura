@@ -21,3 +21,6 @@ crates/workspace-format/bindings/
 
 # Agent worktrees
 .claude/worktrees/
+# Playwright output
+test-results/
+playwright-report/

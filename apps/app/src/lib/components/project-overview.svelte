@@ -5,6 +5,7 @@
 	import type { CoreEvent, Project } from '@noura/workspace';
 	import { isCoreError } from '@noura/workspace';
 	import { PROJECT_STATUSES } from '@noura/shared';
+	import { choiceLabel } from '$lib/property-labels';
 	import { getNouraClient } from '$lib/state.svelte';
 	import {
 		ManagedDraftSession,
@@ -182,12 +183,12 @@
 			value={String(properties.status ?? 'planned')}
 			onValueChange={(value) => value && editStatus(value)}
 			><Select.Trigger size="sm" class="w-36" aria-label="Project status"
-				>{String(properties.status ?? 'planned')}</Select.Trigger
+				>{choiceLabel(String(properties.status ?? 'planned'))}</Select.Trigger
 			><Select.Content
 				><Select.Group
 					>{#each statuses as status (status)}<Select.Item
 							value={status}
-							label={status}>{status}</Select.Item
+							label={choiceLabel(status)}>{choiceLabel(status)}</Select.Item
 						>{/each}</Select.Group
 				></Select.Content
 			></Select.Root

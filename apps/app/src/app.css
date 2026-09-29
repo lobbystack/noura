@@ -36,6 +36,12 @@
 	--chart-3: oklch(0.439 0 0);
 	--chart-4: oklch(0.371 0 0);
 	--chart-5: oklch(0.269 0 0);
+	/* Code highlighting, readable on --muted in each theme. */
+	--syntax-keyword: #6f42c1;
+	--syntax-string: #116329;
+	--syntax-number: #953800;
+	--syntax-type: #0550ae;
+	--syntax-definition: #0a3069;
 	--radius: 0.625rem;
 	--sidebar: oklch(0.985 0 0);
 	--sidebar-foreground: oklch(0.145 0 0);
@@ -71,6 +77,11 @@
 	--chart-3: oklch(0.439 0 0);
 	--chart-4: oklch(0.371 0 0);
 	--chart-5: oklch(0.269 0 0);
+	--syntax-keyword: #ff7b72;
+	--syntax-string: #a5d6ff;
+	--syntax-number: #79c0ff;
+	--syntax-type: #ffa657;
+	--syntax-definition: #d2a8ff;
 	--sidebar: oklch(0.205 0 0);
 	--sidebar-foreground: oklch(0.985 0 0);
 	--sidebar-primary: oklch(0.922 0 0);
@@ -240,6 +251,7 @@
 	text-decoration: line-through;
 }
 .live-md .cm-md-checkbox {
+	position: relative;
 	display: inline-block;
 	width: 0.9rem;
 	height: 0.9rem;
@@ -250,8 +262,17 @@
 	vertical-align: text-bottom;
 }
 .live-md .cm-md-checkbox[aria-checked='true'] {
-	background: var(--primary);
+	background-color: var(--primary);
 	border-color: var(--primary);
+}
+/* The check mark takes the theme's contrast color, like the Checkbox. */
+.live-md .cm-md-checkbox[aria-checked='true']::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background-color: var(--primary-foreground);
+	mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E")
+		center / 100% 100% no-repeat;
 }
 .live-md .cm-md-image {
 	display: block;

@@ -5,7 +5,7 @@ import { isCoreError } from '@noura/workspace';
 import { flushPendingDrafts } from './editor/pending-drafts.svelte';
 import { getNouraClient, workspace } from './state.svelte';
 import { hostCapabilities } from './host-capabilities.svelte';
-import { tabsStore } from './tabs.svelte';
+import { tabHref, tabsStore } from './tabs.svelte';
 import {
 	baseName,
 	canMoveInto,
@@ -294,7 +294,12 @@ export async function trashTreeNode(node: WorkspaceTreeNode) {
 			? `Moved ${quoted(node)} to .noura/trash in this workspace.`
 			: `Moved ${quoted(node)} to the trash.`,
 	);
-	if (showing) await goto(url.pathname, { replaceState: true });
+	// Show the tab that took the closed tab's place, as closing a tab does,
+	// so the page and the highlighted tab agree.
+	if (showing) {
+		const next = tabsStore.active;
+		await goto(next ? tabHref(next) : url.pathname, { replaceState: true });
+	}
 }
 
 export async function revealTreeNode(node: WorkspaceTreeNode) {

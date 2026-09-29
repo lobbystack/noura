@@ -77,6 +77,7 @@ export class DocumentSession<Canonical> {
 	#base: TextBase;
 	#editor: EditorPort | null = null;
 	#discarded = false;
+	#exclusive: Promise<unknown> | null = null;
 	readonly #options: DocumentSessionOptions<Canonical>;
 
 	constructor(options: DocumentSessionOptions<Canonical>) {
@@ -127,8 +128,14 @@ export class DocumentSession<Canonical> {
 		);
 	}
 
-	flush(): Promise<boolean> {
-		if (this.#discarded) return Promise.resolve(true);
+	/**
+	 * Save every edit now. An exclusive operation (a rename) holds autosave
+	 * while it runs; the flush waits for it instead of failing, so closing a
+	 * note right after renaming it still saves what was typed.
+	 */
+	async flush(): Promise<boolean> {
+		while (this.#exclusive) await this.#exclusive.catch(() => {});
+		if (this.#discarded) return true;
 		return this.autosave.flush();
 	}
 
@@ -141,10 +148,18 @@ export class DocumentSession<Canonical> {
 			throw new Error('Save your changes before renaming.');
 		}
 		this.autosave.pause();
+		const running = (async () => {
+			try {
+				return await operation();
+			} finally {
+				this.autosave.resume();
+			}
+		})();
+		this.#exclusive = running;
 		try {
-			return await operation();
+			return await running;
 		} finally {
-			this.autosave.resume();
+			if (this.#exclusive === running) this.#exclusive = null;
 		}
 	}
 

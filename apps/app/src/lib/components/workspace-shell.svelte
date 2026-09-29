@@ -82,7 +82,10 @@
 
 	// Until a lazy component is mounted it cannot hear its own shortcut.
 	// Once it is, it owns the key and this handler stays out of the way.
+	// A key the focused control already handled (Cmd-K adds a link in the
+	// editor) is not a shortcut.
 	function handleKeydown(event: KeyboardEvent) {
+		if (event.defaultPrevented) return;
 		if (!(event.metaKey || event.ctrlKey) || event.repeat) return;
 		const key = event.key.toLowerCase();
 		if (key === 'k' && !Palette) {
@@ -165,8 +168,12 @@
 
 	// Turned-off modules genuinely simplify the workspace: routes backed by a
 	// disabled plugin fall back to Home instead of rendering a dead surface.
+	// Only the open workspace's own plugin list decides: a sync that settled
+	// while it was still opening lists no plugins at all.
 	$effect(() => {
 		if (!plugins.synced) return;
+		if (!readyWorkspaceId || plugins.syncedWorkspaceId !== readyWorkspaceId)
+			return;
 		const pluginId = routePlugin(page.url.pathname);
 		if (pluginId && !plugins.isEnabled(pluginId))
 			void goto('/inbox', { replaceState: true });
