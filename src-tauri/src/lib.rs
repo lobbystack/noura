@@ -5,31 +5,23 @@
 )]
 
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     time::Duration,
 };
 
-use local_core::{
-    AiCancelOutcome, AiConsentGrant, AiConsentGrantInput, AiConsentReadInput, AiConsentRevokeInput,
-    AiConsentRevokeOutcome, AiFoundation, AiProviderConfig, AiStreamFrame, AiStreamInput,
-    AppendChatContextSummaryInput, AppendChatToolResultInput, AppendChatUserMessageInput,
-    BeginChatAssistantInput, BeginChatToolCallInput, CalendarEntry, ChangeChatRetentionInput, Chat,
-    ChatMessage, ChatRead, CoreError, CoreEvent, CreateChatInput, CreateObjectInput,
-    DraftReconcileInput, DraftReconcileResult, ErrorCategory, FinishChatAssistantInput,
-    FinishChatToolCallInput, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
-    ManifestUpdateInput, MarkdownLinkTarget, MutationResult, ObjectFilter, ObjectPatch,
-    ObjectSummary, ObjectSummaryQuery, RawConflictResolveInput, RawConflictResolveResult,
-    RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult,
-    RenameChatInput, ResolveConflictInput, SearchInput, SearchResult, UnmanagedFile,
-    WorkspaceEngine, WorkspaceEntry, WorkspaceManifest, WorkspaceObject, WorkspaceState,
-};
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State, ipc::Channel};
+use local_core::{AiFoundation, CoreError, ErrorCategory, WorkspaceEngine};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_deep_link::DeepLinkExt;
-use tauri_plugin_dialog::DialogExt;
+
+mod commands;
 mod diagnostics;
+mod file_actions;
+mod menu;
+mod os_files;
 mod sync_commands;
+
+use commands::{ai, chats, files, objects, os_integration, plugins, raw_markdown, workspace};
 
 struct AppState {
     sync_auth_return: std::sync::atomic::AtomicBool,
@@ -89,74 +81,6 @@ fn ai_unavailable(operation: &str) -> CoreError {
     );
     error.retryable = true;
     error
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RecentWorkspace {
-    path: String,
-    name: String,
-    workspace_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateWorkspaceInput {
-    path: String,
-    name: String,
-}
-#[derive(Deserialize)]
-struct OpenWorkspaceInput {
-    path: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MoveInput {
-    id: String,
-    relative_path: String,
-    expected_revision: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeleteInput {
-    id: String,
-    expected_revision: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AdoptInput {
-    relative_path: String,
-    expected_revision: String,
-    #[serde(rename = "type")]
-    object_type: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CalendarInput {
-    start: String,
-    end: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FolderInput {
-    relative_path: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FolderMoveInput {
-    from: String,
-    to: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialSetInput {
-    provider_id: String,
-    secret: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialDeleteInput {
-    credential_ref: String,
 }
 
 /// No workspace is open, or the one that was open has closed.
@@ -284,6 +208,7 @@ fn with_engine<T>(
     let engine = current_engine(state, operation)?;
     run(&engine)
 }
+
 fn forward_events(app: AppHandle, engine: Arc<WorkspaceEngine>) {
     let mut events = engine.subscribe();
     tauri::async_runtime::spawn(async move {
@@ -326,392 +251,6 @@ fn forward_events(app: AppHandle, engine: Arc<WorkspaceEngine>) {
         }
     });
 }
-fn recent_path(app: &AppHandle) -> Result<std::path::PathBuf, CoreError> {
-    app.path()
-        .app_local_data_dir()
-        .map(|path| path.join("recent-workspaces.json"))
-        .map_err(|_| {
-            CoreError::new(
-                "app_data_unavailable",
-                ErrorCategory::Filesystem,
-                "The application-data directory is unavailable",
-                "workspace_recent",
-            )
-        })
-}
-fn load_recent(app: &AppHandle) -> Vec<RecentWorkspace> {
-    recent_path(app)
-        .ok()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
-}
-
-fn recent_workspace_at_path<'a>(
-    recent: &'a [RecentWorkspace],
-    path: &str,
-) -> Option<&'a RecentWorkspace> {
-    let requested = Path::new(path).canonicalize().ok()?;
-    recent.iter().find(|workspace| {
-        Path::new(&workspace.path)
-            .canonicalize()
-            .is_ok_and(|candidate| candidate == requested)
-    })
-}
-
-fn workspace_name_from_path(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("Workspace")
-        .to_owned()
-}
-
-// The path locates the last workspace; its manifest ID establishes identity.
-// Do not silently open an older entry or a different workspace at a reused path.
-fn restore_last_workspace(
-    recent: &[RecentWorkspace],
-    open: impl FnOnce(&RecentWorkspace) -> Result<WorkspaceEngine, CoreError>,
-) -> Result<Option<WorkspaceEngine>, CoreError> {
-    let Some(last) = recent.first() else {
-        return Ok(None);
-    };
-    let engine = open(last)?;
-    if engine.manifest().id != last.workspace_id {
-        return Err(CoreError::new(
-            "workspace_identity_changed",
-            ErrorCategory::Identity,
-            "The last workspace is no longer at its saved location",
-            "workspace_restore",
-        ));
-    }
-    Ok(Some(engine))
-}
-
-fn save_recent(app: &AppHandle, workspace: &WorkspaceEngine) -> Result<(), CoreError> {
-    let path = recent_path(app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| CoreError::io(error, "workspace_recent", parent.to_str()))?;
-    }
-    let mut values = load_recent(app);
-    let root = workspace.root().to_string_lossy().into_owned();
-    let manifest = workspace.manifest();
-    values.retain(|value| value.workspace_id != manifest.id);
-    values.insert(
-        0,
-        RecentWorkspace {
-            path: root,
-            name: manifest.name,
-            workspace_id: manifest.id,
-        },
-    );
-    values.truncate(20);
-    write_recent(&path, &values)
-}
-
-fn write_recent(path: &Path, values: &[RecentWorkspace]) -> Result<(), CoreError> {
-    let bytes = serde_json::to_vec_pretty(values).map_err(|_| {
-        CoreError::new(
-            "recent_serialize_failed",
-            ErrorCategory::Parse,
-            "Recent workspaces could not be saved",
-            "workspace_recent",
-        )
-    })?;
-    std::fs::write(path, bytes)
-        .map_err(|error| CoreError::io(error, "workspace_recent", path.to_str()))
-}
-
-/// The recent list without one workspace. The workspace folder is untouched.
-fn without_recent(values: Vec<RecentWorkspace>, workspace_id: &str) -> Vec<RecentWorkspace> {
-    values
-        .into_iter()
-        .filter(|value| value.workspace_id != workspace_id)
-        .collect()
-}
-
-#[tauri::command(async)]
-fn workspace_create(
-    app: AppHandle,
-    state: State<AppState>,
-    input: CreateWorkspaceInput,
-) -> Result<WorkspaceState, CoreError> {
-    state.restore.wait();
-    let engine = WorkspaceEngine::create(&input.path, &input.name)?;
-    engine.set_system_trash(local_core::os_trash());
-    let value = engine.state();
-    save_recent(&app, &engine)?;
-    install_engine(&app, &state, engine, "workspace_create")?;
-    Ok(value)
-}
-#[tauri::command(async)]
-fn workspace_open(
-    app: AppHandle,
-    state: State<AppState>,
-    input: OpenWorkspaceInput,
-) -> Result<WorkspaceState, CoreError> {
-    state.restore.wait();
-    let recent = load_recent(&app);
-    let registered = recent_workspace_at_path(&recent, &input.path);
-    let name = registered
-        .map(|workspace| workspace.name.clone())
-        .unwrap_or_else(|| workspace_name_from_path(&input.path));
-    let workspace_id = registered.map(|workspace| workspace.workspace_id.as_str());
-    let engine = WorkspaceEngine::open_or_initialize(&input.path, &name, workspace_id)?;
-    engine.set_system_trash(local_core::os_trash());
-    if workspace_id.is_some_and(|workspace_id| workspace_id != engine.manifest().id) {
-        return Err(CoreError::new(
-            "workspace_identity_changed",
-            ErrorCategory::Identity,
-            "The selected workspace is no longer at its saved location",
-            "workspace_open",
-        ));
-    }
-    let value = engine.state();
-    save_recent(&app, &engine)?;
-    install_engine(&app, &state, engine, "workspace_open")?;
-    Ok(value)
-}
-#[tauri::command(async)]
-fn workspace_close(app: AppHandle, state: State<AppState>) -> Result<(), CoreError> {
-    state.restore.wait();
-    state.sync_cancel.notify_one();
-    state.sync_wake.notify_one();
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| state_unavailable("workspace_close"))?
-        .take();
-    if let Some(engine) = engine
-        && let Err(error) = app.emit(
-            "noura://core-event",
-            CoreEvent {
-                event_id: uuid::Uuid::new_v4().to_string(),
-                event_type: "workspace:closed".into(),
-                workspace_id: engine.manifest().id,
-                occurred_at: local_core::now_rfc3339(),
-                source: local_core::EventSource::Application,
-                payload: serde_json::json!({}),
-            },
-        )
-    {
-        log::warn!("could not announce the closed workspace: {error}");
-    }
-    Ok(())
-}
-#[tauri::command(async)]
-fn workspace_state(state: State<AppState>) -> Result<WorkspaceState, CoreError> {
-    state.restore.wait();
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| state_unavailable("workspace_state"))?
-        .clone();
-    Ok(engine.as_ref().map_or(
-        WorkspaceState {
-            phase: local_core::WorkspacePhase::Idle,
-            workspace_id: None,
-            root_path: None,
-            indexed_files: 0,
-            diagnostics: Vec::new(),
-        },
-        |workspace| workspace.state(),
-    ))
-}
-#[tauri::command(async)]
-fn workspace_rebuild_index(state: State<AppState>) -> Result<WorkspaceState, CoreError> {
-    let engine = current_engine(&state, "workspace_rebuild_index")?;
-    engine.rebuild_index()?;
-    Ok(engine.state())
-}
-#[tauri::command(async)]
-fn manifest_read(state: State<AppState>) -> Result<WorkspaceManifest, CoreError> {
-    with_engine(&state, "manifest_read", WorkspaceEngine::read_manifest)
-}
-#[tauri::command(async)]
-fn manifest_update(
-    app: AppHandle,
-    state: State<AppState>,
-    input: ManifestUpdateInput,
-) -> Result<WorkspaceManifest, CoreError> {
-    with_engine(&state, "manifest_update", |engine| {
-        let renamed = input.name.is_some();
-        let manifest = engine.manifest_update(input)?;
-        // The recent list caches the name for the workspace switcher; the
-        // manifest stays canonical, so a failed cache refresh is not an error.
-        if renamed && let Err(error) = save_recent(&app, engine) {
-            log::warn!(
-                "could not refresh the recent workspace list: {}",
-                error.code
-            );
-        }
-        Ok(manifest)
-    })
-}
-#[tauri::command(async)]
-fn plugin_state_get(
-    state: State<AppState>,
-    plugin_id: String,
-    key: String,
-) -> Result<Option<serde_json::Value>, CoreError> {
-    with_engine(&state, "plugin_state_get", |engine| {
-        engine.plugin_state_get(&plugin_id, &key)
-    })
-}
-#[tauri::command(async)]
-fn plugin_state_set(
-    state: State<AppState>,
-    plugin_id: String,
-    key: String,
-    value: serde_json::Value,
-) -> Result<(), CoreError> {
-    with_engine(&state, "plugin_state_set", |engine| {
-        engine.plugin_state_set(&plugin_id, &key, value)
-    })
-}
-#[tauri::command(async)]
-fn plugin_state_delete(
-    state: State<AppState>,
-    plugin_id: String,
-    key: String,
-) -> Result<bool, CoreError> {
-    with_engine(&state, "plugin_state_delete", |engine| {
-        engine.plugin_state_delete(&plugin_id, &key)
-    })
-}
-#[tauri::command(async)]
-fn workspace_list_recent(app: AppHandle) -> Vec<RecentWorkspace> {
-    load_recent(&app)
-}
-#[tauri::command(async)]
-fn workspace_forget_recent(
-    app: AppHandle,
-    workspace_id: String,
-) -> Result<Vec<RecentWorkspace>, CoreError> {
-    let path = recent_path(&app)?;
-    let values = without_recent(load_recent(&app), &workspace_id);
-    if path.exists() {
-        write_recent(&path, &values)?;
-    }
-    Ok(values)
-}
-#[tauri::command]
-async fn workspace_pick_folder(app: AppHandle, title: String) -> Result<Option<String>, CoreError> {
-    let selected = app.dialog().file().set_title(title).blocking_pick_folder();
-    selected
-        .map(|path| {
-            path.into_path()
-                .map_err(|_| {
-                    CoreError::validation(
-                        "unsupported_path",
-                        "The selected folder cannot be represented as a local path",
-                        "workspace_pick_folder",
-                    )
-                })?
-                .into_os_string()
-                .into_string()
-                .map_err(|_| {
-                    CoreError::validation(
-                        "unsupported_path",
-                        "The selected folder uses a path that Noura cannot represent safely",
-                        "workspace_pick_folder",
-                    )
-                })
-        })
-        .transpose()
-}
-#[tauri::command(async)]
-fn objects_query(
-    state: State<AppState>,
-    query: ObjectFilter,
-) -> Result<Vec<WorkspaceObject>, CoreError> {
-    with_engine(&state, "objects_query", |engine| {
-        engine.query_objects_filtered(&query)
-    })
-}
-#[tauri::command(async)]
-fn objects_summaries(
-    state: State<AppState>,
-    query: ObjectSummaryQuery,
-) -> Result<Vec<ObjectSummary>, CoreError> {
-    with_engine(&state, "objects_summaries", |engine| {
-        engine.query_object_summaries(&query)
-    })
-}
-#[tauri::command(async)]
-fn objects_get(state: State<AppState>, id: String) -> Result<WorkspaceObject, CoreError> {
-    with_engine(&state, "objects_get", |engine| {
-        engine.get_object(&id)?.ok_or_else(|| {
-            CoreError::validation(
-                "object_not_found",
-                "The object does not exist",
-                "objects_get",
-            )
-        })
-    })
-}
-/// Run an object mutation on a blocking thread with the shared routing rule.
-/// The device connection is read only when the mutation collaborates.
-async fn route_object_mutation<T: Send + 'static>(
-    app: AppHandle,
-    operation: &'static str,
-    mutation: impl FnOnce(
-        &WorkspaceEngine,
-        &dyn Fn() -> Result<Option<local_core::sync::DeviceConnection>, CoreError>,
-    ) -> Result<T, CoreError>
-    + Send
-    + 'static,
-) -> Result<T, CoreError> {
-    let engine = current_engine(&app.state::<AppState>(), operation)?;
-    blocking(operation, move || {
-        let state = app.state::<AppState>();
-        // The account lock keeps the stored connection consistent with an
-        // in-flight sign-in, as in `stored_sync_connection`.
-        let connection = || {
-            let _account = state.sync_account.blocking_lock();
-            local_core::sync::SyncAccountService::stored_connection(
-                &local_core::sync::OsSyncCredentials,
-            )
-        };
-        mutation(&engine, &connection)
-    })
-    .await
-}
-#[tauri::command]
-async fn objects_create(
-    app: AppHandle,
-    input: CreateObjectInput,
-) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    route_object_mutation(app, "objects_create", move |engine, connection| {
-        local_core::sync::route_create_object(
-            engine,
-            connection,
-            &local_core::sync::OsSyncCredentials,
-            input,
-        )
-    })
-    .await
-}
-#[tauri::command]
-async fn objects_update(
-    app: AppHandle,
-    id: String,
-    patch: ObjectPatch,
-) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    route_object_mutation(app, "objects_update", move |engine, connection| {
-        local_core::sync::route_update_object(
-            engine,
-            connection,
-            &local_core::sync::OsSyncCredentials,
-            &id,
-            patch,
-            None,
-        )
-    })
-    .await
-}
 
 /// The saved sync connection, read from the keychain on the blocking pool.
 /// The account lock keeps it consistent with an in-flight sign-in.
@@ -736,748 +275,6 @@ pub(crate) async fn sync_connection(
     stored_sync_connection(state, operation)
         .await?
         .ok_or_else(|| sign_in_required(operation))
-}
-
-#[tauri::command(async)]
-fn chats_create(
-    state: State<AppState>,
-    input: CreateChatInput,
-) -> Result<MutationResult<Chat>, CoreError> {
-    with_engine(&state, "chat_create", |engine| engine.create_chat(input))
-}
-
-#[tauri::command(async)]
-fn chats_change_retention(
-    state: State<AppState>,
-    input: ChangeChatRetentionInput,
-) -> Result<MutationResult<Chat>, CoreError> {
-    with_engine(&state, "chat_change_retention", |engine| {
-        engine.change_chat_retention(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_rename(
-    state: State<AppState>,
-    input: RenameChatInput,
-) -> Result<MutationResult<Chat>, CoreError> {
-    with_engine(&state, "chat_rename", |engine| engine.rename_chat(input))
-}
-
-#[tauri::command(async)]
-fn chats_list(state: State<AppState>) -> Result<Vec<Chat>, CoreError> {
-    with_engine(&state, "chat_list", WorkspaceEngine::list_chats)
-}
-
-#[tauri::command(async)]
-fn chats_read(state: State<AppState>, id: String) -> Result<ChatRead, CoreError> {
-    with_engine(&state, "chat_read", |engine| engine.read_chat(&id))
-}
-
-#[tauri::command(async)]
-fn chats_append_user_message(
-    state: State<AppState>,
-    input: AppendChatUserMessageInput,
-) -> Result<MutationResult<ChatMessage>, CoreError> {
-    with_engine(&state, "chat_append_user_message", |engine| {
-        engine.append_chat_user_message(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_begin_assistant(
-    state: State<AppState>,
-    input: BeginChatAssistantInput,
-) -> Result<MutationResult<ChatMessage>, CoreError> {
-    with_engine(&state, "chat_begin_assistant", |engine| {
-        engine.begin_chat_assistant(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_finish_assistant(
-    state: State<AppState>,
-    input: FinishChatAssistantInput,
-) -> Result<MutationResult<ChatMessage>, CoreError> {
-    with_engine(&state, "chat_finish_assistant", |engine| {
-        engine.finish_chat_assistant(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_begin_tool_call(
-    state: State<AppState>,
-    input: BeginChatToolCallInput,
-) -> Result<MutationResult<ChatMessage>, CoreError> {
-    with_engine(&state, "chat_begin_tool_call", |engine| {
-        engine.begin_chat_tool_call(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_finish_tool_call(
-    state: State<AppState>,
-    input: FinishChatToolCallInput,
-) -> Result<MutationResult<ChatMessage>, CoreError> {
-    with_engine(&state, "chat_finish_tool_call", |engine| {
-        engine.finish_chat_tool_call(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_append_tool_result(
-    state: State<AppState>,
-    input: AppendChatToolResultInput,
-) -> Result<MutationResult<ChatMessage>, CoreError> {
-    with_engine(&state, "chat_append_tool_result", |engine| {
-        engine.append_chat_tool_result(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_append_context_summary(
-    state: State<AppState>,
-    input: AppendChatContextSummaryInput,
-) -> Result<MutationResult<ChatMessage>, CoreError> {
-    with_engine(&state, "chat_append_context_summary", |engine| {
-        engine.append_chat_context_summary(input)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_recover_interrupted(state: State<AppState>, id: String) -> Result<ChatRead, CoreError> {
-    with_engine(&state, "chat_recover_interrupted", |engine| {
-        engine.recover_interrupted_chat(&id)
-    })
-}
-
-#[tauri::command(async)]
-fn chats_expire(state: State<AppState>, now: String) -> Result<Vec<String>, CoreError> {
-    with_engine(&state, "chat_expire", |engine| engine.expire_chats(&now))
-}
-
-#[tauri::command(async)]
-fn notes_reconcile_draft(
-    state: State<AppState>,
-    input: DraftReconcileInput,
-) -> Result<DraftReconcileResult, CoreError> {
-    with_engine(&state, "notes_reconcile_draft", |engine| {
-        engine.reconcile_note_draft(input)
-    })
-}
-#[tauri::command(async)]
-fn notes_resolve_conflict(
-    state: State<AppState>,
-    input: ResolveConflictInput,
-) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    with_engine(&state, "notes_resolve_conflict", |engine| {
-        engine.resolve_note_conflict(input)
-    })
-}
-
-#[tauri::command(async)]
-fn managed_draft_save(
-    state: State<AppState>,
-    input: ManagedDraftInput,
-) -> Result<ManagedDraftResult, CoreError> {
-    with_engine(&state, "managed_draft_save", |engine| {
-        engine.save_managed_draft(input)
-    })
-}
-
-#[tauri::command(async)]
-fn managed_draft_reconcile(
-    state: State<AppState>,
-    input: ManagedDraftInput,
-) -> Result<ManagedDraftResult, CoreError> {
-    with_engine(&state, "managed_draft_reconcile", |engine| {
-        engine.reconcile_managed_draft(input)
-    })
-}
-
-#[tauri::command(async)]
-fn managed_conflict_resolve(
-    state: State<AppState>,
-    input: ManagedConflictResolveInput,
-) -> Result<WorkspaceObject, CoreError> {
-    with_engine(&state, "managed_conflict_resolve", |engine| {
-        engine.resolve_managed_conflict(input)
-    })
-}
-
-#[tauri::command(async)]
-fn raw_markdown_read(
-    state: State<AppState>,
-    relative_path: String,
-) -> Result<RawMarkdownRead, CoreError> {
-    with_engine(&state, "raw_markdown_read", |engine| {
-        engine.read_raw_markdown(&relative_path)
-    })
-}
-
-#[tauri::command(async)]
-fn raw_markdown_save(
-    state: State<AppState>,
-    input: RawSaveInput,
-) -> Result<RawSaveResult, CoreError> {
-    with_engine(&state, "raw_markdown_save", |engine| {
-        engine.save_raw_markdown(input)
-    })
-}
-
-#[tauri::command(async)]
-fn raw_markdown_reconcile(
-    state: State<AppState>,
-    input: RawReconcileInput,
-) -> Result<RawReconcileResult, CoreError> {
-    with_engine(&state, "raw_markdown_reconcile", |engine| {
-        engine.reconcile_raw_markdown(input)
-    })
-}
-
-#[tauri::command(async)]
-fn raw_markdown_resolve(
-    state: State<AppState>,
-    input: RawConflictResolveInput,
-) -> Result<RawConflictResolveResult, CoreError> {
-    with_engine(&state, "raw_markdown_resolve", |engine| {
-        engine.resolve_raw_conflict(input)
-    })
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AssetInput {
-    source_relative_path: String,
-    target: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MarkdownLinkInput {
-    source_relative_path: String,
-    target: String,
-}
-
-const MIME_BY_EXTENSION: &[(&str, &str)] = &[
-    ("apng", "image/apng"),
-    ("avif", "image/avif"),
-    ("gif", "image/gif"),
-    ("jpeg", "image/jpeg"),
-    ("jpg", "image/jpeg"),
-    ("png", "image/png"),
-    ("svg", "image/svg+xml"),
-    ("webp", "image/webp"),
-];
-
-const MAX_ASSET_BYTES: i64 = 20 * 1024 * 1024;
-
-#[tauri::command(async)]
-fn files_inspect_pdf(
-    state: State<AppState>,
-    relative_path: String,
-) -> Result<local_core::PdfInfo, CoreError> {
-    with_engine(&state, "files_inspect_pdf", |engine| {
-        engine.inspect_pdf(&relative_path)
-    })
-}
-
-#[tauri::command(async)]
-fn files_read_pdf_range(
-    state: State<AppState>,
-    input: local_core::PdfRangeInput,
-) -> Result<tauri::ipc::Response, CoreError> {
-    with_engine(&state, "files_read_pdf_range", |engine| {
-        engine.read_pdf_range(&input).map(tauri::ipc::Response::new)
-    })
-}
-
-#[tauri::command(async)]
-fn files_open_pdf_link(url: String) -> Result<(), CoreError> {
-    os_files::open_http_link(&url)
-}
-
-#[tauri::command(async)]
-fn files_read_local_asset(
-    state: State<AppState>,
-    input: AssetInput,
-) -> Result<serde_json::Value, CoreError> {
-    with_engine(&state, "files_read_local_asset", |engine| {
-        let (relative_path, bytes) =
-            engine.read_local_asset(&input.source_relative_path, &input.target, MAX_ASSET_BYTES)?;
-        let extension = relative_path
-            .rsplit('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let mime = MIME_BY_EXTENSION
-            .iter()
-            .find(|(candidate, _)| *candidate == extension)
-            .map(|(_, mime)| *mime)
-            .unwrap_or("application/octet-stream");
-        Ok(serde_json::json!({
-            "dataUrl": format!("data:{mime};base64,{}", base64_encode(&bytes)),
-        }))
-    })
-}
-
-#[tauri::command(async)]
-fn files_resolve_markdown_link(
-    state: State<AppState>,
-    input: MarkdownLinkInput,
-) -> Result<MarkdownLinkTarget, CoreError> {
-    with_engine(&state, "files_resolve_markdown_link", |engine| {
-        engine.resolve_markdown_link(&input.source_relative_path, &input.target)
-    })
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity((bytes.len() + 2) / 3 * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        output.push(TABLE[((triple >> 18) & 63) as usize] as char);
-        output.push(TABLE[((triple >> 12) & 63) as usize] as char);
-        output.push(if chunk.len() > 1 {
-            TABLE[((triple >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        output.push(if chunk.len() > 2 {
-            TABLE[(triple & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    output
-}
-#[tauri::command]
-async fn objects_move(
-    app: AppHandle,
-    input: MoveInput,
-) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    route_object_mutation(app, "objects_move", move |engine, connection| {
-        local_core::sync::route_move_object(
-            engine,
-            connection,
-            &local_core::sync::OsSyncCredentials,
-            &input.id,
-            &input.relative_path,
-            &input.expected_revision,
-        )
-    })
-    .await
-}
-#[tauri::command]
-async fn objects_delete(
-    app: AppHandle,
-    input: DeleteInput,
-) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    route_object_mutation(app, "objects_delete", move |engine, connection| {
-        local_core::sync::route_delete_object(
-            engine,
-            connection,
-            &local_core::sync::OsSyncCredentials,
-            &input.id,
-            &input.expected_revision,
-        )
-    })
-    .await
-}
-#[tauri::command(async)]
-fn objects_adopt(
-    state: State<AppState>,
-    input: AdoptInput,
-) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    with_engine(&state, "objects_adopt", |engine| {
-        engine.adopt_markdown(
-            &input.relative_path,
-            &input.object_type,
-            &input.expected_revision,
-        )
-    })
-}
-#[tauri::command(async)]
-fn search_query(
-    state: State<AppState>,
-    input: SearchInput,
-) -> Result<Vec<SearchResult>, CoreError> {
-    with_engine(&state, "search_query", |engine| engine.search(&input))
-}
-#[tauri::command(async)]
-fn calendar_query(
-    state: State<AppState>,
-    input: CalendarInput,
-) -> Result<Vec<CalendarEntry>, CoreError> {
-    with_engine(&state, "calendar_query", |engine| {
-        engine.calendar(&input.start, &input.end)
-    })
-}
-#[tauri::command(async)]
-fn folders_create(state: State<AppState>, input: FolderInput) -> Result<(), CoreError> {
-    with_engine(&state, "folders_create", |engine| {
-        engine.create_folder(&input.relative_path)
-    })
-}
-#[tauri::command(async)]
-fn folders_list(state: State<AppState>) -> Result<Vec<local_core::FolderEntry>, CoreError> {
-    with_engine(&state, "folders_list", WorkspaceEngine::list_folders)
-}
-#[tauri::command(async)]
-fn files_list(state: State<AppState>) -> Result<Vec<WorkspaceEntry>, CoreError> {
-    with_engine(
-        &state,
-        "files_list",
-        WorkspaceEngine::list_workspace_entries,
-    )
-}
-#[tauri::command(async)]
-fn files_list_non_managed_markdown(
-    state: State<AppState>,
-) -> Result<Vec<UnmanagedFile>, CoreError> {
-    with_engine(&state, "files_list_non_managed_markdown", |engine| {
-        engine.list_non_managed_markdown()
-    })
-}
-#[tauri::command(async)]
-fn folders_move(state: State<AppState>, input: FolderMoveInput) -> Result<(), CoreError> {
-    with_engine(&state, "folders_move", |engine| {
-        engine.move_folder(&input.from, &input.to)
-    })
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FileTrashInput {
-    relative_path: String,
-}
-#[tauri::command(async)]
-fn files_move(state: State<AppState>, input: FolderMoveInput) -> Result<(), CoreError> {
-    with_engine(&state, "files_move", |engine| {
-        engine.move_file(&input.from, &input.to)
-    })
-}
-#[tauri::command(async)]
-fn files_trash(state: State<AppState>, input: FileTrashInput) -> Result<Option<String>, CoreError> {
-    with_engine(&state, "files_trash", |engine| {
-        engine.trash_path(&input.relative_path)
-    })
-}
-#[tauri::command(async)]
-fn folders_remove(state: State<AppState>, input: FolderInput) -> Result<(), CoreError> {
-    with_engine(&state, "folders_remove", |engine| {
-        engine.remove_empty_folder(&input.relative_path)
-    })
-}
-#[tauri::command(async)]
-fn ai_provider_list(state: State<AppState>) -> Result<Vec<AiProviderConfig>, CoreError> {
-    state.ai("ai_provider_list")?.list_providers()
-}
-#[tauri::command(async)]
-fn ai_provider_save(state: State<AppState>, input: AiProviderConfig) -> Result<(), CoreError> {
-    state.ai("ai_provider_save")?.save_provider(input)
-}
-#[tauri::command(async)]
-fn ai_credential_set(
-    state: State<AppState>,
-    input: CredentialSetInput,
-) -> Result<serde_json::Value, CoreError> {
-    let credential_ref = state
-        .ai("ai_credential_set")?
-        .set_credential(&input.provider_id, &input.secret)?;
-    Ok(serde_json::json!({"credentialRef":credential_ref}))
-}
-#[tauri::command(async)]
-fn ai_credential_delete(
-    state: State<AppState>,
-    input: CredentialDeleteInput,
-) -> Result<(), CoreError> {
-    state
-        .ai("ai_credential_delete")?
-        .delete_credential(&input.credential_ref)
-}
-#[tauri::command(async)]
-fn ai_consent_read(
-    state: State<AppState>,
-    input: AiConsentReadInput,
-) -> Result<Option<AiConsentGrant>, CoreError> {
-    with_engine(&state, "ai_consent_read", |engine| {
-        state
-            .ai("ai_consent_read")?
-            .read_consent(&engine.manifest().id, input)
-    })
-}
-#[tauri::command(async)]
-fn ai_consent_grant(
-    state: State<AppState>,
-    input: AiConsentGrantInput,
-) -> Result<AiConsentGrant, CoreError> {
-    with_engine(&state, "ai_consent_grant", |engine| {
-        state
-            .ai("ai_consent_grant")?
-            .grant_consent(&engine.manifest().id, input)
-    })
-}
-#[tauri::command(async)]
-fn ai_consent_revoke(
-    state: State<AppState>,
-    input: AiConsentRevokeInput,
-) -> Result<AiConsentRevokeOutcome, CoreError> {
-    with_engine(&state, "ai_consent_revoke", |engine| {
-        state
-            .ai("ai_consent_revoke")?
-            .revoke_consent(&engine.manifest().id, input)
-    })
-}
-#[tauri::command]
-async fn ai_stream(
-    state: State<'_, AppState>,
-    input: AiStreamInput,
-    channel: Channel<AiStreamFrame>,
-) -> Result<(), CoreError> {
-    let operation_id = input.operation_id.clone();
-    let workspace_id = current_engine(&state, "ai_stream")?.manifest().id;
-    let ai = state.ai("ai_stream")?;
-    let starter = ai.clone();
-    let mut operation = blocking("ai_stream", move || {
-        starter.start_stream(&workspace_id, input)
-    })
-    .await?;
-    while let Some(frame) = operation.receiver.recv().await {
-        if channel.send(frame).is_err() {
-            if let Err(error) = ai.cancel_stream(&operation_id) {
-                log::warn!("could not cancel an abandoned AI stream: {}", error.code);
-            }
-            break;
-        }
-    }
-    Ok(())
-}
-#[tauri::command(async)]
-fn ai_stream_cancel(
-    state: State<AppState>,
-    operation_id: String,
-) -> Result<AiCancelOutcome, CoreError> {
-    state.ai("ai_stream_cancel")?.cancel_stream(&operation_id)
-}
-
-mod file_actions;
-mod menu;
-mod os_files;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ShowInFolderInput {
-    id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum WorkspaceFolder {
-    Root,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WorkspaceShowInFolderInput {
-    folder: WorkspaceFolder,
-}
-
-#[tauri::command(async)]
-fn workspace_show_in_folder(
-    state: State<AppState>,
-    input: WorkspaceShowInFolderInput,
-) -> Result<(), CoreError> {
-    with_engine(&state, "workspace_show_in_folder", |engine| {
-        let path = match input.folder {
-            WorkspaceFolder::Root => engine.root().to_path_buf(),
-        };
-        os_files::open_directory(&path, "workspace_show_in_folder")
-    })
-}
-
-#[tauri::command(async)]
-fn app_open_link(url: String) -> Result<(), CoreError> {
-    os_files::open_web_link(&url, "app_open_link")
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct McpConnection {
-    command: String,
-    args: Vec<String>,
-}
-
-/// The command an MCP client runs to reach the open workspace through this
-/// app's own binary. An AppImage runs from a temporary mount, so use the
-/// AppImage file itself there.
-#[tauri::command(async)]
-fn mcp_connection(state: State<AppState>) -> Result<McpConnection, CoreError> {
-    with_engine(&state, "mcp_connection", |engine| {
-        let command = std::env::var_os("APPIMAGE")
-            .map(std::path::PathBuf::from)
-            .map(Ok)
-            .unwrap_or_else(std::env::current_exe)
-            .map_err(|error| CoreError::io(error, "mcp_connection", None))?;
-        let unsupported = || {
-            CoreError::validation(
-                "unsupported_path",
-                "This path can't be represented for an MCP client",
-                "mcp_connection",
-            )
-        };
-        Ok(McpConnection {
-            command: command.to_str().ok_or_else(unsupported)?.to_owned(),
-            args: vec![
-                "mcp".into(),
-                "--workspace".into(),
-                engine.root().to_str().ok_or_else(unsupported)?.to_owned(),
-            ],
-        })
-    })
-}
-
-/// Start the MCP command exactly as a client would and wait for its
-/// initialize reply, so users know the configuration works before copying it.
-#[tauri::command]
-async fn mcp_test_connection(state: State<'_, AppState>) -> Result<bool, CoreError> {
-    let connection = mcp_connection(state)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        use std::io::{BufRead, Write};
-        let failed = || {
-            CoreError::new(
-                "mcp_unavailable",
-                ErrorCategory::Transient,
-                "The MCP server did not start",
-                "mcp_test_connection",
-            )
-        };
-        let mut child = std::process::Command::new(&connection.command)
-            .args(&connection.args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|_| failed())?;
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": { "name": "noura-settings", "version": "1" }
-            }
-        });
-        let mut stdin = child.stdin.take().ok_or_else(failed)?;
-        let stdout = child.stdout.take().ok_or_else(failed)?;
-        writeln!(stdin, "{request}").map_err(|_| failed())?;
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut line = String::new();
-            let ok = std::io::BufReader::new(stdout).read_line(&mut line).is_ok()
-                && serde_json::from_str::<serde_json::Value>(&line)
-                    .is_ok_and(|reply| reply.get("result").is_some());
-            let _ = sender.send(ok);
-        });
-        let ok = receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .unwrap_or(false);
-        drop(stdin);
-        // The probe already exited when it closed stdout early; a failed
-        // kill is expected then.
-        if let Err(error) = child.kill() {
-            log::debug!("the MCP probe process had already stopped: {error}");
-        }
-        if let Err(error) = child.wait() {
-            log::debug!("could not reap the MCP probe process: {error}");
-        }
-        Ok(ok)
-    })
-    .await
-    .map_err(|_| state_unavailable("mcp_test_connection"))?
-}
-
-#[tauri::command(async)]
-fn object_show_in_folder(
-    state: State<AppState>,
-    input: ShowInFolderInput,
-) -> Result<(), CoreError> {
-    with_engine(&state, "object_show_in_folder", |engine| {
-        os_files::reveal_in_file_manager(engine, &input.id)
-    })
-}
-
-#[tauri::command(async)]
-fn object_open_terminal(state: State<AppState>, input: ShowInFolderInput) -> Result<(), CoreError> {
-    with_engine(&state, "object_open_terminal", |engine| {
-        os_files::open_in_terminal(engine, &input.id)
-    })
-}
-
-/// Reopen the last workspace after the window shows. The frontend shows its
-/// loading state meanwhile, and `workspace_state` waits for the result, so
-/// the chooser never flashes before a restored workspace.
-fn restore_last_workspace_in_background(app: AppHandle) {
-    let state = app.state::<AppState>();
-    state.restore.begin();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        match restore_last_workspace(&load_recent(&app), |workspace| {
-            WorkspaceEngine::open_or_initialize(
-                &workspace.path,
-                &workspace.name,
-                Some(&workspace.workspace_id),
-            )
-        }) {
-            Ok(Some(engine)) => {
-                engine.set_system_trash(local_core::os_trash());
-                if let Err(error) = install_engine(&app, &state, engine, "workspace_restore") {
-                    log::warn!("could not install the restored workspace: {}", error.code);
-                }
-            }
-            Ok(None) => {}
-            // An unavailable disk or invalid workspace must not prevent
-            // launch. The ordinary chooser remains available to recover.
-            Err(error) => log::warn!("the last workspace could not be reopened: {}", error.code),
-        }
-        state.restore.finish();
-    });
-}
-
-/// Poll the watcher and run the periodic full rescan on a dedicated thread.
-/// Waiting on the watcher queue here means changes are handled as soon as
-/// they arrive, and the work never touches the main thread or the async
-/// runtime.
-fn watch_workspaces(app: AppHandle) {
-    const RESCAN_EVERY: Duration = Duration::from_secs(60);
-    let spawned = std::thread::Builder::new()
-        .name("workspace-watch".into())
-        .spawn(move || {
-            let mut last_rescan = std::time::Instant::now();
-            loop {
-                let state = app.state::<AppState>();
-                let engine = state.engine.lock().ok().and_then(|value| value.clone());
-                let Some(engine) = engine else {
-                    std::thread::sleep(Duration::from_millis(250));
-                    continue;
-                };
-                if let Err(error) = engine.poll_external_changes(Duration::from_millis(750)) {
-                    log::warn!("could not apply external changes: {}", error.code);
-                }
-                if last_rescan.elapsed() >= RESCAN_EVERY {
-                    if let Err(error) = engine.reconcile() {
-                        log::warn!("the periodic rescan failed: {}", error.code);
-                    }
-                    last_rescan = std::time::Instant::now();
-                }
-            }
-        });
-    if let Err(error) = spawned {
-        log::error!("could not start the workspace watcher thread: {error}");
-    }
 }
 
 /// Paint the window in the theme's background before the page loads, so a
@@ -1544,10 +341,10 @@ pub fn run() {
             }
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             app.deep_link().register_all()?;
-            restore_last_workspace_in_background(app.handle().clone());
+            workspace::restore_last_workspace_in_background(app.handle().clone());
             menu::install(app.handle())?;
             sync_commands::start(app.handle().clone());
-            watch_workspaces(app.handle().clone());
+            workspace::watch_workspaces(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1581,83 +378,83 @@ pub fn run() {
             sync_commands::sync_account_poll,
             sync_commands::sync_account_cancel,
             sync_commands::sync_account_disconnect,
-            workspace_create,
-            workspace_open,
-            workspace_close,
-            workspace_state,
-            workspace_rebuild_index,
-            workspace_list_recent,
-            workspace_forget_recent,
-            workspace_pick_folder,
-            manifest_read,
-            manifest_update,
-            plugin_state_get,
-            plugin_state_set,
-            plugin_state_delete,
-            objects_query,
-            objects_get,
-            objects_create,
-            objects_update,
-            chats_create,
-            chats_change_retention,
-            chats_rename,
-            chats_list,
-            chats_read,
-            chats_append_user_message,
-            chats_begin_assistant,
-            chats_finish_assistant,
-            chats_begin_tool_call,
-            chats_finish_tool_call,
-            chats_append_tool_result,
-            chats_append_context_summary,
-            chats_recover_interrupted,
-            chats_expire,
-            notes_reconcile_draft,
-            notes_resolve_conflict,
-            managed_draft_save,
-            managed_draft_reconcile,
-            managed_conflict_resolve,
-            raw_markdown_read,
-            raw_markdown_save,
-            raw_markdown_reconcile,
-            raw_markdown_resolve,
-            files_read_local_asset,
-            files_inspect_pdf,
-            files_read_pdf_range,
-            files_open_pdf_link,
-            files_resolve_markdown_link,
-            objects_move,
-            objects_delete,
-            objects_adopt,
-            object_show_in_folder,
+            workspace::workspace_create,
+            workspace::workspace_open,
+            workspace::workspace_close,
+            workspace::workspace_state,
+            workspace::workspace_rebuild_index,
+            workspace::workspace_list_recent,
+            workspace::workspace_forget_recent,
+            workspace::workspace_pick_folder,
+            plugins::manifest_read,
+            plugins::manifest_update,
+            plugins::plugin_state_get,
+            plugins::plugin_state_set,
+            plugins::plugin_state_delete,
+            objects::objects_query,
+            objects::objects_get,
+            objects::objects_create,
+            objects::objects_update,
+            objects::notes_reconcile_draft,
+            objects::notes_resolve_conflict,
+            objects::managed_draft_save,
+            objects::managed_draft_reconcile,
+            objects::managed_conflict_resolve,
+            objects::objects_move,
+            objects::objects_delete,
+            objects::objects_adopt,
+            objects::search_query,
+            objects::calendar_query,
+            objects::objects_summaries,
+            raw_markdown::raw_markdown_read,
+            raw_markdown::raw_markdown_save,
+            raw_markdown::raw_markdown_reconcile,
+            raw_markdown::raw_markdown_resolve,
+            files::files_read_local_asset,
+            files::files_inspect_pdf,
+            files::files_read_pdf_range,
+            files::files_open_pdf_link,
+            files::files_resolve_markdown_link,
+            files::folders_create,
+            files::folders_list,
+            files::files_list,
+            files::files_list_non_managed_markdown,
+            files::folders_move,
+            files::folders_remove,
+            files::files_move,
+            files::files_trash,
             file_actions::files_copy,
             file_actions::files_reveal,
             file_actions::files_open_default,
-            workspace_show_in_folder,
-            app_open_link,
-            mcp_connection,
-            mcp_test_connection,
-            object_open_terminal,
-            search_query,
-            calendar_query,
-            folders_create,
-            folders_list,
-            files_list,
-            files_list_non_managed_markdown,
-            folders_move,
-            folders_remove,
-            files_move,
-            files_trash,
-            ai_provider_list,
-            ai_provider_save,
-            ai_credential_set,
-            ai_credential_delete,
-            ai_consent_read,
-            ai_consent_grant,
-            ai_consent_revoke,
-            ai_stream,
-            ai_stream_cancel,
-            objects_summaries,
+            chats::chats_create,
+            chats::chats_change_retention,
+            chats::chats_rename,
+            chats::chats_list,
+            chats::chats_read,
+            chats::chats_append_user_message,
+            chats::chats_begin_assistant,
+            chats::chats_finish_assistant,
+            chats::chats_begin_tool_call,
+            chats::chats_finish_tool_call,
+            chats::chats_append_tool_result,
+            chats::chats_append_context_summary,
+            chats::chats_recover_interrupted,
+            chats::chats_expire,
+            ai::ai_provider_list,
+            ai::ai_provider_save,
+            ai::ai_credential_set,
+            ai::ai_credential_delete,
+            ai::ai_consent_read,
+            ai::ai_consent_grant,
+            ai::ai_consent_revoke,
+            ai::ai_stream,
+            ai::ai_stream_cancel,
+            os_integration::object_show_in_folder,
+            os_integration::workspace_show_in_folder,
+            os_integration::app_open_link,
+            os_integration::mcp_connection,
+            os_integration::mcp_test_connection,
+            os_integration::object_open_terminal,
             diagnostics::app_diagnostics,
             os_files::app_capabilities
         ])
@@ -1714,14 +511,30 @@ mod command_thread_tests {
 
     #[test]
     fn commands_stay_off_the_main_thread() {
-        let sources = [
-            include_str!("lib.rs"),
-            include_str!("sync_commands.rs"),
-            include_str!("os_files.rs"),
-            include_str!("diagnostics.rs"),
-        ];
+        // Read every source file so commands in new modules are checked too.
+        fn rust_sources(directory: &std::path::Path, sources: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    rust_sources(&path, sources);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    sources.push(std::fs::read_to_string(path).unwrap());
+                }
+            }
+        }
+        let mut sources = Vec::new();
+        rust_sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut sources,
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|source| source.contains("fn workspace_create(")),
+            "the command sources were not found"
+        );
         let mut main_thread = Vec::new();
-        for source in sources {
+        for source in &sources {
             let lines = source.lines().collect::<Vec<_>>();
             for (index, line) in lines.iter().enumerate() {
                 if line.trim() != "#[tauri::command]" {
@@ -1810,130 +623,5 @@ mod ai_state_tests {
 
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod workspace_restore_tests {
-    use super::*;
-
-    struct Fixture(PathBuf);
-    impl Fixture {
-        fn new() -> Self {
-            Self(std::env::temp_dir().join(format!("noura-restore-{}", uuid::Uuid::new_v4())))
-        }
-        fn create(&self, name: &str) -> RecentWorkspace {
-            let path = self.0.join(name);
-            let engine =
-                WorkspaceEngine::create_with_app_data(&path, name, self.0.join("cache")).unwrap();
-            RecentWorkspace {
-                path: path.to_str().unwrap().into(),
-                name: name.into(),
-                workspace_id: engine.manifest().id,
-            }
-        }
-        fn open(&self, path: &str) -> Result<WorkspaceEngine, CoreError> {
-            WorkspaceEngine::open_with_app_data(path, self.0.join("cache"))
-        }
-        fn open_or_initialize(
-            &self,
-            workspace: &RecentWorkspace,
-        ) -> Result<WorkspaceEngine, CoreError> {
-            WorkspaceEngine::open_or_initialize_with_app_data(
-                &workspace.path,
-                &workspace.name,
-                Some(&workspace.workspace_id),
-                self.0.join("cache"),
-            )
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn startup_reopens_the_most_recent_workspace() {
-        let fixture = Fixture::new();
-        let older = fixture.create("older");
-        let last = fixture.create("last");
-        let expected = last.workspace_id.clone();
-        let engine =
-            restore_last_workspace(&[last, older], |workspace| fixture.open(&workspace.path))
-                .unwrap()
-                .unwrap();
-        assert_eq!(engine.manifest().id, expected);
-    }
-    #[test]
-    fn forgetting_a_recent_workspace_keeps_the_others_in_order() {
-        let recent = |id: &str| RecentWorkspace {
-            path: format!("/tmp/{id}"),
-            name: id.to_owned(),
-            workspace_id: id.to_owned(),
-        };
-        let remaining = without_recent(vec![recent("a"), recent("b"), recent("c")], "b");
-        let ids: Vec<_> = remaining
-            .iter()
-            .map(|value| value.workspace_id.as_str())
-            .collect();
-        assert_eq!(ids, ["a", "c"]);
-        assert_eq!(without_recent(remaining, "missing").len(), 2);
-    }
-    #[test]
-    fn first_launch_does_not_attempt_to_open_a_workspace() {
-        assert!(
-            restore_last_workspace(&[], |_| panic!("no workspace to open"))
-                .unwrap()
-                .is_none()
-        );
-    }
-    #[test]
-    fn missing_last_workspace_does_not_open_an_older_one_or_recreate_it() {
-        let fixture = Fixture::new();
-        let older = fixture.create("older");
-        // Point at a path that never existed. Removing a created workspace
-        // leaves a Windows watcher handle race; the behavior under test is the
-        // missing path, not the deletion.
-        let missing = fixture.0.join("missing");
-        let last = RecentWorkspace {
-            path: missing.to_str().unwrap().into(),
-            name: "last".into(),
-            workspace_id: "missing-workspace".into(),
-        };
-        assert!(
-            restore_last_workspace(&[last, older], |workspace| fixture.open(&workspace.path))
-                .is_err()
-        );
-        assert!(!missing.exists());
-    }
-    #[test]
-    fn missing_manifest_is_recreated_with_saved_identity() {
-        let fixture = Fixture::new();
-        let last = fixture.create("last");
-        let expected = last.workspace_id.clone();
-        std::fs::remove_file(Path::new(&last.path).join(local_core::WORKSPACE_MANIFEST_PATH))
-            .unwrap();
-        std::fs::remove_dir_all(Path::new(&last.path).join(".noura")).unwrap();
-
-        let engine = restore_last_workspace(std::slice::from_ref(&last), |workspace| {
-            fixture.open_or_initialize(workspace)
-        })
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(engine.manifest().id, expected);
-        assert!(Path::new(&last.path).join(".noura/trash").is_dir());
-    }
-    #[test]
-    fn reused_path_does_not_restore_a_different_workspace() {
-        let fixture = Fixture::new();
-        let mut last = fixture.create("last");
-        last.workspace_id = "different-workspace".into();
-        let Err(error) = restore_last_workspace(&[last], |workspace| fixture.open(&workspace.path))
-        else {
-            panic!("identity mismatch must be rejected")
-        };
-        assert_eq!(error.code, "workspace_identity_changed");
     }
 }

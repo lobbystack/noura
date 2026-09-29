@@ -165,7 +165,7 @@ pub async fn sync_workspace_join(
         &OsSyncCredentials,
     )
     .await?;
-    crate::save_recent(&app, &engine)?;
+    crate::commands::workspace::save_recent(&app, &engine)?;
     let result = engine.state();
     crate::install_engine(&app, &state, engine, "sync_join")?;
     Ok(Some(result))
