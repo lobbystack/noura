@@ -8,6 +8,7 @@ import {
 	type AssistantMessage,
 	type Model,
 } from '@earendil-works/pi-ai';
+import type { ChatMessageKind, ChatMessageStatus } from '@noura/shared';
 import { Type, type TSchema } from 'typebox';
 import type {
 	AiContextProvider,
@@ -61,10 +62,8 @@ export interface AiProviderStreamTransport {
 	cancel(operationId: string): Promise<boolean>;
 }
 
-export type AiChatMessageKind =
-	'user' | 'assistant' | 'tool-call' | 'tool-result' | 'context-summary';
-export type AiChatMessageStatus =
-	'in-progress' | 'completed' | 'cancelled' | 'failed' | 'interrupted';
+export type AiChatMessageKind = ChatMessageKind;
+export type AiChatMessageStatus = ChatMessageStatus;
 export interface AiChatMessageRef {
 	id: string;
 	revision: string;

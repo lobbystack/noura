@@ -14,7 +14,7 @@ import type {
 	CoreEvent,
 	MutationResult,
 	ObjectPatch,
-	ObjectQuery,
+	ObjectFilter,
 	SearchInput,
 	SearchResult,
 	UnmanagedFile,
@@ -97,7 +97,7 @@ export interface PluginContext {
 		removeEmptyFolder(relativePath: string): Promise<void>;
 	};
 	objects: {
-		list(query?: ObjectQuery): Promise<WorkspaceObject[]>;
+		list(query?: ObjectFilter): Promise<WorkspaceObject[]>;
 		get(id: string): Promise<WorkspaceObject>;
 		create(input: unknown): Promise<MutationResult<WorkspaceObject>>;
 		update(

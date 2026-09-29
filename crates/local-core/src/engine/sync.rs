@@ -1061,7 +1061,7 @@ impl WorkspaceEngine {
         {
             self.emit(
                 "collaboration:status",
-                "sync",
+                EventSource::Sync,
                 serde_json::to_value(crate::sync::collaboration::CollaborationStatusEvent {
                     object_id: op.object_id.clone(),
                     generation: generation.clone(),
@@ -1164,11 +1164,10 @@ impl WorkspaceEngine {
         self.sync_write(STATE_PATH, &journal)?;
         drop(_lock);
         // Index repair cannot turn a successful canonical commit into a failed mutation.
-        let _ =
-            self.index_outcome(self.reconcile_forced_with_source(
-                &std::collections::HashSet::from([change.path]),
-                "sync",
-            ));
+        let _ = self.index_outcome(self.reconcile_forced_with_source(
+            &std::collections::HashSet::from([change.path]),
+            EventSource::Sync,
+        ));
         Ok(outcome)
     }
 

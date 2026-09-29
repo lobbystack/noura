@@ -488,7 +488,7 @@ fn workspace_close(app: AppHandle, state: State<AppState>) -> Result<(), CoreErr
                 event_type: "workspace:closed".into(),
                 workspace_id: engine.manifest().id,
                 occurred_at: local_core::now_rfc3339(),
-                source: "application".into(),
+                source: local_core::EventSource::Application,
                 payload: serde_json::json!({}),
             },
         )

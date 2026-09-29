@@ -101,6 +101,8 @@ pub struct WorkspaceState {
     pub phase: WorkspacePhase,
     pub workspace_id: Option<String>,
     pub root_path: Option<String>,
+    /// Serialized as a JSON number; workspaces never approach 2^53 files.
+    #[ts(type = "number")]
     pub indexed_files: u64,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -129,6 +131,9 @@ pub enum IndexStatus {
 pub struct MutationResult<T> {
     pub value: T,
     pub revision: String,
+    /// Always `committed`: a mutation only returns after its canonical file
+    /// write completes.
+    #[ts(type = "\"committed\"")]
     pub durability: String,
     pub index_status: IndexStatus,
     pub warnings: Vec<CoreWarning>,
@@ -174,6 +179,21 @@ pub struct FolderEntry {
     pub name: String,
 }
 
+/// What caused a core event.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum EventSource {
+    /// A mutation made through this application.
+    Application,
+    /// A change another program made to workspace files.
+    External,
+    /// An index walk that found changes already on disk.
+    Reconciliation,
+    /// A change pulled from managed sync.
+    Sync,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -183,7 +203,7 @@ pub struct CoreEvent {
     pub event_type: String,
     pub workspace_id: String,
     pub occurred_at: String,
-    pub source: String,
+    pub source: EventSource,
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
 }

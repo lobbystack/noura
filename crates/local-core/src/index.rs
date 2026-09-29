@@ -73,7 +73,8 @@ pub(crate) struct ObjectHead {
 }
 
 /// Exact-match filters for object queries, applied in SQL.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, optional_fields)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ObjectFilter {
     #[serde(rename = "type")]
@@ -133,7 +134,7 @@ pub struct ObjectSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
-#[ts(export)]
+#[ts(export, optional_fields = nullable)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchInput {
     pub query: String,
@@ -163,6 +164,9 @@ pub struct CalendarEntry {
     pub source_id: String,
     pub source_type: String,
     pub title: String,
+    /// The date property this entry comes from; the calendar query only
+    /// reads `due`, `date`, and `start`.
+    #[ts(type = "\"due\" | \"date\" | \"start\"")]
     pub property: String,
     pub start: String,
     pub end: Option<String>,

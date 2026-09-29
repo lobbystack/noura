@@ -347,11 +347,10 @@ impl WorkspaceEngine {
         self.sync_mark_reviewed_conflicts(&mut journal, &original.object_id, &change)?;
         self.sync_write(STATE_PATH, &journal)?;
         drop(_lock);
-        let _ =
-            self.index_outcome(self.reconcile_forced_with_source(
-                &std::collections::HashSet::from([change.path]),
-                "sync",
-            ));
+        let _ = self.index_outcome(self.reconcile_forced_with_source(
+            &std::collections::HashSet::from([change.path]),
+            EventSource::Sync,
+        ));
         Ok(())
     }
 

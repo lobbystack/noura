@@ -19,13 +19,13 @@ use crate::{
     AppendChatContextSummaryInput, AppendChatToolResultInput, AppendChatUserMessageInput,
     BeginChatAssistantInput, BeginChatToolCallInput, ChangeChatRetentionInput, Chat, ChatMessage,
     ChatMessageKind, ChatMessageStatus, ChatRead, ChatRetention, CoreError, CoreEvent, CoreWarning,
-    CreateChatInput, ErrorCategory, FinishChatAssistantInput, FinishChatToolCallInput, IndexStatus,
-    IndexStore, MutationResult, ParseStatus, ParsedMarkdown, RenameChatInput, Result, SearchInput,
-    SearchResult, UnmanagedFile, WORKSPACE_MANIFEST_PATH, WatchCoordinator, WorkspaceEntry,
-    WorkspaceEntryKind, WorkspaceManifest, WorkspaceObject, WorkspacePhase, WorkspaceState,
-    index::CalendarEntry, markdown, new_object_id, now_rfc3339, parse_chat, parse_chat_message,
-    path::resolve_for_write, serialize_chat, serialize_chat_message, valid_object_id,
-    valid_object_type, validate_retention,
+    CreateChatInput, ErrorCategory, EventSource, FinishChatAssistantInput, FinishChatToolCallInput,
+    IndexStatus, IndexStore, MutationResult, ParseStatus, ParsedMarkdown, RenameChatInput, Result,
+    SearchInput, SearchResult, UnmanagedFile, WORKSPACE_MANIFEST_PATH, WatchCoordinator,
+    WorkspaceEntry, WorkspaceEntryKind, WorkspaceManifest, WorkspaceObject, WorkspacePhase,
+    WorkspaceState, index::CalendarEntry, markdown, new_object_id, now_rfc3339, parse_chat,
+    parse_chat_message, path::resolve_for_write, serialize_chat, serialize_chat_message,
+    valid_object_id, valid_object_type, validate_retention,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -35,10 +35,11 @@ pub struct CreateObjectInput {
     #[serde(rename = "type")]
     pub object_type: String,
     pub title: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
+    #[ts(optional = nullable)]
     pub relative_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(type = "Record<string, unknown>")]
     pub properties: BTreeMap<String, serde_json::Value>,
 }
@@ -47,12 +48,14 @@ pub struct CreateObjectInput {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectPatch {
+    #[ts(optional = nullable)]
     pub title: Option<String>,
+    #[ts(optional = nullable)]
     pub body: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(type = "Record<string, unknown>")]
     pub properties: BTreeMap<String, serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remove_properties: Vec<String>,
     pub expected_revision: String,
 }
@@ -303,7 +306,7 @@ struct ChatMutationFault {
 /// Patch for selected `.noura/workspace.yaml` fields. Omitted fields keep their
 /// current value; the manifest `updated` timestamp always refreshes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, optional_fields = nullable)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ManifestUpdateInput {
     pub name: Option<String>,
@@ -608,7 +611,11 @@ impl WorkspaceEngine {
         engine.recover_pending_chat_mutations()?;
         engine.reconcile()?;
         engine.migrate_sync_plugin();
-        engine.emit("workspace:ready", "reconciliation", serde_json::json!({}));
+        engine.emit(
+            "workspace:ready",
+            EventSource::Reconciliation,
+            serde_json::json!({}),
+        );
         Ok(engine)
     }
 
@@ -773,7 +780,7 @@ impl WorkspaceEngine {
             .unwrap_or_else(|error| error.into_inner()) = manifest.clone();
         self.emit(
             "workspace:manifest-updated",
-            "application",
+            EventSource::Application,
             serde_json::json!({
                 "enabledPlugins": manifest.enabled_plugins,
                 "name": manifest.name,
@@ -831,7 +838,11 @@ impl WorkspaceEngine {
     }
 
     pub fn rebuild_index(&self) -> Result<()> {
-        self.emit("workspace:rebuilding", "application", serde_json::json!({}));
+        self.emit(
+            "workspace:rebuilding",
+            EventSource::Application,
+            serde_json::json!({}),
+        );
         let next = self.index_path.with_extension("sqlite.next");
         if next.exists() {
             std::fs::remove_file(&next)
@@ -872,7 +883,7 @@ impl WorkspaceEngine {
         let _ = std::fs::remove_file(previous);
         self.emit(
             "workspace:ready",
-            "application",
+            EventSource::Application,
             serde_json::json!({ "rebuilt": true }),
         );
         Ok(())
@@ -880,7 +891,7 @@ impl WorkspaceEngine {
 
     /// Walk the whole workspace and bring the index in line with the files.
     pub fn reconcile(&self) -> Result<()> {
-        self.reconcile_forced_with_source(&HashSet::new(), "reconciliation")
+        self.reconcile_forced_with_source(&HashSet::new(), EventSource::Reconciliation)
     }
 
     /// Whether a read must walk the workspace before trusting the index:
@@ -902,7 +913,7 @@ impl WorkspaceEngine {
     pub(crate) fn reconcile_forced_with_source(
         &self,
         forced: &HashSet<String>,
-        source: &str,
+        source: EventSource,
     ) -> Result<()> {
         self.reconcile_walk(forced, source, false).map(|_| ())
     }
@@ -912,7 +923,7 @@ impl WorkspaceEngine {
     fn reconcile_walk(
         &self,
         forced: &HashSet<String>,
-        source: &str,
+        source: EventSource,
         list_entries: bool,
     ) -> Result<WorkspaceScan> {
         self.recover_pending_chat_mutations()?;
@@ -953,7 +964,7 @@ impl WorkspaceEngine {
 
     /// Re-read specific Markdown files and update only their index rows.
     /// A missing file counts as removed unless iCloud still holds it.
-    fn reconcile_paths(&self, paths: &[String], source: &str) -> Result<()> {
+    fn reconcile_paths(&self, paths: &[String], source: EventSource) -> Result<()> {
         let mut changed = Vec::new();
         let mut removed = Vec::new();
         for relative in paths {
@@ -994,7 +1005,7 @@ impl WorkspaceEngine {
         &self,
         changed: Vec<MarkdownIndexEntry>,
         removed: Vec<String>,
-        source: &str,
+        source: EventSource,
     ) -> Result<()> {
         if changed.is_empty() && removed.is_empty() {
             return Ok(());
@@ -1027,13 +1038,13 @@ impl WorkspaceEngine {
         if self.watcher.take_overflow() {
             // Events were lost, so the paths are incomplete: walk everything.
             self.sync_external_manifest(&[self.root.join(WORKSPACE_MANIFEST_PATH)])?;
-            let scan = self.reconcile_walk(&HashSet::new(), "external", false)?;
+            let scan = self.reconcile_walk(&HashSet::new(), EventSource::External, false)?;
             if let Ok(mut journal) = self.self_writes.lock() {
                 journal.clear();
             }
             self.emit(
                 "file:changed",
-                "external",
+                EventSource::External,
                 serde_json::json!({ "paths": scan.touched, "rescanned": true }),
             );
             return Ok(scan.touched);
@@ -1100,10 +1111,13 @@ impl WorkspaceEngine {
         external.sort();
         external.dedup();
         if !external.is_empty() {
-            self.reconcile_forced_with_source(&external.iter().cloned().collect(), "external")?;
+            self.reconcile_forced_with_source(
+                &external.iter().cloned().collect(),
+                EventSource::External,
+            )?;
             self.emit(
                 "file:changed",
-                "external",
+                EventSource::External,
                 serde_json::json!({ "paths": external }),
             );
         }
@@ -1166,7 +1180,7 @@ impl WorkspaceEngine {
         drop(guard);
         self.emit(
             "workspace:manifest-updated",
-            "external",
+            EventSource::External,
             serde_json::json!({
                 "enabledPlugins": enabled_plugins,
                 "name": name,
@@ -1798,10 +1812,14 @@ impl WorkspaceEngine {
         self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_save")?;
         self.emit(
             "file:changed",
-            "application",
+            EventSource::Application,
             serde_json::json!({ "paths": [relative] }),
         );
-        self.emit("search:index-updated", "application", serde_json::json!({}));
+        self.emit(
+            "search:index-updated",
+            EventSource::Application,
+            serde_json::json!({}),
+        );
         let managed_object = match markdown::parse_markdown(&relative, &next_bytes) {
             ParsedMarkdown::Managed(object) => Some(object),
             _ => None,
@@ -1911,10 +1929,14 @@ impl WorkspaceEngine {
                 self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_resolve")?;
                 self.emit(
                     "file:changed",
-                    "application",
+                    EventSource::Application,
                     serde_json::json!({ "paths": [relative] }),
                 );
-                self.emit("search:index-updated", "application", serde_json::json!({}));
+                self.emit(
+                    "search:index-updated",
+                    EventSource::Application,
+                    serde_json::json!({}),
+                );
                 let managed_object = match markdown::parse_markdown(&relative, &next_bytes) {
                     ParsedMarkdown::Managed(object) => Some(object),
                     _ => None,
@@ -1955,7 +1977,12 @@ impl WorkspaceEngine {
         };
         let _guard = self.write_lock("chat_create")?;
         let (index_status, warnings) = self.write_chat_unlocked(&mut chat, None, "chat_create")?;
-        self.emit_chat_event("chat:created", &chat, "application", serde_json::json!({}));
+        self.emit_chat_event(
+            "chat:created",
+            &chat,
+            EventSource::Application,
+            serde_json::json!({}),
+        );
         Ok(MutationResult {
             value: chat.clone(),
             revision: chat.revision,
@@ -1993,7 +2020,7 @@ impl WorkspaceEngine {
         self.emit_chat_event(
             "chat:retention-changed",
             &chat,
-            "application",
+            EventSource::Application,
             serde_json::json!({}),
         );
         Ok(MutationResult {
@@ -2018,7 +2045,12 @@ impl WorkspaceEngine {
             Some(&input.expected_chat_revision),
             "chat_rename",
         )?;
-        self.emit_chat_event("chat:renamed", &chat, "application", serde_json::json!({}));
+        self.emit_chat_event(
+            "chat:renamed",
+            &chat,
+            EventSource::Application,
+            serde_json::json!({}),
+        );
         Ok(MutationResult {
             value: chat.clone(),
             revision: chat.revision,
@@ -2315,7 +2347,7 @@ impl WorkspaceEngine {
         self.emit_chat_event(
             "chat:recovered",
             &read.chat,
-            "application",
+            EventSource::Application,
             serde_json::json!({ "interruptedMessages": read.messages.iter().filter(|message| message.status == ChatMessageStatus::Interrupted).count() }),
         );
         Ok(read)
@@ -2356,7 +2388,12 @@ impl WorkspaceEngine {
                 continue;
             }
             expired.push(chat.id.clone());
-            self.emit_chat_event("chat:expired", &chat, "application", serde_json::json!({}));
+            self.emit_chat_event(
+                "chat:expired",
+                &chat,
+                EventSource::Application,
+                serde_json::json!({}),
+            );
         }
         drop(_guard);
         if !expired.is_empty() {
@@ -2536,7 +2573,7 @@ impl WorkspaceEngine {
         let (index_status, warnings) = self.index_outcome(index_result);
         self.emit(
             "object:moved",
-            "application",
+            EventSource::Application,
             serde_json::json!({"id":id,"from":old,"to":destination}),
         );
         Ok(MutationResult {
@@ -2580,7 +2617,7 @@ impl WorkspaceEngine {
         let (index_status, warnings) = self.index_outcome(result);
         self.emit(
             "object:deleted",
-            "application",
+            EventSource::Application,
             serde_json::json!({"id":id,"path":object.relative_path,"trashPath":trash_path}),
         );
         Ok(MutationResult {
@@ -2618,7 +2655,7 @@ impl WorkspaceEngine {
     /// The walk also reconciles when the watcher reported changes.
     pub fn list_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
         let scan = if self.needs_reconcile() {
-            self.reconcile_walk(&HashSet::new(), "reconciliation", true)?
+            self.reconcile_walk(&HashSet::new(), EventSource::Reconciliation, true)?
         } else {
             self.recover_pending_chat_mutations()?;
             scan_workspace(&self.root, &self.current_ignore(), None, true)?
@@ -2642,7 +2679,7 @@ impl WorkspaceEngine {
         if !unindexed.is_empty() {
             // A file appeared before its watcher event arrived. Index just
             // those files instead of failing the listing.
-            self.reconcile_paths(&unindexed, "reconciliation")?;
+            self.reconcile_paths(&unindexed, EventSource::Reconciliation)?;
             metadata = self
                 .index
                 .lock()
@@ -2846,7 +2883,7 @@ impl WorkspaceEngine {
                 )
             });
         let (index_status, warnings) = self.index_outcome(result);
-        self.emit(event,"application",serde_json::json!({"id":object.id,"type":object.object_type,"path":object.relative_path,"revision":revision}));
+        self.emit(event,EventSource::Application,serde_json::json!({"id":object.id,"type":object.object_type,"path":object.relative_path,"revision":revision}));
         Ok(MutationResult {
             value: object,
             revision,
@@ -3011,7 +3048,7 @@ impl WorkspaceEngine {
         self.emit_chat_event(
             event,
             &chat,
-            "application",
+            EventSource::Application,
             serde_json::json!({
                 "messageId": message.id,
                 "messagePath": message.relative_path,
@@ -3108,7 +3145,7 @@ impl WorkspaceEngine {
         self.emit_chat_event(
             event,
             &chat,
-            "application",
+            EventSource::Application,
             serde_json::json!({
                 "messageId": message.id,
                 "messagePath": message.relative_path,
@@ -3586,7 +3623,7 @@ impl WorkspaceEngine {
         &self,
         event_type: &str,
         chat: &Chat,
-        source: &str,
+        source: EventSource,
         payload: serde_json::Value,
     ) {
         self.emit(
@@ -3706,7 +3743,7 @@ impl WorkspaceEngine {
                 self.apply_index_changes(
                     vec![(relative, bytes.clone(), modified, parsed)],
                     Vec::new(),
-                    "reconciliation",
+                    EventSource::Reconciliation,
                 )?;
             }
             return Ok(Some((object, bytes)));
@@ -3743,13 +3780,13 @@ impl WorkspaceEngine {
         }
         atomic_write(&self.root, &relative, bytes, "history_snapshot")
     }
-    fn emit(&self, event_type: &str, source: &str, payload: serde_json::Value) {
+    fn emit(&self, event_type: &str, source: EventSource, payload: serde_json::Value) {
         let _ = self.event_sender.send(CoreEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: event_type.into(),
             workspace_id: self.current_workspace_id(),
             occurred_at: now_rfc3339(),
-            source: source.into(),
+            source,
             payload,
         });
     }
@@ -3762,7 +3799,7 @@ impl WorkspaceEngine {
         &self,
         before: &HashMap<String, crate::index::ObjectHead>,
         after: &HashMap<String, crate::index::ObjectHead>,
-        source: &str,
+        source: EventSource,
     ) {
         let mut changes = Vec::new();
         for (id, head) in after {
@@ -3819,7 +3856,7 @@ impl WorkspaceEngine {
             Err(_) => {
                 self.emit(
                     "workspace:index-stale",
-                    "application",
+                    EventSource::Application,
                     serde_json::json!({ "repairScheduled": true }),
                 );
                 (
@@ -5719,7 +5756,7 @@ mod tests {
             .iter()
             .find(|event| event.event_type == "object:updated")
             .unwrap();
-        assert_eq!(updated.source, "external");
+        assert_eq!(updated.source, EventSource::External);
         assert_eq!(updated.payload["id"], created.value.id);
     }
 
@@ -5758,7 +5795,7 @@ mod tests {
             .iter()
             .find(|event| event.event_type == "object:updated")
             .unwrap();
-        assert_eq!(updated.source, "external");
+        assert_eq!(updated.source, EventSource::External);
         assert_eq!(updated.payload["id"], created.value.id);
     }
 
@@ -5793,7 +5830,7 @@ mod tests {
             .iter()
             .find(|event| event.event_type == "workspace:manifest-updated")
             .unwrap();
-        assert_eq!(updated.source, "external");
+        assert_eq!(updated.source, EventSource::External);
         assert!(
             !updated.payload["enabledPlugins"]
                 .as_array()
@@ -5837,7 +5874,7 @@ mod tests {
             .filter(|event| event.event_type == "workspace:manifest-updated")
             .collect::<Vec<_>>();
         assert_eq!(manifest_events.len(), 1);
-        assert_eq!(manifest_events[0].source, "application");
+        assert_eq!(manifest_events[0].source, EventSource::Application);
         assert_ne!(engine.manifest().updated, before.updated);
     }
 

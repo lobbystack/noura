@@ -1,34 +1,19 @@
-export type WorkspaceManifest = {
-	id: string;
-	format_version: 1;
-	name: string;
-	created: string;
-	updated: string;
-	enabled_plugins: string[];
-	ignore: string[];
-};
+import type {
+	CreateNoteInput,
+	ManifestUpdateInput as CoreManifestUpdateInput,
+	ParsedMarkdown,
+	UpdateNoteInput,
+	WorkspaceManifest,
+	WorkspaceObject,
+} from '@noura/shared';
 
-export type WorkspaceObject = {
-	id: string;
-	type: string;
-	title: string;
-	body: string;
-	relativePath: string;
-	revision: string;
-	created: string | null;
-	updated: string | null;
-	properties: Record<string, unknown>;
+export type {
+	CreateNoteInput,
+	ParsedMarkdown,
+	UpdateNoteInput,
+	WorkspaceManifest,
+	WorkspaceObject,
 };
-
-export type ParsedMarkdown =
-	| ({ kind: 'managed' } & WorkspaceObject)
-	| {
-			kind: 'unmanaged';
-			title: string;
-			body: string;
-			frontmatter: Record<string, unknown> | null;
-	  }
-	| { kind: 'malformed'; title: string; body: string; error: string };
 
 export type WorkspaceFormatErrorCode =
 	| 'invalid_input'
@@ -131,32 +116,16 @@ export type WorkspaceFormat = {
 	): WorkspaceObject;
 };
 
-export type CreateNoteInput = {
-	title: string;
-	body?: string;
-	relativePath?: string | null;
-	properties?: Record<string, unknown>;
-	now: string;
-};
-
-export type UpdateNoteInput = {
-	title?: string;
-	body?: string;
-	properties?: Record<string, unknown>;
-	removeProperties?: string[];
-	now: string;
-};
-
 export type CreateTaskInput = CreateNoteInput;
 export type UpdateTaskInput = UpdateNoteInput;
 export type CreateProjectInput = CreateNoteInput;
 export type UpdateProjectInput = UpdateNoteInput;
 
-export type ManifestUpdateInput = {
-	name?: string | null;
-	enabledPlugins?: string[] | null;
-	ignore?: string[] | null;
-};
+/** The optimistic `expectedUpdated` check belongs to the caller, not the format. */
+export type ManifestUpdateInput = Omit<
+	CoreManifestUpdateInput,
+	'expectedUpdated'
+>;
 
 function asFormatError(error: unknown): WorkspaceFormatError {
 	if (

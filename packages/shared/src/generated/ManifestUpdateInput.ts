@@ -4,9 +4,9 @@
  * Patch for selected `.noura/workspace.yaml` fields. Omitted fields keep their
  * current value; the manifest `updated` timestamp always refreshes.
  */
-export type ManifestUpdateInput = { name: string | null, enabledPlugins: Array<string> | null, ignore: Array<string> | null, 
+export type ManifestUpdateInput = { name?: string | null, enabledPlugins?: Array<string> | null, ignore?: Array<string> | null, 
 /**
  * Reject the update unless the on-disk manifest still has this
  * `updated` value, preventing silent overwrite of external edits.
  */
-expectedUpdated: string | null, };
+expectedUpdated?: string | null, };

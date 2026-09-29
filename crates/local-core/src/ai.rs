@@ -39,7 +39,9 @@ pub struct AiProviderConfig {
     pub kind: String,
     pub display_name: String,
     pub model: String,
+    #[ts(optional = nullable)]
     pub endpoint: Option<String>,
+    #[ts(optional = nullable)]
     pub credential_ref: Option<String>,
     pub enabled: bool,
 }
@@ -170,6 +172,8 @@ pub enum AiStreamEvent {
 #[serde(rename_all = "camelCase")]
 pub struct AiStreamFrame {
     pub operation_id: String,
+    /// Serialized as a JSON number; a stream never approaches 2^53 frames.
+    #[ts(type = "number")]
     pub sequence: u64,
     pub event: AiStreamEvent,
 }

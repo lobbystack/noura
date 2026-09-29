@@ -10,6 +10,9 @@
 		"wasm:build": "bun scripts/build-wasm.ts",
 		"test:runtime": "bun scripts/test-wasm-runtime.ts"
 	},
+	"dependencies": {
+		"@noura/shared": "workspace:*"
+	},
 	"devDependencies": {
 		"@types/bun": "latest",
 		"typescript": "^5.9.3"
