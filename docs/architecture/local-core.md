@@ -13,6 +13,27 @@ WorkspaceEngine
 └── provider configuration and OS credential store
 ```
 
+## Source layout
+
+`engine.rs` defines `WorkspaceEngine` and opens or creates a workspace. Each domain adds its methods in its own `impl WorkspaceEngine` block under `src/engine/`:
+
+| Module | Contents |
+| --- | --- |
+| `objects.rs` | Create, adopt, read, update, move, and delete managed objects |
+| `drafts.rs` | Editor draft merges, conflict resolution, and recovery snapshots |
+| `raw_markdown.rs` | Markdown files without a managed ID, saved as raw text |
+| `chats.rs`, `chat_journal.rs` | Chats, messages, and the two-file mutation journal |
+| `files.rs`, `copy.rs`, `trash.rs` | Folders, ordinary files, PDFs, local assets, copies, and deletes |
+| `search.rs` | Object queries, full-text search, and the calendar |
+| `manifest.rs` | `.noura/workspace.yaml` and plugin state |
+| `scan.rs`, `reconcile.rs` | Workspace walks, index rebuilds, and external-change reconciliation |
+| `durable.rs` | Path normalization, atomic writes, and fsync helpers |
+| `sync.rs`, `sync/` | The encrypted sync replica, with collaborative documents in `sync/collaboration/` |
+
+`src/ai.rs` holds the AI provider and consent API. The `genai` adapter, stream operations, and input checks live in `src/ai/`.
+
+The desktop host in `src-tauri/src/lib.rs` holds the shared app state and `run()`. Its Tauri commands live in `src-tauri/src/commands/`, one module per domain, and call these engine methods.
+
 ## Delete to the system trash
 
 Deleting a note, task, or project moves its file to the operating system trash: the macOS Trash, the Windows Recycle Bin, or the freedesktop.org trash on Linux. People restore it there like any other file, so the app has no restore screen of its own. Expired chats follow the same path.
