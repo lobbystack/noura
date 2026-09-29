@@ -1,12 +1,13 @@
 export {
 	createPdfPreviewExtensions,
-	createLiveMarkdownDocument,
 	createLiveMarkdownEditor,
+	setSpellcheck,
 	spellcheckAttributes,
+	spellcheckExtension,
 } from './factory';
 export type {
 	EditorSelectionState,
-	LiveMarkdownDocument,
+	EditorViewMemory,
 	LiveMarkdownEditor,
 	LiveMarkdownOptions,
 	MarkdownFormat,

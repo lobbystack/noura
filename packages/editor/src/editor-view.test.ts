@@ -2,10 +2,7 @@ import { describe, expect, test, beforeAll } from 'bun:test';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import type { Decoration } from '@codemirror/view';
 import { EditorView } from '@codemirror/view';
-import {
-	createLiveMarkdownDocument,
-	createLiveMarkdownEditor,
-} from './factory';
+import { createLiveMarkdownEditor } from './factory';
 
 // Registration stays for the process lifetime: widgets render
 // asynchronously (KaTeX), and later callbacks must still see a DOM.
@@ -58,8 +55,7 @@ describe('live markdown editor view', () => {
 		// is the regression test for the state-field delivery path.
 		const parent = document.createElement('div');
 		document.body.appendChild(parent);
-		const live = createLiveMarkdownDocument('markdown', SAMPLE);
-		const editor = createLiveMarkdownEditor(parent, { ytext: live.ytext });
+		const editor = createLiveMarkdownEditor(parent, { text: SAMPLE });
 		try {
 			const ranges = collectBlockPreviewRanges(editor.view);
 			const blocks = ranges.filter((item) => item.deco.spec.block === true);
@@ -92,7 +88,6 @@ describe('live markdown editor view', () => {
 			).toBe(false);
 		} finally {
 			editor.destroy();
-			live.destroy();
 			parent.remove();
 		}
 	});
@@ -117,12 +112,11 @@ describe('PDF previews', () => {
 		} as unknown as typeof IntersectionObserver;
 		const host = document.createElement('div');
 		document.body.append(host);
-		const documentModel = createLiveMarkdownDocument('markdown', source);
 		let mounts = 0;
 		let cleanups = 0;
 		const opened: number[] = [];
 		const editor = createLiveMarkdownEditor(host, {
-			ytext: documentModel.ytext,
+			text: source,
 			readOnly: true,
 			resolveLink: async (target) => ({
 				kind: 'pdf',
@@ -168,7 +162,6 @@ describe('PDF previews', () => {
 		expect(opened).toEqual([11]);
 		expect(editor.doc()).toBe(source);
 		editor.destroy();
-		documentModel.destroy();
 		host.remove();
 		expect(cleanups).toBe(4);
 		globalThis.IntersectionObserver = originalObserver;
@@ -179,10 +172,8 @@ describe('spellcheck', () => {
 	test('stays off by default and follows the preference when toggled', () => {
 		const host = document.createElement('div');
 		document.body.append(host);
-		const documentModel = createLiveMarkdownDocument('markdown', 'Hello');
 		const editor = createLiveMarkdownEditor(host, {
-			ytext: documentModel.ytext,
-			collaborative: false,
+			text: 'Hello',
 		});
 		expect(editor.view.contentDOM.getAttribute('spellcheck')).toBe('false');
 
@@ -193,20 +184,16 @@ describe('spellcheck', () => {
 		editor.setSpellcheck(false);
 		expect(editor.view.contentDOM.getAttribute('spellcheck')).toBe('false');
 		editor.destroy();
-		documentModel.destroy();
 	});
 
 	test('starts enabled when the option asks for it', () => {
 		const host = document.createElement('div');
 		document.body.append(host);
-		const documentModel = createLiveMarkdownDocument('markdown', 'Hello');
 		const editor = createLiveMarkdownEditor(host, {
-			ytext: documentModel.ytext,
-			collaborative: false,
+			text: 'Hello',
 			spellcheck: true,
 		});
 		expect(editor.view.contentDOM.getAttribute('spellcheck')).toBe('true');
 		editor.destroy();
-		documentModel.destroy();
 	});
 });

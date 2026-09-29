@@ -7,13 +7,13 @@ import {
 	type Extension,
 } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, keymap } from '@codemirror/view';
-import { markdown } from '@codemirror/lang-markdown';
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next';
 import * as Y from 'yjs';
 import {
 	decodeCollaborationUpdate,
 	type CollaborationSession,
 } from './collaboration';
+import { markdownSupport, textSemantics } from './factory';
 
 class CursorLabel extends WidgetType {
 	constructor(
@@ -99,6 +99,9 @@ export function createCollaborativeView(
 			doc: session.text.toString(),
 			extensions: [
 				...extensions,
+				// Y.Text indices and CodeMirror positions must agree, so a lone
+				// `\r` has to stay one character instead of a line break.
+				textSemantics,
 				yCollab(session.text, null, { undoManager: session.undoManager }),
 				keymap.of(yUndoManagerKeymap),
 				permissions.of([
@@ -107,7 +110,7 @@ export function createCollaborativeView(
 				]),
 				presence,
 				EditorView.lineWrapping,
-				...(language === 'markdown' ? [markdown()] : []),
+				...(language === 'markdown' ? [markdownSupport()] : []),
 				EditorView.updateListener.of((update) => {
 					if (update.selectionSet) {
 						const { anchor, head } = update.state.selection.main;
