@@ -87,7 +87,12 @@ impl SyncAccountService {
     }
 
     pub fn current(&self, store: &impl SyncCredentials) -> Result<Option<SyncAccount>> {
-        self.connection(store)?
+        Self::stored_account(store)
+    }
+
+    /// The signed-in account, read from the credential store alone.
+    pub fn stored_account(store: &impl SyncCredentials) -> Result<Option<SyncAccount>> {
+        Self::stored_connection(store)?
             .as_ref()
             .map(|connection| public_account(connection, store))
             .transpose()

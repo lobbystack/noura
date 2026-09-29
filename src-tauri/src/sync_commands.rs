@@ -1,13 +1,16 @@
-use crate::AppState;
+use crate::{AppState, blocking, state_unavailable, sync_connection};
 use futures::{SinkExt, StreamExt};
-use local_core::sync::{
-    DeviceKeys, OsSyncCredentials, SyncCredentials, SyncInvitationRole, WorkspaceSyncCoordinator,
-    WorkspaceSyncPhase, WorkspaceSyncStatus,
+use local_core::{
+    CoreError,
+    sync::{
+        DeviceKeys, DeviceSignInInfo, OsSyncCredentials, SyncAccount, SyncAccountPoll,
+        SyncAccountService, SyncCredentials, SyncInvitationRole, WorkspaceSyncCoordinator,
+        WorkspaceSyncPhase, WorkspaceSyncStatus,
+    },
 };
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use tauri::AppHandle;
-use tauri::Manager;
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{
@@ -56,12 +59,7 @@ impl Drop for RealtimeRegistration<'_> {
 fn current_engine(
     state: &AppState,
 ) -> Result<std::sync::Arc<local_core::WorkspaceEngine>, CoreError> {
-    state
-        .engine
-        .lock()
-        .map_err(|_| crate::unavailable("sync"))?
-        .clone()
-        .ok_or_else(|| crate::unavailable("sync"))
+    crate::current_engine(state, "sync")
 }
 
 #[tauri::command]
@@ -72,13 +70,11 @@ pub async fn sync_workspace_conflicts(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
-    WorkspaceSyncCoordinator::conflicts(&engine, &connection, &OsSyncCredentials)
+    let connection = sync_connection(&state, "sync").await?;
+    blocking("sync", move || {
+        WorkspaceSyncCoordinator::conflicts(&engine, &connection, &OsSyncCredentials)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -90,13 +86,11 @@ pub async fn sync_workspace_resolve_conflict(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
-    WorkspaceSyncCoordinator::resolve_conflict(&engine, &connection, &OsSyncCredentials, &input)
+    let connection = sync_connection(&state, "sync").await?;
+    blocking("sync", move || {
+        WorkspaceSyncCoordinator::resolve_conflict(&engine, &connection, &OsSyncCredentials, &input)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -107,12 +101,7 @@ pub async fn sync_workspace_devices(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::devices(&engine, &connection, &OsSyncCredentials).await
 }
 
@@ -120,12 +109,7 @@ pub async fn sync_workspace_devices(
 pub async fn sync_remote_workspaces(
     state: State<'_, AppState>,
 ) -> Result<Vec<local_core::sync::RemoteSyncWorkspace>, CoreError> {
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     connection.transport(&OsSyncCredentials)?.workspaces().await
 }
 
@@ -139,12 +123,7 @@ pub async fn sync_workspace_join(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     let dialog = app.clone();
     let app_data = state.ai_data_root.clone();
     let path = tauri::async_runtime::spawn_blocking(move || {
@@ -158,11 +137,11 @@ pub async fn sync_workspace_join(
         };
         let path = selected
             .into_path()
-            .map_err(|_| crate::unavailable("sync_replica_path_unavailable"))?;
+            .map_err(|_| unsupported_path("sync_join"))?;
         Ok(Some(path))
     })
     .await
-    .map_err(|_| crate::unavailable("sync_join"))??;
+    .map_err(|_| state_unavailable("sync_join"))??;
     let Some(path) = path else {
         return Ok(None);
     };
@@ -177,12 +156,7 @@ pub async fn sync_workspace_join(
     .await?;
     crate::save_recent(&app, &engine)?;
     let result = engine.state();
-    let engine = std::sync::Arc::new(engine);
-    *state
-        .engine
-        .lock()
-        .map_err(|_| crate::unavailable("sync_join"))? = Some(engine.clone());
-    crate::forward_events(app, engine);
+    crate::install_engine(&app, &state, engine, "sync_join")?;
     Ok(Some(result))
 }
 
@@ -196,12 +170,7 @@ pub async fn sync_workspace_approve_device(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::approve_device(
         &engine,
         &connection,
@@ -220,12 +189,7 @@ pub async fn sync_workspace_invitations(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::invitations(&engine, &connection, &OsSyncCredentials).await
 }
 
@@ -238,12 +202,7 @@ pub async fn sync_workspace_create_invitation(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::create_invitation(&engine, &connection, &OsSyncCredentials, role)
         .await
 }
@@ -259,12 +218,7 @@ pub async fn sync_workspace_approve_invited_device(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::approve_invited_device(
         &engine,
         &connection,
@@ -285,12 +239,7 @@ pub async fn sync_workspace_finalize_invitation(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::finalize_invitation(
         &engine,
         &connection,
@@ -309,12 +258,7 @@ pub async fn sync_workspace_revoke_invitation(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::revoke_invitation(
         &engine,
         &connection,
@@ -337,7 +281,7 @@ fn status_for_engine(
         && let Some((root, live)) = state
             .sync_status
             .lock()
-            .map_err(|_| crate::unavailable("sync"))?
+            .map_err(|_| state_unavailable("sync"))?
             .as_ref()
         && root == engine.root()
     {
@@ -348,7 +292,7 @@ fn status_for_engine(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_workspace_status(state: State<'_, AppState>) -> Result<WorkspaceSyncStatus, CoreError> {
     status(&state)
 }
@@ -361,18 +305,7 @@ pub async fn sync_workspace_enable(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| {
-            CoreError::validation(
-                "sync_sign_in_required",
-                "Sign in before enabling workspace sync",
-                "sync",
-            )
-        })?;
+    let connection = sync_connection(&state, "sync").await?;
     WorkspaceSyncCoordinator::enable(&engine, &connection, &OsSyncCredentials).await?;
     status_for_engine(&state, &engine)
 }
@@ -385,7 +318,8 @@ pub async fn sync_workspace_pause(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    engine.sync_pause(true)?;
+    let paused = engine.clone();
+    blocking("sync", move || paused.sync_pause(true)).await?;
     status_for_engine(&state, &engine)
 }
 
@@ -397,12 +331,21 @@ pub async fn sync_workspace_resume(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    engine.sync_pause(false)?;
+    let resumed = engine.clone();
+    blocking("sync", move || resumed.sync_pause(false)).await?;
     *state
         .sync_status
         .lock()
-        .map_err(|_| crate::unavailable("sync"))? = None;
+        .map_err(|_| state_unavailable("sync"))? = None;
     status_for_engine(&state, &engine)
+}
+
+fn unsupported_path(operation: &str) -> CoreError {
+    CoreError::validation(
+        "unsupported_path",
+        "This location can't be used. Choose a folder on this computer.",
+        operation,
+    )
 }
 
 fn realtime_error() -> CoreError {
@@ -740,18 +683,7 @@ pub fn start(app: AppHandle) {
                 }
             };
             let run = async {
-                let connection = state
-                    .sync_account
-                    .lock()
-                    .await
-                    .connection(&OsSyncCredentials)?
-                    .ok_or_else(|| {
-                        CoreError::validation(
-                            "sync_sign_in_required",
-                            "Sign in to resume workspace sync",
-                            "sync",
-                        )
-                    })?;
+                let connection = sync_connection(&state, "sync").await?;
                 let transport = connection.transport(&OsSyncCredentials)?;
                 if transport.realtime_available().await? {
                     WorkspaceSyncCoordinator::pass(&engine, &connection, &OsSyncCredentials)
@@ -856,12 +788,7 @@ pub async fn sync_account_export_recovery(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     tauri::async_runtime::spawn_blocking(move || {
         let Some(selected) = app
             .dialog()
@@ -874,7 +801,7 @@ pub async fn sync_account_export_recovery(
         };
         let path = selected
             .into_path()
-            .map_err(|_| crate::unavailable("sync_invalid_recovery_path"))?;
+            .map_err(|_| unsupported_path("sync_recovery"))?;
         WorkspaceSyncCoordinator::export_recovery_kit(
             &engine,
             &connection,
@@ -884,7 +811,7 @@ pub async fn sync_account_export_recovery(
         Ok(true)
     })
     .await
-    .map_err(|_| crate::unavailable("sync_recovery_unavailable"))?
+    .map_err(|_| state_unavailable("sync_recovery"))?
 }
 
 #[tauri::command]
@@ -896,12 +823,7 @@ pub async fn sync_account_import_recovery(
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let _gate = state.sync_gate.lock().await;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
+    let connection = sync_connection(&state, "sync").await?;
     let selected = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
@@ -910,13 +832,13 @@ pub async fn sync_account_import_recovery(
             .blocking_pick_file()
     })
     .await
-    .map_err(|_| crate::unavailable("sync_recovery_unavailable"))?;
+    .map_err(|_| state_unavailable("sync_recovery"))?;
     let Some(selected) = selected else {
         return Ok(false);
     };
     let path = selected
         .into_path()
-        .map_err(|_| crate::unavailable("sync_invalid_recovery_path"))?;
+        .map_err(|_| unsupported_path("sync_recovery"))?;
     WorkspaceSyncCoordinator::import_recovery_kit(&engine, &connection, &OsSyncCredentials, &path)
         .await?;
     Ok(true)
@@ -932,47 +854,27 @@ pub async fn sync_account_open_browser(
         uri = uri.replacen("/account/device?", "/account?", 1);
         uri.push_str("&mode=signup");
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        #[cfg(target_os = "macos")]
-        let result = std::process::Command::new("/usr/bin/open")
-            .arg(&uri)
-            .status();
-        #[cfg(target_os = "linux")]
-        let result = std::process::Command::new("xdg-open").arg(&uri).status();
-        #[cfg(target_os = "windows")]
-        let result = std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", &uri])
-            .status();
-        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-        if result.is_ok_and(|status| status.success()) {
-            return Ok(());
-        }
-        Err(CoreError::validation(
-            "sync_browser_unavailable",
-            "Open the sign-in address in your browser",
-            "sync_signin",
-        ))
+    blocking("sync_signin", move || {
+        crate::os_files::open_web_link(&uri, "sync_signin").map_err(|_| {
+            CoreError::validation(
+                "sync_browser_unavailable",
+                "Open the sign-in address in your browser",
+                "sync_signin",
+            )
+        })
     })
     .await
-    .map_err(|_| {
-        CoreError::validation(
-            "sync_browser_unavailable",
-            "Open the sign-in address in your browser",
-            "sync_signin",
-        )
-    })?
 }
-use local_core::{
-    CoreError,
-    sync::{DeviceSignInInfo, SyncAccount, SyncAccountPoll},
-};
-use tauri::State;
 
 #[tauri::command]
 pub async fn sync_account_current(
     state: State<'_, AppState>,
 ) -> Result<Option<SyncAccount>, CoreError> {
-    state.sync_account.lock().await.current(&OsSyncCredentials)
+    let _account = state.sync_account.lock().await;
+    blocking("sync_account", || {
+        SyncAccountService::stored_account(&OsSyncCredentials)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1034,20 +936,26 @@ pub async fn collaboration_open(
     let engine = current_engine(&state)?;
     // Most files aren't collaborative. Answer from the sync journal before
     // reading credentials from the keychain or decrypting workspace keys.
-    if engine.sync_configuration()?.is_none()
-        || !engine.collaboration_path_is_active(&input.relative_path)?
-    {
+    let (local, path) = (engine.clone(), input.relative_path.clone());
+    let active = blocking("collaboration_open", move || {
+        Ok(local.sync_configuration()?.is_some() && local.collaboration_path_is_active(&path)?)
+    })
+    .await?;
+    if !active {
         return Ok(None);
     }
-    let Some(connection) = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-    else {
+    let Some(connection) = crate::stored_sync_connection(&state, "sync").await? else {
         return Ok(None);
     };
-    WorkspaceSyncCoordinator::collaboration_open(&engine, &connection, &OsSyncCredentials, input)
+    blocking("collaboration_open", move || {
+        WorkspaceSyncCoordinator::collaboration_open(
+            &engine,
+            &connection,
+            &OsSyncCredentials,
+            input,
+        )
+    })
+    .await
 }
 #[tauri::command]
 pub async fn collaboration_submit_updates(
@@ -1055,22 +963,20 @@ pub async fn collaboration_submit_updates(
     input: local_core::sync::collaboration::CollaborationSubmitInput,
 ) -> Result<local_core::sync::collaboration::CollaborationReceipt, CoreError> {
     let engine = current_engine(&state)?;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
-    let receipt = WorkspaceSyncCoordinator::collaboration_submit(
-        &engine,
-        &connection,
-        &OsSyncCredentials,
-        input,
-    )?;
+    let connection = sync_connection(&state, "sync").await?;
+    let receipt = blocking("collaboration_submit", move || {
+        WorkspaceSyncCoordinator::collaboration_submit(
+            &engine,
+            &connection,
+            &OsSyncCredentials,
+            input,
+        )
+    })
+    .await?;
     state.sync_wake.notify_one();
     Ok(receipt)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn collaboration_close(
     state: State<'_, AppState>,
     session_id: String,
@@ -1083,18 +989,16 @@ pub async fn collaboration_flush(
     session_id: String,
 ) -> Result<(), CoreError> {
     let engine = current_engine(&state)?;
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&OsSyncCredentials)?
-        .ok_or_else(|| crate::unavailable("sync_sign_in_required"))?;
-    WorkspaceSyncCoordinator::collaboration_flush(
-        &engine,
-        &connection,
-        &OsSyncCredentials,
-        &session_id,
-    )
+    let connection = sync_connection(&state, "sync").await?;
+    blocking("collaboration_flush", move || {
+        WorkspaceSyncCoordinator::collaboration_flush(
+            &engine,
+            &connection,
+            &OsSyncCredentials,
+            &session_id,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1202,12 +1106,17 @@ pub(crate) fn handle_auth_return(app: &AppHandle, uri: &str) {
     app.state::<AppState>()
         .sync_auth_return
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+    if let Some(window) = app.get_webview_window("main")
+        && let Err(error) = window
+            .show()
+            .and_then(|()| window.unminimize())
+            .and_then(|()| window.set_focus())
+    {
+        log::warn!("could not bring the window forward after sign-in: {error}");
     }
-    let _ = tauri::Emitter::emit(app, "noura://auth-return", ());
+    if let Err(error) = tauri::Emitter::emit(app, "noura://auth-return", ()) {
+        log::warn!("could not announce the sign-in return: {error}");
+    }
 }
 
 fn is_auth_return(uri: &str) -> bool {

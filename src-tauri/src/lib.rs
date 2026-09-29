@@ -5,9 +5,9 @@
 )]
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
+    time::Duration,
 };
 
 use local_core::{
@@ -18,15 +18,17 @@ use local_core::{
     ChatMessage, ChatRead, CoreError, CoreEvent, CreateChatInput, CreateObjectInput,
     DraftReconcileInput, DraftReconcileResult, ErrorCategory, FinishChatAssistantInput,
     FinishChatToolCallInput, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
-    ManifestUpdateInput, MarkdownLinkTarget, MutationResult, ObjectPatch, RawConflictResolveInput,
-    RawConflictResolveResult, RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput,
-    RawSaveResult, RenameChatInput, ResolveConflictInput, SearchInput, SearchResult, UnmanagedFile,
+    ManifestUpdateInput, MarkdownLinkTarget, MutationResult, ObjectFilter, ObjectPatch,
+    ObjectSummary, ObjectSummaryQuery, RawConflictResolveInput, RawConflictResolveResult,
+    RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult,
+    RenameChatInput, ResolveConflictInput, SearchInput, SearchResult, UnmanagedFile,
     WorkspaceEngine, WorkspaceEntry, WorkspaceManifest, WorkspaceObject, WorkspaceState,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Channel};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::DialogExt;
+mod diagnostics;
 mod sync_commands;
 
 struct AppState {
@@ -34,7 +36,8 @@ struct AppState {
     engine: Mutex<Option<Arc<WorkspaceEngine>>>,
     ai: Mutex<Option<Arc<AiFoundation>>>,
     ai_data_root: PathBuf,
-    runtime_spike: Arc<PiRuntimeSpikeRegistry>,
+    /// Held while the last workspace reopens in the background at launch.
+    restore: RestoreGate,
     sync_account: tokio::sync::Mutex<local_core::sync::SyncAccountService>,
     sync_gate: tokio::sync::Mutex<()>,
     sync_cancel: tokio::sync::Notify,
@@ -49,7 +52,7 @@ impl AppState {
             engine: Mutex::new(None),
             ai: Mutex::new(None),
             ai_data_root,
-            runtime_spike: Arc::new(PiRuntimeSpikeRegistry::default()),
+            restore: RestoreGate::default(),
             sync_auth_return: std::sync::atomic::AtomicBool::new(false),
             sync_account: tokio::sync::Mutex::new(local_core::sync::SyncAccountService::default()),
             sync_gate: tokio::sync::Mutex::new(()),
@@ -88,95 +91,6 @@ fn ai_unavailable(operation: &str) -> CoreError {
     error
 }
 
-#[derive(Default)]
-struct PiRuntimeSpikeRegistry {
-    operations: Mutex<HashMap<String, tokio::sync::watch::Sender<()>>>,
-}
-
-struct PiRuntimeSpikeOperation {
-    registry: Arc<PiRuntimeSpikeRegistry>,
-    operation_id: String,
-    cancellation: tokio::sync::watch::Receiver<()>,
-}
-
-impl Drop for PiRuntimeSpikeOperation {
-    fn drop(&mut self) {
-        if let Ok(mut operations) = self.registry.operations.lock() {
-            operations.remove(&self.operation_id);
-        }
-    }
-}
-
-impl PiRuntimeSpikeRegistry {
-    fn start(self: &Arc<Self>, operation_id: String) -> Result<PiRuntimeSpikeOperation, CoreError> {
-        let (sender, cancellation) = tokio::sync::watch::channel(());
-        let mut operations = self.operations.lock().map_err(|_| {
-            CoreError::validation(
-                "ai_operation_lock_unavailable",
-                "The AI operation state is unavailable",
-                "pi_runtime_spike_stream",
-            )
-        })?;
-        match operations.entry(operation_id.clone()) {
-            Entry::Vacant(entry) => {
-                entry.insert(sender);
-            }
-            Entry::Occupied(_) => {
-                return Err(CoreError::validation(
-                    "ai_operation_in_progress",
-                    "An AI operation with this identifier is already running",
-                    "pi_runtime_spike_stream",
-                ));
-            }
-        }
-        Ok(PiRuntimeSpikeOperation {
-            registry: self.clone(),
-            operation_id,
-            cancellation,
-        })
-    }
-
-    fn cancel(&self, operation_id: &str) -> Result<bool, CoreError> {
-        let operations = self.operations.lock().map_err(|_| {
-            CoreError::validation(
-                "ai_operation_lock_unavailable",
-                "The AI operation state is unavailable",
-                "pi_runtime_spike_cancel",
-            )
-        })?;
-        Ok(operations
-            .get(operation_id)
-            .is_some_and(|cancellation| cancellation.send(()).is_ok()))
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PiRuntimeSpikeFrame {
-    operation_id: String,
-    sequence: u64,
-    kind: PiRuntimeSpikeFrameKind,
-    text: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PiRuntimeSpikeFrameKind {
-    Delta,
-    Done,
-    Aborted,
-}
-
-fn validate_pi_runtime_spike_operation(operation_id: &str) -> Result<(), CoreError> {
-    uuid::Uuid::parse_str(operation_id).map_err(|_| {
-        CoreError::validation(
-            "ai_operation_invalid",
-            "The AI operation identifier is invalid",
-            "pi_runtime_spike_stream",
-        )
-    })?;
-    Ok(())
-}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RecentWorkspace {
@@ -194,16 +108,6 @@ struct CreateWorkspaceInput {
 #[derive(Deserialize)]
 struct OpenWorkspaceInput {
     path: String,
-}
-#[derive(Deserialize)]
-struct ObjectQuery {
-    #[serde(rename = "type")]
-    object_type: Option<String>,
-    project: Option<String>,
-    status: Option<String>,
-    priority: Option<String>,
-    #[serde(rename = "pathPrefix")]
-    path_prefix: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -255,33 +159,122 @@ struct CredentialDeleteInput {
     credential_ref: String,
 }
 
-fn unavailable(operation: &str) -> CoreError {
-    CoreError::validation(
-        "workspace_not_open",
-        "Open a workspace before using this operation",
+/// No workspace is open, or the one that was open has closed.
+pub(crate) fn workspace_not_open(operation: &str) -> CoreError {
+    CoreError::validation("workspace_not_open", "Open a workspace first.", operation)
+}
+
+/// Sync needs a signed-in account on this device.
+pub(crate) fn sign_in_required(operation: &str) -> CoreError {
+    CoreError::new(
+        "sync_sign_in_required",
+        ErrorCategory::Credential,
+        "Sign in to use sync.",
         operation,
     )
 }
-// Plain Tauri commands run on the main thread and freeze the window while
-// they work. Read commands that may reconcile or scan the workspace are
-// declared `#[tauri::command(async)]` so they run on the async runtime.
+
+/// Host state was briefly unusable: a lock was poisoned by a crashed task or
+/// a background task was cancelled. Retrying usually works. The workspace
+/// itself is still open, so callers must not treat this as a closed one.
+pub(crate) fn state_unavailable(operation: &str) -> CoreError {
+    let mut error = CoreError::new(
+        "state_unavailable",
+        ErrorCategory::Transient,
+        "Something went wrong. Try again.",
+        operation,
+    );
+    error.retryable = true;
+    error
+}
+
+/// Run engine, disk, lock, or keychain work on the blocking thread pool so
+/// it never stalls the window or the async runtime.
+pub(crate) async fn blocking<T: Send + 'static>(
+    operation: &'static str,
+    work: impl FnOnce() -> Result<T, CoreError> + Send + 'static,
+) -> Result<T, CoreError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| state_unavailable(operation))?
+}
+
+/// Lets commands wait for the launch-time restore of the last workspace, so
+/// the first `workspace_state` answer is the restored workspace instead of
+/// the chooser.
+#[derive(Default)]
+struct RestoreGate {
+    restoring: Mutex<bool>,
+    finished: Condvar,
+}
+
+impl RestoreGate {
+    fn begin(&self) {
+        if let Ok(mut restoring) = self.restoring.lock() {
+            *restoring = true;
+        }
+    }
+
+    fn finish(&self) {
+        if let Ok(mut restoring) = self.restoring.lock() {
+            *restoring = false;
+        }
+        self.finished.notify_all();
+    }
+
+    /// Block until the restore finishes. The timeout keeps a hung disk from
+    /// wedging every command; the chooser stays available after it.
+    fn wait(&self) {
+        let Ok(restoring) = self.restoring.lock() else {
+            return;
+        };
+        let _ = self
+            .finished
+            .wait_timeout_while(restoring, Duration::from_secs(30), |restoring| *restoring);
+    }
+}
+
+/// The open workspace engine, after any launch-time restore settles.
+pub(crate) fn current_engine(
+    state: &AppState,
+    operation: &str,
+) -> Result<Arc<WorkspaceEngine>, CoreError> {
+    state.restore.wait();
+    state
+        .engine
+        .lock()
+        .map_err(|_| state_unavailable(operation))?
+        .clone()
+        .ok_or_else(|| workspace_not_open(operation))
+}
+
+/// Install a newly opened engine and route its events to the window.
+fn install_engine(
+    app: &AppHandle,
+    state: &AppState,
+    engine: WorkspaceEngine,
+    operation: &str,
+) -> Result<Arc<WorkspaceEngine>, CoreError> {
+    let engine = Arc::new(engine);
+    state.sync_cancel.notify_one();
+    state.sync_wake.notify_one();
+    *state
+        .engine
+        .lock()
+        .map_err(|_| state_unavailable(operation))? = Some(engine.clone());
+    forward_events(app.clone(), engine.clone());
+    Ok(engine)
+}
+
+// Commands that touch the engine, the disk, locks, or the keychain are
+// declared `#[tauri::command(async)]` or `async` so they never run on the
+// main thread. The `commands_stay_off_the_main_thread` test enforces it.
 fn with_engine<T>(
     state: &State<AppState>,
     operation: &str,
     run: impl FnOnce(&WorkspaceEngine) -> Result<T, CoreError>,
 ) -> Result<T, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| {
-            CoreError::validation(
-                "workspace_lock_unavailable",
-                "The workspace state is unavailable",
-                operation,
-            )
-        })?
-        .clone()
-        .ok_or_else(|| unavailable(operation))?;
+    let engine = current_engine(state, operation)?;
     run(&engine)
 }
 fn forward_events(app: AppHandle, engine: Arc<WorkspaceEngine>) {
@@ -304,13 +297,15 @@ fn forward_events(app: AppHandle, engine: Arc<WorkspaceEngine>) {
                     {
                         break;
                     }
-                    let _ = app.emit("noura://core-event", event);
+                    if let Err(error) = app.emit("noura://core-event", event) {
+                        log::warn!("could not deliver a workspace event: {error}");
+                    }
                 }
                 // A bounded broadcast channel may drop a burst. Keep the bridge
                 // alive: the next event or a projection refresh will reconcile
                 // the canonical files rather than leaving the session stale.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    eprintln!("noura event bridge lagged; skipped {skipped} events");
+                    log::warn!("event bridge lagged; skipped {skipped} events");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -408,32 +403,27 @@ fn save_recent(app: &AppHandle, workspace: &WorkspaceEngine) -> Result<(), CoreE
         .map_err(|error| CoreError::io(error, "workspace_recent", path.to_str()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn workspace_create(
     app: AppHandle,
     state: State<AppState>,
     input: CreateWorkspaceInput,
 ) -> Result<WorkspaceState, CoreError> {
+    state.restore.wait();
     let engine = WorkspaceEngine::create(&input.path, &input.name)?;
     engine.set_system_trash(local_core::os_trash());
     let value = engine.state();
     save_recent(&app, &engine)?;
-    let engine = Arc::new(engine);
-    state.sync_cancel.notify_one();
-    state.sync_wake.notify_one();
-    *state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("workspace_create"))? = Some(engine.clone());
-    forward_events(app, engine);
+    install_engine(&app, &state, engine, "workspace_create")?;
     Ok(value)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn workspace_open(
     app: AppHandle,
     state: State<AppState>,
     input: OpenWorkspaceInput,
 ) -> Result<WorkspaceState, CoreError> {
+    state.restore.wait();
     let recent = load_recent(&app);
     let registered = recent_workspace_at_path(&recent, &input.path);
     let name = registered
@@ -451,27 +441,21 @@ fn workspace_open(
     }
     let value = engine.state();
     save_recent(&app, &engine)?;
-    let engine = Arc::new(engine);
-    state.sync_cancel.notify_one();
-    state.sync_wake.notify_one();
-    *state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("workspace_open"))? = Some(engine.clone());
-    forward_events(app, engine);
+    install_engine(&app, &state, engine, "workspace_open")?;
     Ok(value)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn workspace_close(app: AppHandle, state: State<AppState>) -> Result<(), CoreError> {
+    state.restore.wait();
     state.sync_cancel.notify_one();
     state.sync_wake.notify_one();
     let engine = state
         .engine
         .lock()
-        .map_err(|_| unavailable("workspace_close"))?
+        .map_err(|_| state_unavailable("workspace_close"))?
         .take();
-    if let Some(engine) = engine {
-        let _ = app.emit(
+    if let Some(engine) = engine
+        && let Err(error) = app.emit(
             "noura://core-event",
             CoreEvent {
                 event_id: uuid::Uuid::new_v4().to_string(),
@@ -481,16 +465,19 @@ fn workspace_close(app: AppHandle, state: State<AppState>) -> Result<(), CoreErr
                 source: "application".into(),
                 payload: serde_json::json!({}),
             },
-        );
+        )
+    {
+        log::warn!("could not announce the closed workspace: {error}");
     }
     Ok(())
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn workspace_state(state: State<AppState>) -> Result<WorkspaceState, CoreError> {
+    state.restore.wait();
     let engine = state
         .engine
         .lock()
-        .map_err(|_| unavailable("workspace_state"))?
+        .map_err(|_| state_unavailable("workspace_state"))?
         .clone();
     Ok(engine.as_ref().map_or(
         WorkspaceState {
@@ -504,14 +491,9 @@ fn workspace_state(state: State<AppState>) -> Result<WorkspaceState, CoreError> 
         |workspace| workspace.state(),
     ))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn workspace_rebuild_index(state: State<AppState>) -> Result<WorkspaceState, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("workspace_rebuild_index"))?
-        .clone()
-        .ok_or_else(|| unavailable("workspace_rebuild_index"))?;
+    let engine = current_engine(&state, "workspace_rebuild_index")?;
     engine.rebuild_index()?;
     Ok(engine.state())
 }
@@ -519,7 +501,7 @@ fn workspace_rebuild_index(state: State<AppState>) -> Result<WorkspaceState, Cor
 fn manifest_read(state: State<AppState>) -> Result<WorkspaceManifest, CoreError> {
     with_engine(&state, "manifest_read", WorkspaceEngine::read_manifest)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn manifest_update(
     app: AppHandle,
     state: State<AppState>,
@@ -530,8 +512,11 @@ fn manifest_update(
         let manifest = engine.manifest_update(input)?;
         // The recent list caches the name for the workspace switcher; the
         // manifest stays canonical, so a failed cache refresh is not an error.
-        if renamed {
-            let _ = save_recent(&app, engine);
+        if renamed && let Err(error) = save_recent(&app, engine) {
+            log::warn!(
+                "could not refresh the recent workspace list: {}",
+                error.code
+            );
         }
         Ok(manifest)
     })
@@ -546,7 +531,7 @@ fn plugin_state_get(
         engine.plugin_state_get(&plugin_id, &key)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn plugin_state_set(
     state: State<AppState>,
     plugin_id: String,
@@ -557,7 +542,7 @@ fn plugin_state_set(
         engine.plugin_state_set(&plugin_id, &key, value)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn plugin_state_delete(
     state: State<AppState>,
     plugin_id: String,
@@ -567,7 +552,7 @@ fn plugin_state_delete(
         engine.plugin_state_delete(&plugin_id, &key)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn workspace_list_recent(app: AppHandle) -> Vec<RecentWorkspace> {
     load_recent(&app)
 }
@@ -599,35 +584,19 @@ async fn workspace_pick_folder(app: AppHandle, title: String) -> Result<Option<S
 #[tauri::command(async)]
 fn objects_query(
     state: State<AppState>,
-    query: ObjectQuery,
+    query: ObjectFilter,
 ) -> Result<Vec<WorkspaceObject>, CoreError> {
     with_engine(&state, "objects_query", |engine| {
-        let mut values = engine.query_objects(query.object_type.as_deref())?;
-        values.retain(|value| {
-            query.project.as_ref().is_none_or(|expected| {
-                value
-                    .properties
-                    .get("project")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(expected)
-            }) && query.status.as_ref().is_none_or(|expected| {
-                value
-                    .properties
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(expected)
-            }) && query.priority.as_ref().is_none_or(|expected| {
-                value
-                    .properties
-                    .get("priority")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(expected)
-            }) && query
-                .path_prefix
-                .as_ref()
-                .is_none_or(|prefix| value.relative_path.starts_with(prefix))
-        });
-        Ok(values)
+        engine.query_objects_filtered(&query)
+    })
+}
+#[tauri::command(async)]
+fn objects_summaries(
+    state: State<AppState>,
+    query: ObjectSummaryQuery,
+) -> Result<Vec<ObjectSummary>, CoreError> {
+    with_engine(&state, "objects_summaries", |engine| {
+        engine.query_object_summaries(&query)
     })
 }
 #[tauri::command(async)]
@@ -647,27 +616,24 @@ async fn objects_create(
     state: State<'_, AppState>,
     input: CreateObjectInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("objects_create"))?
-        .clone()
-        .ok_or_else(|| unavailable("objects_create"))?;
-    if engine.sync_configuration()?.is_none() {
-        return engine.create_object(input);
+    let engine = current_engine(&state, "objects_create")?;
+    let local = engine.clone();
+    if blocking("objects_create", move || local.sync_configuration())
+        .await?
+        .is_none()
+    {
+        return blocking("objects_create", move || engine.create_object(input)).await;
     }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_create_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        input,
-    )
+    let connection = sync_connection(&state, "objects_create").await?;
+    blocking("objects_create", move || {
+        local_core::sync::WorkspaceSyncCoordinator::collaboration_create_object(
+            &engine,
+            &connection,
+            &local_core::sync::OsSyncCredentials,
+            input,
+        )
+    })
+    .await
 }
 #[tauri::command]
 async fn objects_update(
@@ -675,31 +641,54 @@ async fn objects_update(
     id: String,
     patch: ObjectPatch,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("objects_update"))?
-        .clone()
-        .ok_or_else(|| unavailable("objects_update"))?;
-    if !engine.collaboration_object_is_active(&id)? {
-        return engine.update_object(&id, patch);
+    let engine = current_engine(&state, "objects_update")?;
+    let (local, object) = (engine.clone(), id.clone());
+    if !blocking("objects_update", move || {
+        local.collaboration_object_is_active(&object)
+    })
+    .await?
+    {
+        return blocking("objects_update", move || engine.update_object(&id, patch)).await;
     }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_update_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        &id,
-        patch,
-    )
+    let connection = sync_connection(&state, "objects_update").await?;
+    blocking("objects_update", move || {
+        local_core::sync::WorkspaceSyncCoordinator::collaboration_update_object(
+            &engine,
+            &connection,
+            &local_core::sync::OsSyncCredentials,
+            &id,
+            patch,
+        )
+    })
+    .await
 }
 
-#[tauri::command]
+/// The saved sync connection, read from the keychain on the blocking pool.
+/// The account lock keeps it consistent with an in-flight sign-in.
+pub(crate) async fn stored_sync_connection(
+    state: &AppState,
+    operation: &'static str,
+) -> Result<Option<local_core::sync::DeviceConnection>, CoreError> {
+    let _account = state.sync_account.lock().await;
+    blocking(operation, || {
+        local_core::sync::SyncAccountService::stored_connection(
+            &local_core::sync::OsSyncCredentials,
+        )
+    })
+    .await
+}
+
+/// Like `stored_sync_connection`, but sync needs a signed-in account.
+pub(crate) async fn sync_connection(
+    state: &AppState,
+    operation: &'static str,
+) -> Result<local_core::sync::DeviceConnection, CoreError> {
+    stored_sync_connection(state, operation)
+        .await?
+        .ok_or_else(|| sign_in_required(operation))
+}
+
+#[tauri::command(async)]
 fn chats_create(
     state: State<AppState>,
     input: CreateChatInput,
@@ -707,7 +696,7 @@ fn chats_create(
     with_engine(&state, "chat_create", |engine| engine.create_chat(input))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_change_retention(
     state: State<AppState>,
     input: ChangeChatRetentionInput,
@@ -717,7 +706,7 @@ fn chats_change_retention(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_rename(
     state: State<AppState>,
     input: RenameChatInput,
@@ -735,7 +724,7 @@ fn chats_read(state: State<AppState>, id: String) -> Result<ChatRead, CoreError>
     with_engine(&state, "chat_read", |engine| engine.read_chat(&id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_append_user_message(
     state: State<AppState>,
     input: AppendChatUserMessageInput,
@@ -745,7 +734,7 @@ fn chats_append_user_message(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_begin_assistant(
     state: State<AppState>,
     input: BeginChatAssistantInput,
@@ -755,7 +744,7 @@ fn chats_begin_assistant(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_finish_assistant(
     state: State<AppState>,
     input: FinishChatAssistantInput,
@@ -765,7 +754,7 @@ fn chats_finish_assistant(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_begin_tool_call(
     state: State<AppState>,
     input: BeginChatToolCallInput,
@@ -775,7 +764,7 @@ fn chats_begin_tool_call(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_finish_tool_call(
     state: State<AppState>,
     input: FinishChatToolCallInput,
@@ -785,7 +774,7 @@ fn chats_finish_tool_call(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_append_tool_result(
     state: State<AppState>,
     input: AppendChatToolResultInput,
@@ -795,7 +784,7 @@ fn chats_append_tool_result(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_append_context_summary(
     state: State<AppState>,
     input: AppendChatContextSummaryInput,
@@ -805,19 +794,19 @@ fn chats_append_context_summary(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_recover_interrupted(state: State<AppState>, id: String) -> Result<ChatRead, CoreError> {
     with_engine(&state, "chat_recover_interrupted", |engine| {
         engine.recover_interrupted_chat(&id)
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chats_expire(state: State<AppState>, now: String) -> Result<Vec<String>, CoreError> {
     with_engine(&state, "chat_expire", |engine| engine.expire_chats(&now))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn notes_reconcile_draft(
     state: State<AppState>,
     input: DraftReconcileInput,
@@ -826,7 +815,7 @@ fn notes_reconcile_draft(
         engine.reconcile_note_draft(input)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn notes_resolve_conflict(
     state: State<AppState>,
     input: ResolveConflictInput,
@@ -836,7 +825,7 @@ fn notes_resolve_conflict(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn managed_draft_save(
     state: State<AppState>,
     input: ManagedDraftInput,
@@ -846,7 +835,7 @@ fn managed_draft_save(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn managed_draft_reconcile(
     state: State<AppState>,
     input: ManagedDraftInput,
@@ -856,7 +845,7 @@ fn managed_draft_reconcile(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn managed_conflict_resolve(
     state: State<AppState>,
     input: ManagedConflictResolveInput,
@@ -876,7 +865,7 @@ fn raw_markdown_read(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn raw_markdown_save(
     state: State<AppState>,
     input: RawSaveInput,
@@ -886,7 +875,7 @@ fn raw_markdown_save(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn raw_markdown_reconcile(
     state: State<AppState>,
     input: RawReconcileInput,
@@ -896,7 +885,7 @@ fn raw_markdown_reconcile(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn raw_markdown_resolve(
     state: State<AppState>,
     input: RawConflictResolveInput,
@@ -953,7 +942,7 @@ fn files_read_pdf_range(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn files_open_pdf_link(url: String) -> Result<(), CoreError> {
     os_files::open_http_link(&url)
 }
@@ -1020,59 +1009,61 @@ async fn objects_move(
     state: State<'_, AppState>,
     input: MoveInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("objects_move"))?
-        .clone()
-        .ok_or_else(|| unavailable("objects_move"))?;
-    if !engine.collaboration_object_is_active(&input.id)? {
-        return engine.move_object(&input.id, &input.relative_path, &input.expected_revision);
+    let engine = current_engine(&state, "objects_move")?;
+    let (local, object) = (engine.clone(), input.id.clone());
+    if !blocking("objects_move", move || {
+        local.collaboration_object_is_active(&object)
+    })
+    .await?
+    {
+        return blocking("objects_move", move || {
+            engine.move_object(&input.id, &input.relative_path, &input.expected_revision)
+        })
+        .await;
     }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_move_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        &input.id,
-        &input.relative_path,
-        &input.expected_revision,
-    )
+    let connection = sync_connection(&state, "objects_move").await?;
+    blocking("objects_move", move || {
+        local_core::sync::WorkspaceSyncCoordinator::collaboration_move_object(
+            &engine,
+            &connection,
+            &local_core::sync::OsSyncCredentials,
+            &input.id,
+            &input.relative_path,
+            &input.expected_revision,
+        )
+    })
+    .await
 }
 #[tauri::command]
 async fn objects_delete(
     state: State<'_, AppState>,
     input: DeleteInput,
 ) -> Result<MutationResult<WorkspaceObject>, CoreError> {
-    let engine = state
-        .engine
-        .lock()
-        .map_err(|_| unavailable("objects_delete"))?
-        .clone()
-        .ok_or_else(|| unavailable("objects_delete"))?;
-    if !engine.collaboration_object_is_active(&input.id)? {
-        return engine.delete_object(&input.id, &input.expected_revision);
+    let engine = current_engine(&state, "objects_delete")?;
+    let (local, object) = (engine.clone(), input.id.clone());
+    if !blocking("objects_delete", move || {
+        local.collaboration_object_is_active(&object)
+    })
+    .await?
+    {
+        return blocking("objects_delete", move || {
+            engine.delete_object(&input.id, &input.expected_revision)
+        })
+        .await;
     }
-    let connection = state
-        .sync_account
-        .lock()
-        .await
-        .connection(&local_core::sync::OsSyncCredentials)?
-        .ok_or_else(|| unavailable("sync_sign_in_required"))?;
-    local_core::sync::WorkspaceSyncCoordinator::collaboration_delete_object(
-        &engine,
-        &connection,
-        &local_core::sync::OsSyncCredentials,
-        &input.id,
-        &input.expected_revision,
-    )
+    let connection = sync_connection(&state, "objects_delete").await?;
+    blocking("objects_delete", move || {
+        local_core::sync::WorkspaceSyncCoordinator::collaboration_delete_object(
+            &engine,
+            &connection,
+            &local_core::sync::OsSyncCredentials,
+            &input.id,
+            &input.expected_revision,
+        )
+    })
+    .await
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn objects_adopt(
     state: State<AppState>,
     input: AdoptInput,
@@ -1101,7 +1092,7 @@ fn calendar_query(
         engine.calendar(&input.start, &input.end)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn folders_create(state: State<AppState>, input: FolderInput) -> Result<(), CoreError> {
     with_engine(&state, "folders_create", |engine| {
         engine.create_folder(&input.relative_path)
@@ -1127,7 +1118,7 @@ fn files_list_non_managed_markdown(
         engine.list_non_managed_markdown()
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn folders_move(state: State<AppState>, input: FolderMoveInput) -> Result<(), CoreError> {
     with_engine(&state, "folders_move", |engine| {
         engine.move_folder(&input.from, &input.to)
@@ -1150,21 +1141,21 @@ fn files_trash(state: State<AppState>, input: FileTrashInput) -> Result<Option<S
         engine.trash_path(&input.relative_path)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn folders_remove(state: State<AppState>, input: FolderInput) -> Result<(), CoreError> {
     with_engine(&state, "folders_remove", |engine| {
         engine.remove_empty_folder(&input.relative_path)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_provider_list(state: State<AppState>) -> Result<Vec<AiProviderConfig>, CoreError> {
     state.ai("ai_provider_list")?.list_providers()
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_provider_save(state: State<AppState>, input: AiProviderConfig) -> Result<(), CoreError> {
     state.ai("ai_provider_save")?.save_provider(input)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_credential_set(
     state: State<AppState>,
     input: CredentialSetInput,
@@ -1174,7 +1165,7 @@ fn ai_credential_set(
         .set_credential(&input.provider_id, &input.secret)?;
     Ok(serde_json::json!({"credentialRef":credential_ref}))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_credential_delete(
     state: State<AppState>,
     input: CredentialDeleteInput,
@@ -1194,7 +1185,7 @@ fn ai_consent_read(
             .read_consent(&engine.manifest().id, input)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_consent_grant(
     state: State<AppState>,
     input: AiConsentGrantInput,
@@ -1205,7 +1196,7 @@ fn ai_consent_grant(
             .grant_consent(&engine.manifest().id, input)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_consent_revoke(
     state: State<AppState>,
     input: AiConsentRevokeInput,
@@ -1223,98 +1214,29 @@ async fn ai_stream(
     channel: Channel<AiStreamFrame>,
 ) -> Result<(), CoreError> {
     let operation_id = input.operation_id.clone();
-    let workspace_id = with_engine(&state, "ai_stream", |engine| Ok(engine.manifest().id))?;
+    let workspace_id = current_engine(&state, "ai_stream")?.manifest().id;
     let ai = state.ai("ai_stream")?;
-    let mut operation = ai.start_stream(&workspace_id, input)?;
+    let starter = ai.clone();
+    let mut operation = blocking("ai_stream", move || {
+        starter.start_stream(&workspace_id, input)
+    })
+    .await?;
     while let Some(frame) = operation.receiver.recv().await {
         if channel.send(frame).is_err() {
-            let _ = ai.cancel_stream(&operation_id);
+            if let Err(error) = ai.cancel_stream(&operation_id) {
+                log::warn!("could not cancel an abandoned AI stream: {}", error.code);
+            }
             break;
         }
     }
     Ok(())
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn ai_stream_cancel(
     state: State<AppState>,
     operation_id: String,
 ) -> Result<AiCancelOutcome, CoreError> {
     state.ai("ai_stream_cancel")?.cancel_stream(&operation_id)
-}
-
-fn send_pi_runtime_spike_frame(
-    channel: &Channel<PiRuntimeSpikeFrame>,
-    operation_id: &str,
-    sequence: u64,
-    kind: PiRuntimeSpikeFrameKind,
-    text: Option<&str>,
-) -> bool {
-    channel
-        .send(PiRuntimeSpikeFrame {
-            operation_id: operation_id.into(),
-            sequence,
-            kind,
-            text: text.map(str::to_owned),
-        })
-        .is_ok()
-}
-
-#[tauri::command]
-async fn pi_runtime_spike_stream(
-    state: State<'_, AppState>,
-    operation_id: String,
-    channel: Channel<PiRuntimeSpikeFrame>,
-) -> Result<(), CoreError> {
-    validate_pi_runtime_spike_operation(&operation_id)?;
-    let mut operation = state.runtime_spike.start(operation_id.clone())?;
-    let mut sequence = 1;
-
-    for text in ["Native ", "Tauri Channel ", "stream verified."] {
-        tokio::select! {
-            changed = operation.cancellation.changed() => {
-                if changed.is_ok() {
-                    let _ = send_pi_runtime_spike_frame(
-                        &channel,
-                        &operation_id,
-                        sequence,
-                        PiRuntimeSpikeFrameKind::Aborted,
-                        None,
-                    );
-                }
-                return Ok(());
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(120)) => {
-                if !send_pi_runtime_spike_frame(
-                    &channel,
-                    &operation_id,
-                    sequence,
-                    PiRuntimeSpikeFrameKind::Delta,
-                    Some(text),
-                ) {
-                    return Ok(());
-                }
-                sequence += 1;
-            }
-        }
-    }
-
-    let _ = send_pi_runtime_spike_frame(
-        &channel,
-        &operation_id,
-        sequence,
-        PiRuntimeSpikeFrameKind::Done,
-        None,
-    );
-    Ok(())
-}
-
-#[tauri::command]
-fn pi_runtime_spike_cancel(
-    state: State<'_, AppState>,
-    operation_id: String,
-) -> Result<bool, CoreError> {
-    validate_pi_runtime_spike_operation(&operation_id)?;
-    state.runtime_spike.cancel(&operation_id)
 }
 
 mod os_files;
@@ -1337,7 +1259,7 @@ struct WorkspaceShowInFolderInput {
     folder: WorkspaceFolder,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn workspace_show_in_folder(
     state: State<AppState>,
     input: WorkspaceShowInFolderInput,
@@ -1350,7 +1272,7 @@ fn workspace_show_in_folder(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn app_open_link(url: String) -> Result<(), CoreError> {
     os_files::open_web_link(&url, "app_open_link")
 }
@@ -1437,15 +1359,21 @@ async fn mcp_test_connection(state: State<'_, AppState>) -> Result<bool, CoreErr
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap_or(false);
         drop(stdin);
-        let _ = child.kill();
-        let _ = child.wait();
+        // The probe already exited when it closed stdout early; a failed
+        // kill is expected then.
+        if let Err(error) = child.kill() {
+            log::debug!("the MCP probe process had already stopped: {error}");
+        }
+        if let Err(error) = child.wait() {
+            log::debug!("could not reap the MCP probe process: {error}");
+        }
         Ok(ok)
     })
     .await
-    .map_err(|_| unavailable("mcp_test_connection"))?
+    .map_err(|_| state_unavailable("mcp_test_connection"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn object_show_in_folder(
     state: State<AppState>,
     input: ShowInFolderInput,
@@ -1455,11 +1383,87 @@ fn object_show_in_folder(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn object_open_terminal(state: State<AppState>, input: ShowInFolderInput) -> Result<(), CoreError> {
     with_engine(&state, "object_open_terminal", |engine| {
         os_files::open_in_terminal(engine, &input.id)
     })
+}
+
+/// Reopen the last workspace after the window shows. The frontend shows its
+/// loading state meanwhile, and `workspace_state` waits for the result, so
+/// the chooser never flashes before a restored workspace.
+fn restore_last_workspace_in_background(app: AppHandle) {
+    let state = app.state::<AppState>();
+    state.restore.begin();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        match restore_last_workspace(&load_recent(&app), |workspace| {
+            WorkspaceEngine::open_or_initialize(
+                &workspace.path,
+                &workspace.name,
+                Some(&workspace.workspace_id),
+            )
+        }) {
+            Ok(Some(engine)) => {
+                engine.set_system_trash(local_core::os_trash());
+                if let Err(error) = install_engine(&app, &state, engine, "workspace_restore") {
+                    log::warn!("could not install the restored workspace: {}", error.code);
+                }
+            }
+            Ok(None) => {}
+            // An unavailable disk or invalid workspace must not prevent
+            // launch. The ordinary chooser remains available to recover.
+            Err(error) => log::warn!("the last workspace could not be reopened: {}", error.code),
+        }
+        state.restore.finish();
+    });
+}
+
+/// Poll the watcher and run the periodic full rescan on a dedicated thread.
+/// Waiting on the watcher queue here means changes are handled as soon as
+/// they arrive, and the work never touches the main thread or the async
+/// runtime.
+fn watch_workspaces(app: AppHandle) {
+    const RESCAN_EVERY: Duration = Duration::from_secs(60);
+    let spawned = std::thread::Builder::new()
+        .name("workspace-watch".into())
+        .spawn(move || {
+            let mut last_rescan = std::time::Instant::now();
+            loop {
+                let state = app.state::<AppState>();
+                let engine = state.engine.lock().ok().and_then(|value| value.clone());
+                let Some(engine) = engine else {
+                    std::thread::sleep(Duration::from_millis(250));
+                    continue;
+                };
+                if let Err(error) = engine.poll_external_changes(Duration::from_millis(750)) {
+                    log::warn!("could not apply external changes: {}", error.code);
+                }
+                if last_rescan.elapsed() >= RESCAN_EVERY {
+                    if let Err(error) = engine.reconcile() {
+                        log::warn!("the periodic rescan failed: {}", error.code);
+                    }
+                    last_rescan = std::time::Instant::now();
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        log::error!("could not start the workspace watcher thread: {error}");
+    }
+}
+
+/// Paint the window in the theme's background before the page loads, so a
+/// dark system theme doesn't flash white.
+fn match_window_to_theme(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if matches!(window.theme(), Ok(tauri::Theme::Dark))
+        && let Err(error) = window.set_background_color(Some(tauri::window::Color(10, 10, 10, 255)))
+    {
+        log::debug!("could not set the window background: {error}");
+    }
 }
 
 pub fn run() {
@@ -1486,6 +1490,7 @@ pub fn run() {
         builder.plugin(tauri_plugin_updater::Builder::new().build())
     };
     builder
+        .plugin(diagnostics::log_plugin())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -1497,6 +1502,7 @@ pub fn run() {
                 )
             })?;
             app.manage(AppState::new(root));
+            match_window_to_theme(app.handle());
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for uri in event.urls() {
@@ -1510,49 +1516,9 @@ pub fn run() {
             }
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             app.deep_link().register_all()?;
-            // Restore before the frontend asks for workspace_state, avoiding a
-            // chooser flash or a late restore replacing a user's selection.
-            match restore_last_workspace(&load_recent(app.handle()), |workspace| {
-                WorkspaceEngine::open_or_initialize(
-                    &workspace.path,
-                    &workspace.name,
-                    Some(&workspace.workspace_id),
-                )
-            }) {
-                Ok(Some(engine)) => {
-                    engine.set_system_trash(local_core::os_trash());
-                    let engine = Arc::new(engine);
-                    *app.state::<AppState>()
-                        .engine
-                        .lock()
-                        .map_err(|_| unavailable("workspace_restore"))? = Some(engine.clone());
-                    forward_events(app.handle().clone(), engine);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    // An unavailable disk or invalid workspace must not prevent
-                    // launch. The ordinary chooser remains available to recover.
-                    eprintln!("Last workspace could not be restored: {}", error.code);
-                }
-            }
+            restore_last_workspace_in_background(app.handle().clone());
             sync_commands::start(app.handle().clone());
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut last_full_reconciliation = std::time::Instant::now();
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-                    let state = handle.state::<AppState>();
-                    let engine = state.engine.lock().ok().and_then(|value| value.clone());
-                    if let Some(engine) = engine {
-                        let _ = engine.poll_external_changes(std::time::Duration::from_millis(25));
-                        if last_full_reconciliation.elapsed() >= std::time::Duration::from_secs(60)
-                        {
-                            let _ = engine.reconcile();
-                            last_full_reconciliation = std::time::Instant::now();
-                        }
-                    }
-                }
-            });
+            watch_workspaces(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1658,52 +1624,105 @@ pub fn run() {
             ai_consent_revoke,
             ai_stream,
             ai_stream_cancel,
-            pi_runtime_spike_stream,
-            pi_runtime_spike_cancel
+            objects_summaries,
+            diagnostics::app_diagnostics,
+            os_files::app_capabilities
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Noura desktop host");
 }
 
 #[cfg(test)]
-mod runtime_spike_tests {
+mod host_state_tests {
     use super::*;
 
     #[test]
-    fn start_rejects_an_operation_id_that_is_already_running() {
-        let registry = Arc::new(PiRuntimeSpikeRegistry::default());
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let _operation = registry.start(operation_id.clone()).unwrap();
+    fn host_errors_keep_distinct_codes() {
+        // The app deactivates plugins and clears chats on workspace_not_open,
+        // so a poisoned lock or a missing sign-in must not reuse that code.
+        assert_eq!(workspace_not_open("x").code, "workspace_not_open");
+        assert_eq!(sign_in_required("x").code, "sync_sign_in_required");
+        let busy = state_unavailable("x");
+        assert_eq!(busy.code, "state_unavailable");
+        assert!(busy.retryable);
+    }
 
-        let Err(error) = registry.start(operation_id) else {
-            panic!("the duplicate operation should be rejected");
+    #[test]
+    fn commands_wait_for_the_launch_restore() {
+        let gate = Arc::new(RestoreGate::default());
+        gate.begin();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiter = {
+            let (gate, finished) = (gate.clone(), finished.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                finished.load(std::sync::atomic::Ordering::SeqCst)
+            })
         };
-
-        assert_eq!(error.code, "ai_operation_in_progress");
+        std::thread::sleep(Duration::from_millis(50));
+        finished.store(true, std::sync::atomic::Ordering::SeqCst);
+        gate.finish();
+        assert!(waiter.join().unwrap());
+        // Once finished, waiting returns at once.
+        gate.wait();
     }
+}
 
-    #[tokio::test]
-    async fn duplicate_start_keeps_the_original_operation_cancellable() {
-        let registry = Arc::new(PiRuntimeSpikeRegistry::default());
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let mut original = registry.start(operation_id.clone()).unwrap();
+#[cfg(test)]
+mod command_thread_tests {
+    /// Plain `#[tauri::command]` functions run on the main thread and freeze
+    /// the window while they work. These may stay there because they only
+    /// read constants or an atomic flag.
+    const MAY_RUN_ON_MAIN_THREAD: &[&str] = &[
+        "app_capabilities",
+        "sync_service_configuration",
+        "sync_account_take_return",
+    ];
 
-        assert!(registry.start(operation_id.clone()).is_err());
-        assert!(registry.cancel(&operation_id).unwrap());
-        assert!(original.cancellation.changed().await.is_ok());
+    #[test]
+    fn commands_stay_off_the_main_thread() {
+        let sources = [
+            include_str!("lib.rs"),
+            include_str!("sync_commands.rs"),
+            include_str!("os_files.rs"),
+            include_str!("diagnostics.rs"),
+        ];
+        let mut main_thread = Vec::new();
+        for source in sources {
+            let lines = source.lines().collect::<Vec<_>>();
+            for (index, line) in lines.iter().enumerate() {
+                if line.trim() != "#[tauri::command]" {
+                    continue;
+                }
+                let signature = lines[index + 1..]
+                    .iter()
+                    .find(|line| line.contains("fn "))
+                    .expect("a command attribute precedes a function");
+                if signature.contains("async fn ") {
+                    continue;
+                }
+                let name = signature
+                    .split("fn ")
+                    .nth(1)
+                    .and_then(|rest| rest.split(['(', '<']).next())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                if !MAY_RUN_ON_MAIN_THREAD.contains(&name.as_str()) {
+                    main_thread.push(name);
+                }
+            }
+        }
+        assert!(
+            main_thread.is_empty(),
+            "declare these commands #[tauri::command(async)] or async: {main_thread:?}"
+        );
     }
+}
 
-    #[tokio::test]
-    async fn cancel_notifies_the_active_operation() {
-        let registry = Arc::new(PiRuntimeSpikeRegistry::default());
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let mut operation = registry.start(operation_id.clone()).unwrap();
-
-        let cancelled = registry.cancel(&operation_id).unwrap();
-
-        assert!(cancelled);
-        assert!(operation.cancellation.changed().await.is_ok());
-    }
+#[cfg(test)]
+mod ai_state_tests {
+    use super::*;
 
     fn temporary_ai_data_root() -> PathBuf {
         std::env::temp_dir().join(format!("noura-desktop-ai-test-{}", uuid::Uuid::new_v4()))
