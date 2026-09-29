@@ -121,6 +121,8 @@ export { firstPartyPlugins } from './first-party';
 export {
 	PluginRuntime,
 	PluginRegistry,
+	CORE_PLUGIN_IDS,
+	isCorePlugin,
 	browserPluginCapabilities,
 	createPluginHostServices,
 	type PluginRegistrySnapshot,
@@ -305,6 +307,15 @@ export interface FileService {
 	 * `.noura/trash` path when the system trash was unavailable.
 	 */
 	trash(input: { relativePath: string }): Promise<string | null>;
+	/**
+	 * Duplicate a file. A note, task or project copy gets a new ID. Refuses to
+	 * overwrite (`path_exists`).
+	 */
+	copy(input: { from: string; to: string }): Promise<void>;
+	/** Show a file or folder in the system file manager. */
+	reveal(input: { relativePath: string }): Promise<void>;
+	/** Open a file with the system's default app. Refuses apps and scripts. */
+	openWithDefaultApp(input: { relativePath: string }): Promise<void>;
 }
 
 export interface GenericObjectService {
@@ -668,6 +679,10 @@ export function createNouraClient(
 				transport.request('files_read_local_asset', { input }),
 			move: (input) => transport.request('files_move', { input }),
 			trash: (input) => transport.request('files_trash', { input }),
+			copy: (input) => transport.request('files_copy', { input }),
+			reveal: (input) => transport.request('files_reveal', { input }),
+			openWithDefaultApp: (input) =>
+				transport.request('files_open_default', { input }),
 		},
 		notes: {
 			...noteObjects,

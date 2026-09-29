@@ -1317,6 +1317,8 @@ fn pi_runtime_spike_cancel(
     state.runtime_spike.cancel(&operation_id)
 }
 
+mod file_actions;
+mod menu;
 mod os_files;
 
 #[derive(Deserialize)]
@@ -1535,6 +1537,7 @@ pub fn run() {
                     eprintln!("Last workspace could not be restored: {}", error.code);
                 }
             }
+            menu::install(app.handle())?;
             sync_commands::start(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1634,6 +1637,9 @@ pub fn run() {
             objects_delete,
             objects_adopt,
             object_show_in_folder,
+            file_actions::files_copy,
+            file_actions::files_reveal,
+            file_actions::files_open_default,
             workspace_show_in_folder,
             app_open_link,
             mcp_connection,

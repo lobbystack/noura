@@ -324,6 +324,7 @@ struct CollaborationPresenceCacheEntry {
     member: crate::sync::CollaborationPresenceMember,
 }
 
+mod copy;
 mod sync;
 mod trash;
 pub use trash::{SystemTrash, os_trash};

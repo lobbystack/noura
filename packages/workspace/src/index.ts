@@ -6,3 +6,9 @@ export {
 	createTauriDesktopApp,
 	type DesktopAppAdapter,
 } from './tauri-app-info';
+export {
+	APP_MENU_COMMANDS,
+	isAppMenuCommand,
+	subscribeAppMenu,
+	type AppMenuCommand,
+} from './app-menu';
