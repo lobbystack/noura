@@ -403,6 +403,7 @@ impl AiFoundation {
 
     pub fn save_provider(&self, provider: AiProviderConfig) -> Result<()> {
         validate_provider(&provider, "ai_provider_save")?;
+        ensure_secure_endpoint(&provider, "ai_provider_save")?;
         // A stream must use either the provider configuration that consented to
         // it or the replacement configuration, never a snapshot raced with a
         // provider update. The same gate also protects consent revocation.
@@ -570,6 +571,7 @@ impl AiFoundation {
             .lock()
             .map_err(|_| operation_lock_error("ai_stream"))?;
         let provider = self.provider(&input.model.provider_id, "ai_stream")?;
+        ensure_secure_endpoint(&provider, "ai_stream")?;
         if provider.model != input.model.model {
             return Err(CoreError::validation(
                 "model_not_found",
@@ -1055,6 +1057,43 @@ fn validate_provider(provider: &AiProviderConfig, operation: &str) -> Result<()>
     Ok(())
 }
 
+/// Plain HTTP would send the API key and workspace content in the clear, so
+/// it is only allowed for a model server on this computer (Ollama, LM
+/// Studio). Saving and streaming check this; loading does not, so settings
+/// saved by an older version stay readable and fixable.
+fn ensure_secure_endpoint(provider: &AiProviderConfig, operation: &str) -> Result<()> {
+    let Some(endpoint) = &provider.endpoint else {
+        return Ok(());
+    };
+    let url = url::Url::parse(endpoint).map_err(|_| {
+        CoreError::validation(
+            "endpoint_invalid",
+            "The provider endpoint must be a valid URL",
+            operation,
+        )
+    })?;
+    let loopback = match url.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    let secure = match url.scheme() {
+        "https" => url.host().is_some(),
+        "http" => loopback,
+        _ => false,
+    };
+    if secure {
+        Ok(())
+    } else {
+        Err(CoreError::validation(
+            "endpoint_insecure",
+            "Use an HTTPS address. Plain HTTP works only for a server on this computer.",
+            operation,
+        ))
+    }
+}
+
 fn validate_provider_configs(providers: &[AiProviderConfig], operation: &str) -> Result<()> {
     let mut ids = std::collections::HashSet::with_capacity(providers.len());
     for provider in providers {
@@ -1207,6 +1246,33 @@ mod tests {
             endpoint: Some("https://example.test/v1/".into()),
             credential_ref: None,
             enabled: true,
+        }
+    }
+
+    #[test]
+    fn plain_http_endpoints_are_limited_to_this_computer() {
+        for (endpoint, allowed) in [
+            ("https://api.example.com/v1/", true),
+            ("http://localhost:11434/v1/", true),
+            ("http://LOCALHOST:1234/", true),
+            ("http://127.0.0.1:1234/", true),
+            ("http://127.8.0.1/", true),
+            ("http://[::1]:8080/", true),
+            ("http://api.example.com/v1/", false),
+            ("http://192.168.1.20:11434/", false),
+            ("http://localhost.example.com/", false),
+            ("ftp://localhost/", false),
+            ("file:///tmp/model", false),
+        ] {
+            let mut provider = enabled_provider();
+            provider.endpoint = Some(endpoint.into());
+            assert_eq!(
+                validate_provider(&provider, "ai_provider_save")
+                    .and_then(|()| ensure_secure_endpoint(&provider, "ai_provider_save"))
+                    .is_ok(),
+                allowed,
+                "{endpoint}"
+            );
         }
     }
 
