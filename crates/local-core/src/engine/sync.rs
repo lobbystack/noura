@@ -14,6 +14,8 @@ const STATE_PATH: &str = ".noura/sync/state.json";
 mod blobs;
 mod collaboration;
 mod conflicts;
+mod plugin;
+pub use plugin::SYNC_PLUGIN_ID;
 
 // Windows FlushFileBuffers requires a handle opened with GENERIC_WRITE, even
 // when we only read the existing bytes before committing their sync descriptor.
@@ -364,7 +366,8 @@ impl WorkspaceEngine {
         Err(invalid("sync_policy_history_required"))
     }
 
-    /// Create a new empty local replica. Existing workspace identities are never changed.
+    /// Create a new empty local replica with the `sync` plugin enabled.
+    /// Existing workspace identities are never changed.
     pub fn create_sync_replica(
         root: impl AsRef<Path>,
         name: &str,
@@ -383,7 +386,7 @@ impl WorkspaceEngine {
         {
             return Err(invalid("sync_replica_directory_not_empty"));
         }
-        Self::create_with_identity(root, name, app_data, Some(workspace_id))
+        Self::create_with_identity(root, name, app_data, Some(workspace_id), &[SYNC_PLUGIN_ID])
     }
     pub fn sync_configuration(&self) -> Result<Option<crate::sync::WorkspaceSyncConfig>> {
         let _lock = self.write_lock("sync_configuration")?;
@@ -402,7 +405,10 @@ impl WorkspaceEngine {
     pub fn sync_save_configuration(&self, config: &crate::sync::WorkspaceSyncConfig) -> Result<()> {
         config.validate(&self.manifest().id)?;
         let _lock = self.write_lock("sync_configuration")?;
-        self.sync_write(".noura/sync/config.json", config)
+        self.sync_write(".noura/sync/config.json", config)?;
+        // A replica whose sync setup was saved has decided its plugin state;
+        // the open-time migration must not revisit it.
+        self.sync_plugin_record_marker_locked()
     }
 
     pub fn sync_pause(&self, paused: bool) -> Result<()> {

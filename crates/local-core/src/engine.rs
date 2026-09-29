@@ -326,6 +326,7 @@ struct CollaborationPresenceCacheEntry {
 
 mod sync;
 mod trash;
+pub use sync::SYNC_PLUGIN_ID;
 pub use trash::{SystemTrash, os_trash};
 
 pub struct WorkspaceEngine {
@@ -366,14 +367,17 @@ impl WorkspaceEngine {
         name: &str,
         app_data: impl AsRef<Path>,
     ) -> Result<Self> {
-        Self::create_with_identity(root, name, app_data, None)
+        Self::create_with_identity(root, name, app_data, None, &[])
     }
 
+    /// `extra_plugins` are enabled in the new manifest in addition to the
+    /// default domain plugins.
     fn create_with_identity(
         root: impl AsRef<Path>,
         name: &str,
         app_data: impl AsRef<Path>,
         workspace_id: Option<&str>,
+        extra_plugins: &[&str],
     ) -> Result<Self> {
         let root = root.as_ref();
         std::fs::create_dir_all(root)
@@ -397,6 +401,16 @@ impl WorkspaceEngine {
             ));
         }
         let now = now_rfc3339();
+        let mut enabled_plugins: Vec<String> =
+            ["folders", "notes", "tasks", "calendar", "projects"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        for plugin in extra_plugins {
+            if !enabled_plugins.iter().any(|id| id == plugin) {
+                enabled_plugins.push((*plugin).to_owned());
+            }
+        }
         let manifest = WorkspaceManifest {
             id: workspace_id.map(str::to_owned).unwrap_or_else(|| {
                 format!("workspace_{}", ulid::Ulid::new().to_string().to_lowercase())
@@ -405,13 +419,7 @@ impl WorkspaceEngine {
             name: name.trim().to_owned(),
             created: now.clone(),
             updated: now,
-            enabled_plugins: vec![
-                "folders".into(),
-                "notes".into(),
-                "tasks".into(),
-                "calendar".into(),
-                "projects".into(),
-            ],
+            enabled_plugins,
             ignore: Vec::new(),
         };
         validate_manifest(&manifest, "workspace_create")?;
@@ -470,7 +478,7 @@ impl WorkspaceEngine {
         {
             return Self::open_with_app_data(root, app_data);
         }
-        Self::create_with_identity(root, name, app_data, workspace_id)
+        Self::create_with_identity(root, name, app_data, workspace_id, &[])
     }
 
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -523,6 +531,7 @@ impl WorkspaceEngine {
         };
         engine.recover_pending_chat_mutations()?;
         engine.reconcile()?;
+        engine.migrate_sync_plugin();
         engine.emit("workspace:ready", "reconciliation", serde_json::json!({}));
         Ok(engine)
     }
