@@ -91,6 +91,15 @@ class TabsStore {
 		this.activeId = id;
 	}
 
+	/** A file moved: its tab follows it to the new identity and name. */
+	retarget(objectId: string, nextObjectId: string, title: string) {
+		this.tabs = this.tabs.map((tab) =>
+			tab.objectId === objectId
+				? { ...tab, objectId: nextObjectId, title }
+				: tab,
+		);
+	}
+
 	renameObject(objectId: string, title: string) {
 		this.tabs = this.tabs.map((tab) =>
 			tab.objectId === objectId ? { ...tab, title } : tab,

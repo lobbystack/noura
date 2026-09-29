@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import type { CollaborationSession } from '@noura/editor';
 	import {
 		acquireNativeCollaboration,
@@ -16,10 +16,18 @@
 		WorkspaceObject,
 	} from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
-	import { AutosaveCoordinator } from '$lib/editor/autosave';
+	import { DocumentSession, type TextBase } from '$lib/editor/document-session';
+	import { saveErrorMessage } from '$lib/editor/messages';
+	import {
+		renameErrorMessage,
+		renamedPath,
+		splitFileName,
+	} from '$lib/editor/rename';
+	import { moveViewMemory } from '$lib/editor/view-memory';
 	import { registerPendingDraft } from '$lib/editor/pending-drafts.svelte';
 	import LiveMarkdownSurface from '$lib/components/live-markdown-surface.svelte';
 	import MarkdownPreview from '$lib/components/markdown-preview.svelte';
+	import DocumentHeader from '$lib/components/document-header.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
@@ -30,16 +38,26 @@
 	let {
 		file,
 		onmanaged,
+		onrenamed,
 	}: {
 		file: Pick<UnmanagedFile, 'relativePath' | 'title'> & {
 			parseStatus?: UnmanagedFile['parseStatus'] | null;
 		};
 		onmanaged?: (object: WorkspaceObject) => void | Promise<void>;
+		/** The file now lives at `relativePath`. */
+		onrenamed?: (relativePath: string) => void | Promise<void>;
 	} = $props();
 
+	type Canonical = {
+		read: RawMarkdownRead;
+		managedObject: WorkspaceObject | null;
+	};
 	type Conflict = { localBody: string; file: RawMarkdownRead };
 	type Resolution = 'use-external' | 'replace-external';
 
+	const initialFile = () => file;
+	let path = $state(initialFile().relativePath);
+	const parseStatus = initialFile().parseStatus;
 	let collaboration = $state.raw<CollaborationSession | null>(null);
 	let collaborationOpening = $state(true);
 	let collaborationFailed = $state(false);
@@ -49,10 +67,8 @@
 	let activationRequested: string[] | null = null;
 	let editorDisposed = false;
 
-	let loaded = $state.raw<RawMarkdownRead | null>(null);
+	let session = $state.raw<DocumentSession<Canonical> | null>(null);
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
-	let coordinator = $state.raw<AutosaveCoordinator<string> | null>(null);
-	let editorCleanup: (() => void) | null = null;
 	let conflict = $state.raw<Conflict | null>(null);
 	let error = $state<unknown | null>(null);
 	let reviewOpen = $state(false);
@@ -60,49 +76,75 @@
 	let pendingResolution = $state<Resolution | null>(null);
 	let resolving = $state(false);
 	let message = $state<string | null>(null);
+	let clearMessageTimer: ReturnType<typeof setTimeout> | null = null;
 
-	function errorMessage(value: unknown) {
-		if (value instanceof Error) return value.message;
-		if (value && typeof value === 'object' && 'message' in value)
-			return String(value.message);
-		return 'Noura could not save this Markdown file.';
+	function showMessage(text: string) {
+		message = text;
+		if (clearMessageTimer) clearTimeout(clearMessageTimer);
+		clearMessageTimer = setTimeout(() => {
+			message = null;
+			clearMessageTimer = null;
+		}, 2400);
 	}
 
-	async function persist(body: string, generation: number) {
-		if (activationInProgress || activationNeedsReview) return 'paused' as const;
-		if (!loaded) return;
-		const result = await getNouraClient().files.saveRawMarkdown({
-			relativePath: loaded.relativePath,
-			baseRevision: loaded.revision,
-			baseBody: loaded.body,
-			localBody: body,
+	const baseOf = (read: RawMarkdownRead): TextBase => ({
+		revision: read.revision,
+		body: read.body,
+	});
+
+	function createSession(read: RawMarkdownRead) {
+		return new DocumentSession<Canonical>({
+			base: baseOf(read),
+			blocked: () => activationInProgress || activationNeedsReview,
+			save: async (base, body) => {
+				const result = await getNouraClient().files.saveRawMarkdown({
+					relativePath: path,
+					baseRevision: base.revision,
+					baseBody: base.body,
+					localBody: body,
+				});
+				if (result.status === 'conflict')
+					return {
+						status: 'conflict',
+						current: { read: result.current, managedObject: null },
+					};
+				return {
+					status: 'saved',
+					base: baseOf(result.current),
+					canonical: {
+						read: result.current,
+						managedObject: result.managedObject,
+					},
+				};
+			},
+			read: async () => {
+				const latest = await getNouraClient().files.readRawMarkdown({
+					relativePath: path,
+				});
+				return {
+					base: baseOf(latest),
+					canonical: { read: latest, managedObject: null },
+				};
+			},
+			onCanonical: async (canonical) => {
+				error = null;
+				if (canonical.managedObject) await onmanaged?.(canonical.managedObject);
+			},
+			onConflict: ({ localBody, current }) => {
+				conflict = { localBody, file: current.read };
+				reviewOpen = true;
+			},
+			onMerged: () => showMessage('Merged changes from another app'),
+			onStateChange: (state) => {
+				error = state.error;
+			},
 		});
-		if (activationInProgress || activationNeedsReview) return 'paused' as const;
-		if (result.status === 'conflict') {
-			conflict = { localBody: body, file: result.current };
-			reviewOpen = true;
-			coordinator?.pause();
-			return 'paused' as const;
-		}
-		loaded = result.current;
-		if (
-			coordinator?.currentGeneration === generation &&
-			result.current.body !== body
-		) {
-			editor?.setText(result.current.body);
-			message = 'External changes merged';
-		}
-		if (result.managedObject) await onmanaged?.(result.managedObject);
 	}
 
-	function hasActivationDraft() {
-		return Boolean(
-			coordinator?.pendingEdits ||
-			coordinator?.isWriting ||
-			coordinator?.error ||
-			(editor && loaded && editor.doc() !== loaded.body),
-		);
+	function currentText() {
+		return collaboration?.text.toString() ?? session?.text() ?? '';
 	}
+
 	async function activateCollaboration(objectIds: string[]) {
 		if (collaboration || activationInProgress || activationNeedsReview) return;
 		if (collaborationOpening) {
@@ -110,13 +152,11 @@
 			return;
 		}
 		activationInProgress = true;
-		const retainedBody = hasActivationDraft()
-			? (editor?.doc() ?? coordinator?.getDraft() ?? loaded?.body)
-			: null;
-		coordinator?.pause();
+		const retainedBody = session?.hasPendingWork ? session.text() : null;
+		session?.autosave.pause();
 		let lease: CollaborationLease | null = null;
 		try {
-			lease = await acquireNativeCollaboration(file.relativePath);
+			lease = await acquireNativeCollaboration(path);
 			if (editorDisposed) {
 				await lease?.release();
 				lease = null;
@@ -125,27 +165,20 @@
 			if (!lease || !objectIds.includes(lease.session.bootstrap.objectId)) {
 				await lease?.release();
 				lease = null;
-				coordinator?.resume();
+				session?.autosave.resume();
 				return;
 			}
-			if (retainedBody !== null && retainedBody !== undefined) {
-				if (lease.session.text.toString() !== retainedBody) {
-					lease.session.transact((text) => {
-						text.delete(0, text.length);
-						text.insert(0, retainedBody);
-					});
-					await lease.session.flush();
-				}
-				coordinator?.acceptDurable();
-				if (loaded)
-					loaded = {
-						...loaded,
-						body: retainedBody,
-						revision: lease.session.revision,
-					};
+			if (
+				retainedBody !== null &&
+				lease.session.text.toString() !== retainedBody
+			) {
+				lease.session.transact((text) => {
+					text.delete(0, text.length);
+					text.insert(0, retainedBody);
+				});
+				await lease.session.flush();
 			}
-			editorCleanup?.();
-			editorCleanup = null;
+			session?.discard();
 			collaborationLease = lease;
 			collaboration = lease.session;
 			lease = null;
@@ -166,84 +199,52 @@
 			if (payload.objectIds) await activateCollaboration(payload.objectIds);
 			return;
 		}
-		if (activationInProgress || activationNeedsReview) return;
-		if (collaboration) return;
+		if (activationInProgress || activationNeedsReview || collaboration) return;
 		if (
-			!loaded ||
+			!session ||
 			(event.source !== 'external' && event.source !== 'reconciliation') ||
 			event.type !== 'file:changed'
 		)
 			return;
 		const payload = event.payload as { paths?: string[] };
-		if (!payload.paths?.includes(loaded.relativePath)) return;
-
+		if (!payload.paths?.includes(path)) return;
 		try {
-			if (!coordinator?.pendingEdits && !coordinator?.isWriting) {
-				const latest = await getNouraClient().files.readRawMarkdown({
-					relativePath: loaded.relativePath,
-				});
-				loaded = latest;
-				editor?.setText(latest.body);
-				return;
-			}
-
-			const localBody = editor?.doc() ?? loaded.body;
-			const result = await getNouraClient().files.reconcileRawMarkdown({
-				relativePath: loaded.relativePath,
-				baseRevision: loaded.revision,
-				baseBody: loaded.body,
-				localBody,
-			});
-			if (result.status === 'conflict') {
-				conflict = { localBody, file: result.current };
-				reviewOpen = true;
-				coordinator?.pause();
-				return;
-			}
-			loaded = result.current;
-			if (result.status === 'merged') {
-				editor?.setText(result.current.body);
-				message = 'External changes merged';
-				coordinator?.noteEdit(result.current.body);
-			}
+			await session.externalChange();
 		} catch (value) {
-			// Preserve the in-memory draft if the file was moved, deleted, or
-			// became unreadable. Retry and Copy draft remain available below.
+			// The file was moved, deleted, or became unreadable. The text stays
+			// in the editor; Try again and Copy text remain available.
 			error = value;
-			coordinator?.pause();
 		}
 	}
 
 	function connectEditor(handle: LiveMarkdownEditor | null) {
-		editorCleanup?.();
-		editorCleanup = null;
 		editor = handle;
-		if (!handle || !loaded) return;
-		const localCoordinator = new AutosaveCoordinator<string>({
-			write: persist,
-			onStateChange: (state) => {
-				error = state.error;
-			},
-		});
-		coordinator = localCoordinator;
-		const unregister = registerPendingDraft(
-			`raw:${loaded.relativePath}`,
-			() =>
-				activationInProgress || activationNeedsReview
-					? Promise.resolve(false)
-					: localCoordinator.flush(),
-			() =>
-				activationInProgress ||
-				activationNeedsReview ||
-				localCoordinator.pendingEdits > 0 ||
-				localCoordinator.isWriting ||
-				localCoordinator.error !== null,
+		session?.attach(
+			handle
+				? {
+						text: () => handle.doc(),
+						setText: (text) => handle.setText(text),
+						rebase: (base, target) => handle.rebase(base, target),
+					}
+				: null,
 		);
-		editorCleanup = () => {
-			unregister();
-			localCoordinator.destroy();
-			if (coordinator === localCoordinator) coordinator = null;
-		};
+	}
+
+	async function rename(name: string) {
+		const from = path;
+		const to = renamedPath(from, name);
+		if (!to) return;
+		const move = () => getNouraClient().files.move({ from, to });
+		try {
+			if (session) await session.exclusive(move);
+			else await move();
+		} catch (value) {
+			toast.error(renameErrorMessage(value));
+			throw value;
+		}
+		path = to;
+		moveViewMemory(`file:${from}`, `file:${to}`);
+		await onrenamed?.(to);
 	}
 
 	function requestResolution(resolution: Resolution) {
@@ -252,22 +253,25 @@
 	}
 
 	async function resolveConflict() {
-		if (!conflict || !loaded || !pendingResolution) return;
+		if (!conflict || !session || !pendingResolution) return;
 		resolving = true;
 		try {
+			const resolution = pendingResolution;
 			const result = await getNouraClient().files.resolveRawConflict({
-				relativePath: loaded.relativePath,
+				relativePath: path,
 				currentRevision: conflict.file.revision,
 				localBody: conflict.localBody,
-				resolution: pendingResolution,
+				resolution,
 			});
-			loaded = result.current;
-			editor?.setText(result.current.body);
-			coordinator?.acceptDurable();
-			coordinator?.resume();
+			session.resolved(baseOf(result.current), resolution === 'use-external');
 			conflict = null;
 			reviewOpen = false;
 			confirmOpen = false;
+			showMessage(
+				resolution === 'use-external'
+					? 'Switched to the file’s version'
+					: 'Saved your version',
+			);
 			if (result.managedObject) await onmanaged?.(result.managedObject);
 		} catch (value) {
 			error = value;
@@ -277,14 +281,16 @@
 	}
 
 	async function flushNow() {
-		if (activationInProgress || activationNeedsReview) return;
+		if (activationInProgress || activationNeedsReview) return false;
 		try {
 			await collaboration?.flush();
-			await coordinator?.flush();
+			return (await session?.flush()) ?? true;
 		} catch (value) {
 			error = value;
+			return false;
 		}
 	}
+
 	function handleShortcut(event: KeyboardEvent) {
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
 			event.preventDefault();
@@ -295,14 +301,34 @@
 	onMount(() => {
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
+		const unregister = registerPendingDraft(
+			`raw:${initialFile().relativePath}`,
+			() => flushNow(),
+			() =>
+				activationInProgress ||
+				activationNeedsReview ||
+				(session?.hasPendingWork ?? false),
+			{
+				label: () => splitFileName(path).stem,
+				problem: () =>
+					conflict
+						? 'The file changed in another app.'
+						: error
+							? saveErrorMessage(error)
+							: null,
+				discard: () => {
+					session?.discard();
+					activationNeedsReview = false;
+					conflict = null;
+				},
+			},
+		);
 		// Read the file while the collaboration check runs instead of after it.
-		const read = /\.md$/i.test(file.relativePath)
-			? getNouraClient().files.readRawMarkdown({
-					relativePath: file.relativePath,
-				})
+		const read = /\.md$/i.test(path)
+			? getNouraClient().files.readRawMarkdown({ relativePath: path })
 			: null;
 		read?.catch(() => {});
-		void openNativeCollaboration(file.relativePath)
+		void openNativeCollaboration(path)
 			.then(async (lease) => {
 				if (disposed) {
 					await lease?.release();
@@ -313,10 +339,10 @@
 				if (!lease) {
 					if (!read)
 						throw new Error(
-							'This text file is not available for collaborative editing yet. You can still edit its workspace file in another application.',
+							'noura can only edit this file while it’s shared. You can still open it in another app.',
 						);
 					const value = await read;
-					if (!disposed) loaded = value;
+					if (!disposed) session = createSession(value);
 				}
 				if (!disposed) {
 					collaborationOpening = false;
@@ -334,19 +360,19 @@
 					collaborationOpening = false;
 				}
 			});
-		if (browser) {
-			void getNouraClient()
-				.events.subscribe((event) => void handleExternalEvent(event))
-				.then((unlisten) => {
-					if (disposed) unlisten();
-					else unsubscribe = unlisten;
-				});
-		}
+		void getNouraClient()
+			.events.subscribe((event) => void handleExternalEvent(event))
+			.then((unlisten) => {
+				if (disposed) unlisten();
+				else unsubscribe = unlisten;
+			});
 		return () => {
 			disposed = true;
 			editorDisposed = true;
 			unsubscribe?.();
-			editorCleanup?.();
+			unregister();
+			if (clearMessageTimer) clearTimeout(clearMessageTimer);
+			session?.destroy();
 			void collaborationLease?.release().catch((value) => {
 				error = value;
 			});
@@ -357,20 +383,20 @@
 <svelte:window onkeydown={handleShortcut} />
 
 <div class="flex min-h-0 flex-1 flex-col">
-	<header class="flex min-h-16 items-center px-6">
-		<div class="min-w-0">
-			<h1 class="truncate text-base font-semibold">{file.title}</h1>
-			<p class="truncate text-xs text-muted-foreground">{file.relativePath}</p>
-		</div>
-	</header>
+	<DocumentHeader
+		relativePath={path}
+		disabled={collaborationOpening || activationInProgress}
+		onrename={rename}
+		ondone={() => editor?.focus()}
+	/>
 	<Separator />
-	{#if file.parseStatus === 'malformed'}
+	{#if parseStatus === 'malformed'}
 		<div class="px-6 pt-4">
 			<Alert.Root
-				><Warning /><Alert.Title>This file needs repair</Alert.Title
+				><Warning /><Alert.Title
+					>The properties at the top of this file have an error</Alert.Title
 				><Alert.Description
-					>Edit the complete Markdown source below. Noura will adopt its stable
-					identity after the frontmatter becomes valid.</Alert.Description
+					>Fix them in the text below. Everything else works as usual.</Alert.Description
 				></Alert.Root
 			>
 		</div>
@@ -378,20 +404,19 @@
 	{#if activationNeedsReview}
 		<div class="px-6 pt-4">
 			<Alert.Root>
-				<Warning /><Alert.Title>Needs review</Alert.Title>
+				<Warning /><Alert.Title
+					>Sharing started while you had unsaved changes</Alert.Title
+				>
 				<Alert.Description
-					>Sharing became live while this editor had a draft. Autosave is
-					paused. Your visible draft remains available to copy before reviewing
-					the shared document.</Alert.Description
+					>Autosave is paused so your changes don’t overwrite the shared
+					version. Copy your text, then reopen the file.</Alert.Description
 				>
 				<Alert.Action
 					><Button
 						variant="outline"
 						size="sm"
-						onclick={() =>
-							void navigator.clipboard.writeText(
-								editor?.doc() ?? loaded?.body ?? '',
-							)}>Copy draft</Button
+						onclick={() => void navigator.clipboard.writeText(currentText())}
+						>Copy text</Button
 					></Alert.Action
 				>
 			</Alert.Root>
@@ -402,12 +427,12 @@
 			<Alert.Root
 				><Warning /><Alert.Title>This file changed in another app</Alert.Title
 				><Alert.Description
-					>Your draft is preserved while you review both versions.</Alert.Description
+					>Your text is still here. Compare both versions and choose one.</Alert.Description
 				><Alert.Action
 					><Button
 						variant="outline"
 						size="sm"
-						onclick={() => (reviewOpen = true)}>Review conflict</Button
+						onclick={() => (reviewOpen = true)}>Compare</Button
 					></Alert.Action
 				></Alert.Root
 			>
@@ -416,22 +441,17 @@
 	{#if error}
 		<div class="px-6 pt-4">
 			<Alert.Root variant="destructive"
-				><Warning /><Alert.Title>Changes could not be saved</Alert.Title
-				><Alert.Description>{errorMessage(error)}</Alert.Description
+				><Warning /><Alert.Title>Changes aren’t saved</Alert.Title
+				><Alert.Description>{saveErrorMessage(error)}</Alert.Description
 				><Alert.Action
 					><div class="flex gap-2">
 						<Button variant="outline" size="sm" onclick={() => void flushNow()}
-							>Retry</Button
+							>Try again</Button
 						><Button
 							variant="outline"
 							size="sm"
-							onclick={() =>
-								void navigator.clipboard.writeText(
-									collaboration?.text.toString() ??
-										editor?.doc() ??
-										loaded?.body ??
-										'',
-								)}>Copy draft</Button
+							onclick={() => void navigator.clipboard.writeText(currentText())}
+							>Copy text</Button
 						>
 					</div></Alert.Action
 				></Alert.Root
@@ -444,17 +464,19 @@
 	{#if collaboration}
 		<CollaborativeTextSurface
 			session={collaboration}
-			sourceRelativePath={file.relativePath}
-			language={/\.md$/i.test(file.relativePath) ? 'markdown' : 'text'}
+			sourceRelativePath={path}
+			language={/\.md$/i.test(path) ? 'markdown' : 'text'}
 			onerror={(value) => (error = value)}
 		/>
-	{:else if loaded}
+	{:else if session}
 		<div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
 			<LiveMarkdownSurface
-				value={loaded.body}
-				sourceRelativePath={loaded.relativePath}
-				label="Raw Markdown document"
-				onedit={(body) => coordinator?.noteEdit(body)}
+				value={session.base.body}
+				sourceRelativePath={path}
+				label="File text"
+				memoryKey={`file:${path}`}
+				autofocus
+				onchange={() => session?.edited()}
 				onready={connectEditor}
 			/>
 		</div>
@@ -464,7 +486,7 @@
 			class="p-6 text-sm text-muted-foreground animate-in fade-in fill-mode-backwards delay-300"
 			role="status"
 		>
-			Opening document…
+			Opening…
 		</p>
 	{/if}
 </div>
@@ -473,32 +495,32 @@
 	<Sheet.Root bind:open={reviewOpen}>
 		<Sheet.Content class="sm:max-w-2xl"
 			><Sheet.Header
-				><Sheet.Title>Review Markdown conflict</Sheet.Title><Sheet.Description
-					>Noura preserved both versions.</Sheet.Description
+				><Sheet.Title>Choose a version</Sheet.Title><Sheet.Description
+					>Both versions are kept until you choose.</Sheet.Description
 				></Sheet.Header
 			>
 			<div
 				class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-5 overflow-y-auto px-4 pb-4"
 			>
-				<section>
-					<h2 class="mb-3 text-sm font-medium">Your draft</h2>
+				<section class="min-w-0">
+					<h2 class="mb-3 text-sm font-medium">Your version</h2>
 					<MarkdownPreview markdown={conflict.localBody} />
 				</section>
 				<Separator orientation="vertical" />
-				<section>
-					<h2 class="mb-3 text-sm font-medium">File version</h2>
+				<section class="min-w-0">
+					<h2 class="mb-3 text-sm font-medium">The file’s version</h2>
 					<MarkdownPreview markdown={conflict.file.body} />
 				</section>
 			</div>
 			<Sheet.Footer
 				><Button variant="outline" onclick={() => (reviewOpen = false)}
-					>Cancel and continue reviewing</Button
+					>Keep editing</Button
 				><Button
 					variant="outline"
 					onclick={() => requestResolution('use-external')}
-					>Use file version</Button
+					>Use the file’s version</Button
 				><Button onclick={() => requestResolution('replace-external')}
-					>Replace file with my version</Button
+					>Use my version</Button
 				></Sheet.Footer
 			></Sheet.Content
 		>
@@ -510,10 +532,12 @@
 		><AlertDialog.Header
 			><AlertDialog.Title
 				>{pendingResolution === 'use-external'
-					? 'Use the file version?'
-					: 'Replace the file version?'}</AlertDialog.Title
+					? 'Use the file’s version?'
+					: 'Use your version?'}</AlertDialog.Title
 			><AlertDialog.Description
-				>The displaced version is saved to recovery history first.</AlertDialog.Description
+				>{pendingResolution === 'use-external'
+					? 'Your version is kept as a backup first.'
+					: 'The file’s version is kept as a backup first.'}</AlertDialog.Description
 			></AlertDialog.Header
 		><AlertDialog.Footer
 			><AlertDialog.Cancel disabled={resolving}>Cancel</AlertDialog.Cancel
