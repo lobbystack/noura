@@ -78,8 +78,7 @@ describe('typed client', () => {
 			revealSelectsFile: true,
 		});
 		expect(
-			(mock as CoreTransport & { calls: Array<Record<string, unknown>> })
-				.calls,
+			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,
 		).toEqual([
 			{ command: 'objects_summaries', payload: { query } },
 			{ command: 'app_diagnostics' },
