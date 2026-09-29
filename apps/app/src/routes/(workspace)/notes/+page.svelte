@@ -1,5 +1,9 @@
 <script lang="ts">
-	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import {
+		getNouraClient,
+		getPluginRuntime,
+		workspace,
+	} from '$lib/state.svelte';
 	import { isPlainTextPath } from '$lib/editor/text-files';
 	import { workspaceTree } from '$lib/workspace-tree.svelte';
 	import { findTreeNode } from '$lib/workspace-tree';
@@ -30,6 +34,8 @@
 	let appliedKey: string | null = null;
 	let autofocusTitle = $state(false);
 	let selectionGeneration = 0;
+	// Editors reopen when the sync plugin adds or removes collaboration.
+	const collaborationSlot = getPluginRuntime().collaboration;
 
 	// Opening a document reads only that document. The sidebar tree already
 	// holds every path and parse status, so there is nothing to list first.
@@ -193,7 +199,7 @@
 	</div>
 
 	<div class="flex min-h-0 flex-1 flex-col">
-		{#key selected?.id ?? `raw:${selectedRaw?.relativePath ?? ''}`}
+		{#key `${$collaborationSlot.generation}:${selected?.id ?? `raw:${selectedRaw?.relativePath ?? ''}`}`}
 			{#if selectedRaw}
 				<RawMarkdownEditor file={selectedRaw} onmanaged={handleManaged} />
 			{:else}

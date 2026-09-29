@@ -14,7 +14,11 @@
 		Task,
 		WorkspaceEntry,
 	} from '@noura/workspace';
-	import { getNouraClient, workspace } from '$lib/state.svelte';
+	import {
+		getNouraClient,
+		getPluginRuntime,
+		workspace,
+	} from '$lib/state.svelte';
 	import { LiveProjection } from '$lib/live-refresh';
 	import { formatCalendarBoundary } from '$lib/calendar';
 	import { tabsStore } from '$lib/tabs.svelte';
@@ -38,6 +42,8 @@
 	type Summary = Awaited<
 		ReturnType<ReturnType<typeof getNouraClient>['projects']['listSummaries']>
 	>[number];
+	// Note editors reopen when the sync plugin adds or removes collaboration.
+	const collaborationSlot = getPluginRuntime().collaboration;
 	let summaries = $state<Summary[]>([]);
 	let selectedId = $state<string | null>(null);
 	let selectedProjectSnapshot = $state.raw<Project | null>(null);
@@ -491,7 +497,7 @@
 						</div>
 					</section>
 					<section class="flex min-w-0 flex-1">
-						{#if selectedNote}{#key selectedNote.id}<NoteEditor
+						{#if selectedNote}{#key `${$collaborationSlot.generation}:${selectedNote.id}`}<NoteEditor
 									note={selectedNote}
 									onsaved={handleNoteSaved}
 								/>{/key}{:else}<EmptyState
