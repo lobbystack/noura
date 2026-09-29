@@ -1508,8 +1508,9 @@ impl WorkspaceEngine {
         crate::path::validate_relative(&input.relative_path, "managed_object_restore")?;
         let object_type = input.id.split('_').next().unwrap_or_default().to_owned();
         if object_type.is_empty() || !valid_object_id(&input.id, &object_type) {
-            return Err(CoreError::validation(
+            return Err(CoreError::new(
                 "invalid_object_id",
+                ErrorCategory::Identity,
                 "The object ID is invalid",
                 "managed_conflict_resolve",
             ));
@@ -3662,8 +3663,9 @@ impl WorkspaceEngine {
     ) -> Result<(WorkspaceObject, Vec<u8>)> {
         let object_type = id.split('_').next().unwrap_or_default();
         if object_type.is_empty() || !valid_object_id(id, object_type) {
-            return Err(CoreError::validation(
+            return Err(CoreError::new(
                 "invalid_object_id",
+                ErrorCategory::Identity,
                 "The object ID is invalid",
                 operation,
             ));
@@ -3886,17 +3888,21 @@ fn compile_workspace_ignores(
     let mut builder = GitignoreBuilder::new(root);
     for pattern in patterns {
         builder.add_line(None, pattern).map_err(|error| {
-            CoreError::validation(
+            tracing::warn!(pattern, %error, "a workspace ignore pattern is invalid");
+            let mut value = CoreError::validation(
                 "invalid_ignore_pattern",
-                format!("Workspace ignore pattern is invalid: {error}"),
+                "A workspace ignore pattern is invalid",
                 "workspace_open",
-            )
+            );
+            value.details = Some(serde_json::json!({ "pattern": pattern }));
+            value
         })?;
     }
     builder.build().map_err(|error| {
+        tracing::warn!(%error, "the workspace ignore patterns could not be compiled");
         CoreError::validation(
             "invalid_ignore_pattern",
-            format!("Workspace ignore patterns are invalid: {error}"),
+            "The workspace ignore patterns are invalid",
             "workspace_open",
         )
     })
@@ -5612,6 +5618,19 @@ mod tests {
         assert_eq!(
             adopted.value.created.as_deref(),
             Some("2026-08-01T10:00:00Z")
+        );
+    }
+
+    #[test]
+    fn invalid_ignore_pattern_keeps_library_text_out_of_the_message() {
+        let workspace = tempdir().unwrap();
+        let error =
+            compile_workspace_ignores(workspace.path(), &["notes/{a,b".into()]).unwrap_err();
+        assert_eq!(error.code, "invalid_ignore_pattern");
+        assert_eq!(error.message, "A workspace ignore pattern is invalid");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "pattern": "notes/{a,b" }))
         );
     }
 

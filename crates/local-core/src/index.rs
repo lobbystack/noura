@@ -866,10 +866,11 @@ fn upsert_markdown_tx(
 
 fn encode_plugin_state_value(value: &serde_json::Value, operation: &str) -> Result<String> {
     let json = serde_json::to_string(value).map_err(|error| {
+        tracing::warn!(%error, "plugin state could not be encoded as JSON");
         CoreError::new(
             "plugin_state_unserializable",
             ErrorCategory::Parse,
-            format!("Plugin state is not representable as JSON: {error}"),
+            "Plugin state is not representable as JSON",
             operation,
         )
     })?;
@@ -880,10 +881,11 @@ fn encode_plugin_state_value(value: &serde_json::Value, operation: &str) -> Resu
 
 fn parse_plugin_state_value(json: &str, operation: &str) -> Result<serde_json::Value> {
     serde_json::from_str(json).map_err(|error| {
+        tracing::warn!(%error, "stored plugin state is not valid JSON");
         CoreError::new(
             "plugin_state_corrupt",
             ErrorCategory::Parse,
-            format!("Stored plugin state is not valid JSON: {error}"),
+            "Stored plugin state is not valid JSON",
             operation,
         )
     })
