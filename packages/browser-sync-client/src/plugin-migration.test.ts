@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
 	migrateBrowserSyncPlugin,
 	type BrowserSyncPluginMigration,
-} from './browser-sync-plugin';
+} from './plugin-migration';
 
 function harness(options: {
 	binding: boolean;

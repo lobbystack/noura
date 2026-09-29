@@ -30,6 +30,8 @@ export * from './crypto';
 export * from './http';
 export * from './identity';
 export * from './binding';
+export * from './binding-store';
+export * from './binding-keys';
 export * from './enrollment';
 export * from './keys';
 export * from './operations';
@@ -38,6 +40,8 @@ export * from './codec';
 export * from './attachments';
 export * from './access-policy';
 export * from './recovery-kit';
+export * from './native-recovery-kit';
+export * from './workspace-api';
 
 export {
 	AGE_DEVICE_FINGERPRINT_DOMAIN,

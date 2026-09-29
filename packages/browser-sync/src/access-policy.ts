@@ -16,6 +16,7 @@ import { importSigningKey, importVerifyKey } from './crypto';
 import type { Bytes } from './crypto';
 import { BrowserSyncError, BrowserSyncErrorCode } from './errors';
 import type { DeviceIdentity } from './identity';
+import type { AccessState } from './operations';
 
 /** One recipient envelope inside an access policy object entry. */
 export interface AccessPolicyEnvelope {
@@ -230,4 +231,159 @@ function decodeBase64(value: string): Bytes {
 	for (let index = 0; index < binary.length; index += 1)
 		bytes[index] = binary.charCodeAt(index);
 	return bytes;
+}
+
+/** True when access-state lists an active device with a non-browser recipient. */
+export function hasNativeActiveDevice(state: AccessState): boolean {
+	for (const raw of state.devices) {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+		const recipient = (raw as Record<string, unknown>).encryptionRecipient;
+		if (
+			typeof recipient === 'string' &&
+			recipient.length > 0 &&
+			!recipient.startsWith('x25519:')
+		)
+			return true;
+	}
+	return false;
+}
+
+/**
+ * Parse the server's latest signed access policy from an access-state response.
+ *
+ * Returns `null` when no policy exists yet. A present policy must match the
+ * browser's {@link AccessPolicy} shape closely enough that rebuilding and
+ * re-signing it preserves the server's member, grant, document, and envelope
+ * fields; an unexpected shape returns `null` so provisioning is skipped rather
+ * than fabricating a policy.
+ */
+export function parseAccessPolicy(value: unknown): AccessPolicy | null {
+	if (value === null || value === undefined) return null;
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+	const policy = value as Record<string, unknown>;
+	const version = policy.version;
+	if (version !== 1 && version !== 2) return null;
+	if (
+		typeof policy.workspaceId !== 'string' ||
+		typeof policy.revision !== 'string' ||
+		(policy.previousPolicyDigest !== null &&
+			typeof policy.previousPolicyDigest !== 'string') ||
+		typeof policy.deviceId !== 'string' ||
+		typeof policy.signature !== 'string' ||
+		!Array.isArray(policy.members) ||
+		!Array.isArray(policy.objects)
+	)
+		return null;
+	const members: AccessPolicy['members'] = [];
+	for (const raw of policy.members) {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+		const member = raw as Record<string, unknown>;
+		if (
+			typeof member.accountId !== 'string' ||
+			(member.role !== 'owner' &&
+				member.role !== 'admin' &&
+				member.role !== 'editor' &&
+				member.role !== 'viewer')
+		)
+			return null;
+		members.push({
+			accountId: member.accountId,
+			role: member.role as AccessPolicy['members'][number]['role'],
+		});
+	}
+	const objects: AccessPolicyObject[] = [];
+	for (const raw of policy.objects) {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+		const object = raw as Record<string, unknown>;
+		if (
+			typeof object.objectId !== 'string' ||
+			!Number.isSafeInteger(object.epoch) ||
+			(object.epoch as number) < 1 ||
+			!Array.isArray(object.grants) ||
+			!Array.isArray(object.envelopes)
+		)
+			return null;
+		const grants: AccessPolicyObject['grants'] = [];
+		for (const rawGrant of object.grants) {
+			if (!rawGrant || typeof rawGrant !== 'object' || Array.isArray(rawGrant))
+				return null;
+			const grant = rawGrant as Record<string, unknown>;
+			if (
+				typeof grant.accountId !== 'string' ||
+				(grant.role !== 'editor' && grant.role !== 'viewer')
+			)
+				return null;
+			grants.push({
+				accountId: grant.accountId,
+				role: grant.role as AccessPolicyObject['grants'][number]['role'],
+			});
+		}
+		const envelopes: AccessPolicyEnvelope[] = [];
+		for (const rawEnvelope of object.envelopes) {
+			if (
+				!rawEnvelope ||
+				typeof rawEnvelope !== 'object' ||
+				Array.isArray(rawEnvelope)
+			)
+				return null;
+			const envelope = rawEnvelope as Record<string, unknown>;
+			if (
+				typeof envelope.deviceId !== 'string' ||
+				typeof envelope.wrappedKey !== 'string' ||
+				typeof envelope.signature !== 'string'
+			)
+				return null;
+			const parsed: AccessPolicyEnvelope = {
+				deviceId: envelope.deviceId,
+				wrappedKey: envelope.wrappedKey,
+				signature: envelope.signature,
+			};
+			if (envelope.construction === 'web' || envelope.construction === 'age')
+				parsed.construction = envelope.construction;
+			if (typeof envelope.recipientPublicKey === 'string')
+				parsed.recipientPublicKey = envelope.recipientPublicKey;
+			if (typeof envelope.ephemeralPublicKey === 'string')
+				parsed.ephemeralPublicKey = envelope.ephemeralPublicKey;
+			if (typeof envelope.salt === 'string') parsed.salt = envelope.salt;
+			if (typeof envelope.nonce === 'string') parsed.nonce = envelope.nonce;
+			envelopes.push(parsed);
+		}
+		let document: AccessPolicyObject['document'];
+		if (
+			object.document &&
+			typeof object.document === 'object' &&
+			!Array.isArray(object.document)
+		) {
+			const descriptor = object.document as Record<string, unknown>;
+			if (
+				typeof descriptor.generation === 'string' &&
+				(descriptor.mode === 'text' || descriptor.mode === 'attachment')
+			)
+				document = {
+					generation: descriptor.generation,
+					mode: descriptor.mode,
+				};
+		}
+		// A version-2 policy binds a document descriptor per object; the server
+		// rejects a version-2 object without one. A malformed or partial response
+		// must not be rebuilt and re-signed, so skip provisioning instead.
+		if (version === 2 && document === undefined) return null;
+		objects.push({
+			objectId: object.objectId,
+			epoch: object.epoch as number,
+			grants,
+			envelopes,
+			...(document === undefined ? {} : { document }),
+		});
+	}
+	return {
+		version,
+		workspaceId: policy.workspaceId,
+		revision: policy.revision,
+		previousPolicyDigest: policy.previousPolicyDigest as string | null,
+		deviceId: policy.deviceId,
+		members,
+		objects,
+		signature: policy.signature,
+	};
 }

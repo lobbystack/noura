@@ -209,11 +209,11 @@ Behavior:
 
 ### App host wiring (`apps/app`)
 
-Browser sync runs only while the workspace's `sync` plugin is on. The browser shell renders the sync settings and synced attachments only then. A workspace that already has a binding in this browser turns the plugin on once; the marker `.noura-adapter/browser-sync/plugin/<workspace>.json` keeps a later “off” in place, and writing a binding also writes it. Like the other adapter files, the marker is never exported or synchronized. See [the plugin runtime](plugin-runtime.md#host-backed-plugins-sync).
+Browser sync runs only while the workspace's `sync` plugin is on. Settings shows the sync section and notes show synced attachments only then. A workspace that already has a binding in this browser turns the plugin on once; the marker `.noura-adapter/browser-sync/plugin/<workspace>.json` keeps a later “off” in place, and writing a binding also writes it. Like the other adapter files, the marker is never exported or synchronized. See [the plugin runtime](plugin-runtime.md#host-backed-plugins-sync).
 
-`apps/app/src/lib/browser-sync.ts` is the controller that binds the packages above to the hosted app. It reconciles **per object**, not through one shared sync object:
+`packages/browser-sync-client` holds the controller that binds the packages above to the hosted app; `apps/app/src/lib/browser-sync.ts` only creates it. It reconciles **per object**, not through one shared sync object:
 
-- The workspace worker exposes `objects_list`, a minimal managed-object projection `{id, path, type}` derived from `BrowserWorkspaceStorage.rebuild()`; `BrowserWorkspaceFiles.listObjects()` wraps it.
+- The workspace worker exposes `storage_objects_list`, a minimal managed-object projection `{id, path, type}` derived from `BrowserWorkspaceStorage.rebuild()`; `BrowserWorkspaceFiles.listObjects()` wraps it.
 - `enableSync` creates one remote object and one random object key per managed local object, wraps every key to this browser device, signs one version-1 access policy covering all of the objects, and persists only the wrapped keys.
 - The reconcile codec seals each file change under the object that owns its path and opens operations by `operation.objectId`. A local path with no owning object or no object key is skipped and counted in `skippedUnmanaged`; it is never sealed under a different object.
 - Before reconcile the controller calls `receiveKeys` with the pinned signer set (this device plus locally approved devices) and merges delivered keys over the local self-wrapped ones. A delivery failure keeps the local keys. A delivered key that differs from the stored self-wrapped key is re-wrapped to this device with `wrapKey` and persisted in the durable binding, so a later sync can seal under it even if the server is unreachable. Only the wrapped envelope is ever persisted; the plaintext key stays in tab memory.

@@ -67,6 +67,7 @@ Generates a Svelte Playground link with the provided code. After completing the 
 - `packages/browser-workspace` contains the browser workspace worker, its protocol, and the typed client transport for the browser build.
 - `packages/browser-sync` contains browser device custody, enrollment, key delivery, operation encryption, and recovery kits for experimental encrypted sync.
 - `packages/browser-sync-engine` contains the browser replica engine for experimental encrypted sync: outbox, push and pull, and conflict handling. It holds no keys and performs no cryptography.
+- `packages/browser-sync-client` contains the browser sync controller that joins device custody, the replica engine, and the server API, plus its storage in the origin private file system. The app only creates it and renders its state.
 - `plugins/*` contains first-party domain adapters built against the same public capabilities intended for future plugins.
 - `crates/workspace-format` owns platform-independent parsing, validation, and canonical serialization of workspace files, with no filesystem, database, or credential dependencies.
 - `crates/workspace-format-wasm` exposes `crates/workspace-format` to WebAssembly and contains no format rules.
