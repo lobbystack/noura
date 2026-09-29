@@ -1,4 +1,5 @@
 import type { CoreEvent } from '@noura/workspace';
+import { BULK_OBJECT_EVENT, objectEvents } from './object-events';
 
 /**
  * Events that can change what a projection shows. `search:index-updated`
@@ -10,16 +11,10 @@ export const LIVE_REFRESH_EVENT_TYPES = new Set([
 	'object:updated',
 	'object:deleted',
 	'object:moved',
+	BULK_OBJECT_EVENT,
 	'file:changed',
 	'workspace:ready',
 	'workspace:manifest-updated',
-]);
-
-const OBJECT_EVENT_TYPES = new Set([
-	'object:created',
-	'object:updated',
-	'object:deleted',
-	'object:moved',
 ]);
 
 /** Decides whether a core event can change one projection. */
@@ -33,17 +28,21 @@ function payloadObjectType(payload: unknown): string | null {
 
 /**
  * A filter for projections built from typed objects. Object events count
- * only for the listed types, so a note autosave no longer reloads tasks.
+ * only for the listed types, so a note autosave no longer reloads tasks. A
+ * bulk `objects:changed` event counts when any of its changes does.
  * External file changes still count: they may arrive batched, without a
  * per-object event.
  */
 export function objectTypeEvents(types: readonly string[]): LiveEventFilter {
 	const accepted = new Set(types);
 	return (event) => {
-		if (OBJECT_EVENT_TYPES.has(event.type)) {
-			const type = payloadObjectType(event.payload);
-			return type === null || accepted.has(type);
-		}
+		const changes = objectEvents(event);
+		if (changes.length > 0)
+			return changes.some((change) => {
+				const type = payloadObjectType(change.payload);
+				return type === null || accepted.has(type);
+			});
+		if (event.type === BULK_OBJECT_EVENT) return true;
 		if (event.type === 'file:changed') return event.source !== 'application';
 		return (
 			event.type === 'workspace:ready' ||

@@ -170,6 +170,12 @@ describe('isLiveRefreshEvent', () => {
 			expect(isLiveRefreshEvent(coreEvent(type), 'workspace-a')).toBe(true);
 		}
 	});
+
+	test('invalidates projections for a bulk object change', () => {
+		expect(
+			isLiveRefreshEvent(coreEvent('objects:changed'), 'workspace-a'),
+		).toBe(true);
+	});
 });
 
 describe('objectTypeEvents', () => {
@@ -189,6 +195,22 @@ describe('objectTypeEvents', () => {
 		expect(tasks({ ...coreEvent('file:changed'), source: 'application' })).toBe(
 			false,
 		);
+	});
+
+	test('counts a bulk change when any of its changes matches', () => {
+		const bulk = (types: string[]) => ({
+			...coreEvent('objects:changed'),
+			payload: {
+				changes: types.map((type, index) => ({
+					event: 'object:updated',
+					id: `object-${index}`,
+					type,
+				})),
+			},
+		});
+		expect(tasks(bulk(['note', 'note']))).toBe(false);
+		expect(tasks(bulk(['note', 'task']))).toBe(true);
+		expect(tasks(bulk([]))).toBe(true);
 	});
 
 	test('ignores search index hints and chat events', () => {

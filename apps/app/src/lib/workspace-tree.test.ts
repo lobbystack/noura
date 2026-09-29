@@ -19,6 +19,7 @@ import {
 	ancestorFolders,
 	openDocumentPath,
 	findNodeByObjectId,
+	objectChangesKeepTree,
 	treeTargetFor,
 	type WorkspaceTreeNode,
 } from './workspace-tree';
@@ -377,5 +378,39 @@ describe('the open document', () => {
 		expect(at('/tasks?selected=task_missing')).toBeNull();
 		expect(at('/inbox')).toBeNull();
 		expect(findNodeByObjectId(tree, 'task_01k')?.name).toBe('x.md');
+	});
+});
+
+describe('objectChangesKeepTree', () => {
+	const tree = buildWorkspaceTree([
+		entry('notes', 'folder'),
+		entry('notes/a.md', 'file', { objectId: 'note_a' }),
+		entry('notes/b.md', 'file', { objectId: 'note_b' }),
+	]);
+
+	test('keeps the tree when every change saves a file it shows', () => {
+		expect(
+			objectChangesKeepTree(tree, [
+				{ type: 'object:updated', id: 'note_a', path: 'notes/a.md' },
+				{ type: 'object:updated', id: 'note_b', path: 'notes/b.md' },
+			]),
+		).toBe(true);
+	});
+
+	test('reads again for new files, moves, deletions and unknown ids', () => {
+		for (const change of [
+			{ type: 'object:created', id: 'note_c', path: 'notes/c.md' },
+			{ type: 'object:moved', id: 'note_a', path: 'notes/a.md' },
+			{ type: 'object:deleted', id: 'note_a', path: 'notes/a.md' },
+			{ type: 'object:updated', id: 'note_x', path: 'notes/a.md' },
+			{ type: 'object:updated', id: 'note_a' },
+		])
+			expect(
+				objectChangesKeepTree(tree, [
+					{ type: 'object:updated', id: 'note_b', path: 'notes/b.md' },
+					change,
+				]),
+			).toBe(false);
+		expect(objectChangesKeepTree(tree, [])).toBe(false);
 	});
 });

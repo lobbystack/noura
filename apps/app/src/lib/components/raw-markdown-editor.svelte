@@ -3,6 +3,10 @@
 	import { toast } from 'svelte-sonner';
 	import type { CollaborationSession } from '@noura/editor';
 	import { getCollaborationAccess } from '$lib/editor/workspace-collaboration';
+	import {
+		BULK_OBJECT_EVENT,
+		objectEventTouchesPath,
+	} from '$lib/object-events';
 	import type { CollaborationLease } from '$lib/editor/collaboration-registry';
 	import CollaborativeTextSurface from '$lib/components/collaborative-text-surface.svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
@@ -201,12 +205,16 @@
 		if (activationInProgress || activationNeedsReview || collaboration) return;
 		if (
 			!session ||
-			(event.source !== 'external' && event.source !== 'reconciliation') ||
-			event.type !== 'file:changed'
+			(event.source !== 'external' && event.source !== 'reconciliation')
 		)
 			return;
-		const payload = event.payload as { paths?: string[] };
-		if (!payload.paths?.includes(path)) return;
+		// A bulk external change names this file among many others.
+		const touched =
+			event.type === 'file:changed'
+				? (event.payload as { paths?: string[] }).paths?.includes(path)
+				: event.type === BULK_OBJECT_EVENT &&
+					objectEventTouchesPath(event, path);
+		if (!touched) return;
 		try {
 			await session.externalChange();
 		} catch (value) {

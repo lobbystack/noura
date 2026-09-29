@@ -7,19 +7,19 @@ import {
 	collectFolderPaths,
 	findTreeNode,
 	moveTreePath,
+	objectChangesKeepTree,
 	remapPath,
 	type WorkspaceTreeNode,
 } from './workspace-tree';
 import { LiveRefresh } from './live-refresh';
+import {
+	BULK_OBJECT_EVENT,
+	objectEvents,
+	type ObjectEventPayload,
+} from './object-events';
 import { getNouraClient, workspace } from './state.svelte';
 
 const EXPANDED_STORAGE_PREFIX = 'noura.file-tree.expanded.v1:';
-
-interface ObjectEventPayload {
-	id?: string;
-	path?: string;
-	previousPath?: string | null;
-}
 
 /**
  * Reactive projection of the workspace folder tree for the sidebar.
@@ -169,11 +169,18 @@ class WorkspaceTreeStore {
 		switch (event.type) {
 			case 'object:updated':
 			case 'object:created': {
-				const node = payload.path
-					? findTreeNode(this.tree, payload.path)
-					: null;
-				if (node && node.objectId === payload.id) return;
-				this.#invalidate();
+				const change = { ...payload, type: event.type };
+				if (!objectChangesKeepTree(this.tree, [change])) this.#invalidate();
+				return;
+			}
+			case BULK_OBJECT_EVENT: {
+				// A bulk change is one read of the file list at most, never one
+				// per object.
+				const changes = objectEvents(event).map((change) => ({
+					...(change.payload as ObjectEventPayload),
+					type: change.type,
+				}));
+				if (!objectChangesKeepTree(this.tree, changes)) this.#invalidate();
 				return;
 			}
 			case 'object:moved': {

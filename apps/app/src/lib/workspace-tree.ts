@@ -237,6 +237,33 @@ export function findTreeNode(
 	return null;
 }
 
+/** One object change as the tree sees it. */
+export interface TreeObjectChange {
+	/** `object:created`, `object:updated`, `object:moved` or `object:deleted`. */
+	type: string;
+	id?: string;
+	path?: string;
+}
+
+/**
+ * Whether object changes leave the tree as it is: each one saves a file the
+ * tree already shows for the same object. Anything else needs a new read.
+ */
+export function objectChangesKeepTree(
+	nodes: WorkspaceTreeNode[],
+	changes: readonly TreeObjectChange[],
+): boolean {
+	return (
+		changes.length > 0 &&
+		changes.every((change) => {
+			if (change.type !== 'object:updated' && change.type !== 'object:created')
+				return false;
+			const node = change.path ? findTreeNode(nodes, change.path) : null;
+			return node !== null && node.objectId === change.id;
+		})
+	);
+}
+
 /** The file whose managed object has `objectId`. */
 export function findNodeByObjectId(
 	nodes: WorkspaceTreeNode[],

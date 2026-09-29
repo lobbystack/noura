@@ -3,6 +3,7 @@
 	import { toast } from 'svelte-sonner';
 	import type { CollaborationSession } from '@noura/editor';
 	import { getCollaborationAccess } from '$lib/editor/workspace-collaboration';
+	import { editorObjectEvent } from '$lib/object-events';
 	import type { CollaborationLease } from '$lib/editor/collaboration-registry';
 	import CollaborativeTextSurface from '$lib/components/collaborative-text-surface.svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
@@ -230,19 +231,14 @@
 				await activateCollaboration();
 			return;
 		}
-		if (activationInProgress || activationNeedsReview) return;
-		if (
-			!target ||
-			(!collaboration &&
-				event.source !== 'external' &&
-				event.source !== 'reconciliation') ||
-			!['object:updated', 'object:moved', 'object:deleted'].includes(event.type)
-		)
-			return;
-		const payload = event.payload as { id?: string };
-		if (payload.id !== target.id) return;
+		if (activationInProgress || activationNeedsReview || !target) return;
+		// A bulk external change carries this note among many others.
+		const own = editorObjectEvent(event, target.id, {
+			includeApplication: !!collaboration,
+		});
+		if (!own) return;
 		if (collaboration) {
-			if (event.type === 'object:deleted') {
+			if (own.type === 'object:deleted') {
 				autosaveError = new Error(
 					'This note’s file was deleted. Your shared text is still here.',
 				);
@@ -255,7 +251,7 @@
 			}
 			return;
 		}
-		if (event.type === 'object:deleted') {
+		if (own.type === 'object:deleted') {
 			openConflict({ title: fileName(), body: currentBody() }, target, true);
 			return;
 		}

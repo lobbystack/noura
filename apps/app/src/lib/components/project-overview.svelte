@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { editorObjectEvent } from '$lib/object-events';
 	import { onMount } from 'svelte';
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
 	import type { CoreEvent, Project } from '@noura/workspace';
@@ -104,14 +105,10 @@
 		}
 	}
 	async function handleExternalEvent(event: CoreEvent) {
-		if (
-			(event.source !== 'external' && event.source !== 'reconciliation') ||
-			!['object:updated', 'object:moved', 'object:deleted'].includes(event.type)
-		)
-			return;
-		const payload = event.payload as { id?: string };
-		if (payload.id !== current.id) return;
-		if (event.type === 'object:deleted') {
+		// A bulk external change carries this project among many others.
+		const own = editorObjectEvent(event, current.id);
+		if (!own) return;
+		if (own.type === 'object:deleted') {
 			conflict = { draft: draft(), file: current, deleted: true };
 			coordinator?.pause();
 			return;
