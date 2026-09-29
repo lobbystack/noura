@@ -6,7 +6,11 @@
 	import type { CoreEvent, Project, Task } from '@noura/workspace';
 	import { isCoreError } from '@noura/workspace';
 	import { getNouraClient } from '$lib/state.svelte';
-	import { AutosaveCoordinator } from '$lib/editor/autosave';
+	import {
+		ManagedDraftSession,
+		rebaseManagedDraft,
+		type ManagedSaveResult,
+	} from '$lib/editor/managed-draft-session';
 	import { registerPendingDraft } from '$lib/editor/pending-drafts.svelte';
 	import LiveMarkdownSurface from '$lib/components/live-markdown-surface.svelte';
 	import MarkdownPreview from '$lib/components/markdown-preview.svelte';
@@ -39,20 +43,12 @@
 	const initialTask = () => task;
 
 	let current = $state.raw(initialTask());
-	let baseTitle = $state(initialTask().title);
-	let baseBody = $state(initialTask().body);
 	let displayBody = $state(initialTask().body);
-	let baseRevision = $state(initialTask().revision);
-	let baseProperties = $state<Record<string, unknown>>({
-		...initialTask().properties,
-	});
 	let properties = $state<Record<string, unknown>>({
 		...initialTask().properties,
 	});
 	let title = $state(initialTask().title);
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
-	let coordinator = $state.raw<AutosaveCoordinator<Draft> | null>(null);
-	let cleanup: (() => void) | null = null;
 	let error = $state<unknown | null>(null);
 	let conflict = $state.raw<Conflict | null>(null);
 	let reviewOpen = $state(false);
@@ -69,80 +65,43 @@
 		};
 	}
 
-	function input(value: Draft) {
-		return {
-			id: current.id,
-			baseRevision,
-			baseTitle,
-			baseBody,
-			baseProperties,
-			localTitle: value.title,
-			localBody: value.body,
-			localProperties: value.properties,
-		};
-	}
-
-	function adoptCanonical(value: Task) {
-		current = value;
-		baseRevision = value.revision;
-		baseTitle = value.title;
-		baseBody = value.body;
-		baseProperties = { ...value.properties };
-		onupdated?.(value);
-	}
-
-	function syncDraft(value: Draft) {
-		title = value.title;
-		displayBody = value.body;
-		properties = { ...value.properties };
-		editor?.setText(value.body);
-	}
-
-	async function persist(value: Draft, generation: number) {
-		const result = await getNouraClient().tasks.saveDraft(input(value));
-		if (result.status === 'conflict') {
-			conflict = { draft: value, file: result.current as Task };
+	// Saves and reloads move the form to a new version as a rebase, so edits
+	// made while either is in flight are kept.
+	const session = new ManagedDraftSession<Task>({
+		base: initialTask(),
+		// The native side returns the saved task as a plain object.
+		save: async (input) =>
+			(await getNouraClient().tasks.saveDraft(
+				input,
+			)) as ManagedSaveResult<Task>,
+		read: () => getNouraClient().tasks.get(current.id),
+		onCanonical: (value) => {
+			current = value;
+			onupdated?.(value);
+		},
+		onConflict: ({ draft: local, file }) => {
+			conflict = { draft: local, file };
 			reviewOpen = true;
-			coordinator?.pause();
-			return 'paused' as const;
-		}
-		const canonical = result.current as Task;
-		adoptCanonical(canonical);
-		if (coordinator?.currentGeneration === generation) {
-			syncDraft(
-				result.status === 'merged'
-					? {
-							title: result.title,
-							body: result.body,
-							properties: result.properties,
-						}
-					: canonical,
-			);
-		}
-		if (result.status === 'merged' && result.body !== value.body)
-			message = 'External changes merged';
-	}
+		},
+		onMerged: () => (message = 'External changes merged'),
+		onStateChange: (state) => (error = state.error),
+	});
+	session.attach({
+		read: draft,
+		rebase: (from, to) => {
+			const next = rebaseManagedDraft(draft(), from, to);
+			title = next.title;
+			properties = next.properties;
+			if (from.body === to.body) return;
+			if (editor) {
+				editor.rebase(from.body, to.body);
+				displayBody = editor.doc();
+			} else displayBody = to.body;
+		},
+	});
 
 	function connectEditor(handle: LiveMarkdownEditor | null) {
-		cleanup?.();
-		cleanup = null;
 		editor = handle;
-		if (!handle) return;
-		const local = new AutosaveCoordinator<Draft>({
-			write: persist,
-			onStateChange: (state) => (error = state.error),
-		});
-		coordinator = local;
-		const unregister = registerPendingDraft(
-			current.id,
-			() => local.flush(),
-			() => local.pendingEdits > 0 || local.isWriting || local.error !== null,
-		);
-		cleanup = () => {
-			unregister();
-			local.destroy();
-			if (coordinator === local) coordinator = null;
-		};
 	}
 
 	function editProperty(key: string, value: string) {
@@ -150,57 +109,31 @@
 		if (value) next[key] = value;
 		else delete next[key];
 		properties = next;
-		coordinator?.noteEdit(draft());
-		void coordinator?.flush();
+		session.edited();
+		void session.flush();
+	}
+
+	function showDeleted() {
+		conflict = { draft: draft(), file: current, deleted: true };
+		reviewOpen = true;
+		session.pause();
 	}
 
 	async function handleExternalEvent(event: CoreEvent) {
 		// A bulk external change carries this task among many others.
 		const own = editorObjectEvent(event, current.id);
-		if (!own) return;
+		if (!own || conflict) return;
 		if (own.type === 'object:deleted') {
-			conflict = { draft: draft(), file: current, deleted: true };
-			reviewOpen = true;
-			coordinator?.pause();
+			showDeleted();
 			return;
 		}
-
 		try {
-			const latest = await getNouraClient().tasks.get(current.id);
-			if (!coordinator?.pendingEdits && !coordinator?.isWriting) {
-				adoptCanonical(latest);
-				syncDraft(latest);
-				return;
-			}
-
-			const local = draft();
-			const result = await getNouraClient().tasks.reconcileManaged(
-				input(local),
-			);
-			if (result.status === 'conflict') {
-				conflict = { draft: local, file: result.current as Task };
-				reviewOpen = true;
-				coordinator?.pause();
-				return;
-			}
-			const canonical = result.current as Task;
-			adoptCanonical(canonical);
-			if (result.status === 'merged') {
-				syncDraft({
-					title: result.title,
-					body: result.body,
-					properties: result.properties,
-				});
-				message = 'External changes merged';
-			}
-			coordinator?.noteEdit(draft());
+			await session.externalChange();
 		} catch (value) {
 			if (isCoreError(value) && value.code === 'object_not_found') {
-				// The file disappeared between the event and the fetch; show the
+				// The file disappeared between the event and the read; show the
 				// same review surface the deleted event would.
-				conflict = { draft: draft(), file: current, deleted: true };
-				reviewOpen = true;
-				coordinator?.pause();
+				showDeleted();
 				return;
 			}
 			error = value;
@@ -217,16 +150,13 @@
 		resolving = true;
 		try {
 			const value = await getNouraClient().tasks.resolveManagedConflict({
-				...input(conflict.draft),
+				...session.input(conflict.draft),
 				currentRevision: conflict.file.revision,
 				relativePath: current.relativePath,
 				created: current.created,
 				resolution,
 			});
-			adoptCanonical(value as Task);
-			syncDraft(value as Task);
-			coordinator?.acceptDurable();
-			coordinator?.resume();
+			session.resolved(value as Task, true);
 			conflict = null;
 			reviewOpen = false;
 			confirmOpen = false;
@@ -247,13 +177,18 @@
 	function handleShortcut(event: KeyboardEvent) {
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
 			event.preventDefault();
-			void coordinator?.flush();
+			void session.flush();
 		}
 	}
 
 	onMount(() => {
 		let disposed = false;
 		let unsubscribe: (() => void) | undefined;
+		const unregister = registerPendingDraft(
+			current.id,
+			() => session.flush(),
+			() => session.hasPendingWork,
+		);
 		if (browser) {
 			void getNouraClient()
 				.events.subscribe((event) => void handleExternalEvent(event))
@@ -265,7 +200,8 @@
 		return () => {
 			disposed = true;
 			unsubscribe?.();
-			cleanup?.();
+			unregister();
+			session.destroy();
 		};
 	});
 </script>
@@ -276,8 +212,8 @@
 	<header class="flex min-h-16 items-center px-6">
 		<input
 			bind:value={title}
-			oninput={() => coordinator?.noteEdit(draft())}
-			onblur={() => void coordinator?.flush()}
+			oninput={() => session.edited()}
+			onblur={() => void session.flush()}
 			aria-label="Task title"
 			placeholder="Task title"
 			class="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none placeholder:text-muted-foreground"
@@ -357,7 +293,7 @@
 					><Button
 						variant="outline"
 						size="sm"
-						onclick={() => void coordinator?.flush()}>Retry</Button
+						onclick={() => void session.flush()}>Retry</Button
 					></Alert.Action
 				></Alert.Root
 			>
@@ -367,7 +303,7 @@
 			value={displayBody}
 			sourceRelativePath={current.relativePath}
 			label="Task body"
-			onedit={(body) => coordinator?.noteEdit({ ...draft(), body })}
+			onedit={() => session.edited()}
 			onready={connectEditor}
 		/>
 	</div>
