@@ -55,8 +55,8 @@ Generates a Svelte Playground link with the provided code. After completing the 
 ## Code Ownership Boundaries
 
 - `apps/app` contains the SvelteKit application, visual UI, and typed client wiring. Components must not call raw Tauri commands.
-- `packages/shared` contains generated/native DTOs, errors, events, and transport-neutral types.
-- `packages/workspace-schema` contains public TypeScript validation for the workspace format.
+- `packages/shared` re-exports the DTOs, errors, and events that ts-rs generates from Rust, plus transport-neutral types and enum value lists checked against the generated unions. Do not hand-write a type that Rust already exports.
+- `packages/workspace-schema` holds TypeScript validators that a TypeScript caller needs and Rust cannot serve, currently the sync file-change schema.
 - `packages/workspace` contains the typed client, service facades, transports, and thin reactive adapters. Keep business rules out of stores.
 - `packages/plugin-sdk` contains capability contracts and the trusted first-party plugin host. Plugins must not import SQLite or Rust internals.
 - `packages/editor` contains headless CodeMirror 6/Yjs configuration and Markdown safety checks. Visual editor components belong in `apps/app`.
@@ -81,7 +81,9 @@ Generates a Svelte Playground link with the provided code. After completing the 
 
 `docs/workspace-format/` defines the normative public workspace format. `crates/local-core` is authoritative for parsing, validation, normalization, and deterministic serialization of durable workspace files.
 
-`packages/workspace-schema` exposes compatible TypeScript validators for frontend and plugin consumers. It must not parse or serialize durable files independently, redefine canonical serialization, or create new format semantics. Generate shared DTO shapes from Rust where practical.
+TypeScript code validates workspace files through Rust: the browser calls the wasm build in `packages/workspace-format-wasm`, and the desktop calls local-core over IPC. `packages/workspace-schema` keeps only validators with a TypeScript consumer. It must not parse or serialize durable files independently, redefine canonical serialization, or create new format semantics.
+
+DTO shapes come from Rust. Add `#[derive(TS)]` and `#[ts(export)]` to the Rust type, run `bun run bindings:generate`, and import the type from `@noura/shared`. Annotate a Rust field when its JSON differs from the ts-rs default: `#[ts(type = "number")]` for a `u64` sent as a JSON number, and `#[ts(optional = nullable)]` for an input field that callers may omit. Enum value lists such as `TASK_STATUSES` live in `packages/shared/src/enums.ts` and fail type checking when they miss a variant of the generated union.
 
 Do not maintain two independently evolving definitions of the workspace format. Any mirrored TypeScript validation must pass the same conformance fixtures as Rust.
 

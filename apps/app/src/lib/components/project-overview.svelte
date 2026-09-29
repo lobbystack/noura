@@ -4,6 +4,7 @@
 	import type { LiveMarkdownEditor } from '@noura/editor/types';
 	import type { CoreEvent, Project } from '@noura/workspace';
 	import { isCoreError } from '@noura/workspace';
+	import { PROJECT_STATUSES } from '@noura/shared';
 	import { getNouraClient } from '$lib/state.svelte';
 	import {
 		ManagedDraftSession,
@@ -28,13 +29,7 @@
 		properties: Record<string, unknown>;
 	};
 	type Conflict = { draft: Draft; file: Project; deleted?: boolean };
-	const statuses = [
-		'planned',
-		'active',
-		'on-hold',
-		'completed',
-		'cancelled',
-	] as const;
+	const statuses = PROJECT_STATUSES;
 	const initialProject = () => project;
 	let current = $state.raw(initialProject());
 	let title = $state(initialProject().title);

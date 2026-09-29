@@ -43,7 +43,9 @@ const platformActivationCapabilitiesSchema = z
 	})
 	.strict();
 export const pluginManifestSchema = z.object({
-	id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+	// Matches the workspace manifest rule, so an enabled plugin ID is always
+	// valid in .noura/workspace.yaml.
+	id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
 	name: z.string().min(1),
 	version: z.string(),
 	capabilities: z.array(capabilitySchema),

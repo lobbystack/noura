@@ -105,6 +105,36 @@
 			}
 		},
 		{
+			"name": "plugin id of 64 characters",
+			"valid": true,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": [
+					"abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+				],
+				"ignore": []
+			}
+		},
+		{
+			"name": "plugin id longer than 64 characters",
+			"valid": false,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
+				"name": "Example",
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": [
+					"abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+				],
+				"ignore": []
+			}
+		},
+		{
 			"name": "plugin ids not a list",
 			"valid": false,
 			"value": {

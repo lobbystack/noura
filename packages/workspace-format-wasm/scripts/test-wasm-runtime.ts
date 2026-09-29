@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import {
+	PROJECT_STATUSES,
+	TASK_PRIORITIES,
+	TASK_STATUSES,
+} from '@noura/shared';
 import { WorkspaceFormatError, loadWorkspaceFormat } from '../src/index';
 
 type Fixtures = {
@@ -168,5 +173,34 @@ assert.deepEqual(patchedProject.properties, {
 	status: 'active',
 	custom: 'kept',
 });
+
+// The TypeScript enum lists must name exactly the values Rust accepts.
+for (const status of TASK_STATUSES)
+	assert.equal(
+		format.createTask({
+			title: 'Status',
+			properties: { status },
+			now: '2026-09-12T00:00:00Z',
+		}).properties.status,
+		status,
+	);
+for (const priority of TASK_PRIORITIES)
+	assert.equal(
+		format.createTask({
+			title: 'Priority',
+			properties: { priority },
+			now: '2026-09-12T00:00:00Z',
+		}).properties.priority,
+		priority,
+	);
+for (const status of PROJECT_STATUSES)
+	assert.equal(
+		format.createProject({
+			title: 'Status',
+			properties: { status },
+			now: '2026-09-12T00:00:00Z',
+		}).properties.status,
+		status,
+	);
 
 console.info('Verified generated wasm glue against workspace format fixtures.');

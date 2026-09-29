@@ -19,6 +19,7 @@
 		workspace,
 	} from '$lib/state.svelte';
 	import { LiveProjection } from '$lib/live-refresh';
+	import { isProjectStatus, type ProjectStatus } from '@noura/shared';
 	import { formatCalendarBoundary } from '$lib/calendar';
 	import { dueLabel } from '$lib/dashboard-dates';
 	import { tabsStore } from '$lib/tabs.svelte';
@@ -276,10 +277,18 @@
 		return words.charAt(0).toUpperCase() + words.slice(1);
 	}
 
+	const statusVariants: Record<
+		ProjectStatus,
+		'default' | 'secondary' | 'outline'
+	> = {
+		planned: 'secondary',
+		active: 'default',
+		'on-hold': 'outline',
+		completed: 'secondary',
+		cancelled: 'secondary',
+	};
 	function statusVariant(status: unknown): 'default' | 'secondary' | 'outline' {
-		if (status === 'active') return 'default';
-		if (status === 'on-hold') return 'outline';
-		return 'secondary';
+		return isProjectStatus(status) ? statusVariants[status] : 'secondary';
 	}
 
 	onMount(() => {

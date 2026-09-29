@@ -6,6 +6,14 @@
  */
 export type * from './generated/index';
 export type { SequencedOperation, SyncPage, SyncTransport } from './sync';
+export {
+	PROJECT_STATUSES,
+	TASK_PRIORITIES,
+	TASK_STATUSES,
+	isProjectStatus,
+	isTaskPriority,
+	isTaskStatus,
+} from './enums';
 
 import type {
 	CoreError,

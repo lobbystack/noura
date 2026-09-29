@@ -338,7 +338,6 @@
         "@noura/plugin-sdk": "workspace:*",
         "@noura/shared": "workspace:*",
         "fractional-indexing": "latest",
-        "zod": "latest",
       },
       "devDependencies": {
         "typescript": "^5.9.3",
