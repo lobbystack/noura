@@ -16,3 +16,6 @@ crates/workspace-format/bindings/
 
 # Local agent/tooling artifacts
 .openchamber/
+
+# Agent worktrees
+.claude/worktrees/
