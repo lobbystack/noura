@@ -6,6 +6,7 @@
 use tauri::{AppHandle, Runtime};
 
 /// Event the frontend listens to. The payload is one command id below.
+#[cfg(target_os = "macos")]
 pub const MENU_EVENT: &str = "app-menu";
 
 /// Menu item ids carry this prefix so predefined items never reach the app.
@@ -14,6 +15,7 @@ const COMMAND_PREFIX: &str = "noura:";
 
 /// Every command the menu can send, with its label and shortcut. The ids are
 /// part of the contract with `packages/workspace/src/app-menu.ts`.
+#[cfg(any(target_os = "macos", test))]
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("new-note", "New Note", "CmdOrCtrl+N"),
     ("new-folder", "New Folder", "CmdOrCtrl+Shift+N"),
