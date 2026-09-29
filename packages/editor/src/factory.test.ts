@@ -7,7 +7,7 @@ import { createLiveMarkdownEditor, markdownBlockStyle } from './factory';
 import type { LiveMarkdownOptions } from './types';
 
 beforeAll(() => {
-	if (typeof document === 'undefined') GlobalRegistrator.register();
+	if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 });
 
 function mount(text: string, options: Partial<LiveMarkdownOptions> = {}) {

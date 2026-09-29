@@ -7,7 +7,7 @@ import { createLiveMarkdownEditor } from './factory';
 // Registration stays for the process lifetime: widgets render
 // asynchronously (KaTeX), and later callbacks must still see a DOM.
 beforeAll(() => {
-	GlobalRegistrator.register();
+	if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 });
 
 const SAMPLE = [

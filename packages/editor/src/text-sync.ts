@@ -14,14 +14,40 @@ const DIFF_CONFIG = { scanLimit: 5_000, timeout: 100 };
  */
 export function changesBetween(from: string, to: string): ChangeSet {
 	if (from === to) return ChangeSet.empty(from.length);
+	// Most updates touch a small region of a large file. Trim the shared
+	// start and end first so only that region is diffed.
+	let start = 0;
+	const shortest = Math.min(from.length, to.length);
+	while (start < shortest && from.charCodeAt(start) === to.charCodeAt(start))
+		start += 1;
+	let end = 0;
+	while (
+		end < shortest - start &&
+		from.charCodeAt(from.length - 1 - end) ===
+			to.charCodeAt(to.length - 1 - end)
+	)
+		end += 1;
+	// Keep surrogate pairs whole.
+	if (start > 0 && isHighSurrogate(from.charCodeAt(start - 1))) start -= 1;
+	if (end > 0 && isLowSurrogate(from.charCodeAt(from.length - end))) end -= 1;
+	const middleFrom = from.slice(start, from.length - end);
+	const middleTo = to.slice(start, to.length - end);
 	return ChangeSet.of(
-		diff(from, to, DIFF_CONFIG).map((change) => ({
-			from: change.fromA,
-			to: change.toA,
-			insert: to.slice(change.fromB, change.toB),
+		diff(middleFrom, middleTo, DIFF_CONFIG).map((change) => ({
+			from: start + change.fromA,
+			to: start + change.toA,
+			insert: middleTo.slice(change.fromB, change.toB),
 		})),
 		from.length,
 	);
+}
+
+function isHighSurrogate(code: number) {
+	return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number) {
+	return code >= 0xdc00 && code <= 0xdfff;
 }
 
 /**
