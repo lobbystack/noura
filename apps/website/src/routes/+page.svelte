@@ -107,11 +107,11 @@
 		],
 		[
 			'Can AI read my workspace?',
-			'The AI chat in noura sees workspace content only after you allow it for your provider, and it asks before each tool the AI runs. AI assistants you connect through MCP work differently: they can read and change your workspace without asking you first, so connect only assistants you trust.',
+			'The AI chat in noura sees workspace content only after you allow it for your provider, and it asks before each tool the AI runs. AI assistants you connect through MCP work differently: noura doesn’t ask before they read or change your workspace, so connect only assistants you trust.',
 		],
 		[
 			'Do I need an account?',
-			'No. noura works offline, and you never sign up.',
+			'No. noura works offline, and there’s nothing to sign up for.',
 		],
 		[
 			'Which platforms does noura support?',
@@ -407,7 +407,8 @@ bun run tauri dev`;
 					<p class="update-note">
 						<Icon name="check" size={16} />
 						<span>
-							Signed updates install themselves, except with the .deb package.
+							Signed updates download in the background, except with the .deb
+							package.
 							<a href={siteConfig.releasesUrl}>See all releases</a>.
 						</span>
 					</p>
