@@ -1,4 +1,5 @@
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
 	test as base,
@@ -113,6 +114,9 @@ export class App {
 	async newNote(name: string) {
 		await this.openFiles();
 		await this.page.getByRole('button', { name: 'New note' }).click();
+		// Move the pointer off the button, as a person would, so its tooltip
+		// does not stay open over the first row of the tree.
+		await this.page.mouse.move(700, 450);
 		await expect(this.fileName).toBeFocused();
 		await this.page.keyboard.press('ControlOrMeta+a');
 		await this.page.keyboard.type(name);
@@ -252,6 +256,25 @@ export class App {
 			bytes: bytes.toString('base64'),
 			expectedRevision: current?.revision ?? null,
 		});
+	}
+
+	/** Serve the text editor's code `ms` late, like a slow machine. */
+	async delayEditorLoad(ms: number) {
+		const directory = fileURLToPath(
+			new URL('../../build/_app/immutable/chunks/', import.meta.url),
+		);
+		const chunks = readdirSync(directory).filter((file) =>
+			readFileSync(join(directory, file), 'utf8').includes('cm-md-checkbox'),
+		);
+		if (chunks.length === 0) throw new Error('No editor chunk in the build');
+		for (const chunk of chunks)
+			await this.page.route(
+				`**/_app/immutable/chunks/${chunk}`,
+				async (route) => {
+					await new Promise((resolve) => setTimeout(resolve, ms));
+					await route.continue();
+				},
+			);
 	}
 
 	/**

@@ -157,4 +157,22 @@ test.describe('typing in a note', () => {
 			.toBe(`X${start}local line\n\nfrom outside more\ntail`);
 		expect(await app.messages()).toEqual([MERGED_MESSAGE]);
 	});
+
+	test('Enter in a new note’s name moves to its text at once', async ({
+		app,
+		page,
+	}) => {
+		// The text editor loads while the name is focused. On a slow machine
+		// Enter comes first; the caret must still land in the text.
+		await app.delayEditorLoad(1500);
+		await app.openFiles();
+		await page.getByRole('button', { name: 'New note' }).click();
+		await expect(app.fileName).toBeFocused();
+		await page.keyboard.type('Quick');
+		await page.keyboard.press('Enter');
+		await expect(app.editor()).toBeFocused();
+		await page.keyboard.type('first words');
+		expect(await app.doc()).toBe('first words');
+		await expect.poll(() => app.storedBody('Quick.md')).toBe('first words\n');
+	});
 });

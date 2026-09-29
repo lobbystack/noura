@@ -238,6 +238,20 @@
 					}
 				: null,
 		);
+		if (handle && focusWhenReady) {
+			focusWhenReady = false;
+			handle.focus();
+		}
+	}
+
+	/**
+	 * Enter in the name moves on to the text. The text editor may still be
+	 * loading then; it takes the caret as soon as it is ready.
+	 */
+	let focusWhenReady = false;
+	function focusText() {
+		if (editor) editor.focus();
+		else focusWhenReady = true;
 	}
 
 	async function rename(name: string) {
@@ -398,7 +412,7 @@
 		relativePath={path}
 		disabled={collaborationOpening || activationInProgress}
 		onrename={rename}
-		ondone={() => editor?.focus()}
+		ondone={focusText}
 	/>
 	<Separator />
 	{#if parseStatus === 'malformed'}
