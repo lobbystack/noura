@@ -103,7 +103,7 @@ test.describe('editing a note', () => {
 		await page.keyboard.press('End');
 		await page.keyboard.type(' ');
 		await selectWord('gone');
-		await page.keyboard.press('ControlOrMeta+Shift+x');
+		await page.keyboard.press('ControlOrMeta+Shift+KeyX');
 		await page.keyboard.press('End');
 		await page.keyboard.type(' ');
 		await selectWord('site');

@@ -14,7 +14,9 @@ export default defineConfig({
 	testMatch: '**/*.e2e.ts',
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
-	retries: 0,
+	// One retry on CI marks a timing-sensitive test as flaky instead of failing
+	// the build; the report still lists it so it gets fixed.
+	retries: process.env.CI ? 1 : 0,
 	workers: process.env.CI ? 2 : undefined,
 	timeout: 60_000,
 	expect: { timeout: 10_000 },

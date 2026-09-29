@@ -215,7 +215,7 @@ test.describe('finding files', () => {
 	test('content search finds text inside notes', async ({ app, page }) => {
 		await writeNote(app, 'Recipe', 'Add the saffron last');
 		await writeNote(app, 'Other', 'nothing here');
-		await page.keyboard.press('ControlOrMeta+Shift+f');
+		await page.keyboard.press('ControlOrMeta+Shift+KeyF');
 		const palette = page.getByRole('dialog', { name: 'Search and commands' });
 		await expect(palette).toBeVisible();
 		await page.keyboard.type('saffron');
@@ -236,6 +236,9 @@ test.describe('wikilinks', () => {
 		await page.keyboard.type('See [[Targ');
 		const option = page.getByRole('option', { name: /Target page/ });
 		await expect(option).toBeVisible();
+		// CodeMirror ignores Enter for 75 ms after suggestions open, so a key
+		// pressed too early never picks one; a person is never that fast.
+		await page.waitForTimeout(150);
 		await page.keyboard.press('Enter');
 		expect(await app.doc()).toBe('See [[Target page]]');
 		await page.keyboard.type(' done');

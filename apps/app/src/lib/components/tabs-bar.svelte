@@ -152,6 +152,11 @@
 					// Middle-click closes instead of starting auto-scroll.
 					if (event.button === 1) event.preventDefault();
 				}}
+				onmouseup={(event) => {
+					// On Linux a middle-click release pastes the last selected text
+					// into the focused note; closing a tab must not do that.
+					if (event.button === 1) event.preventDefault();
+				}}
 				onauxclick={(event) => {
 					if (event.button !== 1) return;
 					event.preventDefault();

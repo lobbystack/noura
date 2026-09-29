@@ -94,7 +94,7 @@ test.describe('typing in a note', () => {
 		await page.keyboard.press('ControlOrMeta+z');
 		expect(await app.doc()).toBe(`${start}alpha `);
 		await expectStoredBody(app, 'Undo.md', `${start}alpha `);
-		await page.keyboard.press('ControlOrMeta+Shift+z');
+		await page.keyboard.press('ControlOrMeta+Shift+KeyZ');
 		expect(await app.doc()).toBe(`${start}alpha beta`);
 		await expectStoredBody(app, 'Undo.md', `${start}alpha beta`);
 		expect(await app.messages()).toEqual([]);
