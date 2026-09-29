@@ -493,6 +493,7 @@ mod tests {
         engine.get_object(&created.value.id).unwrap().unwrap()
     }
 
+    #[cfg(unix)]
     fn diagnostic_codes(engine: &WorkspaceEngine) -> Vec<(String, Option<String>)> {
         engine
             .state()

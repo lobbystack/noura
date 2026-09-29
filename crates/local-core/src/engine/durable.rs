@@ -128,11 +128,11 @@ pub(super) fn check_revision(bytes: &[u8], expected: &str, operation: &str) -> R
     Ok(())
 }
 
-#[cfg(test)]
+// Non-UTF-8 file names exist only on Unix file systems.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn relative_path_normalization_rejects_non_utf8_paths() {
         use std::{ffi::OsString, os::unix::ffi::OsStringExt};
