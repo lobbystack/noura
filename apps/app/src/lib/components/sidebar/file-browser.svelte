@@ -35,11 +35,13 @@
 		trashTreeNode,
 	} from '$lib/file-actions';
 	import { hostOs, revealLabel, shortcutLabel } from '$lib/host-os';
+	import { hostCapabilities } from '$lib/host-capabilities.svelte';
 	import ArrowsInLineVertical from 'phosphor-svelte/lib/ArrowsInLineVertical';
 	import FolderSimplePlus from 'phosphor-svelte/lib/FolderSimplePlus';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
 
 	const reveal = revealLabel();
+	const capabilities = $derived(hostCapabilities.current);
 	const trashShortcut =
 		hostOs() === 'mac' ? shortcutLabel(['Mod', '⌫']) : 'Del';
 
@@ -439,9 +441,11 @@
 								Open in new tab
 							</ContextMenu.Item>
 						{/if}
-						<ContextMenu.Item onclick={() => void openWithDefaultApp(node)}>
-							Open in default app
-						</ContextMenu.Item>
+						{#if capabilities.openWithDefaultApp}
+							<ContextMenu.Item onclick={() => void openWithDefaultApp(node)}>
+								Open in default app
+							</ContextMenu.Item>
+						{/if}
 					</ContextMenu.Group>
 					<ContextMenu.Separator />
 					<ContextMenu.Group>
@@ -452,9 +456,11 @@
 						<ContextMenu.Item onclick={() => void duplicateTreeNode(node)}>
 							Duplicate
 						</ContextMenu.Item>
-						<ContextMenu.Item onclick={() => void revealTreeNode(node)}>
-							{reveal}
-						</ContextMenu.Item>
+						{#if capabilities.revealInFileManager}
+							<ContextMenu.Item onclick={() => void revealTreeNode(node)}>
+								{reveal}
+							</ContextMenu.Item>
+						{/if}
 					</ContextMenu.Group>
 					<ContextMenu.Separator />
 					<ContextMenu.Group>
@@ -483,16 +489,20 @@
 								Rename…
 								<ContextMenu.Shortcut>F2</ContextMenu.Shortcut>
 							</ContextMenu.Item>
-							<ContextMenu.Item onclick={() => void revealTreeNode(node)}>
-								{reveal}
-							</ContextMenu.Item>
+							{#if capabilities.revealInFileManager}
+								<ContextMenu.Item onclick={() => void revealTreeNode(node)}>
+									{reveal}
+								</ContextMenu.Item>
+							{/if}
 						{:else}
-							<ContextMenu.Item
-								onclick={() =>
-									void getNouraClient().workspaces.showInFolder('root')}
-							>
-								{reveal}
-							</ContextMenu.Item>
+							{#if capabilities.revealInFileManager}
+								<ContextMenu.Item
+									onclick={() =>
+										void getNouraClient().workspaces.showInFolder('root')}
+								>
+									{reveal}
+								</ContextMenu.Item>
+							{/if}
 							<ContextMenu.Item onclick={() => workspaceTree.collapseAll()}>
 								Collapse all
 							</ContextMenu.Item>
@@ -538,8 +548,13 @@
 				Move “{trashCandidate ? displayName(trashCandidate) : ''}” to the trash?
 			</AlertDialog.Title>
 			<AlertDialog.Description>
-				The folder and everything in it go to the trash. You can restore them
-				from there.
+				{#if capabilities.systemTrash}
+					The folder and everything in it go to the trash. You can restore them
+					from there.
+				{:else}
+					The folder and everything in it move to .noura/trash in this
+					workspace.
+				{/if}
 			</AlertDialog.Description>
 		</AlertDialog.Header>
 		<AlertDialog.Footer>

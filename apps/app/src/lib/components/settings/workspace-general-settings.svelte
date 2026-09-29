@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { workspace, getNouraClient } from '$lib/state.svelte';
+	import { hostCapabilities } from '$lib/host-capabilities.svelte';
 	import * as Field from '$lib/components/ui/field';
 	import * as Empty from '$lib/components/ui/empty';
 	import { Button } from '$lib/components/ui/button';
@@ -8,6 +9,7 @@
 	import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
 
 	const client = getNouraClient();
+	const folders = $derived(hostCapabilities.current.workspaceFolders);
 
 	let draft = $derived(workspace.name);
 	let saving = $state(false);
@@ -29,8 +31,9 @@
 			});
 			await workspace.refreshRecents();
 		} catch {
-			error =
-				'Couldn’t rename the workspace. Its settings file may have changed on disk. Try again.';
+			error = folders
+				? 'Couldn’t rename the workspace. Its settings file may have changed on disk. Try again.'
+				: 'Couldn’t rename the workspace. Try again.';
 		} finally {
 			saving = false;
 		}
@@ -66,22 +69,26 @@
 					</Button>
 				</div>
 				<Field.FieldDescription>
-					Shown in the workspace switcher. The folder keeps its name.
+					{folders
+						? 'Shown in the workspace switcher. The folder keeps its name.'
+						: 'Shown in the workspace switcher.'}
 				</Field.FieldDescription>
 			</Field.Field>
 
-			<Field.Field>
-				<Field.FieldLabel>Location</Field.FieldLabel>
-				<p class="break-all text-sm text-muted-foreground select-text">
-					{workspace.state.rootPath}
-				</p>
-				<div>
-					<Button type="button" variant="outline" onclick={showFolder}>
-						<FolderOpen data-icon="inline-start" />
-						Show folder
-					</Button>
-				</div>
-			</Field.Field>
+			{#if folders}
+				<Field.Field>
+					<Field.FieldLabel>Location</Field.FieldLabel>
+					<p class="break-all text-sm text-muted-foreground select-text">
+						{workspace.state.rootPath}
+					</p>
+					<div>
+						<Button type="button" variant="outline" onclick={showFolder}>
+							<FolderOpen data-icon="inline-start" />
+							Show folder
+						</Button>
+					</div>
+				</Field.Field>
+			{/if}
 			{#if error}<Field.FieldError>{error}</Field.FieldError>{/if}
 		</Field.FieldGroup>
 	</form>

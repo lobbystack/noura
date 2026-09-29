@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Note, Project, Task, WorkspaceObject } from '@noura/workspace';
 	import { getNouraClient as getClient } from '$lib/state.svelte';
+	import { hostCapabilities } from '$lib/host-capabilities.svelte';
 	import * as Sheet from '$lib/components/ui/sheet/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
@@ -21,12 +22,8 @@
 		onclose?: () => void;
 	} = $props();
 
-	// Only some systems have a terminal the app can open; hide it elsewhere.
-	let canOpenTerminal = $state(false);
-	void getClient()
-		.app.capabilities()
-		.then((capabilities) => (canOpenTerminal = capabilities.openTerminal))
-		.catch(() => {});
+	// Only some hosts can reveal files or open a terminal; hide them elsewhere.
+	const capabilities = $derived(hostCapabilities.current);
 
 	const taskProps = $derived(
 		object?.properties as Record<string, unknown> | undefined,
@@ -170,16 +167,18 @@
 								<Copy data-icon="inline-start" />
 								Copy path
 							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								class="h-7 flex-1 text-xs"
-								onclick={revealInFolder}
-							>
-								<FolderOpen data-icon="inline-start" />
-								Reveal
-							</Button>
-							{#if canOpenTerminal}
+							{#if capabilities.revealInFileManager}
+								<Button
+									variant="outline"
+									size="sm"
+									class="h-7 flex-1 text-xs"
+									onclick={revealInFolder}
+								>
+									<FolderOpen data-icon="inline-start" />
+									Reveal
+								</Button>
+							{/if}
+							{#if capabilities.openTerminal}
 								<Button
 									variant="outline"
 									size="sm"
