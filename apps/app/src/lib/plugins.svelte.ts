@@ -1,4 +1,3 @@
-import { browser } from '$app/environment';
 import {
 	firstPartyPlugins,
 	isCoreError,
@@ -66,6 +65,7 @@ class PluginStore {
 
 	#initialized = false;
 	#syncChain: Promise<void> = Promise.resolve();
+	#queued: Promise<void> | null = null;
 	#unlisten: (() => void) | undefined;
 	#orderWorkspaceId: string | null = null;
 
@@ -91,24 +91,21 @@ class PluginStore {
 		);
 	}
 
+	/**
+	 * Listen for manifest changes. The shell runs `sync()` whenever the
+	 * workspace settles, so opening, closing and switching workspaces are
+	 * covered there; ordinary file changes never touch the manifest.
+	 */
 	async init() {
-		if (!browser || this.#initialized) return;
+		if (this.#initialized) return;
 		if (this.platform === 'web' || !this.platform) {
 			this.synced = true;
 			return;
 		}
 		this.#initialized = true;
-		await this.sync();
 		try {
 			this.#unlisten = await getNouraClient().events.subscribe((event) => {
-				if (
-					event.type === 'workspace:ready' ||
-					event.type === 'workspace:manifest-updated' ||
-					event.type === 'workspace:closed' ||
-					event.type === 'file:changed'
-				) {
-					void this.sync();
-				}
+				if (event.type === 'workspace:manifest-updated') void this.sync();
 			});
 		} catch {
 			this.#initialized = false;
@@ -120,10 +117,16 @@ class PluginStore {
 	 * bursts and the explicit sync after `setEnabled` chain onto one
 	 * in-flight run, so two overlapping reconciliations can never both
 	 * pass the activation checks and double-activate a plugin (whose
-	 * lifecycle may await, per the plugin-sdk contract).
+	 * lifecycle may await, per the plugin-sdk contract). Requests that
+	 * arrive while a run is queued share that queued run.
 	 */
 	async sync() {
-		const run = this.#syncChain.then(() => this.#runSync());
+		if (this.#queued) return this.#queued;
+		const run = this.#syncChain.then(() => {
+			this.#queued = null;
+			return this.#runSync();
+		});
+		this.#queued = run;
 		// Keep the chain resolvable even if a run ever rejects.
 		this.#syncChain = run.then(undefined, () => undefined);
 		await run;
@@ -166,7 +169,7 @@ class PluginStore {
 		const next = movePlugin(this.pluginOrder, pluginId, targetPluginId, after);
 		if (next.every((id, index) => id === this.pluginOrder[index])) return;
 		this.pluginOrder = next;
-		if (browser && this.#orderWorkspaceId) {
+		if (this.#orderWorkspaceId) {
 			try {
 				localStorage.setItem(
 					`${PLUGIN_ORDER_STORAGE_PREFIX}${this.#orderWorkspaceId}`,
@@ -181,7 +184,7 @@ class PluginStore {
 	#loadPluginOrder(workspaceId: string | null) {
 		if (workspaceId === this.#orderWorkspaceId) return;
 		this.#orderWorkspaceId = workspaceId;
-		if (!browser || !workspaceId) {
+		if (!workspaceId) {
 			this.pluginOrder = normalizePluginOrder();
 			return;
 		}
