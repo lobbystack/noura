@@ -168,8 +168,12 @@
 
 	// Turned-off modules genuinely simplify the workspace: routes backed by a
 	// disabled plugin fall back to Home instead of rendering a dead surface.
+	// Only the open workspace's own plugin list decides: a sync that settled
+	// while it was still opening lists no plugins at all.
 	$effect(() => {
 		if (!plugins.synced) return;
+		if (!readyWorkspaceId || plugins.syncedWorkspaceId !== readyWorkspaceId)
+			return;
 		const pluginId = routePlugin(page.url.pathname);
 		if (pluginId && !plugins.isEnabled(pluginId))
 			void goto('/inbox', { replaceState: true });

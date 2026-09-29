@@ -259,6 +259,18 @@ test.describe('wikilinks', () => {
 });
 
 test.describe('coming back', () => {
+	test('reloading a module page stays on it', async ({ app, page }) => {
+		await expect(app.tree).toHaveCount(0);
+		const main = page.getByRole('main');
+		await page.goto('/tasks?view=all');
+		await expect(main.getByRole('heading', { name: 'Tasks' })).toBeVisible();
+		await page.goto('/calendar');
+		await expect(main.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+		await page.goto('/projects');
+		await expect(main.getByText('Select a project')).toBeVisible();
+		await expect(page).toHaveURL(/\/projects$/);
+	});
+
 	test('reopening the app shows the last page and its document', async ({
 		app,
 		page,
