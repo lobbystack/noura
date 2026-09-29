@@ -35,7 +35,7 @@ test.describe('layout at a normal window width', () => {
 		expect(await app.storedPaths()).toHaveLength(2);
 	});
 
-	test.fixme('tabs fit the title bar row with no scrollbar and still scroll', async ({
+	test('tabs fit the title bar row with no scrollbar and still scroll', async ({
 		app,
 		page,
 	}) => {

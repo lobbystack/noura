@@ -54,6 +54,20 @@
 		if (to) arrived(to.url);
 	});
 
+	// The bar has no visible scrollbar, which would squeeze the tabs in the
+	// title bar row. A mouse wheel scrolls it sideways; trackpads already do.
+	// The listener is not passive, so it can stop the page from scrolling.
+	const scrollTabs: Attachment<HTMLElement> = (bar) => {
+		const scroll = (event: WheelEvent) => {
+			if (bar.scrollWidth <= bar.clientWidth) return;
+			if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+			event.preventDefault();
+			bar.scrollLeft += event.deltaY;
+		};
+		bar.addEventListener('wheel', scroll, { passive: false });
+		return () => bar.removeEventListener('wheel', scroll);
+	};
+
 	function focusTab(index: number) {
 		const tab = tabsStore.tabs[index];
 		if (tab) document.getElementById(`tab-${tab.id}`)?.focus();
@@ -119,9 +133,10 @@
 	<div
 		role="tablist"
 		aria-label="Open files"
-		class="fixed top-0 right-0 z-20 flex h-(--app-titlebar-height) min-w-0 items-center gap-0.5 overflow-x-auto border-b border-sidebar-border bg-sidebar px-2"
+		class="fixed top-0 right-0 z-20 flex h-(--app-titlebar-height) min-w-0 items-center gap-0.5 overflow-x-auto overflow-y-hidden border-b border-sidebar-border bg-sidebar px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 		style="left: {left}px"
 		data-tauri-drag-region
+		{@attach scrollTabs}
 	>
 		{#each tabsStore.tabs as tab, index (tab.id)}
 			{@const isActive = tabsStore.activeId === tab.id}
