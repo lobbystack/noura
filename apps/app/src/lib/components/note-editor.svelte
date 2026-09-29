@@ -78,7 +78,7 @@
 		if (error && typeof error === 'object' && 'message' in error) {
 			return String(error.message);
 		}
-		return 'Noura could not save this note.';
+		return 'noura could not save this note.';
 	}
 
 	function showMessage(message: string) {
@@ -643,8 +643,8 @@
 					{collaboration
 						? 'Choose which title to keep. Shared text is unaffected.'
 						: conflict?.deleted
-							? 'The Markdown file was deleted outside Noura. Restore it from your preserved draft.'
-							: 'Noura preserved both versions. Choose which note should remain in the Markdown file.'}
+							? 'The Markdown file was deleted outside noura. Restore it from your preserved draft.'
+							: 'noura preserved both versions. Choose which note should remain in the Markdown file.'}
 				</Sheet.Description>
 			</Sheet.Header>
 			{#if conflict}

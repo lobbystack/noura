@@ -62,7 +62,7 @@
 
 <img
 	src="/logo.png"
-	alt="Noura"
+	alt="noura"
 	width="40"
 	height="40"
 	class="mb-3 rounded-lg"
@@ -71,8 +71,8 @@
 	{account
 		? 'Your account'
 		: signup
-			? 'Create your Noura account'
-			: 'Log in to Noura'}
+			? 'Create your noura account'
+			: 'Log in to noura'}
 </h1>
 {#if loading}<p role="status">Checking your session…</p>
 {:else if account}

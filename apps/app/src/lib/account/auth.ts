@@ -98,7 +98,7 @@ export async function signUpPasskey(
 		callbackURL: accountCallbackURL(code, invite),
 	});
 	const result = await client().passkey.addPasskey({
-		name: 'Noura account',
+		name: 'noura account',
 		authenticatorAttachment: 'platform',
 		context,
 	});
@@ -115,7 +115,7 @@ export async function signInPasskey(): Promise<void> {
 	checked(result?.error);
 }
 export async function addPasskey(): Promise<void> {
-	const result = await client().passkey.addPasskey({ name: 'Noura account' });
+	const result = await client().passkey.addPasskey({ name: 'noura account' });
 	checked(result?.error);
 }
 export async function signOut(): Promise<void> {
@@ -141,14 +141,14 @@ async function deviceRequest(
 		throw new Error(
 			response.status === 401
 				? 'Sign in before reviewing this device.'
-				: 'This code is expired, already used, or unavailable. Start again in Noura desktop.',
+				: 'This code is expired, already used, or unavailable. Start again in noura desktop.',
 		);
 	return response.json();
 }
 export async function reviewDevice(code: string): Promise<DeviceReview> {
 	const normalized = userCode(code);
 	if (!normalized)
-		throw new Error('Enter the eight-character code shown in Noura desktop.');
+		throw new Error('Enter the eight-character code shown in noura desktop.');
 	const value = (await deviceRequest(
 		`?user_code=${encodeURIComponent(normalized)}`,
 	)) as DeviceReview;
@@ -157,7 +157,7 @@ export async function reviewDevice(code: string): Promise<DeviceReview> {
 		!['pending', 'approved', 'denied'].includes(value.status)
 	)
 		throw new Error(
-			'This request cannot be approved by this account. Start again in Noura desktop.',
+			'This request cannot be approved by this account. Start again in noura desktop.',
 		);
 	return value;
 }

@@ -422,7 +422,7 @@
 							: 'API key'}
 					/>
 					<Field.FieldDescription
-						>Noura saves API keys in your device’s credential store.</Field.FieldDescription
+						>noura saves API keys in your device’s credential store.</Field.FieldDescription
 					>
 				</Field.Field>
 				<Field.Field orientation="horizontal">

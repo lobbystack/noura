@@ -4,7 +4,7 @@
 </script>
 
 <svelte:head
-	><title>Noura account</title><meta
+	><title>noura account</title><meta
 		name="robots"
 		content="noindex,nofollow"
 	/></svelte:head
@@ -17,7 +17,7 @@
 		class="flex items-center gap-2 text-base font-semibold tracking-tight"
 	>
 		<img src="/logo.png" alt="" width="24" height="24" class="rounded-md" />
-		Noura
+		noura
 	</a>
 	<section
 		class="flex flex-col gap-6 rounded-2xl border bg-card p-6 text-card-foreground"

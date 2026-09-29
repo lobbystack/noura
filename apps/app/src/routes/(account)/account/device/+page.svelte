@@ -45,7 +45,7 @@
 		if (approved) location.assign('noura://auth/complete');
 		result =
 			decision === 'approve'
-				? 'Desktop sign-in approved. Return to Noura desktop to finish connecting.'
+				? 'Desktop sign-in approved. Return to noura desktop to finish connecting.'
 				: 'Desktop sign-in denied. You can close this page.';
 	}
 	onMount(() => {
@@ -59,9 +59,9 @@
 	});
 </script>
 
-<h1 class="text-base font-semibold">Connect Noura desktop</h1>
+<h1 class="text-base font-semibold">Connect noura desktop</h1>
 <p class="text-muted-foreground">
-	Only approve if you started signing in from Noura desktop. Compare this code
+	Only approve if you started signing in from noura desktop. Compare this code
 	with the code on your device.
 </p>
 {#if loading}<p role="status">Checking the sign-in request…</p>
@@ -69,7 +69,7 @@
 		>Sign in to review this device</Button
 	>
 {:else if result}<p role="status">{result}</p>
-	{#if approved}<Button href="noura://auth/complete">Return to Noura</Button
+	{#if approved}<Button href="noura://auth/complete">Return to noura</Button
 		>{/if}
 {:else if review}
 	<p class="break-all text-sm text-muted-foreground">
@@ -97,7 +97,7 @@
 			>
 		</div>
 	{:else}<p role="status">
-			This sign-in request has already been {review.status}. Return to Noura
+			This sign-in request has already been {review.status}. Return to noura
 			desktop.
 		</p>{/if}
 {:else}

@@ -13,7 +13,7 @@ export const BACKUP_LIMITS = {
 const FORMAT = 'noura.browser-backup';
 function invalid(): never {
 	throw new Error(
-		'Invalid or unsupported Noura JSON backup. Check its format, paths and size limits.',
+		'Invalid or unsupported noura JSON backup. Check its format, paths and size limits.',
 	);
 }
 function record(
@@ -110,7 +110,7 @@ export async function decodeBackup(
 	// Check before reading, parsing JSON or allocating decoded byte arrays.
 	if (!file.size || file.size > BACKUP_LIMITS.maxFileBytes)
 		throw new Error(
-			'Select a nonempty Noura JSON backup no larger than 96 MiB.',
+			'Select a nonempty noura JSON backup no larger than 96 MiB.',
 		);
 	let value: unknown;
 	try {

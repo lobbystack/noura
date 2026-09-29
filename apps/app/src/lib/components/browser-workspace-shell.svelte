@@ -461,7 +461,7 @@
 	});
 </script>
 
-<svelte:head><title>{workspaceName} · Noura</title></svelte:head>
+<svelte:head><title>{workspaceName} · noura</title></svelte:head>
 <svelte:window
 	onbeforeunload={(event) => {
 		if (hasDrafts || busy) {
@@ -476,7 +476,7 @@
 		<div class="flex items-center gap-2">
 			<img src="/logo.png" alt="" width="24" height="24" class="rounded-md" />
 			<div>
-				<h1 class="text-base font-semibold">Noura · Browser workspace</h1>
+				<h1 class="text-base font-semibold">noura · Browser workspace</h1>
 				<p class="text-sm text-muted-foreground">{workspaceName}</p>
 			</div>
 		</div>
@@ -519,7 +519,7 @@
 					onclick={backup}>Download JSON backup</Button
 				>
 				<Field.Field>
-					<Field.Label for="backup-file">Import Noura JSON backup</Field.Label>
+					<Field.Label for="backup-file">Import noura JSON backup</Field.Label>
 					<Input
 						id="backup-file"
 						type="file"
