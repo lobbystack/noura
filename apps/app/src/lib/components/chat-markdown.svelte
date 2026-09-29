@@ -76,7 +76,7 @@
 		background: var(--muted);
 		border-radius: 0.25rem;
 		font-family: var(--font-mono, monospace);
-		font-size: 0.85em;
+		font-size: var(--text-xs);
 		padding: 0.05rem 0.3rem;
 	}
 	.chat-md :global(pre) {
