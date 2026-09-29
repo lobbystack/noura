@@ -12,9 +12,7 @@ export const BACKUP_LIMITS = {
 } as const;
 const FORMAT = 'noura.browser-backup';
 function invalid(): never {
-	throw new Error(
-		'Invalid or unsupported noura JSON backup. Check its format, paths and size limits.',
-	);
+	throw new Error('This file isn’t a noura backup.');
 }
 function record(
 	value: unknown,
@@ -62,9 +60,7 @@ function checkSize(size: number, total: number) {
 		size > BACKUP_LIMITS.maxEntryBytes ||
 		total > BACKUP_LIMITS.maxTotalBytes
 	) {
-		throw new Error(
-			'Backup exceeds the 32 MiB per-file or 64 MiB total decoded limit.',
-		);
+		throw new Error('This backup is too large to restore in the browser.');
 	}
 }
 export function encodeBackup(snapshot: BrowserWorkspaceSnapshot): Blob {
@@ -109,9 +105,7 @@ export async function decodeBackup(
 ): Promise<BrowserWorkspaceSnapshot> {
 	// Check before reading, parsing JSON or allocating decoded byte arrays.
 	if (!file.size || file.size > BACKUP_LIMITS.maxFileBytes)
-		throw new Error(
-			'Select a nonempty noura JSON backup no larger than 96 MiB.',
-		);
+		throw new Error('Choose a noura backup file of 96 MB or less.');
 	let value: unknown;
 	try {
 		value = JSON.parse(
@@ -176,12 +170,9 @@ export async function decodeBackup(
 }
 
 export const IDENTITY_CONFLICT =
-	'A workspace with this identity already exists in this browser. Nothing was overwritten. Open the existing workspace, or restore this backup in a separate browser profile. Workspace IDs are never changed to bypass a conflict.';
+	'This workspace is already in this browser. Open it from your workspaces.';
 export function assertBackupActionAllowed(dirty: boolean) {
-	if (dirty)
-		throw new Error(
-			'Save or explicitly discard your unsaved draft before backup or import.',
-		);
+	if (dirty) throw new Error('Save your changes first, then try again.');
 }
 export function assertFreshIdentity(
 	id: string,

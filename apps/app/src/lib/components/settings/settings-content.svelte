@@ -2,7 +2,7 @@
 	import { onMount, tick, type Component } from 'svelte';
 	import { getSettingsDialog } from '$lib/settings.svelte';
 	import { plugins } from '$lib/plugins.svelte';
-	import { getNouraClient } from '$lib/state.svelte';
+	import { getNouraClient, workspace } from '$lib/state.svelte';
 	import {
 		visibleSettingsSections,
 		type SettingsSectionId,
@@ -34,9 +34,14 @@
 	import FilesSettings from './files-settings.svelte';
 	import AboutSettings from './about-settings.svelte';
 	import SyncAccountSettings from '$lib/components/sync-account-settings.svelte';
+	import BrowserSyncSettings from '$lib/components/browser-sync-settings.svelte';
+	import BrowserStorageSettings from './browser-storage-settings.svelte';
+	import { getBrowserWorkspace } from '$lib/browser-workspace';
+	import HardDrives from 'phosphor-svelte/lib/HardDrives';
 
 	const settings = getSettingsDialog();
 	const desktop = getAppPlatform() === 'desktop';
+	const web = getAppPlatform() === 'web';
 
 	type Entry = {
 		label: string;
@@ -67,8 +72,13 @@
 			icon: UserCircle,
 			keywords: 'sign in log out disconnect server',
 		},
+		storage: {
+			label: 'Storage and backups',
+			icon: HardDrives,
+			keywords: 'backup restore export import browser data',
+		},
 		workspace: {
-			label: 'Name and location',
+			label: web ? 'Name' : 'Name and location',
 			icon: FolderSimple,
 			keywords: 'rename folder path',
 		},
@@ -114,7 +124,7 @@
 		},
 	};
 	const groupLabels = {
-		device: 'This computer',
+		device: web ? 'This browser' : 'This computer',
 		workspace: 'Workspace',
 		app: 'App',
 	} as const;
@@ -123,6 +133,8 @@
 	// so it happens here, once Settings opens, rather than at startup.
 	let signedIn = $state(false);
 	onMount(() => {
+		// The browser has no device account; its sync lives in its own section.
+		if (web) return;
 		const signIn = getNouraClient().sync.signIn;
 		const unsubscribe = signIn.subscribe((value) => {
 			signedIn = value.account !== null;
@@ -134,6 +146,7 @@
 	const visibleEntries = $derived(
 		visibleSettingsSections({
 			desktop,
+			web,
 			enabledPluginIds: new Set(plugins.activeIds),
 			signedIn,
 		}).map((section) => ({
@@ -282,6 +295,15 @@
 			<FilesSettings />
 		{:else if current.id === 'about'}
 			<AboutSettings />
+		{:else if current.id === 'storage'}
+			<BrowserStorageSettings />
+		{:else if current.id === 'sync' && web}
+			{#key workspace.state?.workspaceId}
+				<BrowserSyncSettings
+					workspaceId={workspace.state?.workspaceId ?? null}
+					workspaceFiles={getBrowserWorkspace().files}
+				/>
+			{/key}
 		{:else if current.id === 'account' || current.id === 'sync' || current.id === 'people'}
 			<SyncAccountSettings section={current.id} />
 		{/if}

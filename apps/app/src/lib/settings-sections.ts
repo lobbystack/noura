@@ -15,6 +15,7 @@ export type SettingsSectionId =
 	| 'sync'
 	| 'people'
 	| 'files'
+	| 'storage'
 	| 'about';
 
 export interface SettingsSection {
@@ -25,16 +26,27 @@ export interface SettingsSection {
 	/** Also shown while a device account is signed in, so you can sign out. */
 	shownWhenSignedIn?: boolean;
 	desktopOnly?: boolean;
+	/** Only the desktop and mobile apps have it. */
+	nativeOnly?: boolean;
+	/** Only the browser has it. */
+	webOnly?: boolean;
 }
 
 export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
 	{ id: 'general', group: 'device', pluginId: null },
 	{ id: 'editor', group: 'device', pluginId: null },
 	{ id: 'shortcuts', group: 'device', pluginId: null },
-	{ id: 'account', group: 'device', pluginId: 'sync', shownWhenSignedIn: true },
+	{
+		id: 'account',
+		group: 'device',
+		pluginId: 'sync',
+		shownWhenSignedIn: true,
+		nativeOnly: true,
+	},
+	{ id: 'storage', group: 'device', pluginId: null, webOnly: true },
 	{ id: 'workspace', group: 'workspace', pluginId: null },
 	{ id: 'plugins', group: 'workspace', pluginId: null },
-	{ id: 'ai', group: 'workspace', pluginId: null },
+	{ id: 'ai', group: 'workspace', pluginId: null, nativeOnly: true },
 	{
 		id: 'external-tools',
 		group: 'workspace',
@@ -42,13 +54,16 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
 		desktopOnly: true,
 	},
 	{ id: 'sync', group: 'workspace', pluginId: 'sync' },
-	{ id: 'people', group: 'workspace', pluginId: 'sync' },
-	{ id: 'files', group: 'workspace', pluginId: null },
+	{ id: 'people', group: 'workspace', pluginId: 'sync', nativeOnly: true },
+	// The browser doesn't apply ignore patterns yet.
+	{ id: 'files', group: 'workspace', pluginId: null, nativeOnly: true },
 	{ id: 'about', group: 'app', pluginId: null },
 ];
 
 export interface SettingsVisibility {
 	desktop: boolean;
+	/** Running in a web browser rather than the desktop or mobile app. */
+	web: boolean;
 	enabledPluginIds: ReadonlySet<string>;
 	/** Whether this device is signed in to an account. */
 	signedIn: boolean;
@@ -59,6 +74,8 @@ export function settingsSectionVisible(
 	visibility: SettingsVisibility,
 ): boolean {
 	if (section.desktopOnly && !visibility.desktop) return false;
+	if (section.nativeOnly && visibility.web) return false;
+	if (section.webOnly && !visibility.web) return false;
 	if (!section.pluginId || visibility.enabledPluginIds.has(section.pluginId))
 		return true;
 	return !!section.shownWhenSignedIn && visibility.signedIn;

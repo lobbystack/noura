@@ -1,16 +1,11 @@
-import { afterEach, describe, expect, test } from 'bun:test';
-import { startBrowserWorkspace } from './browser-workspace';
+import { describe, expect, test } from 'bun:test';
+import { createNouraClient } from '@noura/workspace';
+import { createBrowserWorkspace } from './browser-workspace';
 
-const OriginalWorker = globalThis.Worker;
 class TestWorker extends EventTarget {
-	static instance: TestWorker;
 	terminated = false;
-	requests: unknown[] = [];
-	constructor() {
-		super();
-		TestWorker.instance = this;
-	}
-	postMessage(message: unknown) {
+	requests: Array<{ id: string; command: string }> = [];
+	postMessage(message: { id: string; command: string }) {
 		this.requests.push(message);
 	}
 	terminate() {
@@ -20,42 +15,41 @@ class TestWorker extends EventTarget {
 		this.dispatchEvent(new MessageEvent('message', { data }));
 	}
 }
-afterEach(() => {
-	globalThis.Worker = OriginalWorker;
-});
+
 function start() {
-	globalThis.Worker = TestWorker as unknown as typeof Worker;
-	return startBrowserWorkspace();
+	const worker = new TestWorker();
+	const workspace = createBrowserWorkspace(worker as unknown as Worker);
+	return { worker, workspace, client: createNouraClient(workspace.transport) };
 }
-describe('browser workspace worker lifecycle', () => {
-	test('waits for readiness, uses the typed transport, and rejects pending calls on teardown', async () => {
-		const runtime = start();
-		const worker = TestWorker.instance;
-		expect(worker.requests).toEqual([]);
-		worker.message({ type: 'ready' });
-		await runtime.ready;
-		const request = runtime.client.workspaces.current();
+
+describe('browser workspace worker', () => {
+	test('sends requests right away; the worker holds them until it starts', async () => {
+		const { worker, workspace, client } = start();
+		const request = client.workspaces.current();
 		expect(worker.requests).toMatchObject([{ command: 'workspace_state' }]);
-		runtime.dispose();
-		await expect(request).rejects.toThrow('disposed');
+		worker.message({ type: 'ready' });
+		await workspace.ready;
+		worker.message({
+			type: 'response',
+			id: worker.requests[0]!.id,
+			ok: true,
+			value: { phase: 'idle', indexedFiles: 0, diagnostics: [] },
+		});
+		await expect(request).resolves.toMatchObject({ phase: 'idle' });
+	});
+
+	test('reports a browser that cannot store workspaces', async () => {
+		const { worker, workspace } = start();
+		worker.message({ type: 'startup-error', stage: 'storage' });
+		await expect(workspace.ready).rejects.toThrow('can’t store workspaces');
+	});
+
+	test('a crashed worker rejects pending and later requests', async () => {
+		const { worker, client } = start();
+		const pending = client.notes.list();
+		worker.dispatchEvent(new Event('error'));
+		await expect(pending).rejects.toThrow();
+		await expect(client.notes.list()).rejects.toThrow('disposed');
 		expect(worker.terminated).toBe(true);
-		runtime.dispose();
-	});
-	test('startup failure terminates the worker instead of leaving a pending client', async () => {
-		const runtime = start();
-		TestWorker.instance.message({ type: 'startup-error', stage: 'WASM' });
-		await expect(runtime.ready).rejects.toThrow('WASM');
-		expect(TestWorker.instance.terminated).toBe(true);
-		await expect(runtime.client.workspaces.current()).rejects.toThrow(
-			'disposed',
-		);
-	});
-	test('a crashed worker rejects subsequent requests too', async () => {
-		const runtime = start();
-		TestWorker.instance.message({ type: 'ready' });
-		await runtime.ready;
-		TestWorker.instance.dispatchEvent(new Event('error'));
-		await expect(runtime.client.notes.list()).rejects.toThrow('disposed');
-		runtime.dispose();
 	});
 });

@@ -6,7 +6,11 @@
 import { createSameOriginFetch } from '@noura/browser-sync';
 import {
 	createBrowserSyncController,
+	hasBrowserSyncBinding,
+	migrateBrowserSyncPlugin,
+	openBrowserSyncPluginMarker,
 	type BrowserSyncController,
+	type BrowserSyncPluginMigration,
 } from '@noura/browser-sync-client';
 
 export {
@@ -38,6 +42,23 @@ export function getBrowserSyncController(): Promise<BrowserSyncController> {
 		fetch: createSameOriginFetch(origin),
 	});
 	return sharedController;
+}
+
+/**
+ * Workspaces this browser already syncs keep syncing: the sync plugin turns
+ * on once. Resolves true when it turned the plugin on.
+ */
+export async function keepBrowserSyncOn(
+	workspaceId: string,
+	registry: BrowserSyncPluginMigration['registry'],
+): Promise<boolean> {
+	const marker = await openBrowserSyncPluginMarker(workspaceId);
+	if (!marker) return false;
+	return migrateBrowserSyncPlugin({
+		hasBinding: () => hasBrowserSyncBinding(workspaceId),
+		marker,
+		registry,
+	});
 }
 
 /** Drop the shared controller so the next caller rebuilds it (sign-out). */
