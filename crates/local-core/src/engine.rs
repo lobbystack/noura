@@ -2501,6 +2501,65 @@ impl WorkspaceEngine {
         Ok(())
     }
 
+    /// Rename or move one file inside the workspace. A managed object keeps
+    /// its stable ID because the ID lives in the file.
+    pub fn move_file(&self, from: &str, to: &str) -> Result<()> {
+        let operation = "file_move";
+        let source = resolve_for_write(&self.root, from, operation)?;
+        let destination = resolve_for_write(&self.root, to, operation)?;
+        let guard = self.write_lock(operation)?;
+        self.collaboration_guard_file_mutation(from)?;
+        self.collaboration_guard_file_mutation(to)?;
+        let metadata = std::fs::symlink_metadata(&source)
+            .map_err(|error| CoreError::io(error, operation, Some(from)))?;
+        if !metadata.is_file() {
+            return Err(CoreError::validation(
+                "file_not_found",
+                "The source is not a file in this workspace",
+                operation,
+            ));
+        }
+        if std::fs::symlink_metadata(&destination).is_ok() && !same_file(&source, &destination) {
+            return Err(CoreError::new(
+                "path_exists",
+                ErrorCategory::Conflict,
+                "A file already exists at the destination",
+                operation,
+            ));
+        }
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| CoreError::io(error, operation, Some(to)))?;
+        }
+        std::fs::rename(&source, &destination)
+            .map_err(|error| CoreError::io(error, operation, Some(to)))?;
+        sync_rename_parents(&source, &destination, operation)?;
+        drop(guard);
+        self.reconcile()
+    }
+
+    /// Move a file or folder to the trash. Returns the `.noura/trash` path
+    /// when it went there instead of the system trash.
+    pub fn trash_path(&self, relative_path: &str) -> Result<Option<String>> {
+        let operation = "file_trash";
+        let source = resolve_for_write(&self.root, relative_path, operation)?;
+        if source == self.root {
+            return Err(CoreError::validation(
+                "invalid_path",
+                "The workspace folder itself can't be deleted",
+                operation,
+            ));
+        }
+        let guard = self.write_lock(operation)?;
+        self.collaboration_guard_file_mutation(relative_path)?;
+        std::fs::symlink_metadata(&source)
+            .map_err(|error| CoreError::io(error, operation, Some(relative_path)))?;
+        let trashed = self.discard(&source, relative_path, operation)?;
+        drop(guard);
+        self.reconcile()?;
+        Ok(trashed)
+    }
+
     pub fn remove_empty_folder(&self, relative_path: &str) -> Result<()> {
         let path = resolve_for_write(&self.root, relative_path, "folder_remove")?;
         let _guard = self.write_lock("folder_remove")?;
@@ -4010,6 +4069,26 @@ fn sync_parent(path: &Path, operation: &str) -> Result<()> {
 #[cfg(not(unix))]
 fn sync_parent(_path: &Path, _operation: &str) -> Result<()> {
     Ok(())
+}
+
+/// Whether two paths name the same file, as in a case-only rename on a
+/// case-insensitive volume.
+fn same_file(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(left), std::fs::metadata(right)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 fn sync_rename_parents(source: &Path, destination: &Path, operation: &str) -> Result<()> {

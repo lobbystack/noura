@@ -2102,3 +2102,81 @@ fn a_new_workspace_reports_sync_as_off() {
     let (_workspace, _app_data, engine) = engine();
     assert!(!engine.state().sync_enabled);
 }
+
+#[test]
+fn moving_a_file_renames_it_and_keeps_a_managed_id() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("plain.md"), "# Plain\n").unwrap();
+    engine.reconcile().unwrap();
+    engine.move_file("plain.md", "archive/renamed.md").unwrap();
+    assert!(!workspace.path().join("plain.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("archive/renamed.md")).unwrap(),
+        "# Plain\n"
+    );
+
+    let note = create_note(&engine, "Launch brief");
+    engine
+        .move_file(&note.value.relative_path, "Launch brief.md")
+        .unwrap();
+    let moved = engine.get_object(&note.value.id).unwrap().unwrap();
+    assert_eq!(moved.relative_path, "Launch brief.md");
+}
+
+#[test]
+fn moving_a_file_never_overwrites_or_escapes() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("a.md"), "a").unwrap();
+    std::fs::write(workspace.path().join("b.md"), "b").unwrap();
+    engine.reconcile().unwrap();
+    assert_eq!(
+        engine.move_file("a.md", "b.md").unwrap_err().code,
+        "path_exists"
+    );
+    assert!(engine.move_file("a.md", "../outside.md").is_err());
+    assert!(engine.move_file("a.md", ".noura/a.md").is_err());
+    assert!(engine.move_file("missing.md", "c.md").is_err());
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("b.md")).unwrap(),
+        "b"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("a.md")).unwrap(),
+        "a"
+    );
+}
+
+#[test]
+fn moving_a_file_allows_a_case_only_rename() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join("note.md"), "x").unwrap();
+    engine.reconcile().unwrap();
+    engine.move_file("note.md", "Note.md").unwrap();
+    let names: Vec<_> = std::fs::read_dir(workspace.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".md"))
+        .collect();
+    assert_eq!(names, ["Note.md"]);
+}
+
+#[test]
+fn trashing_a_path_sends_files_and_folders_to_the_system_trash() {
+    let (workspace, _app_data, engine) = engine();
+    let (bin, received, trash) = fake_system_trash();
+    engine.set_system_trash(Some(trash));
+    std::fs::create_dir_all(workspace.path().join("drafts")).unwrap();
+    std::fs::write(workspace.path().join("drafts/one.md"), "one").unwrap();
+    std::fs::write(workspace.path().join("loose.pdf"), "%PDF").unwrap();
+    engine.reconcile().unwrap();
+
+    assert_eq!(engine.trash_path("loose.pdf").unwrap(), None);
+    assert_eq!(engine.trash_path("drafts").unwrap(), None);
+    assert!(!workspace.path().join("loose.pdf").exists());
+    assert!(!workspace.path().join("drafts").exists());
+    assert_eq!(received.lock().unwrap().len(), 2);
+    assert!(bin.path().join("1/one.md").is_file());
+    assert!(engine.trash_path("").is_err());
+    assert!(engine.trash_path("../elsewhere").is_err());
+    assert!(engine.trash_path(".noura/workspace.yaml").is_err());
+}

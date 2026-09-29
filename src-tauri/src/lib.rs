@@ -1133,6 +1133,23 @@ fn folders_move(state: State<AppState>, input: FolderMoveInput) -> Result<(), Co
         engine.move_folder(&input.from, &input.to)
     })
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileTrashInput {
+    relative_path: String,
+}
+#[tauri::command(async)]
+fn files_move(state: State<AppState>, input: FolderMoveInput) -> Result<(), CoreError> {
+    with_engine(&state, "files_move", |engine| {
+        engine.move_file(&input.from, &input.to)
+    })
+}
+#[tauri::command(async)]
+fn files_trash(state: State<AppState>, input: FileTrashInput) -> Result<Option<String>, CoreError> {
+    with_engine(&state, "files_trash", |engine| {
+        engine.trash_path(&input.relative_path)
+    })
+}
 #[tauri::command]
 fn folders_remove(state: State<AppState>, input: FolderInput) -> Result<(), CoreError> {
     with_engine(&state, "folders_remove", |engine| {
@@ -1630,6 +1647,8 @@ pub fn run() {
             files_list_non_managed_markdown,
             folders_move,
             folders_remove,
+            files_move,
+            files_trash,
             ai_provider_list,
             ai_provider_save,
             ai_credential_set,

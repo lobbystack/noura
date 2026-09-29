@@ -298,6 +298,13 @@ export interface FileService {
 		sourceRelativePath: string;
 		target: string;
 	}): Promise<{ dataUrl: string }>;
+	/** Rename or move a file. Managed objects keep their ID. */
+	move(input: { from: string; to: string }): Promise<void>;
+	/**
+	 * Move a file or folder to the system trash. Resolves to the
+	 * `.noura/trash` path when the system trash was unavailable.
+	 */
+	trash(input: { relativePath: string }): Promise<string | null>;
 }
 
 export interface GenericObjectService {
@@ -659,6 +666,8 @@ export function createNouraClient(
 				transport.request('files_resolve_markdown_link', { input }),
 			readLocalAsset: (input) =>
 				transport.request('files_read_local_asset', { input }),
+			move: (input) => transport.request('files_move', { input }),
+			trash: (input) => transport.request('files_trash', { input }),
 		},
 		notes: {
 			...noteObjects,
