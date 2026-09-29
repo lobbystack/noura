@@ -122,6 +122,7 @@ import {
 	type WorkspaceStorageLike,
 } from '@noura/browser-sync-engine';
 import { OpfsFileSystem } from '@noura/browser-storage';
+import type { BrowserSyncPluginMarker } from './browser-sync-plugin';
 
 /** Directory outside canonical workspace files that holds adapter-owned state. */
 const ADAPTER_DIRECTORY = '.noura-adapter/browser-sync';
@@ -1368,6 +1369,50 @@ export async function openBrowserSyncStateStore(
 }
 
 /**
+ * Open the marker that records this browser's one-time sync plugin
+ * migration for a local workspace. It lives in the adapter directory, so it
+ * is never exported or synchronized. Returns `null` without OPFS.
+ */
+export async function openBrowserSyncPluginMarker(
+	localWorkspaceId: string,
+): Promise<BrowserSyncPluginMarker | null> {
+	const directory = await openOpfsDirectory(`${ADAPTER_DIRECTORY}/plugin`);
+	if (!directory) return null;
+	const name = `${requireBundleId(localWorkspaceId)}.json`;
+	return {
+		async exists() {
+			return (await readOpfsFile(directory, name)) !== null;
+		},
+		async write() {
+			if (await readOpfsFile(directory, name)) return;
+			const handle = await directory.getFileHandle(name, { create: true });
+			const writable = await handle.createWritable();
+			try {
+				await writable.write(JSON.stringify({ version: 1 }));
+				await writable.close();
+			} catch (error) {
+				await writable.abort().catch(() => {});
+				throw error;
+			}
+		},
+	};
+}
+
+/** Whether this browser holds a sync binding for a local workspace. */
+export async function hasBrowserSyncBinding(
+	localWorkspaceId: string,
+): Promise<boolean> {
+	const directory = await openOpfsDirectory(`${ADAPTER_DIRECTORY}/bindings`);
+	if (!directory) return false;
+	return (
+		(await readOpfsFile(
+			directory,
+			`${requireBundleId(localWorkspaceId)}.json`,
+		)) !== null
+	);
+}
+
+/**
  * Open the durable binding store for one local browser workspace.
  *
  * The record lives under the adapter-owned directory, outside canonical
@@ -1398,6 +1443,9 @@ export async function openBrowserSyncBindingStore(
 				await writable.abort().catch(() => {});
 				throw error;
 			}
+			// A workspace bound through the plugin has settled its plugin
+			// state; the one-time migration must not revisit it.
+			await (await openBrowserSyncPluginMarker(localWorkspaceId))?.write();
 		},
 		async remove() {
 			try {
