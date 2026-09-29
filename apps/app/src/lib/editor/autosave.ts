@@ -4,7 +4,7 @@ export interface AutosaveState {
 	error: unknown | null;
 }
 
-export type AutosaveWriteResult = void | 'paused';
+type AutosaveWriteResult = void | 'paused';
 
 export interface AutosaveOptions<Draft> {
 	debounceDelayMs?: number;

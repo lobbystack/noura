@@ -6,7 +6,7 @@ import { BULK_OBJECT_EVENT, objectEvents } from './object-events';
  * is left out on purpose: the engine emits it next to an object or file
  * event, so listening to both doubled the work behind every save.
  */
-export const LIVE_REFRESH_EVENT_TYPES = new Set([
+const LIVE_REFRESH_EVENT_TYPES = new Set([
 	'object:created',
 	'object:updated',
 	'object:deleted',

@@ -2,7 +2,7 @@
  * What the palette shows: everything, files by name (quick open), or file
  * contents (search).
  */
-export type CommandPaletteMode = 'all' | 'files' | 'search';
+type CommandPaletteMode = 'all' | 'files' | 'search';
 
 /**
  * Global open state for the command palette (search + quick actions).

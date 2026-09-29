@@ -6,15 +6,15 @@ import { getNouraClient, workspace } from './state.svelte';
 
 export { daypartGreeting, dueLabel } from './dashboard-dates';
 
-export interface DashboardSectionState {
+interface DashboardSectionState {
 	tasks: boolean;
 	calendar: boolean;
 	notes: boolean;
 }
 
 /** Home lists titles and dates only, so it never loads document bodies. */
-export type TaskSummary = Omit<Task, 'body'>;
-export type NoteSummary = Omit<Note, 'body'>;
+type TaskSummary = Omit<Task, 'body'>;
+type NoteSummary = Omit<Note, 'body'>;
 
 const TODAY_LIMIT = 6;
 const UPCOMING_LIMIT = 5;

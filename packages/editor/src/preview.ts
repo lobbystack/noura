@@ -38,7 +38,7 @@ export interface PreviewWidgetFactories {
 /** File extensions `![[...]]` renders as an image. */
 const IMAGE_TARGET = /\.(?:png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 
-export function isImageTarget(target: string): boolean {
+function isImageTarget(target: string): boolean {
 	return IMAGE_TARGET.test(target.split('#')[0] ?? '');
 }
 
@@ -522,7 +522,7 @@ function finishDecorationSet(pushed: CollectedDecoration[]): DecorationSet {
 }
 
 /** Cells of a pipe table, with offsets relative to the table source. */
-export function parseTableRows(source: string): TableCell[][] {
+function parseTableRows(source: string): TableCell[][] {
 	let cursor = 0;
 	return source.split('\n').map((line) => {
 		const rowStart = cursor;
@@ -583,7 +583,7 @@ function inlineCodeSpans(
 }
 
 /** Obsidian `[[target#heading|alias]]` parts. */
-export function wikilinkParts(inner: string) {
+function wikilinkParts(inner: string) {
 	const pipe = inner.indexOf('|');
 	const target = (pipe >= 0 ? inner.slice(0, pipe) : inner).trim();
 	const alias = pipe >= 0 ? inner.slice(pipe + 1).trim() : undefined;

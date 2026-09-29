@@ -64,7 +64,7 @@ export const transitionPhaseLabels: Record<
 	complete: 'Access preparation complete',
 };
 
-export function message(cause: unknown): string {
+function message(cause: unknown): string {
 	if (
 		cause &&
 		typeof cause === 'object' &&

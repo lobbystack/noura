@@ -35,7 +35,7 @@ function operationId() {
 	return crypto.randomUUID();
 }
 
-export interface PendingToolApproval {
+interface PendingToolApproval {
 	workspaceId: string;
 	chatId: string;
 	runId: string;
