@@ -77,8 +77,8 @@ const RESERVED_PROPERTIES = new Set(['id', 'type', 'created', 'updated']);
 
 /**
  * What the browser host can do. Everything that needs the operating system
- * (a file manager, a terminal, other apps, the system trash, an MCP client,
- * app updates, a native menu) is off, so the interface hides it.
+ * (a file manager, a terminal, other apps, the system trash, folder pickers,
+ * an MCP client) is off, so the interface hides it.
  */
 export const BROWSER_APP_CAPABILITIES = {
 	openTerminal: false,
@@ -88,10 +88,6 @@ export const BROWSER_APP_CAPABILITIES = {
 	systemTrash: false,
 	workspaceFolders: false,
 	mcp: false,
-	appUpdates: false,
-	launchAtLogin: false,
-	nativeMenu: false,
-	ai: false,
 } as const;
 
 /**
@@ -1258,7 +1254,8 @@ export class BrowserWorkspaceServer {
 		const before = objectHeads(await current.storage.rebuild());
 		const moves = await current.storage.movePath({ from, to });
 		const paths = [from, to, ...moves.flatMap((move) => [move.from, move.to])];
-		await this.#emitDiff(before, 'reconciliation');
+		// This tab made the change, so open editors must not treat it as outside.
+		await this.#emitDiff(before, 'application');
 		this.#emit('file:changed', { paths: [...new Set(paths)] });
 		this.#broadcast(paths);
 	}
@@ -1304,7 +1301,7 @@ export class BrowserWorkspaceServer {
 				expectedRevision: null,
 			});
 		}
-		await this.#emitDiff(before, 'reconciliation');
+		await this.#emitDiff(before, 'application');
 		this.#emit('file:changed', { paths: [to] });
 		this.#broadcast([to]);
 		return null;
