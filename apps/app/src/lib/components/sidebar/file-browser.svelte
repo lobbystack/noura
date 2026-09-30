@@ -11,6 +11,8 @@
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import TreeNode from '$lib/components/tree-node.svelte';
 	import WorkspaceTreeRefresh from './workspace-tree-refresh.svelte';
+	import SidebarSectionLabel from './sidebar-section-label.svelte';
+	import { isSectionCollapsed } from '$lib/preferences.svelte';
 	import {
 		canMoveInto,
 		displayName,
@@ -26,7 +28,9 @@
 	import {
 		createFolder,
 		createNote,
+		dragOutTreeNode,
 		duplicateTreeNode,
+		importDroppedFiles,
 		moveTreeNode,
 		openTreeNode,
 		openWithDefaultApp,
@@ -36,6 +40,7 @@
 	} from '$lib/file-actions';
 	import { hostOs, revealLabel, shortcutLabel } from '$lib/host-os';
 	import { hostCapabilities } from '$lib/host-capabilities.svelte';
+	import type { FileDropEvent } from '@noura/workspace';
 	import ArrowsInLineVertical from 'phosphor-svelte/lib/ArrowsInLineVertical';
 	import FolderSimplePlus from 'phosphor-svelte/lib/FolderSimplePlus';
 	import NotePencil from 'phosphor-svelte/lib/NotePencil';
@@ -269,19 +274,60 @@
 		};
 	}
 
-	function dropFolderAt(x: number, y: number, path: string): string | null {
+	/** The folder a drop at this point lands in, or null outside the tree. */
+	function folderAt(x: number, y: number): string | null {
 		const element = document.elementFromPoint(x, y);
 		if (!element || !areaElement?.contains(element)) return null;
 		const rowPath = element
 			.closest('[data-tree-path]')
 			?.getAttribute('data-tree-path');
-		let folder = '';
-		if (rowPath != null) {
-			const node = findTreeNode(workspaceTree.tree, rowPath);
-			folder =
-				node?.kind === 'folder' ? rowPath : (parentPathOf(rowPath) ?? '');
+		if (rowPath == null) return '';
+		const node = findTreeNode(workspaceTree.tree, rowPath);
+		return node?.kind === 'folder' ? rowPath : (parentPathOf(rowPath) ?? '');
+	}
+
+	function dropFolderAt(x: number, y: number, path: string): string | null {
+		const folder = folderAt(x, y);
+		return folder !== null && canMoveInto(path, folder) ? folder : null;
+	}
+
+	// Resting on a closed folder during a drag opens it, so deep folders are
+	// reachable. Folders opened this way close again when the drag ends,
+	// unless the drop landed inside them.
+	const SPRING_OPEN_DELAY_MS = 1000;
+	let hoveredFolder: string | null = null;
+	const springOpened = new Set<string>();
+
+	function hoverFolder(folder: string | null) {
+		if (folder === hoveredFolder) return;
+		hoveredFolder = folder;
+		clearTimeout(expandTimer);
+		if (folder && !workspaceTree.isExpanded(folder))
+			expandTimer = setTimeout(() => {
+				workspaceTree.setExpanded(folder, true);
+				springOpened.add(folder);
+			}, SPRING_OPEN_DELAY_MS);
+	}
+
+	/** End a drag's hover: close the folders it opened, except around `kept`. */
+	function finishHover(kept: string | null) {
+		hoverFolder(null);
+		for (const folder of springOpened) {
+			const holdsDrop =
+				kept !== null && (kept === folder || kept.startsWith(`${folder}/`));
+			if (!holdsDrop) workspaceTree.setExpanded(folder, false);
 		}
-		return canMoveInto(path, folder) ? folder : null;
+		springOpened.clear();
+	}
+
+	/** Whether the pointer has left the window, where a native drag takes over. */
+	function outsideWindow(event: PointerEvent) {
+		return (
+			event.clientX <= 0 ||
+			event.clientY <= 0 ||
+			event.clientX >= window.innerWidth - 1 ||
+			event.clientY >= window.innerHeight - 1
+		);
 	}
 
 	function moveDrag(event: PointerEvent) {
@@ -294,23 +340,23 @@
 		drag.active = true;
 		drag.x = event.clientX;
 		drag.y = event.clientY;
-		const folder = dropFolderAt(event.clientX, event.clientY, drag.path);
-		if (folder !== dropFolder) {
-			clearTimeout(expandTimer);
-			// Hovering a closed folder opens it, so deep folders are reachable.
-			if (folder && !workspaceTree.isExpanded(folder))
-				expandTimer = setTimeout(
-					() => workspaceTree.setExpanded(folder, true),
-					600,
-				);
+		// Out of the window the system takes over, so the row can land in the
+		// file manager or another app.
+		if (capabilities.dragOut && outsideWindow(event)) {
+			const node = findTreeNode(workspaceTree.tree, drag.path);
+			cancelDrag();
+			if (node) void dragOutTreeNode(node);
+			return;
 		}
+		const folder = dropFolderAt(event.clientX, event.clientY, drag.path);
+		hoverFolder(folder);
 		dropFolder = folder;
 	}
 
 	function endDrag() {
 		const finished = drag;
 		const target = dropFolder;
-		clearTimeout(expandTimer);
+		finishHover(finished?.active ? target : null);
 		drag = null;
 		dropFolder = null;
 		if (!finished?.active) return;
@@ -322,10 +368,57 @@
 	}
 
 	function cancelDrag() {
-		clearTimeout(expandTimer);
+		finishHover(null);
 		drag = null;
 		dropFolder = null;
 	}
+
+	// Files dragged in from the file manager. The host reports the pointer;
+	// the folder under it receives a copy.
+	let fileDropFolder = $state<string | null>(null);
+	const highlightFolder = $derived(drag?.active ? dropFolder : fileDropFolder);
+
+	async function handleFileDrop(event: FileDropEvent) {
+		if (event.type === 'leave') {
+			finishHover(null);
+			fileDropFolder = null;
+			return;
+		}
+		const folder = folderAt(event.x, event.y);
+		if (event.type === 'over') {
+			hoverFolder(folder);
+			fileDropFolder = folder;
+			return;
+		}
+		finishHover(folder);
+		fileDropFolder = null;
+		if (folder === null) return;
+		if (!event.workspacePaths) {
+			await importDroppedFiles(event.dropId, folder);
+			return;
+		}
+		// Rows dragged out of the tree and back in move, as inside the tree.
+		for (const path of event.workspacePaths) {
+			const node = findTreeNode(workspaceTree.tree, path);
+			if (node && canMoveInto(path, folder)) await moveTreeNode(node, folder);
+		}
+	}
+
+	$effect(() => {
+		if (!capabilities.fileDrops) return;
+		let stop: (() => void) | undefined;
+		let stopped = false;
+		void getNouraClient()
+			.files.subscribeDrops((event) => void handleFileDrop(event))
+			.then((unlisten) => {
+				if (stopped) unlisten();
+				else stop = unlisten;
+			});
+		return () => {
+			stopped = true;
+			stop?.();
+		};
+	});
 
 	function menuFolder(): string {
 		if (!menuNode) return '';
@@ -351,7 +444,9 @@
 
 <Sidebar.SidebarGroup class="flex min-h-0 flex-1 flex-col">
 	<div class="flex items-center gap-0.5 pr-1">
-		<Sidebar.SidebarGroupLabel class="flex-1">Files</Sidebar.SidebarGroupLabel>
+		<SidebarSectionLabel section="files" class="flex-1"
+			>Files</SidebarSectionLabel
+		>
 		{@render headerAction('New note', NotePencil, () => void createNote())}
 		{@render headerAction(
 			'New folder',
@@ -362,153 +457,107 @@
 			workspaceTree.collapseAll(),
 		)}
 	</div>
-	<Sidebar.SidebarGroupContent class="flex min-h-0 flex-1 flex-col">
-		<ContextMenu.Root>
-			<ContextMenu.Trigger>
-				{#snippet child({ props })}
-					<div
-						{...props}
-						bind:this={areaElement}
-						class="flex min-h-24 flex-1 flex-col pb-6"
-						oncontextmenucapture={(event) => {
-							menuNode = nodeAt(event);
-							if (menuNode) workspaceTree.selectedPath = menuNode.relativePath;
-						}}
-					>
-						{#if workspaceTree.loading && workspaceTree.tree.length === 0}
-							<div class="flex flex-col gap-1 px-2 py-1">
-								{#each [0, 1, 2, 3, 4] as i (i)}
-									<Skeleton class="h-7 w-full" />
-								{/each}
-							</div>
-						{:else if workspaceTree.tree.length === 0}
-							<p class="px-3 py-2 text-xs text-muted-foreground">
-								This folder is empty.
-							</p>
-						{:else}
-							<Sidebar.SidebarMenu
-								bind:ref={treeElement}
-								role="tree"
-								aria-label="Files"
-								class={dropFolder === ''
-									? 'rounded-xl ring-2 ring-sidebar-ring'
-									: ''}
-								onkeydown={handleKeydown}
-								onclick={handleClick}
-								ondblclick={handleDoubleClick}
-								onpointerdown={startDrag}
-							>
-								{#each rows as row, index (row.node.relativePath)}
-									<TreeNode
-										{row}
-										expanded={workspaceTree.isExpanded(row.node.relativePath)}
-										selected={index === focusIndex}
-										active={row.node.relativePath === activePath}
-										tabbable={index === tabbableIndex}
-										renaming={workspaceTree.renamingPath ===
-											row.node.relativePath}
-										dropTarget={drag?.active === true &&
-											dropFolder === row.node.relativePath}
-										dragging={drag?.active === true &&
-											drag.path === row.node.relativePath}
-										onrename={(name) => void finishRename(row.node, name)}
-										oncancelrename={() => cancelRename(row.node)}
-									/>
-								{/each}
-							</Sidebar.SidebarMenu>
-						{/if}
-					</div>
-				{/snippet}
-			</ContextMenu.Trigger>
-			<ContextMenu.Content
-				class="w-56"
-				onCloseAutoFocus={(event) => {
-					event.preventDefault();
-					if (!workspaceTree.renamingPath)
-						focusPath(workspaceTree.selectedPath);
-				}}
-			>
-				{#if menuNode?.kind === 'file'}
-					{@const node = menuNode}
-					<ContextMenu.Group>
-						{#if opensHere(node)}
-							<ContextMenu.Item onclick={() => void openTreeNode(node)}>
-								Open
-							</ContextMenu.Item>
-							<ContextMenu.Item
-								onclick={() => void openTreeNode(node, { keep: true })}
-							>
-								Open in new tab
-							</ContextMenu.Item>
-						{/if}
-						{#if capabilities.openWithDefaultApp}
-							<ContextMenu.Item onclick={() => void openWithDefaultApp(node)}>
-								Open in default app
-							</ContextMenu.Item>
-						{/if}
-					</ContextMenu.Group>
-					<ContextMenu.Separator />
-					<ContextMenu.Group>
-						<ContextMenu.Item onclick={() => startRename(node)}>
-							Rename…
-							<ContextMenu.Shortcut>F2</ContextMenu.Shortcut>
-						</ContextMenu.Item>
-						<ContextMenu.Item onclick={() => void duplicateTreeNode(node)}>
-							Duplicate
-						</ContextMenu.Item>
-						{#if capabilities.revealInFileManager}
-							<ContextMenu.Item onclick={() => void revealTreeNode(node)}>
-								{reveal}
-							</ContextMenu.Item>
-						{/if}
-					</ContextMenu.Group>
-					<ContextMenu.Separator />
-					<ContextMenu.Group>
-						<ContextMenu.Item
-							variant="destructive"
-							onclick={() => requestTrash(node)}
+	{#if !isSectionCollapsed('files')}
+		<Sidebar.SidebarGroupContent class="flex min-h-0 flex-1 flex-col">
+			<ContextMenu.Root>
+				<ContextMenu.Trigger>
+					{#snippet child({ props })}
+						<div
+							{...props}
+							bind:this={areaElement}
+							class={[
+								'flex min-h-24 flex-1 flex-col rounded-xl pb-6',
+								highlightFolder === '' && 'ring-2 ring-sidebar-ring',
+							]}
+							oncontextmenucapture={(event) => {
+								menuNode = nodeAt(event);
+								if (menuNode)
+									workspaceTree.selectedPath = menuNode.relativePath;
+							}}
 						>
-							Move to Trash
-							<ContextMenu.Shortcut>{trashShortcut}</ContextMenu.Shortcut>
-						</ContextMenu.Item>
-					</ContextMenu.Group>
-				{:else}
-					{@const node = menuNode}
-					<ContextMenu.Group>
-						<ContextMenu.Item onclick={() => void createNote(menuFolder())}>
-							New note
-						</ContextMenu.Item>
-						<ContextMenu.Item onclick={() => void createFolder(menuFolder())}>
-							New folder
-						</ContextMenu.Item>
-					</ContextMenu.Group>
-					<ContextMenu.Separator />
-					<ContextMenu.Group>
-						{#if node}
+							{#if workspaceTree.loading && workspaceTree.tree.length === 0}
+								<div class="flex flex-col gap-1 px-2 py-1">
+									{#each [0, 1, 2, 3, 4] as i (i)}
+										<Skeleton class="h-7 w-full" />
+									{/each}
+								</div>
+							{:else if workspaceTree.tree.length === 0}
+								<p class="px-3 py-2 text-xs text-muted-foreground">
+									This folder is empty.
+								</p>
+							{:else}
+								<Sidebar.SidebarMenu
+									bind:ref={treeElement}
+									role="tree"
+									aria-label="Files"
+									onkeydown={handleKeydown}
+									onclick={handleClick}
+									ondblclick={handleDoubleClick}
+									onpointerdown={startDrag}
+								>
+									{#each rows as row, index (row.node.relativePath)}
+										<TreeNode
+											{row}
+											expanded={workspaceTree.isExpanded(row.node.relativePath)}
+											selected={index === focusIndex}
+											active={row.node.relativePath === activePath}
+											tabbable={index === tabbableIndex}
+											renaming={workspaceTree.renamingPath ===
+												row.node.relativePath}
+											dropTarget={highlightFolder === row.node.relativePath}
+											dragging={drag?.active === true &&
+												drag.path === row.node.relativePath}
+											onrename={(name) => void finishRename(row.node, name)}
+											oncancelrename={() => cancelRename(row.node)}
+										/>
+									{/each}
+								</Sidebar.SidebarMenu>
+							{/if}
+						</div>
+					{/snippet}
+				</ContextMenu.Trigger>
+				<ContextMenu.Content
+					class="w-56"
+					onCloseAutoFocus={(event) => {
+						event.preventDefault();
+						if (!workspaceTree.renamingPath)
+							focusPath(workspaceTree.selectedPath);
+					}}
+				>
+					{#if menuNode?.kind === 'file'}
+						{@const node = menuNode}
+						<ContextMenu.Group>
+							{#if opensHere(node)}
+								<ContextMenu.Item onclick={() => void openTreeNode(node)}>
+									Open
+								</ContextMenu.Item>
+								<ContextMenu.Item
+									onclick={() => void openTreeNode(node, { keep: true })}
+								>
+									Open in new tab
+								</ContextMenu.Item>
+							{/if}
+							{#if capabilities.openWithDefaultApp}
+								<ContextMenu.Item onclick={() => void openWithDefaultApp(node)}>
+									Open in default app
+								</ContextMenu.Item>
+							{/if}
+						</ContextMenu.Group>
+						<ContextMenu.Separator />
+						<ContextMenu.Group>
 							<ContextMenu.Item onclick={() => startRename(node)}>
 								Rename…
 								<ContextMenu.Shortcut>F2</ContextMenu.Shortcut>
+							</ContextMenu.Item>
+							<ContextMenu.Item onclick={() => void duplicateTreeNode(node)}>
+								Duplicate
 							</ContextMenu.Item>
 							{#if capabilities.revealInFileManager}
 								<ContextMenu.Item onclick={() => void revealTreeNode(node)}>
 									{reveal}
 								</ContextMenu.Item>
 							{/if}
-						{:else}
-							{#if capabilities.revealInFileManager}
-								<ContextMenu.Item
-									onclick={() =>
-										void getNouraClient().workspaces.showInFolder('root')}
-								>
-									{reveal}
-								</ContextMenu.Item>
-							{/if}
-							<ContextMenu.Item onclick={() => workspaceTree.collapseAll()}>
-								Collapse all
-							</ContextMenu.Item>
-						{/if}
-					</ContextMenu.Group>
-					{#if node}
+						</ContextMenu.Group>
 						<ContextMenu.Separator />
 						<ContextMenu.Group>
 							<ContextMenu.Item
@@ -519,11 +568,59 @@
 								<ContextMenu.Shortcut>{trashShortcut}</ContextMenu.Shortcut>
 							</ContextMenu.Item>
 						</ContextMenu.Group>
+					{:else}
+						{@const node = menuNode}
+						<ContextMenu.Group>
+							<ContextMenu.Item onclick={() => void createNote(menuFolder())}>
+								New note
+							</ContextMenu.Item>
+							<ContextMenu.Item onclick={() => void createFolder(menuFolder())}>
+								New folder
+							</ContextMenu.Item>
+						</ContextMenu.Group>
+						<ContextMenu.Separator />
+						<ContextMenu.Group>
+							{#if node}
+								<ContextMenu.Item onclick={() => startRename(node)}>
+									Rename…
+									<ContextMenu.Shortcut>F2</ContextMenu.Shortcut>
+								</ContextMenu.Item>
+								{#if capabilities.revealInFileManager}
+									<ContextMenu.Item onclick={() => void revealTreeNode(node)}>
+										{reveal}
+									</ContextMenu.Item>
+								{/if}
+							{:else}
+								{#if capabilities.revealInFileManager}
+									<ContextMenu.Item
+										onclick={() =>
+											void getNouraClient().workspaces.showInFolder('root')}
+									>
+										{reveal}
+									</ContextMenu.Item>
+								{/if}
+								<ContextMenu.Item onclick={() => workspaceTree.collapseAll()}>
+									Collapse all
+								</ContextMenu.Item>
+							{/if}
+						</ContextMenu.Group>
+						{#if node}
+							<ContextMenu.Separator />
+							<ContextMenu.Group>
+								<ContextMenu.Item
+									variant="destructive"
+									onclick={() => requestTrash(node)}
+								>
+									Move to Trash
+									<ContextMenu.Shortcut>{trashShortcut}</ContextMenu.Shortcut>
+								</ContextMenu.Item>
+							</ContextMenu.Group>
+						{/if}
 					{/if}
-				{/if}
-			</ContextMenu.Content>
-		</ContextMenu.Root>
-	</Sidebar.SidebarGroupContent>
+				</ContextMenu.Content>
+			</ContextMenu.Root>
+		</Sidebar.SidebarGroupContent>
+	{/if}
 </Sidebar.SidebarGroup>
 
 {#if drag?.active}
@@ -580,7 +677,7 @@
 				<Button
 					{...props}
 					variant="ghost"
-					size="icon-xs"
+					size="icon-sm"
 					aria-label={label}
 					onclick={run}
 				>

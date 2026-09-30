@@ -10,6 +10,8 @@
 	import { Spinner } from '$lib/components/ui/spinner';
 	import * as Field from '$lib/components/ui/field';
 	import * as Alert from '$lib/components/ui/alert';
+	import { hostOs } from '$lib/host-os';
+	import { isFindShortcut } from '$lib/app-shortcuts';
 
 	let {
 		relativePath,
@@ -37,6 +39,17 @@
 	let query = $state('');
 	let thumbnails = $state(false);
 	let retry: () => void = () => {};
+	let searchInput = $state<HTMLInputElement | null>(null);
+
+	// Find jumps to this viewer's search field while it is on screen.
+	function handleFindKey(event: KeyboardEvent) {
+		if (event.defaultPrevented || !isFindShortcut(event, hostOs())) return;
+		if (!searchInput || searchInput.disabled) return;
+		if (!searchInput.checkVisibility()) return;
+		event.preventDefault();
+		searchInput.focus();
+		searchInput.select();
+	}
 
 	function attachViewer(node: HTMLDivElement) {
 		const path = relativePath;
@@ -166,6 +179,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={handleFindKey} />
+
 <div
 	class="pdf-surface flex h-full min-h-0 flex-col bg-muted/40"
 	aria-label="PDF viewer"
@@ -242,6 +257,7 @@
 			<Input
 				class="w-36"
 				type="search"
+				bind:ref={searchInput}
 				aria-label="Search PDF"
 				placeholder="Find in PDF"
 				bind:value={query}

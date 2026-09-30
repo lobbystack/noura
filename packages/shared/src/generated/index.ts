@@ -68,6 +68,7 @@ export type { EventSource } from './EventSource';
 export type { FinishChatAssistantInput } from './FinishChatAssistantInput';
 export type { FinishChatToolCallInput } from './FinishChatToolCallInput';
 export type { FolderEntry } from './FolderEntry';
+export type { ImportResult } from './ImportResult';
 export type { IndexStatus } from './IndexStatus';
 export type { ManagedConflictResolution } from './ManagedConflictResolution';
 export type { ManagedConflictResolveInput } from './ManagedConflictResolveInput';

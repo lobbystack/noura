@@ -26,7 +26,7 @@ pub use consent::{
     AiConsentRevokeInput, AiConsentRevokeOutcome,
 };
 pub use engine::{
-    ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult,
+    ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ImportResult,
     ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
     ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch, RawConflictResolveInput,
     RawConflictResolveResult, RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput,

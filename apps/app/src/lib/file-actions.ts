@@ -2,6 +2,7 @@ import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { toast } from 'svelte-sonner';
 import { isCoreError } from '@noura/workspace';
+import { dragLabelImage } from './drag-image';
 import { flushPendingDrafts } from './editor/pending-drafts.svelte';
 import { getNouraClient, workspace } from './state.svelte';
 import { hostCapabilities } from './host-capabilities.svelte';
@@ -38,6 +39,10 @@ function problem(error: unknown, fallback: string): string {
 			return 'Something with that name is already there.';
 		if (error.code === 'open_not_allowed') return error.message;
 		if (error.code === 'file_not_downloaded') return NOT_DOWNLOADED_MESSAGE;
+		if (error.code === 'drop_expired')
+			return 'Those files are no longer available. Drag them in again.';
+		if (error.code === 'import_contains_workspace')
+			return 'That folder holds this workspace, so it can’t be copied into it.';
 		if (error.code === 'collaboration_transaction_required')
 			return 'noura can’t rename, move or delete a file while it’s open for live editing.';
 	}
@@ -321,5 +326,60 @@ export async function openWithDefaultApp(node: WorkspaceTreeNode) {
 		});
 	} catch (error) {
 		toast.error(problem(error, `Couldn’t open ${quoted(node)}.`));
+	}
+}
+
+function folderLabel(folder: string) {
+	return folder ? `“${baseName(folder)}”` : 'the top folder';
+}
+
+/**
+ * Copy files dropped from the file manager into `folder` and select what
+ * arrived. The originals stay where they were.
+ */
+export async function importDroppedFiles(dropId: number, folder: string) {
+	let result;
+	try {
+		result = await getNouraClient().files.importDrop({ dropId, folder });
+	} catch (error) {
+		toast.error(problem(error, 'Couldn’t copy the dropped files.'));
+		return;
+	}
+	workspaceTree.expandTo(folder);
+	await workspaceTree.refresh();
+	const [first] = result.imported;
+	if (first) workspaceTree.selectedPath = first;
+	const count = result.imported.length;
+	const copied =
+		count === 1
+			? `Copied “${baseName(first!)}” to ${folderLabel(folder)}.`
+			: `Copied ${count} items to ${folderLabel(folder)}.`;
+	const skipped =
+		result.skipped === 0
+			? ''
+			: result.skipped === 1
+				? ' Skipped 1 hidden file or link.'
+				: ` Skipped ${result.skipped} hidden files or links.`;
+	if (count === 0) toast(`Nothing to copy.${skipped}`);
+	else toast.success(`${copied}${skipped}`);
+}
+
+/**
+ * Hand a file or folder to the system as a native drag, so the file manager
+ * or another app gets a copy. Unsaved edits are saved first so the copy has
+ * them.
+ */
+export async function dragOutTreeNode(node: WorkspaceTreeNode) {
+	const [, image] = await Promise.all([
+		flushPendingDrafts(),
+		dragLabelImage(displayName(node)),
+	]);
+	try {
+		await getNouraClient().files.dragOut({
+			relativePaths: [node.relativePath],
+			...image,
+		});
+	} catch (error) {
+		toast.error(problem(error, `Couldn’t drag ${quoted(node)} out.`));
 	}
 }

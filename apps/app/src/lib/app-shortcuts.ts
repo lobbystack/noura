@@ -36,6 +36,11 @@ export function shortcutCommand(
 	const other = os === 'mac' ? event.ctrlKey : event.metaKey;
 	if (!mod || other) return null;
 	const key = event.key.toLowerCase();
+	// Zoom follows the printed character, with or without Shift, since + and
+	// = share a key on many layouts and sit on different keys on others.
+	if (key === '=' || key === '+') return 'zoom-in';
+	if (key === '-' || key === '_') return 'zoom-out';
+	if (key === '0' && !event.shiftKey) return 'zoom-reset';
 	if (event.shiftKey) {
 		if (event.code === 'BracketRight' || key === '}' || key === ']')
 			return 'next-tab';
@@ -50,6 +55,18 @@ export function shortcutCommand(
 	if (key === 'w') return 'close-tab';
 	if (key === '\\' || event.code === 'Backslash') return 'toggle-sidebar';
 	return GO_TO[key] ?? null;
+}
+
+/**
+ * Whether a key press is Find: Mod+F, and Control+F on a Mac as well. The
+ * open note or PDF handles it, so it is not an app command.
+ */
+export function isFindShortcut(event: ShortcutEvent, os: HostOs): boolean {
+	if (event.key.toLowerCase() !== 'f' || event.shiftKey || event.altKey)
+		return false;
+	return os === 'mac'
+		? event.metaKey !== event.ctrlKey
+		: event.ctrlKey && !event.metaKey;
 }
 
 /** Where a command came from: a key press or the macOS menu bar. */
@@ -80,6 +97,7 @@ export const APP_SHORTCUTS: ReadonlyArray<{
 	{ label: 'New note', keys: ['Mod', 'N'] },
 	{ label: 'New folder', keys: ['Mod', 'Shift', 'N'] },
 	{ label: 'Open a file by name', keys: ['Mod', 'O'] },
+	{ label: 'Find in the open note or PDF', keys: ['Mod', 'F'] },
 	{ label: 'Search file contents', keys: ['Mod', 'Shift', 'F'] },
 	{ label: 'Search and run commands', keys: ['Mod', 'K'] },
 	{ label: 'Rename the open file', keys: ['F2'] },
@@ -87,6 +105,9 @@ export const APP_SHORTCUTS: ReadonlyArray<{
 	{ label: 'Next tab', keys: ['Ctrl', 'Tab'] },
 	{ label: 'Previous tab', keys: ['Ctrl', 'Shift', 'Tab'] },
 	{ label: 'Show or hide the sidebar', keys: ['Mod', '\\'] },
+	{ label: 'Zoom in', keys: ['Mod', '+'] },
+	{ label: 'Zoom out', keys: ['Mod', '−'] },
+	{ label: 'Actual size', keys: ['Mod', '0'] },
 	{
 		label: 'Go to Home, Files, Tasks, Calendar, Projects, AI',
 		keys: ['Mod', '1–6'],

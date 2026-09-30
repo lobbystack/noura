@@ -17,6 +17,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod commands;
 mod diagnostics;
 mod file_actions;
+mod file_drops;
 mod menu;
 mod os_files;
 mod sync_commands;
@@ -36,6 +37,7 @@ struct AppState {
     sync_wake: tokio::sync::Notify,
     sync_status: Mutex<Option<(PathBuf, local_core::sync::WorkspaceSyncStatus)>>,
     sync_realtime: Mutex<Option<sync_commands::RealtimeHandle>>,
+    file_drops: file_drops::FileDrops,
 }
 
 impl AppState {
@@ -52,6 +54,7 @@ impl AppState {
             sync_wake: tokio::sync::Notify::new(),
             sync_status: Mutex::new(None),
             sync_realtime: Mutex::new(None),
+            file_drops: file_drops::FileDrops::default(),
         }
     }
 
@@ -278,15 +281,30 @@ pub(crate) async fn sync_connection(
 }
 
 /// Paint the window in the theme's background before the page loads, so a
-/// dark system theme doesn't flash white.
+/// dark system theme doesn't flash white, and let that color show through
+/// the webview whenever it repaints: on first load, and when macOS dropped
+/// its layers after a while idle.
 fn match_window_to_theme(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    if matches!(window.theme(), Ok(tauri::Theme::Dark))
-        && let Err(error) = window.set_background_color(Some(tauri::window::Color(10, 10, 10, 255)))
-    {
-        log::debug!("could not set the window background: {error}");
+    if matches!(window.theme(), Ok(tauri::Theme::Dark)) {
+        os_files::paint_window_background(&window, true);
+    }
+    #[cfg(target_os = "macos")]
+    if let Err(error) = window.with_webview(|webview| {
+        // The page paints its own background; the webview's default white
+        // would otherwise show for a frame before each repaint.
+        // SAFETY: `inner` is this window's live WKWebView, used on the main
+        // thread, and `drawsBackground` is a documented-by-use WKWebView key.
+        unsafe {
+            let view: &objc2::runtime::AnyObject = &*webview.inner().cast();
+            let no = objc2_foundation::NSNumber::new_bool(false);
+            let key = objc2_foundation::NSString::from_str("drawsBackground");
+            let _: () = objc2::msg_send![view, setValue: &*no, forKey: &*key];
+        }
+    }) {
+        log::debug!("could not make the webview background clear: {error}");
     }
 }
 
@@ -346,6 +364,11 @@ pub fn run() {
             sync_commands::start(app.handle().clone());
             workspace::watch_workspaces(app.handle().clone());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(event) = event {
+                file_drops::window_event(window, event);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             sync_commands::collaboration_open,
@@ -427,6 +450,8 @@ pub fn run() {
             file_actions::files_copy,
             file_actions::files_reveal,
             file_actions::files_open_default,
+            file_drops::files_import_drop,
+            file_drops::files_drag_out,
             chats::chats_create,
             chats::chats_change_retention,
             chats::chats_rename,
@@ -457,7 +482,9 @@ pub fn run() {
             os_integration::mcp_test_connection,
             os_integration::object_open_terminal,
             diagnostics::app_diagnostics,
-            os_files::app_capabilities
+            os_files::app_capabilities,
+            os_files::app_set_theme,
+            os_files::app_set_zoom
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Noura desktop host");

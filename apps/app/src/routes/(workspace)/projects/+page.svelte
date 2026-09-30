@@ -1,4 +1,6 @@
 <script lang="ts">
+	import SidebarSectionLabel from '$lib/components/sidebar/sidebar-section-label.svelte';
+	import { isSectionCollapsed } from '$lib/preferences.svelte';
 	import { choiceLabel } from '$lib/property-labels';
 	import { getRouteSidebar } from '$lib/route-sidebar.svelte';
 	const routeSidebar = getRouteSidebar();
@@ -310,66 +312,68 @@
 
 {#snippet projectSidebar()}
 	<Sidebar.SidebarGroup>
-		<Sidebar.SidebarGroupLabel
-			>Projects <span class="ml-2 font-normal">{summaries.length}</span
-			></Sidebar.SidebarGroupLabel
+		<SidebarSectionLabel section="projects.list"
+			>Projects <span class="ml-1 font-normal">{summaries.length}</span
+			></SidebarSectionLabel
 		>
 		<Sidebar.SidebarGroupAction
 			onclick={() => void create()}
 			aria-label="New project"
 			title="New project"><Plus /></Sidebar.SidebarGroupAction
 		>
-		<Sidebar.SidebarGroupContent>
-			{#if loading}
-				<div class="flex flex-col gap-1">
-					{#each [0, 1, 2] as item (item)}<Skeleton
-							class="h-12 w-full"
-						/>{/each}
-				</div>
-			{:else if summaries.length === 0}
-				<EmptyState
-					icon={FolderOpen}
-					title="No projects"
-					description="Organize work with projects."
-					actionLabel="New project"
-					onAction={create}
-				/>
-			{:else}
-				<nav aria-label="Projects">
-					<Sidebar.SidebarMenu>
-						{#each summaries as summary (summary.project.id)}
-							<Sidebar.SidebarMenuItem>
-								<Sidebar.SidebarMenuButton
-									size="lg"
-									isActive={selectedId === summary.project.id}
-									onclick={() => void select(summary.project)}
-									title={summary.project.title}
-								>
-									<div class="min-w-0 flex-1">
-										<span class="block truncate text-xs font-medium"
-											>{summary.project.title}</span
-										>
-										<span class="text-xs text-muted-foreground"
-											>{summary.taskCount} task{summary.taskCount === 1
-												? ''
-												: 's'}</span
-										>
-									</div>
-									<Badge
-										class="max-w-20 shrink-0 truncate"
-										variant={statusVariant(summary.project.properties.status)}
-										>{statusLabel(
-											summary.project.properties.status,
-											'planned',
-										)}</Badge
+		{#if !isSectionCollapsed('projects.list')}
+			<Sidebar.SidebarGroupContent>
+				{#if loading}
+					<div class="flex flex-col gap-1">
+						{#each [0, 1, 2] as item (item)}<Skeleton
+								class="h-12 w-full"
+							/>{/each}
+					</div>
+				{:else if summaries.length === 0}
+					<EmptyState
+						icon={FolderOpen}
+						title="No projects"
+						description="Organize work with projects."
+						actionLabel="New project"
+						onAction={create}
+					/>
+				{:else}
+					<nav aria-label="Projects">
+						<Sidebar.SidebarMenu>
+							{#each summaries as summary (summary.project.id)}
+								<Sidebar.SidebarMenuItem>
+									<Sidebar.SidebarMenuButton
+										size="lg"
+										isActive={selectedId === summary.project.id}
+										onclick={() => void select(summary.project)}
+										title={summary.project.title}
 									>
-								</Sidebar.SidebarMenuButton>
-							</Sidebar.SidebarMenuItem>
-						{/each}
-					</Sidebar.SidebarMenu>
-				</nav>
-			{/if}
-		</Sidebar.SidebarGroupContent>
+										<div class="min-w-0 flex-1">
+											<span class="block truncate text-xs font-medium"
+												>{summary.project.title}</span
+											>
+											<span class="text-xs text-muted-foreground"
+												>{summary.taskCount} task{summary.taskCount === 1
+													? ''
+													: 's'}</span
+											>
+										</div>
+										<Badge
+											class="max-w-20 shrink-0 truncate"
+											variant={statusVariant(summary.project.properties.status)}
+											>{statusLabel(
+												summary.project.properties.status,
+												'planned',
+											)}</Badge
+										>
+									</Sidebar.SidebarMenuButton>
+								</Sidebar.SidebarMenuItem>
+							{/each}
+						</Sidebar.SidebarMenu>
+					</nav>
+				{/if}
+			</Sidebar.SidebarGroupContent>
+		{/if}
 	</Sidebar.SidebarGroup>
 {/snippet}
 

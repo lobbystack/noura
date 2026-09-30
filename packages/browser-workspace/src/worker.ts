@@ -88,6 +88,8 @@ export const BROWSER_APP_CAPABILITIES = {
 	systemTrash: false,
 	workspaceFolders: false,
 	mcp: false,
+	fileDrops: false,
+	dragOut: false,
 } as const;
 
 /**
@@ -243,6 +245,10 @@ export class BrowserWorkspaceServer {
 				return this.#updateManifest(payload);
 			case 'app_capabilities':
 				return { ...BROWSER_APP_CAPABILITIES };
+			case 'app_set_theme':
+			case 'app_set_zoom':
+				// A browser tab has no native window; the browser zooms itself.
+				return null;
 			case 'app_diagnostics':
 				return this.#diagnosticsReport();
 			case 'objects_query':

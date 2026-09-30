@@ -43,6 +43,7 @@ mod copy;
 mod drafts;
 mod durable;
 mod files;
+mod import;
 mod manifest;
 mod objects;
 mod raw_markdown;
@@ -64,6 +65,7 @@ pub use drafts::{
     ConflictResolution, DraftReconcileInput, DraftReconcileResult, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ResolveConflictInput,
 };
+pub use import::ImportResult;
 pub use manifest::ManifestUpdateInput;
 pub use objects::{CreateObjectInput, ObjectPatch};
 pub use raw_markdown::{

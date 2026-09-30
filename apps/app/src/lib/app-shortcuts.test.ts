@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import {
+	isFindShortcut,
 	shortcutCommand,
 	shortcutOnce,
 	type ShortcutEvent,
@@ -61,4 +62,31 @@ test('every command has its key', () => {
 	).toBe('previous-tab');
 	expect(mac('n', { altKey: true })).toBeNull();
 	expect(shortcutCommand(press('n'), 'mac')).toBeNull();
+});
+
+test('Find is Command or Control+F on a Mac and Control+F elsewhere', () => {
+	expect(isFindShortcut(press('f', { metaKey: true }), 'mac')).toBe(true);
+	expect(isFindShortcut(press('F', { ctrlKey: true }), 'mac')).toBe(true);
+	expect(isFindShortcut(press('f', { ctrlKey: true }), 'windows')).toBe(true);
+	expect(isFindShortcut(press('f', { metaKey: true }), 'windows')).toBe(false);
+	expect(
+		isFindShortcut(press('f', { metaKey: true, shiftKey: true }), 'mac'),
+	).toBe(false);
+	expect(isFindShortcut(press('f'), 'mac')).toBe(false);
+	// Find belongs to the open document, not the app's command list.
+	expect(shortcutCommand(press('f', { metaKey: true }), 'mac')).toBeNull();
+});
+
+test('Mod with plus, minus and zero zooms, whatever the layout needs for +', () => {
+	expect(shortcutCommand(press('=', { metaKey: true }), 'mac')).toBe('zoom-in');
+	expect(
+		shortcutCommand(press('+', { metaKey: true, shiftKey: true }), 'mac'),
+	).toBe('zoom-in');
+	expect(shortcutCommand(press('-', { ctrlKey: true }), 'windows')).toBe(
+		'zoom-out',
+	);
+	expect(shortcutCommand(press('0', { metaKey: true }), 'mac')).toBe(
+		'zoom-reset',
+	);
+	expect(shortcutCommand(press('=', { ctrlKey: true }), 'mac')).toBeNull();
 });
