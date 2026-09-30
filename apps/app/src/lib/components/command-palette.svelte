@@ -71,7 +71,7 @@
 
 	const NAV_ENTRIES: ReadonlyArray<readonly [string, string, string | null]> = (
 		[
-			['Home', '/inbox'],
+			['Inbox', '/inbox'],
 			['Files', '/files'],
 			['Tasks', '/tasks'],
 			['Calendar', '/calendar'],

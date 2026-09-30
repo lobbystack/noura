@@ -5,7 +5,11 @@ export type { ObjectType };
 
 export interface Tab {
 	id: string;
-	/** A managed object ID, `raw:<path>` for other files, or `pdf:<workspace>:<path>`. */
+	/**
+	 * A managed object ID, `raw:<path>` for other files,
+	 * `pdf:<workspace>:<path>`, or `page:<route>` for an app page like
+	 * Calendar.
+	 */
 	objectId: string;
 	objectType: ObjectType;
 	title: string;
@@ -35,6 +39,46 @@ export function tabHref(tab: Tab): string {
 		return `/files?raw=${encodeURIComponent(tab.objectId.slice(4))}`;
 	const route = ROUTES_BY_TYPE[tab.objectType] ?? '/files';
 	return `${route}?selected=${encodeURIComponent(tab.objectId)}`;
+}
+
+const PAGE_PREFIX = 'page:';
+
+/**
+ * App pages that show as tabs, with their titles. Files is missing on
+ * purpose: its tabs are the documents it opens.
+ */
+export const PAGE_TABS: Readonly<Record<string, string>> = {
+	'/inbox': 'Inbox',
+	'/tasks': 'Tasks',
+	'/calendar': 'Calendar',
+	'/projects': 'Projects',
+	'/ai': 'AI',
+};
+
+/**
+ * The page tab route for an address, or null when the address shows a
+ * document or a page without a tab.
+ */
+export function pageRouteFor(url: URL): string | null {
+	if (['selected', 'raw', 'path'].some((key) => url.searchParams.has(key)))
+		return null;
+	return (
+		Object.keys(PAGE_TABS).find(
+			(route) => url.pathname === route || url.pathname.startsWith(`${route}/`),
+		) ?? null
+	);
+}
+
+/** The tab ID for an app page such as `/calendar`. */
+export function pageTabObjectId(route: string): string {
+	return `${PAGE_PREFIX}${route}`;
+}
+
+/** The route of a page tab, or null for a document tab. */
+export function pageTabRoute(tab: Pick<Tab, 'objectId'>): string | null {
+	return tab.objectId.startsWith(PAGE_PREFIX)
+		? tab.objectId.slice(PAGE_PREFIX.length)
+		: null;
 }
 
 /** The workspace file a path-backed tab shows, if it has one. */

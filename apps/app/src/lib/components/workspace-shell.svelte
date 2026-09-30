@@ -183,7 +183,7 @@
 	});
 
 	// Turned-off modules genuinely simplify the workspace: routes backed by a
-	// disabled plugin fall back to Home instead of rendering a dead surface.
+	// disabled plugin fall back to the Inbox instead of rendering a dead surface.
 	// Only the open workspace's own plugin list decides: a sync that settled
 	// while it was still opening lists no plugins at all.
 	$effect(() => {

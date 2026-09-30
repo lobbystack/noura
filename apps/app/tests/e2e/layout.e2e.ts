@@ -15,9 +15,9 @@ test.describe('layout at a normal window width', () => {
 			(element) => element.scrollWidth - element.clientWidth,
 		);
 		expect(overflow).toBeLessThanOrEqual(0);
-		await expect(
-			toolbar.getByRole('button', { name: /Find and replace/ }),
-		).toBeInViewport({ ratio: 1 });
+		await expect(toolbar.getByRole('button', { name: /^Find/ })).toBeInViewport(
+			{ ratio: 1 },
+		);
 		await expect(page.getByLabel('Status', { exact: true })).toHaveText(
 			'To do',
 		);
@@ -43,7 +43,7 @@ test.describe('layout at a normal window width', () => {
 			await app.newNote(`A long note name ${index}`);
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		const bar = page.getByRole('tablist', { name: 'Open files' });
 		const box = await bar.evaluate((element: HTMLElement) => {

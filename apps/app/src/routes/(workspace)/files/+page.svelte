@@ -131,16 +131,18 @@
 
 	/**
 	 * Plain /files keeps whatever is already open, like any editor surface.
-	 * With nothing open it shows the active tab's document, so the page and
-	 * the highlighted tab agree.
+	 * With nothing open it shows the active tab's document, or the document
+	 * you had open before an app page's tab, so the page and the highlighted
+	 * tab agree.
 	 */
 	function showActiveTab() {
 		if (shownNote || shownRaw) return;
-		const active = tabsStore.active;
-		if (!active) return;
-		const href = tabHref(active);
-		if (new URL(href, page.url).pathname === page.url.pathname)
-			void goto(href, { replaceState: true });
+		const tab = tabsStore.documentTab;
+		if (!tab) return;
+		const href = tabHref(tab);
+		if (new URL(href, page.url).pathname !== page.url.pathname) return;
+		tabsStore.setActive(tab.id);
+		void goto(href, { replaceState: true });
 	}
 
 	// Selection is URL-driven: /files?selected=<id> or /files?raw=<path>.

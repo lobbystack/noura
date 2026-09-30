@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { tick, type Component } from 'svelte';
 	import { getSettingsDialog } from '$lib/settings.svelte';
-	import House from 'phosphor-svelte/lib/House';
+	import Tray from 'phosphor-svelte/lib/Tray';
 	import Files from 'phosphor-svelte/lib/Files';
 	import Checks from 'phosphor-svelte/lib/Checks';
 	import Calendar from 'phosphor-svelte/lib/Calendar';
@@ -11,6 +11,9 @@
 	import Sparkle from 'phosphor-svelte/lib/Sparkle';
 	import GearSix from 'phosphor-svelte/lib/GearSix';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+	import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+	import { openPageInNewTab } from '$lib/tab-actions';
+	import { hostOs } from '$lib/host-os';
 	import AppShortcuts from '$lib/components/app-shortcuts.svelte';
 	import { cn } from '$lib/utils.js';
 	import { plugins } from '$lib/plugins.svelte';
@@ -28,7 +31,7 @@
 
 	// `notes` keeps its id so saved rail orders still apply; the section is Files.
 	const entries: Partial<Record<NavigationId, RailEntry>> = {
-		inbox: { label: 'Home', path: '/inbox', icon: House },
+		inbox: { label: 'Inbox', path: '/inbox', icon: Tray },
 		ai: { label: 'AI', path: '/ai', icon: Sparkle },
 		notes: { label: 'Files', path: '/files', icon: Files },
 		tasks: { label: 'Tasks', path: '/tasks', icon: Checks },
@@ -50,6 +53,10 @@
 		if (path === '/files' && current.startsWith('/pdf')) return true;
 		return current === path || current.startsWith(`${path}/`);
 	}
+
+	// Mod-click and middle-click open a section in its own tab, as the right
+	// click menu does.
+	const newTabModifier = hostOs() === 'mac' ? 'metaKey' : 'ctrlKey';
 
 	let draggedNavigationId = $state<NavigationId | null>(null);
 	let dropTargetId = $state<NavigationId | null>(null);
@@ -143,51 +150,75 @@
 		{#each visibleIds as pluginId (pluginId)}
 			{@const entry = entries[pluginId]!}
 			{@const current = isCurrent(entry.path)}
-			<Tooltip.Root>
-				<Tooltip.Trigger>
-					{#snippet child({ props })}
-						<a
-							{...props}
-							href={entry.path}
-							draggable="false"
-							data-plugin-id={pluginId}
-							aria-current={current ? 'page' : undefined}
-							aria-label={entry.label}
-							aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-							class={cn(
-								'relative flex size-9 touch-none items-center justify-center rounded-xl transition-colors select-none outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
-								current
-									? 'bg-sidebar-accent text-sidebar-accent-foreground'
-									: 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-								draggedNavigationId === pluginId && 'opacity-40',
-								draggedNavigationId && 'cursor-grabbing',
-							)}
-							onpointerdown={(event) => startPointer(event, pluginId)}
-							ondragstart={(event) => event.preventDefault()}
-							onkeydown={(event) => void moveWithKeyboard(event, pluginId)}
-							onclick={(event) => {
-								if (suppressClick) {
-									event.preventDefault();
-									suppressClick = false;
-								}
-							}}
-						>
-							{#if dropTargetId === pluginId}<span
-									aria-hidden="true"
-									class={cn(
-										'pointer-events-none absolute inset-x-0 h-0.5 bg-primary',
-										dropAfter ? '-bottom-0.5' : '-top-0.5',
-									)}
-								></span>{/if}
-							<entry.icon
-								class="size-5"
-								weight={current ? 'fill' : 'regular'}
-							/>
-						</a>
+			<ContextMenu.Root>
+				<ContextMenu.Trigger>
+					{#snippet child({ props: menuProps })}
+						<Tooltip.Root>
+							<Tooltip.Trigger {...menuProps}>
+								{#snippet child({ props })}
+									<a
+										{...props}
+										href={entry.path}
+										draggable="false"
+										data-plugin-id={pluginId}
+										aria-current={current ? 'page' : undefined}
+										aria-label={entry.label}
+										aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+										class={cn(
+											'relative flex size-9 touch-none items-center justify-center rounded-xl transition-colors select-none outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+											current
+												? 'bg-sidebar-accent text-sidebar-accent-foreground'
+												: 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+											draggedNavigationId === pluginId && 'opacity-40',
+											draggedNavigationId && 'cursor-grabbing',
+										)}
+										onpointerdown={(event) => startPointer(event, pluginId)}
+										ondragstart={(event) => event.preventDefault()}
+										onkeydown={(event) =>
+											void moveWithKeyboard(event, pluginId)}
+										onclick={(event) => {
+											if (suppressClick) {
+												event.preventDefault();
+												suppressClick = false;
+												return;
+											}
+											if (event[newTabModifier]) {
+												event.preventDefault();
+												void openPageInNewTab(entry.path, entry.label);
+											}
+										}}
+										onauxclick={(event) => {
+											if (event.button !== 1) return;
+											event.preventDefault();
+											void openPageInNewTab(entry.path, entry.label);
+										}}
+									>
+										{#if dropTargetId === pluginId}<span
+												aria-hidden="true"
+												class={cn(
+													'pointer-events-none absolute inset-x-0 h-0.5 bg-primary',
+													dropAfter ? '-bottom-0.5' : '-top-0.5',
+												)}
+											></span>{/if}
+										<entry.icon
+											class="size-5"
+											weight={current ? 'fill' : 'regular'}
+										/>
+									</a>
+								{/snippet}
+							</Tooltip.Trigger>
+							<Tooltip.Content side="right">{entry.label}</Tooltip.Content>
+						</Tooltip.Root>
 					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content side="right">{entry.label}</Tooltip.Content>
-			</Tooltip.Root>
+				</ContextMenu.Trigger>
+				<ContextMenu.Content class="w-44">
+					<ContextMenu.Item
+						onclick={() => void openPageInNewTab(entry.path, entry.label)}
+					>
+						Open in new tab
+					</ContextMenu.Item>
+				</ContextMenu.Content>
+			</ContextMenu.Root>
 		{/each}
 	</div>
 	<div class="flex flex-col items-center gap-1">

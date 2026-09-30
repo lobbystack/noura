@@ -49,9 +49,14 @@
 
 	// The bar mounts once the workspace is ready, after the navigation that
 	// opened the app has finished, so it handles that page on mount.
-	onMount(() => arrived(page.url));
+	onMount(() => {
+		arrived(page.url);
+		tabsStore.followPage(page.url);
+	});
 	afterNavigate(({ to }) => {
-		if (to) arrived(to.url);
+		if (!to) return;
+		arrived(to.url);
+		tabsStore.followPage(to.url);
 	});
 
 	// The bar has no visible scrollbar, which would squeeze the tabs in the

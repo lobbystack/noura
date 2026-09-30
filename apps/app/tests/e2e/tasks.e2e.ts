@@ -44,7 +44,7 @@ async function newTask(app: App, title: string) {
 	return taskPath(app, 'New task');
 }
 
-test.describe('Home', () => {
+test.describe('Inbox', () => {
 	test('a task added for today shows under Due today and opens', async ({
 		app,
 		page,
@@ -61,10 +61,10 @@ test.describe('Home', () => {
 		await expect(page.getByRole('textbox', { name: 'Task title' })).toHaveValue(
 			'Buy milk',
 		);
-		// Completing it from Home removes it from the list.
+		// Completing it from the Inbox removes it from the list.
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		await today_.getByRole('button', { name: 'Complete Buy milk' }).click();
 		await expect(today_.getByText('Nothing due today.')).toBeVisible();
@@ -81,7 +81,7 @@ test.describe('Home', () => {
 			.toBe(noteFileBody('dear diary'));
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		const recent = page.getByRole('region', { name: 'Recent' });
 		await recent.getByRole('link', { name: 'Diary' }).click();

@@ -28,7 +28,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("zoom-in", "Zoom In", "CmdOrCtrl+="),
     ("zoom-out", "Zoom Out", "CmdOrCtrl+-"),
     ("zoom-reset", "Actual Size", "CmdOrCtrl+0"),
-    ("go-home", "Home", "CmdOrCtrl+1"),
+    ("go-home", "Inbox", "CmdOrCtrl+1"),
     ("go-files", "Files", "CmdOrCtrl+2"),
     ("go-tasks", "Tasks", "CmdOrCtrl+3"),
     ("go-calendar", "Calendar", "CmdOrCtrl+4"),

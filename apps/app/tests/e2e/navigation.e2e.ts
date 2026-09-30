@@ -92,6 +92,34 @@ test.describe('tabs', () => {
 		await expect(app.fileName).toHaveValue('One');
 	});
 
+	test('app pages open as tabs, and Open in new tab keeps one', async ({
+		app,
+		page,
+	}) => {
+		await app.openFiles();
+		const sections = page.getByRole('navigation', { name: 'Sections' });
+		const tabs = page.getByRole('tab');
+		await sections.getByRole('link', { name: 'Calendar' }).click();
+		await expect(page.getByRole('tab', { selected: true })).toHaveText(
+			'Calendar',
+		);
+		// A plain click shows a preview tab that the next page replaces.
+		await sections.getByRole('link', { name: 'Tasks' }).click();
+		await expect(tabs).toHaveText(['Tasks']);
+		await sections
+			.getByRole('link', { name: 'Calendar' })
+			.click({ button: 'right' });
+		await page.getByRole('menuitem', { name: 'Open in new tab' }).click();
+		await expect(page).toHaveURL(/\/calendar/);
+		await expect(tabs).toHaveText(['Tasks', 'Calendar']);
+		await sections.getByRole('link', { name: 'Inbox' }).click();
+		await expect(tabs).toHaveText(['Inbox', 'Calendar']);
+		// Closing the last page tab doesn't open it again.
+		await page.getByRole('button', { name: 'Close Inbox' }).click();
+		await page.getByRole('button', { name: 'Close Calendar' }).click();
+		await expect(tabs).toHaveCount(0);
+	});
+
 	test('tabs come back after a reload', async ({ app, page }) => {
 		await writeNote(app, 'Left', 'left');
 		await writeNote(app, 'Right', 'right');
@@ -317,7 +345,7 @@ test.describe('coming back', () => {
 		await writeNote(app, 'Shown', 'shown text');
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		await expect(app.fileName).toBeHidden();
 		await app.openFiles();

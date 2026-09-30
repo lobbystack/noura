@@ -52,7 +52,7 @@ test.describe('projects', () => {
 });
 
 test.describe('calendar', () => {
-	test('a task due today shows on the calendar and on Home, and opens', async ({
+	test('a task due today shows on the calendar and in the Inbox, and opens', async ({
 		app,
 		page,
 	}) => {
@@ -79,7 +79,7 @@ test.describe('calendar', () => {
 		await expect(entry).toBeVisible();
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		const upcoming = page.getByRole('region', { name: 'Next 7 days' });
 		await expect(upcoming.getByRole('link', { name: /Dentist/ })).toBeVisible();

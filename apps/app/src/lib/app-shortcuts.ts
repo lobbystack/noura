@@ -109,7 +109,7 @@ export const APP_SHORTCUTS: ReadonlyArray<{
 	{ label: 'Zoom out', keys: ['Mod', '−'] },
 	{ label: 'Actual size', keys: ['Mod', '0'] },
 	{
-		label: 'Go to Home, Files, Tasks, Calendar, Projects, AI',
+		label: 'Go to Inbox, Files, Tasks, Calendar, Projects, AI',
 		keys: ['Mod', '1–6'],
 	},
 	{ label: 'Open settings', keys: ['Mod', ','] },
