@@ -84,6 +84,67 @@ impl AppError {
     }
 }
 
+impl AppError {
+    /// Translate a `local-core` error from a change to the file or folder
+    /// at `path`, logging the details.
+    pub(crate) fn from_change(error: CoreError, path: &str) -> Self {
+        tracing::warn!(
+            code = %error.code,
+            operation = %error.operation,
+            details = ?error.details,
+            "a file operation failed"
+        );
+        let message = match error.code.as_str() {
+            "unsupported_path" | "non_utf8_path" => format!(
+                "{path} has characters in its name Noura can't represent, so Noura left it as \
+                 it was."
+            ),
+            "symlink_escape" => {
+                format!("{path} is a link or sits in a linked folder, so Noura won't change it.")
+            }
+            "empty_path" | "absolute_path" | "unsafe_path" => {
+                "Noura only changes files inside this workspace.".to_owned()
+            }
+            "reserved_path" => "Noura doesn't keep files in .noura, .git, node_modules or \
+                 target at the top of the workspace."
+                .to_owned(),
+            "path_exists" => format!("Something named {path} is already there."),
+            "file_not_found" | "folder_not_found" | "object_not_found" => {
+                format!("{path} isn't in the workspace anymore.")
+            }
+            "collaboration_transaction_required" => "Noura can't rename, move or delete a \
+                 file while it's open for live editing."
+                .to_owned(),
+            "import_contains_workspace" => {
+                "That folder holds this workspace, so it can't be copied into it.".to_owned()
+            }
+            "import_into_itself" => "A folder can't be copied into itself.".to_owned(),
+            "manifest_conflict" => "The settings file .noura/workspace.yaml changed on disk \
+                 since Noura read it. Try again."
+                .to_owned(),
+            "invalid_ignore_pattern" => match error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("pattern"))
+                .and_then(|pattern| pattern.as_str())
+            {
+                Some(pattern) => format!("\u{201c}{pattern}\u{201d} isn't a valid pattern."),
+                None => "One of the patterns isn't valid.".to_owned(),
+            },
+            _ => match error.category {
+                ErrorCategory::Permission => {
+                    format!("Noura doesn't have permission to change {path}.")
+                }
+                _ => format!("Noura couldn't change {path}."),
+            },
+        };
+        Self {
+            code: error.code,
+            message,
+        }
+    }
+}
+
 /// What the failed `local-core` call did with the path it names, so a
 /// permission or link error says the right thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

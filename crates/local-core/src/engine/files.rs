@@ -43,10 +43,13 @@ impl WorkspaceEngine {
         Ok((relative_path, bytes))
     }
 
+    /// Create a folder and the folders above it. The new folder's entry is
+    /// durable before this returns.
     pub fn create_folder(&self, relative_path: &str) -> Result<()> {
         let path = resolve_for_write(&self.root, relative_path, "folder_create")?;
-        std::fs::create_dir_all(path)
-            .map_err(|error| CoreError::io(error, "folder_create", Some(relative_path)))
+        std::fs::create_dir_all(&path)
+            .map_err(|error| CoreError::io(error, "folder_create", Some(relative_path)))?;
+        sync_parent(&path, "folder_create")
     }
 
     pub fn list_folders(&self) -> Result<Vec<crate::FolderEntry>> {
