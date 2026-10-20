@@ -116,9 +116,9 @@ impl AppError {
                  file while it's open for live editing."
                 .to_owned(),
             "import_contains_workspace" => {
-                "That folder holds this workspace, so it can't be copied into it.".to_owned()
+                "That folder holds this workspace, so Noura can't copy it here.".to_owned()
             }
-            "import_into_itself" => "A folder can't be copied into itself.".to_owned(),
+            "import_into_itself" => "Noura can't copy a folder into itself.".to_owned(),
             "manifest_conflict" => "The settings file .noura/workspace.yaml changed on disk \
                  since Noura read it. Try again."
                 .to_owned(),

@@ -36,7 +36,7 @@ fn move_to_trash_uses_the_system_trash_and_says_so() {
         notice(&app),
         Some((
             "Moved \u{201c}Plan\u{201d} to the trash".to_owned(),
-            "It's in your system's trash, where you can restore it.".to_owned()
+            "You can restore it from your system's trash.".to_owned()
         ))
     );
     assert_eq!(app.notice().unwrap().kind, NoticeKind::Done);
@@ -69,7 +69,7 @@ fn when_the_system_trash_refuses_the_item_goes_to_the_workspace_trash_folder() {
         Some((
             "Moved \u{201c}Plan\u{201d} to .noura/trash".to_owned(),
             format!(
-                "The system trash wasn't available, so it's in \
+                "Noura couldn't use the system trash and moved it to \
                  .noura/trash/{stamp}/Docs/Deep/Plan.md in this workspace."
             )
         ))

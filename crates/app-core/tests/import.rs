@@ -42,7 +42,7 @@ fn import_refuses_a_folder_into_itself_and_copies_nothing() {
                 folder,
             )
             .unwrap_err();
-        assert_eq!(error.message, "A folder can't be copied into itself.");
+        assert_eq!(error.message, "Noura can't copy a folder into itself.");
     }
 
     assert_eq!(fixture.snapshot(), before);
@@ -65,7 +65,7 @@ fn import_refuses_a_folder_that_holds_the_workspace_and_copies_nothing() {
         let error = workspace.import(&sources, "").unwrap_err();
         assert_eq!(
             error.message,
-            "That folder holds this workspace, so it can't be copied into it."
+            "That folder holds this workspace, so Noura can't copy it here."
         );
     }
 

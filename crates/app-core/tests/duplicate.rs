@@ -100,7 +100,7 @@ fn folders_and_items_outside_the_workspace_are_not_duplicated() {
         notice(&app),
         Some((
             "Couldn't duplicate \u{201c}Docs\u{201d}".to_owned(),
-            "Only files can be duplicated.".to_owned()
+            "You can only duplicate files.".to_owned()
         ))
     );
     for path in [

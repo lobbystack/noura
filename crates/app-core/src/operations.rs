@@ -125,7 +125,7 @@ impl Workspace {
     /// byte for byte. Returns the copy's workspace path once it is on disk.
     pub fn duplicate(&self, relative_path: &str) -> Result<String, AppError> {
         if self.existing(relative_path)?.is_dir() {
-            return Err(AppError::new("not_a_file", "Only files can be duplicated."));
+            return Err(AppError::new("not_a_file", "You can only duplicate files."));
         }
         let name = file_name(relative_path);
         let (stem, suffix) = match name.rfind('.') {

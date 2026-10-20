@@ -207,12 +207,12 @@ impl App {
                 match place {
                     None => self.show_done(
                         &format!("Moved {quoted} to the trash"),
-                        "It's in your system's trash, where you can restore it.".to_owned(),
+                        "You can restore it from your system's trash.".to_owned(),
                     ),
                     Some(place) => self.show_done(
                         &format!("Moved {quoted} to .noura/trash"),
                         format!(
-                            "The system trash wasn't available, so it's in {place} in this \
+                            "Noura couldn't use the system trash and moved it to {place} in this \
                              workspace."
                         ),
                     ),
