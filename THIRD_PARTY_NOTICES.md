@@ -69,6 +69,24 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+## egui default fonts
+
+The desktop app draws text with the fonts egui bundles in `epaint_default_fonts` 0.37.0:
+
+- **Ubuntu Light**: Copyright 2011 Canonical Ltd., under the Ubuntu Font Licence 1.0
+- **Noto Emoji**: Copyright 2013 Google Inc., under the SIL Open Font License 1.1
+- **Hack**: Copyright 2018 Source Foundry Authors, under the MIT License, with Bitstream Vera glyphs Copyright 2003 Bitstream, Inc., under the Bitstream Vera License
+- **emoji-icon-font** and its `egui-icons` subset: Copyright 2014 John Slegers, under the MIT License
+
+The crate's `fonts` folder holds each font's full license text. Noura uses the crate as a dependency and copies no font file into this repository.
+
+## MPL-2.0 crates
+
+These Rust dependencies use the Mozilla Public License 2.0. Noura uses them unmodified, and crates.io serves their source at the versions pinned in Cargo.lock:
+
+- `webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5, which give `sync-server` its passkey support
+- `option-ext` 0.2.0, which `local-core` gets through `directories` and `dirs-sys`
+
 ## Marketing website source record
 
 - Source: a local predecessor workspace's `apps/website` (not a public repository)

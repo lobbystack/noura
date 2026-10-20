@@ -20,15 +20,29 @@ Branch from `main` and give the branch a neutral name, such as `feature/workspac
 
 Add tests with your change. Storage, format, and sync changes need coverage for malformed input, round trips, external edits, stale indexes, interrupted writes, moves, duplicate IDs, path traversal, and rebuilds.
 
-Run these checks before you open a pull request:
+Run the checks CI runs before you open a pull request:
 
 ```sh
-bun run check
-bun run test
-bun run format:check
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
+cargo deny check
 ```
 
+If you change the website, also run `bun run check:website` and `bun run build:website`.
+
 Describe what changed and why in the pull request. Link the issue when one exists.
+
+## Share a build cache across worktrees
+
+Dev and test builds keep only line tables for debug info, so each `target` folder stays smaller. If you build in several worktrees, install [sccache](https://github.com/mozilla/sccache) and add these lines to your shell profile so your worktrees share one cache capped at 30 GB:
+
+```sh
+export RUSTC_WRAPPER=sccache
+export SCCACHE_CACHE_SIZE=30G
+```
+
+sccache reads the size when its server starts, so run `sccache --stop-server` after you change it. `sccache --show-stats` reports the cap as the max cache size. Without sccache, leave `RUSTC_WRAPPER` unset and Cargo builds as usual.
 
 ## Follow the architecture boundaries
 
