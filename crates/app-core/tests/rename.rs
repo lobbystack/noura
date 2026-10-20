@@ -2,7 +2,7 @@
 
 mod support;
 
-use support::{Fixture, current, document, note, object_id, rows};
+use support::{Fixture, current, document, note, notice, object_id, rows};
 
 const PLAN_ID: &str = "01jbcdefghjkmnpqrstvwxyz00";
 
@@ -162,19 +162,52 @@ fn keeping_the_same_name_or_cancelling_changes_nothing() {
 }
 
 #[test]
-fn renaming_an_item_that_left_the_workspace_says_so() {
-    let fixture = Fixture::new(&[("Plan.md", b"x")]);
+fn renaming_an_item_that_left_the_workspace_says_so_and_drops_its_row() {
+    let fixture = Fixture::new(&[("Plan.md", b"x"), ("Readme.md", b"r")]);
     let mut app = fixture.app();
+    app.open_file("Plan.md");
     app.start_rename("Plan.md");
     std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
 
-    assert!(!app.commit_rename("Roadmap"));
+    assert!(app.commit_rename("Roadmap"));
 
+    assert!(app.renaming().is_none());
     assert_eq!(
-        app.renaming().unwrap().problem.as_deref(),
-        Some("Plan.md isn't in the workspace anymore.")
+        notice(&app),
+        Some((
+            "Couldn't rename \u{201c}Plan\u{201d}".to_owned(),
+            "Plan.md isn't in the workspace anymore.".to_owned()
+        ))
     );
+    assert_eq!(document(&app), None);
+    assert_eq!(rows(&app), ["Readme"]);
     assert!(!fixture.exists("Roadmap.md"));
+}
+
+#[test]
+fn a_rename_that_fails_after_the_item_moved_follows_it() {
+    let fixture = Fixture::new(&[("Docs/Plan.md", b"x"), ("Readme.md", b"r")]);
+    let mut app = fixture.app();
+    app.open_file("Docs/Plan.md");
+    app.start_rename("Docs/Plan.md");
+    // The file already has the new name, as when the move happened and
+    // only syncing its folder failed.
+    std::fs::rename(
+        fixture.root.join("Docs/Plan.md"),
+        fixture.root.join("Docs/Roadmap.md"),
+    )
+    .unwrap();
+
+    assert!(app.commit_rename("Roadmap"));
+
+    assert!(app.renaming().is_none());
+    assert_eq!(
+        notice(&app).unwrap().0,
+        "Couldn't rename \u{201c}Plan\u{201d}"
+    );
+    assert_eq!(document(&app).as_deref(), Some("Docs/Roadmap.md"));
+    assert_eq!(current(&app).as_deref(), Some("Docs/Roadmap.md"));
+    assert_eq!(rows(&app), ["Docs", "Roadmap", "Readme"]);
 }
 
 #[test]
@@ -199,4 +232,41 @@ fn leaving_the_field_saves_the_name_or_says_why_it_couldnt() {
         ))
     );
     assert_eq!(fixture.read("Roadmap.md"), b"x");
+}
+
+#[test]
+fn a_name_taken_after_noura_checked_it_names_the_name_not_the_file() {
+    let fixture = Fixture::new(&[("Draft.md", b"draft"), ("Docs/a.txt", b"a")]);
+    let mut app = fixture.app();
+    app.start_rename("Draft.md");
+
+    let renamed = support::race(
+        &fixture,
+        &mut app,
+        |app| app.commit_rename("Plan"),
+        || std::fs::write(fixture.root.join("Plan.md"), b"other app").unwrap(),
+    );
+
+    assert!(!renamed);
+    assert_eq!(
+        app.renaming().unwrap().problem.as_deref(),
+        Some("Something named \u{201c}Plan\u{201d} is already in this folder.")
+    );
+    assert_eq!(fixture.read("Draft.md"), b"draft");
+    assert_eq!(fixture.read("Plan.md"), b"other app");
+
+    app.cancel_rename();
+    app.start_rename("Docs");
+    let renamed = support::race(
+        &fixture,
+        &mut app,
+        |app| app.commit_rename("Guides"),
+        || std::fs::create_dir(fixture.root.join("Guides")).unwrap(),
+    );
+    assert!(!renamed);
+    assert_eq!(
+        app.renaming().unwrap().problem.as_deref(),
+        Some("Something named \u{201c}Guides\u{201d} is already in this folder.")
+    );
+    assert_eq!(fixture.read("Docs/a.txt"), b"a");
 }

@@ -197,3 +197,68 @@ fn the_next_action_replaces_the_trash_notice() {
 
     assert_eq!(app.notice(), None);
 }
+
+/// Whether every folder from `.noura/trash` down to the item at `place`
+/// in the workspace's trash folder was synced, so the item can be found
+/// there after a crash.
+fn assert_trash_path_synced(fixture: &Fixture, synced: &[std::path::PathBuf], place: &str) {
+    let mut folder = fixture.root.join(".noura");
+    let mut chain = vec![folder.clone()];
+    let inside = place.strip_prefix(".noura/").unwrap();
+    let parts: Vec<_> = inside.split('/').collect();
+    for part in &parts[..parts.len() - 1] {
+        folder = folder.join(part);
+        chain.push(folder.clone());
+    }
+    for folder in chain {
+        assert!(
+            synced.contains(&folder),
+            "{} wasn't synced; synced: {synced:?}",
+            folder.display()
+        );
+    }
+}
+
+#[test]
+fn the_workspace_trash_folder_holds_the_item_on_disk_when_the_trash_returns() {
+    let fixture = Fixture::new(&[("Docs/Deep/Plan.md", b"plan"), ("Notes/A.md", b"a")]);
+    std::fs::remove_dir_all(fixture.root.join(".noura/trash")).unwrap();
+    let mut app = fixture.app_with(FakeSystem::refusing_trash());
+
+    let ((), synced) = local_core::durability_probe::record(|| app.trash("Docs/Deep/Plan.md"));
+    let stamp = stamped_folder(&fixture);
+    let stamp = stamp.file_name().unwrap().to_str().unwrap();
+    assert_trash_path_synced(
+        &fixture,
+        &synced,
+        &format!(".noura/trash/{stamp}/Docs/Deep/Plan.md"),
+    );
+    // The item left its folder for good, too.
+    assert!(synced.contains(&fixture.root.join("Docs/Deep")));
+    std::fs::remove_dir_all(fixture.root.join(".noura/trash")).unwrap();
+    drop(app);
+
+    let mut app = fixture.app_with(FakeSystem::without_trash());
+    let ((), synced) = local_core::durability_probe::record(|| app.trash("Notes"));
+    let stamp = stamped_folder(&fixture);
+    let stamp = stamp.file_name().unwrap().to_str().unwrap();
+    assert_trash_path_synced(&fixture, &synced, &format!(".noura/trash/{stamp}/Notes"));
+    assert!(synced.contains(&fixture.root));
+}
+
+#[test]
+fn trashing_an_item_that_left_closes_it_and_drops_its_row() {
+    let fixture = Fixture::new(&[("Plan.md", b"plan"), ("Readme.md", b"r")]);
+    let mut app = fixture.app();
+    app.open_file("Plan.md");
+    std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
+
+    app.trash("Plan.md");
+
+    assert_eq!(
+        notice(&app).unwrap().1,
+        "Plan.md isn't in the workspace anymore."
+    );
+    assert_eq!(document(&app), None);
+    assert_eq!(rows(&app), ["Readme"]);
+}

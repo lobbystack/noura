@@ -8,7 +8,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use app_core::App;
-use support::{Fixture, note, object_id, rows};
+use support::{FakeSystem, Fixture, document, note, notice, object_id, rows};
 
 const A: &str = "01jbcdefghjkmnpqrstvwxyz0a";
 const B: &str = "01jbcdefghjkmnpqrstvwxyz0b";
@@ -40,6 +40,44 @@ fn remove_present(files: &[PathBuf]) {
             std::fs::remove_file(file).unwrap();
         }
     }
+}
+
+/// Stop the index from changing its file list, as a full disk or a broken
+/// index would, through triggers added by a second connection. Dropping
+/// the triggers lets writes through again.
+fn refuse_index_writes(fixture: &Fixture, app: &App) -> rusqlite::Connection {
+    let connection = rusqlite::Connection::open(&index_files(fixture, app)[0]).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER refuse_insert BEFORE INSERT ON files \
+               BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;
+             CREATE TRIGGER refuse_update BEFORE UPDATE ON files \
+               BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;
+             CREATE TRIGGER refuse_delete BEFORE DELETE ON files \
+               BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;",
+        )
+        .unwrap();
+    connection
+}
+
+fn accept_index_writes(connection: &rusqlite::Connection) {
+    connection
+        .execute_batch(
+            "DROP TRIGGER refuse_insert; DROP TRIGGER refuse_update; DROP TRIGGER refuse_delete;",
+        )
+        .unwrap();
+}
+
+/// The Markdown files the index lists.
+fn indexed_markdown(connection: &rusqlite::Connection) -> Vec<String> {
+    let mut statement = connection
+        .prepare("SELECT relative_path FROM files WHERE relative_path LIKE '%.md' ORDER BY 1")
+        .unwrap();
+    statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }
 
 /// Every Markdown file's path and stable ID, for files that have one.
@@ -159,6 +197,8 @@ fn an_item_moved_outside_noura_says_it_left_and_works_at_its_new_path() {
         app.notice().unwrap().message,
         "Plan.md isn't in the workspace anymore."
     );
+    // The tree reads the files again, so the row it showed is gone.
+    assert_eq!(rows(&app), ["Docs"]);
     app.duplicate("Docs/Moved.md");
     app.start_rename("Docs/Moved.md");
     assert!(app.commit_rename("Renamed"));
@@ -317,4 +357,55 @@ fn an_index_update_lost_after_the_file_change_heals_on_the_next_open() {
     app.duplicate("Docs/Plan.md");
     let copy = object_id(&fixture.read("Docs/Plan 1.md"));
     assert!(before.iter().all(|(_, id)| *id != copy));
+}
+
+#[test]
+fn changes_finish_and_the_tree_follows_when_the_index_refuses_writes() {
+    let plan = note(A, "Body\n");
+    let fixture = Fixture::new(&[
+        ("Plan.md", &plan),
+        ("Loose.md", b"loose"),
+        ("Docs/Guide.md", b"g"),
+        ("Old/Inner.md", b"i"),
+    ]);
+    let mut app = fixture.app_with(FakeSystem::without_trash());
+    app.open_file("Plan.md");
+    let index = refuse_index_writes(&fixture, &app);
+
+    // Each change is on disk, so each one succeeds and the tree shows it,
+    // though the index can't record it yet.
+    app.start_rename("Plan.md");
+    assert!(app.commit_rename("Roadmap"));
+    assert_eq!(notice(&app), None);
+    app.move_into("Roadmap.md", "Docs");
+    assert_eq!(notice(&app), None);
+    app.duplicate("Loose.md");
+    assert_eq!(notice(&app), None);
+    app.trash("Old");
+    assert_eq!(
+        notice(&app).unwrap().0,
+        "Moved \u{201c}Old\u{201d} to .noura/trash"
+    );
+
+    assert_eq!(fixture.read("Docs/Roadmap.md"), plan);
+    assert_eq!(fixture.read("Loose 1.md"), b"loose");
+    assert!(!fixture.exists("Old"));
+    assert_eq!(rows(&app), ["Docs", "Guide", "Roadmap", "Loose 1", "Loose"]);
+    assert_eq!(document(&app).as_deref(), Some("Loose 1.md"));
+    assert!(indexed_markdown(&index).contains(&"Plan.md".to_owned()));
+
+    // Once the index takes writes again, the next look at the files brings
+    // it in line with them.
+    accept_index_writes(&index);
+    app.new_note(Some(""));
+    assert_eq!(
+        indexed_markdown(&index),
+        [
+            "Docs/Guide.md",
+            "Docs/Roadmap.md",
+            "Loose 1.md",
+            "Loose.md",
+            "Untitled.md"
+        ]
+    );
 }

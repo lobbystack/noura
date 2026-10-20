@@ -15,5 +15,9 @@ tracing.workspace = true
 unicode-normalization.workspace = true
 
 [dev-dependencies]
+# The tests record which folders each change syncs.
+local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
+# The tests stop the index from accepting writes.
+rusqlite.workspace = true
 serde_yaml_ng.workspace = true
 tempfile.workspace = true

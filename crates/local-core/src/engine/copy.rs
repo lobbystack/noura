@@ -9,7 +9,8 @@ impl WorkspaceEngine {
     /// A managed object's copy is a new object with a fresh ID, the same
     /// properties and body, and a title that follows the new file name. Any
     /// other file, including idless Markdown, is copied byte for byte. The copy
-    /// is durable before this returns.
+    /// is durable before this returns, and an index that can't follow
+    /// catches up on the next read instead of failing the copy.
     pub fn copy_file(&self, from: &str, to: &str) -> Result<()> {
         let operation = "file_copy";
         let source = resolve_for_write(&self.root, from, operation)?;
@@ -59,7 +60,8 @@ impl WorkspaceEngine {
         })?;
         atomic_write(&self.root, relative, &bytes, operation)?;
         drop(guard);
-        self.reconcile_as_application()
+        self.reconcile_after_change(operation);
+        Ok(())
     }
 }
 

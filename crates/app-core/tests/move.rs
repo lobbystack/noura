@@ -289,3 +289,67 @@ fn leaving_the_tree_while_dragging_drops_nowhere() {
     assert_eq!(tree.drop_target(), None);
     assert_eq!(tree.finish_drag(), None);
 }
+
+#[test]
+fn a_name_taken_after_noura_checked_it_names_the_item_and_the_folder() {
+    let fixture = Fixture::new(&[("Plan.md", b"plan"), ("Docs/Guide.md", b"g")]);
+    let mut app = fixture.app();
+
+    support::race(
+        &fixture,
+        &mut app,
+        |app| app.move_into("Plan.md", "Docs"),
+        || std::fs::write(fixture.root.join("Docs/Plan.md"), b"other app").unwrap(),
+    );
+
+    assert_eq!(
+        notice(&app),
+        Some((
+            "Couldn't move \u{201c}Plan\u{201d}".to_owned(),
+            "Something named \u{201c}Plan\u{201d} is already in \u{201c}Docs\u{201d}.".to_owned()
+        ))
+    );
+    assert_eq!(fixture.read("Plan.md"), b"plan");
+    assert_eq!(fixture.read("Docs/Plan.md"), b"other app");
+}
+
+#[test]
+fn a_move_that_fails_because_the_item_left_shows_where_it_is() {
+    let fixture = Fixture::new(&[
+        ("Plan.md", b"plan"),
+        ("Notes.md", b"n"),
+        ("Docs/Guide.md", b"g"),
+    ]);
+    let mut app = fixture.app();
+    app.open_file("Plan.md");
+    // Another app put the note where the drop would have.
+    std::fs::rename(
+        fixture.root.join("Plan.md"),
+        fixture.root.join("Docs/Plan.md"),
+    )
+    .unwrap();
+
+    app.move_into("Plan.md", "Docs");
+
+    assert_eq!(
+        notice(&app),
+        Some((
+            "Couldn't move \u{201c}Plan\u{201d}".to_owned(),
+            "Plan.md isn't in the workspace anymore.".to_owned()
+        ))
+    );
+    assert_eq!(document(&app).as_deref(), Some("Docs/Plan.md"));
+    assert_eq!(current(&app).as_deref(), Some("Docs/Plan.md"));
+    assert_eq!(rows(&app), ["Docs", "Guide", "Plan", "Notes"]);
+
+    // Another app took it out of the workspace: the open file closes.
+    std::fs::rename(
+        fixture.root.join("Docs/Plan.md"),
+        fixture.outside().join("Plan.md"),
+    )
+    .unwrap();
+    app.move_into("Docs/Plan.md", "");
+
+    assert_eq!(document(&app), None);
+    assert_eq!(rows(&app), ["Docs", "Guide", "Notes"]);
+}

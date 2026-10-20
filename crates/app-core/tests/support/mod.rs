@@ -207,6 +207,40 @@ pub fn write(root: &Path, relative: &str, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
+/// Run `action` on another thread while this test holds the workspace's
+/// write lock, call `meanwhile` once the action is waiting for the lock,
+/// then let it go on. This stands in for another app changing the files
+/// after Noura checked them and before it changes them. Under heavy load
+/// `meanwhile` may run before Noura's own checks, which then catch it.
+pub fn race<T: Send>(
+    fixture: &Fixture,
+    app: &mut App,
+    action: impl FnOnce(&mut App) -> T + Send,
+    meanwhile: impl FnOnce(),
+) -> T {
+    let lock_path = fixture
+        .app_data
+        .path()
+        .join("workspaces")
+        .join(app.workspace().unwrap().id())
+        .join("workspace.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .unwrap();
+    lock.lock().unwrap();
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| action(app));
+        std::thread::sleep(Duration::from_millis(300));
+        meanwhile();
+        lock.unlock().unwrap();
+        running.join().unwrap()
+    })
+}
+
 /// Poll until background work finishes.
 pub fn settle(app: &mut App) {
     let deadline = Instant::now() + Duration::from_secs(20);

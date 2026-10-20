@@ -64,11 +64,8 @@ impl Workspace {
         name_problem(name)?;
         let source = self.existing(relative_path)?;
         let current = file_name(relative_path);
-        let new_name = if !source.is_dir() && is_markdown(current) {
-            format!("{name}{}", &current[current.len() - 3..])
-        } else {
-            name.to_owned()
-        };
+        let destination = renamed_path(relative_path, name, source.is_dir());
+        let new_name = file_name(&destination);
         if new_name == current {
             return Ok(relative_path.to_owned());
         }
@@ -76,13 +73,10 @@ impl Workspace {
         let case_only = new_name.to_lowercase() == current.to_lowercase();
         if !case_only && taken_names(&self.folder_path(folder)?).contains(&new_name.to_lowercase())
         {
-            return Err(AppError::new(
-                "name_taken",
-                format!("Something named \u{201c}{name}\u{201d} is already in this folder."),
-            ));
+            return Err(name_taken(name, IN_THIS_FOLDER));
         }
-        let destination = join(folder, &new_name);
-        self.move_item(relative_path, &destination)?;
+        self.move_item(relative_path, &destination)
+            .map_err(|error| or_taken(error, name, IN_THIS_FOLDER))?;
         Ok(destination)
     }
 
@@ -101,21 +95,17 @@ impl Workspace {
             return Ok(relative_path.to_owned());
         }
         let name = file_name(relative_path);
+        let shown_name = if is_folder { name } else { shown(name) };
+        let place = match folder {
+            "" => "at the top of the workspace".to_owned(),
+            _ => format!("in \u{201c}{}\u{201d}", file_name(folder)),
+        };
         if taken_names(&self.folder_path(folder)?).contains(&name.to_lowercase()) {
-            let place = match folder {
-                "" => "at the top of the workspace".to_owned(),
-                _ => format!("in \u{201c}{}\u{201d}", file_name(folder)),
-            };
-            return Err(AppError::new(
-                "name_taken",
-                format!(
-                    "Something named \u{201c}{}\u{201d} is already {place}.",
-                    if is_folder { name } else { shown(name) }
-                ),
-            ));
+            return Err(name_taken(shown_name, &place));
         }
         let destination = join(folder, name);
-        self.move_item(relative_path, &destination)?;
+        self.move_item(relative_path, &destination)
+            .map_err(|error| or_taken(error, shown_name, &place))?;
         Ok(destination)
     }
 
@@ -136,7 +126,8 @@ impl Workspace {
         let copy = join(folder, &free_name(&self.folder_path(folder)?, stem, suffix));
         self.engine()
             .copy_file(relative_path, &copy)
-            .map_err(|error| AppError::from_change(error, relative_path))?;
+            .map_err(|error| AppError::from_change(error, relative_path))
+            .map_err(|error| or_taken(error, shown(file_name(&copy)), IN_THIS_FOLDER))?;
         Ok(copy)
     }
 
@@ -247,6 +238,17 @@ impl Workspace {
         moved.map_err(|error| AppError::from_change(error, from))
     }
 
+    /// Whether a file or folder is at `relative_path` in the workspace.
+    pub(crate) fn contains(&self, relative_path: &str) -> bool {
+        self.existing(relative_path).is_ok()
+    }
+
+    /// Whether nothing is left at `relative_path`, a path inside the
+    /// workspace. A path Noura refuses, such as a link, hasn't left.
+    pub(crate) fn has_left(&self, relative_path: &str) -> bool {
+        matches!(self.existing(relative_path), Err(error) if error.code == "file_missing")
+    }
+
     /// The file or folder at `relative_path` on disk, which must be inside
     /// the workspace and not a link.
     fn existing(&self, relative_path: &str) -> Result<PathBuf, AppError> {
@@ -282,6 +284,29 @@ impl Workspace {
     }
 }
 
+const IN_THIS_FOLDER: &str = "in this folder";
+
+/// The error for a name something in the destination folder already uses.
+/// `place` says where: "in this folder", "in “Docs”" or "at the top of
+/// the workspace".
+fn name_taken(name: &str, place: &str) -> AppError {
+    AppError::new(
+        "name_taken",
+        format!("Something named \u{201c}{name}\u{201d} is already {place}."),
+    )
+}
+
+/// `local-core` found something at the destination after Noura checked the
+/// name, as when another app took it meanwhile: name the name that's
+/// taken, not the item being changed.
+fn or_taken(error: AppError, name: &str, place: &str) -> AppError {
+    if error.code == "path_exists" {
+        name_taken(name, place)
+    } else {
+        error
+    }
+}
+
 /// Why Noura refuses `name` for a file or folder. These are the names
 /// Windows, macOS and Obsidian refuse, so a workspace stays portable.
 fn name_problem(name: &str) -> Result<(), AppError> {
@@ -297,6 +322,18 @@ fn name_problem(name: &str) -> Result<(), AppError> {
         return Ok(());
     };
     Err(AppError::new("invalid_name", problem))
+}
+
+/// Where renaming the item at `relative_path` to `name` puts it. A Markdown
+/// file keeps its `.md`, which `name` leaves out.
+pub(crate) fn renamed_path(relative_path: &str, name: &str, is_folder: bool) -> String {
+    let current = file_name(relative_path);
+    let new_name = if !is_folder && is_markdown(current) {
+        format!("{name}{}", &current[current.len() - 3..])
+    } else {
+        name.to_owned()
+    };
+    join(parent(relative_path), &new_name)
 }
 
 fn is_markdown(file_name: &str) -> bool {

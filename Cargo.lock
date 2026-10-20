@@ -290,6 +290,7 @@ dependencies = [
  "atomic-write-file",
  "directories",
  "local-core",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml_ng",

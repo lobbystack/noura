@@ -117,3 +117,26 @@ fn folders_and_items_outside_the_workspace_are_not_duplicated() {
     assert_eq!(fixture.snapshot(), before);
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
 }
+
+#[test]
+fn a_copy_name_taken_after_noura_chose_it_says_which_name() {
+    let fixture = Fixture::new(&[("Data.csv", b"1,2")]);
+    let mut app = fixture.app();
+
+    support::race(
+        &fixture,
+        &mut app,
+        |app| app.duplicate("Data.csv"),
+        || std::fs::write(fixture.root.join("Data 1.csv"), b"other app").unwrap(),
+    );
+
+    assert_eq!(
+        notice(&app),
+        Some((
+            "Couldn't duplicate \u{201c}Data.csv\u{201d}".to_owned(),
+            "Something named \u{201c}Data 1.csv\u{201d} is already in this folder.".to_owned()
+        ))
+    );
+    assert_eq!(fixture.read("Data.csv"), b"1,2");
+    assert_eq!(fixture.read("Data 1.csv"), b"other app");
+}

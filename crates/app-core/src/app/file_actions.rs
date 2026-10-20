@@ -5,6 +5,7 @@ use super::{App, Change, Notice, NoticeKind};
 use crate::{
     AppError, EntryKind, OpenedFile, Platform, TreeAction, TreeKey,
     files::{remap, shown_name},
+    operations::{join, renamed_path},
 };
 
 fn file_name(relative_path: &str) -> &str {
@@ -81,6 +82,8 @@ impl App {
             Ok(to) => self.follow_move(relative_path, &to),
             Err(error) => {
                 let title = format!("Couldn't move {}", self.quoted(relative_path));
+                let to = join(folder, file_name(relative_path));
+                self.follow_failed_change(relative_path, Some(&to));
                 self.show_notice(&title, error, None);
             }
         }
@@ -102,6 +105,11 @@ impl App {
             }
             Err(error) => {
                 let title = format!("Couldn't duplicate {}", self.quoted(relative_path));
+                // The copy may be on disk even so, when only syncing its
+                // folder failed.
+                if !self.follow_failed_change(relative_path, None) {
+                    self.refresh_tree(None);
+                }
                 self.show_notice(&title, error, None);
             }
         }
@@ -281,22 +289,7 @@ impl App {
         let next = self.row_after_removing(relative_path);
         match workspace.trash(relative_path) {
             Ok(place) => {
-                let inside = |path: &str| remap(path, relative_path, relative_path).is_some();
-                if self
-                    .document
-                    .as_ref()
-                    .is_some_and(|file| inside(&file.relative_path))
-                {
-                    self.document = None;
-                    self.listeners.emit(Change::Document);
-                }
-                if self
-                    .renaming
-                    .as_ref()
-                    .is_some_and(|rename| inside(&rename.relative_path))
-                {
-                    self.renaming = None;
-                }
+                self.close_inside(relative_path);
                 self.refresh_tree(None);
                 if let Some(next) = next {
                     self.select(&next);
@@ -316,6 +309,7 @@ impl App {
                 }
             }
             Err(error) => {
+                self.follow_failed_change(relative_path, None);
                 self.show_notice(&format!("Couldn't move {quoted} to the trash"), error, None);
             }
         }
@@ -360,9 +354,11 @@ impl App {
         self.listeners.emit(Change::Tree);
     }
 
-    /// Rename the row being renamed to `name`. Returns whether the rename
-    /// finished. When Noura refuses the name, renaming goes on and
-    /// [`Rename::problem`] says why.
+    /// Rename the row being renamed to `name`. Returns whether renaming
+    /// stopped. When Noura refuses the name, renaming goes on and
+    /// [`Rename::problem`] says why. When the item left its place anyway,
+    /// renaming stops, the tree shows where the item is, and a notice says
+    /// what went wrong.
     pub fn commit_rename(&mut self, name: &str) -> bool {
         let (Some(workspace), Some(rename)) = (&self.workspace, &mut self.renaming) else {
             return false;
@@ -380,7 +376,18 @@ impl App {
                 true
             }
             Err(error) => {
-                rename.problem = Some(error.message);
+                let is_folder = self.tree.as_ref().is_some_and(|tree| tree.is_folder(&from));
+                let title = format!("Couldn't rename {}", self.quoted(&from));
+                let to = renamed_path(&from, name, is_folder);
+                if self.follow_failed_change(&from, Some(&to)) {
+                    self.renaming = None;
+                    self.show_notice(&title, error, None);
+                    self.listeners.emit(Change::Tree);
+                    return true;
+                }
+                if let Some(rename) = &mut self.renaming {
+                    rename.problem = Some(error.message);
+                }
                 self.listeners.emit(Change::Tree);
                 false
             }
@@ -445,6 +452,50 @@ impl App {
     fn select(&mut self, relative_path: &str) {
         if let Some(tree) = &mut self.tree {
             tree.select(relative_path);
+        }
+    }
+
+    /// After a change that failed, the item at `from` may have left its
+    /// place anyway: another app moved it, or Noura moved it and only
+    /// syncing its folder failed. Then the tree reads the files again, and
+    /// the open file follows the item to `to` when it's there and closes
+    /// otherwise. Returns whether the item left.
+    fn follow_failed_change(&mut self, from: &str, to: Option<&str>) -> bool {
+        let Some(workspace) = &self.workspace else {
+            return false;
+        };
+        if !workspace.has_left(from) {
+            return false;
+        }
+        let arrived = to.filter(|to| workspace.contains(to));
+        match arrived {
+            Some(to) => self.follow_move(from, to),
+            None => {
+                self.close_inside(from);
+                self.refresh_tree(None);
+            }
+        }
+        true
+    }
+
+    /// Close the open file and stop renaming when either is the item at
+    /// `relative_path` or inside it.
+    fn close_inside(&mut self, relative_path: &str) {
+        let inside = |path: &str| remap(path, relative_path, relative_path).is_some();
+        if self
+            .document
+            .as_ref()
+            .is_some_and(|file| inside(&file.relative_path))
+        {
+            self.document = None;
+            self.listeners.emit(Change::Document);
+        }
+        if self
+            .renaming
+            .as_ref()
+            .is_some_and(|rename| inside(&rename.relative_path))
+        {
+            self.renaming = None;
         }
     }
 

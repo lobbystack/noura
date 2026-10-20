@@ -90,9 +90,8 @@ impl WorkspaceEngine {
             Ok(())
         });
         // Whatever landed before a failure is on disk; index it either way.
-        let indexed = self.reconcile_as_application();
+        self.reconcile_after_change(operation);
         copied?;
-        indexed?;
         Ok(ImportResult {
             imported,
             skipped: import.skipped,
