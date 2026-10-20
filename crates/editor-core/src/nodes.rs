@@ -162,7 +162,7 @@ impl<'ast> MdDoc {
                     // a grapheme one or two clusters past where
                     // the actual content ends (observed with
                     // Devanagari in tab-indented table cells).
-                    let buf_byte_end = self.buffer.current.text().len();
+                    let buf_byte_end = self.buffer.current.len_bytes();
                     let sp = node_data.sourcepos;
                     let line_to_byte = |lc: comrak::nodes::LineColumn,
                                         plus_one_for_exclusive: bool|

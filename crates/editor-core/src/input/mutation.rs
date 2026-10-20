@@ -897,7 +897,7 @@ impl<'ast> MdDoc {
         operations: &mut Vec<Operation>,
     ) {
         let selection = self.buffer.current.selection;
-        if self.buffer.current.text().is_empty() {
+        if self.buffer.is_empty() {
             self.insert_head(range.start(), style.clone(), operations);
             operations.push(Operation::Select(selection));
             self.insert_tail(range.start(), style, operations);

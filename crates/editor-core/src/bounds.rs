@@ -120,7 +120,7 @@ impl MdDoc {
         // capacity hint.
         self.bounds
             .words
-            .reserve(self.buffer.current.text().len() / 6);
+            .reserve(self.buffer.current.len_bytes() / 6);
 
         // The editor cursor only stops at grapheme boundaries, so words are
         // ranges of graphemes here. UAX #29 word boundaries are *almost* a
@@ -152,8 +152,11 @@ impl MdDoc {
 
         let mut prev_char_offset = Grapheme(0);
         let mut prev_word = "";
-        for (byte_offset, word) in
-            (self.buffer.current.text().to_string() + " ").split_word_bound_indices()
+        for (byte_offset, word) in self
+            .buffer
+            .current
+            .text_with(" ")
+            .split_word_bound_indices()
         {
             let char_offset = snap(byte_offset);
 

@@ -570,7 +570,7 @@ impl Editor {
     pub fn flush_for_save(&mut self) -> (usize, String) {
         self.apply_pending_buffer();
         let current = &self.edit.renderer.buffer.current;
-        (current.seq, current.text().to_string())
+        (current.seq, current.rope().to_string())
     }
 
     /// Records that the file now holds `content`, saved at buffer version
@@ -683,7 +683,7 @@ impl Editor {
         let root = {
             let _parse = tracing::trace_span!("MarkdownEditor::parse").entered();
             let options = MdDoc::comrak_options();
-            let text_with_newline = self.edit.renderer.buffer.current.text().to_string() + "\n";
+            let text_with_newline = self.edit.renderer.buffer.current.text_with("\n");
             comrak::parse_document(&arena, &text_with_newline, &options)
         };
 

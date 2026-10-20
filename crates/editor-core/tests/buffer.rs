@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use editor_core::buffer::Buffer;
 use editor_core::offset_types::Grapheme;
 use editor_core::operation_types::{Operation, Replace};
+use editor_core::unicode_segs;
 
 fn g(offset: usize) -> Grapheme {
     Grapheme(offset)
@@ -189,4 +190,89 @@ fn offsets_count_grapheme_clusters() {
     buffer.update();
     assert_eq!(buffer.current.text(), "e\u{301}y");
     assert_eq!(&buffer[(g(0), g(1))], "e\u{301}");
+}
+
+/// The rope holds the text. After any mix of edits, undo, redo and outside
+/// edits, the flat view, the save text and the grapheme index all match the
+/// rope, and edits land where a plain string says they should.
+#[test]
+fn the_rope_holds_the_text_through_edits_undo_and_reloads() {
+    let pieces = [
+        "a",
+        "\u{e9}",
+        "e\u{301}",
+        "\u{1f44d}\u{1f3fd}",
+        "\n",
+        "# ",
+        "**",
+        " ",
+        "\u{65e5}\u{672c}",
+    ];
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n as u64) as usize
+    };
+
+    let mut buffer = Buffer::from("start\n");
+    for step in 0..500 {
+        match next(10) {
+            0 => {
+                buffer.undo();
+            }
+            1 => {
+                buffer.redo();
+            }
+            2 => {
+                let outside = format!("outside {}", buffer.current.text());
+                buffer.reload(outside);
+                buffer.update();
+            }
+            _ => {
+                let len = buffer.current.segs.last_cursor_position().0;
+                let start = next(len + 1);
+                let end = start + next(len - start + 1);
+                let count = next(3);
+                let text: String = (0..count).map(|_| pieces[next(pieces.len())]).collect();
+
+                let mut expected = buffer.current.text().to_string();
+                let (from, to) = buffer.current.segs.range_to_byte((g(start), g(end)));
+                expected.replace_range(from.0..to.0, &text);
+
+                buffer.queue(vec![replace(start, end, &text)]);
+                buffer.update();
+                assert_eq!(buffer.current.text(), expected, "step {step}");
+            }
+        }
+        let rope = buffer.current.rope().to_string();
+        assert_eq!(rope, buffer.current.text(), "step {step}");
+        assert_eq!(buffer.current.len_bytes(), rope.len(), "step {step}");
+        assert_eq!(buffer.current.text_with("\n"), format!("{rope}\n"));
+        assert_eq!(
+            buffer.current.segs,
+            unicode_segs::calc(&rope),
+            "step {step}"
+        );
+    }
+}
+
+/// A local edit that wins an overlap leaves the outside edit out, so the
+/// buffer never holds the text the next reload diffs against. That reload's
+/// offsets can run past the text; they stay inside it.
+#[test]
+fn a_reload_after_an_overlapping_outside_edit_stays_inside_the_text() {
+    let mut buffer = Buffer::from("start\n");
+    buffer.queue(vec![replace(2, 2, "  ")]);
+    buffer.update();
+    buffer.reload("outside st  art\n".into());
+    buffer.update();
+    assert_eq!(buffer.current.text(), "st  art\n");
+
+    buffer.queue(vec![replace(0, 8, "")]);
+    buffer.update();
+    buffer.reload("outside st  art\nmore\n".into());
+    buffer.update();
+    assert_eq!(buffer.current.text(), "more\n");
 }

@@ -218,7 +218,7 @@ impl MdDoc {
         self.cache.ensure_text_consistent(self.text_seq);
 
         let options = Self::comrak_options();
-        let text_with_newline = format!("{}\n", self.buffer.current.text());
+        let text_with_newline = self.buffer.current.text_with("\n");
         let root = comrak::parse_document(arena, &text_with_newline, &options);
 
         // Bounds depend only on text. Skip rebuild + bump bounds_seq

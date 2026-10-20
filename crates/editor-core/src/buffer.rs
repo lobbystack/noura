@@ -1,6 +1,17 @@
 //! The editor's text buffer: a ropey rope with grapheme offsets, a selection,
 //! and an operation history for undo, redo and merging outside edits.
 //!
+//! Adapted from Lockbook's `lb-rs` (`libs/lb/lb-rs/src/model/text/buffer.rs`,
+//! BSD-3-Clause); see `docs/provenance/lockbook-editor.md`.
+//!
+//! # The rope and its flat view
+//!
+//! The rope holds the text: every edit, undo, redo and merged outside edit
+//! writes it, and owned reads such as the text to save come from it. comrak
+//! parses one `&str` and the layout shapes `&str` runs, so the buffer also
+//! keeps the rope's text as one string, rebuilt from the rope after each
+//! change. [`Snapshot::text`] and the `Index` impls read that view.
+//!
 //! # Operations and their base
 //!
 //! Every operation names the buffer version it was made against, its base.
@@ -47,10 +58,11 @@ pub struct Buffer {
 /// A version of the buffer's text with its selection.
 #[derive(Debug, Default)]
 pub struct Snapshot {
+    /// The text. Edits write here and nowhere else.
     rope: Rope,
-    /// The rope's text as one string, updated with it, for the parser and
-    /// for slicing.
-    text: String,
+    /// The rope's text as one string, rebuilt from the rope after each
+    /// change, for the parser and for `&str` slices.
+    flat: String,
     pub segs: UnicodeSegs,
     /// `(anchor, caret)`.
     pub selection: (Grapheme, Grapheme),
@@ -60,23 +72,55 @@ pub struct Snapshot {
 
 impl Snapshot {
     fn new(text: &str) -> Self {
-        Self {
+        let mut snapshot = Self {
             rope: Rope::from_str(text),
-            text: text.into(),
-            segs: unicode_segs::calc(text),
-            selection: Default::default(),
-            seq: 0,
-        }
+            ..Default::default()
+        };
+        snapshot.flatten();
+        snapshot
     }
 
-    /// The whole text.
+    /// The whole text, as one string.
     pub fn text(&self) -> &str {
-        &self.text
+        &self.flat
     }
 
     /// The whole text as a rope.
     pub fn rope(&self) -> &Rope {
         &self.rope
+    }
+
+    /// The text's length in bytes.
+    pub fn len_bytes(&self) -> usize {
+        self.rope.len_bytes()
+    }
+
+    /// The whole text followed by `suffix`, copied from the rope.
+    pub fn text_with(&self, suffix: &str) -> String {
+        let mut text = String::with_capacity(self.rope.len_bytes() + suffix.len());
+        for chunk in self.rope.chunks() {
+            text.push_str(chunk);
+        }
+        text.push_str(suffix);
+        text
+    }
+
+    /// The text in `range`, copied from the rope.
+    pub fn slice_to_string(&self, range: (Grapheme, Grapheme)) -> String {
+        let bytes = self.segs.range_to_byte(range);
+        self.rope
+            .byte_slice(bytes.start().0..bytes.end().0)
+            .to_string()
+    }
+
+    /// Rebuilds the flat view and the grapheme index from the rope.
+    fn flatten(&mut self) {
+        self.flat.clear();
+        self.flat.reserve(self.rope.len_bytes());
+        for chunk in self.rope.chunks() {
+            self.flat.push_str(chunk);
+        }
+        self.segs = unicode_segs::calc(&self.flat);
     }
 
     fn select(&mut self, range: (Grapheme, Grapheme)) -> Response {
@@ -97,11 +141,10 @@ impl Snapshot {
         let end_char = self.rope.byte_to_char(end.0);
         self.rope.remove(start_char..end_char);
         self.rope.insert(start_char, &replace.text);
-        self.text.replace_range(start.0..end.0, &replace.text);
 
-        let segs = unicode_segs::calc(&self.text);
-        let added = self.segs.measure_replace(&segs, replace.range);
-        self.segs = segs;
+        let before = std::mem::take(&mut self.segs);
+        self.flatten();
+        let added = before.measure_replace(&self.segs, replace.range);
 
         adjust_subsequent_range(replace.range, added, false, &mut self.selection);
         (
@@ -124,7 +167,7 @@ impl Snapshot {
         if let Operation::Replace(Replace { range, .. }) = op {
             inverse.replace = Some(Replace {
                 range: *range,
-                text: self[*range].into(),
+                text: self.slice_to_string(*range),
             });
             start = Some(range.start());
         }
@@ -399,6 +442,19 @@ impl Buffer {
                 }
             }
         }
+
+        // An outside edit is made against the last text loaded or saved,
+        // which the buffer never held if a local edit won an overlap with
+        // the outside edit before it. Its offsets can then run past the
+        // text: keep them inside it so the merge degrades instead of
+        // panicking.
+        let last = self.current.segs.last_cursor_position();
+        match &mut op {
+            Operation::Select(range) | Operation::Replace(Replace { range, .. }) => {
+                range.0 = range.0.min(last);
+                range.1 = range.1.min(last);
+            }
+        }
         op
     }
 
@@ -474,11 +530,11 @@ impl Buffer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.current.text.is_empty()
+        self.current.len_bytes() == 0
     }
 
     pub fn selection_text(&self) -> String {
-        self[self.current.selection].to_string()
+        self.current.slice_to_string(self.current.selection)
     }
 }
 
@@ -532,7 +588,7 @@ impl Index<(Byte, Byte)> for Snapshot {
     type Output = str;
 
     fn index(&self, range: (Byte, Byte)) -> &str {
-        &self.text[range.start().0..range.end().0]
+        &self.flat[range.start().0..range.end().0]
     }
 }
 
