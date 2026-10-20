@@ -445,7 +445,9 @@ fn sort_key(name: &str) -> String {
 }
 
 /// Compare folded names with digit runs compared as numbers, so "Note 2"
-/// sorts before "Note 10".
+/// sorts before "Note 10". As in the root collation order the legacy
+/// collator uses, punctuation and symbols come before digits, and digits
+/// before letters.
 fn natural_cmp(left: &str, right: &str) -> Ordering {
     let mut left = left.chars().peekable();
     let mut right = right.chars().peekable();
@@ -464,7 +466,7 @@ fn natural_cmp(left: &str, right: &str) -> Ordering {
                 }
             }
             (Some(a), Some(b)) => {
-                let order = a.cmp(&b);
+                let order = group(a).cmp(&group(b)).then_with(|| a.cmp(&b));
                 if order != Ordering::Equal {
                     return order;
                 }
@@ -472,6 +474,18 @@ fn natural_cmp(left: &str, right: &str) -> Ordering {
                 right.next();
             }
         }
+    }
+}
+
+/// A character's group in the root collation order: spaces, punctuation
+/// and symbols first, then digits, then letters.
+fn group(character: char) -> u8 {
+    if character.is_numeric() {
+        1
+    } else if character.is_alphabetic() {
+        2
+    } else {
+        0
     }
 }
 

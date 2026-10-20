@@ -73,6 +73,20 @@ fn siblings_sort_without_regard_to_accents_or_case() {
     assert_eq!(names, ["eagle", "\u{c9}mile", "Ostrich", "Zebra"]);
 }
 
+/// The legacy collator follows the root collation order: punctuation and
+/// symbols, then digits, then letters.
+#[test]
+fn names_starting_with_a_symbol_sort_before_digits_and_letters() {
+    let (_folder, tree) = tree_of(
+        &["zebra.md", "~tilde.md", "2 two.md", "apple.md", "_under.md"],
+        &[],
+    );
+
+    let names: Vec<&str> = tree.rows().iter().map(|row| row.name.as_str()).collect();
+
+    assert_eq!(names, ["_under", "~tilde", "2 two", "apple", "zebra"]);
+}
+
 #[test]
 fn the_tree_hides_metadata_dot_names_and_top_level_build_folders() {
     let (_folder, mut tree) = tree_of(
