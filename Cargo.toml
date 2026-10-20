@@ -45,10 +45,12 @@ atomic-write-file = "0.3.1"
 blake3 = "1.8"
 directories = "6"
 diffy = "=0.5.1"
+drag = "2.1.1"
 # eframe's defaults minus `clipboard`: arboard's Windows clipboard crates are
 # BSL-1.0, which waits for the owner's approval.
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
 egui = "0.37"
+egui_kittest = "0.37"
 fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
@@ -57,8 +59,14 @@ hmac = "=0.12.1"
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
+# Without default features muda has no GTK backend: on Linux, menus need a GTK
+# window, which winit doesn't create.
+muda = { version = "0.21.2", default-features = false }
 trash = "5"
 notify = "8"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-foundation = { version = "0.3.2", default-features = false }
 openssl = "0.10"
 pbkdf2 = "=0.12.2"
 pulldown-cmark = "0.13"
@@ -85,6 +93,9 @@ wasmtime = { version = "48.0.7", default-features = false, features = ["componen
 url = "2"
 libc = "0.2"
 windows-sys = "0.61.2"
+# The winit release eframe 0.37 runs on, for its macOS and Windows event loop
+# options.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 wasm-bindgen = "0.2.127"
 webauthn-rs = "0.5"
 x25519-dalek = "=2.0.1"
