@@ -9,4 +9,10 @@ export type ManifestUpdateInput = { name?: string | null, enabledPlugins?: Array
  * Reject the update unless the on-disk manifest still has this
  * `updated` value, preventing silent overwrite of external edits.
  */
-expectedUpdated?: string | null, };
+expectedUpdated?: string | null, 
+/**
+ * Reject the update unless the on-disk manifest's bytes still have
+ * this revision, from [`WorkspaceEngine::read_manifest_revision`]. It
+ * catches outside edits that leave `updated` alone.
+ */
+expectedRevision?: string | null, };

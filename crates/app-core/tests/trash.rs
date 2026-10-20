@@ -184,3 +184,16 @@ fn trash_refuses_items_outside_the_workspace_and_says_when_one_left() {
         ))
     );
 }
+
+#[test]
+fn the_next_action_replaces_the_trash_notice() {
+    let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b")]);
+    let mut app = fixture.app();
+    app.trash("A.md");
+    assert!(app.notice().is_some());
+
+    app.start_rename("B.md");
+    assert!(app.commit_rename("C"));
+
+    assert_eq!(app.notice(), None);
+}

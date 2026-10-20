@@ -32,6 +32,8 @@ impl App {
     /// Create a note in `folder`, or in the current row's folder when
     /// `folder` is `None`, then select and open it.
     pub fn new_note(&mut self, folder: Option<&str>) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -49,6 +51,8 @@ impl App {
     /// Create a folder in `folder`, or in the current row's folder when
     /// `folder` is `None`, then select it and start renaming it.
     pub fn new_folder(&mut self, folder: Option<&str>) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -67,6 +71,8 @@ impl App {
     /// the workspace), then open that folder in the tree and select the
     /// item.
     pub fn move_into(&mut self, relative_path: &str, folder: &str) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -83,6 +89,8 @@ impl App {
     /// Copy the file at `relative_path` next to itself, then select and
     /// open the copy.
     pub fn duplicate(&mut self, relative_path: &str) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -106,6 +114,8 @@ impl App {
 
     /// Show the item at `relative_path` in the file manager.
     pub fn reveal(&mut self, relative_path: &str) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -117,6 +127,8 @@ impl App {
 
     /// Show the workspace folder in the file manager.
     pub fn reveal_workspace(&mut self) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -128,6 +140,8 @@ impl App {
     /// Put the workspace path of the item at `relative_path` on the
     /// clipboard.
     pub fn copy_path(&mut self, relative_path: &str) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -145,6 +159,8 @@ impl App {
     /// Open a terminal in the folder at `relative_path`, or in the folder
     /// that holds the file there.
     pub fn open_terminal(&mut self, relative_path: &str) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -256,6 +272,8 @@ impl App {
     /// went to. A file open in the document area closes, and the next row
     /// becomes current.
     pub fn trash(&mut self, relative_path: &str) {
+        // A new action replaces the last one's notice.
+        self.dismiss_notice();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -357,6 +375,7 @@ impl App {
         match workspace.rename(&from, name) {
             Ok(to) => {
                 self.renaming = None;
+                self.dismiss_notice();
                 self.follow_move(&from, &to);
                 true
             }
@@ -372,7 +391,11 @@ impl App {
     /// you leave the field. When Noura refuses the name, the row keeps its
     /// old name and a notice says why.
     pub fn finish_rename(&mut self, name: &str) {
-        let Some(path) = self.renaming.as_ref().map(|rename| rename.relative_path.clone()) else {
+        let Some(path) = self
+            .renaming
+            .as_ref()
+            .map(|rename| rename.relative_path.clone())
+        else {
             return;
         };
         if self.commit_rename(name) {
@@ -430,6 +453,11 @@ impl App {
     fn follow_move(&mut self, from: &str, to: &str) {
         self.refresh_tree(Some((from, to)));
         self.select(to);
+        if let Some(rename) = &mut self.renaming
+            && let Some(path) = remap(&rename.relative_path, from, to)
+        {
+            rename.relative_path = path;
+        }
         let moved = self
             .document
             .as_ref()
