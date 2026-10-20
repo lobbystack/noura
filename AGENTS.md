@@ -119,3 +119,17 @@ Internal plans and product notes belong in the private Noura-Internal workspace,
 ## Security Principles
 
 Treat workspace content, plugin input, paths, frontmatter, provider output, and MCP arguments as untrusted. Resolve and validate relative paths inside the selected workspace; reject traversal, absolute paths, and symlink escapes. Paths crossing the Rust and TypeScript IPC boundary need a lossless, validated representation. Do not corrupt or reinterpret non-UTF-8 paths; return a structured unsupported-path error when the current platform or API cannot represent one safely. Keep credentials in the operating system credential store and never return secrets over IPC or write them to workspace files, SQLite, logs, snapshots, or frontend storage. Escape FTS queries instead of accepting raw SQLite syntax. Use expected content revisions to prevent silent overwrite of external edits. Return structured public errors and keep raw OS, database, and provider details in local diagnostic logs.
+
+## Agent skills
+
+### Issue tracker
+
+Specs and tickets are Markdown files in the private Noura-Internal workspace, never GitHub Issues or this repository. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single context: `GLOSSARY.md` at the repository root, with ADRs in Noura-Internal. See `docs/agents/domain.md`.
+
+### Research notes
+
+Save research notes in the Noura-Internal `Research/` folder.

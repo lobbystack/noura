@@ -24,3 +24,6 @@ crates/workspace-format/bindings/
 # Playwright output
 test-results/
 playwright-report/
+
+# Local agent scratch files
+.scratch/
