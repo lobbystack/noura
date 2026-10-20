@@ -126,6 +126,8 @@ pub struct App {
     renaming: Option<Rename>,
     /// The Ignored files page, while it is open.
     ignored_files: Option<IgnoredFiles>,
+    /// A folder waiting to go to the trash until you confirm.
+    pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
     pending: Option<Pending>,
@@ -161,6 +163,7 @@ impl App {
             notice: None,
             renaming: None,
             ignored_files: None,
+            pending_trash: None,
             failed_restore: None,
             pending: None,
             listeners: Listeners::default(),
@@ -333,6 +336,7 @@ impl App {
                 self.document = None;
                 self.renaming = None;
                 self.ignored_files = None;
+                self.pending_trash = None;
                 self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),
@@ -360,6 +364,7 @@ impl App {
         self.notice = None;
         self.renaming = None;
         self.ignored_files = None;
+        self.pending_trash = None;
         self.listeners.emit(Change::Tree);
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);

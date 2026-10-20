@@ -3,7 +3,7 @@
 
 use super::{App, Change, Notice, NoticeKind};
 use crate::{
-    AppError, EntryKind, OpenedFile, Platform,
+    EntryKind, OpenedFile, Platform, TreeAction, TreeKey,
     files::{remap, shown_name},
 };
 
@@ -150,6 +150,85 @@ impl App {
         };
         if let Err(error) = workspace.open_terminal(relative_path) {
             self.show_notice("Couldn't open a terminal", error, None);
+        }
+    }
+
+    /// Handle a key pressed while the tree has focus. Opening, renaming
+    /// and trashing happen here; the tree's owner gets the actions it has
+    /// to draw, such as a row's menu.
+    pub fn press_tree_key(&mut self, key: TreeKey) -> Option<TreeAction> {
+        let tree = self.tree.as_ref()?;
+        if key == TreeKey::Enter {
+            let current = tree.focused().map(|row| &tree.rows()[row]);
+            let open = self.document.as_ref().map(|file| &file.relative_path);
+            if let Some(row) = current
+                && row.kind == EntryKind::File
+                && Some(&row.relative_path) == open
+            {
+                let path = row.relative_path.clone();
+                self.start_rename(&path);
+                return None;
+            }
+        }
+        let action = self.tree.as_mut()?.press(key)?;
+        self.apply(action)
+    }
+
+    /// Carry out what the tree asked for. Returns the actions the tree's
+    /// owner has to carry out itself.
+    pub fn apply(&mut self, action: TreeAction) -> Option<TreeAction> {
+        match action {
+            TreeAction::OpenFile { relative_path } => self.open_file(&relative_path),
+            TreeAction::Rename { relative_path } => self.start_rename(&relative_path),
+            TreeAction::Trash { relative_path } => self.request_trash(&relative_path),
+            TreeAction::Move {
+                relative_path,
+                folder,
+            } => self.move_into(&relative_path, &folder),
+            menu @ TreeAction::Menu { .. } => return Some(menu),
+        }
+        None
+    }
+
+    /// Close every folder in the tree.
+    pub fn collapse_all(&mut self) {
+        if let Some(tree) = &mut self.tree {
+            tree.collapse_all();
+            self.listeners.emit(Change::Tree);
+        }
+    }
+
+    /// Move to the trash, as Move to Trash does: a file goes at once, and
+    /// a folder waits for [`App::confirm_trash`] after
+    /// [`App::pending_trash`] asks.
+    pub fn request_trash(&mut self, relative_path: &str) {
+        match self.trash_question(relative_path) {
+            Some(question) => {
+                self.pending_trash = Some((relative_path.to_owned(), question));
+                self.listeners.emit(Change::Tree);
+            }
+            None => self.trash(relative_path),
+        }
+    }
+
+    /// The folder waiting to go to the trash, and what to ask first.
+    pub fn pending_trash(&self) -> Option<(&str, &Question)> {
+        self.pending_trash
+            .as_ref()
+            .map(|(path, question)| (path.as_str(), question))
+    }
+
+    /// Move the folder waiting in [`App::pending_trash`] to the trash.
+    pub fn confirm_trash(&mut self) {
+        if let Some((path, _)) = self.pending_trash.take() {
+            self.trash(&path);
+        }
+    }
+
+    /// Keep the folder waiting in [`App::pending_trash`].
+    pub fn cancel_trash(&mut self) {
+        if self.pending_trash.take().is_some() {
+            self.listeners.emit(Change::Tree);
         }
     }
 
@@ -372,10 +451,5 @@ impl App {
             kind: NoticeKind::Done,
         });
         self.listeners.emit(Change::Notice);
-    }
-
-    #[allow(dead_code, reason = "used by later file actions")]
-    fn fail(&mut self, title: &str, error: AppError) {
-        self.show_notice(title, error, None);
     }
 }

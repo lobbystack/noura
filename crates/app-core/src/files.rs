@@ -47,14 +47,37 @@ pub enum TreeKey {
     Right,
     /// Close an open folder, or move to the parent folder.
     Left,
-    /// Enter or Space: open a file or toggle a folder.
+    /// Space: open a file or toggle a folder.
     Activate,
+    /// Enter: as Space, except that on the file that's already open it
+    /// starts renaming the file. [`crate::App::press_tree_key`] knows which
+    /// file is open.
+    Enter,
+    /// F2: rename the current row.
+    Rename,
+    /// Delete, or Cmd-Backspace on macOS and Ctrl-Backspace elsewhere: move
+    /// the current row to the trash.
+    Trash,
+    /// Shift-F10 or the menu key: open the current row's menu.
+    Menu,
 }
 
 /// What the tree asks its owner to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeAction {
     OpenFile {
+        relative_path: String,
+    },
+    /// Start renaming the item in place.
+    Rename {
+        relative_path: String,
+    },
+    /// Move the item to the trash, asking first for a folder.
+    Trash {
+        relative_path: String,
+    },
+    /// Open the item's row menu.
+    Menu {
         relative_path: String,
     },
     /// Move the item at `relative_path` into `folder` (`""` is the top of
@@ -529,7 +552,22 @@ impl FileTree {
                     self.focused = self.row_of(parent);
                 }
             }
-            TreeKey::Activate => return self.activate(current),
+            TreeKey::Activate | TreeKey::Enter => return self.activate(current),
+            TreeKey::Rename => {
+                return Some(TreeAction::Rename {
+                    relative_path: row.relative_path.clone(),
+                });
+            }
+            TreeKey::Trash => {
+                return Some(TreeAction::Trash {
+                    relative_path: row.relative_path.clone(),
+                });
+            }
+            TreeKey::Menu => {
+                return Some(TreeAction::Menu {
+                    relative_path: row.relative_path.clone(),
+                });
+            }
         }
         None
     }
