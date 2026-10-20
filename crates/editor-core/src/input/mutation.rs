@@ -516,6 +516,43 @@ impl<'ast> MdDoc {
                     self.enter_at_link(root, operations);
                 }
             }
+            Event::Paste { text } => {
+                let event = self.paste_event(root, text, current_selection);
+                response |= self.calc_operations(root, event, operations, layout);
+            }
+            Event::ToggleTask { node: range } => {
+                if self.readonly {
+                    return response;
+                }
+                let Some(node) = root.descendants().find(|node| {
+                    matches!(node.data.borrow().value, NodeValue::TaskItem(_))
+                        && self.node_range(node) == range
+                }) else {
+                    return response;
+                };
+                let checked = matches!(
+                    node.data.borrow().value,
+                    NodeValue::TaskItem(NodeTaskItem {
+                        symbol: Some(_),
+                        ..
+                    })
+                );
+                let check = self.check_offset(node);
+                operations.push(Operation::Replace(Replace {
+                    range: (check, check + 1),
+                    text: (if checked { " " } else { "x" }).into(),
+                }));
+            }
+            Event::Unfold { tag } => {
+                // Only a tag that folds a section; anything else at this
+                // range is text the user wrote.
+                if self.active_fold_at_tag(tag).is_some() {
+                    operations.push(Operation::Replace(Replace {
+                        range: tag,
+                        text: String::new(),
+                    }));
+                }
+            }
         }
 
         response
@@ -1525,4 +1562,59 @@ impl HeadTail for NodeValue {
             _ => unimplemented!(), // many such cases!
         }
     }
+}
+
+impl<'ast> MdDoc {
+    /// What a paste does. Non-breaking spaces become spaces, because the
+    /// parser handles them poorly. A URL pasted over selected text that
+    /// isn't already part of a link or image links the selection to the URL.
+    /// Anything else replaces the selection.
+    pub fn paste_event(
+        &self,
+        root: &'ast AstNode<'ast>,
+        text: String,
+        selection: (Grapheme, Grapheme),
+    ) -> Event {
+        let text = text.replace('\u{a0}', " ");
+
+        let links_selection = !self.plaintext
+            && !selection.is_empty()
+            && is_autolink(&text)
+            && !root.descendants().any(|node| {
+                matches!(
+                    node.data().value,
+                    NodeValue::Link(_) | NodeValue::WikiLink(_) | NodeValue::Image(_)
+                ) && self.node_range(node).intersects(&selection, false)
+            });
+
+        if links_selection {
+            Event::ToggleStyle {
+                region: Region::Selection,
+                style: NodeValue::Link(
+                    NodeLink {
+                        url: text,
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
+            }
+        } else {
+            Event::Replace {
+                region: Region::Selection,
+                text,
+                advance_cursor: true,
+            }
+        }
+    }
+}
+
+/// Whether comrak's autolink extension reads `text`, alone, as one link to
+/// itself.
+fn is_autolink(text: &str) -> bool {
+    let arena = comrak::Arena::new();
+    let mut options = comrak::Options::default();
+    options.extension.autolink = true;
+    let root = comrak::parse_document(&arena, &format!("{text}\n"), &options);
+    root.descendants()
+        .any(|node| matches!(&node.data.borrow().value, NodeValue::Link(link) if link.url == text))
 }

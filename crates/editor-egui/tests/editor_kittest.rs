@@ -217,3 +217,37 @@ fn undo_takes_back_typing() {
 
     assert_eq!(editor(&harness).text(), "draft\n");
 }
+
+/// Clicks the primary button at `pos`.
+fn click_at(harness: &mut EditorHarness, pos: egui::Pos2) {
+    harness.hover_at(pos);
+    harness.run_steps(1);
+    harness.drag_at(pos);
+    harness.run_steps(1);
+    harness.drop_at(pos);
+    harness.run_steps(2);
+}
+
+#[test]
+fn clicking_a_task_checkbox_checks_the_task() {
+    // The caret sits in the first line, so the task's marker stays hidden
+    // and its checkbox draws.
+    let mut harness = harness("intro\n\n- [ ] write the plan\n");
+    let text = find(editor(&harness), "write");
+    let span = editor(&harness)
+        .painted_spans()
+        .into_iter()
+        .find(|span| span.glyphs && span.source_range.0 <= text.0 && text.0 < span.source_range.1)
+        .expect("the task's text was drawn");
+
+    // The checkbox sits in the gutter left of the item's text.
+    click_at(
+        &mut harness,
+        egui::pos2(
+            span.rect.left() - span.rect.height() * 0.6,
+            span.rect.center().y,
+        ),
+    );
+
+    assert_eq!(editor(&harness).text(), "intro\n\n- [x] write the plan\n");
+}

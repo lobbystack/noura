@@ -64,11 +64,8 @@ impl<'ast> MdRender {
             // ui.scope_id().with() instead of Id::unique() so two views of the same document
             // get distinct checkbox IDs
             ui.interact(clickable_space, checkbox_id, sense);
-            let check_offset = self.check_offset(node);
-            let toggle = Event::Replace {
-                region: (check_offset, check_offset + 1).into(),
-                text: (if checked { " " } else { "x" }).into(),
-                advance_cursor: false,
+            let toggle = Event::ToggleTask {
+                node: self.node_range(node),
             };
             if checkbox_response.clicked() {
                 self.render_events.push(toggle.clone());

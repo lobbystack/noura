@@ -137,6 +137,15 @@ pub enum Event {
         url: String,
         wikilink: bool,
     }, // navigate, on the platform
+    Paste {
+        text: String,
+    }, // replace the selection with pasted text, or link the selection to a pasted URL
+    ToggleTask {
+        node: (Grapheme, Grapheme),
+    }, // check or uncheck the task item whose range this is
+    Unfold {
+        tag: (Grapheme, Grapheme),
+    }, // remove the fold tag at this range, showing the section it hid
 }
 
 impl From<(Grapheme, Grapheme)> for Region {

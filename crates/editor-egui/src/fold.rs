@@ -91,11 +91,7 @@ impl<'ast> MdRender {
                 continue;
             };
 
-            let unfold = Event::Replace {
-                region: fold.tag.into(),
-                text: "".into(),
-                advance_cursor: false,
-            };
+            let unfold = Event::Unfold { tag: fold.tag };
             self.touch_consume_interaction(id, TouchTarget::Tap(unfold.clone()));
 
             if response.hovered() {

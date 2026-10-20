@@ -1,7 +1,6 @@
 use crate::MdEdit;
 use crate::input::{Advance, Bound, Event, Increment, Region};
-use comrak::nodes::{AstNode, ListType, NodeHeading, NodeLink, NodeList, NodeValue};
-use editor_core::offset_types::RangeExt as _;
+use comrak::nodes::{AstNode, ListType, NodeHeading, NodeList, NodeValue};
 use egui::{self, Key, Modifiers};
 
 /// The advance a navigation key makes with these modifiers held.
@@ -86,63 +85,7 @@ impl<'ast> MdEdit {
                 if self.renderer.readonly {
                     return None;
                 }
-
-                let text = text.replace('\u{a0}', " "); // parser does not interact well with non-breaking spaces
-
-                // with text selected, pasting a link turns selected text into a
-                // markdown link...
-                let mut link_paste = false;
-                if !self.renderer.buffer.current.selection.is_empty() {
-                    // use comrak's auto-link detector
-                    let arena = comrak::Arena::new();
-                    let mut options = comrak::Options::default();
-                    options.extension.autolink = true;
-                    let text_with_newline = text.to_string() + "\n"; // todo: probably not okay but this parser quirky af sometimes
-                    let root = comrak::parse_document(&arena, &text_with_newline, &options);
-                    for node in root.descendants() {
-                        let value = &node.data.borrow().value;
-                        if let comrak::nodes::NodeValue::Link(node_link) = value
-                            && node_link.url == text
-                        {
-                            link_paste = true;
-                            break;
-                        }
-                    }
-                }
-
-                // ...unless we're already in a link
-                for descendant in root.descendants() {
-                    if matches!(
-                        descendant.data().value,
-                        NodeValue::Link(_) | NodeValue::WikiLink(_) | NodeValue::Image(_)
-                    ) && self
-                        .renderer
-                        .node_range(descendant)
-                        .intersects(&self.renderer.buffer.current.selection, false)
-                    {
-                        link_paste = false;
-                        break;
-                    }
-                }
-
-                if link_paste {
-                    Some(Event::ToggleStyle {
-                        region: Region::Selection,
-                        style: NodeValue::Link(
-                            NodeLink {
-                                url: text,
-                                ..Default::default()
-                            }
-                            .into(),
-                        ),
-                    })
-                } else {
-                    Some(Event::Replace {
-                        region: Region::Selection,
-                        text,
-                        advance_cursor: true,
-                    })
-                }
+                Some(Event::Paste { text })
             }
             egui::Event::Text(text) => {
                 if self.renderer.readonly {
