@@ -1,0 +1,412 @@
+//! The files service: the file tree's view state and opening files.
+
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+};
+
+use local_core::WorkspaceEntryKind;
+
+use crate::{AppError, Workspace};
+
+/// Typed characters within this window extend the type-ahead search.
+pub const TYPE_AHEAD_TIMEOUT: Duration = Duration::from_millis(1000);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Folder,
+    File,
+}
+
+/// One visible row of the file tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeRow {
+    /// The name the tree shows: Markdown files appear without `.md`.
+    pub name: String,
+    pub relative_path: String,
+    pub kind: EntryKind,
+    /// 1 for top-level rows, as in an accessibility tree.
+    pub level: usize,
+    /// Whether a folder is open. `None` for files.
+    pub expanded: Option<bool>,
+}
+
+/// A key the file tree understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeKey {
+    Up,
+    Down,
+    Home,
+    End,
+    /// Open a closed folder, or move into an open one.
+    Right,
+    /// Close an open folder, or move to the parent folder.
+    Left,
+    /// Enter or Space: open a file or toggle a folder.
+    Activate,
+}
+
+/// What the tree asks its owner to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeAction {
+    OpenFile { relative_path: String },
+}
+
+/// A file shown in the document area.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedFile {
+    /// The file's title: its name without `.md` for Markdown files.
+    pub name: String,
+    pub relative_path: String,
+}
+
+struct Node {
+    file_name: String,
+    shown: String,
+    relative_path: String,
+    kind: EntryKind,
+    children: Vec<usize>,
+}
+
+/// The file tree of one workspace: its folders and files, which folders are
+/// open, the visible rows and the keyboard focus.
+pub struct FileTree {
+    nodes: Vec<Node>,
+    top: Vec<usize>,
+    expanded: HashSet<usize>,
+    rows: Vec<TreeRow>,
+    /// The node behind each visible row.
+    row_nodes: Vec<usize>,
+    parents: Vec<Option<usize>>,
+    focused: Option<usize>,
+    typed: String,
+    typed_at: Option<Instant>,
+}
+
+impl FileTree {
+    pub(crate) fn new(entries: impl IntoIterator<Item = (String, EntryKind)>) -> Self {
+        let mut tree = Self {
+            nodes: Vec::new(),
+            top: Vec::new(),
+            expanded: HashSet::new(),
+            rows: Vec::new(),
+            row_nodes: Vec::new(),
+            parents: Vec::new(),
+            focused: None,
+            typed: String::new(),
+            typed_at: None,
+        };
+        let mut folders: HashMap<String, usize> = HashMap::new();
+        for (relative_path, kind) in entries {
+            if kind == EntryKind::Folder {
+                tree.folder(&relative_path, &mut folders);
+                continue;
+            }
+            let parent = parent_of(&relative_path).map(|path| tree.folder(path, &mut folders));
+            tree.add(relative_path, EntryKind::File, parent);
+        }
+        let order: Vec<usize> = (0..tree.nodes.len()).collect();
+        for index in order {
+            let mut children = std::mem::take(&mut tree.nodes[index].children);
+            children.sort_by(|left, right| tree.compare(*left, *right));
+            tree.nodes[index].children = children;
+        }
+        let mut top = std::mem::take(&mut tree.top);
+        top.sort_by(|left, right| tree.compare(*left, *right));
+        tree.top = top;
+        tree.refresh_rows();
+        tree
+    }
+
+    fn folder(&mut self, path: &str, folders: &mut HashMap<String, usize>) -> usize {
+        if let Some(index) = folders.get(path) {
+            return *index;
+        }
+        let parent = parent_of(path).map(|parent| self.folder(parent, folders));
+        let index = self.add(path.to_owned(), EntryKind::Folder, parent);
+        folders.insert(path.to_owned(), index);
+        index
+    }
+
+    fn add(&mut self, relative_path: String, kind: EntryKind, parent: Option<usize>) -> usize {
+        let file_name = relative_path
+            .rsplit_once('/')
+            .map_or(relative_path.as_str(), |(_, name)| name)
+            .to_owned();
+        let index = self.nodes.len();
+        self.nodes.push(Node {
+            shown: shown_name(&file_name, kind),
+            file_name,
+            relative_path,
+            kind,
+            children: Vec::new(),
+        });
+        self.parents.push(parent);
+        match parent {
+            Some(parent) => self.nodes[parent].children.push(index),
+            None => self.top.push(index),
+        }
+        index
+    }
+
+    fn compare(&self, left: usize, right: usize) -> Ordering {
+        let (left, right) = (&self.nodes[left], &self.nodes[right]);
+        let rank = |node: &Node| match node.kind {
+            EntryKind::Folder => 0,
+            EntryKind::File => 1,
+        };
+        rank(left)
+            .cmp(&rank(right))
+            .then_with(|| natural_cmp(&left.file_name, &right.file_name))
+            .then_with(|| left.file_name.cmp(&right.file_name))
+    }
+
+    fn refresh_rows(&mut self) {
+        let focused_node = self.focused.map(|row| self.row_nodes[row]);
+        self.rows.clear();
+        self.row_nodes.clear();
+        let mut stack: Vec<(usize, usize)> = self.top.iter().rev().map(|node| (*node, 1)).collect();
+        while let Some((index, level)) = stack.pop() {
+            let node = &self.nodes[index];
+            let open = self.expanded.contains(&index);
+            self.rows.push(TreeRow {
+                name: node.shown.clone(),
+                relative_path: node.relative_path.clone(),
+                kind: node.kind,
+                level,
+                expanded: (node.kind == EntryKind::Folder).then_some(open),
+            });
+            self.row_nodes.push(index);
+            if open {
+                stack.extend(node.children.iter().rev().map(|child| (*child, level + 1)));
+            }
+        }
+        self.focused = focused_node.and_then(|node| self.row_of(node));
+    }
+
+    fn row_of(&self, node: usize) -> Option<usize> {
+        self.row_nodes
+            .iter()
+            .position(|candidate| *candidate == node)
+    }
+
+    /// The visible rows, top to bottom.
+    pub fn rows(&self) -> &[TreeRow] {
+        &self.rows
+    }
+
+    /// The row with keyboard focus.
+    pub fn focused(&self) -> Option<usize> {
+        self.focused
+    }
+
+    pub fn set_focus(&mut self, row: usize) {
+        if row < self.rows.len() {
+            self.focused = Some(row);
+        }
+    }
+
+    /// Open or close the folder at `row`. Focus inside a folder that closes
+    /// moves to the folder.
+    pub fn toggle(&mut self, row: usize) {
+        let Some(&node) = self.row_nodes.get(row) else {
+            return;
+        };
+        if self.nodes[node].kind != EntryKind::Folder {
+            return;
+        }
+        if !self.expanded.remove(&node) {
+            self.expanded.insert(node);
+        }
+        self.refresh_rows();
+        if self.focused.is_none() {
+            self.focused = self.row_of(node);
+        }
+    }
+
+    /// Click, Enter or Space on `row`: open a file or toggle a folder.
+    pub fn activate(&mut self, row: usize) -> Option<TreeAction> {
+        let row_value = self.rows.get(row)?;
+        self.focused = Some(row);
+        match row_value.kind {
+            EntryKind::File => Some(TreeAction::OpenFile {
+                relative_path: row_value.relative_path.clone(),
+            }),
+            EntryKind::Folder => {
+                self.toggle(row);
+                None
+            }
+        }
+    }
+
+    /// Handle a key while the tree has focus.
+    pub fn press(&mut self, key: TreeKey) -> Option<TreeAction> {
+        let last = self.rows.len().checked_sub(1)?;
+        let Some(current) = self.focused else {
+            self.focused = Some(if key == TreeKey::End { last } else { 0 });
+            return None;
+        };
+        let row = &self.rows[current];
+        match key {
+            TreeKey::Up => self.focused = Some(current.saturating_sub(1)),
+            TreeKey::Down => self.focused = Some((current + 1).min(last)),
+            TreeKey::Home => self.focused = Some(0),
+            TreeKey::End => self.focused = Some(last),
+            TreeKey::Right => match row.expanded {
+                Some(false) => self.toggle(current),
+                Some(true)
+                    if self
+                        .rows
+                        .get(current + 1)
+                        .is_some_and(|next| next.level == row.level + 1) =>
+                {
+                    self.focused = Some(current + 1);
+                }
+                _ => {}
+            },
+            TreeKey::Left => {
+                if row.expanded == Some(true) {
+                    self.toggle(current);
+                } else if let Some(parent) = self.parents[self.row_nodes[current]] {
+                    self.focused = self.row_of(parent);
+                }
+            }
+            TreeKey::Activate => return self.activate(current),
+        }
+        None
+    }
+
+    /// Type-ahead: move focus to the next visible row whose name starts with
+    /// the characters typed within [`TYPE_AHEAD_TIMEOUT`]. Typing one letter
+    /// again cycles through the rows starting with it.
+    pub fn type_ahead(&mut self, text: &str, at: Instant) {
+        if text.chars().all(char::is_whitespace) || self.rows.is_empty() {
+            return;
+        }
+        let stale = self
+            .typed_at
+            .is_none_or(|previous| at.saturating_duration_since(previous) > TYPE_AHEAD_TIMEOUT);
+        if stale {
+            self.typed.clear();
+        }
+        self.typed.extend(text.chars().flat_map(char::to_lowercase));
+        self.typed_at = Some(at);
+        let mut letters = self.typed.chars();
+        let first = letters.next().unwrap_or_default();
+        let repeated = letters.all(|letter| letter == first);
+        let (needle, start) = match self.focused {
+            Some(current) if repeated => (first.to_string(), current + 1),
+            Some(current) => (self.typed.clone(), current),
+            None => (self.typed.clone(), 0),
+        };
+        let count = self.rows.len();
+        let found = (0..count)
+            .map(|offset| (start + offset) % count)
+            .find(|row| {
+                self.rows[*row]
+                    .name
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>()
+                    .starts_with(&needle)
+            });
+        if let Some(row) = found {
+            self.focused = Some(row);
+        }
+    }
+}
+
+impl Workspace {
+    /// The workspace's file tree with every folder closed.
+    pub fn file_tree(&self) -> Result<FileTree, AppError> {
+        let entries = self
+            .engine()
+            .list_workspace_entries()
+            .map_err(|error| AppError::from_core(error, self.root()))?;
+        Ok(FileTree::new(entries.into_iter().map(|entry| {
+            let kind = match entry.kind {
+                WorkspaceEntryKind::Folder => EntryKind::Folder,
+                WorkspaceEntryKind::File => EntryKind::File,
+            };
+            (entry.relative_path, kind)
+        })))
+    }
+
+    /// The file at `relative_path`, for the document area. Reads nothing
+    /// and writes nothing.
+    pub fn open_file(&self, relative_path: &str) -> Result<OpenedFile, AppError> {
+        let path = self
+            .engine()
+            .resolve_managed_path(relative_path, "file_open")
+            .map_err(|error| AppError::from_core(error, relative_path))?;
+        let is_file = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file());
+        if !is_file {
+            return Err(AppError::new(
+                "file_missing",
+                format!("{relative_path} isn't in the workspace anymore."),
+            ));
+        }
+        let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
+        Ok(OpenedFile {
+            name: shown_name(file_name, EntryKind::File),
+            relative_path: relative_path.to_owned(),
+        })
+    }
+}
+
+fn parent_of(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(parent, _)| parent)
+}
+
+/// Markdown files show without `.md`; everything else shows whole.
+pub(crate) fn shown_name(file_name: &str, kind: EntryKind) -> String {
+    let markdown = kind == EntryKind::File
+        && file_name.len() > 3
+        && file_name.is_char_boundary(file_name.len() - 3)
+        && file_name[file_name.len() - 3..].eq_ignore_ascii_case(".md");
+    if markdown {
+        file_name[..file_name.len() - 3].to_owned()
+    } else {
+        file_name.to_owned()
+    }
+}
+
+/// Compare names ignoring case, with digit runs compared as numbers, so
+/// "Note 2" sorts before "Note 10".
+fn natural_cmp(left: &str, right: &str) -> Ordering {
+    let mut left = left.chars().peekable();
+    let mut right = right.chars().peekable();
+    loop {
+        match (left.peek().copied(), right.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a), Some(b)) if a.is_ascii_digit() && b.is_ascii_digit() => {
+                let a = digits(&mut left);
+                let b = digits(&mut right);
+                let (a, b) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
+                let order = a.len().cmp(&b.len()).then_with(|| a.cmp(b));
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+            (Some(a), Some(b)) => {
+                let order = a.to_lowercase().cmp(b.to_lowercase());
+                if order != Ordering::Equal {
+                    return order;
+                }
+                left.next();
+                right.next();
+            }
+        }
+    }
+}
+
+fn digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut run = String::new();
+    while let Some(digit) = chars.next_if(char::is_ascii_digit) {
+        run.push(digit);
+    }
+    run
+}
