@@ -13,7 +13,9 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, OpenedFile, RecentWorkspace, Workspace, WorkspaceService, files::shown_name,
+    AppError, FileTree, OpenedFile, RecentWorkspace, Workspace, WorkspaceService,
+    files::shown_name,
+    watch::{Rescans, Snapshot, Watch},
 };
 
 /// What the window shows.
@@ -37,6 +39,15 @@ pub struct Notice {
     pub remove_recent: Option<String>,
 }
 
+/// Who changed files in the workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Noura wrote the change.
+    Noura,
+    /// Another app, a cloud drive or another device changed the files.
+    Outside,
+}
+
 /// One part of the view state changed. Listeners hear about changes made
 /// on any thread, including background work that [`App::poll`] can now
 /// collect.
@@ -49,15 +60,18 @@ pub enum Change {
     Notice,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
+    /// Files in the open workspace changed on disk; call [`App::poll`] to
+    /// apply the change to the views.
+    Files(Origin),
 }
 
 type Listener = Box<dyn Fn(Change) + Send + Sync>;
 
 #[derive(Clone, Default)]
-struct Listeners(Arc<Mutex<Vec<Listener>>>);
+pub(crate) struct Listeners(Arc<Mutex<Vec<Listener>>>);
 
 impl Listeners {
-    fn emit(&self, change: Change) {
+    pub(crate) fn emit(&self, change: Change) {
         let listeners = self.0.lock().unwrap_or_else(|error| error.into_inner());
         for listener in listeners.iter() {
             listener(change);
@@ -84,6 +98,7 @@ enum Job {
 
 struct Opened {
     workspace: Workspace,
+    snapshot: Snapshot,
     tree: FileTree,
 }
 
@@ -107,6 +122,11 @@ pub struct App {
     failed_restore: Option<String>,
     pending: Option<Pending>,
     listeners: Listeners,
+    rescans: Rescans,
+    /// Keeps the open workspace in step with its folder.
+    watch: Option<Watch>,
+    /// The listing the views show, which tells which object each file is.
+    snapshot: Option<Snapshot>,
 }
 
 impl App {
@@ -114,6 +134,12 @@ impl App {
     /// was open last time, it reopens in the background while the screen
     /// shows [`Screen::Loading`].
     pub fn launch(app_data: impl AsRef<Path>) -> Self {
+        Self::launch_with(app_data, Rescans::default())
+    }
+
+    /// [`App::launch`] with other intervals for the full rescans that back
+    /// up the native watcher.
+    pub fn launch_with(app_data: impl AsRef<Path>, rescans: Rescans) -> Self {
         let service = Arc::new(WorkspaceService::new(app_data.as_ref()));
         let recents = service.recents();
         let mut app = Self {
@@ -127,6 +153,9 @@ impl App {
             failed_restore: None,
             pending: None,
             listeners: Listeners::default(),
+            rescans,
+            watch: None,
+            snapshot: None,
         };
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
@@ -270,8 +299,15 @@ impl App {
         }
     }
 
-    /// Apply finished background work. Returns whether anything changed.
+    /// Apply finished background work and changes to the open workspace's
+    /// files. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
+        let opened = self.poll_job();
+        let refreshed = self.poll_watch();
+        opened || refreshed
+    }
+
+    fn poll_job(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };
@@ -291,6 +327,8 @@ impl App {
         match (result, job) {
             (Ok(opened), _) => self.adopt(opened),
             (Err(error), Job::Restore { workspace_id }) => {
+                self.watch = None;
+                self.snapshot = None;
                 self.workspace = None;
                 self.tree = None;
                 self.document = None;
@@ -313,8 +351,62 @@ impl App {
         true
     }
 
+    /// Apply the newest view of the open workspace's files.
+    fn poll_watch(&mut self) -> bool {
+        let Some(update) = self.watch.as_ref().and_then(Watch::take) else {
+            return false;
+        };
+        let mut tree = update.tree;
+        if let Some(old) = &self.tree {
+            tree.keep_state_from(old);
+        }
+        let rows_changed = self
+            .tree
+            .as_ref()
+            .is_none_or(|old| old.rows() != tree.rows());
+        self.tree = Some(tree);
+        if rows_changed {
+            self.listeners.emit(Change::Tree);
+        }
+        let previous = self.snapshot.replace(update.snapshot);
+        self.follow_document(previous.as_ref());
+        true
+    }
+
+    /// Keep the document area on the file it shows. A note that moved keeps
+    /// its ID, so the document follows it to the new path. A file that is
+    /// gone, or moved without an ID to follow, closes.
+    fn follow_document(&mut self, previous: Option<&Snapshot>) {
+        let (Some(document), Some(current)) = (&self.document, &self.snapshot) else {
+            return;
+        };
+        let path = document.relative_path.as_str();
+        if current.file(path).is_some() {
+            return;
+        }
+        let moved_to = previous
+            .and_then(|previous| previous.file(path))
+            .and_then(|entry| entry.object_id.as_deref())
+            .and_then(|id| current.only_file_with_id(id));
+        self.document = moved_to.map(|entry| OpenedFile {
+            name: shown_name(&entry.name, crate::EntryKind::File),
+            relative_path: entry.relative_path.clone(),
+        });
+        self.listeners.emit(Change::Document);
+    }
+
     fn adopt(&mut self, opened: Opened) {
         self.failed_restore = None;
+        // Stop watching the previous workspace before watching this one.
+        self.watch = None;
+        self.snapshot = Some(opened.snapshot.clone());
+        self.watch = Watch::start(
+            opened.workspace.shared_engine(),
+            opened.workspace.root().to_owned(),
+            opened.snapshot,
+            self.rescans,
+            self.listeners.clone(),
+        );
         self.workspace = Some(opened.workspace);
         self.tree = Some(opened.tree);
         self.document = None;
@@ -387,6 +479,89 @@ fn run(service: &WorkspaceService, job: &Job) -> Result<Opened, AppError> {
         Job::OpenFolder(folder) => service.open_folder(folder)?,
         Job::Create { name, folder } => service.create(name, folder)?,
     };
-    let tree = workspace.file_tree()?;
-    Ok(Opened { workspace, tree })
+    let snapshot = Snapshot::of(workspace.engine(), workspace.root())?;
+    let tree = FileTree::from_entries(&snapshot.entries);
+    Ok(Opened {
+        workspace,
+        snapshot,
+        tree,
+    })
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Release the workspace's files and index before the app goes.
+        if let Some(watch) = self.watch.take() {
+            watch.finish();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        sync::mpsc::channel,
+        time::{Duration, Instant},
+    };
+
+    use local_core::CreateObjectInput;
+
+    use super::*;
+
+    /// App-core has no file operations of its own yet (ticket 08 adds
+    /// them), so this writes through the engine the way they will.
+    #[test]
+    fn a_file_noura_writes_reaches_the_tree_marked_as_noura_s_own() {
+        let app_data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let mut app = App::launch(app_data.path());
+        let (sender, changes) = channel();
+        app.subscribe(move |change| {
+            let _ = sender.send(change);
+        });
+        app.open_folder(folder.path().to_owned());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app.is_busy() {
+            assert!(Instant::now() < deadline, "the workspace never opened");
+            let _ = changes.recv_timeout(Duration::from_millis(50));
+            app.poll();
+        }
+        let _ = changes.try_iter().count();
+
+        app.workspace()
+            .unwrap()
+            .engine()
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Mine".into(),
+                body: String::new(),
+                relative_path: Some("Mine.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+
+        let mut seen = Vec::new();
+        loop {
+            app.poll();
+            seen.extend(changes.try_iter());
+            let rows: Vec<&str> = app
+                .tree()
+                .unwrap()
+                .rows()
+                .iter()
+                .map(|row| row.relative_path.as_str())
+                .collect();
+            if rows == ["Mine.md"] {
+                break;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "the note never showed in the tree");
+            if let Ok(change) = changes.recv_timeout(left) {
+                seen.push(change);
+            }
+        }
+        assert!(seen.contains(&Change::Files(Origin::Noura)));
+        assert!(!seen.contains(&Change::Files(Origin::Outside)));
+    }
 }

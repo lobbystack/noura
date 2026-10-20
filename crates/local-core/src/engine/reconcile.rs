@@ -71,6 +71,25 @@ impl WorkspaceEngine {
         self.reconcile_forced_with_source(&HashSet::new(), EventSource::Application)
     }
 
+    /// Whether the native watcher reports changes. When it doesn't, callers
+    /// must rescan the workspace to see changes other apps make.
+    pub fn is_watching(&self) -> bool {
+        self.watcher.is_available()
+    }
+
+    /// Test hook: make the native watcher fail from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn force_watch_fault(&self, fault: crate::WatchFault) {
+        self.watcher.force_fault(fault);
+    }
+
+    /// Test hook: deliver one native watcher event naming `paths`, which
+    /// may lie anywhere, as the platform would.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn inject_watch_event(&self, paths: Vec<PathBuf>) {
+        self.watcher.inject(paths);
+    }
+
     /// Whether a read must walk the workspace before trusting the index:
     /// the watcher is down, or it saw a change nobody reconciled yet.
     pub(super) fn needs_reconcile(&self) -> bool {

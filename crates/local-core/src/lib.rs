@@ -40,6 +40,8 @@ pub use index::{
 pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object};
 pub use model::*;
 pub use watcher::WatchCoordinator;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use watcher::WatchFault;
 pub use web_access::*;
 pub use workspace_format::{
     WORKSPACE_MANIFEST_PATH, WorkspaceManifest, WorkspaceObject, valid_object_id, valid_object_type,

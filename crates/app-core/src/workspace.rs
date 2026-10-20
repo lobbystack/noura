@@ -1,6 +1,9 @@
 //! The workspace service: create, open and reopen workspaces.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use local_core::{WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
 
@@ -12,7 +15,7 @@ use crate::{
 
 /// An open workspace.
 pub struct Workspace {
-    engine: WorkspaceEngine,
+    engine: Arc<WorkspaceEngine>,
     id: String,
     name: String,
     root: String,
@@ -27,7 +30,7 @@ impl Workspace {
             .ok_or_else(AppError::unsupported_path)?
             .to_owned();
         Ok(Self {
-            engine,
+            engine: Arc::new(engine),
             id: manifest.id,
             name: manifest.name,
             root,
@@ -52,12 +55,33 @@ impl Workspace {
         &self.engine
     }
 
+    /// The engine, for background work that outlives a borrow.
+    pub(crate) fn shared_engine(&self) -> Arc<WorkspaceEngine> {
+        self.engine.clone()
+    }
+
     fn recent(&self) -> RecentWorkspace {
         RecentWorkspace {
             workspace_id: self.id.clone(),
             name: self.name.clone(),
             path: self.root.clone(),
         }
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Workspace {
+    /// Test hook: make the native watcher fail from now on.
+    pub fn force_watch_fault(&self, fault: crate::WatchFault) {
+        self.engine.force_watch_fault(fault);
+    }
+
+    /// Test hook: deliver one native watcher event that names these
+    /// workspace-relative paths, as the platform would.
+    pub fn inject_watch_event(&self, relative_paths: &[&str]) {
+        let root = self.engine.root();
+        self.engine
+            .inject_watch_event(relative_paths.iter().map(|path| root.join(path)).collect());
     }
 }
 

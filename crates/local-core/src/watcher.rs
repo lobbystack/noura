@@ -16,6 +16,27 @@ use crate::{CoreError, ErrorCategory, Result};
 /// Capacity of the queue between the native watcher thread and the poller.
 const QUEUE_CAPACITY: usize = 1024;
 
+/// A failure tests can force on the native watcher, to check that callers
+/// fall back to full rescans.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchFault {
+    /// The watcher stops, as when the platform can't start one.
+    Unavailable,
+    /// Every native event is lost and reported as an overflow, as when the
+    /// queue fills or the platform asks for a rescan.
+    Overflow,
+    /// Every native event is lost without a report.
+    Silent,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+const NO_FAULT: u8 = 0;
+#[cfg(any(test, feature = "test-hooks"))]
+const LOSE_AND_REPORT: u8 = 1;
+#[cfg(any(test, feature = "test-hooks"))]
+const LOSE_SILENTLY: u8 = 2;
+
 /// Watches the workspace and hands coalesced paths to the reconciler.
 ///
 /// Watching is an optimization: the periodic full rescan stays authoritative.
@@ -28,7 +49,11 @@ pub struct WatchCoordinator {
     _watcher: Option<RecommendedWatcher>,
     receiver: Mutex<mpsc::Receiver<notify::Result<Event>>>,
     overflowed: Arc<AtomicBool>,
-    available: bool,
+    available: AtomicBool,
+    #[cfg(any(test, feature = "test-hooks"))]
+    fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    injector: mpsc::SyncSender<notify::Result<Event>>,
 }
 
 impl WatchCoordinator {
@@ -38,8 +63,20 @@ impl WatchCoordinator {
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
         let flag = overflowed.clone();
+        #[cfg(any(test, feature = "test-hooks"))]
+        let injector = sender.clone();
+        #[cfg(any(test, feature = "test-hooks"))]
+        let fault = Arc::new(std::sync::atomic::AtomicU8::new(NO_FAULT));
+        #[cfg(any(test, feature = "test-hooks"))]
+        let forced = fault.clone();
         let watcher = RecommendedWatcher::new(
             move |event: notify::Result<Event>| {
+                #[cfg(any(test, feature = "test-hooks"))]
+                match forced.load(Ordering::SeqCst) {
+                    LOSE_AND_REPORT => return flag.store(true, Ordering::SeqCst),
+                    LOSE_SILENTLY => return,
+                    _ => {}
+                }
                 match &event {
                     Ok(event) => {
                         if event.need_rescan() {
@@ -59,32 +96,54 @@ impl WatchCoordinator {
             watcher.watch(root, RecursiveMode::Recursive)?;
             Ok(watcher)
         });
-        match watcher {
-            Ok(watcher) => Self {
-                _watcher: Some(watcher),
-                receiver: Mutex::new(receiver),
-                overflowed,
-                available: true,
-            },
-            Err(error) => {
+        let watcher = watcher
+            .inspect_err(|error| {
                 tracing::warn!(
                     %error,
                     "filesystem watcher unavailable; relying on periodic rescans"
                 );
-                Self {
-                    _watcher: None,
-                    receiver: Mutex::new(receiver),
-                    overflowed,
-                    available: false,
-                }
-            }
+            })
+            .ok();
+        Self {
+            available: AtomicBool::new(watcher.is_some()),
+            _watcher: watcher,
+            receiver: Mutex::new(receiver),
+            overflowed,
+            #[cfg(any(test, feature = "test-hooks"))]
+            fault,
+            #[cfg(any(test, feature = "test-hooks"))]
+            injector,
         }
     }
 
     /// Whether native change notifications are flowing. When false, readers
     /// must rescan instead of trusting that the index is current.
     pub fn is_available(&self) -> bool {
-        self.available
+        self.available.load(Ordering::SeqCst)
+    }
+
+    /// Test hook: make the native watcher fail from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn force_fault(&self, fault: WatchFault) {
+        let (available, effect) = match fault {
+            WatchFault::Unavailable => (false, LOSE_SILENTLY),
+            WatchFault::Overflow => (true, LOSE_AND_REPORT),
+            WatchFault::Silent => (true, LOSE_SILENTLY),
+        };
+        self.fault.store(effect, Ordering::SeqCst);
+        self.available.store(available, Ordering::SeqCst);
+    }
+
+    /// Test hook: queue one native event that names `paths`, as the
+    /// platform would.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn inject(&self, paths: Vec<PathBuf>) {
+        let event = paths
+            .into_iter()
+            .fold(Event::new(notify::EventKind::Any), Event::add_path);
+        if self.injector.try_send(Ok(event)).is_err() {
+            self.overflowed.store(true, Ordering::SeqCst);
+        }
     }
 
     /// Report and clear a lost-event condition (queue overflow, a native
@@ -104,7 +163,7 @@ impl WatchCoordinator {
                 "watcher_poll",
             )
         })?;
-        if !self.available {
+        if !self.is_available() {
             drop(receiver);
             std::thread::sleep(wait);
             return Ok(Vec::new());
@@ -142,7 +201,9 @@ impl WatchCoordinator {
             _watcher: None,
             receiver: Mutex::new(receiver),
             overflowed: Arc::new(AtomicBool::new(false)),
-            available: true,
+            available: AtomicBool::new(true),
+            fault: Arc::new(std::sync::atomic::AtomicU8::new(NO_FAULT)),
+            injector: mpsc::sync_channel(1).0,
         }
     }
 }

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use local_core::WorkspaceEntryKind;
+use local_core::{WorkspaceEntry, WorkspaceEntryKind};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
 use crate::{AppError, Workspace, error::Access};
@@ -133,6 +133,45 @@ impl FileTree {
         tree.top = top;
         tree.refresh_rows();
         tree
+    }
+
+    /// The tree of a workspace listing, with every folder closed.
+    pub(crate) fn from_entries(entries: &[WorkspaceEntry]) -> Self {
+        Self::new(entries.iter().map(|entry| TreeEntry {
+            kind: match entry.kind {
+                WorkspaceEntryKind::Folder => EntryKind::Folder,
+                WorkspaceEntryKind::File => EntryKind::File,
+            },
+            relative_path: entry.relative_path.clone(),
+            not_downloaded: entry.not_downloaded,
+        }))
+    }
+
+    /// Carry the open folders, the keyboard focus and the type-ahead over
+    /// from the tree this one replaces. When the focused row went away,
+    /// focus stays at its place in the list.
+    pub(crate) fn keep_state_from(&mut self, old: &FileTree) {
+        let open: HashSet<&str> = old
+            .expanded
+            .iter()
+            .map(|node| old.nodes[*node].relative_path.as_str())
+            .collect();
+        self.expanded = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                node.kind == EntryKind::Folder && open.contains(node.relative_path.as_str())
+            })
+            .map(|(index, _)| index)
+            .collect();
+        self.refresh_rows();
+        self.focused = old.focused.and_then(|row| {
+            self.find_row(&old.rows[row].relative_path)
+                .or_else(|| self.rows.len().checked_sub(1).map(|last| row.min(last)))
+        });
+        self.typed.clone_from(&old.typed);
+        self.typed_at = old.typed_at;
     }
 
     fn folder(&mut self, path: &str, folders: &mut HashMap<String, usize>) -> usize {
@@ -350,14 +389,7 @@ impl Workspace {
             .engine()
             .list_workspace_entries()
             .map_err(|error| AppError::from_core(error, self.root(), Access::ReadWorkspace))?;
-        Ok(FileTree::new(entries.into_iter().map(|entry| TreeEntry {
-            kind: match entry.kind {
-                WorkspaceEntryKind::Folder => EntryKind::Folder,
-                WorkspaceEntryKind::File => EntryKind::File,
-            },
-            relative_path: entry.relative_path,
-            not_downloaded: entry.not_downloaded,
-        })))
+        Ok(FileTree::from_entries(&entries))
     }
 
     /// The file at `relative_path`, for the document area. Reads nothing

@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Lets tests force the native watcher to fail or deliver chosen events.
+# Never enabled in a shipped build.
+test-hooks = []
+
 [dependencies]
 yrs.workspace = true
 age.workspace = true

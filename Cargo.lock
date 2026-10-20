@@ -287,12 +287,14 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "app-core"
 version = "0.2.0"
 dependencies = [
+ "app-core",
  "atomic-write-file",
  "directories",
  "local-core",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
  "unicode-normalization",
 ]
