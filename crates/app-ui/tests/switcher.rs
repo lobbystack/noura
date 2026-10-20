@@ -40,6 +40,37 @@ fn the_switcher_lists_recent_workspaces_and_opens_another() {
 }
 
 #[test]
+fn another_workspace_opens_with_its_tree_scrolled_to_the_top() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    for name in ["First", "Second"] {
+        let folder = parent.path().join(name);
+        create_workspace(app_data.path(), name, &folder);
+        for index in 0..200 {
+            std::fs::write(folder.join(format!("{name} {index:03}.txt")), b"x").unwrap();
+        }
+    }
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Second 000.txt")
+        .focus();
+    harness.run();
+    harness.key_press(egui::Key::End);
+    harness.run();
+    assert!(harness.query_by_label("Second 000.txt").is_none());
+
+    harness
+        .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Second")
+        .click();
+    harness.run();
+    harness.get_by_role_and_label(Role::Button, "First").click();
+    settle(&mut harness);
+
+    harness.get_by_role_and_label(Role::TreeItem, "First 000.txt");
+}
+
+#[test]
 fn remove_from_recents_in_the_switcher_drops_the_entry() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();

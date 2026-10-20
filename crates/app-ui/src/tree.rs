@@ -18,6 +18,8 @@ const INDENT: f32 = 12.0;
 /// What the tree remembers between frames.
 #[derive(Default)]
 pub(crate) struct TreeView {
+    /// The workspace this state belongs to.
+    workspace: Option<String>,
     offset: f32,
     /// The rows drawn last frame, to find the row that has keyboard focus.
     drawn: Vec<(Id, String)>,
@@ -77,6 +79,15 @@ fn take_input(ui: &Ui) -> Vec<Input> {
 }
 
 pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
+    // Another workspace starts at the top, with nothing focused.
+    let workspace = app.workspace().map(|workspace| workspace.id().to_owned());
+    let switched = view.workspace != workspace;
+    if switched {
+        *view = TreeView {
+            workspace,
+            ..TreeView::default()
+        };
+    }
     // The tree has the keyboard when one of last frame's rows has focus.
     let focused_path = ui.memory(|memory| memory.focused()).and_then(|focused| {
         view.drawn
@@ -116,7 +127,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     let mut scroll = ScrollArea::vertical()
         .id_salt("file-tree")
         .auto_shrink(false);
-    if reveal && let Some(row) = focused {
+    if switched {
+        scroll = scroll.vertical_scroll_offset(0.0);
+    } else if reveal && let Some(row) = focused {
         let viewport = ui.available_height();
         let top = row as f32 * ROW_HEIGHT;
         let offset = if top < view.offset {
