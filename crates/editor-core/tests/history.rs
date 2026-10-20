@@ -400,6 +400,135 @@ fn buffer_merge_crash() {
     merge(base, remote, local);
 }
 
+// ── Outside edits after a save ──
+//
+// A save records the version that held the file's text. Undo back past that
+// version, then a new edit, drops it; merging an outside edit into unsaved
+// edits leaves no version that held the file's text. Later outside edits
+// must still merge with the text on screen.
+
+/// Records a save of the buffer's current text, as the editor's save does.
+fn save(buf: &mut Buffer) -> String {
+    let text = buf.current.rope().to_string();
+    buf.saved(buf.current.seq, text.clone());
+    text
+}
+
+fn reload(buf: &mut Buffer, outside: &str) {
+    buf.reload(outside.into());
+    buf.update();
+}
+
+/// Replaces graphemes `start..end` with `text` in one frame and puts the
+/// caret after it.
+fn replace_range(buf: &mut Buffer, start: usize, end: usize, text: &str) {
+    frame(
+        buf,
+        vec![
+            Operation::Select((Grapheme(start), Grapheme(end))),
+            Operation::Replace(Replace {
+                range: (Grapheme(start), Grapheme(end)),
+                text: text.into(),
+            }),
+        ],
+    );
+}
+
+#[test]
+fn an_outside_edit_after_undo_past_the_save_merges_with_the_restored_text() {
+    let mut buf = Buffer::from("Keep this line\nSecond line here\n");
+    replace_range(&mut buf, 0, 15, "");
+    assert_eq!(save(&mut buf), "Second line here\n");
+    buf.undo();
+    assert_eq!(buf.current.text(), "Keep this line\nSecond line here\n");
+
+    reload(&mut buf, "2nd line here\n");
+
+    assert_eq!(buf.current.text(), "Keep this line\n2nd line here\n");
+}
+
+#[test]
+fn an_outside_edit_after_undoing_the_saved_typing_keeps_the_undo() {
+    let mut buf = Buffer::from("alpha beta\n");
+    replace_range(&mut buf, 10, 10, " gamma delta");
+    save(&mut buf);
+    buf.undo();
+
+    reload(&mut buf, "intro alpha beta gamma delta\n");
+
+    assert_eq!(buf.current.text(), "intro alpha beta\n");
+}
+
+#[test]
+fn an_outside_edit_after_undo_and_new_typing_merges_both() {
+    let mut buf = Buffer::from("alpha beta\n");
+    replace_range(&mut buf, 10, 10, " gamma");
+    save(&mut buf);
+    buf.undo();
+    // The new edit drops the saved version from the history.
+    replace_range(&mut buf, 10, 10, " delta");
+    assert!(!buf.can_redo());
+
+    reload(&mut buf, "intro alpha beta gamma\n");
+
+    assert_eq!(buf.current.text(), "intro alpha beta delta\n");
+}
+
+#[test]
+fn an_outside_edit_pending_through_an_undo_merges_with_the_restored_text() {
+    let mut buf = Buffer::from("one two\n");
+    replace_range(&mut buf, 3, 7, "");
+    save(&mut buf);
+
+    buf.reload("one\nthree\n".into());
+    buf.undo();
+    buf.update();
+
+    assert_eq!(buf.current.text(), "one two\nthree\n");
+}
+
+#[test]
+fn redo_back_to_the_save_merges_through_the_history() {
+    let mut buf = Buffer::from("alpha\n");
+    replace_range(&mut buf, 5, 5, " beta");
+    save(&mut buf);
+    buf.undo();
+    buf.redo();
+
+    reload(&mut buf, "alpha beta gamma\n");
+
+    assert_eq!(buf.current.text(), "alpha beta gamma\n");
+    // Nothing unsaved: the merged text is the file's, so a second outside
+    // edit diffs against it.
+    reload(&mut buf, "start alpha beta gamma\n");
+    assert_eq!(buf.current.text(), "start alpha beta gamma\n");
+}
+
+#[test]
+fn a_second_outside_edit_merges_after_the_first_merged_into_unsaved_typing() {
+    let mut buf = Buffer::from("hello world\n");
+    replace_range(&mut buf, 0, 0, "A ");
+
+    reload(&mut buf, "hello world!!\n");
+    assert_eq!(buf.current.text(), "A hello world!!\n");
+
+    reload(&mut buf, "hello there world!!\n");
+    assert_eq!(buf.current.text(), "A hello there world!!\n");
+}
+
+#[test]
+fn an_unchanged_file_keeps_redo() {
+    let mut buf = Buffer::from("alpha\n");
+    replace_range(&mut buf, 5, 5, " beta");
+    save(&mut buf);
+    buf.undo();
+
+    reload(&mut buf, "alpha beta\n");
+
+    assert!(buf.can_redo());
+    assert_eq!(buf.current.text(), "alpha\n");
+}
+
 /// Graphemes for random edits: ASCII, multi-byte letters, emoji sequences
 /// with joiners, skin tones and flags, and combining marks.
 const POOL: &[&str] = &[

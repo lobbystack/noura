@@ -574,7 +574,8 @@ impl Editor {
     }
 
     /// Records that the file now holds `content`, saved at buffer version
-    /// `seq`. Later outside edits merge against it.
+    /// `seq`. Later outside edits merge against it. Call it before the next
+    /// frame, while version `seq` is still in the buffer's history.
     pub fn record_disk_save(&mut self, seq: usize, content: String) {
         self.edit.renderer.buffer.saved(seq, content);
     }

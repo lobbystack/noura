@@ -77,7 +77,7 @@ To the `lb-rs` text model:
 
 - The buffer keeps its text in a ropey rope instead of a `String`. Edits, undo, redo and merged outside edits write the rope, and the save text comes from it. A contiguous copy, rebuilt from the rope after each change, feeds comrak and `&str` slices.
 - Rewrote the operation history as two lists, received and applied, in place of `Ops`, and dropped the base snapshot, `Buffer::merge` and the `open_camera` response flag. `queue_at` takes the time of an edit, so tests set keystroke times instead of sleeping.
-- A merged outside edit whose offsets run past the text, which can happen after a local edit wins an overlap, is clamped to the text instead of panicking.
+- `lb-rs` merged a reload by diffing the file against the last text loaded or saved, then applying the diff at the version that held that text. Undo past that version, followed by any edit or reload, drops the version from the history. A merge into unsaved edits leaves no version holding the file's text. In both cases `lb-rs` applied the diff to the wrong text and mangled the note. Noura's buffer merges on its next update instead. While a version still holds the last text loaded or saved, it transforms the diff through the edits made since. Otherwise it merges three texts: that one, the buffer's and the file's. Offsets that still run past the text clamp to it instead of panicking.
 - Restructured the word diff around a `Side` helper with the same algorithm, and took only `measure_replace` and `last_grapheme` from `units.rs`.
 - Uses `std::time` in place of `web_time`, and renamed identifiers throughout.
 

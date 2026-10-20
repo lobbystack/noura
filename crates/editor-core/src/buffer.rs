@@ -20,11 +20,16 @@
 //! every operation applied since its base, so an insertion typed at the end
 //! of a line lands after text inserted earlier in the same frame.
 //!
-//! Outside edits arrive the same way. [`Buffer::reload`] diffs the last text
-//! loaded or saved against the new file contents and queues the result with
-//! that text's version as the base, so the buffer transforms it through the
-//! user's unsaved edits. Where an outside edit overlaps a local one, the
-//! local edit wins.
+//! Outside edits arrive the same way. [`Buffer::reload`] hands the buffer
+//! the file's new contents, and the next [`Buffer::update`] diffs the last
+//! text loaded or saved against them. While the version that held that text
+//! is still in the history, the update queues the diff with that version as
+//! the base, so the buffer transforms it through the user's unsaved edits.
+//! Undo past that version followed by a new edit drops it, and merging an
+//! outside edit into unsaved edits leaves the buffer with no version that
+//! held the file's text. The update then merges three texts instead: the
+//! last text loaded or saved, the buffer's and the file's. Either way, where
+//! an outside edit overlaps a local one, the local edit wins.
 //!
 //! # Undo
 //!
@@ -53,6 +58,8 @@ pub struct Buffer {
     pub current: Snapshot,
     history: History,
     external: External,
+    /// File contents passed to [`Self::reload`], merged by the next update.
+    disk: Option<String>,
 }
 
 /// A version of the buffer's text with its selection.
@@ -287,12 +294,15 @@ impl History {
     }
 }
 
-/// The last text loaded from or saved to the file, and its version: the
-/// base for merging outside edits.
+/// The last text loaded from or saved to the file: the base for merging
+/// outside edits.
 #[derive(Default)]
 struct External {
     text: String,
-    seq: usize,
+    /// The version that held `text`. `None` once undo went back past that
+    /// version and a new edit dropped it, or when no version held `text`,
+    /// as after an outside edit merged into unsaved edits.
+    seq: Option<usize>,
 }
 
 /// What an update, undo or redo changed.
@@ -352,13 +362,64 @@ impl Buffer {
             .extend(joined.into_iter().map(|op| Received { op, base, at }));
     }
 
-    /// Loads new file contents, merging the edits made outside the editor
-    /// since the last load or save with the edits made inside it. Call
-    /// [`Self::update`] to apply the merge.
+    /// Loads new file contents. The next [`Self::update`] merges the edits
+    /// made outside the editor since the last load or save with the edits
+    /// made in it.
     pub fn reload(&mut self, text: String) {
-        let base = self.external.seq;
-        let at = Instant::now();
-        let ops = diff(&self.external.text, &text);
+        self.disk = Some(text);
+    }
+
+    /// Records that the file now holds `text`, which the buffer held at
+    /// version `seq`. Later reloads merge against it. Call it before undo
+    /// and a new edit can drop version `seq`.
+    pub fn saved(&mut self, seq: usize, text: String) {
+        self.external = External {
+            text,
+            seq: Some(seq),
+        };
+    }
+
+    /// Applies the queued operations, then merges the file contents passed
+    /// to [`Self::reload`].
+    pub fn update(&mut self) -> Response {
+        let mut response = self.apply_queued();
+        if let Some(text) = self.disk.take()
+            && text != self.external.text
+        {
+            self.queue_outside_edits(&text);
+            if let Some(merged) = self.apply_queued() {
+                match &mut response {
+                    Some(response) => *response |= merged,
+                    None => response = Some(merged),
+                }
+            }
+            // An unsaved edit that survived the merge leaves the buffer with
+            // no version that holds the file's text.
+            let seq = (self.current.text() == text).then_some(self.current.seq);
+            self.external = External { text, seq };
+        }
+        response.unwrap_or_default()
+    }
+
+    /// Queues the operations that turn the buffer's text into its merge with
+    /// `text`, the file's new contents.
+    fn queue_outside_edits(&mut self, text: &str) {
+        let (base, ops) = match self.external.seq {
+            // A version on the way to this one held the last text loaded or
+            // saved: diff the file against that text, and let the update
+            // transform the result through every edit made since.
+            Some(seq) if seq <= self.current.seq => (seq, diff(&self.external.text, text)),
+            // Undo took that version back, or no version held that text.
+            _ => {
+                let merged = merge(&self.external.text, self.current.text(), text);
+                (self.current.seq, diff(self.current.text(), &merged))
+            }
+        };
+        self.queue_replacements(ops, base, Instant::now());
+    }
+
+    /// Queues replacements made against version `base`.
+    fn queue_replacements(&mut self, ops: Vec<Replace>, base: usize, at: Instant) {
         self.history
             .received
             .extend(ops.into_iter().map(|replace| Received {
@@ -366,26 +427,21 @@ impl Buffer {
                 base,
                 at,
             }));
-
-        self.external.text = text;
-        self.external.seq = self.history.received.len();
     }
 
-    /// Records that the file now holds `text`, which the buffer held at
-    /// version `seq`. Later reloads merge against it.
-    pub fn saved(&mut self, seq: usize, text: String) {
-        self.external.text = text;
-        self.external.seq = seq;
-    }
-
-    /// Applies the queued operations.
-    pub fn update(&mut self) -> Response {
+    /// Applies the operations waiting in the queue. Returns `None` if none
+    /// were waiting.
+    fn apply_queued(&mut self) -> Option<Response> {
         if self.history.received.len() == self.history.applied.len() {
-            return Response::default();
+            return None;
         }
 
-        // New edits drop what undo had taken back.
+        // New edits drop what undo had taken back, which includes the
+        // version that held the file's text if undo went back past it.
         let redo = self.current.seq..self.history.applied.len();
+        if !redo.is_empty() && self.external.seq.is_some_and(|seq| seq > self.current.seq) {
+            self.external.seq = None;
+        }
         self.history.received.drain(redo.clone());
         self.history.applied.drain(redo);
 
@@ -410,7 +466,7 @@ impl Buffer {
             self.current.seq += 1;
         }
         response.seq_after = self.current.seq;
-        response
+        Some(response)
     }
 
     fn apply(&mut self, op: &Operation) -> (Response, Graphemes) {
@@ -423,7 +479,6 @@ impl Buffer {
     /// Rewrites an operation made against version `base` to apply to the
     /// current version.
     fn transform(&self, mut op: Operation, base: usize) -> Operation {
-        // An outside edit's base can name a version that undo took back.
         let base = base.min(self.history.applied.len());
         for applied in &self.history.applied[base..] {
             let Operation::Replace(earlier) = &applied.op else {
@@ -445,11 +500,10 @@ impl Buffer {
             }
         }
 
-        // An outside edit is made against the last text loaded or saved,
-        // which the buffer never held if a local edit won an overlap with
-        // the outside edit before it. Its offsets can then run past the
-        // text: keep them inside it so the merge degrades instead of
-        // panicking.
+        // An outside edit's offsets come from the text recorded as saved at
+        // its base. If a caller recorded the wrong version, they can run
+        // past the text: keep them inside it so the merge degrades instead
+        // of panicking.
         let last = self.current.segs.last_cursor_position();
         match &mut op {
             Operation::Select(range) | Operation::Replace(Replace { range, .. }) => {
@@ -547,8 +601,9 @@ impl From<&str> for Buffer {
             history: Default::default(),
             external: External {
                 text: text.into(),
-                seq: 0,
+                seq: Some(0),
             },
+            disk: None,
         }
     }
 }
@@ -584,6 +639,18 @@ fn adjust_subsequent_position(
     } else {
         start
     }
+}
+
+/// Merges two edits of `base`, one that produced `local` and one that
+/// produced `outside`. Where they overlap, `local`'s edit wins.
+fn merge(base: &str, local: &str, outside: &str) -> String {
+    let mut buffer = Buffer::from(base);
+    let at = Instant::now();
+    buffer.queue_replacements(diff(base, local), 0, at);
+    buffer.apply_queued();
+    buffer.queue_replacements(diff(base, outside), 0, at);
+    buffer.apply_queued();
+    buffer.current.rope().to_string()
 }
 
 impl Index<(Byte, Byte)> for Snapshot {

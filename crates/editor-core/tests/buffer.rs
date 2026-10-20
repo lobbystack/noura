@@ -258,9 +258,10 @@ fn the_rope_holds_the_text_through_edits_undo_and_reloads() {
     }
 }
 
-/// A local edit that wins an overlap leaves the outside edit out, so the
-/// buffer never holds the text the next reload diffs against. That reload's
-/// offsets can run past the text; they stay inside it.
+/// A local edit that wins an overlap leaves the outside edit out, so no
+/// version of the buffer holds the file's text. The next reload merges the
+/// three texts instead of transforming a diff of the file through the
+/// history.
 #[test]
 fn a_reload_after_an_overlapping_outside_edit_stays_inside_the_text() {
     let mut buffer = Buffer::from("start\n");
