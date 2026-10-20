@@ -5,7 +5,8 @@
         { "name": "status", "kind": { "enum": ["todo", "in-progress", "done", "cancelled"] }, "default": "todo" },
         { "name": "priority", "kind": { "enum": ["low", "medium", "high", "urgent"] }, "default": "medium" },
         { "name": "project", "kind": { "reference": "project" }, "nullable": true },
-        { "name": "due", "kind": "date", "nullable": true }
+        { "name": "due", "kind": "date", "nullable": true },
+        { "name": "kanban_order", "kind": "string" }
       ]
     },
     "project": {
@@ -162,6 +163,20 @@
         "properties": { "steps": "Boil.\n\n" }
       },
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |+\n  Boil.\n\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a carriage return left before a line feed in the body is dropped",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Stew\n\nSimmer.\r\r\r\nServe.\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "Stew",
+        "body": "Simmer.\r\nServe.",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Stew\n\nSimmer.\nServe.\n"
     }
   ],
   "schema_declaration": [
@@ -474,7 +489,7 @@
   ],
   "unregistered": [
     {
-      "name": "a type with no schema keeps every property as written",
+      "name": "a type with no schema keeps every property as written, in the built-in order",
       "registry": "schemas",
       "markdown": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\nstatus: later\ndue: tomorrow\namount: '12.50'\nlines:\n- item: Paper\n  count: 2\npaid: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n",
       "properties": {
@@ -484,10 +499,10 @@
         "lines": [{ "item": "Paper", "count": 2 }],
         "paid": null
       },
-      "canonical": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\namount: '12.50'\ndue: tomorrow\nlines:\n- count: 2\n  item: Paper\npaid: null\nstatus: later\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n"
+      "canonical": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\nstatus: later\ndue: tomorrow\namount: '12.50'\nlines:\n- count: 2\n  item: Paper\npaid: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n"
     },
     {
-      "name": "a task file stays a managed object when no task schema is registered",
+      "name": "a task file stays a managed object in today's order when no task schema is registered",
       "registry": "empty",
       "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: later\npriority: 1\ndue: tomorrow\nproject: project_not-an-id\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n",
       "properties": {
@@ -496,7 +511,7 @@
         "due": "tomorrow",
         "project": "project_not-an-id"
       },
-      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: tomorrow\npriority: 1\nproject: project_not-an-id\nstatus: later\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n"
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: later\npriority: 1\nproject: project_not-an-id\ndue: tomorrow\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n"
     }
   ],
   "malformed": [
@@ -578,9 +593,120 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nservings: many\n---\n\n# Feast\n"
     },
     {
-      "name": "a task declared as a schema writes today's task order",
+      "name": "a task schema declared in today's field order writes today's task order",
       "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: 2026-09-04\ncustom: kept\nproject: project_01j00000000000000000000000\npriority: high\nstatus: in-progress\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
       "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+    },
+    {
+      "name": "a declared kanban_order comes before an unknown key that sorts ahead of it, as today",
+      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nestimate: 3\nkanban_order: a0\npriority: low\nstatus: todo\n---\n\n# Sort the board\n",
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\nkanban_order: a0\nestimate: 3\n---\n\n# Sort the board\n"
+    },
+    {
+      "name": "a built-in key that the task schema doesn't declare sorts with the unknown keys, unlike today",
+      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ndate: 2026-09-04\ncustom: kept\n---\n\n# Plan the day\n",
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ncustom: kept\ndate: 2026-09-04\n---\n\n# Plan the day\n"
+    }
+  ],
+  "line_separators": [
+    {
+      "name": "a multi-line value ending in U+2028 is written double-quoted, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\u2028\"\n---\n\n# Pasta\n",
+      "properties": { "steps": "Boil.\nServe.\u2028" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a multi-line value ending in U+2028 is written double-quoted, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\u2028\"\n---\n\n# Pasta\n",
+      "properties": { "source": "Boil.\nServe.\u2028" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "an updated value ending in U+2028 is written double-quoted, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\u2028\"\n---\n\n# Pasta\n",
+      "properties": {},
+      "updated": "\na\u2028",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "an updated value ending in U+2028 is written double-quoted, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\u2028\"\n---\n\n# Pasta\n",
+      "properties": {},
+      "updated": "\na\u2028",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a last value ending in a line break and U+2029 is written double-quoted, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"a\\n\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "steps": "a\n\u2029" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"a\\n\\P\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a last value ending in a line break and U+2029 is written double-quoted, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"a\\n\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "source": "a\n\u2029" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"a\\n\\P\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a one-line value holding U+2028 is written double-quoted, not single-quoted with the raw character",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: 'a\u2028  b'\nzeta: end\n---\n\n# Pasta\n",
+      "properties": { "note": "a\u2028b", "zeta": "end" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\Lb\"\nzeta: end\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a nested value holding U+2029 is written double-quoted",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "steps": [{ "first": "Boil.\u2029" }] },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\P\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "U+0085 keeps the double quotes libyaml already writes",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\u0085b\"\n---\n\n# Pasta\n",
+      "properties": { "note": "a\u0085b" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\Nb\"\n---\n\n# Pasta\n"
+    }
+  ],
+  "task_schema_differences": [
+    {
+      "name": "a due date that isn't a string",
+      "properties": { "due": 5 },
+      "schema_error": { "code": "wrong_type", "property": "due" }
+    },
+    {
+      "name": "a due value that is a boolean",
+      "properties": { "due": true },
+      "schema_error": { "code": "wrong_type", "property": "due" }
+    },
+    {
+      "name": "a project reference that isn't a string",
+      "properties": { "project": 5 },
+      "schema_error": { "code": "wrong_type", "property": "project" }
+    },
+    {
+      "name": "a project reference that is a list",
+      "properties": { "project": ["project_01j00000000000000000000000"] },
+      "schema_error": { "code": "wrong_type", "property": "project" }
+    },
+    {
+      "name": "a kanban_order that isn't a string",
+      "properties": { "kanban_order": 5 },
+      "schema_error": { "code": "wrong_type", "property": "kanban_order" }
     }
   ]
 }

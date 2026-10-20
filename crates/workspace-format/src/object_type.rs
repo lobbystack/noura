@@ -9,8 +9,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    FormatError, WorkspaceObject, is_managed_property, serialize_envelope, valid_date_value,
-    valid_object_id, valid_object_type,
+    FormatError, WorkspaceObject, is_managed_property, serialize_envelope, serialize_object,
+    valid_date_value, valid_object_id, valid_object_type,
 };
 
 /// The properties an object type declares, in canonical order.
@@ -167,20 +167,19 @@ impl ObjectTypeRegistry {
 
     /// Serializes an object through the envelope in canonical order: `id` and
     /// `type`, the properties its type declares in declared order, the other
-    /// properties sorted by key, then `created` and `updated`. It writes the
-    /// properties as they are, without checking them or adding defaults.
+    /// properties sorted by key, then `created` and `updated`. An object
+    /// whose type has no registered schema gets `serialize_object`'s
+    /// built-in order. It writes the properties as they are, without
+    /// checking them or adding defaults.
     pub fn serialize(&self, object: &WorkspaceObject) -> Result<Vec<u8>, FormatError> {
-        let declared: Vec<&str> = self
-            .types
-            .get(&object.object_type)
-            .map(|schema| {
-                schema
-                    .properties
-                    .iter()
-                    .map(|declaration| declaration.name.as_str())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let Some(schema) = self.types.get(&object.object_type) else {
+            return serialize_object(object);
+        };
+        let declared: Vec<&str> = schema
+            .properties
+            .iter()
+            .map(|declaration| declaration.name.as_str())
+            .collect();
         serialize_envelope(object, &declared)
     }
 }

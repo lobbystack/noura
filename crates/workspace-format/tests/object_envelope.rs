@@ -131,6 +131,16 @@ fn registry(fixture: &Value) -> ObjectTypeRegistry {
     types
 }
 
+/// The registry a case names: `schemas` holds every schema in the fixture,
+/// and `empty` holds none, as when every plugin is off.
+fn registry_for(fixture: &Value, case: &Value) -> ObjectTypeRegistry {
+    match case["registry"].as_str().unwrap() {
+        "schemas" => registry(fixture),
+        "empty" => ObjectTypeRegistry::new(),
+        other => panic!("{}: unknown registry {other}", name(case)),
+    }
+}
+
 fn object_with(object_type: &str, properties: &Value) -> WorkspaceObject {
     WorkspaceObject {
         id: format!("{object_type}_01j00000000000000000000000"),
@@ -219,6 +229,29 @@ fn a_declared_task_schema_matches_the_task_property_fixtures() {
     assert_schema_matches_built_in_rules("task", "task_properties", normalize_task_properties);
 }
 
+/// Today's built-in task rules check `due` and `project` only when they hold
+/// a string and don't check `kanban_order`, so they keep these values as
+/// metadata. A declared kind also checks the JSON type and rejects them.
+#[test]
+fn a_declared_task_schema_is_stricter_than_the_built_in_rules_about_json_types() {
+    let fixture = fixture();
+    let types = registry(&fixture);
+    for case in cases(&fixture, "task_schema_differences") {
+        let mut properties: BTreeMap<String, Value> =
+            serde_json::from_value(case["properties"].clone()).unwrap();
+        normalize_task_properties(&mut properties)
+            .unwrap_or_else(|error| panic!("{}: built-in rules: {error}", name(case)));
+        let mut object = object_with("task", &case["properties"]);
+        let error = types.normalize(&mut object).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            case["schema_error"],
+            "{}",
+            name(case)
+        );
+    }
+}
+
 #[test]
 fn a_declared_project_schema_matches_the_project_property_fixtures() {
     assert_schema_matches_built_in_rules(
@@ -295,11 +328,7 @@ fn registered_types_keep_todays_body_rules() {
 fn an_unregistered_type_stays_a_managed_object_with_every_property() {
     let fixture = fixture();
     for case in cases(&fixture, "unregistered") {
-        let types = match case["registry"].as_str().unwrap() {
-            "schemas" => registry(&fixture),
-            "empty" => ObjectTypeRegistry::new(),
-            other => panic!("{}: unknown registry {other}", name(case)),
-        };
+        let types = registry_for(&fixture, case);
         let mut object = managed(case);
         assert_eq!(
             json!(object.properties),
@@ -319,6 +348,44 @@ fn an_unregistered_type_stays_a_managed_object_with_every_property() {
             &object,
             case["canonical"].as_str().unwrap(),
             name(case),
+        );
+        assert_eq!(
+            text(serialize_object(&object).unwrap()),
+            case["canonical"].as_str().unwrap(),
+            "{}: serialize_object writes the same built-in order",
+            name(case)
+        );
+    }
+}
+
+#[test]
+fn string_values_with_line_separators_are_written_double_quoted() {
+    let fixture = fixture();
+    for case in cases(&fixture, "line_separators") {
+        let types = registry_for(&fixture, case);
+        let object = managed(case);
+        let expected = (case["properties"].clone(), case["updated"].clone());
+        assert_eq!(
+            (json!(object.properties), json!(object.updated)),
+            expected,
+            "{}",
+            name(case)
+        );
+        assert_canonical(
+            &types,
+            &object,
+            case["canonical"].as_str().unwrap(),
+            name(case),
+        );
+        let reparsed = managed(&json!({
+            "name": name(case),
+            "markdown": case["canonical"],
+        }));
+        assert_eq!(
+            (json!(reparsed.properties), json!(reparsed.updated)),
+            expected,
+            "{}: canonical bytes read back the same values",
+            name(case)
         );
     }
 }
@@ -355,12 +422,20 @@ fn the_format_spec_schema_example_registers() {
 #[test]
 fn note_task_and_project_files_serialize_to_the_same_bytes_as_before() {
     let fixture = fixture();
+    let types = registry(&fixture);
     for case in cases(&fixture, "existing_serialization") {
-        let bytes = serialize_object(&managed(case)).unwrap();
+        let object = managed(case);
+        let markdown = case["markdown"].as_str().unwrap();
         assert_eq!(
-            String::from_utf8(bytes).unwrap(),
-            case["markdown"].as_str().unwrap(),
+            text(serialize_object(&object).unwrap()),
+            markdown,
             "{}",
+            name(case)
+        );
+        assert_eq!(
+            text(types.serialize(&object).unwrap()),
+            markdown,
+            "{}: with the declared task and project schemas",
             name(case)
         );
     }

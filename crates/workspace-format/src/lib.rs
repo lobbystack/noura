@@ -552,8 +552,9 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
 }
 
 /// The properties `serialize_object` writes first, in this order, before the
-/// sorted unknown properties. Schemas take over once the Tasks, Projects and
-/// Calendar plugins declare their types.
+/// sorted unknown properties. It applies to every type without a registered
+/// schema; schemas take over once the Tasks, Projects and Calendar plugins
+/// declare their types.
 const BUILT_IN_PROPERTY_ORDER: [&str; 8] = [
     "status",
     "priority",
@@ -577,44 +578,215 @@ fn serialize_envelope(object: &WorkspaceObject, leading: &[&str]) -> Result<Vec<
     if !valid_object_id(&object.id, &object.object_type) {
         return Err(FormatError::InvalidObjectId);
     }
-    let mut ordered = serde_yaml_ng::Mapping::new();
-    let mut insert = |key: &str, value: serde_json::Value| -> Result<(), FormatError> {
-        let value = serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
-        ordered.insert(serde_yaml_ng::Value::String(key.into()), value);
-        Ok(())
-    };
-    insert("id", serde_json::Value::String(object.id.clone()))?;
-    insert(
-        "type",
-        serde_json::Value::String(object.object_type.clone()),
-    )?;
+    let mut entries = vec![
+        ("id", serde_json::Value::String(object.id.clone())),
+        (
+            "type",
+            serde_json::Value::String(object.object_type.clone()),
+        ),
+    ];
     for key in leading {
         if let Some(value) = object.properties.get(*key) {
-            insert(key, value.clone())?;
+            entries.push((key, value.clone()));
         }
     }
     for (key, value) in &object.properties {
         if !is_managed_property(key) && !leading.contains(&key.as_str()) {
-            insert(key, value.clone())?;
+            entries.push((key, value.clone()));
         }
     }
     if let Some(created) = &object.created {
-        insert("created", serde_json::Value::String(created.clone()))?;
+        entries.push(("created", serde_json::Value::String(created.clone())));
     }
     if let Some(updated) = &object.updated {
-        insert("updated", serde_json::Value::String(updated.clone()))?;
+        entries.push(("updated", serde_json::Value::String(updated.clone())));
     }
-    let yaml = serde_yaml_ng::to_string(&ordered).map_err(|_| FormatError::ObjectSerialization)?;
+    let yaml = frontmatter_yaml(entries)?;
     let mut result = format!("---\n{}---\n\n# {}\n", yaml, object.title.trim());
-    // Only line breaks at the end are normalized. Trailing spaces stay: two
-    // of them are a Markdown line break, and the editor may be mid-typing.
-    let body = object.body.trim_end_matches(['\n', '\r']);
+    // Only line breaks are normalized. Trailing spaces stay: two of them are
+    // a Markdown line break, and the editor may be mid-typing.
+    let body = without_carriage_returns_before_line_feeds(&object.body);
+    let body = body.trim_end_matches(['\n', '\r']);
     if !body.trim().is_empty() {
         result.push('\n');
         result.push_str(body);
         result.push('\n');
     }
     Ok(result.into_bytes())
+}
+
+/// Parsers turn each CRLF into LF, so a body with a carriage return right
+/// before a line feed loses one carriage return on every read (`\r\r\n`
+/// reads as `\r\n`). Writing a bare LF there keeps canonical bytes a fixed
+/// point.
+fn without_carriage_returns_before_line_feeds(text: &str) -> Cow<'_, str> {
+    if !text.contains("\r\n") {
+        return Cow::Borrowed(text);
+    }
+    let mut normalized = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        match line.strip_suffix('\n') {
+            Some(content) => {
+                normalized.push_str(content.trim_end_matches('\r'));
+                normalized.push('\n');
+            }
+            None => normalized.push_str(line),
+        }
+    }
+    Cow::Owned(normalized)
+}
+
+/// U+2028 and U+2029 are line breaks to YAML 1.1 readers such as libyaml and
+/// ordinary characters to YAML 1.2 readers. libyaml writes them raw in plain,
+/// single-quoted and literal scalars, and a literal scalar that ends in one
+/// leaves the YAML without the line break the closing `---` needs. U+0085 is
+/// the third such character, but libyaml already double-quotes it.
+const LINE_SEPARATORS: [char; 2] = ['\u{2028}', '\u{2029}'];
+
+/// The character that stand-ins for double-quoted strings are built from.
+const STAND_IN_MARKER: char = '\u{e000}';
+
+/// Writes frontmatter entries as a YAML mapping, in order.
+///
+/// A string value that holds a line separator is written double-quoted with
+/// libyaml's escapes. libyaml doesn't let a caller pick a scalar style, so
+/// such a string goes to it as a stand-in that it writes plain, and the
+/// stand-in is then swapped for the quoted string. Mapping keys keep
+/// libyaml's style: a value always follows them, and they read back the same.
+fn frontmatter_yaml(mut entries: Vec<(&str, serde_json::Value)>) -> Result<String, FormatError> {
+    let mut quoted = Vec::new();
+    let mut marker = String::new();
+    if entries.iter().any(|(_, value)| holds_line_separator(value)) {
+        // A run of the marker longer than any run in the entries' keys and
+        // strings can't appear anywhere else in the YAML, because libyaml
+        // only adds ASCII around and inside the scalars it writes.
+        let mut longest = 0;
+        for (key, value) in &entries {
+            longest = longest.max(longest_marker_run(key));
+            visit_text(value, &mut |text| {
+                longest = longest.max(longest_marker_run(text));
+            });
+        }
+        marker = STAND_IN_MARKER.to_string().repeat(longest + 1);
+        for (_, value) in &mut entries {
+            replace_with_stand_ins(value, &marker, &mut quoted);
+        }
+    }
+    let mut mapping = serde_yaml_ng::Mapping::new();
+    for (key, value) in entries {
+        let value = serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
+        mapping.insert(serde_yaml_ng::Value::String(key.into()), value);
+    }
+    let mut yaml =
+        serde_yaml_ng::to_string(&mapping).map_err(|_| FormatError::ObjectSerialization)?;
+    for (index, text) in quoted.iter().enumerate() {
+        yaml = yaml.replacen(&stand_in(&marker, index), &double_quoted(text), 1);
+    }
+    Ok(yaml)
+}
+
+fn holds_line_separator(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => text.contains(LINE_SEPARATORS),
+        serde_json::Value::Array(items) => items.iter().any(holds_line_separator),
+        serde_json::Value::Object(map) => map.values().any(holds_line_separator),
+        _ => false,
+    }
+}
+
+/// Calls `visit` with every string and mapping key inside `value`.
+fn visit_text<'a>(value: &'a serde_json::Value, visit: &mut impl FnMut(&'a str)) {
+    match value {
+        serde_json::Value::String(text) => visit(text),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                visit_text(item, visit);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                visit(key);
+                visit_text(item, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn longest_marker_run(text: &str) -> usize {
+    text.split(|character| character != STAND_IN_MARKER)
+        .map(|run| run.len() / STAND_IN_MARKER.len_utf8())
+        .max()
+        .unwrap_or(0)
+}
+
+fn stand_in(marker: &str, index: usize) -> String {
+    format!("{marker}{index}{marker}")
+}
+
+/// Moves every string value that holds a line separator into `quoted` and
+/// leaves its stand-in in its place.
+fn replace_with_stand_ins(value: &mut serde_json::Value, marker: &str, quoted: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) if text.contains(LINE_SEPARATORS) => {
+            let placeholder = stand_in(marker, quoted.len());
+            quoted.push(std::mem::replace(text, placeholder));
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                replace_with_stand_ins(item, marker, quoted);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                replace_with_stand_ins(item, marker, quoted);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Writes `text` as a double-quoted YAML scalar, escaping exactly what
+/// libyaml escapes: characters outside YAML's printable set, the byte order
+/// mark, line breaks, `"` and `\`.
+fn double_quoted(text: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for character in text.chars() {
+        match character {
+            '\0' => quoted.push_str("\\0"),
+            '\u{7}' => quoted.push_str("\\a"),
+            '\u{8}' => quoted.push_str("\\b"),
+            '\t' => quoted.push_str("\\t"),
+            '\n' => quoted.push_str("\\n"),
+            '\u{b}' => quoted.push_str("\\v"),
+            '\u{c}' => quoted.push_str("\\f"),
+            '\r' => quoted.push_str("\\r"),
+            '\u{1b}' => quoted.push_str("\\e"),
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\u{85}' => quoted.push_str("\\N"),
+            '\u{2028}' => quoted.push_str("\\L"),
+            '\u{2029}' => quoted.push_str("\\P"),
+            '\u{feff}' => quoted.push_str("\\uFEFF"),
+            ' '..='~' | '\u{a0}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'.. => {
+                quoted.push(character);
+            }
+            _ => {
+                let code = u32::from(character);
+                // Writing to a String can't fail.
+                let _ = match code {
+                    ..=0xff => write!(quoted, "\\x{code:02X}"),
+                    0x100..=0xffff => write!(quoted, "\\u{code:04X}"),
+                    _ => write!(quoted, "\\U{code:08X}"),
+                };
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Decodes a manifest document without applying semantic validation.
@@ -996,5 +1168,66 @@ mod tests {
             Err(ManagedObjectPathError::Unsafe)
         );
         assert!(validate_managed_object_path("notes/note.md").is_ok());
+    }
+
+    proptest::proptest! {
+        /// libyaml double-quotes any string that holds U+0085, so its output
+        /// for such strings shows the escapes `double_quoted` has to match.
+        #[test]
+        fn double_quoted_strings_match_libyaml(
+            before in proptest::collection::vec(proptest::char::any(), 0..16),
+            after in proptest::collection::vec(proptest::char::any(), 0..16),
+        ) {
+            let text = format!(
+                "{}\u{85}{}",
+                String::from_iter(before),
+                String::from_iter(after)
+            );
+            let libyaml = serde_yaml_ng::to_string(&text).unwrap();
+            proptest::prop_assert_eq!(libyaml, format!("{}\n", double_quoted(&text)));
+        }
+    }
+
+    #[test]
+    fn double_quoted_strings_read_back_unchanged() {
+        let text = "\0\u{7}\u{8}\t\n\u{b}\u{c}\r\u{1b}\"\\\u{7f}\u{85}\u{9f}\u{a0}\u{2028}\u{2029}\u{feff}\u{fffe}\u{e000}\u{1f600}'#: -";
+        let quoted = double_quoted(text);
+        assert_eq!(serde_yaml_ng::from_str::<String>(&quoted).unwrap(), text);
+    }
+
+    #[test]
+    fn line_separators_in_string_values_are_double_quoted() {
+        let mut object = WorkspaceObject {
+            id: "note_01j00000000000000000000000".into(),
+            object_type: "note".into(),
+            title: "Example".into(),
+            body: String::new(),
+            relative_path: "notes/example.md".into(),
+            revision: String::new(),
+            created: None,
+            updated: Some("\na\u{2028}".into()),
+            properties: BTreeMap::from([
+                ("a".into(), serde_json::json!("Boil.\nServe.\u{2028}")),
+                (
+                    "b".into(),
+                    serde_json::json!(["x\u{2029}", {"k": "y\u{2029}"}]),
+                ),
+                (
+                    "c".into(),
+                    serde_json::json!("\u{e000}0\u{e000} stays plain text"),
+                ),
+            ]),
+        };
+        let bytes = String::from_utf8(serialize_object(&object).unwrap()).unwrap();
+        assert_eq!(
+            bytes,
+            "---\nid: note_01j00000000000000000000000\ntype: note\na: \"Boil.\\nServe.\\L\"\nb:\n- \"x\\P\"\n- k: \"y\\P\"\nc: \u{e000}0\u{e000} stays plain text\nupdated: \"\\na\\L\"\n---\n\n# Example\n"
+        );
+        let ParsedMarkdown::Managed(parsed) = parse_markdown("notes/example.md", bytes.as_bytes())
+        else {
+            panic!("the canonical bytes must stay managed");
+        };
+        object.revision = parsed.revision.clone();
+        assert_eq!(parsed, object);
     }
 }

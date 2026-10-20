@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ebb5203595dd2fb2fb37964716e734d82eee05b1d2eb1f346356953ad0208876 # shrinks to case = Case { registered: false, declared: [], object: WorkspaceObject { id: "a_00000000000000000000000000", object_type: "a", title: "", body: "", relative_path: "objects/example.md", revision: "", created: None, updated: Some("\n\n"), properties: {} } }
+cc 81c16fc6ceb4f6b1aa6edb2dca7fdac49ebe3b3690b75feeb220c9406aac63ce # shrinks to case = Case { registered: false, declared: [], object: WorkspaceObject { id: "a_00000000000000000000000000", object_type: "a", title: "", body: "\r\r\r\nA", relative_path: "objects/example.md", revision: "", created: None, updated: None, properties: {} } }

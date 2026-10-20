@@ -1,6 +1,7 @@
 //! Canonical serialization is a fixed point: for any managed object, parsing
 //! its bytes and serializing again gives the same bytes, whether or not its
-//! type is registered.
+//! type is registered. Without a registered schema, the registry writes the
+//! same bytes as `serialize_object`.
 
 use std::collections::BTreeMap;
 
@@ -8,12 +9,30 @@ use proptest::prelude::*;
 use serde_json::Value;
 use workspace_format::{
     ObjectTypeRegistry, ParsedMarkdown, PropertyDeclaration, PropertyKind, PropertySchema,
-    WorkspaceObject, parse_markdown,
+    WorkspaceObject, parse_markdown, serialize_object,
 };
 
-/// Any Unicode text, control characters and line breaks included.
+/// Text that YAML reads in a special way: the line breaks of YAML 1.1 and
+/// 1.2, the byte order mark, document markers, indicators, a merge key, and
+/// plain scalars that resolve to null, booleans or numbers. `any::<char>()`
+/// almost never produces most of them.
+const YAML_SIGNIFICANT: &[&str] = &[
+    "\n", "\r", "\r\n", "\t", " ", "\u{85}", "\u{2028}", "\u{2029}", "\u{feff}", "\u{e000}", "---",
+    "...", "a\n", "<<", "null", "~", "yes", "No", "0x1f", "1e3", ".inf", "# ", ": ", "- ", "? ",
+    "|", ">", "'", "\"", "\\", "&a", "*a", "!t", "%", "@", "`", "{", "[",
+];
+
+/// Any Unicode text, control characters and line breaks included, mixed
+/// with pieces of text that YAML reads in a special way.
 fn any_text() -> impl Strategy<Value = String> {
-    prop::collection::vec(any::<char>(), 0..24).prop_map(String::from_iter)
+    prop::collection::vec(
+        prop_oneof![
+            3 => any::<char>().prop_map(String::from),
+            2 => prop::sample::select(YAML_SIGNIFICANT).prop_map(String::from),
+        ],
+        0..16,
+    )
+    .prop_map(|pieces| pieces.concat())
 }
 
 /// Property names: a small shared pool so declared and written names
@@ -21,7 +40,17 @@ fn any_text() -> impl Strategy<Value = String> {
 fn property_name() -> impl Strategy<Value = String> {
     prop_oneof![
         prop::sample::select(vec![
-            "status", "due", "alpha", "zeta", "Émile", "id", "created", "a b", "",
+            "status",
+            "due",
+            "kanban_order",
+            "start",
+            "alpha",
+            "zeta",
+            "Émile",
+            "id",
+            "created",
+            "a b",
+            "",
         ])
         .prop_map(String::from),
         any_text(),
@@ -131,8 +160,17 @@ fn reparse(bytes: &[u8]) -> WorkspaceObject {
     }
 }
 
+/// 2048 cases, or the number `PROPTEST_CASES` sets.
+fn config() -> ProptestConfig {
+    if std::env::var_os("PROPTEST_CASES").is_some() {
+        ProptestConfig::default()
+    } else {
+        ProptestConfig::with_cases(2048)
+    }
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(2048))]
+    #![proptest_config(config())]
 
     #[test]
     fn parsing_serializing_and_parsing_again_gives_identical_bytes(case in case()) {
@@ -153,6 +191,10 @@ proptest! {
             types.register(&case.object.object_type, schema).unwrap();
         }
         let written = types.serialize(&case.object).unwrap();
+        if !case.registered {
+            // Without a schema the registry writes the built-in order.
+            prop_assert_eq!(&written, &serialize_object(&case.object).unwrap());
+        }
         let parsed = reparse(&written);
         let mut expected = case.object.properties.clone();
         for key in ["id", "type", "created", "updated"] {
