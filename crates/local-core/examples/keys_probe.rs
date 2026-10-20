@@ -1,4 +1,8 @@
 //! Native key-exchange integration probe. Only public identity metadata and ciphertext reach stdout.
+#![allow(
+    clippy::result_large_err,
+    reason = "CoreError is a deliberately structured, serializable IPC error; errors are exceptional paths"
+)]
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use local_core::{Result, WorkspaceEngine, sync::*};
 use std::{

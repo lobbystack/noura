@@ -508,7 +508,7 @@ impl Drop for ActiveWorkerGuard {
 
 fn run_worker(request: WorkerRequest) -> Result<WorkerResponse> {
     ACTIVE_WORKERS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
             (active < MAX_ACTIVE_WORKERS).then_some(active + 1)
         })
         .map_err(|_| invalid("collaboration_worker_busy"))?;

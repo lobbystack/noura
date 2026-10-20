@@ -1,0 +1,10 @@
+[package]
+name = "app-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app-core = { version = "0.2.0", path = "../app-core" }
+egui.workspace = true
