@@ -48,9 +48,9 @@ blake3 = "1.8"
 comrak = { version = "=0.50.0", default-features = false, features = ["shortcodes"] }
 directories = "6"
 diffy = "=0.5.1"
-# eframe's defaults minus `clipboard`: arboard's Windows clipboard crates are
-# BSL-1.0, which waits for the owner's approval.
-eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
+# eframe's native defaults. `clipboard` connects copy and paste to the
+# system clipboard through arboard, whose Windows crates are BSL-1.0.
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
 egui = "0.37"
 egui-wgpu = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
