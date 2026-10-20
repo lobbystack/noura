@@ -72,6 +72,8 @@ Every record and hashed tuple starts with a tag: one byte holding the length of 
 
 A v2 tag starts with a byte below `0x40`, so no v2 signing input can collide with a v1 JSON tuple, which starts with `[` (`0x5b`).
 
+Unsigned request and response bodies ([§26](#26-http-api)) carry no tag: the route fixes their type.
+
 ### Records, signatures and digests
 
 A signed record is its body followed by `sig`, an Ed25519 signature over the body bytes. The signer is the device named in the body, or the device the body's context names. The record's digest is `BLAKE3(body || sig)`.
@@ -129,7 +131,7 @@ padme(L):
 padded_length(L) = max(256, padme(L))
 ```
 
-A padded plaintext is `u32 n || content || zero bytes`, where `n` is the content length and the total length is `padded_length(n + 4)`. Blobs use a `u64` length prefix instead ([§21](#21-attachments)). Unpadding happens after AEAD verification and before any parsing. It rejects a total length that isn't a valid padded length, an `n` larger than the space after the prefix, and any nonzero padding byte.
+A padded plaintext is `u32 n || content || zero bytes`, where `n` is the content length and the total length is `padded_length(n + 4)`. A length `x` is a valid padded length when `x >= 256` and `padme(x) = x`. Blobs use a `u64` length prefix instead ([§21](#21-attachments)). Unpadding happens after AEAD verification and before any parsing. It rejects a total length that isn't a valid padded length, an `n` larger than the space after the prefix, and any nonzero padding byte.
 
 **Overhead bound.** Lengths below 256 pad to 256. From 256 bytes, Padmé adds less than 2^-S of the framed length: at most 6.25% below 64 KiB, at most 3.125% below 4 GiB, and at most 1.5625% above. From 256 bytes up, the worst case is 6.247%, at a framed length of 32,769 bytes. Padmé leaks `O(log log L)` bits of the length.
 
@@ -211,9 +213,13 @@ A workspace's membership, roles, devices and key domains live in its policy: a h
 
 `access` is `id account | u8 level`, sorted by account, with levels 1 read, 2 write and 3 manage. A folder domain's list is empty in v2. Roles are 1 owner, 2 admin, 3 editor and 4 viewer.
 
-A change that removes write access from a device in a domain must carry a cut for that pair. The server builds the expected cuts from its own chain heads and rejects a change whose cuts differ (`policy_cuts_stale`), returning its heads so the signer can retry. Clients reject every operation beyond a device's cut.
+A change that removes write access from a device in a domain must carry a cut for that pair. The server builds the expected cuts from its own chain heads and rejects a change whose cuts differ (`policy_cuts_stale`), returning its heads so the signer can retry. Before signing, the signer fetches the record at each cut position by chain position ([§26](#26-http-api)) and checks its signature and its link to the chain the signer already holds.
+
+Clients reject a record beyond a device's cut unless its `policy_revision` is at or after a later change that gave that device write access again in that domain. A client that already accepted a record beyond a new cut, under valid authority, rejects the change with `sync_policy_cut_invalid`.
 
 Removing a member requires a `remove_device` change for each of the member's devices earlier in the same transaction.
+
+`delete_domain` deletes the domain's log, epochs, envelopes and checkpoints on the server, and the blobs that only its operations listed. Devices that held the domain keep their local files. Those files lose their marker's protection, so the rule in [§9](#moving-objects-between-domains) holds them for review instead of uploading them to a wider domain. An owner or admin can delete a restricted domain they can't read.
 
 ### Roles and authority
 
@@ -256,6 +262,8 @@ The client stores the accepted head durably and reports:
 - `sync_policy_rollback` when the server reports a head below the accepted one;
 - `sync_policy_unauthorized` when a change fails the authority rules.
 
+A record that names a policy revision above the client's accepted head (an operation, epoch record, checkpoint or purge) waits until the client has fetched and accepted that revision. If the server can't supply it, the client reports `sync_policy_rollback`.
+
 Policy chains stay short (one change per membership or device event), so a new device replays the whole chain and v2 defines no policy snapshot.
 
 ## 9. Key domains
@@ -274,7 +282,7 @@ A folder domain inherits its audience. A restricted domain's audience comes only
 
 A folder or restricted domain covers the folder that holds its marker file, `.noura-domain`, and everything beneath it. The marker is an ordinary synced file inside the domain it names, so a member outside a restricted domain never receives it. Its content is one line, `domain: <base64url domain ID>`, followed by a line feed. Because the marker moves with its folder, moving the folder keeps the domain and no path serves as identity. Domain roots don't nest: a client refuses to create a marker inside another domain's root.
 
-An object's domain is the domain of the nearest ancestor folder holding a valid marker, or the workspace domain.
+A marker is valid when its bytes are exactly `domain: `, the 22-character base64url domain ID and one line feed, the ID names a folder or restricted domain in the verified policy, and no ancestor folder holds another valid marker. An object's domain is the domain of the nearest ancestor folder holding a valid marker, or the workspace domain. The workspace format spec and its conformance fixtures gain this file in the same change that implements domain roots.
 
 ### Moving objects between domains
 
@@ -294,6 +302,7 @@ Each domain's key changes in epochs, numbered from 1. An epoch key is 32 random 
 | workspace | `id` | |
 | domain | `id` | |
 | epoch | `u64` | 1 for a new domain, then +1 |
+| previous | `digest` | digest of the previous epoch record; 32 zero bytes at epoch 1 |
 | policy_revision | `u64` | the policy head the rotating device saw; recipients are computed at this revision |
 | rotating_device | `id` | |
 | recipients | `list<id>` | sorted device IDs that receive this epoch's key |
@@ -307,7 +316,9 @@ The lineage field links each epoch to the one before, so a device that holds the
 
 `key_check` lets every recipient confirm it received the same key as the others. A rotating device can't hand different recipients different keys without failing that check.
 
-A client accepts an epoch record when its signature verifies under the rotating device's pinned card, the rotating device could read the domain at `policy_revision`, every recipient could read it at that revision, the epoch is one above the previous accepted epoch, and the lineage decrypts to a key matching the previous epoch's `key_check`. A failure reports `sync_key_mismatch`.
+A client accepts an epoch record when its signature verifies under the rotating device's pinned card, the rotating device could read the domain at `policy_revision`, every recipient could read it at that revision, the epoch is one above the previous accepted epoch, `previous` equals that record's digest, and the lineage decrypts to a key matching the previous record's `key_check`. Every key derived through lineage is checked against its own record's `key_check`. A failure reports `sync_key_mismatch`.
+
+Epoch records form a hash chain per domain, and each checkpoint names the current epoch record ([§17](#17-manifest-and-checkpoints)). A rotating device that colludes with the server to show two recipients two different records for one epoch is caught when either recipient sees the other record, a checkpoint naming it, or an operation that fails to decrypt under its key (`sync_key_mismatch`).
 
 ### Envelopes
 
@@ -338,7 +349,7 @@ Granting decides who may read a domain; wrapping hands an authorized device the 
 - **Granting** happens only through policy changes, signed by the devices the authority table in [§8](#roles-and-authority) allows: membership changes for workspace and folder domains, and a manager's access-list changes for a restricted domain.
 - **Wrapping** is mechanical. Any device that holds an epoch key may wrap it for a device that the current policy authorizes to read that domain. The server rejects an envelope for any other recipient.
 
-When an approver can't wrap a domain (an admin approving a member's new device outside a restricted domain the member belongs to), the new device's envelope stays missing. The server lists missing envelopes to every device that holds the key ([§26](#26-http-api)), and the first one to see the gap fills it.
+When an approver can't wrap a domain (an admin approving a member's new device outside a restricted domain the member belongs to), the new device's envelope stays missing. The server lists missing envelopes to every device that holds the key ([§26](#26-http-api)). For workspace and folder domains, the first device to see the gap fills it. For a restricted domain, a device fills the gap on its own only when a device of the same account signed the new device's `add_device`. A device that another account added (an admin re-enrolling a member) waits for a manager of the restricted domain to wrap its key by hand, so an admin who enrolls a device in a member's name can't read that member's restricted domains.
 
 ### Rotation
 
@@ -361,7 +372,9 @@ Rotating domain D at policy revision r means:
 
 The device that removes another device includes rotations for every domain it can read. A domain it can't read (a restricted domain it doesn't belong to) stays pending until one of that domain's grantee devices rotates it. Concurrent rotations race; the server accepts the first epoch record for each epoch and rejects the rest with `epoch_conflict`.
 
-From revision r until the rotation commits, the server stops serving D's operations and keys to the removed devices and rejects writes to D with `rotation_pending`. A client that holds D's key rotates it before its next write to D. No device encrypts under an epoch whose recipients include a device that no longer has access.
+From revision r until the rotation commits, the server stops serving D's operations and keys to the removed devices and rejects writes to D with `rotation_pending`. A client that holds D's key rotates it before its next write to D. No device that has seen revision r encrypts under an epoch whose recipients include a device that no longer has access.
+
+An operation is epoch-valid when its `epoch` is at least the first epoch of D whose record has `policy_revision` at or above the latest revision, at or below the operation's `policy_revision`, that required D to rotate. After the rotation commits, the server still accepts an operation under the previous epoch when its `policy_revision` is below r: its writer signed it before learning of the removal, and rejecting it would force a re-seal ([§14](#your-own-chain)).
 
 **Cost.** A rotation writes one epoch record and one envelope per remaining authorized device, for each domain the removed device could read. Its size depends on devices and domains and never on objects. [§28](#28-worked-example-100000-objects) works through the numbers.
 
@@ -373,11 +386,13 @@ A domain key opens every earlier ciphertext in that domain through lineage, so t
 
 | Event | Floor |
 |---|---|
-| A member joins | the domain head when the approval commits |
-| A grantee joins a restricted domain | the domain head when the grant commits |
+| A member joins | `covered_seq` of the checkpoint committed with the approval |
+| A grantee joins a restricted domain | `covered_seq` of the checkpoint committed with the grant |
 | A member's new device | the member's existing floor |
-| An admin re-enrolls a member who lost every device | the domain head when the approval commits |
+| An admin re-enrolls a member who lost every device | `covered_seq` of the checkpoint committed with the approval |
 | A device restored from the member's recovery kit | the member's existing floor |
+
+An approval or grant that sets a floor carries a fresh checkpoint for each affected domain, signed by a device that can write it, and the floor equals that checkpoint's `covered_seq`. Records that land between signing and commit sit above the floor, so the new device pulls them normally. The server answers a pull or chain fetch below the floor with `before_history_floor`.
 
 History isolation for new members depends on the server. [§30](#30-threats) records that limit.
 
@@ -418,7 +433,9 @@ Both devices show the approval code as 40 lowercase hexadecimal characters in 10
 4. The approving device commits the approval: `add_device` changes (with `offer` set to `offer_digest`) in each anchored workspace, the envelopes the candidate needs, and, for a new member, `add_member` and a fresh checkpoint per domain it can read so the member's floor has a checkpoint to bootstrap from.
 5. The candidate pins the approver's card and anchors. It accepts the approval only from that card, and verifies each workspace's chain from genesis to its anchor, then onward.
 
-A server that swaps either card produces different codes on the two screens. To make them match, it would have to find a second card whose offer hashes to the same 160-bit code after the approver chose its nonce, which takes about 2^160 work.
+Before showing the code, the candidate checks that `candidate_card_digest` equals `BLAKE3` of its own card; otherwise it reports `sync_approval_mismatch` and shows nothing. After you confirm, the candidate verifies each workspace's chain up to its anchor and checks that the approver's card belongs to the policy at that anchor with the authority to sign the `add_device` that follows. For an invitation, the approver must be the inviting device: `BLAKE3(approver_card)` must equal the context's `inviter_fingerprint` ([§11](#11-invitations)).
+
+A server that swaps either card produces different codes on the two screens. Passing the approver's offer for a substitute card through to the real candidate fails the digest check. To make the codes match otherwise, the server would have to find a second offer that hashes to the same 160-bit code after the approver chose its nonce, which takes about 2^160 work.
 
 ## 11. Invitations
 
@@ -451,11 +468,11 @@ Its padded plaintext:
 | inviter_name | `str` |
 | inviter_fingerprint | `digest` |
 
-The invitation page decrypts the context in `account-web` and shows the workspace name, the inviter and the role. A wrong secret or tampered context shows a generic page. You sign in or sign up (the server's email allowlist still applies) and accept. Acceptance binds the invitation to your account and grants nothing. The inviter's device then approves your device with an approval code ([§10](#10-approval)), and only that commit adds you to the policy and wraps keys for you. Revoking an invitation makes its link fail.
+The invitation page decrypts the context in `account-web` and shows the workspace name, the inviter and the role. A wrong secret or tampered context shows a generic page. You sign in or sign up (the server's email allowlist still applies) and accept. Acceptance binds the invitation to your account and grants nothing. The inviting device then approves your device with an approval code ([§10](#10-approval)), and only that commit adds you to the policy and wraps keys for you. Only the inviting device can approve, because your device checks its card against the context's fingerprint; if that device is lost, an owner or admin revokes the invitation and sends a new one. Revoking an invitation makes its link fail.
 
 ## 12. Recovery kit
 
-A recovery kit is an offline device. Exporting a kit creates a recovery identity (a device card with its own signing and HPKE keys) and adds it to every workspace your account belongs to with `add_device`. Rotations wrap keys for it like any other device, so the kit never goes stale. Removing the recovery identity from your device list revokes the kit.
+A recovery kit is an offline device. Exporting a kit creates a recovery identity (a device card with its own signing and HPKE keys) and adds it to every workspace your account belongs to with `add_device`. When your account later creates or joins a workspace, your device adds the recovery identity there in the same transaction. Rotations wrap keys for it like any other device, so the kit never goes stale. Removing the recovery identity from your device list revokes the kit.
 
 The kit is a file you pick outside every workspace, written with mode 0600 on Unix:
 
@@ -468,7 +485,7 @@ The kit is a file you pick outside every workspace, written with mode 0600 on Un
 | parallelism | `u32` | 4 |
 | *AEAD associated data ends here* | | |
 | nonce | `nonce` | |
-| ciphertext | `bytes` | XChaCha20-Poly1305 under `Argon2id(passphrase, salt, m, t, p)`, 32-byte output |
+| ciphertext | `bytes` | XChaCha20-Poly1305 under `Argon2id(passphrase, salt, m, t, p)`, Argon2 version `0x13`, 32-byte output |
 
 Its plaintext:
 
@@ -482,9 +499,9 @@ Its plaintext:
 | hpke_secret | `key` |
 | workspaces | `list<kit_workspace>` |
 
-`kit_workspace` is `id workspace | digest genesis`, the digest of each workspace's revision-1 policy change. The passphrase is at least 12 characters of UTF-8, used as typed. Readers reject parameters below the values above.
+`kit_workspace` is `id workspace | digest genesis | u64 revision | digest head`, sorted by workspace: the digest of the workspace's revision-1 policy change and the accepted policy head when the kit was written. The passphrase is at least 12 characters, normalized to Unicode NFC and encoded as UTF-8. Readers reject parameters below the values above, and a wrong passphrase or tampered file reports `sync_recovery_kit_invalid`.
 
-To recover after losing every device, you sign in on a new computer, enroll it, and import the kit. The new device verifies the kit's card against its seeds, checks each workspace's chain against the stored genesis digest, and signs `add_device` for itself as the recovery identity. It unwraps the recovery identity's envelopes and wraps every key for itself. The kit restores keys, never the old device's signing identity or session. The app then asks you to remove the lost devices, which rotates every domain, and to export a new kit.
+To recover after losing every device, you sign in on a new computer, enroll it, and import the kit. The new device verifies the kit's card against its seeds, checks that each workspace's chain starts at the stored genesis digest and extends the stored head (a shorter chain reports `sync_policy_rollback`), and signs `add_device` for itself as the recovery identity. It unwraps the recovery identity's envelopes and wraps every key for itself. The kit restores keys, never the old device's signing identity or session. The app then asks you to remove the lost devices, which rotates every domain, and to export a new kit.
 
 ## 13. Operations
 
@@ -502,8 +519,9 @@ An operation records one change to one object.
 | previous | `digest` | digest of the device's previous record in this domain; 32 zero bytes at counter 1 |
 | epoch | `u64` | the epoch whose key encrypts the payload |
 | policy_revision | `u64` | the policy head the device saw when it signed |
+| previous_attempt | `digest` | digest of a record the server rejected at this chain position, when this record re-seals the same change ([§14](#your-own-chain)); otherwise 32 zero bytes |
 | rid | `id` | |
-| supersedes | `list<cover>` | sorted by device, one entry per device, at most 64 |
+| supersedes | `list<cover>` | sorted by device, one entry per device, at most 256 |
 | blobs | `list<id>` | blob IDs the payload references, sorted, at most 4 |
 | *AEAD associated data ends here* | | |
 | nonce | `nonce` | |
@@ -531,7 +549,7 @@ An operation records one change to one object.
 | 6 | move | patch | `str object_id`, `digest base_snapshot`, `bytes expected_path`, `bytes path` |
 
 - `object_id` is the managed file's frontmatter ID, or empty for an ordinary file.
-- `path` is a workspace-relative UTF-8 path of at most 4,096 bytes. Clients reject absolute paths, `.` and `..` components, empty components, control characters, Windows reserved names and characters, trailing dots or spaces, and the reserved roots `.noura` and `.git` in any ASCII case. Paths compare byte for byte.
+- `path` is a workspace-relative UTF-8 path of at most 4,096 bytes, with `/` between components. Clients reject absolute paths, `.` and `..` components, empty components, control characters, Windows reserved names and characters, trailing dots or spaces, and the reserved roots `.noura` and `.git` in any ASCII case. Paths compare byte for byte.
 - `revision` is the BLAKE3 hash of the file's bytes as materialized; for a delete, of the deleted bytes, or zeros when unknown.
 - `content` is `u8 form` then either form 1, `bytes inline`, or form 2, `blob_ref`.
 - `blob_ref` is `id blob | u64 ciphertext_length | digest ciphertext_digest | key blob_key | u64 plaintext_length`.
@@ -545,7 +563,7 @@ An inline payload holds at most 262,144 bytes before padding. Larger content goe
 
 The server and the client compute the same live set for each `rid` from cleartext fields: an operation is live unless another operation on the same `rid` covers it. The server needs no plaintext to compute it, compact the log, or check a manifest.
 
-- A state operation covers every state operation and patch the writer knows on that `rid`. A delete covers everything, so the tombstone stays live alone.
+- A state operation covers every operation live in the writer's view of that `rid`, naming each device's highest live counter. A delete covers everything, so the tombstone stays live alone. Covers name only live operations, which the server never prunes ([§19](#19-compaction-and-purge)).
 - A patch covers nothing. It applies on top of the snapshot named by `base_snapshot`.
 
 ### Server checks on an operation
@@ -554,7 +572,7 @@ The server accepts an operation only when:
 
 - the session's device is the signer, is active, and the signature verifies under its card;
 - the device may write the domain at the current policy revision and at `policy_revision`, which is at most the current revision;
-- `epoch` is the domain's current epoch and no rotation is pending;
+- `epoch` is the domain's current epoch and no rotation is pending, or the previous epoch under the condition in [§9](#rotation);
 - `counter` is one above the server's head for this device and domain and `previous` equals that head's digest (else `chain_conflict` with the head);
 - `rid` is new, or already belongs to this domain;
 - every cover names an existing operation on this `rid` with exactly that device and counter (else `supersedes_unknown`);
@@ -565,7 +583,7 @@ A retried upload of an operation the server already holds, with the same digest,
 
 ### Client checks on an operation
 
-Before decrypting, the client verifies the signature under a pinned card from its verified policy, checks that the signer could write the domain at `policy_revision`, rejects an operation beyond the signer's cut, checks the epoch against the domain's rotations, and runs the chain verifier ([§14](#14-device-chains)). It decrypts with the epoch key, unpads, parses, and checks that the payload's `rid` matches the header. A failure reports `sync_writer_not_authorized`, `sync_epoch_stale`, `sync_padding_invalid` or `sync_payload_invalid` and changes no file.
+Before decrypting, the client verifies the signature under a pinned card from its verified policy, checks that the signer could write the domain at `policy_revision`, rejects an operation beyond the signer's cut, checks that the operation is epoch-valid ([§9](#rotation)), and runs the chain verifier ([§14](#14-device-chains)). It decrypts with the epoch key, unpads, parses, and checks that the payload's `rid` matches the header. A failure reports `sync_writer_not_authorized`, `sync_epoch_stale`, `sync_padding_invalid` or `sync_payload_invalid` and changes no file.
 
 ## 14. Device chains
 
@@ -575,10 +593,14 @@ Chains are per domain because a member outside a restricted domain never sees th
 
 ### Verifier
 
-The client keeps, per domain and device, the accepted head `(counter, digest)` and, for each accepted record, the server sequence where it first arrived. It processes each pull page in sequence order. For a record with counter `c`, previous digest `p` and digest `h` at sequence `s`:
+The client keeps, per domain and device, the accepted head `(counter, digest, sequence)` and the counter, digest and sequence of each accepted record above the domain's retention floor. It processes each pull page in sequence order. For a record with counter `c`, previous digest `p` and digest `h` at sequence `s`:
 
-1. **Counter at or below the head.** If the accepted record at `c` has digest `h` and arrived at `s`, the page repeats a position the client already applied (for example after a restart), so the client ignores it. Same digest at another sequence: `sync_chain_replayed`. Different digest: `sync_chain_forked`.
-2. **Counter one above the head.** If `p` equals the head's digest, accept and advance the head. Otherwise: `sync_chain_forked`.
+1. **Counter at or below the head.**
+   - The client holds the record at `c` with digest `h` at sequence `s`: the page repeats a position the client already applied (for example after a restart), so the client ignores it.
+   - The client holds the record at `c` with digest `h` at another sequence: `sync_chain_replayed`.
+   - The client holds a different record at `c`: if this record's `previous_attempt` names the held record and both decrypt to the same payload, the server served a rejected attempt and its re-seal ([§14](#your-own-chain)); the client keeps the re-seal, which carries the same change, and reports nothing. Otherwise: `sync_chain_forked`.
+   - The client no longer holds a record at `c` (it bootstrapped past it, or the record sits below the retention floor): every legitimate record at or below the head has a sequence at or below the head's, so `s` above the head's sequence reports `sync_chain_replayed`.
+2. **Counter one above the head.** If `p` equals the head's digest, accept and advance the head. Otherwise the client fetches position `c - 1`: if the server returns a re-seal of the head that rule 1 accepts, the client replaces the head with it and accepts this record when `p` matches the re-seal. Otherwise: `sync_chain_forked`.
 3. **Counter more than one above the head.** The page skipped records. The client fetches each missing position by chain position ([§26](#26-http-api)). A missing record that the server returns at a sequence above `s` reports `sync_chain_reordered`. A missing record at a sequence below `s`, or one the server can't return, reports `sync_chain_gap`.
 
 On any of these errors the client applies nothing from the page, changes no file, keeps its cursor and reports the error with the device and domain. It retries on the next pull, so a transient server fault clears itself.
@@ -591,9 +613,12 @@ A chain proves what the server served, never that it served everything. A client
 
 ### Your own chain
 
-A device writes each counter to its journal before signing, so a crash never reuses one. On startup, and on `chain_conflict`, it compares its journal with the server's head for its own chain. A server head above the journal means the journal was restored from a backup: the device verifies those records carry its own signature and continues from the server's head.
+A device writes each counter to its journal before signing and persists each signed record before sending it, so a crash never reuses a counter and a retry sends the same bytes. On startup, and on `chain_conflict`, it compares its journal with the server's head for its own chain:
 
-If the server rejects an operation with `epoch_stale` or `rotation_pending`, the device re-encrypts the same change under the new epoch and signs it at the same counter. A server that kept the rejected version could later show a fork; clients report it as `sync_chain_forked` without deciding whether the device or the server misbehaved.
+- A server head above the journal means the journal was restored from a backup. The device verifies those records carry its own signature and continues from the server's head.
+- A server head below a record the server acknowledged means the server lost acknowledged records. The device reports `sync_chain_gap` for its own chain and uploads its persisted records again, unchanged.
+
+When the server rejects a record the device must change before it can succeed (`epoch_stale`, `rotation_pending`, `supersedes_unknown`, `blob_incomplete`), the device re-seals the same change at the same counter with `previous_attempt` set to the rejected record's digest. A server that kept the rejected copy and serves both shows readers two records that carry one change, which rule 1 above accepts as a retry. Two records at one position that carry different changes are a fork, and clients report it without deciding whether the device or the server misbehaved.
 
 ## 15. Domain log, cursors and pulls
 
@@ -601,7 +626,7 @@ Each domain has its own log. The server assigns each accepted operation and purg
 
 ### Push
 
-`POST /v2/workspaces/{w}/ops` carries `list<bytes>` of operation records, at most 1 MiB, possibly spanning domains. The server commits the batch atomically or rejects all of it, and returns `list<receipt>`, where a receipt is `digest op_digest | id domain | u64 seq`. A cross-domain move fits one push; a larger atomic change uses a staged transaction ([§20](#20-chunked-staging)).
+`POST /v2/workspaces/{w}/ops` carries `list<record_ref>` ([§20](#20-chunked-staging)) holding operations and purges, at most 1 MiB, possibly spanning domains. The server commits the batch atomically or rejects all of it, and returns `list<receipt>`, where a receipt is `digest record_digest | id domain | u64 seq`, in request order. A cross-domain move fits one push; a larger atomic change uses a staged transaction ([§20](#20-chunked-staging)).
 
 ### Pull
 
@@ -622,6 +647,19 @@ Each domain has its own log. The server assigns each accepted operation and purg
 `entry` is `u64 seq | u8 record_type | bytes record`, with record types 1 operation and 7 purge. A page holds at most 1 MiB. A cursor below the retention floor returns `cursor_compacted`, and the client bootstraps ([§18](#18-bootstrap)).
 
 The client advances a domain's cursor to `complete_through` only after every record in the page passes verification and every resulting file change reaches disk. Policy changes and keys have their own cursors ([§26](#26-http-api)). A pull may wait up to 25 seconds for new records, and the realtime channel ([§23](#23-presence-and-realtime-channel)) announces new heads; both only prompt a pull.
+
+### Client journal
+
+The client keeps its sync state in ordinary files under `.noura/sync/`, never only in SQLite, and never uploads them:
+
+- the accepted policy chain and its head;
+- epoch records and the envelopes addressed to this device, still wrapped;
+- per domain: the cursor, the latest accepted checkpoint, the chain heads and recent records the verifier needs ([§14](#verifier)), and the cuts;
+- this device's counters and every signed record not yet acknowledged, persisted before sending;
+- the map from each `rid` to its local object, path and live operations;
+- the review store for conflicts, orphans and held files.
+
+Device signing and HPKE secrets live only in the operating system's credential store. Epoch keys exist only in memory: the client unwraps them from the stored envelopes with the device's HPKE secret. If the journal is lost, the client bootstraps again ([§18](#18-bootstrap)), matches local files to objects by path and content revision, and takes its own counters from the server's heads.
 
 ## 16. Conflicts
 
@@ -692,34 +730,37 @@ A writer device signs a checkpoint for a domain after it has applied every recor
 | live_objects | `u64` | number of leaves |
 | manifest_root | `digest` | |
 | heads_digest | `digest` | `BLAKE3(tag(noura.sync.manifest.heads) \|\| list<ref>)`: every device's chain head in this domain at `covered_seq`, sorted by device |
+| epoch_record | `digest` | digest of the domain's current epoch record at `covered_seq` |
 | signer | `id` | |
 | sig | `sig` | |
 
-A `checkpoint_bundle` is `bytes checkpoint | list<ref> heads`. The server recomputes the root from its own log at `covered_seq` and rejects a mismatch with `manifest_mismatch`, so an honest server and an honest writer always agree. A writer signs a checkpoint when the server sets `checkpoint_due`: after 10,000 records since the last checkpoint, after 24 hours with any record, or when a new member's floor passes the latest checkpoint.
+A `checkpoint_bundle` is `bytes checkpoint | list<ref> heads`. A client accepts a checkpoint only when its signer can write the domain in the client's current verified policy and has no cut there, so a removed device can't sign checkpoints. The server recomputes the root from its own log at `covered_seq` and rejects a mismatch with `manifest_mismatch`, so an honest server and an honest writer always agree. A writer signs a checkpoint when the server sets `checkpoint_due`: after 10,000 records since the last checkpoint, or 24 hours after the first record that followed it.
 
-A client that has applied through `covered_seq` compares the root with its own. A mismatch reports `sync_manifest_mismatch`, and the client walks the tree to find which objects differ.
+A client that has applied through `covered_seq` compares the root and `epoch_record` with its own. A mismatch reports `sync_manifest_mismatch` or `sync_key_mismatch`, and the client walks the tree to find which objects differ.
 
 ## 18. Bootstrap
 
 A new device, or one whose cursor fell below the retention floor, loads current state from the latest checkpoint instead of history:
 
 1. Fetch and verify the policy chain from the approval anchor, and the epoch records and envelopes for each readable domain. Derive older epoch keys through lineage as live operations need them.
-2. For each domain, fetch the latest checkpoint bundle, signed by a device that could write the domain at its `policy_revision`.
+2. For each domain, fetch the latest checkpoint bundle and check its signer against the current verified policy ([§17](#checkpoint)) and its `covered_seq` against the device's history floor.
 3. Fetch the operations live at `covered_seq` in pages ordered by `rid`. Verify each signature, compute each leaf, and check the root and `live_objects` against the checkpoint. A mismatch reports `sync_manifest_mismatch` and installs nothing.
 4. Decrypt, materialize the files and record the chain heads from the bundle.
 5. Pull from `covered_seq` with the chain verifier starting at those heads.
 
-A returning device compares its journal with the manifest instead of replacing files. An object missing from the manifest was deleted elsewhere: the client deletes its local copy when that copy hasn't changed since the last sync, and otherwise keeps it and uploads it under a new `rid`.
+A returning device compares its journal with the manifest instead of replacing files. It never deletes a local file because the manifest lacks its object: it lists those files once for review ("deleted on another device while this one was away") and deletes them only when you confirm. A changed local copy uploads under a new `rid` unless you choose to delete it.
 
 ## 19. Compaction and purge
 
 The server deletes operations no client needs.
 
-**Retention floor.** For each domain, the retention floor is the lowest of: the lowest cursor acknowledged by any device that pulled the domain in the last 90 days (a device acknowledges a cursor by pulling after it), the latest checkpoint's `covered_seq`, and the last sequence older than 30 days. The server keeps a daily table of sequence marks per domain to map days to sequences and stores no other timestamp on records.
+Retention counts checkpoints instead of days, so the server needs no table that maps sequences to dates.
 
-**Pruning.** The server may delete an operation whose sequence is at or below the retention floor and that a record at or below the latest checkpoint's `covered_seq` covers. It deletes all such operations in one transaction, so a covering operation never disappears before the operations it covers. The live set at the latest checkpoint stays complete.
+**Retention floor.** For each domain, the retention floor is the lower of: the lowest cursor acknowledged by any active device (a device acknowledges a cursor by pulling after it), and the `covered_seq` of the 30th most recent checkpoint. A device stays active while it has pulled the domain since the 90th most recent checkpoint; the server records, per device and domain, its acknowledged cursor and the index of the latest checkpoint at its last pull.
 
-**Purge.** A delete operation stays live as a tombstone until a writer purges it. The server publishes a `purge_horizon`, at most the retention floor, at the last sequence older than 90 days. A writer device lists objects whose only live operation is a delete at or below the horizon and signs a purge:
+**Pruning.** The server may delete an operation whose sequence is at or below the retention floor when another operation whose sequence is also at or below the floor covers it. Every active device has seen both, so no writer can still name the deleted operation in a cover. The server deletes all such operations in one transaction, so a covering operation never disappears before the operations it covers, and the live set at every retained checkpoint stays complete.
+
+**Purge.** A delete operation stays live as a tombstone until a writer purges it. The server publishes a `purge_horizon`: the `covered_seq` of the 90th most recent checkpoint, or 0 while fewer exist. A writer device lists objects whose only live operation is a delete at or below the horizon and signs a purge:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -730,11 +771,12 @@ The server deletes operations no client needs.
 | counter | `u64` | in the device's chain for this domain |
 | previous | `digest` | |
 | policy_revision | `u64` | |
+| previous_attempt | `digest` | as in an operation |
 | horizon | `u64` | at most the server's `purge_horizon` |
 | rids | `list<id>` | sorted, at most 10,000 |
 | sig | `sig` | |
 
-The server checks that every listed `rid` has all its live operations at or below the horizon, then deletes every operation on those `rid`s. A client that holds a listed object with a live state other than a tombstone reports `sync_purge_live_object` and uploads its copy under a new `rid`. The server learns that those objects were deleted at some point before the horizon, which is less than a per-delete flag would reveal.
+The server checks the signer and chain as for an operation and that every listed `rid` belongs to the domain and has all its live operations at or below the horizon (else `purge_invalid`), then deletes every operation on those `rid`s. A client that holds a listed object with a live state other than a tombstone reports `sync_purge_live_object` and uploads its copy under a new `rid`. The server learns that those objects were deleted at some point before the horizon, which is less than a per-delete flag would reveal.
 
 The server deletes a purge record once its sequence falls below the retention floor; readers above the floor have seen it, and readers below it bootstrap.
 
@@ -743,7 +785,7 @@ The server deletes a purge record once its sequence falls below the retention fl
 A change too large for one request commits atomically through a staged transaction: key rotations in large workspaces, approvals into many domains, and moving many objects into a restricted domain.
 
 1. `POST /v2/workspaces/{w}/txns` opens transaction `t` (a random ID) with its part count.
-2. `PUT /v2/workspaces/{w}/txns/{t}/parts/{i}` uploads part `i`, at most 1 MiB. A part is `list<record_ref>`, where `record_ref` is `u8 record_type | bytes record` with types 1 operation, 2 policy change, 3 epoch, 4 envelope, 5 checkpoint, 6 profile and 7 purge. Re-uploading a part with the same bytes succeeds; different bytes fail.
+2. `PUT /v2/workspaces/{w}/txns/{t}/parts/{i}` uploads part `i`, at most 1 MiB. A part is `list<record_ref>`, where `record_ref` is `u8 record_type | bytes record` with types 1 operation, 2 policy change, 3 epoch record, 4 envelope, 5 checkpoint bundle, 6 profile and 7 purge. Re-uploading a part with the same bytes succeeds; different bytes fail.
 3. `POST /v2/workspaces/{w}/txns/{t}/commit` carries the signed descriptor.
 
 `txn`:
@@ -775,7 +817,7 @@ chunk i     = XChaCha20-Poly1305(blob_key, nonce_prefix || u32 i || u8 last, aad
 ciphertext  = header || chunk 0 || chunk 1 || ...
 ```
 
-Every chunk holds 65,536 plaintext bytes except the last, which holds 1 to 65,536 and sets `last` to 1. The ciphertext length is `header length + P + 16 * ceil(P / 65,536)`, which lets the server check padding from the length alone. A blob's plaintext is at most 2^31 bytes (2 GiB).
+Every chunk holds 65,536 plaintext bytes except the last, which holds 1 to 65,536 and sets `last` to 1. The ciphertext length is `header length + P + 16 * ceil(P / 65,536)`, which lets the server check padding from the length alone. A blob's file content `L` is at most 2^31 bytes (2 GiB).
 
 The receiver checks the complete ciphertext against `ciphertext_digest` (BLAKE3) before decrypting, writes the plaintext to a temporary file, checks `plaintext_length` and the file `revision`, and only then replaces the destination.
 
@@ -785,7 +827,7 @@ Uploads use tus 1.0.0 core with the `creation`, `termination` and `expiration` e
 
 | Request | Purpose |
 |---|---|
-| `POST /v2/workspaces/{w}/blobs` with `Upload-Length` and `Upload-Metadata: blob <b64>,digest <b64>,domain <b64>` | create; the device must be able to write that domain |
+| `POST /v2/workspaces/{w}/blobs` with `Upload-Length` and `Upload-Metadata: blob <base64>,digest <base64>,domain <base64>` (standard base64, as tus requires) | create; the device must be able to write that domain |
 | `HEAD /v2/workspaces/{w}/blobs/{id}` | read `Upload-Offset` to resume |
 | `PATCH /v2/workspaces/{w}/blobs/{id}` with `Upload-Offset` and `Content-Type: application/offset+octet-stream` | append at most 1 MiB |
 | `DELETE /v2/workspaces/{w}/blobs/{id}` | abandon an incomplete upload |
@@ -848,7 +890,7 @@ The ciphertext uses the presence subkey of the domain's current epoch. Its padde
 | tag | `tag(noura.sync.presence.payload)` |
 | rid | `id` |
 | state | `u8` (1 active, 2 idle) |
-| selections | `list<selection>`, at most 8, each `bytes anchor`, `bytes head` (yrs relative positions, at most 512 bytes each) |
+| selections | `list<selection>`, at most 8, each `bytes anchor`, `bytes head` (yrs relative positions, at most 256 bytes each) |
 
 The object's `rid` stays inside the ciphertext, so the server learns which domain you're in but not which note. The server checks the signer's device, its read access to the domain and the current epoch, then forwards the record to the other connected devices that can read the domain. It never stores presence. A device sends at most 10 presence records a second. Receivers reject a sequence at or below the last one seen for that session and drop a session's cursors 30 seconds after its last record or when the server sends `presence_gone`.
 
@@ -873,7 +915,7 @@ The sharing device generates a 16-byte token and a 32-byte link key. Browsers ne
 | nonce | `nonce` | |
 | ciphertext | `bytes` | under `derive_key("noura.sync.v2 share key", link_key)` |
 
-Its padded plaintext is `tag(noura.sync.share.payload) | str title | bytes markdown`, at most 1 MiB after padding. The viewer in `account-web` decrypts it under a content security policy that blocks inline scripts, renders the Markdown through a strict allowlist, and leaves images out. A tampered ciphertext or wrong key shows an error page and renders nothing.
+Its padded plaintext is `tag(noura.sync.share.payload) | str title | bytes markdown`, at most 983,040 bytes (960 KiB) after padding, so the record fits a 1 MiB request. The viewer in `account-web` decrypts it under a content security policy that blocks inline scripts, renders the Markdown through a strict allowlist, and leaves images out. A tampered ciphertext or wrong key shows an error page and renders nothing.
 
 `share_box`, which lets owner and admin devices list and update links:
 
@@ -888,7 +930,9 @@ Its padded plaintext is `tag(noura.sync.share.payload) | str title | bytes markd
 | nonce | `nonce` |
 | ciphertext | `bytes` |
 
-The box uses the share box subkey of the shared note's domain. Its padded plaintext holds the token (16 bytes), the link key (32 bytes) and the note's `rid`, so only members who can read the note recover the link. The server stores the token hash, workspace, domain, expiry (1 to 30 days, 30 by default), the snapshot and the box. Update link replaces the snapshot under the same token and key. Revoking or expiring a link deletes its snapshot and box, and the viewer then shows a not-found page.
+The box uses the share box subkey of the shared note's domain at `epoch`. Its padded plaintext is `tag(noura.sync.share.box.payload) | id token | key link_key | id rid`, so only members who can read the note recover the link. The server stores the token hash, workspace, domain, expiry (1 to 30 days, 30 by default), the snapshot and the box.
+
+Update link replaces the snapshot under the same token and key while the domain's current epoch equals the box's `epoch`. After a rotation, members who lost access may still hold the old link key, so Update link revokes the old link and creates a new one with a new token and key, and the app shows the new URL. Revoking or expiring a link deletes its snapshot and box, and the viewer then shows a not-found page.
 
 ## 25. Workspace profile
 
@@ -906,7 +950,7 @@ The workspace's display name travels encrypted, so a new device can list your wo
 | ciphertext | `bytes` |
 | sig | `sig` |
 
-The ciphertext uses the profile subkey of the workspace domain's `epoch` key. Its padded plaintext is `tag(noura.sync.profile.payload) | str name`. Owner and admin devices sign it. Clients reject a `profile_revision` below the last one they accepted.
+The ciphertext uses the profile subkey of the workspace domain's `epoch` key. Its padded plaintext is `tag(noura.sync.profile.payload) | str name`. Clients accept a profile only when its signer is an owner or admin device in their current verified policy, and report `sync_profile_rollback` for a `profile_revision` below the last one they accepted.
 
 ## 26. HTTP API
 
@@ -943,6 +987,49 @@ Request and response bodies use the encoding in [§4](#4-encoding) with media ty
 | `PUT /v2/workspaces/{w}/profile` | replace the profile record |
 | `GET /v2/workspaces/{w}/realtime` | realtime channel |
 
+### Message bodies
+
+Each body below uses the types in [§4](#4-encoding) and carries no tag. A route not listed takes an empty request body and returns an empty response body on success. Timestamps in these bodies (`expires_at`) are Unix seconds as `u64`; they describe invitations and links, never objects.
+
+| Route | Request | Response |
+|---|---|---|
+| `GET /v2/limits` | | `u16 protocol`, `u32 max_body`, `u32 max_inline`, `u64 max_blob`, `u32 max_txn_parts`, `u32 max_txn_records`, `u32 max_covers`, `u32 presence_per_second` |
+| `POST /v2/device/authorize` | | `str device_code`, `str user_code`, `str verification_uri`, `u32 expires_in`, `u32 interval` |
+| `POST /v2/device/token` | `str device_code` | `str session_token`; errors use the RFC 8628 codes `authorization_pending`, `slow_down`, `expired_token`, `access_denied` |
+| `POST /v2/devices/challenge` | | `key challenge`, `u32 expires_in` |
+| `POST /v2/devices` | `bytes enroll` | |
+| `GET /v2/devices` | | `list<device_info>`: `bytes card`, `u8 state` (1 active, 2 removed) |
+| `GET /v2/approvals` | | `list<bytes>` of offer records |
+| `POST /v2/approvals` | `bytes offer` | |
+| `GET .../pending-devices` | | `list<pending>`: `bytes card`, `opt<id> invitation` |
+| `GET /v2/workspaces` | | `list<workspace_info>`: `id workspace`, `u8 role`, `opt<bytes> profile` |
+| `POST /v2/workspaces` | `list<record_ref>`: genesis, the workspace domain's first epoch record, envelopes, profile, and the recovery identity's `add_device` with its envelope when you have a kit | `u64 policy_head` |
+| `GET .../policy` | | `u64 head_revision`, `list<bytes>` of policy records |
+| `GET .../keys` | | `u64 next_key_seq`, `list<key_entry>`: `u64 key_seq`, `u8 record_type` (3 or 4), `bytes record` |
+| `GET .../keys/missing` | | `list<missing>`: `id domain`, `u64 epoch`, `bytes card` |
+| `POST .../envelopes` | `list<bytes>` of envelope records | |
+| `POST .../ops` | `list<record_ref>` | `list<receipt>` |
+| `GET .../ops` | | pull page ([§15](#pull)) |
+| `GET .../chain/{device}/{counter}` | | `entry` |
+| `GET .../checkpoint` | | `checkpoint_bundle` |
+| `POST .../checkpoints` | `checkpoint_bundle` | `u64 seq` |
+| `GET .../live` | | `u64 at`, `opt<id> next_rid`, `list<entry>` |
+| `GET .../manifest`, levels 0 to 2 | | `list<digest>` of the node's 16 children |
+| `GET .../manifest`, level 3 | | `list<leaf>`: `id rid`, `list<ref>` |
+| `POST .../txns` | `id txn`, `u32 part_count` | |
+| `PUT .../txns/{t}/parts/{i}` | the part bytes | `digest part_digest` |
+| `POST .../txns/{t}/commit` | `bytes txn` | `list<receipt>` for its operations and purges, `u64 policy_head` |
+| `GET .../txns/{t}` | | `u8 state` (1 staged, 2 committed, 3 failed), `opt<error>` |
+| `POST .../invitations` | `id invitation`, `digest token_hash`, `u8 role`, `bytes invite_context` | `u64 expires_at` |
+| `GET .../invitations` | | `list<invitation_info>`: `id invitation`, `u8 role`, `u8 status` (1 pending, 2 accepted, 3 approved, 4 revoked, 5 expired), `opt<id> accepted_by`, `u64 expires_at`, `bytes invite_context` |
+| `POST .../shares` | `digest token_hash`, `id domain`, `u8 expires_in_days`, `bytes share`, `bytes share_box` | `u64 expires_at` |
+| `GET .../shares` | | `list<share_info>`: `digest token_hash`, `id domain`, `u64 expires_at`, `bytes share_box` |
+| `PUT .../shares/{token_hash}` | `bytes share` | |
+| `GET /v2/shares/{token}` | | `bytes share` |
+| `PUT .../profile` | `bytes profile` | |
+
+`error` is `str code | str message | opt<u64> retry_after_seconds | opt<bytes> detail`. The `detail` of `chain_conflict` is `id domain | u64 counter | digest record_digest`, the server's head; of `policy_cuts_stale`, `list<cut>`; of a failed transaction, `u32 record_index | str code`.
+
 Server error codes:
 
 | Code | Meaning |
@@ -965,8 +1052,13 @@ Server error codes:
 | `txn_incomplete`, `txn_expired` | parts are missing or differ; the transaction expired |
 | `quota_exceeded` | the workspace is over its storage quota |
 | `id_conflict` | a new random ID already exists |
+| `rid_domain_mismatch` | the `rid` belongs to another domain |
+| `purge_invalid` | a purged `rid` is outside the domain or has a live operation above the horizon |
+| `before_history_floor` | the request reaches below the account's history floor |
+| `challenge_invalid`, `origin_mismatch` | the enrollment challenge is unknown, used or expired; the proof names another origin |
+| `offer_expired`, `invitation_limit`, `invitation_invalid` | the approval offer is older than 10 minutes; the workspace already has 100 active invitations; the invitation is revoked, expired, used or unknown |
 
-Client error codes: `sync_chain_gap`, `sync_chain_reordered`, `sync_chain_replayed`, `sync_chain_forked`, `sync_policy_forked`, `sync_policy_rollback`, `sync_policy_unauthorized`, `sync_writer_not_authorized`, `sync_epoch_stale`, `sync_key_mismatch`, `sync_padding_invalid`, `sync_payload_invalid`, `sync_manifest_mismatch`, `sync_purge_live_object`. Each names the device and domain involved.
+Client error codes: `sync_chain_gap`, `sync_chain_reordered`, `sync_chain_replayed`, `sync_chain_forked`, `sync_policy_forked`, `sync_policy_rollback`, `sync_policy_unauthorized`, `sync_policy_cut_invalid`, `sync_writer_not_authorized`, `sync_epoch_stale`, `sync_key_mismatch`, `sync_padding_invalid`, `sync_payload_invalid`, `sync_manifest_mismatch`, `sync_purge_live_object`, `sync_approval_mismatch`, `sync_recovery_kit_invalid`, `sync_profile_rollback`. Chain and record errors name the device and domain involved.
 
 ## 27. Limits
 
@@ -975,20 +1067,22 @@ Client error codes: `sync_chain_gap`, `sync_chain_reordered`, `sync_chain_replay
 | Request or response body, tus PATCH, range response | 1,048,576 bytes |
 | Inline payload before padding | 262,144 bytes |
 | Minimum padded length | 256 bytes |
-| Blob plaintext | 2,147,483,648 bytes |
+| Blob file content | 2,147,483,648 bytes |
 | Blob chunk | 65,536 bytes |
-| Supersedes entries per operation | 64 |
+| Supersedes entries per operation | 256 |
 | Blobs per operation | 4 |
 | Staged transaction | 1,024 parts, 250,000 records, 24 hours |
 | Purge | 10,000 `rid`s |
 | Envelope ciphertext | 48 bytes |
 | Epoch recipients | 4,096 |
-| Presence | 10 a second per device, 30-second expiry, 4 KiB plaintext |
+| Presence | 10 a second per device, 30-second expiry, 8 KiB padded plaintext |
 | Realtime frame | 65,536 bytes |
 | Invitations | 7 days, 100 active per workspace |
 | Share links | 1 to 30 days |
 | Device authorization codes, enrollment challenges, approval offers | 10 minutes |
 | Text in text mode, yrs document | 8 MiB, 32 MiB |
+| Share snapshot, padded | 983,040 bytes |
+| Retention | 30 checkpoints; devices idle for 90 checkpoints stop holding the floor; tombstones purge after 90 checkpoints |
 
 The targets of 100,000 objects and 200 devices are tested sizes, not caps. No structure in this document stops at 1,000 objects.
 
@@ -996,7 +1090,7 @@ The targets of 100,000 objects and 200 devices are tested sizes, not caps. No st
 
 The workspace holds 95,000 notes averaging 3 KiB and 5,000 attachments averaging 2 MiB, across 200 devices. It has 12 domains: the workspace domain, 9 folder domains, and 2 restricted domains of 20 devices each.
 
-**Record sizes** from the layouts above: an envelope is 274 bytes, an epoch record with 199 recipients 3,443 bytes, and an operation carrying a 3 KiB note 3,604 bytes (276 bytes of fields and signature, and a 3,328-byte padded payload).
+**Record sizes** from the layouts above: an envelope is 274 bytes, an epoch record with 199 recipients 3,475 bytes, and an operation carrying a 3 KiB note 3,636 bytes (308 bytes of fields, AEAD tag and signature, and a 3,328-byte padded payload).
 
 ### Removing one device
 
@@ -1004,28 +1098,28 @@ The removed device could read all 12 domains. Its owner's other device signs the
 
 | Record | Count | Bytes |
 |---|---|---|
-| `remove_device` with 12 cuts | 1 | 849 |
+| `remove_device` with 12 cuts | 1 | 1,041 |
 | Envelopes, workspace and folder domains | 10 × 199 = 1,990 | 545,260 |
 | Envelopes, restricted domains | 2 × 19 = 38 | 10,412 |
-| Epoch records | 12 | 35,556 |
+| Epoch records | 12 | 35,940 |
 | Part framing, 5 bytes per record | 2,041 | 10,205 |
-| Total | | about 602 KB |
+| Total | | 602,858 bytes |
 
-The rotation fits one staged part and commits atomically. It re-encrypts no object; the 100,000 objects add nothing. In the worst case of 200 devices and 100 folder domains, the same removal writes 19,900 envelopes and 100 epoch records, about 5.9 MB in 6 parts.
+The rotation fits one staged part and commits atomically. It re-encrypts no object; the 100,000 objects add nothing. In the worst case of 200 devices and 100 folder domains plus the workspace domain, the same removal writes 20,099 envelopes and 101 epoch records, about 6.0 MB in 6 parts.
 
 ### Joining
 
 A new member's device joins with access to the workspace and folder domains.
 
-1. **Approval transaction**, about 118 KB in one request: `add_member` (190 bytes), `add_device` (314 bytes), 10 envelopes (2,740 bytes) and 10 fresh checkpoints, each about 11.4 KB with 200 chain heads.
+1. **Approval transaction**, about 118 KB in one request: `add_member` (194 bytes), `add_device` (318 bytes), 10 envelopes (2,740 bytes) and 10 fresh checkpoint bundles, each about 11.5 KB with 200 chain heads.
 2. **Policy and keys**: a policy chain of 3,000 changes is about 1.2 MB (2 pages). Walking lineage across 300 past epochs in 10 domains reads about 10 MB of epoch records (11 pages).
-3. **Live operations**: 95,000 notes at 3,616 bytes per page entry, 289 per page, take 329 pages. The 5,000 attachment operations take 4 more.
-4. **Attachments**: 10,000 MiB of attachments pad to about 10,300 MiB, fetched in about 10,300 range requests of 1 MiB.
-5. **Verification**: the device computes 100,000 leaf hashes and 4,369 bucket and node hashes and compares each domain's root. That takes milliseconds.
+3. **Live operations**: 95,000 notes at 3,649 bytes per page entry, 287 per page, take 332 pages. The 5,000 attachment operations take 4 more.
+4. **Attachments**: each 2 MiB attachment pads to a 2,163,269-byte blob, so the 5,000 blobs take 3 range requests each, 15,000 in all.
+5. **Verification**: the device computes 100,000 leaf hashes and 4,369 bucket and node hashes per domain (43,690 for 10 domains) and compares each root. That takes milliseconds.
 
 No request or response exceeds 1 MiB.
 
-A sync rate limit counted only in requests would hold this download back: at 120 requests a minute, the attachment ranges alone take 86 minutes. The server should count bootstrap pages and range reads against a byte budget.
+A sync rate limit counted only in requests would hold this download back: at 120 requests a minute, the attachment ranges alone take 125 minutes. The server should count bootstrap pages and range reads against a byte budget.
 
 ## 29. What the server stores
 
@@ -1033,27 +1127,28 @@ A sync rate limit counted only in requests would hold this download back: at 120
 |---|---|---|
 | Accounts | account ID, email, passkey credentials, email confirmation state | who you are |
 | Sessions, magic links, device grants, enrollment challenges | token hashes, account, expiry | that you signed in |
-| Devices | card (account, device ID, public keys), active or removed | how many devices you enrolled; a card that never enrolls a session suggests a recovery identity |
+| Devices | card (account, device ID, public keys), active or removed, which sessions belong to which device | how many devices you enrolled; a card that never enrolls a session suggests a recovery identity |
+| Pending approvals | enrolled cards awaiting approval, approval offers until they expire | that a device is waiting for approval |
 | Workspaces | workspace ID, owner account, quota usage | that the workspace exists |
 | Policy changes | full signed records | members, roles, device events, domain kinds and restricted grants, in order |
 | Domains | domain ID, kind, current epoch, rotation state, history floors | how many domains exist and who reads each |
-| Epoch records and envelopes | full signed records | when each domain rotated and which devices hold its key |
+| Device progress | per device and domain: acknowledged cursor and the index of the latest checkpoint at its last pull | how far each device has synced, in checkpoint units |
+| Epoch records and envelopes | full signed records, the key sequence, which authorized devices still lack an envelope | when each domain rotated and which devices hold its key |
 | Operations | domain, sequence, device, counter, previous digest, epoch, policy revision, `rid`, supersedes, blob IDs, nonce, padded ciphertext, signature, digest | which device changed which random ID and how often; concurrent edits and incremental updates; padded payload size |
 | Purges | full signed records | that listed objects were deleted before a horizon at least 90 days old |
 | Checkpoints | full signed records and chain heads | the number of live objects per domain |
 | Staged transactions | parts, descriptor, expiry | size of large pending changes |
-| Blobs | blob ID, domain, padded ciphertext length, ciphertext digest, upload state, referencing operations; expiry only while incomplete | padded attachment size |
-| Share links | token hash, workspace, domain, expiry, padded snapshot, box | that a domain has a shared item, and how long the link lives |
-| Invitations | ID, token hash, workspace, role, inviter, accepting account, status, expiry, padded context | who invited whom, with which role |
+| Blobs | blob ID, domain, uploading device, padded ciphertext length, ciphertext digest, upload state, referencing operations; expiry only while incomplete | padded attachment size, and that an operation refers to a large file |
+| Share links | token hash, workspace, domain, expiry, padded snapshot, box | that a domain has a shared item, and from its expiry roughly when someone shared it |
+| Invitations | ID, token hash, workspace, role, inviter, accepting account, status, expiry, padded context | who invited whom, with which role, and from the expiry roughly when |
 | Workspace profile | signed encrypted record | when the name changed |
-| Sequence marks | domain, day, sequence | daily activity counts per domain |
 | Rate counters | key and counter | request volume |
 | Presence | nothing stored | |
 
 No stored field holds an object type, a creation time or an unpadded size.
 
-- **Object types.** `rid`s are random, payload kinds are encrypted, and paths, file names and frontmatter stay inside ciphertext. Text mode and attachments show only through patterns: operations that cover nothing, and blob IDs.
-- **Creation times.** Operations, `rid`s and completed blobs carry no timestamp. The server sees when an operation arrives while it handles the request, and it doesn't store that time. A `rid` first appears when an object first syncs: for files that existed before you turned sync on, that's the day you turned it on.
+- **Object types.** `rid`s are random, payload kinds are encrypted, and paths, file names and frontmatter stay inside ciphertext. Two patterns show how an object is edited, not what it is: operations that cover nothing mark a note in text mode, which any Markdown type (note, task, project, chat) can enter, and a blob ID marks content above 256 KiB, a size class the padded length would show anyway.
+- **Creation times.** Operations, `rid`s and completed blobs carry no timestamp, and retention counts checkpoints, so the server keeps no table that turns a sequence into a date. The server sees when an operation arrives while it handles the request, and it doesn't store that time. A `rid` first appears when an object first syncs: for files that existed before you turned sync on, that's the day you turned it on. Share and invitation expiries date the share or invitation, never an object.
 - **Sizes.** Every ciphertext the server stores is Padmé-padded, and the server rejects unpadded lengths. Policy, epoch and envelope sizes depend on member, device and domain counts, never on content.
 
 Logs keep route templates, request IDs, status codes and account IDs. They never hold record bodies, tokens, fragments, `rid`s or ciphertext.
@@ -1075,7 +1170,8 @@ Logs keep route templates, request IDs, status codes and account IDs. They never
 | Returns an older or different policy chain | yes, after first contact | `sync_policy_rollback`, `sync_policy_forked` |
 | Gives recipients of one epoch different keys (with a malicious member) | yes | `key_check` |
 | Lists an unauthorized recipient in an epoch | yes | recipients checked against the verified policy |
-| Serves a manifest that omits an object | yes | the recomputed root differs from the signed checkpoint |
+| Serves a manifest that omits an object | yes, with an honest signer | the recomputed root differs from the signed checkpoint |
+| Shows two recipients two different epoch records for one epoch (with the rotating member) | when either sees the other | the epoch record chain, checkpoints naming the epoch record, decryption failures |
 | Accepts writes from a device that lost write access | yes | cuts |
 | Forwards an old presence record | yes | per-session sequence |
 | Forges or drops realtime notifications | harmless | notifications only prompt verified pulls |
@@ -1090,7 +1186,10 @@ Logs keep route templates, request IDs, status codes and account IDs. They never
 - **Pending rotations.** Until a grantee device rotates a restricted domain, the server alone keeps its ciphertext from a removed device. An operation signed before its writer saw a removal can still use the old epoch.
 - **Old share snapshots.** A viewer can't tell a current snapshot from an older one the server kept after Update link.
 - **Served web code.** The server serves `account-web`. A modified viewer or invitation page could read the fragment and leak a share link's key or an invitation's context. Self-hosting removes that risk; the desktop app doesn't depend on served code.
-- **Blame for forks.** After a device re-seals a rejected operation at the same counter ([§14](#your-own-chain)), a server that kept the rejected copy can show a fork. Clients can't tell which party caused it.
+- **Blame for forks.** A server can't fake a fork from a re-seal, because `previous_attempt` marks it as a retry. Two records at one position with different changes come from the device's key; clients can't tell whether the device misbehaved or a stolen key did.
+- **A colluding writer.** An editor who colludes with the server can sign a checkpoint that omits objects, and a new device bootstrapping from it misses them. Current devices detect the mismatch against their own root; returning devices hold missing files for review instead of deleting them.
+- **Enrollment in another account's name.** An owner or admin can remove a member's devices and approve a new device for that member's account. The server checks that the member's own sign-in enrolled the card; clients can't check that. The member sees the device in their device list, and the device gets no restricted key until a manager wraps it ([§9](#granting-and-wrapping)).
+- **Recovery after first contact.** A recovering device trusts the policy head stored in its kit. A server can withhold changes made after the kit was written, such as the kit's own revocation, until another device's records reveal them.
 
 ### Members and devices
 
@@ -1125,7 +1224,7 @@ v2 can't detect conflicts on the server, because entity IDs are encrypted. Super
 
 SuperSync treats a full-state import or repair as a snapshot operation. A daily job deletes history before the newest snapshot once it is older than 45 days, and a 100 MB quota per user deletes old snapshots (`storage-quota.service.ts`, `deleteOldSyncedOpsForAllUsers`). Clients don't create periodic snapshots. A new device downloads the newest snapshot and the tail.
 
-v2 adopts a retention window behind a snapshot boundary and the snapshot-plus-tail bootstrap. It differs in what a snapshot is: writer devices sign periodic manifest checkpoints, the server deletes only operations covered at the latest checkpoint and below a retention floor that waits for active devices, and tombstones leave through signed purges. Text snapshots play the role of SuperSync's full-state operations for one note.
+v2 adopts a retention window behind a snapshot boundary and the snapshot-plus-tail bootstrap. It differs in what a snapshot is and how the window is measured: writer devices sign periodic manifest checkpoints, the server deletes only covered operations below a retention floor that waits for every active device and 30 checkpoints, and tombstones leave through signed purges. v2 counts checkpoints instead of days so the server keeps no dates. Text snapshots play the role of SuperSync's full-state operations for one note.
 
 ### Encryption and integrity
 
@@ -1156,9 +1255,9 @@ Fixtures live in `docs/workspace-format/fixtures/`. Each holds accepted cases an
 | `sync-v2-device.json` | `noura.sync.device.card`, device fingerprint, `noura.sync.device.enroll` (wrong origin, account and key) |
 | `sync-v2-approval.json` | `noura.sync.approval.offer`, `noura.sync.approval.code` |
 | `sync-v2-policy.json` | `noura.sync.policy`, each change kind, cuts, chain links, authority failures |
-| `sync-v2-keys.json` | `noura.sync.epoch`, `noura.sync.key-check`, lineage, `noura.sync.envelope`, HPKE `info`, unpinned signer, `noura.sync.v2 lineage key` |
+| `sync-v2-keys.json` | `noura.sync.epoch`, the epoch record chain, `noura.sync.key-check`, lineage, `noura.sync.envelope`, HPKE `info`, unpinned signer, `noura.sync.v2 lineage key` |
 | `sync-v2-operation.json` | `noura.sync.op`, `noura.sync.payload` for each kind, AEAD associated data, `noura.sync.v2 operation key` |
-| `sync-v2-chain.json` | schedules for gap, reorder, replay, fork and a retried upload |
+| `sync-v2-chain.json` | schedules for gap, reorder, replay, fork, a retried upload, a re-seal with `previous_attempt`, and a record beyond a cut |
 | `sync-v2-manifest.json` | `noura.sync.manifest.leaf`, `.bucket`, `.node`, `.heads`, `noura.sync.checkpoint`, roots for add, remove and change |
 | `sync-v2-purge.json` | `noura.sync.purge` |
 | `sync-v2-txn.json` | `noura.sync.txn`, `noura.sync.txn.parts` |
@@ -1166,7 +1265,7 @@ Fixtures live in `docs/workspace-format/fixtures/`. Each holds accepted cases an
 | `sync-v2-presence.json` | `noura.sync.presence`, `noura.sync.presence.payload`, `noura.sync.v2 presence key` |
 | `sync-v2-profile.json` | `noura.sync.profile`, `noura.sync.profile.payload`, `noura.sync.v2 profile key` |
 | `sync-v2-invitation.json` | `noura.sync.invite.token`, `noura.sync.invite.context`, `noura.sync.invite.payload`, `noura.sync.v2 invitation key` |
-| `sync-v2-share.json` | `noura.sync.share.token`, `noura.sync.share`, `noura.sync.share.payload`, `noura.sync.share.box`, `noura.sync.v2 share key`, `noura.sync.v2 share box key` |
+| `sync-v2-share.json` | `noura.sync.share.token`, `noura.sync.share`, `noura.sync.share.payload`, `noura.sync.share.box`, `noura.sync.share.box.payload`, `noura.sync.v2 share key`, `noura.sync.v2 share box key` |
 | `sync-v2-recovery.json` | `noura.sync.recovery-kit`, `noura.sync.recovery-kit.payload` (wrong passphrase, low parameters) |
 
 ### Tag bytes
@@ -1205,6 +1304,7 @@ Each tag is the length byte, the ASCII domain string and `0002`:
 | `noura.sync.share` | 16 | `106e6f7572612e73796e632e73686172650002` |
 | `noura.sync.share.payload` | 24 | `186e6f7572612e73796e632e73686172652e7061796c6f61640002` |
 | `noura.sync.share.box` | 20 | `146e6f7572612e73796e632e73686172652e626f780002` |
+| `noura.sync.share.box.payload` | 28 | `1c6e6f7572612e73796e632e73686172652e626f782e7061796c6f61640002` |
 | `noura.sync.recovery-kit` | 23 | `176e6f7572612e73796e632e7265636f766572792d6b69740002` |
 | `noura.sync.recovery-kit.payload` | 31 | `1f6e6f7572612e73796e632e7265636f766572792d6b69742e7061796c6f61640002` |
 
@@ -1232,10 +1332,13 @@ These choices go beyond the list of topics the protocol had to cover. Confirm or
 4. **History isolation is the server's job.** Lineage lets one envelope per domain open old epochs, so joining never re-encrypts objects.
 5. **Recovery kits are offline devices** protected by an Argon2id passphrase of at least 12 characters, and they stay current through rotations.
 6. **Approval compares one 160-bit code** on both devices, confirmed on both.
-7. **Tombstones leave through signed purges** after 90 days, instead of a cleartext delete flag on each operation.
-8. **Limits**: 1 MiB bodies, 256 KiB inline payloads, 2 GiB blobs, 30-day retention, 90-day tombstones.
-9. **Edit beats delete** in a conflict until you choose.
-10. **Bootstrap rate budget**: the sync rate limit counts bootstrap pages and range reads in bytes.
+7. **Tombstones leave through signed purges** after 90 checkpoints, instead of a cleartext delete flag on each operation.
+8. **Retention counts checkpoints, not days**, so the server stores no sequence-to-date table: 30 checkpoints of dead operations, 90 for idle devices and tombstones.
+9. **Limits**: 1 MiB bodies, 256 KiB inline payloads, 2 GiB blobs, 256 covers per operation.
+10. **Edit beats delete** in a conflict until you choose, and a returning device asks before deleting files the manifest lacks.
+11. **Edit mode and size class stay visible.** Patches that cover nothing show text mode, and blob IDs show content above 256 KiB. Hiding them would mean dropping server-side compaction or blob authorization.
+12. **Only the inviting device approves an invitee**, and a manager wraps restricted keys by hand for devices that another account enrolled.
+13. **Bootstrap rate budget**: the sync rate limit counts bootstrap pages and range reads in bytes.
 
 ## Sign-off
 
