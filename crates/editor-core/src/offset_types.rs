@@ -5,6 +5,9 @@
 //! counts. A position plus a count is a position, and a position minus a
 //! position is a count. Ranges are `(start, end)` tuples, extended by
 //! [`RangeExt`].
+//!
+//! Adapted from Lockbook's `lb-rs` (`libs/lb/lb-rs/src/model/text/offset_types.rs`,
+//! BSD-3-Clause); see `docs/provenance/lockbook-editor.md`.
 
 use std::cmp::{max, min};
 use std::fmt;
@@ -376,6 +379,41 @@ mod tests {
         assert!(!range.contains(Byte(2), false, false));
         assert!(range.contains(Byte(4), false, true));
         assert!(!range.contains(Byte(4), true, false));
+    }
+
+    // `contains`, `contains_empty` and `intersects_allow_empty_contained`
+    // are ported from `lb-rs`'s offset tests.
+    #[test]
+    fn contains() {
+        for (offset, expected) in [(0, false), (1, false), (2, true), (3, false), (4, false)] {
+            assert_eq!((1, 3).contains(offset, false, false), expected, "{offset}");
+        }
+        for (offset, expected) in [(0, false), (1, true), (2, true), (3, false), (4, false)] {
+            assert_eq!((1, 3).contains(offset, true, false), expected, "{offset}");
+        }
+        for (offset, expected) in [(0, false), (1, false), (2, true), (3, true), (4, false)] {
+            assert_eq!((1, 3).contains(offset, false, true), expected, "{offset}");
+        }
+        for (offset, expected) in [(0, false), (1, true), (2, true), (3, true), (4, false)] {
+            assert_eq!((1, 3).contains(offset, true, true), expected, "{offset}");
+        }
+    }
+
+    #[test]
+    fn contains_empty() {
+        for (start_inclusive, end_inclusive) in [(false, false), (true, false), (false, true)] {
+            for offset in 0..3 {
+                assert!(!(1, 1).contains(offset, start_inclusive, end_inclusive));
+            }
+        }
+        assert!(!(1, 1).contains(0, true, true));
+        assert!((1, 1).contains(1, true, true));
+        assert!(!(1, 1).contains(2, true, true));
+    }
+
+    #[test]
+    fn intersects_allow_empty_contained() {
+        assert!((1, 3).intersects(&(2, 2), false));
     }
 
     #[test]

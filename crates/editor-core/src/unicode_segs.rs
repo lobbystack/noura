@@ -1,4 +1,7 @@
 //! Conversions between byte offsets and grapheme offsets.
+//!
+//! Adapted from Lockbook's `lb-rs` (`libs/lb/lb-rs/src/model/text/unicode_segs.rs`
+//! and `units.rs`, BSD-3-Clause); see `docs/provenance/lockbook-editor.md`.
 
 use unicode_segmentation::UnicodeSegmentation as _;
 

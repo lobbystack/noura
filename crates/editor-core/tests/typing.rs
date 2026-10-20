@@ -192,3 +192,22 @@ fn shift_down_selects_to_the_same_column_on_the_next_line() {
 
     assert_eq!(doc.selection(), (g(2), g(8)));
 }
+
+#[test]
+fn typing_over_a_selection_made_leftward_replaces_it() {
+    let mut doc = MdDoc::new("one two three");
+    doc.apply(
+        [Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(g(7)),
+                end: Location::Grapheme(g(4)),
+            },
+        }],
+        &NoLayout,
+    );
+
+    type_text(&mut doc, "2");
+
+    assert_eq!(doc.text(), "one 2 three");
+    assert_eq!(doc.selection(), (g(5), g(5)));
+}

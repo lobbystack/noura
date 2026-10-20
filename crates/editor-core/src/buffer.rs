@@ -135,7 +135,9 @@ impl Snapshot {
     /// spliced in, which can differ from the replacement's own count where
     /// its ends fuse with neighboring characters.
     fn replace(&mut self, replace: &Replace) -> (Response, Graphemes) {
-        let (start, end) = self.segs.range_to_byte(replace.range);
+        // A range taken from a selection made leftward runs backward.
+        let bytes = self.segs.range_to_byte(replace.range);
+        let (start, end) = (bytes.start(), bytes.end());
 
         let start_char = self.rope.byte_to_char(start.0);
         let end_char = self.rope.byte_to_char(end.0);

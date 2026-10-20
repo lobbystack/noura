@@ -3,6 +3,9 @@
 //! A byte-level merge of two valid UTF-8 texts can produce invalid UTF-8, and
 //! a character-level diff of two words that share letters interleaves them.
 //! Diffing words keeps each side's words whole.
+//!
+//! Adapted from Lockbook's `lb-rs` (`libs/lb/lb-rs/src/model/text/mod.rs`,
+//! BSD-3-Clause); see `docs/provenance/lockbook-editor.md`.
 
 use similar::{Algorithm, DiffOp, TextDiff};
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -144,6 +147,34 @@ mod tests {
         for (from, to) in cases {
             assert_eq!(
                 apply(from, &diff(from, to)),
+                to,
+                "diff from {from:?} to {to:?}"
+            );
+        }
+    }
+
+    /// Ported from `lb-rs`'s `diff_fuzz`, which only checked that the diff
+    /// doesn't panic. This also applies each diff.
+    #[test]
+    fn random_texts_diff_and_apply_to_the_target() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n
+        };
+        let mut random_text = |next: &mut dyn FnMut(u64) -> u64| -> String {
+            let length = next(10);
+            (0..length)
+                .map(|_| char::from_u32(0x20 + next(0xd7ff - 0x20) as u32).unwrap_or('?'))
+                .collect()
+        };
+        for _ in 0..1000 {
+            let from = random_text(&mut next);
+            let to = random_text(&mut next);
+            assert_eq!(
+                apply(&from, &diff(&from, &to)),
                 to,
                 "diff from {from:?} to {to:?}"
             );

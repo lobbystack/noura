@@ -1,4 +1,7 @@
 //! The edits a [`Buffer`](crate::buffer::Buffer) applies.
+//!
+//! Adapted from Lockbook's `lb-rs` (`libs/lb/lb-rs/src/model/text/operation_types.rs`,
+//! BSD-3-Clause); see `docs/provenance/lockbook-editor.md`.
 
 use crate::offset_types::Grapheme;
 
