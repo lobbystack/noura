@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use local_core::{WorkspaceEntry, WorkspaceEntryKind};
+use local_core::{WorkspaceEntry, WorkspaceEntryKind, is_online_only};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
 use crate::{AppError, Workspace, error::Access};
@@ -401,7 +401,7 @@ impl Workspace {
             .resolve_managed_path(relative_path, "file_open")
             .map_err(|error| AppError::from_core(error, relative_path, Access::ReadFile))?;
         match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_file() && !is_dataless(&metadata) => {}
+            Ok(metadata) if metadata.is_file() && !is_online_only(&metadata) => {}
             Ok(metadata) if metadata.is_file() => return Err(not_downloaded()),
             _ if has_icloud_placeholder(&path) => return Err(not_downloaded()),
             _ => {
@@ -434,20 +434,6 @@ fn has_icloud_placeholder(path: &std::path::Path) -> bool {
     };
     let placeholder = path.with_file_name(format!(".{name}.icloud"));
     std::fs::symlink_metadata(placeholder).is_ok_and(|metadata| metadata.is_file())
-}
-
-/// Whether macOS reports the file as dataless: its content lives only in
-/// cloud storage. `local-core`'s scan marks these rows as not downloaded.
-#[cfg(target_os = "macos")]
-fn is_dataless(metadata: &std::fs::Metadata) -> bool {
-    use std::os::macos::fs::MetadataExt;
-    const SF_DATALESS: u32 = 0x4000_0000;
-    metadata.st_flags() & SF_DATALESS != 0
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_dataless(_metadata: &std::fs::Metadata) -> bool {
-    false
 }
 
 fn parent_of(path: &str) -> Option<&str> {

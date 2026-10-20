@@ -72,6 +72,7 @@ pub use raw_markdown::{
     MarkdownLinkTarget, RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead,
     RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult,
 };
+pub use scan::is_online_only;
 pub use sync::SYNC_PLUGIN_ID;
 pub use trash::{SystemTrash, os_trash};
 
@@ -373,6 +374,26 @@ impl WorkspaceEngine {
             source,
             payload,
         });
+    }
+
+    /// Note that this engine is about to write `revision` to `relative`, or
+    /// delete it when `revision` is `None`. Call it before touching the
+    /// file: the watcher can report the change before the write returns,
+    /// and an unexpected change reads as another app's.
+    fn expect_own_write(&self, relative: &str, revision: Option<&str>) {
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.insert(
+                relative.to_owned(),
+                revision.unwrap_or("<deleted>").to_owned(),
+            );
+        }
+    }
+
+    /// Forget an expected write that failed.
+    fn forget_own_write(&self, relative: &str) {
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.remove(relative);
+        }
     }
 
     fn index_outcome(&self, result: Result<()>) -> (IndexStatus, Vec<CoreWarning>) {

@@ -164,7 +164,14 @@ pub(super) fn scan_workspace(
         } else {
             None
         };
-        let dataless = metadata.as_ref().is_some_and(is_dataless);
+        let dataless = match &metadata {
+            Some(metadata) => is_dataless(metadata),
+            // The listing marks every file that isn't downloaded yet.
+            None if list_entries && !markdown => entry
+                .metadata()
+                .is_ok_and(|metadata| is_dataless(&metadata)),
+            None => false,
+        };
         if list_entries {
             scan.entries.push(ScannedEntry {
                 relative_path: relative.clone(),
@@ -275,8 +282,14 @@ pub(super) fn icloud_placeholder(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.icloud"))
 }
 
-/// Whether macOS reports the file as dataless: its content lives only in
-/// the cloud and reading it would block on a download.
+/// Whether the file's content lives only in the cloud, so reading it would
+/// start a download and block: a dataless file on macOS, or a file the
+/// cloud provider marks offline or recall-on-access on Windows. Getting the
+/// metadata reads no content.
+pub fn is_online_only(metadata: &std::fs::Metadata) -> bool {
+    is_dataless(metadata)
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn is_dataless(metadata: &std::fs::Metadata) -> bool {
     use std::os::macos::fs::MetadataExt;
@@ -284,7 +297,20 @@ pub(super) fn is_dataless(metadata: &std::fs::Metadata) -> bool {
     metadata.st_flags() & SF_DATALESS != 0
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub(super) fn is_dataless(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_OFFLINE: u32 = 0x0000_1000;
+    const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    metadata.file_attributes()
+        & (FILE_ATTRIBUTE_OFFLINE
+            | FILE_ATTRIBUTE_RECALL_ON_OPEN
+            | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+        != 0
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(super) fn is_dataless(_metadata: &std::fs::Metadata) -> bool {
     false
 }

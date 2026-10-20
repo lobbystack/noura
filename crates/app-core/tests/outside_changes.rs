@@ -389,6 +389,154 @@ fn two_files_that_share_an_id_stay_untouched_and_block_the_id_until_one_loses_it
     );
 }
 
+/// Whether the tree row at `relative_path` exists and is marked not
+/// downloaded.
+fn not_downloaded(app: &App, relative_path: &str) -> Option<bool> {
+    let tree = app.tree()?;
+    let row = tree.find_row(relative_path)?;
+    Some(tree.rows()[row].not_downloaded)
+}
+
+fn hit_paths(app: &App, query: &str) -> Vec<String> {
+    app.workspace()
+        .unwrap()
+        .search(query)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.relative_path)
+        .collect()
+}
+
+#[test]
+fn a_note_the_cloud_drive_evicts_keeps_its_entry_and_id_until_it_downloads_again() {
+    let mut live = Live::open(&[("Journal/today.md", &note(PLAN_ID, "Morning pages."))]);
+    expand(&mut live.app, "Journal");
+
+    // iCloud swaps the file for a placeholder named after it.
+    std::fs::remove_file(live.path("Journal/today.md")).unwrap();
+    write(&live.folder, "Journal/.today.md.icloud", "bplist00");
+
+    live.wait_until("the row shows as not downloaded", |app| {
+        not_downloaded(app, "Journal/today.md") == Some(true)
+    });
+    assert_eq!(rows(&live.app), ["Journal", "Journal/today.md"]);
+    let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
+    assert_eq!(found.relative_path, "Journal/today.md");
+    assert_eq!(hit_paths(&live.app, "morning"), ["Journal/today.md"]);
+    assert!(live.app.problems().is_empty(), "{:?}", live.app.problems());
+
+    live.app.open_file("Journal/today.md");
+    assert_eq!(live.app.document(), None);
+    assert_eq!(
+        live.app.notice().unwrap().message,
+        "This file isn't downloaded yet. Try again once it is."
+    );
+
+    // The download replaces the placeholder with the file.
+    write(
+        &live.folder,
+        "Journal/today.md",
+        &note(PLAN_ID, "Evening pages."),
+    );
+    std::fs::remove_file(live.path("Journal/.today.md.icloud")).unwrap();
+
+    live.wait_until("the downloaded file shows", |app| {
+        not_downloaded(app, "Journal/today.md") == Some(false)
+            && hit_paths(app, "evening") == ["Journal/today.md"]
+    });
+    let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
+    assert_eq!(found.relative_path, "Journal/today.md");
+    live.app.open_file("Journal/today.md");
+    assert_eq!(
+        live.app.document().map(|file| file.relative_path.as_str()),
+        Some("Journal/today.md")
+    );
+}
+
+#[test]
+fn any_file_the_cloud_drive_has_not_downloaded_shows_marked() {
+    let mut live = Live::open(&[("Notes.md", "# Notes\n")]);
+
+    write(&live.folder, ".Scan.pdf.icloud", "bplist00");
+
+    live.wait_until("the placeholder shows as its file", |app| {
+        not_downloaded(app, "Scan.pdf") == Some(true)
+    });
+    assert_eq!(rows(&live.app), ["Notes.md", "Scan.pdf"]);
+}
+
+/// Set or clear the attribute a cloud provider gives a file whose content
+/// lives only online.
+#[cfg(windows)]
+fn set_online_only(path: &Path, online_only: bool) {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_OFFLINE, GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SetFileAttributesW,
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: `wide` is a NUL-terminated path that outlives both calls.
+    unsafe {
+        let attributes = GetFileAttributesW(wide.as_ptr());
+        assert_ne!(attributes, INVALID_FILE_ATTRIBUTES);
+        let attributes = if online_only {
+            attributes | FILE_ATTRIBUTE_OFFLINE
+        } else {
+            attributes & !FILE_ATTRIBUTE_OFFLINE
+        };
+        assert_ne!(SetFileAttributesW(wide.as_ptr(), attributes), 0);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_file_the_cloud_provider_marks_online_only_shows_marked_and_noura_never_reads_it() {
+    let mut live = Live::open_with(
+        &[
+            ("Online.md", &note(PLAN_ID, "Morning pages.")),
+            ("Scan.pdf", "%PDF-1.7\n"),
+        ],
+        NO_RESCANS,
+    );
+    // The test delivers the watcher's events itself, so nothing reads the
+    // new text before the file goes online-only.
+    live.workspace().force_watch_fault(WatchFault::Silent);
+    write(&live.folder, "Online.md", &note(PLAN_ID, "Evening pages."));
+    set_online_only(&live.path("Online.md"), true);
+    set_online_only(&live.path("Scan.pdf"), true);
+    live.workspace()
+        .inject_watch_event(&["Online.md", "Scan.pdf"]);
+
+    live.wait_until("both files show as not downloaded", |app| {
+        not_downloaded(app, "Online.md") == Some(true)
+            && not_downloaded(app, "Scan.pdf") == Some(true)
+    });
+    // The index keeps the last text Noura read, and the new text stays unread.
+    assert_eq!(hit_paths(&live.app, "morning"), ["Online.md"]);
+    assert!(hit_paths(&live.app, "evening").is_empty());
+    let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
+    assert_eq!(found.relative_path, "Online.md");
+    live.app.open_file("Online.md");
+    assert_eq!(live.app.document(), None);
+    assert_eq!(
+        live.app.notice().unwrap().message,
+        "This file isn't downloaded yet. Try again once it is."
+    );
+
+    // The provider downloads both files.
+    set_online_only(&live.path("Online.md"), false);
+    set_online_only(&live.path("Scan.pdf"), false);
+    live.workspace()
+        .inject_watch_event(&["Online.md", "Scan.pdf"]);
+
+    live.wait_until("the downloaded files show", |app| {
+        not_downloaded(app, "Online.md") == Some(false)
+            && not_downloaded(app, "Scan.pdf") == Some(false)
+            && hit_paths(app, "evening") == ["Online.md"]
+    });
+}
+
 #[test]
 fn a_workspace_that_opens_with_a_shared_id_reports_both_files() {
     let original = note(PLAN_ID, "The plan.");

@@ -314,16 +314,15 @@ impl WorkspaceEngine {
         let external_merged = merged_body != input.local_body;
         let next_bytes = compose_raw_bytes(&merged_body, &layout);
         let next_relative = PathBuf::from(&relative);
+        self.expect_own_write(&relative, Some(&markdown::revision(&next_bytes)));
         atomic_write_checked(
             &self.root,
             &next_relative,
             &next_bytes,
             Some(&current.revision),
             "raw_markdown_save",
-        )?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(relative.clone(), markdown::revision(&next_bytes));
-        }
+        )
+        .inspect_err(|_| self.forget_own_write(&relative))?;
         self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_save")?;
         self.emit(
             "file:changed",
@@ -439,16 +438,15 @@ impl WorkspaceEngine {
                 )?;
                 let next_bytes = compose_raw_bytes(&input.local_body, &layout);
                 let next_relative = PathBuf::from(&relative);
+                self.expect_own_write(&relative, Some(&markdown::revision(&next_bytes)));
                 atomic_write_checked(
                     &self.root,
                     &next_relative,
                     &next_bytes,
                     Some(&input.current_revision),
                     "raw_markdown_resolve",
-                )?;
-                if let Ok(mut journal) = self.self_writes.lock() {
-                    journal.insert(relative.clone(), markdown::revision(&next_bytes));
-                }
+                )
+                .inspect_err(|_| self.forget_own_write(&relative))?;
                 self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_resolve")?;
                 self.emit(
                     "file:changed",

@@ -23,3 +23,6 @@ unicode-normalization.workspace = true
 [dev-dependencies]
 app-core = { path = ".", features = ["test-hooks"] }
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

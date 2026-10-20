@@ -248,13 +248,14 @@ impl WorkspaceEngine {
                 .map_err(|error| CoreError::io(error, "object_move", Some(destination)))?;
         }
         let old = object.relative_path.clone();
-        std::fs::rename(&source, &destination_path)
-            .map_err(|error| CoreError::io(error, "object_move", Some(destination)))?;
+        self.expect_own_write(&old, None);
+        self.expect_own_write(destination, Some(&markdown::revision(&bytes)));
+        std::fs::rename(&source, &destination_path).map_err(|error| {
+            self.forget_own_write(&old);
+            self.forget_own_write(destination);
+            CoreError::io(error, "object_move", Some(destination))
+        })?;
         sync_rename_parents(&source, &destination_path, "object_move")?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(old.clone(), "<deleted>".into());
-            journal.insert(destination.into(), markdown::revision(&bytes));
-        }
         object.relative_path = destination.into();
         let index_result = (|| {
             let mut index = self.index.lock().map_err(|_| lock_error("object_move"))?;
@@ -297,10 +298,10 @@ impl WorkspaceEngine {
         let bytes = std::fs::read(&source)
             .map_err(|error| CoreError::io(error, "object_delete", Some(&object.relative_path)))?;
         check_revision(&bytes, expected_revision, "object_delete")?;
-        let trash_path = self.discard(&source, &object.relative_path, "object_delete")?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(object.relative_path.clone(), "<deleted>".into());
-        }
+        self.expect_own_write(&object.relative_path, None);
+        let trash_path = self
+            .discard(&source, &object.relative_path, "object_delete")
+            .inspect_err(|_| self.forget_own_write(&object.relative_path))?;
         let result = self
             .index
             .lock()
@@ -347,10 +348,9 @@ impl WorkspaceEngine {
         }
         let bytes = markdown::serialize_object(&object)?;
         let revision = markdown::revision(&bytes);
-        atomic_write_checked(&self.root, &relative, &bytes, expected, operation)?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(object.relative_path.clone(), revision.clone());
-        }
+        self.expect_own_write(&object.relative_path, Some(&revision));
+        atomic_write_checked(&self.root, &relative, &bytes, expected, operation)
+            .inspect_err(|_| self.forget_own_write(&object.relative_path))?;
         // Serialization normalizes the title and body (for example it trims
         // trailing blank lines). Index and return what the file now says, so
         // a client's next save starts from the canonical text instead of
