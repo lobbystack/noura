@@ -22,71 +22,38 @@ A durable mutation succeeds only after the canonical file operation completes du
 
 ## Toolchain
 
-- Use Bun as the JavaScript and TypeScript runtime, package manager, and workspace tool.
-- Build the frontend with SvelteKit, Svelte 5, and TypeScript.
-- When working with Svelte, use the [@svelte](plugin://svelte@svelte) plugin.
-- Use Tauri 2 for the desktop and mobile shell.
-- Keep native and local-core work in Rust.
-- Use shadcn-svelte with preset `b2ZtALO3cm` for UI primitives. Do not replace the preset or introduce a competing component system without explicit approval.
-- When working with shadcn-svelte, use the [$shadcn-svelte](.agents/skills/shadcn-svelte/SKILL.md) skill.
-- Do not add npm, pnpm, Yarn, Nx, or Turborepo to the repository without a demonstrated need and explicit approval. Do not introduce another JavaScript lockfile.
-- Format Rust with `cargo fmt` and lint it with Clippy.
+- Write the product in Rust, on the toolchain pinned in `rust-toolchain.toml`.
+- Build the desktop UI with egui through eframe.
+- Format Rust with `cargo fmt`, lint it with Clippy, and check licenses and advisories with `cargo deny`.
+- `sdk/typescript` is the only TypeScript in the product. It uses npm and Node because the `jco` toolchain requires them.
+- `apps/website` stays on SvelteKit and Bun until it moves to Zola. Use the [@svelte](plugin://svelte@svelte) plugin when you edit it.
 
-You are able to use the Svelte MCP server, where you have access to comprehensive Svelte 5 and SvelteKit documentation. Here's how to use the available tools effectively:
+## Rewrite in progress
 
-## Available Svelte MCP Tools:
-
-### 1. list-sections
-
-Use this FIRST to discover all available documentation sections. Returns a structured list with titles, use_cases, and paths. When asked about Svelte or SvelteKit topics, ALWAYS use this tool at the start of the chat to find relevant sections.
-
-### 2. get-documentation
-
-Retrieves full documentation content for specific sections. Accepts single or multiple sections. After calling the list-sections tool, you MUST analyze the returned documentation sections (especially the use_cases field) and then use the get-documentation tool to fetch ALL documentation sections that are relevant for the task at hand.
-
-### 3. svelte-autofixer
-
-Analyzes Svelte code and returns issues and suggestions. You MUST use this tool whenever you write Svelte code before sending it back. Keep calling it until it returns no issues or suggestions.
-
-### 4. playground-link
-
-Generates a Svelte Playground link with the provided code. After completing the code, ask whether a playground link would help. Only call this tool after user confirmation and NEVER if you wrote the code to files in the project.
+Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, the legacy code stays as a read-only behavior reference: `apps/app`, `apps/server`, `apps/server-web`, `packages/*`, the TypeScript `plugins/*`, `src-tauri` and `crates/workspace-format-wasm`. Read it to learn how a feature behaves today, and build the replacement in the crates below.
 
 ## Code Ownership Boundaries
 
-- `apps/app` contains the SvelteKit application, visual UI, and typed client wiring. Components must not call raw Tauri commands.
-- `packages/shared` re-exports the DTOs, errors, and events that ts-rs generates from Rust, plus transport-neutral types and enum value lists checked against the generated unions. Do not hand-write a type that Rust already exports.
-- `packages/workspace-schema` holds TypeScript validators that a TypeScript caller needs and Rust cannot serve, currently the sync file-change schema.
-- `packages/workspace` contains the typed client, service facades, transports, and thin reactive adapters. Keep business rules out of stores.
-- `packages/plugin-sdk` contains capability contracts and the trusted first-party plugin host. Plugins must not import SQLite or Rust internals.
-- `packages/editor` contains headless CodeMirror 6/Yjs configuration and Markdown safety checks. Visual editor components belong in `apps/app`.
-- `packages/ai` contains provider-neutral TypeScript context and tool registries. Secrets stay behind the native boundary.
-- `packages/workspace-format-wasm` loads the WebAssembly build of `crates/workspace-format` and exposes it to TypeScript. It adds no format rules.
-- `packages/sync-key-envelope` contains the browser WebCrypto implementation of the `noura.sync.key.web` key envelope and browser device formats. It must pass the same shared fixtures as `crates/sync-key-envelope`.
-- `packages/browser-storage` contains the browser build's workspace storage over the origin private file system (OPFS), using `@noura/workspace-format-wasm` for parsing and serialization.
-- `packages/browser-workspace` contains the browser workspace worker, its protocol, and the typed client transport for the browser build.
-- `packages/browser-sync` contains browser device custody, enrollment, key delivery, operation encryption, and recovery kits for experimental encrypted sync.
-- `packages/browser-sync-engine` contains the browser replica engine for experimental encrypted sync: outbox, push and pull, and conflict handling. It holds no keys and performs no cryptography.
-- `packages/browser-sync-client` contains the browser sync controller that joins device custody, the replica engine, and the server API, plus its storage in the origin private file system. The app only creates it and renders its state.
-- `plugins/*` contains first-party domain adapters built against the same public capabilities intended for future plugins.
 - `crates/workspace-format` owns platform-independent parsing, validation, and canonical serialization of workspace files, with no filesystem, database, or credential dependencies.
-- `crates/workspace-format-wasm` exposes `crates/workspace-format` to WebAssembly and contains no format rules.
-- `crates/sync-key-envelope` owns the native and portable implementation of the `noura.sync.key.web` key envelope and browser device formats.
-- `crates/local-core` owns canonical parsing, deterministic serialization, filesystem safety, atomic writes, indexing, watching, reconciliation, credentials, and domain operations.
-- `crates/mcp-server` adapts MCP tools to local-core services and must not duplicate business logic.
-- `src-tauri` owns the desktop process and typed IPC/event bridge.
-- `apps/server` contains the experimental encrypted sync service built with Bun, TypeScript, and Hono. It must not become a dependency of local features. It serves the browser build of `apps/app`, which includes the account pages and encrypted share viewer.
+- `crates/local-core` owns filesystem safety, atomic writes, indexing, watching, reconciliation, credentials, and domain operations.
+- `crates/app-core` holds product behavior and view state for every client. It has no UI dependency, so a mobile client can reuse it later.
+- `crates/app-ui` holds the egui screens and the widget kit that draws plugin UI. It calls only `app-core`.
+- `crates/editor-core` holds the Markdown editor's buffer, parsing, reveal rules, and yrs binding, with no UI dependency. `crates/editor-egui` draws and drives it.
+- `crates/plugin-host` runs plugins in Wasmtime and enforces their capabilities. `crates/plugin-sdk` holds the WIT interfaces and the Rust author library.
+- `crates/plugins/*` holds first-party plugins. They build to WebAssembly against `plugin-sdk`, exactly like third-party plugins.
+- `crates/mcp-server` adapts MCP tools to shared services and duplicates no business logic.
+- `crates/sync-protocol` holds the wire types, signing, and verification shared by clients and the server. `crates/sync-key-envelope` owns the key envelope and device formats.
+- `crates/sync-server` is the sync service. `crates/sync-store-sqlite` and `crates/sync-store-postgres` implement its store and pass one conformance suite. Local features never depend on the server.
+- `crates/account-web` is the WebAssembly module for passkey ceremonies and the encrypted share viewer.
+- `apps/desktop` is the desktop binary: windows, menus, drag and drop, and updates.
+- `sdk/typescript` holds the generated types, project template, and CLI for TypeScript plugin authors.
 - `apps/website` contains the static marketing site and legal pages for noura.app. It uses no other workspace package.
 
 ### Workspace schema ownership
 
-`docs/workspace-format/` defines the normative public workspace format. `crates/local-core` is authoritative for parsing, validation, normalization, and deterministic serialization of durable workspace files.
+`docs/workspace-format/` defines the public workspace format, and `crates/workspace-format` is authoritative for parsing, validation, normalization, and deterministic serialization. Keep exactly one definition of the format: plugins, the MCP server, and the sync server reach workspace files only through Rust APIs.
 
-TypeScript code validates workspace files through Rust: the browser calls the wasm build in `packages/workspace-format-wasm`, and the desktop calls local-core over IPC. `packages/workspace-schema` keeps only validators with a TypeScript consumer. It must not parse or serialize durable files independently, redefine canonical serialization, or create new format semantics.
-
-DTO shapes come from Rust. Add `#[derive(TS)]` and `#[ts(export)]` to the Rust type, run `bun run bindings:generate`, and import the type from `@noura/shared`. Annotate a Rust field when its JSON differs from the ts-rs default: `#[ts(type = "number")]` for a `u64` sent as a JSON number, and `#[ts(optional = nullable)]` for an input field that callers may omit. Enum value lists such as `TASK_STATUSES` live in `packages/shared/src/enums.ts` and fail type checking when they miss a variant of the generated union.
-
-Do not maintain two independently evolving definitions of the workspace format. Any mirrored TypeScript validation must pass the same conformance fixtures as Rust.
+The format may change during the rewrite without migrations, because there are no users to migrate. Update the spec and the conformance fixtures in the same commit as the change.
 
 ## Git Workflow
 
@@ -98,9 +65,9 @@ The project uses the MIT license. Verify the license for each source path before
 
 ## Testing Requirements
 
-Run focused tests while editing and the full checks before handoff. Storage changes require tests for malformed input, round trips, external edits, stale indexes, interrupted index updates, moves, duplicate IDs, path traversal, and rebuilds. Mutations must prove that durable bytes reach disk before the call resolves. MCP and Tauri adapters must call shared services. Generated TypeScript bindings and documentation examples must compile in CI.
+Run focused tests while editing and the full checks before handoff. Storage changes require tests for malformed input, round trips, external edits, stale indexes, interrupted index updates, moves, duplicate IDs, path traversal, and rebuilds. Mutations must prove that durable bytes reach disk before the call resolves. MCP, plugin, and UI adapters must call shared services. Documentation examples must compile in CI.
 
-Any change to workspace-format parsing, validation, normalization, or serialization must update the shared conformance fixtures. Rust and TypeScript must accept and reject the same fixtures. Test deterministic serialization against canonical Rust output; TypeScript must not implement a competing serializer.
+Any change to workspace-format parsing, validation, normalization, or serialization must update the shared conformance fixtures. The editor must leave an unchanged note byte-for-byte identical through open, display, and close. Test UI through AccessKit with `egui_kittest`. Run the sync store conformance suite against both SQLite and PostgreSQL.
 
 ## Scope Discipline
 
@@ -110,7 +77,7 @@ Keep architectural responsibilities separated:
 
 - Core and domain work belongs outside visual components.
 - UI work consumes public typed contracts and must not bypass them.
-- Do not move business logic into Svelte components or stores for convenience.
+- Keep business logic in `app-core`, `local-core`, or plugins, never in UI crates.
 - Do not modify core architecture during UI work unless you identify and document a blocker.
 - Do not implement cloud, collaboration, meeting, or calling features unless the task includes them.
 
@@ -118,7 +85,7 @@ Internal plans and product notes belong in the private Noura-Internal workspace,
 
 ## Security Principles
 
-Treat workspace content, plugin input, paths, frontmatter, provider output, and MCP arguments as untrusted. Resolve and validate relative paths inside the selected workspace; reject traversal, absolute paths, and symlink escapes. Paths crossing the Rust and TypeScript IPC boundary need a lossless, validated representation. Do not corrupt or reinterpret non-UTF-8 paths; return a structured unsupported-path error when the current platform or API cannot represent one safely. Keep credentials in the operating system credential store and never return secrets over IPC or write them to workspace files, SQLite, logs, snapshots, or frontend storage. Escape FTS queries instead of accepting raw SQLite syntax. Use expected content revisions to prevent silent overwrite of external edits. Return structured public errors and keep raw OS, database, and provider details in local diagnostic logs.
+Treat workspace content, plugin input, paths, frontmatter, provider output, and MCP arguments as untrusted. Resolve and validate relative paths inside the selected workspace; reject traversal, absolute paths, and symlink escapes. Paths crossing the plugin boundary need a lossless, validated representation. Do not corrupt or reinterpret non-UTF-8 paths; return a structured unsupported-path error when the current platform or API cannot represent one safely. Keep credentials in the operating system credential store and never hand secrets to plugins or write them to workspace files, SQLite, logs, or snapshots. Check every plugin call against the capabilities the user approved for that plugin. Escape FTS queries instead of accepting raw SQLite syntax. Use expected content revisions to prevent silent overwrite of external edits. Return structured public errors and keep raw OS, database, and provider details in local diagnostic logs.
 
 ## Agent skills
 
