@@ -4,3 +4,27 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+[dependencies]
+comrak.workspace = true
+editor-core = { version = "0.2.0", path = "../editor-core" }
+egui.workspace = true
+egui-wgpu.workspace = true
+glyphon.workspace = true
+serde.workspace = true
+tracing.workspace = true
+unicode-linebreak.workspace = true
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+atomic-write-file.workspace = true
+eframe.workspace = true
+egui_kittest = { workspace = true, features = ["wgpu"] }
+pollster = "1"
+rand.workspace = true
+tempfile.workspace = true
+
+# Runs the example's save tests with `cargo test`.
+[[example]]
+name = "editor"
+test = true
