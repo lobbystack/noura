@@ -72,10 +72,14 @@ fn main() {
     }
 
     let cache = tempfile::tempdir().expect("cache directory");
+    if let Some(load) = load_average() {
+        println!("Load average at start: {load:.1}");
+        println!();
+    }
     println!(
-        "| Plugin | Backend | Component | Cold compile | Compiled code | Load from cache | Instantiate | Render call | Event + render |"
+        "| Plugin | Backend | Component | Cold compile, median | Cold compile, fastest | Compile CPU, median | Compiled code | Load from cache | Instantiate | Render call | Event + render |"
     );
-    println!("|---|---|---:|---:|---:|---:|---:|---:|---:|");
+    println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for plugin in plugins() {
         for backend in backends() {
             measure_times(
@@ -134,12 +138,28 @@ fn read(plugin: &Plugin) -> Vec<u8> {
 fn measure_times(plugin: &Plugin, backend: Backend, cache_path: &Path) {
     let bytes = read(plugin);
 
-    let compile = median((0..COMPILE_RUNS).map(|_| {
+    // Without Wasmtime's `parallel-compilation` feature the calling thread
+    // does all the compiling, so its CPU time shows the work even when other
+    // processes share the machine.
+    let mut compile_wall = Vec::new();
+    let mut compile_cpu = Vec::new();
+    for _ in 0..COMPILE_RUNS {
         let host = TrialHost::new(backend).expect("host starts");
         let started = Instant::now();
+        let cpu_started = thread_cpu_time();
         host.compile(&bytes).expect("plugin compiles");
-        started.elapsed()
-    }));
+        compile_wall.push(started.elapsed());
+        if let (Some(from), Some(to)) = (cpu_started, thread_cpu_time()) {
+            compile_cpu.push(to.saturating_sub(from));
+        }
+    }
+    let fastest_compile = compile_wall.iter().min().copied().expect("compile runs");
+    let compile = median(compile_wall.into_iter());
+    let compile_cpu = if compile_cpu.is_empty() {
+        "n/a".into()
+    } else {
+        time(median(compile_cpu.into_iter()))
+    };
 
     let host = TrialHost::new(backend).expect("host starts");
     let cached = host
@@ -175,10 +195,11 @@ fn measure_times(plugin: &Plugin, backend: Backend, cache_path: &Path) {
     }));
 
     println!(
-        "| {} | {backend:?} | {} | {} | {} | {} | {} | {} | {} |",
+        "| {} | {backend:?} | {} | {} | {} | {compile_cpu} | {} | {} | {} | {} | {} |",
         plugin.name,
         size(bytes.len() as u64),
         time(compile),
+        time(fastest_compile),
         size(compiled_size),
         time(load),
         time(instantiate),
@@ -254,6 +275,41 @@ fn size(bytes: u64) -> String {
     } else {
         format!("{:.1} KiB", bytes / 1024.0)
     }
+}
+
+/// CPU time the calling thread has used.
+#[cfg(unix)]
+fn thread_cpu_time() -> Option<Duration> {
+    // SAFETY: `timespec` is plain data, and `clock_gettime` writes one.
+    unsafe {
+        let mut time: libc::timespec = std::mem::zeroed();
+        let result = libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time);
+        (result == 0).then(|| {
+            Duration::new(
+                u64::try_from(time.tv_sec).unwrap_or(0),
+                u32::try_from(time.tv_nsec).unwrap_or(0),
+            )
+        })
+    }
+}
+
+#[cfg(not(unix))]
+fn thread_cpu_time() -> Option<Duration> {
+    None
+}
+
+/// The one-minute load average, which shows how busy the machine was.
+#[cfg(unix)]
+fn load_average() -> Option<f64> {
+    let mut load = [0.0f64; 1];
+    // SAFETY: `getloadavg` writes at most one sample into the buffer.
+    let samples = unsafe { libc::getloadavg(load.as_mut_ptr(), 1) };
+    (samples == 1).then_some(load[0])
+}
+
+#[cfg(not(unix))]
+fn load_average() -> Option<f64> {
+    None
 }
 
 /// The process's physical footprint, the number Activity Monitor shows.
