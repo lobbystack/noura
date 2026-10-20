@@ -8,7 +8,10 @@
 mod app;
 mod error;
 mod files;
+mod rail;
 mod recents;
+mod tabs;
+mod view_state;
 mod workspace;
 
 pub use app::{App, Change, Notice, Screen};
@@ -16,7 +19,9 @@ pub use error::AppError;
 pub use files::{
     EntryKind, FileTree, OpenedFile, TYPE_AHEAD_TIMEOUT, TreeAction, TreeKey, TreeRow,
 };
+pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};
 pub use workspace::{Workspace, WorkspaceService};
 
 /// Where Noura keeps per-device state, such as indexes and the recent

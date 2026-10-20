@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use app_core::{App, TreeAction, TreeKey, TreeRow};
+use app_core::{App, OpenAs, TreeAction, TreeKey, TreeRow};
 use egui::{
     Align2, Event, EventFilter, FontId, Id, Key, Pos2, Rect, Response, ScrollArea, Sense, Shape,
     Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
@@ -126,7 +126,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         }
     }
     if let Some(TreeAction::OpenFile { relative_path }) = open.take() {
-        app.open_file(&relative_path);
+        app.open_file(&relative_path, OpenAs::Preview);
     }
 
     let open_path = app.document().map(|file| file.relative_path.clone());
@@ -228,7 +228,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
             ui.memory_mut(|memory| memory.request_focus(row_id(&path)));
         }
         if let Some(TreeAction::OpenFile { relative_path }) = tree.activate(row) {
-            app.open_file(&relative_path);
+            app.open_file(&relative_path, OpenAs::Preview);
         }
     }
 }

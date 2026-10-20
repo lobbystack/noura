@@ -13,8 +13,11 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, OpenedFile, RecentWorkspace, Workspace, WorkspaceService, files::shown_name,
+    AppError, FileTree, OpenedFile, RecentWorkspace, Tab, Workspace, WorkspaceService, rail::Rail,
+    tabs::Tabs, view_state::ViewStore,
 };
+
+mod view;
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +48,10 @@ pub enum Change {
     Screen,
     Recents,
     Tree,
+    /// The open tabs or the active tab changed.
+    Tabs,
+    /// The rail's pages or their order changed.
+    Rail,
     Document,
     Notice,
     /// Background work finished; call [`App::poll`] to apply it.
@@ -101,7 +108,10 @@ pub struct App {
     recents: Vec<RecentWorkspace>,
     workspace: Option<Workspace>,
     tree: Option<FileTree>,
-    document: Option<OpenedFile>,
+    tabs: Tabs,
+    rail: Rail,
+    /// Each workspace's tabs, kept in this device's app data.
+    views: ViewStore,
     notice: Option<Notice>,
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
@@ -122,7 +132,9 @@ impl App {
             recents,
             workspace: None,
             tree: None,
-            document: None,
+            tabs: Tabs::default(),
+            rail: Rail::default(),
+            views: ViewStore::new(app_data.as_ref()),
             notice: None,
             failed_restore: None,
             pending: None,
@@ -171,9 +183,19 @@ impl App {
         self.tree.as_mut()
     }
 
-    /// The file shown in the document area.
+    /// The file shown in the document area: the active tab's file.
     pub fn document(&self) -> Option<&OpenedFile> {
-        self.document.as_ref()
+        self.tabs.active().and_then(Tab::file)
+    }
+
+    /// The open tabs, in order.
+    pub fn tabs(&self) -> &[Tab] {
+        self.tabs.list()
+    }
+
+    /// The tab the window shows.
+    pub fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.active()
     }
 
     pub fn notice(&self) -> Option<&Notice> {
@@ -247,29 +269,6 @@ impl App {
         }
     }
 
-    /// Show a file from the tree in the document area.
-    pub fn open_file(&mut self, relative_path: &str) {
-        let Some(workspace) = &self.workspace else {
-            return;
-        };
-        match workspace.open_file(relative_path) {
-            Ok(file) => {
-                self.document = Some(file);
-                self.listeners.emit(Change::Document);
-            }
-            Err(error) => {
-                let title = format!(
-                    "Couldn't open \u{201c}{}\u{201d}",
-                    shown_name(
-                        relative_path.rsplit('/').next().unwrap_or(relative_path),
-                        crate::EntryKind::File
-                    )
-                );
-                self.show_notice(&title, error, None);
-            }
-        }
-    }
-
     /// Apply finished background work. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
         let Some(pending) = &self.pending else {
@@ -293,7 +292,7 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
-                self.document = None;
+                self.tabs = Tabs::default();
                 self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),
@@ -317,9 +316,10 @@ impl App {
         self.failed_restore = None;
         self.workspace = Some(opened.workspace);
         self.tree = Some(opened.tree);
-        self.document = None;
+        self.restore_view();
         self.notice = None;
         self.listeners.emit(Change::Tree);
+        self.listeners.emit(Change::Tabs);
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
         self.set_screen(Screen::Workspace);

@@ -65,11 +65,35 @@ pub struct OpenedFile {
     pub relative_path: String,
 }
 
+impl OpenedFile {
+    /// The file at `relative_path`, named after its file name.
+    pub(crate) fn at(relative_path: &str) -> Self {
+        let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
+        Self {
+            name: shown_name(file_name, EntryKind::File),
+            relative_path: relative_path.to_owned(),
+        }
+    }
+}
+
+/// `path` after the item at `from`, a file or a folder, moved to `to`, or
+/// `None` when `path` isn't `from` or inside it.
+pub(crate) fn remap(path: &str, from: &str, to: &str) -> Option<String> {
+    if path == from {
+        return Some(to.to_owned());
+    }
+    path.strip_prefix(from)
+        .filter(|rest| rest.starts_with('/'))
+        .map(|rest| format!("{to}{rest}"))
+}
+
 /// One file or folder from the workspace listing.
 pub(crate) struct TreeEntry {
     pub(crate) relative_path: String,
     pub(crate) kind: EntryKind,
     pub(crate) not_downloaded: bool,
+    /// A managed object's stable ID.
+    pub(crate) object_id: Option<String>,
 }
 
 struct Node {
@@ -80,6 +104,7 @@ struct Node {
     relative_path: String,
     kind: EntryKind,
     not_downloaded: bool,
+    object_id: Option<String>,
     children: Vec<usize>,
 }
 
@@ -121,6 +146,7 @@ impl FileTree {
                 parent_of(&entry.relative_path).map(|path| tree.folder(path, &mut folders));
             let index = tree.add(entry.relative_path, EntryKind::File, parent);
             tree.nodes[index].not_downloaded = entry.not_downloaded;
+            tree.nodes[index].object_id = entry.object_id;
         }
         let order: Vec<usize> = (0..tree.nodes.len()).collect();
         for index in order {
@@ -158,6 +184,7 @@ impl FileTree {
             relative_path,
             kind,
             not_downloaded: false,
+            object_id: None,
             children: Vec::new(),
         });
         self.parents.push(parent);
@@ -213,6 +240,65 @@ impl FileTree {
     /// The visible rows, top to bottom.
     pub fn rows(&self) -> &[TreeRow] {
         &self.rows
+    }
+
+    fn file(&self, relative_path: &str) -> Option<&Node> {
+        self.nodes
+            .iter()
+            .find(|node| node.kind == EntryKind::File && node.relative_path == relative_path)
+    }
+
+    /// Whether the workspace listing has a file at `relative_path`.
+    pub(crate) fn is_file(&self, relative_path: &str) -> bool {
+        self.file(relative_path).is_some()
+    }
+
+    /// The stable ID of the managed object at `relative_path`.
+    pub(crate) fn object_id(&self, relative_path: &str) -> Option<&str> {
+        self.file(relative_path)?.object_id.as_deref()
+    }
+
+    /// The path of the one file whose stable ID is `object_id`. `None`
+    /// when no file has it, or when two files share it.
+    pub(crate) fn only_file_with_object(&self, object_id: &str) -> Option<&str> {
+        let mut found = self
+            .nodes
+            .iter()
+            .filter(|node| node.object_id.as_deref() == Some(object_id));
+        let first = found.next()?;
+        found
+            .next()
+            .is_none()
+            .then_some(first.relative_path.as_str())
+    }
+
+    /// The open folders' paths, sorted.
+    pub(crate) fn expanded_folders(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .expanded
+            .iter()
+            .map(|node| self.nodes[*node].relative_path.clone())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// Open the folders at `paths`; paths that aren't folders are left
+    /// out.
+    pub(crate) fn expand_folders<'a>(&mut self, paths: impl IntoIterator<Item = &'a str>) {
+        let wanted: HashSet<&str> = paths.into_iter().collect();
+        for (index, node) in self.nodes.iter().enumerate() {
+            if node.kind == EntryKind::Folder && wanted.contains(node.relative_path.as_str()) {
+                self.expanded.insert(index);
+            }
+        }
+        self.refresh_rows();
+    }
+
+    /// The path of the row with keyboard focus.
+    pub(crate) fn focused_path(&self) -> Option<&str> {
+        self.focused
+            .map(|row| self.rows[row].relative_path.as_str())
     }
 
     /// The row with keyboard focus.
@@ -357,6 +443,7 @@ impl Workspace {
             },
             relative_path: entry.relative_path,
             not_downloaded: entry.not_downloaded,
+            object_id: entry.object_id,
         })))
     }
 
@@ -379,11 +466,7 @@ impl Workspace {
                 ));
             }
         }
-        let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
-        Ok(OpenedFile {
-            name: shown_name(file_name, EntryKind::File),
-            relative_path: relative_path.to_owned(),
-        })
+        Ok(OpenedFile::at(relative_path))
     }
 }
 
