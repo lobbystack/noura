@@ -6,4 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+app-core = { version = "0.2.0", path = "../../crates/app-core" }
+app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
 eframe.workspace = true
+rfd.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

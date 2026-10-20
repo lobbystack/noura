@@ -28,16 +28,16 @@ fn tree_of(files: &[&str], folders: &[&str]) -> (tempfile::TempDir, FileTree) {
     (folder, tree)
 }
 
-/// (shown name, level, expanded) for each visible row.
+/// (shown name, depth, expanded) for each visible row.
 fn shown(tree: &FileTree) -> Vec<(String, usize, Option<bool>)> {
     tree.rows()
         .iter()
-        .map(|row: &TreeRow| (row.name.clone(), row.level, row.expanded))
+        .map(|row: &TreeRow| (row.name.clone(), row.depth, row.expanded))
         .collect()
 }
 
-fn row(name: &str, level: usize, expanded: Option<bool>) -> (String, usize, Option<bool>) {
-    (name.to_owned(), level, expanded)
+fn row(name: &str, depth: usize, expanded: Option<bool>) -> (String, usize, Option<bool>) {
+    (name.to_owned(), depth, expanded)
 }
 
 #[test]
@@ -50,13 +50,13 @@ fn the_tree_lists_folders_first_and_sorts_siblings_by_name() {
     assert_eq!(
         shown(&tree),
         [
-            row("alpha", 1, Some(false)),
-            row("sub", 1, Some(false)),
-            row("Zeta", 1, Some(false)),
-            row("A", 1, None),
-            row("b.txt", 1, None),
-            row("Note 2", 1, None),
-            row("Note 10", 1, None),
+            row("alpha", 0, Some(false)),
+            row("sub", 0, Some(false)),
+            row("Zeta", 0, Some(false)),
+            row("A", 0, None),
+            row("b.txt", 0, None),
+            row("Note 2", 0, None),
+            row("Note 10", 0, None),
         ]
     );
 }
@@ -87,10 +87,10 @@ fn the_tree_hides_metadata_dot_names_and_top_level_build_folders() {
     assert_eq!(
         shown(&tree),
         [
-            row("sub", 1, Some(true)),
-            row("node_modules", 2, Some(false)),
-            row("target", 2, Some(false)),
-            row("Visible", 1, None),
+            row("sub", 0, Some(true)),
+            row("node_modules", 1, Some(false)),
+            row("target", 1, Some(false)),
+            row("Visible", 0, None),
         ]
     );
 }
@@ -141,9 +141,9 @@ fn right_and_left_open_close_and_move_between_folders() {
     assert_eq!(
         shown(&tree),
         [
-            row("Docs", 1, Some(true)),
-            row("Guide", 2, None),
-            row("Readme", 1, None)
+            row("Docs", 0, Some(true)),
+            row("Guide", 1, None),
+            row("Readme", 0, None)
         ]
     );
     assert_eq!(focused_name(&tree), "Docs");
@@ -157,7 +157,7 @@ fn right_and_left_open_close_and_move_between_folders() {
     tree.press(TreeKey::Left);
     assert_eq!(
         shown(&tree),
-        [row("Docs", 1, Some(false)), row("Readme", 1, None)]
+        [row("Docs", 0, Some(false)), row("Readme", 0, None)]
     );
     assert_eq!(focused_name(&tree), "Docs");
 }
@@ -180,7 +180,7 @@ fn enter_or_space_opens_a_file_and_toggles_a_folder() {
 
     tree.press(TreeKey::Home);
     tree.press(TreeKey::Activate);
-    assert_eq!(shown(&tree), [row("Docs", 1, Some(false))]);
+    assert_eq!(shown(&tree), [row("Docs", 0, Some(false))]);
 }
 
 #[test]

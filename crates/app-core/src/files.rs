@@ -26,8 +26,8 @@ pub struct TreeRow {
     pub name: String,
     pub relative_path: String,
     pub kind: EntryKind,
-    /// 1 for top-level rows, as in an accessibility tree.
-    pub level: usize,
+    /// How deep the row sits: 0 for top-level rows.
+    pub depth: usize,
     /// Whether a folder is open. `None` for files.
     pub expanded: Option<bool>,
 }
@@ -166,20 +166,20 @@ impl FileTree {
         let focused_node = self.focused.map(|row| self.row_nodes[row]);
         self.rows.clear();
         self.row_nodes.clear();
-        let mut stack: Vec<(usize, usize)> = self.top.iter().rev().map(|node| (*node, 1)).collect();
-        while let Some((index, level)) = stack.pop() {
+        let mut stack: Vec<(usize, usize)> = self.top.iter().rev().map(|node| (*node, 0)).collect();
+        while let Some((index, depth)) = stack.pop() {
             let node = &self.nodes[index];
             let open = self.expanded.contains(&index);
             self.rows.push(TreeRow {
                 name: node.shown.clone(),
                 relative_path: node.relative_path.clone(),
                 kind: node.kind,
-                level,
+                depth,
                 expanded: (node.kind == EntryKind::Folder).then_some(open),
             });
             self.row_nodes.push(index);
             if open {
-                stack.extend(node.children.iter().rev().map(|child| (*child, level + 1)));
+                stack.extend(node.children.iter().rev().map(|child| (*child, depth + 1)));
             }
         }
         self.focused = focused_node.and_then(|node| self.row_of(node));
@@ -199,6 +199,13 @@ impl FileTree {
     /// The row with keyboard focus.
     pub fn focused(&self) -> Option<usize> {
         self.focused
+    }
+
+    /// The visible row showing `relative_path`.
+    pub fn find_row(&self, relative_path: &str) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|row| row.relative_path == relative_path)
     }
 
     pub fn set_focus(&mut self, row: usize) {
@@ -259,7 +266,7 @@ impl FileTree {
                     if self
                         .rows
                         .get(current + 1)
-                        .is_some_and(|next| next.level == row.level + 1) =>
+                        .is_some_and(|next| next.depth == row.depth + 1) =>
                 {
                     self.focused = Some(current + 1);
                 }
