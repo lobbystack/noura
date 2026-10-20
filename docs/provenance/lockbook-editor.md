@@ -53,6 +53,7 @@ Paths on the left are relative to `libs/content/workspace/src/`.
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
+- Inserts an input method's committed text the way a key press inserts text. Lockbook's desktop path ignored egui's input method events.
 
 Lockbook's editing behaviors stay as they were, including the ones that write files: fold tags, Tab handling, non-breaking spaces flattened on paste, setext headings turned off, `__` drawn as underline, and soft breaks drawn as hard breaks. Ticket 18 removes those.
 
