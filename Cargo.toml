@@ -62,6 +62,9 @@ notify = "8"
 openssl = "0.10"
 pbkdf2 = "=0.12.2"
 pulldown-cmark = "0.13"
+ropey = "1.6.1"
+similar = { version = "2.7", features = ["unicode"] }
+unicode-segmentation = "1.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
 rmcp = { version = "3.1", features = ["server", "transport-io"] }
 schemars = "1"
