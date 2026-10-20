@@ -5,8 +5,18 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Runs plugins on Wasmtime's Pulley interpreter as well as Cranelift's native
+# code, so a future mobile host never needs to generate native code.
+pulley = ["wasmtime/pulley"]
+
 [dependencies]
+thiserror.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
+egui = { workspace = true, features = ["default_fonts"] }
+egui_kittest.workspace = true
+libc.workspace = true
+tempfile.workspace = true
 wasmtime = { workspace = true, features = ["wat"] }

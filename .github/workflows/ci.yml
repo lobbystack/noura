@@ -61,7 +61,22 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo build --workspace --locked
+      # Trial S7 loads a Rust and a TypeScript hello plugin in plugin-host's
+      # tests. jco needs Node and npm, which AGENTS.md allows only for
+      # sdk/typescript.
+      - name: Install the WebAssembly component target
+        run: rustup target add wasm32-wasip2
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdk/typescript/s7-hello/package-lock.json
+      - name: Build the trial S7 plugins
+        shell: bash
+        run: bash crates/plugin-host/trial/build-plugins.sh
       - run: cargo test --workspace --locked
+        env:
+          NOURA_S7_REQUIRE_PLUGINS: '1'
 
   static-server:
     runs-on: ubuntu-latest

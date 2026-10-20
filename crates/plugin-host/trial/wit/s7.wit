@@ -1,0 +1,31 @@
+// Trial S7 only. Ticket 24 replaces this world with `noura:plugin@0.1.0`.
+package noura-trial:s7@0.1.0;
+
+interface ui {
+  variant node-kind {
+    // Lays out its children from top to bottom.
+    panel,
+    // A line of text.
+    text(string),
+    // A button with this label.
+    button(string),
+  }
+
+  // One UI node. WIT has no recursive types, so `children` holds indices
+  // into the list that `render` returns.
+  record node {
+    id: string,
+    kind: node-kind,
+    children: list<u32>,
+  }
+}
+
+world plugin {
+  use ui.{node};
+
+  // Returns the plugin's UI as a flat list whose first node is the root.
+  export render: func() -> list<node>;
+
+  // Handles a press on the button with this node id.
+  export handle-event: func(node-id: string);
+}

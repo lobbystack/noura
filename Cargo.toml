@@ -10,6 +10,7 @@ members = [
     "crates/local-core",
     "crates/mcp-server",
     "crates/plugin-host",
+    "crates/plugin-host/trial/rust-hello",
     "crates/plugin-sdk",
     "crates/sync-key-envelope",
     "crates/sync-protocol",
