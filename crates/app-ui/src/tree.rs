@@ -5,8 +5,10 @@ use std::time::Instant;
 
 use app_core::{App, TreeAction, TreeKey, TreeRow};
 use egui::{
-    Align2, Event, EventFilter, FontId, Id, Key, Pos2, Response, ScrollArea, Sense, Shape, Stroke,
-    StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText, accesskit::Role, pos2, vec2,
+    Align2, Event, EventFilter, FontId, Id, Key, Pos2, Rect, Response, ScrollArea, Sense, Shape,
+    Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
+    accesskit::{Action, Role},
+    pos2, vec2,
 };
 
 use crate::theme::{BODY_SIZE, Palette, radius};
@@ -21,7 +23,8 @@ pub(crate) struct TreeView {
     /// The workspace this state belongs to.
     workspace: Option<String>,
     offset: f32,
-    /// The rows drawn last frame, to find the row that has keyboard focus.
+    /// The rows that existed last frame, to find the row that has keyboard
+    /// focus: the rows in view and the tree's current row.
     drawn: Vec<(Id, String)>,
 }
 
@@ -88,12 +91,22 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
             ..TreeView::default()
         };
     }
-    // The tree has the keyboard when one of last frame's rows has focus.
-    let focused_path = ui.memory(|memory| memory.focused()).and_then(|focused| {
+    // The tree has the keyboard when one of last frame's rows has focus, or
+    // when a screen reader asks to focus one. A screen reader can focus any
+    // row, as it can a row with tabindex -1 in the legacy tree.
+    let asked = ui.input(|input| {
         view.drawn
             .iter()
-            .find(|(id, _)| *id == focused)
+            .find(|(id, _)| input.has_accesskit_action_request(*id, Action::Focus))
             .map(|(_, path)| path.clone())
+    });
+    let focused_path = asked.or_else(|| {
+        ui.memory(|memory| memory.focused()).and_then(|focused| {
+            view.drawn
+                .iter()
+                .find(|(id, _)| *id == focused)
+                .map(|(_, path)| path.clone())
+        })
     });
     let has_keyboard = focused_path.is_some();
     let mut reveal = false;
@@ -122,6 +135,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     };
     let rows = tree.rows();
     let focused = tree.focused();
+    // Like the legacy tree's roving tabindex, only the current row, or the
+    // first row when none is current, takes Tab focus. Tab and Shift+Tab
+    // leave the tree instead of stepping through its rows.
+    let tab_stop = focused.or((!rows.is_empty()).then_some(0));
     let palette = Palette::of(ui.ctx());
 
     let mut scroll = ScrollArea::vertical()
@@ -145,6 +162,27 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     let mut clicked = None;
     let mut gained = None;
     let mut drawn = Vec::new();
+    let mut row_ui = |ui: &mut Ui, index: usize, rect: Rect| {
+        let row = &rows[index];
+        let id = row_id(&row.relative_path);
+        let selected = open_path.as_deref() == Some(row.relative_path.as_str());
+        let tab_stop = Some(index) == tab_stop;
+        let response = draw_row(ui, rect, id, row, selected, tab_stop, &palette);
+        if response.clicked() {
+            clicked = Some(index);
+        }
+        if response.gained_focus() {
+            gained = Some(index);
+            response.scroll_to_me(None);
+        }
+        if has_keyboard && Some(index) == focused && !response.has_focus() {
+            response.request_focus();
+        }
+        if response.has_focus() {
+            ui.memory_mut(|memory| memory.set_focus_lock_filter(id, KEY_FILTER));
+        }
+        drawn.push((id, row.relative_path.clone()));
+    };
     let builder = UiBuilder::new()
         .accessibility_role(Role::Tree)
         .accessibility_label("Files");
@@ -152,24 +190,26 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         .scope_builder(builder, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             scroll.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
-                for index in range {
-                    let row = &rows[index];
-                    let id = row_id(&row.relative_path);
-                    let selected = open_path.as_deref() == Some(row.relative_path.as_str());
-                    let response = draw_row(ui, id, row, selected, &palette);
-                    if response.clicked() {
-                        clicked = Some(index);
-                    }
-                    if response.gained_focus() {
-                        gained = Some(index);
-                    }
-                    if has_keyboard && Some(index) == focused && !response.has_focus() {
-                        response.request_focus();
-                    }
-                    if response.has_focus() {
-                        ui.memory_mut(|memory| memory.set_focus_lock_filter(id, KEY_FILTER));
-                    }
-                    drawn.push((id, row.relative_path.clone()));
+                // The current row exists even while it is scrolled out of
+                // view, so it keeps keyboard focus and its place in the tab
+                // order.
+                let shown = ui.max_rect();
+                let top = shown.top() - range.start as f32 * ROW_HEIGHT;
+                let away = |index: usize| {
+                    Rect::from_min_size(
+                        pos2(shown.left(), top + index as f32 * ROW_HEIGHT),
+                        vec2(shown.width(), ROW_HEIGHT),
+                    )
+                };
+                if let Some(row) = tab_stop.filter(|row| *row < range.start) {
+                    row_ui(ui, row, away(row));
+                }
+                for index in range.clone() {
+                    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), ROW_HEIGHT));
+                    row_ui(ui, index, rect);
+                }
+                if let Some(row) = tab_stop.filter(|row| *row >= range.end) {
+                    row_ui(ui, row, away(row));
                 }
             })
         })
@@ -193,12 +233,27 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     }
 }
 
-fn draw_row(ui: &mut Ui, id: Id, row: &TreeRow, selected: bool, palette: &Palette) -> Response {
-    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), ROW_HEIGHT));
-    let mut response = ui.interact(rect, id, Sense::click());
+/// One row at `rect`. Only the tab stop takes Tab focus; every row takes
+/// clicks.
+fn draw_row(
+    ui: &mut Ui,
+    rect: Rect,
+    id: Id,
+    row: &TreeRow,
+    selected: bool,
+    tab_stop: bool,
+    palette: &Palette,
+) -> Response {
+    let sense = if tab_stop {
+        Sense::click()
+    } else {
+        Sense::CLICK
+    };
+    let mut response = ui.interact(rect, id, sense);
     response.widget_info(|| WidgetInfo::labeled(Role::TreeItem, true, &row.name));
     let description = row_description(row);
     ui.ctx().accesskit_node_builder(id, |node| {
+        node.add_action(Action::Focus);
         node.set_level(row.depth);
         if let Some(expanded) = row.expanded {
             node.set_expanded(expanded);

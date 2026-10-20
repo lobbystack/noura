@@ -87,8 +87,10 @@ fn tree_scroll_frame_times() {
         ms(at(0.95)),
         ms(at(1.0)),
     );
+    // The first row stays in the AccessKit tree as the tree's tab stop, so
+    // look for the second.
     assert!(
-        harness.query_by_label("File 00000").is_none(),
+        harness.query_by_label("File 00001").is_none(),
         "the tree scrolled"
     );
 }

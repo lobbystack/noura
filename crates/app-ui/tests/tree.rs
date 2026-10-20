@@ -2,7 +2,9 @@
 
 mod support;
 
-use egui::{Event, Key, accesskit::Role};
+use egui::{
+    Event, Key, Modifiers, MouseWheelSource, MouseWheelUnit, TouchPhase, accesskit::Role, vec2,
+};
 use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
@@ -202,4 +204,116 @@ fn opening_a_file_shows_its_name_and_workspace_relative_path() {
         std::fs::read(folder.join("Docs/Guide.md")).unwrap(),
         b"# Guide\n"
     );
+}
+
+/// A workspace with `count` notes, `N 000` and up, opened at launch.
+fn many_notes(
+    app_data: &std::path::Path,
+    folder: &std::path::Path,
+    count: usize,
+) -> Harness<'static, app_ui::NouraUi> {
+    create_workspace(app_data, "Notes", folder);
+    for index in 0..count {
+        std::fs::write(folder.join(format!("N {index:03}.md")), b"x").unwrap();
+    }
+    let mut harness = harness(app_data, FakePicker::default());
+    settle(&mut harness);
+    harness
+}
+
+/// The part of the window the tree can show: below the workspace switcher.
+fn tree_area(harness: &Harness<'static, app_ui::NouraUi>) -> egui::Rect {
+    let switcher = harness
+        .get_by_label_contains("Switch workspace")
+        .rect()
+        .bottom();
+    let mut area = harness.ctx.content_rect();
+    area.min.y = switcher;
+    area
+}
+
+/// Whether `name`'s row is drawn where you can see it.
+fn in_view(harness: &Harness<'static, app_ui::NouraUi>, name: &str) -> bool {
+    let area = tree_area(harness);
+    harness
+        .query_by_role_and_label(Role::TreeItem, name)
+        .is_some_and(|row| area.contains_rect(row.rect()))
+}
+
+/// Scroll the tree with the mouse wheel, as far as `points` goes.
+fn wheel(harness: &mut Harness<'static, app_ui::NouraUi>, points: f32) {
+    let first = harness
+        .get_all_by_role(Role::TreeItem)
+        .next()
+        .unwrap()
+        .rect();
+    harness.hover_at(first.center());
+    harness.run();
+    for _ in 0..10 {
+        harness.event(Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: vec2(0.0, -points / 10.0),
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run();
+}
+
+#[test]
+fn the_arrow_keys_carry_on_after_the_focused_row_scrolls_out_of_view() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = many_notes(app_data.path(), &parent.path().join("Notes"), 200);
+    row(&harness, "N 003").focus();
+    harness.run();
+    assert_eq!(focused(&harness), "N 003");
+
+    wheel(&mut harness, 4000.0);
+    assert!(!in_view(&harness, "N 003"), "the tree didn't scroll");
+    assert_eq!(focused(&harness), "N 003");
+
+    press(&mut harness, Key::ArrowDown);
+    assert_eq!(focused(&harness), "N 004");
+    assert!(in_view(&harness, "N 004"));
+}
+
+#[test]
+fn tab_leaves_the_tree_and_shift_tab_comes_back_to_the_same_row() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    row(&harness, "Notes").focus();
+    harness.run();
+    assert_eq!(focused(&harness), "Notes");
+
+    press(&mut harness, Key::Tab);
+    assert_eq!(focused(&harness), "", "Tab stayed in the tree");
+    let next = harness.get_by(|node| node.is_focused());
+    assert_ne!(next.accesskit_node().role(), Role::TreeItem);
+
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    harness.run();
+    assert_eq!(focused(&harness), "Notes");
+}
+
+#[test]
+fn tab_comes_back_to_a_row_scrolled_out_of_view_and_shows_it() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = many_notes(app_data.path(), &parent.path().join("Notes"), 200);
+    row(&harness, "N 003").focus();
+    harness.run();
+    press(&mut harness, Key::Tab);
+    assert_eq!(focused(&harness), "");
+
+    wheel(&mut harness, 4000.0);
+    assert!(!in_view(&harness, "N 003"), "the tree didn't scroll");
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    harness.run();
+
+    assert_eq!(focused(&harness), "N 003");
+    assert!(in_view(&harness, "N 003"));
 }
