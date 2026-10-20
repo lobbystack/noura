@@ -1936,6 +1936,7 @@ dependencies = [
 name = "editor-egui"
 version = "0.2.0"
 dependencies = [
+ "atomic-write-file",
  "comrak",
  "editor-core",
  "eframe",
