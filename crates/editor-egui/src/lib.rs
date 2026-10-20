@@ -53,9 +53,9 @@ pub struct Response {
     pub selection_updated: bool,
     pub scroll_updated: bool,
 
-    /// A link the user opened this frame, resolved through the
-    /// [`LinkResolver`]. The editor never opens it itself.
-    pub opened_link: Option<resolvers::OpenedLink>,
+    /// Links the user opened this frame, resolved through the
+    /// [`LinkResolver`]. The editor never opens them itself.
+    pub opened_links: Vec<resolvers::OpenedLink>,
 }
 
 /// A span of the note's source and where the last frame drew it.
@@ -769,7 +769,7 @@ impl Editor {
             self.unprocessed_scroll = None;
         }
 
-        resp.opened_link = self.edit.renderer.doc.opened_links.pop();
+        resp.opened_links = mem::take(&mut self.edit.renderer.doc.opened_links);
 
         // focus editor when first shown or when nothing else has focus
         if !self.initialized || ui.memory(|m| m.focused().is_none()) {

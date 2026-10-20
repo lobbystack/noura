@@ -139,7 +139,7 @@ impl eframe::App for ExampleApp {
             if response.text_updated && self.status.starts_with("Saved") {
                 self.status.clear();
             }
-            if let Some(link) = response.opened_link {
+            if let Some(link) = response.opened_links.into_iter().last() {
                 self.status = match link {
                     OpenedLink::File(file) => format!("Link to {file}"),
                     OpenedLink::External(url) => format!("Link to {url}"),

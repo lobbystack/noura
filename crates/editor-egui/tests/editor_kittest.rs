@@ -184,6 +184,32 @@ fn selecting_copying_and_pasting_duplicates_text() {
 }
 
 #[test]
+fn an_input_method_commit_inserts_its_text() {
+    let mut harness = harness("note\n");
+    press(&mut harness, Modifiers::NONE, Key::End);
+
+    for event in [
+        egui::ImeEvent::Enabled,
+        egui::ImeEvent::Preedit {
+            text: "に".into(),
+            active_range_chars: None,
+        },
+        egui::ImeEvent::Preedit {
+            text: "にほん".into(),
+            active_range_chars: None,
+        },
+        egui::ImeEvent::Commit("日本".into()),
+        egui::ImeEvent::Disabled,
+    ] {
+        harness.event(Event::Ime(event));
+    }
+    harness.run_steps(1);
+
+    assert_eq!(editor(&harness).text(), "note日本\n");
+    assert_eq!(editor(&harness).selection(), (Grapheme(6), Grapheme(6)));
+}
+
+#[test]
 fn undo_takes_back_typing() {
     let mut harness = harness("draft\n");
 

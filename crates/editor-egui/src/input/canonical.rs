@@ -154,6 +154,18 @@ impl<'ast> MdEdit {
                     advance_cursor: true,
                 })
             }
+            // An input method's committed text types like a key. Its
+            // composition (preedit) stays out of the note until it commits.
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                if self.renderer.readonly || text.is_empty() {
+                    return None;
+                }
+                Some(Event::Replace {
+                    region: Region::Selection,
+                    text,
+                    advance_cursor: true,
+                })
+            }
             egui::Event::Key {
                 key,
                 pressed: true,
