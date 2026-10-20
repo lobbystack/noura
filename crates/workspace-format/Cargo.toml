@@ -16,3 +16,6 @@ thiserror.workspace = true
 ts-rs.workspace = true
 ulid.workspace = true
 slug.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

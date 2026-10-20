@@ -17,7 +17,13 @@ use ts_rs::TS;
 
 pub mod calendar;
 pub mod merge;
+mod object_type;
 pub mod raw_text;
+
+pub use object_type::{
+    ObjectTypeRegistry, PropertyDeclaration, PropertyError, PropertyKind, PropertySchema,
+    RegistrationError,
+};
 
 /// Canonical workspace-relative location of Noura's durable manifest.
 pub const WORKSPACE_MANIFEST_PATH: &str = ".noura/workspace.yaml";
@@ -405,6 +411,16 @@ pub fn normalize_project_properties(
 }
 
 fn validate_task_due(value: &str) -> Result<(), FormatError> {
+    if valid_date_value(value) {
+        Ok(())
+    } else {
+        Err(FormatError::InvalidTaskDue)
+    }
+}
+
+/// Checks for a civil date (`YYYY-MM-DD`) or an RFC 3339 instant with an
+/// explicit offset.
+fn valid_date_value(value: &str) -> bool {
     let date_only = value.len() == 10
         && value.as_bytes().get(4) == Some(&b'-')
         && value.as_bytes().get(7) == Some(&b'-')
@@ -416,11 +432,7 @@ fn validate_task_due(value: &str) -> Result<(), FormatError> {
             .skip(10)
             .any(|byte| matches!(byte, b'+' | b'-')))
         && value.parse::<jiff::Timestamp>().is_ok();
-    if date_only || timed {
-        Ok(())
-    } else {
-        Err(FormatError::InvalidTaskDue)
-    }
+    date_only || timed
 }
 
 fn split_title(content: &str) -> (String, String) {
@@ -470,7 +482,9 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
             error: "Frontmatter has no closing delimiter".into(),
         };
     };
-    let yaml = &text[4..end];
+    // The line break before the closing delimiter ends the last YAML line.
+    // Without it, a block scalar written last would lose its final line break.
+    let yaml = &text[4..=end];
     let markdown = text[end + 5..].trim_start_matches('\n');
     let (title, body) = split_title(markdown);
     let properties: BTreeMap<String, serde_json::Value> = match serde_yaml_ng::from_str(yaml) {
@@ -537,8 +551,29 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     })
 }
 
+/// The properties `serialize_object` writes first, in this order, before the
+/// sorted unknown properties. Schemas take over once the Tasks, Projects and
+/// Calendar plugins declare their types.
+const BUILT_IN_PROPERTY_ORDER: [&str; 8] = [
+    "status",
+    "priority",
+    "project",
+    "due",
+    "date",
+    "start",
+    "end",
+    "kanban_order",
+];
+
 /// Serializes a managed object using the deterministic workspace representation.
 pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError> {
+    serialize_envelope(object, &BUILT_IN_PROPERTY_ORDER)
+}
+
+/// Writes the managed-object envelope: `id` and `type`, the `leading`
+/// properties in that order, the other properties sorted by key, `created`
+/// and `updated`, then the title heading and the body.
+fn serialize_envelope(object: &WorkspaceObject, leading: &[&str]) -> Result<Vec<u8>, FormatError> {
     if !valid_object_id(&object.id, &object.object_type) {
         return Err(FormatError::InvalidObjectId);
     }
@@ -553,35 +588,13 @@ pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError
         "type",
         serde_json::Value::String(object.object_type.clone()),
     )?;
-    for key in [
-        "status",
-        "priority",
-        "project",
-        "due",
-        "date",
-        "start",
-        "end",
-        "kanban_order",
-    ] {
-        if let Some(value) = object.properties.get(key) {
+    for key in leading {
+        if let Some(value) = object.properties.get(*key) {
             insert(key, value.clone())?;
         }
     }
     for (key, value) in &object.properties {
-        if !matches!(
-            key.as_str(),
-            "id" | "type"
-                | "status"
-                | "priority"
-                | "project"
-                | "due"
-                | "date"
-                | "start"
-                | "end"
-                | "kanban_order"
-                | "created"
-                | "updated"
-        ) {
+        if !is_managed_property(key) && !leading.contains(&key.as_str()) {
             insert(key, value.clone())?;
         }
     }

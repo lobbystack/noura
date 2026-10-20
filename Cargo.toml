@@ -69,6 +69,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
 openssl = "0.10"
 pbkdf2 = "=0.12.2"
+# Without default features proptest leaves out its process-forking runner.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 pulldown-cmark = "0.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
 rmcp = { version = "3.1", features = ["server", "transport-io"] }

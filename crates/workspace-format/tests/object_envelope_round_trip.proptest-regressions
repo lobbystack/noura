@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ebb5203595dd2fb2fb37964716e734d82eee05b1d2eb1f346356953ad0208876 # shrinks to case = Case { registered: false, declared: [], object: WorkspaceObject { id: "a_00000000000000000000000000", object_type: "a", title: "", body: "", relative_path: "objects/example.md", revision: "", created: None, updated: Some("\n\n"), properties: {} } }
