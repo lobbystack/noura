@@ -109,6 +109,20 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 The editor in `crates/editor-core` and `crates/editor-egui` adapts Lockbook's Markdown editor, which its authors dedicated to the public domain under the Unlicense. The Unlicense asks for no notice. [The Lockbook editor provenance record](docs/provenance/lockbook-editor.md) lists the files taken and the changes made.
 
+`editor-core`'s text buffer, offsets, grapheme index and word diff adapt the text model in Lockbook's `lb-rs` crate (`libs/lb/lb-rs/src/model/text/` at commit `1cd633a`), which its manifest licenses under the BSD 3-Clause License. `lb-rs` names no copyright holder, so this notice credits the Lockbook authors:
+
+Copyright (c) 2023–2026, the Lockbook authors (https://github.com/lockbook/lockbook)
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 ## BSL-1.0 crates (Windows clipboard)
 
 eframe reaches the Windows clipboard through arboard, which uses `clipboard-win` 5.4.1 and `error-code` 3.4.0 by Douman (https://github.com/DoumanAsh). Noura uses both unmodified, pinned in Cargo.lock. Both use the Boost Software License 1.0:
