@@ -2,8 +2,9 @@
 
 use super::{App, Change};
 use crate::{
-    OpenAs, Tab, TabId, TabPlace,
+    Layout, OpenAs, Page, Tab, TabId, TabPlace, TreeAction, TreeKey,
     files::{remap, shown_name},
+    layout::sidebar_width,
     rail::FILES_PAGE,
     tabs::TabContent,
 };
@@ -66,6 +67,36 @@ impl App {
         self.tabs_changed(true);
     }
 
+    /// The rail's pages, top to bottom.
+    pub fn rail(&self) -> Vec<&Page> {
+        self.rail.ordered()
+    }
+
+    /// Put the page `page_id` at `index` in the rail, as dragging it does.
+    /// The open workspace keeps the order on this device.
+    pub fn move_page(&mut self, page_id: &str, index: usize) {
+        if self.rail.move_page(page_id, index) {
+            self.listeners.emit(Change::Rail);
+            self.save_view();
+        }
+    }
+
+    /// Move the page `page_id` up (`-1`) or down (`1`) the rail, as
+    /// Alt-Up and Alt-Down do.
+    pub fn move_page_by(&mut self, page_id: &str, offset: isize) {
+        let Some(index) = self
+            .rail
+            .ordered()
+            .iter()
+            .position(|page| page.id == page_id)
+        else {
+            return;
+        };
+        if let Some(index) = index.checked_add_signed(offset) {
+            self.move_page(page_id, index);
+        }
+    }
+
     /// The rail page the window shows: the active tab's page, or Files.
     pub fn current_page(&self) -> &str {
         self.tabs
@@ -111,6 +142,88 @@ impl App {
         if self.tabs.close(id) {
             self.tabs_changed(was_active);
         }
+    }
+
+    /// The layout this device remembers.
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    /// Show or hide the sidebar.
+    pub fn toggle_sidebar(&mut self) {
+        self.layout.sidebar_shown = !self.layout.sidebar_shown;
+        self.layout_changed();
+    }
+
+    /// Resize the sidebar, to no less than
+    /// [`SIDEBAR_MIN_WIDTH`](crate::SIDEBAR_MIN_WIDTH).
+    pub fn set_sidebar_width(&mut self, width: f32) {
+        if let Some(width) = sidebar_width(width)
+            && width != self.layout.sidebar_width
+        {
+            self.layout.sidebar_width = width;
+            self.layout_changed();
+        }
+    }
+
+    /// Whether you folded the sidebar section `key`.
+    pub fn is_section_collapsed(&self, key: &str) -> bool {
+        self.layout
+            .collapsed_sections
+            .iter()
+            .any(|section| section == key)
+    }
+
+    /// Fold or unfold the sidebar section `key`.
+    pub fn toggle_section(&mut self, key: &str) {
+        let sections = &mut self.layout.collapsed_sections;
+        match sections.iter().position(|section| section == key) {
+            Some(index) => {
+                sections.remove(index);
+            }
+            None => sections.push(key.to_owned()),
+        }
+        self.layout_changed();
+    }
+
+    fn layout_changed(&mut self) {
+        self.listeners.emit(Change::Layout);
+        self.layouts.save(&self.layout);
+    }
+
+    /// Handle a key while the file tree has focus. Enter or Space on a
+    /// file opens it in the preview tab.
+    pub fn press_tree_key(&mut self, key: TreeKey) {
+        if let Some(TreeAction::OpenFile { relative_path }) =
+            self.change_tree(|tree| tree.press(key))
+        {
+            self.open_file(&relative_path, OpenAs::Preview);
+        }
+    }
+
+    /// A click on the tree's `row`: open a file as `how` says, or open or
+    /// close a folder.
+    pub fn activate_tree_row(&mut self, row: usize, how: OpenAs) {
+        if let Some(TreeAction::OpenFile { relative_path }) =
+            self.change_tree(|tree| tree.activate(row))
+        {
+            self.open_file(&relative_path, how);
+        }
+    }
+
+    /// Change the file tree, and save its open folders when they changed.
+    fn change_tree<R>(
+        &mut self,
+        change: impl FnOnce(&mut crate::FileTree) -> Option<R>,
+    ) -> Option<R> {
+        let tree = self.tree.as_mut()?;
+        let before = tree.expanded_folders();
+        let result = change(tree);
+        if tree.expanded_folders() != before {
+            self.listeners.emit(Change::Tree);
+            self.save_view();
+        }
+        result
     }
 
     /// Read the workspace folder again and bring the tree and the tabs in
@@ -168,6 +281,7 @@ impl App {
         self.tree = Some(tree);
         self.listeners.emit(Change::Tree);
         self.follow_files();
+        self.save_view();
     }
 
     /// Point each file tab at its file in the tree: the same path, or the
@@ -204,10 +318,18 @@ impl App {
             return;
         };
         let (tabs, active) = self.tabs.stored();
-        self.views.save(
-            workspace.id(),
-            &crate::view_state::StoredView { tabs, active },
-        );
+        let expanded_folders = self
+            .tree
+            .as_ref()
+            .map(crate::FileTree::expanded_folders)
+            .unwrap_or_default();
+        let view = crate::view_state::StoredView {
+            tabs,
+            active,
+            expanded_folders,
+            rail_order: self.rail.saved_order().to_vec(),
+        };
+        self.views.save(workspace.id(), &view);
     }
 
     /// Bring back the open workspace's saved view state: the tabs whose
@@ -218,6 +340,11 @@ impl App {
             return;
         };
         let stored = self.views.load(workspace.id());
+        self.rail.set_saved_order(stored.rail_order);
+        self.listeners.emit(Change::Rail);
+        if let Some(tree) = &mut self.tree {
+            tree.expand_folders(stored.expanded_folders.iter().map(String::as_str));
+        }
         let restored = stored
             .tabs
             .into_iter()

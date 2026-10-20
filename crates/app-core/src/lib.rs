@@ -8,6 +8,7 @@
 mod app;
 mod error;
 mod files;
+mod layout;
 mod rail;
 mod recents;
 mod tabs;
@@ -19,6 +20,7 @@ pub use error::AppError;
 pub use files::{
     EntryKind, FileTree, OpenedFile, TYPE_AHEAD_TIMEOUT, TreeAction, TreeKey, TreeRow,
 };
+pub use layout::{Layout, SIDEBAR_MIN_WIDTH};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};

@@ -13,8 +13,8 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, OpenedFile, RecentWorkspace, Tab, Workspace, WorkspaceService, rail::Rail,
-    tabs::Tabs, view_state::ViewStore,
+    AppError, FileTree, Layout, OpenedFile, RecentWorkspace, Tab, Workspace, WorkspaceService,
+    layout::LayoutStore, rail::Rail, tabs::Tabs, view_state::ViewStore,
 };
 
 mod view;
@@ -52,6 +52,8 @@ pub enum Change {
     Tabs,
     /// The rail's pages or their order changed.
     Rail,
+    /// The sidebar showed, hid, resized or folded a section.
+    Layout,
     Document,
     Notice,
     /// Background work finished; call [`App::poll`] to apply it.
@@ -112,6 +114,8 @@ pub struct App {
     rail: Rail,
     /// Each workspace's tabs, kept in this device's app data.
     views: ViewStore,
+    layout: Layout,
+    layouts: LayoutStore,
     notice: Option<Notice>,
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
@@ -135,11 +139,14 @@ impl App {
             tabs: Tabs::default(),
             rail: Rail::default(),
             views: ViewStore::new(app_data.as_ref()),
+            layout: Layout::default(),
+            layouts: LayoutStore::new(app_data.as_ref()),
             notice: None,
             failed_restore: None,
             pending: None,
             listeners: Listeners::default(),
         };
+        app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;

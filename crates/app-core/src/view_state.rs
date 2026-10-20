@@ -19,6 +19,11 @@ pub(crate) struct StoredView {
     pub(crate) tabs: Vec<StoredTab>,
     /// The index of the active tab in `tabs`.
     pub(crate) active: Option<usize>,
+    /// The file tree's open folders.
+    pub(crate) expanded_folders: Vec<String>,
+    /// The rail's page IDs in the order you gave them. Empty until you
+    /// move a page.
+    pub(crate) rail_order: Vec<String>,
 }
 
 /// One saved tab: a file by workspace-relative path, or a rail page.
@@ -119,6 +124,8 @@ impl ViewStore {
         StoredView {
             tabs: tabs.into_iter().flatten().collect(),
             active,
+            expanded_folders: strings(&value, "expandedFolders"),
+            rail_order: strings(&value, "railOrder"),
         }
     }
 
@@ -132,6 +139,21 @@ impl ViewStore {
             tracing::warn!(%error, "the workspace's view state could not be saved");
         }
     }
+}
+
+/// The strings in the array `key` of `value`, leaving out anything else.
+fn strings(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn write(file: &Path, view: &StoredView) -> std::io::Result<()> {
