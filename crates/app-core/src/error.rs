@@ -53,10 +53,13 @@ impl AppError {
                 .to_owned(),
             "workspace_identity_changed" => format!("A different workspace is now at {path}."),
             "unsupported_path" | "non_utf8_path" => return Self::unsupported_path(),
-            "symlink_escape" => {
-                "The folder's .noura folder is a link to somewhere else, so Noura won't use it."
-                    .to_owned()
-            }
+            "symlink_escape" => match error.operation.as_str() {
+                "workspace_create" | "workspace_open" => {
+                    "The folder's .noura folder or settings file is a link, so Noura won't use it."
+                        .to_owned()
+                }
+                _ => format!("{path} is a link or sits in a linked folder, so Noura won't use it."),
+            },
             _ => match error.category {
                 ErrorCategory::Permission => {
                     format!("Noura doesn't have permission to read {path}.")

@@ -47,6 +47,22 @@ fn new_workspace_leaves_existing_files_byte_for_byte() {
 }
 
 #[test]
+fn new_workspace_with_a_blank_name_changes_nothing() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Not yet");
+
+    let error = WorkspaceService::new(app_data.path())
+        .create("   ", &folder)
+        .err()
+        .unwrap();
+
+    assert_eq!(error.code, "workspace_name_required");
+    assert_eq!(error.message, "Enter a name for the workspace.");
+    assert!(!folder.exists(), "a failed create must not make the folder");
+}
+
+#[test]
 fn new_workspace_where_one_exists_changes_nothing_and_says_so() {
     let app_data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
@@ -109,20 +125,41 @@ fn open_folder_opens_the_workspace_now_in_a_folder_recents_remember_differently(
 }
 
 #[test]
-fn open_folder_restores_a_known_folder_s_identity_when_its_manifest_is_gone() {
+fn open_folder_gives_a_folder_that_lost_its_manifest_a_new_id() {
     let app_data = tempfile::tempdir().unwrap();
-    let folder = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Known folder");
+    std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service
-        .create("Known", folder.path())
-        .unwrap()
-        .id()
-        .to_owned();
-    std::fs::remove_file(folder.path().join(".noura/workspace.yaml")).unwrap();
+    let id = service.create("Known", &folder).unwrap().id().to_owned();
+    std::fs::remove_file(folder.join(".noura/workspace.yaml")).unwrap();
 
-    let workspace = service.open_folder(folder.path()).unwrap();
+    let workspace = service.open_folder(&folder).unwrap();
 
-    assert_eq!((workspace.id(), workspace.name()), (id.as_str(), "Known"));
+    assert_ne!(workspace.id(), id);
+    assert_eq!(workspace.name(), "Known folder");
+    assert!(manifest(&folder).contains(&format!("id: {}", workspace.id())));
+}
+
+#[test]
+fn open_folder_never_lends_a_remembered_id_to_another_folder_at_the_same_path() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Projects");
+    std::fs::create_dir(&folder).unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    let old_id = service.create("Old", &folder).unwrap().id().to_owned();
+    let archive = parent.path().join("Projects archive");
+    rename_with_retry(&folder, &archive);
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("unrelated.md"), b"x").unwrap();
+
+    let workspace = service.open_folder(&folder).unwrap();
+
+    assert_ne!(workspace.id(), old_id);
+    assert_eq!(workspace.name(), "Projects");
+    assert!(manifest(&archive).contains(&format!("id: {old_id}")));
+    assert_eq!(recent_ids(&service), [workspace.id().to_owned(), old_id]);
 }
 
 #[test]
@@ -425,6 +462,30 @@ fn restore_says_why_while_the_folder_is_missing_and_opens_it_once_it_is_back() {
 }
 
 #[test]
+fn restore_and_open_recent_refuse_a_saved_folder_that_lost_its_manifest() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Bare");
+    std::fs::create_dir(&folder).unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    let id = service.create("Bare", &folder).unwrap().id().to_owned();
+    let saved_path = service.recents()[0].path.clone();
+    std::fs::remove_file(folder.join(".noura/workspace.yaml")).unwrap();
+
+    let restored = service.restore_last().err().unwrap();
+    let reopened = service.open_recent(&id).err().unwrap();
+
+    assert_eq!(restored, reopened);
+    assert_eq!(restored.code, "workspace_manifest_missing");
+    assert_eq!(restored.message, missing_manifest_message(&saved_path));
+    assert!(
+        !folder.join(".noura/workspace.yaml").exists(),
+        "a saved ID must not be written into the folder"
+    );
+    assert_eq!(recent_ids(&service), [id]);
+}
+
+#[test]
 fn restore_refuses_a_different_workspace_at_the_saved_path() {
     let app_data = tempfile::tempdir().unwrap();
     let other_app_data = tempfile::tempdir().unwrap();
@@ -475,6 +536,31 @@ fn restore_says_when_the_folder_is_unreadable() {
         error.message,
         format!("Noura doesn't have permission to read {saved_path}.")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_that_fails_for_another_reason_is_not_called_a_permission_problem() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    // A name longer than any file system allows.
+    let folder = parent.path().join("n".repeat(300));
+    let path = folder.to_str().unwrap().to_owned();
+
+    let error = WorkspaceService::new(app_data.path())
+        .open_folder(&folder)
+        .err()
+        .unwrap();
+
+    assert_eq!(error.code, "folder_unavailable");
+    assert_eq!(error.message, format!("Noura couldn't open {path}."));
+}
+
+fn missing_manifest_message(path: &str) -> String {
+    format!(
+        "The settings file .noura/workspace.yaml is missing from {path}. Noura left the \
+         folder as it was. Choose Open folder to use it as a new workspace."
+    )
 }
 
 /// Windows can hold a just-closed watcher handle on the folder for a moment.

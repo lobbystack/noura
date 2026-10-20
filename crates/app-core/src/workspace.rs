@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use local_core::WorkspaceEngine;
+use local_core::{WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
 
 use crate::{
     AppError,
@@ -89,8 +89,14 @@ impl WorkspaceService {
 
     /// Create a workspace named `name` in `folder`. Files already in the
     /// folder keep their bytes, and a folder that already holds a workspace
-    /// stays unchanged.
+    /// stays unchanged. A blank name changes nothing on disk.
     pub fn create(&self, name: &str, folder: &Path) -> Result<Workspace, AppError> {
+        if name.trim().is_empty() {
+            return Err(AppError::new(
+                "workspace_name_required",
+                "Enter a name for the workspace.",
+            ));
+        }
         let path = representable(folder)?;
         let engine = WorkspaceEngine::create_with_app_data(folder, name, &self.app_data)
             .map_err(|error| AppError::from_core(error, path))?;
@@ -98,22 +104,17 @@ impl WorkspaceService {
     }
 
     /// Open the workspace in `folder`, whichever workspace it holds now. A
-    /// plain folder becomes a workspace named after the folder, and its
-    /// files keep their bytes. An invalid manifest opens nothing and stays
-    /// as it is.
+    /// plain folder becomes a new workspace with a new ID, named after the
+    /// folder, and its files keep their bytes. The recent list never lends
+    /// a folder an identity because of its path. An invalid manifest opens
+    /// nothing and stays as it is.
     pub fn open_folder(&self, folder: &Path) -> Result<Workspace, AppError> {
         let path = representable(folder)?;
         check_folder(folder, path)?;
-        // A folder this device knew gets its identity back if its manifest
-        // went missing.
-        let recents = self.recents.load();
-        let known = recent_at(&recents, folder);
-        let name = known.map_or_else(|| folder_name(folder), |recent| recent.name.clone());
-        let saved_id = known.map(|recent| recent.workspace_id.as_str());
         let engine = WorkspaceEngine::open_or_initialize_with_app_data(
             folder,
-            &name,
-            saved_id,
+            &folder_name(folder),
+            None,
             &self.app_data,
         )
         .map_err(|error| AppError::from_core(error, path))?;
@@ -149,17 +150,15 @@ impl WorkspaceService {
 
     /// Open a saved entry. The path locates the folder and the manifest ID
     /// must match, so a different workspace at a reused path never opens in
-    /// its place. A missing manifest is recreated with the saved identity.
+    /// its place. A folder without a manifest opens nothing and stays as it
+    /// is: Noura can't tell it is the saved workspace, so Open folder makes
+    /// it a new one.
     fn open_saved(&self, recent: &RecentWorkspace) -> Result<Workspace, AppError> {
         let folder = Path::new(&recent.path);
         check_folder(folder, &recent.path)?;
-        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
-            folder,
-            &recent.name,
-            Some(&recent.workspace_id),
-            &self.app_data,
-        )
-        .map_err(|error| AppError::from_core(error, &recent.path))?;
+        check_manifest(folder, &recent.path)?;
+        let engine = WorkspaceEngine::open_with_app_data(folder, &self.app_data)
+            .map_err(|error| AppError::from_core(error, &recent.path))?;
         check_identity(&engine, &recent.workspace_id, &recent.path)?;
         self.opened(engine)
     }
@@ -197,13 +196,37 @@ fn check_folder(folder: &Path, path: &str) -> Result<(), AppError> {
                  connect the drive and try again."
             ),
         )),
-        Err(error) => {
-            tracing::warn!(%error, "a workspace folder could not be checked");
-            Err(AppError::new(
-                "folder_unreadable",
-                format!("Noura doesn't have permission to read {path}."),
-            ))
-        }
+        Err(error) => Err(unreadable(&error, path)),
+    }
+}
+
+/// A folder Noura couldn't check. Only a permission error says
+/// "permission"; the details go to the log.
+fn unreadable(error: &std::io::Error, path: &str) -> AppError {
+    tracing::warn!(%error, "a workspace folder could not be checked");
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        AppError::new(
+            "folder_unreadable",
+            format!("Noura doesn't have permission to read {path}."),
+        )
+    } else {
+        AppError::new("folder_unavailable", format!("Noura couldn't open {path}."))
+    }
+}
+
+/// Refuse a saved folder whose manifest is gone instead of writing the
+/// saved ID into whatever folder now sits at the path.
+fn check_manifest(folder: &Path, path: &str) -> Result<(), AppError> {
+    match folder.join(WORKSPACE_MANIFEST_PATH).try_exists() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(AppError::new(
+            "workspace_manifest_missing",
+            format!(
+                "The settings file .noura/workspace.yaml is missing from {path}. Noura left \
+                 the folder as it was. Choose Open folder to use it as a new workspace."
+            ),
+        )),
+        Err(error) => Err(unreadable(&error, path)),
     }
 }
 
@@ -215,15 +238,6 @@ fn check_identity(engine: &WorkspaceEngine, saved_id: &str, path: &str) -> Resul
         "workspace_identity_changed",
         format!("A different workspace is now at {path}."),
     ))
-}
-
-fn recent_at<'a>(recents: &'a [RecentWorkspace], folder: &Path) -> Option<&'a RecentWorkspace> {
-    let requested = folder.canonicalize().ok()?;
-    recents.iter().find(|recent| {
-        Path::new(&recent.path)
-            .canonicalize()
-            .is_ok_and(|candidate| candidate == requested)
-    })
 }
 
 fn folder_name(folder: &Path) -> String {
