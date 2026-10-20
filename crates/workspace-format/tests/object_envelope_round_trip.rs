@@ -160,6 +160,13 @@ fn reparse(bytes: &[u8]) -> WorkspaceObject {
     }
 }
 
+/// The YAML between the opening `---` line and the closing one.
+fn frontmatter(bytes: &[u8]) -> &str {
+    let text = std::str::from_utf8(bytes).unwrap();
+    let end = text[4..].find("\n---\n").unwrap() + 4;
+    &text[4..end]
+}
+
 /// 2048 cases, or the number `PROPTEST_CASES` sets.
 fn config() -> ProptestConfig {
     if std::env::var_os("PROPTEST_CASES").is_some() {
@@ -191,6 +198,14 @@ proptest! {
             types.register(&case.object.object_type, schema).unwrap();
         }
         let written = types.serialize(&case.object).unwrap();
+        // Keys and strings holding a YAML 1.1 line break other than LF are
+        // double-quoted, so YAML 1.2 readers get the same text.
+        let frontmatter = frontmatter(&written);
+        prop_assert!(
+            !frontmatter.contains(['\u{85}', '\u{2028}', '\u{2029}']),
+            "a raw line separator in {:?}",
+            frontmatter
+        );
         if !case.registered {
             // Without a schema the registry writes the built-in order.
             prop_assert_eq!(&written, &serialize_object(&case.object).unwrap());

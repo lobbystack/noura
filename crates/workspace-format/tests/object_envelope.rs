@@ -2,7 +2,10 @@
 //! against the shared fixture in
 //! `docs/workspace-format/fixtures/object-envelope-v1.json`.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use serde_json::{Value, json};
 use workspace_format::{
@@ -359,7 +362,7 @@ fn an_unregistered_type_stays_a_managed_object_with_every_property() {
 }
 
 #[test]
-fn string_values_with_line_separators_are_written_double_quoted() {
+fn strings_and_keys_with_line_separators_are_written_double_quoted() {
     let fixture = fixture();
     for case in cases(&fixture, "line_separators") {
         let types = registry_for(&fixture, case);
@@ -420,6 +423,17 @@ fn the_format_spec_schema_example_registers() {
 }
 
 #[test]
+fn the_format_spec_key_example_is_what_the_serializer_writes() {
+    let spec = include_str!("../../../docs/workspace-format/v1.md");
+    let section = &spec[spec.find("### Envelope").unwrap()..];
+    let start = section.find("```yaml\n").unwrap() + "```yaml\n".len();
+    let end = start + section[start..].find("```").unwrap();
+    let object = object_with("note", &json!({ "a\u{2028}b": "v" }));
+    let written = text(serialize_object(&object).unwrap());
+    assert!(written.contains(&section[start..end]), "{written}");
+}
+
+#[test]
 fn note_task_and_project_files_serialize_to_the_same_bytes_as_before() {
     let fixture = fixture();
     let types = registry(&fixture);
@@ -439,4 +453,42 @@ fn note_task_and_project_files_serialize_to_the_same_bytes_as_before() {
             name(case)
         );
     }
+}
+
+/// Hostile frontmatter: a long run of the first private-use character next
+/// to thousands of strings and keys that hold U+2028. Serializing it must
+/// stay linear in its size, as it was before line separators were quoted.
+#[test]
+fn quoting_line_separators_stays_linear_in_the_frontmatter_size() {
+    let count = 5_000;
+    let keys = (0..count)
+        .map(|index| (format!("k{index}\u{2028}"), Value::Null))
+        .collect::<serde_json::Map<_, _>>();
+    let mut object = object_with(
+        "note",
+        &json!({
+            "a": "\u{e000}".repeat(100_000),
+            "b": vec!["\u{2028}"; count],
+            "c": keys,
+        }),
+    );
+    object.updated = Some("\u{2029}".into());
+    let started = Instant::now();
+    let bytes = serialize_object(&object).unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "serializing took {elapsed:?}"
+    );
+    let json = serde_json::to_string(&object.properties).unwrap().len();
+    assert!(
+        bytes.len() < 2 * json,
+        "{} bytes of Markdown for {json} bytes of JSON properties",
+        bytes.len()
+    );
+    let ParsedMarkdown::Managed(parsed) = parse_markdown(&object.relative_path, &bytes) else {
+        panic!("the canonical bytes must stay managed");
+    };
+    assert_eq!(parsed.properties, object.properties);
+    assert_eq!(parsed.updated, object.updated);
 }

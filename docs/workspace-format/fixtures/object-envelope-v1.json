@@ -680,6 +680,46 @@
       "properties": { "note": "a\u0085b" },
       "updated": null,
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\Nb\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key holding U+2028 is written double-quoted as an explicit key, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\u2028b\": v\nzeta: end\n---\n\n# Pasta\n",
+      "properties": { "a\u2028b": "v", "zeta": "end" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? \"a\\Lb\"\n: v\nzeta: end\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key ending in a line break and U+2028 is written double-quoted as an explicit key, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\n\\u2028\": null\n---\n\n# Pasta\n",
+      "properties": { "a\n\u2028": null },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? \"a\\n\\L\"\n: null\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a nested key ending in a line break and U+2029 is written double-quoted as an explicit key",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  \"x\\n\\u2029\": v\n---\n\n# Pasta\n",
+      "properties": { "steps": { "x\n\u2029": "v" } },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  ? \"x\\n\\P\"\n  : v\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key holding U+2028 in a list item is written double-quoted as an explicit key",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- \"a\\u2028\": \"b\\u2029\"\n  c: d\n---\n\n# Pasta\n",
+      "properties": { "steps": [{ "a\u2028": "b\u2029", "c": "d" }] },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- ? \"a\\L\"\n  : \"b\\P\"\n  c: d\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key holding U+0085 keeps the explicit double-quoted form libyaml already writes",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\u0085b\": v\n---\n\n# Pasta\n",
+      "properties": { "a\u0085b": "v" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? \"a\\Nb\"\n: v\n---\n\n# Pasta\n"
     }
   ],
   "task_schema_differences": [
