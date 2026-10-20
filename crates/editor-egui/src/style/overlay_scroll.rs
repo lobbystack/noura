@@ -4,7 +4,7 @@
 //! Idle hidden; reveal on content scroll or thumb hover/drag; fade after leave.
 //! A host may set [`SIDEBAR_RESIZING_LATCH`] to force-hide while a split is dragged.
 //!
-//! egui [`ScrollArea`]: wrap with [`with_overlay_scroll`].
+//! egui `ScrollArea`: wrap with [`with_overlay_scroll`].
 //! Custom bars (affine markdown): [`tick`] + [`paint`].
 
 use std::time::Duration;

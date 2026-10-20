@@ -1,3 +1,6 @@
+//! Links in the note and the lookups that resolve them through the
+//! embedding app's [`LinkResolver`](crate::resolvers::LinkResolver).
+
 use comrak::Arena;
 use comrak::nodes::{AstNode, NodeValue};
 

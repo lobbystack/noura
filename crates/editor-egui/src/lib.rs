@@ -159,7 +159,7 @@ pub struct MdRender {
 pub enum ScrollTarget {
     Cursor,
     FindMatch,
-    /// Read-only search-preview snippet (see [`MdRender::preview_match`]).
+    /// Read-only search-preview snippet (see `MdRender::preview_match`).
     Preview,
 }
 
@@ -189,7 +189,7 @@ pub struct MdEdit {
     pub in_progress_block_drag: Option<widget::block::drag::BlockDrag>,
 
     /// Touch long-press → reorder gesture state (touch only; desktop drags
-    /// the marker handle directly). See [`MdEdit::detect_touch_reorder`].
+    /// the marker handle directly). See `MdEdit::detect_touch_reorder`.
     pub touch_reorder: widget::block::drag::TouchReorder,
 
     /// A committed reorder `(section_range, insert_offset)`, applied at the

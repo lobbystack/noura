@@ -1,3 +1,6 @@
+//! Inline images as atoms: the cursor steps past a whole image, a backspace
+//! against one selects it, and `|WxH` in the alt text sets its size.
+
 use comrak::nodes::{AstNode, NodeValue};
 
 use crate::doc::MdDoc;
@@ -64,7 +67,7 @@ impl<'ast> MdDoc {
         }
     }
 
-    /// Recompute [`super::super::super::bounds::Bounds::images`] — the source
+    /// Recompute `super::super::super::bounds::Bounds::images` — the source
     /// range of every inline image. Images are empty when they render raw
     /// (disabled), since then the source is plain editable text. Depends on
     /// text only.

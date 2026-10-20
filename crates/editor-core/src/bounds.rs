@@ -1,3 +1,6 @@
+//! Text bounds: source lines, words, wrap lines, inline paragraphs, folds
+//! and image atoms, which cursor movement and selection step over.
+
 use crate::doc::MdDoc;
 use crate::input::Bound;
 use crate::offset_types::{Byte, Grapheme, RangeExt};
@@ -166,7 +169,7 @@ impl MdDoc {
 
     /// Translates a comrak::LineColumn into an lb_rs::Grapheme. Note that comrak's text ranges, represented using
     /// comrak::Sourcepos, are inclusive/inclusive so just translating the start and end using this function is
-    /// incorrect - use [`sourcepos_to_range`] instead.
+    /// incorrect - use [`Self::sourcepos_to_range`] instead.
     pub fn line_column_to_offset(&self, line_column: LineColumn) -> Grapheme {
         // convert cardinal to ordinal
         let line_column = LineColumn {

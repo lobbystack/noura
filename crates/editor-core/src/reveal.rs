@@ -1,3 +1,7 @@
+//! Reveal rules: which syntax shows. Syntax shows while the selection, the
+//! current find match or a search preview touches its construct, and stays
+//! hidden otherwise.
+
 use comrak::nodes::{AstNode, NodeCodeBlock, NodeValue};
 
 use crate::bounds::RangesExt as _;
@@ -93,7 +97,7 @@ impl<'ast> MdDoc {
 
     /// A gutter level whose marker lives only on its first line; later
     /// lines carry pure indentation. Such a level must reveal per-line
-    /// (see [`reveal_line`]) so cursoring into a continuation line's
+    /// (see [`Self::reveal_line`]) so cursoring into a continuation line's
     /// indentation doesn't also reveal the first-line marker. Block quotes
     /// and alerts mark every line, so they reveal node-wide.
     pub fn marks_first_line_only(&self, node: &'ast AstNode<'ast>) -> bool {
@@ -194,7 +198,7 @@ impl<'ast> MdDoc {
         false
     }
 
-    /// Like [`reveal`] but scoped to a single `line`: true when a reveal
+    /// Like [`Self::reveal`] but scoped to a single `line`: true when a reveal
     /// endpoint lands strictly inside the gutter column `node` owns on
     /// `line` — marker *or* leading indentation.
     ///

@@ -1,3 +1,10 @@
+//! AST nodes and their source ranges, offset conversions, and indent
+//! math. Indent math works in two units that diverge once tabs are involved:
+//! **graphemes** for slicing source, **columns** for nesting depth
+//! (CommonMark §2.2: tabs in indent positions act like spaces to
+//! the next 4-col stop). Structural prefix helpers live in
+//! [`crate::blocks`].
+
 use comrak::nodes::{AstNode, NodeHeading, NodeValue};
 
 use crate::bounds::RangesExt as _;
@@ -847,5 +854,24 @@ impl<'ast> MdDoc {
         let last_child = node.children().last()?;
         let last_child_range = self.node_range(last_child);
         Some((first_child_range.start(), last_child_range.end()))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn range_lines_char_no_newline() {
+        let text = "*";
+        let md = crate::MdDoc::new(text);
+        let lines = md.range_split_newlines((0.into(), text.len().into()));
+        assert_eq!(lines, vec![(0.into(), 1.into())]);
+    }
+
+    #[test]
+    fn range_lines_char_newline() {
+        let text = "*\n";
+        let md = crate::MdDoc::new(text);
+        let lines = md.range_split_newlines((0.into(), text.len().into()));
+        assert_eq!(lines, vec![(0.into(), 1.into()), (2.into(), 2.into())]);
     }
 }

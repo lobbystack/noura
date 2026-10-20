@@ -1,3 +1,7 @@
+//! Edit commands: each [`Event`] becomes buffer operations, interpreted
+//! against the parsed note so Return continues a list, Backspace peels a
+//! marker, and a style toggle wraps or unwraps the selection.
+
 use comrak::nodes::{
     AstNode, LineColumn, ListType, NodeAlert, NodeHeading, NodeLink, NodeList, NodeShortCode,
     NodeTaskItem, NodeValue, Sourcepos,

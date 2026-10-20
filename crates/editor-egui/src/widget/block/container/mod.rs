@@ -161,14 +161,14 @@ impl<'ast> MdRender {
         }
     }
 
-    /// Registers an atomic, selectable [`Fragment`] for each gutter
+    /// Registers an atomic, selectable `Fragment` for each gutter
     /// column (marker / per-level indentation) on `line`, laid out in
     /// the indent-width columns left of `content_top_left` (the content
     /// origin, after every prefix shift).
     ///
-    /// Each column's [`line_own_prefix`] becomes one `Spacer`: a drag
+    /// Each column's `line_own_prefix` becomes one `Spacer`: a drag
     /// lands only at its edges (so a click-drag never reveals syntax —
-    /// see [`reveal`]) and a selection highlights the whole column. The
+    /// see `reveal`) and a selection highlights the whole column. The
     /// columns are non-atomic, so a single click places the cursor at the
     /// nearer edge rather than selecting the column; drag or double-click
     /// selects it. Marker glyphs are still painted by the per-container
@@ -180,7 +180,7 @@ impl<'ast> MdRender {
     /// indentation. A revealed level renders its own column as ordinary
     /// source syntax in place of the `Spacer` and its decoration.
     ///
-    /// Resolves the line's columns from its [`deepest_gutter_level`], not
+    /// Resolves the line's columns from its `deepest_gutter_level`, not
     /// `node`'s ancestors: a spacing line sits in a shallower node than
     /// the content it spaces, so walking up from `node` would miss the
     /// deeper columns. For content lines `node` is already on the line, so
@@ -267,7 +267,7 @@ impl<'ast> MdRender {
                 // Non-atomic: a click places the cursor at the nearer
                 // edge. A drag still selects the whole column (an empty-
                 // glyph `Spacer` midpoint-snaps to an edge either way, so
-                // a drag never lands interior — see [`reveal`]); a double-
+                // a drag never lands interior — see `reveal`); a double-
                 // click selects it via `bounds.words`.
                 atomic: false,
                 interaction: None,

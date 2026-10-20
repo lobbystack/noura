@@ -1,3 +1,8 @@
+//! Block structure: each block's source lines, the prefixes container
+//! blocks own on each line (list markers, quote markers, indentation), the
+//! prefixes Return and Tab insert, folding, and the bounds that blocks
+//! contribute.
+
 use std::ops::Range;
 
 use comrak::nodes::{AstNode, NodeAlert, NodeCodeBlock, NodeList, NodeValue};
@@ -97,8 +102,8 @@ impl<'ast> MdDoc {
 
     /// Returns the portion of the line that's within the node, excluding line
     /// prefixes due to parent nodes. For container blocks, this is equivalent
-    /// to [`line_own_prefix`] + [`line_content`]. For leaf blocks, which have
-    /// no prefix, this is equivalent to [`line_content`].
+    /// to [`Self::line_own_prefix`] + [`Self::line_content`]. For leaf blocks, which have
+    /// no prefix, this is equivalent to [`Self::line_content`].
     pub fn node_line(
         &self,
         node: &'ast AstNode<'ast>,
@@ -995,7 +1000,7 @@ impl<'ast> MdDoc {
     /// when it comes to footnote definitions. Instead, they're presented in
     /// reference order. At first, I
     /// [thought](https://github.com/kivikakk/comrak/issues/554) this a bug, but
-    /// it's intended behavior. This is why [`Self::sorted_siblings`] exists.
+    /// it's intended behavior. This is why `Self::sorted_siblings` exists.
     /// Anyway, we leverage this behavior to determine the number we should
     /// render for the definition, since the node itself does not contain it.
     pub fn definition_number(&self, node: &'ast AstNode<'ast>) -> usize {
@@ -1309,8 +1314,8 @@ impl<'ast> MdDoc {
     }
 
     /// Returns the range representing the portion of the line that belongs to
-    /// the given node's ancestors; comes before [`line_own_prefix`] which
-    /// comes before [`line_content`].
+    /// the given node's ancestors; comes before [`Self::line_own_prefix`] which
+    /// comes before [`Self::line_content`].
     ///
     /// In the following example:
     ///
@@ -1339,10 +1344,10 @@ impl<'ast> MdDoc {
     }
 
     /// Returns the range representing the portion of the line that constitutes
-    /// the given node's prefix; comes after [`line_ancestors_prefix`] and
-    /// before [`line_content`].
+    /// the given node's prefix; comes after [`Self::line_ancestors_prefix`] and
+    /// before [`Self::line_content`].
     ///
-    /// See [`line_ancestors_prefix`] for an example.
+    /// See [`Self::line_ancestors_prefix`] for an example.
     pub fn line_own_prefix(
         &self,
         node: &'ast AstNode<'ast>,
@@ -1358,10 +1363,10 @@ impl<'ast> MdDoc {
     }
 
     /// Returns the range representing the portion of the line after the given
-    /// node's prefix; comes after [`line_ancestors_prefix`] and
-    /// [`line_own_prefix`].
+    /// node's prefix; comes after [`Self::line_ancestors_prefix`] and
+    /// [`Self::line_own_prefix`].
     ///
-    /// See [`line_ancestors_prefix`] for an example.
+    /// See [`Self::line_ancestors_prefix`] for an example.
     pub fn line_content(
         &self,
         node: &'ast AstNode<'ast>,
@@ -1372,8 +1377,8 @@ impl<'ast> MdDoc {
     }
 
     /// Returns the range representing the portion of the line before the
-    /// [`node_content`]. Equivalent to [`line_ancestors_prefix`] +
-    /// [`line_own_prefix`]. Always has length == [`line_prefix_len`].
+    /// `node_content`. Equivalent to [`Self::line_ancestors_prefix`] +
+    /// [`Self::line_own_prefix`]. Always has length == [`Self::line_prefix_len`].
     pub fn line_prefix(
         &self,
         node: &'ast AstNode<'ast>,
@@ -1484,7 +1489,7 @@ impl<'ast> MdDoc {
     }
 
     /// Returns the prefix required to extend the given node and its ancestors
-    /// to a new line i.e. the concatenation of [`extension_own_prefix`] of all
+    /// to a new line i.e. the concatenation of [`Self::extension_own_prefix`] of all
     /// container block ancestors.
     pub fn extension_prefix(&self, node: &'ast AstNode<'ast>) -> Option<String> {
         let mut result = if let Some(parent) = node.parent() {
@@ -1603,7 +1608,7 @@ impl<'ast> MdDoc {
     /// for word navigation and double-click. Replaces the default
     /// unicode-segmented words inside each line's prefix region — which
     /// would split a marker like `* ` into `*` + ` ` and drop
-    /// indentation — with the per-level [`line_own_prefix`] columns. Call after
+    /// indentation — with the per-level [`Self::line_own_prefix`] columns. Call after
     /// `calc_words`, with the parsed `root`.
     pub fn calc_syntax_words(&mut self, root: &'ast AstNode<'ast>) {
         let n = self.bounds.source_lines.len();

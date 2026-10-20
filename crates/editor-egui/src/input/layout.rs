@@ -310,9 +310,9 @@ impl FragmentLayout<'_> {
     }
 
     /// Resolves a pointer position to a single cursor offset. Unlike
-    /// [`pos_to_range`] (which returns an atomic fragment's *whole*
+    /// [`Self::pos_to_range`] (which returns an atomic fragment's *whole*
     /// range so a click selects it), this edge-snaps an atomic fragment
-    /// to the nearer edge by `pos.x` via [`fragment_offset`]. That lets
+    /// to the nearer edge by `pos.x` via `fragment_offset`. That lets
     /// a drag's anchor and moving end land on opposite edges of a marker
     /// / indentation column and select it, rather than both collapsing
     /// to its start.

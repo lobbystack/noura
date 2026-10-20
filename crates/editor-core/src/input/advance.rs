@@ -1,3 +1,6 @@
+//! Cursor movement by characters, words, lines, paragraphs and the
+//! document, and by visual rows through the layout.
+
 use crate::bounds::BoundExt as _;
 use crate::doc::MdDoc;
 use crate::input::{Advance, Increment, TextLayout};

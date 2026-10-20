@@ -1,3 +1,6 @@
+//! Moving a list item, with its nested children, to another place among
+//! its siblings.
+
 use comrak::nodes::{AstNode, NodeValue};
 
 use crate::doc::MdDoc;

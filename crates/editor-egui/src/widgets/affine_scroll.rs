@@ -73,7 +73,7 @@
 //! - Hidden — no paint, no hit area — when the document fits the
 //!   viewport and there's nothing to scroll.
 //! - Thumb size proportional to the visible fraction; floored at
-//!   [`MIN_THUMB_PX`] for grabability.
+//!   `MIN_THUMB_PX` for grabability.
 //! - Thumb position proportional to scroll progress in approx
 //!   coordinate.
 //! - Track + thumb expressed in window-local pixels; embedder chooses
@@ -1225,7 +1225,7 @@ impl<Id: Clone + Eq + std::fmt::Debug> AffineScrollArea<Id> {
     }
 
     /// Allocate the body's drag rect. Caller paints content widgets
-    /// between `begin` and [`AffineScrollAreaBegun::finish`]; those
+    /// between `begin` and `AffineScrollAreaBegun::finish`; those
     /// land at higher z than the body, so click senses on the content
     /// (e.g. cursor placement) win over the body's drag — see egui's
     /// `hit_test`.
