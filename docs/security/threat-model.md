@@ -36,4 +36,4 @@ Provider settings contain opaque credential references. The OS credential store 
 
 ## Deferred and release-gated risks
 
-The Initial MVP does not load community plugins or serve remote MCP transports. Those features require separate authorization and sandboxing reviews before implementation. Sync, account, and collaboration paths remain experimental and require their documented network, encryption, cross-platform, and independent-review release gates before user-facing release.
+The Initial MVP does not load community plugins or serve remote MCP transports. Those features require separate authorization and sandboxing reviews before implementation. Sync, account, and collaboration paths remain experimental and require their documented network, encryption, and cross-platform release gates before user-facing release.
