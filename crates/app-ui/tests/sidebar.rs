@@ -69,9 +69,7 @@ fn the_sidebar_keeps_its_width_and_folded_files_section_after_a_relaunch() {
     let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
     let narrowest = sidebar_edge(&harness);
     for _ in 0..4 {
-        harness
-            .get_by_role(Role::Splitter)
-            .increment_accesskit();
+        harness.get_by_role(Role::Splitter).increment_accesskit();
         harness.run();
     }
     let widened = sidebar_edge(&harness);
