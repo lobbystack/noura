@@ -164,15 +164,15 @@ mod tests {
             state ^= state << 17;
             state % n
         };
-        let mut random_text = |next: &mut dyn FnMut(u64) -> u64| -> String {
+        let mut random_text = || -> String {
             let length = next(10);
             (0..length)
                 .map(|_| char::from_u32(0x20 + next(0xd7ff - 0x20) as u32).unwrap_or('?'))
                 .collect()
         };
         for _ in 0..1000 {
-            let from = random_text(&mut next);
-            let to = random_text(&mut next);
+            let from = random_text();
+            let to = random_text();
             assert_eq!(
                 apply(&from, &diff(&from, &to)),
                 to,
