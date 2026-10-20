@@ -1,6 +1,8 @@
 //! The Noura desktop app.
 
-use std::path::PathBuf;
+mod system;
+
+use std::{path::PathBuf, sync::Arc};
 
 use app_core::App;
 use app_ui::{FolderPicker, NouraUi};
@@ -48,7 +50,8 @@ fn main() -> eframe::Result {
         Box::new(move |creation| {
             app_ui::theme::install(&creation.egui_ctx);
             // The last workspace starts reopening now, off the UI thread.
-            let app = App::launch(&app_data);
+            let system = system::DesktopSystem::new(creation.egui_ctx.clone());
+            let app = App::launch_with(&app_data, Arc::new(system));
             Ok(Box::new(Desktop {
                 ui: NouraUi::new(app, Box::new(SystemFolderPicker)),
             }))
