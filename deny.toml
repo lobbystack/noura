@@ -16,6 +16,10 @@ ignore = [
   "RUSTSEC-2026-0371", # zbus_names, through zbus
   "RUSTSEC-2026-0372", # zvariant_derive, through zbus
   "RUSTSEC-2026-0374", # basic-toml, through age's i18n-embed
+  # proc-macro-error, through the GTK crates the `drag` crate uses on Linux.
+  # The desktop crate uses `drag` on macOS and Windows only, so no build
+  # compiles them, but cargo deny reads every target's dependencies.
+  "RUSTSEC-2024-0370",
   # yrs 0.26.0 enables `small-client` for Yjs interoperability and currently
   # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
   # not a reported vulnerability; decoder isolation remains a release gate.
