@@ -76,7 +76,7 @@ jobs:
         run: bash crates/plugin-host/trial/build-plugins.sh
       - run: cargo test --workspace --locked
         env:
-          NOURA_S7_REQUIRE_PLUGINS: "1"
+          NOURA_S7_REQUIRE_PLUGINS: '1'
 
   static-server:
     runs-on: ubuntu-latest
