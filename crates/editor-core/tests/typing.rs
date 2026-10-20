@@ -140,3 +140,55 @@ fn undo_takes_back_the_typing() {
     assert_eq!(doc.text(), "note");
     assert_eq!(doc.selection(), (g(4), g(4)));
 }
+
+fn vertical(lines: usize, backwards: bool, extend_selection: bool) -> Event {
+    Event::Select {
+        region: Region::ToAdvance {
+            advance: Advance::By(Increment::Lines(lines)),
+            backwards,
+            extend_selection,
+        },
+    }
+}
+
+#[test]
+fn up_and_down_step_over_source_lines_and_hold_the_column() {
+    // Columns: "first line" is 10 graphemes, "ab" 2, "third line" 10.
+    let mut doc = MdDoc::new("first line\nab\nthird line");
+    caret_at(&mut doc, 7);
+
+    doc.apply([vertical(1, false, false)], &NoLayout);
+    assert_eq!(
+        doc.selection(),
+        (g(13), g(13)),
+        "clamped to the end of \"ab\""
+    );
+
+    doc.apply([vertical(1, false, false)], &NoLayout);
+    assert_eq!(doc.selection(), (g(21), g(21)), "back to column 7");
+
+    doc.apply([vertical(2, true, false)], &NoLayout);
+    assert_eq!(doc.selection(), (g(7), g(7)));
+}
+
+#[test]
+fn moving_past_the_first_or_last_line_lands_on_the_document_edge() {
+    let mut doc = MdDoc::new("one\ntwo");
+    caret_at(&mut doc, 5);
+
+    doc.apply([vertical(1, false, false)], &NoLayout);
+    assert_eq!(doc.selection(), (g(7), g(7)));
+
+    doc.apply([vertical(50, true, false)], &NoLayout);
+    assert_eq!(doc.selection(), (g(0), g(0)));
+}
+
+#[test]
+fn shift_down_selects_to_the_same_column_on_the_next_line() {
+    let mut doc = MdDoc::new("alpha\nbravo\n");
+    caret_at(&mut doc, 2);
+
+    doc.apply([vertical(1, false, true)], &NoLayout);
+
+    assert_eq!(doc.selection(), (g(2), g(8)));
+}

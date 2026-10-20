@@ -175,6 +175,12 @@ pub trait TextLayout {
     /// The cursor position one visual row above (`backwards`) or below
     /// `offset`, nearest `x_target`.
     fn offset_by_row(&self, offset: Grapheme, x_target: f32, backwards: bool) -> Grapheme;
+
+    /// Whether this layout placed no rows, so vertical moves step over
+    /// source lines and hold a column counted in graphemes instead.
+    fn rows_are_source_lines(&self) -> bool {
+        false
+    }
 }
 
 /// A layout that placed nothing. Points resolve to the start of the text,
@@ -197,5 +203,9 @@ impl TextLayout for NoLayout {
 
     fn offset_by_row(&self, offset: Grapheme, _x_target: f32, _backwards: bool) -> Grapheme {
         offset
+    }
+
+    fn rows_are_source_lines(&self) -> bool {
+        true
     }
 }
