@@ -38,7 +38,19 @@ impl FolderPicker for FakePicker {
 }
 
 pub fn harness(app_data: &Path, picker: FakePicker) -> Harness<'static, NouraUi> {
-    let ui = NouraUi::new(App::launch(app_data), Box::new(picker));
+    harness_with(app_data, picker, |_| {})
+}
+
+/// A harness whose app runs `register` first, such as to add test pages
+/// to the rail.
+pub fn harness_with(
+    app_data: &Path,
+    picker: FakePicker,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    let mut app = App::launch(app_data);
+    register(&mut app);
+    let ui = NouraUi::new(app, Box::new(picker));
     Harness::builder()
         .with_size([1000.0, 700.0])
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)

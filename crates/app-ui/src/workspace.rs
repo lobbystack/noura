@@ -1,33 +1,58 @@
-//! The workspace screen: the sidebar with the workspace switcher and the
-//! file tree, and the document area.
+//! The workspace screen: the rail, the sidebar with the workspace switcher
+//! and the file tree, the tab bar, and the document area.
 
+use app_core::{SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
-    Button, CentralPanel, Frame, Id, Margin, Modal, Panel, RichText, Ui, UiBuilder,
-    accesskit::Role, containers::menu::MenuButton,
+    Button, CentralPanel, Frame, Id, Key, Margin, Modal, Modifiers, Panel, RichText, ScrollArea,
+    Sense, Ui, UiBuilder, WidgetInfo, accesskit::Role, containers::menu::MenuButton, pos2, vec2,
 };
 
 use crate::{
     NouraUi,
     common::{self, NewWorkspace, muted},
-    theme::{Palette, TITLE_SIZE},
+    rail::{self, RAIL_WIDTH},
+    tab_bar::{self, BAR_HEIGHT},
+    theme::{Palette, SUPPORTING_SIZE, TITLE_SIZE},
     tree,
 };
 
+/// The widest you can drag the sidebar.
+const SIDEBAR_MAX_WIDTH: f32 = 480.0;
+
+/// The sidebar section that holds the file tree.
+const FILES_SECTION: &str = "files";
+
 pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
+    // Cmd-\ on macOS and Ctrl-\ elsewhere shows or hides the sidebar.
+    if ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Backslash)) {
+        state.app.toggle_sidebar();
+    }
     let palette = Palette::of(ui.ctx());
-    Panel::left("sidebar")
-        .resizable(true)
-        .default_size(260.0)
-        .size_range(180.0..=480.0)
+    Panel::left("rail")
+        .resizable(false)
+        .exact_size(RAIL_WIDTH)
+        .frame(Frame::new().fill(palette.sidebar))
+        .show(ui, |ui| rail::show(ui, &mut state.app, &mut state.rail));
+    if state.app.layout().sidebar_shown {
+        sidebar(state, ui);
+    }
+    let sidebar_shown = state.app.layout().sidebar_shown;
+    Panel::top("tab-bar")
+        .resizable(false)
+        .exact_size(BAR_HEIGHT)
         .frame(
             Frame::new()
                 .fill(palette.sidebar)
-                .inner_margin(Margin::same(8)),
+                .inner_margin(Margin::symmetric(8, 0)),
         )
         .show(ui, |ui| {
-            switcher(state, ui);
-            ui.separator();
-            tree::show(ui, &mut state.app, &mut state.tree);
+            ui.horizontal_centered(|ui| {
+                // With the sidebar hidden, its switcher moves here.
+                if !sidebar_shown {
+                    switcher(state, ui);
+                }
+                tab_bar::show(ui, &mut state.app, &mut state.tab_bar);
+            });
         });
     CentralPanel::default()
         .frame(
@@ -37,9 +62,75 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
         )
         .show(ui, |ui| {
             common::notice(state, ui);
-            document(state, ui);
+            content(state, ui);
         });
     new_workspace_dialog(state, ui);
+}
+
+/// The resizable sidebar: the workspace switcher and the Files section.
+fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
+    let palette = Palette::of(ui.ctx());
+    let width = state.app.layout().sidebar_width;
+    let panel = Panel::left("sidebar")
+        .resizable(true)
+        .default_size(width)
+        .size_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH.max(width))
+        .frame(
+            Frame::new()
+                .fill(palette.sidebar)
+                .inner_margin(Margin::same(8)),
+        )
+        .show(ui, |ui| {
+            switcher(state, ui);
+            ui.separator();
+            let collapsed = section_header(ui, state, FILES_SECTION, "Files");
+            if !collapsed {
+                tree::show(ui, &mut state.app, &mut state.tree);
+            }
+        });
+    // Save the width once a resize ends.
+    let shown = panel.response.rect.width().round();
+    if shown != width && !ui.input(|input| input.pointer.any_down()) {
+        state.app.set_sidebar_width(shown);
+    }
+}
+
+/// A sidebar section's heading, which folds the section. Returns whether
+/// the section is folded.
+fn section_header(ui: &mut Ui, state: &mut NouraUi, key: &str, title: &str) -> bool {
+    let collapsed = state.app.is_section_collapsed(key);
+    let palette = Palette::of(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, title));
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_expanded(!collapsed));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, crate::theme::radius(0.6), palette.sidebar_accent);
+        }
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                crate::theme::radius(0.6),
+                egui::Stroke::new(1.0, palette.ring),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let center = pos2(rect.left() + 10.0, rect.center().y);
+        painter.add(tree::chevron(center, !collapsed, &palette));
+        painter.text(
+            pos2(rect.left() + 20.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(SUPPORTING_SIZE),
+            palette.muted_foreground,
+        );
+    }
+    if response.clicked() {
+        state.app.toggle_section(key);
+    }
+    collapsed
 }
 
 /// The workspace switcher: the current workspace's name, opening a menu of
@@ -115,19 +206,49 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     }
 }
 
-/// The open file's name and workspace-relative path. The editor and the
-/// file viewers replace this later.
-fn document(state: &NouraUi, ui: &mut Ui) {
+/// What the active tab shows: a file's name and workspace-relative path,
+/// which the editor and the file viewers replace later, or a page's
+/// title, which the page's own view replaces. Each tab keeps its scroll
+/// position.
+fn content(state: &mut NouraUi, ui: &mut Ui) {
+    let active = state
+        .app
+        .active_tab()
+        .map(|tab| (tab.id(), tab.content().clone(), tab.place().clone()));
     let builder = UiBuilder::new()
         .accessibility_role(Role::Region)
         .accessibility_label("Document");
-    ui.scope_builder(builder, |ui| match state.app.document() {
-        Some(file) => {
-            ui.label(RichText::new(&file.name).size(TITLE_SIZE).strong());
-            muted(ui, &file.relative_path);
-        }
-        None => {
+    ui.scope_builder(builder, |ui| {
+        let Some((id, content, place)) = active else {
+            state.shown_tab = None;
             ui.centered_and_justified(|ui| muted(ui, "Open a file from the sidebar."));
+            return;
+        };
+        let mut scroll = ScrollArea::both()
+            .id_salt(("document", id))
+            .auto_shrink(false);
+        if state.shown_tab != Some(id) {
+            state.shown_tab = Some(id);
+            scroll = scroll.scroll_offset(vec2(place.scroll[0], place.scroll[1]));
+        }
+        let output = scroll.show(ui, |ui| match &content {
+            TabContent::File { file, .. } => {
+                ui.label(RichText::new(&file.name).size(TITLE_SIZE).strong());
+                muted(ui, &file.relative_path);
+            }
+            TabContent::Page { title, .. } => {
+                ui.label(RichText::new(title).size(TITLE_SIZE).strong());
+            }
+        });
+        let offset = output.state.clamped_offset();
+        if [offset.x, offset.y] != place.scroll {
+            state.app.set_tab_place(
+                id,
+                TabPlace {
+                    scroll: [offset.x, offset.y],
+                    view: place.view,
+                },
+            );
         }
     });
 }

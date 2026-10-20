@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use app_core::{App, OpenAs, TreeAction, TreeKey, TreeRow};
+use app_core::{App, EntryKind, OpenAs, TreeKey, TreeRow};
 use egui::{
     Align2, Event, EventFilter, FontId, Id, Key, Pos2, Rect, Response, ScrollArea, Sense, Shape,
     Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
@@ -110,23 +110,23 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     });
     let has_keyboard = focused_path.is_some();
     let mut reveal = false;
-    let mut open = None;
-    if let Some(path) = focused_path
-        && let Some(tree) = app.tree_mut()
-    {
-        if let Some(row) = tree.find_row(&path) {
+    if let Some(path) = focused_path {
+        if let Some(tree) = app.tree_mut()
+            && let Some(row) = tree.find_row(&path)
+        {
             tree.set_focus(row);
         }
         for input in take_input(ui) {
             reveal = true;
             match input {
-                Input::Key(key) => open = tree.press(key).or(open),
-                Input::Text(text) => tree.type_ahead(&text, Instant::now()),
+                Input::Key(key) => app.press_tree_key(key),
+                Input::Text(text) => {
+                    if let Some(tree) = app.tree_mut() {
+                        tree.type_ahead(&text, Instant::now());
+                    }
+                }
             }
         }
-    }
-    if let Some(TreeAction::OpenFile { relative_path }) = open.take() {
-        app.open_file(&relative_path, OpenAs::Preview);
     }
 
     let open_path = app.document().map(|file| file.relative_path.clone());
@@ -160,6 +160,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     }
 
     let mut clicked = None;
+    let mut kept = None;
     let mut gained = None;
     let mut drawn = Vec::new();
     let mut row_ui = |ui: &mut Ui, index: usize, rect: Rect| {
@@ -169,7 +170,29 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         let tab_stop = Some(index) == tab_stop;
         let response = draw_row(ui, rect, id, row, selected, tab_stop, &palette);
         if response.clicked() {
-            clicked = Some(index);
+            // Cmd-click (Ctrl-click on Windows and Linux) opens a file in
+            // a new tab, as Open in new tab does.
+            let command = ui.input(|input| input.modifiers.command);
+            clicked = Some((
+                index,
+                if command {
+                    OpenAs::Kept
+                } else {
+                    OpenAs::Preview
+                },
+            ));
+        }
+        if row.kind == EntryKind::File {
+            // A double-click keeps the preview tab the first click opened.
+            if response.double_clicked() {
+                kept = Some(row.relative_path.clone());
+            }
+            response.context_menu(|ui| {
+                if ui.button("Open in new tab").clicked() {
+                    kept = Some(row.relative_path.clone());
+                    ui.close();
+                }
+            });
         }
         if response.gained_focus() {
             gained = Some(index);
@@ -223,13 +246,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     if let Some(row) = gained {
         tree.set_focus(row);
     }
-    if let Some(row) = clicked {
+    if let Some((row, how)) = clicked {
         if let Some(path) = tree.rows().get(row).map(|row| row.relative_path.clone()) {
             ui.memory_mut(|memory| memory.request_focus(row_id(&path)));
         }
-        if let Some(TreeAction::OpenFile { relative_path }) = tree.activate(row) {
-            app.open_file(&relative_path, OpenAs::Preview);
-        }
+        app.activate_tree_row(row, how);
+    }
+    if let Some(path) = kept {
+        app.open_file(&path, OpenAs::Kept);
     }
 }
 
@@ -325,7 +349,7 @@ fn row_description(row: &TreeRow) -> Option<String> {
 }
 
 /// A small triangle: pointing right for a closed folder, down for an open one.
-fn chevron(center: Pos2, expanded: bool, palette: &Palette) -> Shape {
+pub(crate) fn chevron(center: Pos2, expanded: bool, palette: &Palette) -> Shape {
     let size = 3.5;
     let points = if expanded {
         vec![

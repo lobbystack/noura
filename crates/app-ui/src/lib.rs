@@ -5,13 +5,15 @@
 
 mod chooser;
 mod common;
+mod rail;
+mod tab_bar;
 pub mod theme;
 mod tree;
 mod workspace;
 
 use std::{path::PathBuf, time::Duration};
 
-use app_core::{App, Screen};
+use app_core::{App, Screen, TabId};
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -27,6 +29,10 @@ pub struct NouraUi {
     /// The New workspace form, while it is open.
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
+    tab_bar: tab_bar::TabBarView,
+    rail: rail::RailView,
+    /// The tab the document area showed last frame.
+    shown_tab: Option<TabId>,
     started: bool,
 }
 
@@ -37,6 +43,9 @@ impl NouraUi {
             picker,
             new_workspace: None,
             tree: tree::TreeView::default(),
+            tab_bar: tab_bar::TabBarView::default(),
+            rail: rail::RailView::default(),
+            shown_tab: None,
             started: false,
         }
     }
