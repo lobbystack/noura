@@ -1,5 +1,7 @@
 # Encrypted file synchronization, version 1
 
+> The legacy app implements this protocol. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
+
 This document defines the implemented file-change payload and its local durable journal. It does not change canonical Markdown serialization. Rust in `crates/local-core` owns serialization; the TypeScript workspace-schema package only validates the shared `fixtures/sync-v1.json` conformance cases.
 
 ## Plugin switch
