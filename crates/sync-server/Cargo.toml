@@ -1,0 +1,16 @@
+[package]
+name = "sync-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# webauthn-rs links OpenSSL. Building it from source keeps the Linux server one
+# static binary.
+openssl = { workspace = true, features = ["vendored"] }
+sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres" }
+sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
+tokio.workspace = true
+url.workspace = true
+webauthn-rs.workspace = true
