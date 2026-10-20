@@ -14,19 +14,15 @@ impl WorkspaceEngine {
             EventSource::Application,
             serde_json::json!({}),
         );
+        // A rebuild that stopped midway may have left a partial database
+        // and its journal behind.
         let next = self.index_path.with_extension("sqlite.next");
-        if next.exists() {
-            std::fs::remove_file(&next)
-                .map_err(|error| CoreError::io(error, "index_rebuild", next.to_str()))?;
-        }
+        super::remove_index_files(&next, "index_rebuild")?;
         let mut replacement = IndexStore::open(&next)?;
         scan_into(&self.root, &self.current_ignore(), &mut replacement)?;
         drop(replacement);
         let previous = self.index_path.with_extension("sqlite.previous");
-        if previous.exists() {
-            std::fs::remove_file(&previous)
-                .map_err(|error| CoreError::io(error, "index_rebuild", previous.to_str()))?;
-        }
+        super::remove_index_files(&previous, "index_rebuild")?;
         // Close the active connection before replacing the database. Windows does not allow an
         // open SQLite file to be renamed, while Unix happens to tolerate it.
         let mut index = self.index.lock().map_err(|_| lock_error("index_rebuild"))?;
@@ -51,7 +47,7 @@ impl WorkspaceEngine {
         }
         *index = IndexStore::open(&self.index_path)?;
         drop(index);
-        let _ = std::fs::remove_file(previous);
+        let _ = super::remove_index_files(&previous, "index_rebuild");
         self.emit(
             "workspace:ready",
             EventSource::Application,

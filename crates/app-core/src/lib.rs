@@ -21,7 +21,7 @@ pub use files::{
 };
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
-pub use objects::ObjectRef;
+pub use objects::{ObjectRef, SearchHit};
 pub use problems::Problem;
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use watch::Rescans;

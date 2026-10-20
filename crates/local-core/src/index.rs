@@ -207,9 +207,17 @@ impl IndexStore {
         connection
             .busy_timeout(BUSY_TIMEOUT)
             .map_err(|error| CoreError::index(error, "index_open"))?;
-        connection
-            .execute_batch(SCHEMA)
-            .map_err(|error| CoreError::index(error, "index_migrate"))?;
+        connection.execute_batch(SCHEMA).map_err(|error| {
+            let damaged = matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
+            );
+            let mut value = CoreError::index(error, "index_migrate");
+            if damaged {
+                value.code = "index_damaged".into();
+            }
+            value
+        })?;
         connection.set_prepared_statement_cache_capacity(64);
         Ok(Self { connection })
     }

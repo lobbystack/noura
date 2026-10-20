@@ -263,7 +263,7 @@ impl WorkspaceEngine {
         std::fs::create_dir_all(&local_dir)
             .map_err(|error| CoreError::io(error, "workspace_open", local_dir.to_str()))?;
         let index_path = local_dir.join("index.sqlite");
-        let index = IndexStore::open(&index_path)?;
+        let (index, rebuild) = open_index(&index_path)?;
         let (event_sender, _) = tokio::sync::broadcast::channel(256);
         let self_writes = Arc::new(Mutex::new(HashMap::new()));
         let dirty = Arc::new(AtomicBool::new(false));
@@ -290,6 +290,9 @@ impl WorkspaceEngine {
             system_trash: std::sync::RwLock::new(None),
         };
         engine.recover_pending_chat_mutations()?;
+        if rebuild {
+            engine.rebuild_index()?;
+        }
         engine.reconcile()?;
         engine.migrate_sync_plugin();
         engine.emit(
@@ -392,6 +395,54 @@ impl WorkspaceEngine {
             }
         }
     }
+}
+
+/// Open a workspace's index, and say whether it must be rebuilt from the
+/// files: it's missing, it isn't a database anymore, or a rebuild stopped
+/// before it finished. An unfinished rebuild never destroyed the previous
+/// index, so that index stays in use until the rebuild completes.
+fn open_index(path: &Path) -> Result<(IndexStore, bool)> {
+    let next = path.with_extension("sqlite.next");
+    let previous = path.with_extension("sqlite.previous");
+    let exists = |path: &Path| {
+        path.try_exists()
+            .map_err(|error| CoreError::io(error, "index_open", path.to_str()))
+    };
+    let unfinished = exists(&next)? || exists(&previous)?;
+    if !exists(path)? && exists(&previous)? {
+        // The rebuild set the index aside and stopped before the new one
+        // took its place.
+        std::fs::rename(&previous, path)
+            .map_err(|error| CoreError::io(error, "index_open", path.to_str()))?;
+    }
+    if !exists(path)? {
+        return Ok((IndexStore::in_memory()?, true));
+    }
+    match IndexStore::open(path) {
+        Ok(index) => Ok((index, unfinished)),
+        Err(error) if error.code == "index_damaged" => {
+            tracing::warn!(details = ?error.details, "the index is damaged; rebuilding it");
+            remove_index_files(path, "index_open")?;
+            Ok((IndexStore::in_memory()?, true))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Delete an index database and the journal files SQLite keeps beside it.
+pub(super) fn remove_index_files(path: &Path, operation: &str) -> Result<()> {
+    let name = path.as_os_str();
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut file = name.to_owned();
+        file.push(suffix);
+        let file = PathBuf::from(file);
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(CoreError::io(error, operation, file.to_str())),
+        }
+    }
+    Ok(())
 }
 
 struct WorkspaceLock(File);
