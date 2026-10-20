@@ -60,14 +60,14 @@ fn move_then_move_back_round_trips() {
     let all = items(&mut ws);
     let alpha = all[0].0;
     let charlie_start = all[2].0.start();
-    ws.editor.edit.move_block(alpha, charlie_start);
+    ws.editor.edit.renderer.move_block(alpha, charlie_start);
     ws.enter_frame();
 
     assert_ne!(ws_text(&ws), original, "move should change the document");
 
     // Move "alpha" back to the top.
     let alpha_now = find_item_with(&mut ws, "alpha");
-    ws.editor.edit.move_block(alpha_now, Grapheme(0));
+    ws.editor.edit.renderer.move_block(alpha_now, Grapheme(0));
     ws.enter_frame();
 
     assert_eq!(
@@ -91,7 +91,7 @@ fn multiset_of_items_preserved() {
     before.sort();
 
     let three = find_item_with(&mut ws, "three");
-    ws.editor.edit.move_block(three, Grapheme(0));
+    ws.editor.edit.renderer.move_block(three, Grapheme(0));
     ws.enter_frame();
 
     let text = ws_text(&ws);
@@ -120,7 +120,7 @@ fn moving_item_carries_nested_children() {
     );
 
     // Move "second" (with its nested child) to the top.
-    ws.editor.edit.move_block(second, Grapheme(0));
+    ws.editor.edit.renderer.move_block(second, Grapheme(0));
     ws.enter_frame();
 
     let text = ws_text(&ws);
@@ -141,7 +141,7 @@ fn reordering_tight_list_keeps_it_tight() {
     ws.enter_frame();
     let one = find_item_with(&mut ws, "one");
     let three_start = find_item_with(&mut ws, "three").start();
-    ws.editor.edit.move_block(one, three_start);
+    ws.editor.edit.renderer.move_block(one, three_start);
     ws.enter_frame();
     assert_eq!(ws_text(&ws), "- two\n- one\n- three\n");
 }
@@ -179,6 +179,7 @@ fn appending_to_tight_list_stays_tight() {
 
     ws.editor
         .edit
+        .renderer
         .move_block(one_box.node_range, gap.insert_offset);
     ws.enter_frame();
     assert_eq!(ws_text(&ws), "- two\n- three\n- one\n");
@@ -317,7 +318,7 @@ fn moving_task_item_works() {
 
     let one = find_item_with(&mut ws, "one");
     let three_start = find_item_with(&mut ws, "three").start();
-    ws.editor.edit.move_block(one, three_start);
+    ws.editor.edit.renderer.move_block(one, three_start);
     ws.enter_frame();
     assert_eq!(ws_text(&ws), "- [x] two\n- [ ] one\n- [ ] three\n");
 }

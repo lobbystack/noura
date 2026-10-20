@@ -1,11 +1,8 @@
 use comrak::nodes::{AstNode, NodeCodeBlock};
-use editor_core::offset_types::{Grapheme, RangeExt as _, RangeIterExt};
+use editor_core::offset_types::{Grapheme, RangeExt as _};
 use egui::{Pos2, Rect, Stroke, Ui, Vec2};
 
-use comrak::nodes::NodeValue;
-
 use crate::MdRender;
-use crate::widget::utils::consume_indent_columns;
 use crate::widget::utils::wrap_layout::{FontFamily, Format, Layout};
 
 use crate::palette::{ThemeExt as _, translucent_over};
@@ -167,37 +164,6 @@ impl<'ast> MdRender {
         }
     }
 
-    fn reveal_fenced_code_block(
-        &self,
-        node: &'ast AstNode<'ast>,
-        node_code_block: &NodeCodeBlock,
-    ) -> bool {
-        let first_line_idx = self.node_first_line_idx(node);
-        let last_line_idx = self.node_last_line_idx(node);
-
-        if first_line_idx == last_line_idx {
-            return true; // only opening fence: always reveal
-        }
-        if first_line_idx + 1 == last_line_idx
-            && self.is_closing_fence(
-                node,
-                node_code_block,
-                self.bounds.source_lines[last_line_idx],
-            )
-        {
-            return true; // only opening + closing fence: always reveal
-        }
-
-        // Reveal when a reveal range touches any of the block's source
-        // lines, *including* a container prefix (`> `): a cursor on the
-        // prefix of an otherwise-collapsed fence line would otherwise have
-        // no fragment, since the fence line isn't rendered.
-        self.node_lines(node).iter().any(|line_idx| {
-            let line = self.bounds.source_lines[line_idx];
-            self.range_revealed(line, true)
-        })
-    }
-
     pub fn height_indented_code_block(
         &self,
         node: &'ast AstNode<'ast>,
@@ -310,85 +276,6 @@ impl<'ast> MdRender {
         }
     }
 
-    fn reveal_indented_code_block(&self, node: &'ast AstNode<'ast>, synthetic: bool) -> bool {
-        let mut reveal = false;
-        for line_idx in self.node_lines(node).iter() {
-            let line = self.bounds.source_lines[line_idx];
-            let node_line = self.node_line(node, line);
-
-            // reveal if selection is inside the indentation, but not at the
-            // indentation's end / content's start
-            let indentation = (
-                node_line.start(),
-                node_line
-                    .end()
-                    .min(node_line.start() + if synthetic { 0 } else { 4 }),
-            );
-            if self.range_revealed(indentation, false)
-                || self
-                    .reveal_ranges()
-                    .any(|rr| rr.contains(indentation.start(), true, true))
-            {
-                reveal = true;
-                break;
-            }
-        }
-        reveal
-    }
-
-    /// Compute the `(chunk_start, end)` slice of `node_line` that's the
-    /// actual content of a code-block line (fence indent stripped for
-    /// fenced; 4-col indent stripped for indented, combined with parent
-    /// item padding if any).
-    fn code_line_range(
-        &self,
-        node: &'ast AstNode<'ast>,
-        node_code_block: &NodeCodeBlock,
-        node_line: (Grapheme, Grapheme),
-        synthetic: bool,
-    ) -> (Grapheme, Grapheme) {
-        let NodeCodeBlock {
-            fenced,
-            fence_offset,
-            ..
-        } = node_code_block;
-        if *fenced {
-            // "If the leading code fence is indented N spaces, then up to N spaces
-            // of indentation are removed from each line of the content..."
-            // https://github.github.com/gfm/#fenced-code-blocks
-            let text = &self.buffer[node_line];
-            let indentation = text
-                .chars()
-                .take_while(|&c| c == ' ')
-                .count()
-                .min(*fence_offset);
-            (node_line.start() + indentation, node_line.end())
-        } else {
-            // "An indented code block ... minus four spaces of indentation."
-            // https://github.github.com/gfm/#indented-code-blocks
-            //
-            // Strip column-aware. If inside a list item, combine with
-            // the item's padding so a tab straddling the boundary
-            // doesn't get attributed entirely to one side.
-            let target_cols = if synthetic {
-                0
-            } else {
-                let parent_item_padding = node
-                    .ancestors()
-                    .find_map(|a| match &a.data.borrow().value {
-                        NodeValue::Item(nl) => Some(nl.padding),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                parent_item_padding + 4
-            };
-            let text = &self.buffer[node_line];
-            let strip_graphemes = consume_indent_columns(text, target_cols);
-            let chunk_start = (node_line.start() + strip_graphemes).min(node_line.end());
-            (chunk_start, node_line.end())
-        }
-    }
-
     /// Build a `Layout` for one code-block line: the whole line goes in as
     /// one push_source with the code format. Syntax highlighting waits for
     /// a highlighter whose grammars have checked licenses.
@@ -440,53 +327,4 @@ impl<'ast> MdRender {
     // "The closing code fence may be indented up to three spaces, and may be
     // followed only by spaces, which are ignored."
     // https://github.github.com/gfm/#fenced-code-blocks
-
-    fn is_closing_fence(
-        &self,
-        node: &'ast AstNode<'ast>,
-        node_code_block: &NodeCodeBlock,
-        line: (Grapheme, Grapheme),
-    ) -> bool {
-        let NodeCodeBlock {
-            fence_char,
-            fence_length,
-            ..
-        } = node_code_block;
-        let fence_char = *fence_char as char;
-
-        let node_line = self.node_line(node, line);
-
-        let text = &self.buffer[node_line];
-        let mut chars = text.chars().peekable();
-
-        // Skip up to 3 leading spaces
-        for _ in 0..3 {
-            if chars.peek() == Some(&' ') {
-                chars.next();
-            } else {
-                break;
-            }
-        }
-
-        // Skip exactly fence_length fence_char's
-        for _ in 0..*fence_length {
-            if chars.peek() == Some(&fence_char) {
-                chars.next();
-            } else {
-                return false;
-            }
-        }
-
-        // Skip any number of additional fence_char's
-        loop {
-            if chars.peek() == Some(&fence_char) {
-                chars.next();
-            } else {
-                break;
-            }
-        }
-
-        // Any additional characters may be spaces only
-        chars.all(|c| c == ' ')
-    }
 }

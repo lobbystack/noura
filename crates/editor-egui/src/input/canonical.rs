@@ -4,8 +4,9 @@ use comrak::nodes::{AstNode, ListType, NodeHeading, NodeLink, NodeList, NodeValu
 use editor_core::offset_types::RangeExt as _;
 use egui::{self, Key, Modifiers};
 
-impl From<Modifiers> for Advance {
-    fn from(modifiers: Modifiers) -> Self {
+/// The advance a navigation key makes with these modifiers held.
+fn advance_for(modifiers: Modifiers) -> Advance {
+    {
         let should_jump_line = modifiers.mac_cmd;
 
         let is_apple = cfg!(target_vendor = "apple");
@@ -74,7 +75,7 @@ impl<'ast> MdEdit {
                                 Advance::To(Bound::Line)
                             }
                         } else {
-                            Advance::from(modifiers)
+                            advance_for(modifiers)
                         },
                         backwards: matches!(key, Key::ArrowLeft | Key::Home),
                         extend_selection: modifiers.shift,
@@ -164,7 +165,7 @@ impl<'ast> MdEdit {
                 }
                 Some(Event::Delete {
                     region: Region::SelectionOrAdvance {
-                        advance: Advance::from(modifiers),
+                        advance: advance_for(modifiers),
                         backwards: key == Key::Backspace,
                     },
                 })

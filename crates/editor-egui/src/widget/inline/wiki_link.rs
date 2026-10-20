@@ -5,10 +5,6 @@ use crate::MdRender;
 use crate::widget::utils::wrap_layout::Layout;
 
 impl<'ast> MdRender {
-    pub fn resolve_wikilink(&self, url: &str) -> Option<String> {
-        self.link_resolver.resolve_wikilink(url)
-    }
-
     pub fn layout_wikilink(
         &self,
         layout: &mut Layout,

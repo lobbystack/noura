@@ -46,7 +46,9 @@ impl MdEdit {
 
         // Deferred block reorder
         let move_resp = match self.pending_block_move.take() {
-            Some((section_range, insert_offset)) => self.move_block(section_range, insert_offset),
+            Some((section_range, insert_offset)) => {
+                self.renderer.move_block(section_range, insert_offset)
+            }
             None => buffer::Response::default(),
         };
 
@@ -97,7 +99,7 @@ impl MdEdit {
         }
 
         let edited = buf_resp.text_updated || buf_resp.selection_user_moved;
-        buf_resp |= self.unfold_after_edit(&arena, edited, undo_redo);
+        buf_resp |= self.renderer.unfold_after_edit(&arena, edited, undo_redo);
 
         // An entered atom stays revealed only while the selection remains
         // within it; the range is re-resolved against the (possibly edited)
@@ -151,7 +153,7 @@ impl MdEdit {
         // The frame's own edits get this in `show`; a platform's edit is
         // applied here, before that frame sees anything to unfold for.
         let edited = resp.text_updated || resp.selection_user_moved;
-        resp |= self.unfold_after_edit(&arena, edited, undo_redo);
+        resp |= self.renderer.unfold_after_edit(&arena, edited, undo_redo);
         if reveal && (resp.text_updated || resp.selection_user_moved) {
             self.pending_scroll = Some(ScrollTarget::Cursor);
             self.cursor_last_interact = Some(ctx.input(|i| i.time));
@@ -660,64 +662,64 @@ impl MdEdit {
         let modifiers = ui.ctx().input(|i| i.modifiers);
         let have_galleys = !self.renderer.fragments.is_empty();
         if have_galleys && let Some(pos) = response.interact_pointer_pos() {
-            let location = Location::Pos(pos);
+            let location = Location::Pos(crate::input::pos(pos));
 
             // deliberate order; double click is also click
-            let region_opt: Option<Region> = if response.double_clicked()
-                || response.triple_clicked()
-            {
-                // egui triple click detection is flaky; treat non-empty
-                // selection double-click as triple-click (paragraph).
-                if self.renderer.buffer.current.selection.is_empty() {
-                    Some(Region::BoundAt {
-                        bound: Bound::Word,
-                        location,
-                        backwards: true,
-                    })
-                } else {
-                    Some(Region::BoundAt {
-                        bound: Bound::Paragraph,
-                        location,
-                        backwards: true,
-                    })
-                }
-            } else if response.clicked() && modifiers.shift {
-                Some(Region::ToLocation(location))
-            } else if response.clicked() && self.scroll_area.momentum_cancel_press() {
-                None
-            } else if matches!(self.touch_reorder, TouchReorder::Armed { .. }) {
-                // An armed reorder owns the gesture: swallow both the release
-                // click and egui's touch long-press (a `secondary_clicked`
-                // below), so it can't also place the cursor or open a menu.
-                None
-            } else if response.clicked() {
-                Some(Region::Location(location))
-            } else if response.drag_stopped() {
-                std::mem::take(&mut self.in_progress_selection).map(Region::from)
-            } else if response.dragged() && modifiers.shift {
-                self.in_progress_selection =
-                    Some(self.region_to_range(Region::ToLocation(location)));
-                self.pending_scroll = Some(ScrollTarget::Cursor);
-                None
-            } else if response.dragged() {
-                if response.drag_started() {
-                    // capture drag origin on first frame so auto-scroll doesn't pull it
-                    let drag_origin = ui
-                        .ctx()
-                        .input(|i| i.pointer.press_origin())
-                        .unwrap_or_default();
+            let region_opt: Option<Region> =
+                if response.double_clicked() || response.triple_clicked() {
+                    // egui triple click detection is flaky; treat non-empty
+                    // selection double-click as triple-click (paragraph).
+                    if self.renderer.buffer.current.selection.is_empty() {
+                        Some(Region::BoundAt {
+                            bound: Bound::Word,
+                            location,
+                            backwards: true,
+                        })
+                    } else {
+                        Some(Region::BoundAt {
+                            bound: Bound::Paragraph,
+                            location,
+                            backwards: true,
+                        })
+                    }
+                } else if response.clicked() && modifiers.shift {
+                    Some(Region::ToLocation(location))
+                } else if response.clicked() && self.scroll_area.momentum_cancel_press() {
+                    None
+                } else if matches!(self.touch_reorder, TouchReorder::Armed { .. }) {
+                    // An armed reorder owns the gesture: swallow both the release
+                    // click and egui's touch long-press (a `secondary_clicked`
+                    // below), so it can't also place the cursor or open a menu.
+                    None
+                } else if response.clicked() {
+                    Some(Region::Location(location))
+                } else if response.drag_stopped() {
+                    std::mem::take(&mut self.in_progress_selection).map(Region::from)
+                } else if response.dragged() && modifiers.shift {
                     self.in_progress_selection =
-                        Some(self.region_to_range(Region::Location(Location::Pos(drag_origin))));
-                }
-                let offset = self.location_to_char_offset(location);
-                if let Some(sel) = &mut self.in_progress_selection {
-                    sel.1 = offset;
-                }
-                self.pending_scroll = Some(ScrollTarget::Cursor);
-                None
-            } else {
-                None
-            };
+                        Some(self.region_to_range(Region::ToLocation(location)));
+                    self.pending_scroll = Some(ScrollTarget::Cursor);
+                    None
+                } else if response.dragged() {
+                    if response.drag_started() {
+                        // capture drag origin on first frame so auto-scroll doesn't pull it
+                        let drag_origin = ui
+                            .ctx()
+                            .input(|i| i.pointer.press_origin())
+                            .unwrap_or_default();
+                        self.in_progress_selection = Some(self.region_to_range(Region::Location(
+                            Location::Pos(crate::input::pos(drag_origin)),
+                        )));
+                    }
+                    let offset = self.location_to_char_offset(location);
+                    if let Some(sel) = &mut self.in_progress_selection {
+                        sel.1 = offset;
+                    }
+                    self.pending_scroll = Some(ScrollTarget::Cursor);
+                    None
+                } else {
+                    None
+                };
 
             // iOS handles cursor placement via virtual-keyboard FFI
             if !cfg!(target_os = "ios")

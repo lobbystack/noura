@@ -1,19 +1,18 @@
-use crate::bounds::{BoundExt as _, RangesExt as _};
-use crate::input::{Event, Increment};
-use crate::widget::utils::{NodeValueExt as _, leading_indent_cols, leading_indent_range};
-use crate::{MdEdit, MdRender};
 use comrak::nodes::{
     AstNode, LineColumn, ListType, NodeAlert, NodeHeading, NodeLink, NodeList, NodeShortCode,
     NodeTaskItem, NodeValue, Sourcepos,
 };
-use editor_core::buffer::{self};
-use editor_core::offset_types::{
-    Bytes, Grapheme, Graphemes, IntoRangeExt, RangeExt as _, RangeIterExt, ToRangeExt as _,
-};
-use editor_core::operation_types::{Operation, Replace};
-use egui::{Pos2, Rangef};
 
-use super::{Advance, Bound, Location, Region};
+use crate::bounds::{BoundExt as _, RangesExt as _};
+use crate::buffer::{self};
+use crate::doc::MdDoc;
+use crate::input::{Advance, Bound, Event, Increment, Location, Region, TextLayout};
+use crate::nodes::{NodeValueExt as _, leading_indent_cols, leading_indent_range};
+use crate::offset_types::{
+    Bytes, Grapheme, Graphemes, IntoRangeExt as _, RangeExt as _, RangeIterExt as _,
+    ToRangeExt as _,
+};
+use crate::operation_types::{Operation, Replace};
 
 /// tracks editor state necessary to support translating input events to buffer operations
 #[derive(Default)]
@@ -21,9 +20,9 @@ pub struct EventState {
     pub internal_events: Vec<Event>,
 }
 
-impl MdEdit {
+impl MdDoc {
     /// Reorder a list item to the gap at `insert_offset` via
-    /// [`MdRender::plan_block_move`]. The selection is left where the
+    /// [`MdDoc::plan_block_move`]. The selection is left where the
     /// edit transform lands it — a drop doesn't reselect the moved item.
     pub fn move_block(
         &mut self,
@@ -31,23 +30,20 @@ impl MdEdit {
         insert_offset: Grapheme,
     ) -> buffer::Response {
         let arena = comrak::Arena::new();
-        let root = self.renderer.reparse(&arena);
-        let Some(plan) = self
-            .renderer
-            .plan_block_move(root, section_range, insert_offset)
-        else {
+        let root = self.reparse(&arena);
+        let Some(plan) = self.plan_block_move(root, section_range, insert_offset) else {
             return Default::default();
         };
 
-        self.renderer.buffer.queue(vec![Operation::Replace(Replace {
+        self.buffer.queue(vec![Operation::Replace(Replace {
             range: plan.run_range,
             text: plan.new_run,
         })]);
-        let mut resp = self.renderer.buffer.update();
+        let mut resp = self.buffer.update();
         if !resp.text_updated {
             return resp;
         }
-        self.renderer.bump_text_seq();
+        self.bump_text_seq();
 
         // the drag already positioned the viewport; don't scroll-to-cursor
         resp.selection_user_moved = false;
@@ -55,22 +51,22 @@ impl MdEdit {
     }
 }
 
-impl<'ast> MdEdit {
+impl<'ast> MdDoc {
     /// Translates editor events into buffer operations by interpreting them in the context of the current editor state.
     /// Dispatches events that aren't buffer operations. Returns a (text_updated, selection_updated) pair.
     pub fn calc_operations(
         &mut self,
-        ctx: &egui::Context,
         root: &'ast AstNode<'ast>,
         event: Event,
         operations: &mut Vec<Operation>,
+        layout: &dyn TextLayout,
     ) -> buffer::Response {
-        let current_selection = self.renderer.buffer.current.selection;
+        let current_selection = self.buffer.current.selection;
         let mut response = buffer::Response::default();
         match event {
             Event::Select { region } => {
-                let range = self.region_to_range(region);
-                let range = self.renderer.snap_selection_out_of_fold_tags(range);
+                let range = self.region_to_range(region, layout);
+                let range = self.snap_selection_out_of_fold_tags(range);
                 operations.push(Operation::Select(range));
             }
             Event::Replace {
@@ -78,11 +74,11 @@ impl<'ast> MdEdit {
                 text,
                 advance_cursor,
             } => {
-                let mut range = self.region_to_range(region);
+                let mut range = self.region_to_range(region, layout);
                 if matches!(region, Region::Selection) {
                     // selecting a fold chip is just selecting a fold tag, but
                     // replacing it should delete folded content
-                    range = self.renderer.grow_range_over_fold_contents(range);
+                    range = self.grow_range_over_fold_contents(range);
                 }
                 operations.push(Operation::Replace(Replace { range, text }));
                 if advance_cursor {
@@ -92,8 +88,8 @@ impl<'ast> MdEdit {
             Event::ToggleStyle { region, style } => {
                 // ToggleStyle inserts markdown syntax (e.g. `**…**`); the
                 // syntax would render as literal text in plaintext mode.
-                if !self.renderer.plaintext {
-                    self.toggle_style(root, region, style, current_selection, operations);
+                if !self.plaintext {
+                    self.toggle_style(root, region, style, current_selection, operations, layout);
                 }
             }
             Event::Newline { shift } => {
@@ -107,23 +103,17 @@ impl<'ast> MdEdit {
                 // insert/extend/terminate container blocks
                 let mut handled = || {
                     // selection must be empty
-                    let Some(offset) = self.renderer.selection_offset() else {
+                    let Some(offset) = self.selection_offset() else {
                         return false;
                     };
 
-                    let container = self
-                        .renderer
-                        .deepest_container_block_at_offset(root, offset);
-                    let line = self.renderer.line_at_offset(offset);
-                    let line_content = self.renderer.line_content(container, line);
-                    let own_prefix = self.renderer.line_own_prefix(container, line);
+                    let container = self.deepest_container_block_at_offset(root, offset);
+                    let line = self.line_at_offset(offset);
+                    let line_content = self.line_content(container, line);
+                    let own_prefix = self.line_own_prefix(container, line);
 
                     let in_code_block = matches!(
-                        self.renderer
-                            .leaf_block_at_offset(root, offset)
-                            .data
-                            .borrow()
-                            .value,
+                        self.leaf_block_at_offset(root, offset).data.borrow().value,
                         NodeValue::CodeBlock(_)
                     );
 
@@ -133,7 +123,7 @@ impl<'ast> MdEdit {
                             range: current_selection,
                             text: "\n".into(),
                         }));
-                        if let Some(extension_prefix) = self.renderer.extension_prefix(container) {
+                        if let Some(extension_prefix) = self.extension_prefix(container) {
                             operations.push(Operation::Replace(Replace {
                                 range: current_selection,
                                 text: extension_prefix,
@@ -157,7 +147,7 @@ impl<'ast> MdEdit {
                             range: current_selection,
                             text: "\n".into(),
                         }));
-                        if let Some(insertion_prefix) = self.renderer.insertion_prefix(container) {
+                        if let Some(insertion_prefix) = self.insertion_prefix(container) {
                             operations.push(Operation::Replace(Replace {
                                 range: current_selection,
                                 text: insertion_prefix,
@@ -167,18 +157,18 @@ impl<'ast> MdEdit {
 
                     // code block auto-indentation
                     if in_code_block {
-                        let line_content_start = self.renderer.offset_to_byte(line_content.start());
+                        let line_content_start = self.offset_to_byte(line_content.start());
                         let indentation_len = Bytes(
-                            self.renderer.buffer[line_content].len()
-                                - self.renderer.buffer[line_content].trim_start().len(),
+                            self.buffer[line_content].len()
+                                - self.buffer[line_content].trim_start().len(),
                         );
                         let indentation =
                             (line_content_start, line_content_start + indentation_len);
-                        let indentation = self.renderer.range_to_char(indentation);
+                        let indentation = self.range_to_char(indentation);
 
                         operations.push(Operation::Replace(Replace {
                             range: current_selection,
-                            text: self.renderer.buffer[indentation].to_string(),
+                            text: self.buffer[indentation].to_string(),
                         }));
                     }
 
@@ -224,16 +214,14 @@ impl<'ast> MdEdit {
                     }
 
                     // selection must be empty
-                    let Some(offset) = self.renderer.selection_offset() else {
+                    let Some(offset) = self.selection_offset() else {
                         return false;
                     };
 
-                    let container = self
-                        .renderer
-                        .deepest_container_block_at_offset(root, offset);
-                    let line = self.renderer.line_at_offset(offset);
-                    let own_prefix = self.renderer.line_own_prefix(container, line);
-                    let content = self.renderer.line_content(container, line);
+                    let container = self.deepest_container_block_at_offset(root, offset);
+                    let line = self.line_at_offset(offset);
+                    let own_prefix = self.line_own_prefix(container, line);
+                    let content = self.line_content(container, line);
 
                     // selection must be at content start
                     if offset != content.start() {
@@ -254,15 +242,15 @@ impl<'ast> MdEdit {
                 };
                 if !handled() {
                     // default -> delete region
-                    let mut range = self.region_to_range(region);
+                    let mut range = self.region_to_range(region, layout);
 
                     // selecting a fold chip is just selecting a fold tag, but
                     // deleting it should delete folded content
                     if !current_selection.is_empty() {
-                        range = self.renderer.grow_range_over_fold_contents(range);
+                        range = self.grow_range_over_fold_contents(range);
                     }
 
-                    let range = self.renderer.grow_delete_over_fold_tags(range);
+                    let range = self.grow_delete_over_fold_tags(range);
                     operations.push(Operation::Replace(Replace {
                         range,
                         text: "".into(),
@@ -274,13 +262,11 @@ impl<'ast> MdEdit {
             }
             Event::Indent { deindent } => {
                 let selected_lines = self
-                    .renderer
                     .bounds
                     .source_lines
                     .find_intersecting(current_selection, true);
                 let first_selected_line_idx = selected_lines.0;
-                let first_selected_line =
-                    self.renderer.bounds.source_lines[first_selected_line_idx];
+                let first_selected_line = self.bounds.source_lines[first_selected_line_idx];
 
                 if !deindent {
                     // indent into extension of block on prior line
@@ -291,13 +277,11 @@ impl<'ast> MdEdit {
                         }
 
                         let prior_line_idx = first_selected_line_idx - 1;
-                        let prior_line = self.renderer.bounds.source_lines[prior_line_idx];
-                        let prior_line_deepest_container = self
-                            .renderer
-                            .deepest_container_block_at_offset(root, prior_line.end());
-                        let first_selected_line_deepest = self
-                            .renderer
-                            .deepest_container_block_at_offset(root, first_selected_line.end());
+                        let prior_line = self.bounds.source_lines[prior_line_idx];
+                        let prior_line_deepest_container =
+                            self.deepest_container_block_at_offset(root, prior_line.end());
+                        let first_selected_line_deepest =
+                            self.deepest_container_block_at_offset(root, first_selected_line.end());
 
                         // Pick the highest matching ancestor (last
                         // assignment wins). Use AST ancestry — list-
@@ -308,7 +292,6 @@ impl<'ast> MdEdit {
                         let mut prior_line_container_extension_prefix = None;
                         for prior_line_container in prior_line_deepest_container.ancestors() {
                             let has_prefix_on_prior_line = !self
-                                .renderer
                                 .line_own_prefix(prior_line_container, prior_line)
                                 .is_empty();
                             let already_inside_prior_container = first_selected_line_deepest
@@ -318,7 +301,7 @@ impl<'ast> MdEdit {
                             if has_prefix_on_prior_line
                                 && !already_inside_prior_container
                                 && let Some(extension_prefix) =
-                                    self.renderer.extension_own_prefix(prior_line_container)
+                                    self.extension_own_prefix(prior_line_container)
                             {
                                 prior_line_container_extension_prefix = Some(extension_prefix);
                             }
@@ -342,20 +325,18 @@ impl<'ast> MdEdit {
                             if !done.insert(line_idx) {
                                 continue;
                             }
-                            let line = self.renderer.bounds.source_lines[line_idx];
-                            let container = self
-                                .renderer
-                                .deepest_container_block_at_offset(root, line.end());
-                            let container_own_prefix =
-                                self.renderer.line_own_prefix(container, line);
+                            let line = self.bounds.source_lines[line_idx];
+                            let container =
+                                self.deepest_container_block_at_offset(root, line.end());
+                            let container_own_prefix = self.line_own_prefix(container, line);
 
                             // Marker line: insert before the marker
                             // (whole block shifts). Continuation:
                             // insert after the prefix (content
                             // shifts).
                             let is_continuation =
-                                Some(self.renderer.buffer[container_own_prefix].to_string())
-                                    == self.renderer.extension_own_prefix(container);
+                                Some(self.buffer[container_own_prefix].to_string())
+                                    == self.extension_own_prefix(container);
                             let insertion_offset = if is_continuation {
                                 container_own_prefix.end()
                             } else {
@@ -371,10 +352,9 @@ impl<'ast> MdEdit {
                             if !is_continuation
                                 && !insert_text.is_empty()
                                 && insert_text.bytes().all(|b| b == b' ')
-                                && let Some(max_child_col) =
-                                    max_child_marker_col(&self.renderer, container)
+                                && let Some(max_child_col) = max_child_marker_col(self, container)
                             {
-                                let cur_col = leading_indent_cols(&self.renderer.buffer[line]);
+                                let cur_col = leading_indent_cols(&self.buffer[line]);
                                 let one_unit = insert_text.chars().count();
                                 let want = (cur_col + one_unit).max(max_child_col);
                                 insert_text = " ".repeat(want - cur_col);
@@ -385,7 +365,7 @@ impl<'ast> MdEdit {
                             // plain text. Later items render off the list
                             // start, so forcing `1.` is harmless.
                             let renumber = (!is_continuation)
-                                .then(|| ordered_marker_digits(&self.renderer, container, line))
+                                .then(|| ordered_marker_digits(self, container, line))
                                 .flatten();
                             match renumber {
                                 Some(digits) => operations.push(Operation::Replace(Replace {
@@ -409,8 +389,8 @@ impl<'ast> MdEdit {
                     // nested under a deindented parent.
                     let mut handled = || {
                         for line_idx in selected_lines.iter() {
-                            let line = self.renderer.bounds.source_lines[line_idx];
-                            if find_deindent(&self.renderer, root, line).is_none() {
+                            let line = self.bounds.source_lines[line_idx];
+                            if find_deindent(self, root, line).is_none() {
                                 return false;
                             }
                         }
@@ -419,25 +399,17 @@ impl<'ast> MdEdit {
                             if !done.insert(line_idx) {
                                 continue;
                             }
-                            let line = self.renderer.bounds.source_lines[line_idx];
-                            let Some((range, text)) = find_deindent(&self.renderer, root, line)
-                            else {
+                            let line = self.bounds.source_lines[line_idx];
+                            let Some((range, text)) = find_deindent(self, root, line) else {
                                 continue;
                             };
-                            let cur_cols = leading_indent_cols(&self.renderer.buffer[range]);
+                            let cur_cols = leading_indent_cols(&self.buffer[range]);
                             let new_cols = text.chars().count();
                             let delta = -(cur_cols.saturating_sub(new_cols) as isize);
                             operations.push(Operation::Replace(Replace { range, text }));
-                            let container = self
-                                .renderer
-                                .deepest_container_block_at_offset(root, line.end());
-                            cascade_deindent_delta(
-                                &self.renderer,
-                                container,
-                                delta,
-                                &mut done,
-                                operations,
-                            );
+                            let container =
+                                self.deepest_container_block_at_offset(root, line.end());
+                            cascade_deindent_delta(self, container, delta, &mut done, operations);
                         }
                         true
                     };
@@ -449,10 +421,10 @@ impl<'ast> MdEdit {
                 operations.push(Operation::Select(current_selection));
             }
             Event::Undo => {
-                response |= self.renderer.buffer.undo();
+                response |= self.buffer.undo();
             }
             Event::Redo => {
-                response |= self.renderer.buffer.redo();
+                response |= self.buffer.redo();
             }
             Event::Cut => {
                 let range = if !current_selection.is_empty() {
@@ -462,9 +434,9 @@ impl<'ast> MdEdit {
                 };
                 // selecting a fold chip is just selecting a fold tag, but
                 // copying it should copy folded content
-                let range = self.renderer.grow_range_over_fold_contents(range);
+                let range = self.grow_range_over_fold_contents(range);
 
-                ctx.copy_text(self.renderer.buffer[range].into());
+                self.copied = Some(self.buffer[range].into());
                 operations.push(Operation::Replace(Replace {
                     range,
                     text: "".into(),
@@ -476,12 +448,12 @@ impl<'ast> MdEdit {
                 } else {
                     self.clipboard_current_line()
                 };
-                let range = self.renderer.grow_range_over_fold_contents(range);
+                let range = self.grow_range_over_fold_contents(range);
 
-                ctx.copy_text(self.renderer.buffer[range].into());
+                self.copied = Some(self.buffer[range].into());
             }
             Event::ToggleDebug => {
-                self.renderer.debug = !self.renderer.debug;
+                self.debug = !self.debug;
             }
             Event::IncrementBaseFontSize => {
                 // self.appearance.base_font_size =
@@ -497,43 +469,42 @@ impl<'ast> MdEdit {
                 let unapply = at.is_none().then(|| self.unapply_fold(root));
                 for node in root.descendants() {
                     let targeted = |selected: bool| match at {
-                        Some(range) => self.renderer.node_range(node) == range,
+                        Some(range) => self.node_range(node) == range,
                         None => selected,
                     };
                     let contents = if matches!(node.data().value, NodeValue::Heading(_))
-                        && targeted(self.renderer.selected_block(node))
+                        && targeted(self.selected_block(node))
                     {
-                        self.renderer.heading_contents(node)
+                        self.heading_contents(node)
                     } else if matches!(
                         node.data().value,
                         NodeValue::Item(_) | NodeValue::TaskItem(_)
-                    ) && targeted(self.renderer.selected_fold_item(node))
+                    ) && targeted(self.selected_fold_item(node))
                     {
-                        self.renderer.item_contents(node)
+                        self.item_contents(node)
                     } else {
                         continue;
                     };
-                    let unapply = unapply.unwrap_or_else(|| self.renderer.fold(node).is_some());
-                    self.renderer.apply_fold(node, contents, unapply);
+                    let unapply = unapply.unwrap_or_else(|| self.fold(node).is_some());
+                    self.apply_fold(node, contents, unapply);
                 }
             }
             Event::ToggleSpoiler { node: range } => {
                 let Some(node) = root
                     .descendants()
-                    .find(|node| self.renderer.node_range(node) == range)
+                    .find(|node| self.node_range(node) == range)
                 else {
                     return response;
                 };
-                let salt = MdRender::spoiler_interaction_id_salt(node);
-                if !self.renderer.revealed_spoilers.insert(salt) {
-                    self.renderer.revealed_spoilers.remove(&salt);
+                let range = self.node_range(node);
+                if !self.revealed_spoilers.insert(range) {
+                    self.revealed_spoilers.remove(&range);
                 }
             }
             Event::OpenLink { url, wikilink } => {
                 // The embedding app opens what the link resolves to; a link
                 // that leads nowhere is reported and creates nothing.
-                let opened =
-                    crate::resolvers::open_link(&*self.renderer.link_resolver, &url, wikilink);
+                let opened = crate::resolvers::open_link(&*self.link_resolver, &url, wikilink);
                 self.opened_links.push(opened);
             }
             Event::EnterAtom => {
@@ -553,15 +524,16 @@ impl<'ast> MdEdit {
         style: NodeValue,
         current_selection: (Grapheme, Grapheme),
         operations: &mut Vec<Operation>,
+        layout: &dyn TextLayout,
     ) {
-        let range = self.region_to_range(region);
+        let range = self.region_to_range(region, layout);
 
         match style {
             NodeValue::Document | NodeValue::Paragraph => {}
             _ if style.is_inline() => {
                 let unapply = self.unapply_inline(root, range, &style);
 
-                for inline_paragraph in &self.renderer.bounds.inline_paragraphs {
+                for inline_paragraph in &self.bounds.inline_paragraphs {
                     if inline_paragraph.intersects(&range, true) {
                         let paragraph_range = (
                             range.start().max(inline_paragraph.start()),
@@ -585,7 +557,7 @@ impl<'ast> MdEdit {
 
                 let mut handled = false;
                 for node in root.descendants() {
-                    if self.renderer.selected_block(node) {
+                    if self.selected_block(node) {
                         handled = true;
 
                         // apply heading to ATX heading: replace existing heading
@@ -596,9 +568,9 @@ impl<'ast> MdEdit {
                                 ..
                             }) = node.data.borrow().value
                             {
-                                for line_idx in self.renderer.node_lines(node).iter() {
-                                    let line = self.renderer.bounds.source_lines[line_idx];
-                                    let node_line = self.renderer.node_line(node, line);
+                                for line_idx in self.node_lines(node).iter() {
+                                    let line = self.bounds.source_lines[line_idx];
+                                    let node_line = self.node_line(node, line);
 
                                     if level > node_level {
                                         let add_levels = level - node_level;
@@ -612,10 +584,9 @@ impl<'ast> MdEdit {
                                             node_line.start(),
                                             node_line.start() + Graphemes(node_level as _),
                                         );
-                                        if self.renderer.buffer.current.segs.last_cursor_position()
+                                        if self.buffer.current.segs.last_cursor_position()
                                             > range.end()
-                                            && &self.renderer.buffer[(range.end(), range.end() + 1)]
-                                                == " "
+                                            && &self.buffer[(range.end(), range.end() + 1)] == " "
                                         {
                                             range.1 += 1;
                                         }
@@ -636,16 +607,13 @@ impl<'ast> MdEdit {
                                     }
                                 }
                             } else if NodeValue::Paragraph == node.data.borrow().value {
-                                for line_idx in self.renderer.node_lines(node).iter() {
-                                    let line = self.renderer.bounds.source_lines[line_idx];
-                                    let node_line = self.renderer.node_line(node, line);
+                                for line_idx in self.node_lines(node).iter() {
+                                    let line = self.bounds.source_lines[line_idx];
+                                    let node_line = self.node_line(node, line);
 
                                     // count paragraph soft breaks as node breaks
                                     if node.data.borrow().value == NodeValue::Paragraph
-                                        && !line.intersects(
-                                            &self.renderer.buffer.current.selection,
-                                            true,
-                                        )
+                                        && !line.intersects(&self.buffer.current.selection, true)
                                     {
                                         continue;
                                     }
@@ -664,10 +632,10 @@ impl<'ast> MdEdit {
                             } else {
                                 node.parent().unwrap()
                             };
-                            for line_idx in self.renderer.node_lines(node).iter() {
-                                let line = self.renderer.bounds.source_lines[line_idx];
+                            for line_idx in self.node_lines(node).iter() {
+                                let line = self.bounds.source_lines[line_idx];
 
-                                let prefix = self.renderer.line_own_prefix(target_node, line);
+                                let prefix = self.line_own_prefix(target_node, line);
 
                                 operations.push(Operation::Replace(Replace {
                                     range: prefix,
@@ -677,24 +645,18 @@ impl<'ast> MdEdit {
 
                             if !unapply {
                                 let mut first_line = true;
-                                for line_idx in self.renderer.node_lines(node).iter() {
-                                    let line = self.renderer.bounds.source_lines[line_idx];
+                                for line_idx in self.node_lines(node).iter() {
+                                    let line = self.bounds.source_lines[line_idx];
 
                                     // count paragraph soft breaks as node breaks
                                     if node.data.borrow().value == NodeValue::Paragraph
-                                        && !line.intersects(
-                                            &self.renderer.buffer.current.selection,
-                                            true,
-                                        )
+                                        && !line.intersects(&self.buffer.current.selection, true)
                                     {
                                         continue;
                                     }
 
-                                    let range = self
-                                        .renderer
-                                        .line_ancestors_prefix(node, line)
-                                        .end()
-                                        .into_range();
+                                    let range =
+                                        self.line_ancestors_prefix(node, line).end().into_range();
                                     let text = match style {
                                         NodeValue::Heading(_) => unreachable!(),
                                         NodeValue::BlockQuote => "> ",
@@ -786,18 +748,17 @@ impl<'ast> MdEdit {
 
                         operations.push(Operation::Replace(Replace { range, text }));
                     } else {
-                        let target_node = self.renderer.deepest_container_block_at_offset(
+                        let target_node = self.deepest_container_block_at_offset(
                             root,
-                            self.renderer.buffer.current.selection.start(),
+                            self.buffer.current.selection.start(),
                         );
                         if style == target_node.node_type() {
                             let line_idx = self
-                                .renderer
                                 .range_lines(current_selection.start().into_range())
                                 .start();
-                            let line = self.renderer.bounds.source_lines[line_idx];
+                            let line = self.bounds.source_lines[line_idx];
 
-                            let prefix = self.renderer.line_own_prefix(target_node, line);
+                            let prefix = self.line_own_prefix(target_node, line);
 
                             operations.push(Operation::Replace(Replace {
                                 range: prefix,
@@ -823,10 +784,7 @@ impl<'ast> MdEdit {
     ) -> bool {
         for node in root.descendants() {
             if &node.node_type() == style
-                && self
-                    .renderer
-                    .node_range(node)
-                    .contains_range(&range, true, true)
+                && self.node_range(node).contains_range(&range, true, true)
             {
                 return true;
             }
@@ -843,7 +801,7 @@ impl<'ast> MdEdit {
         style: &NodeValue,
     ) -> bool {
         let mut unapply = false;
-        for inline_paragraph in &self.renderer.bounds.inline_paragraphs {
+        for inline_paragraph in &self.bounds.inline_paragraphs {
             if inline_paragraph.intersects(&range, true) {
                 let paragraph_range = (
                     range.start().max(inline_paragraph.start()),
@@ -861,7 +819,7 @@ impl<'ast> MdEdit {
         let mut unapply = false;
         let mut any_selected_blocks = false;
         for node in root.descendants() {
-            if self.renderer.selected_block(node) {
+            if self.selected_block(node) {
                 any_selected_blocks = true;
 
                 // Walk up the ancestor chain: the selected block (a leaf
@@ -892,11 +850,7 @@ impl<'ast> MdEdit {
             // selecting sequence of contiguous empty/whitespace-only lines:
             // check for matching container block
             return &self
-                .renderer
-                .deepest_container_block_at_offset(
-                    root,
-                    self.renderer.buffer.current.selection.start(),
-                )
+                .deepest_container_block_at_offset(root, self.buffer.current.selection.start())
                 .node_type()
                 == style;
         }
@@ -909,8 +863,8 @@ impl<'ast> MdEdit {
         let mut unapply = false;
         for node in root.descendants() {
             if matches!(node.data().value, NodeValue::Heading(_))
-                && self.renderer.selected_block(node)
-                && self.renderer.fold(node).is_some()
+                && self.selected_block(node)
+                && self.fold(node).is_some()
             {
                 unapply = true;
             }
@@ -918,8 +872,8 @@ impl<'ast> MdEdit {
             if matches!(
                 node.data().value,
                 NodeValue::Item(_) | NodeValue::TaskItem(_)
-            ) && self.renderer.selected_fold_item(node)
-                && self.renderer.fold(node).is_some()
+            ) && self.selected_fold_item(node)
+                && self.fold(node).is_some()
             {
                 unapply = true;
             }
@@ -929,15 +883,6 @@ impl<'ast> MdEdit {
     }
 
     #[allow(clippy::collapsible_else_if)]
-    pub fn apply_fold(
-        &mut self,
-        node: &'ast AstNode<'ast>,
-        contents: (Grapheme, Grapheme),
-        unapply: bool,
-    ) {
-        self.renderer.apply_fold(node, contents, unapply);
-    }
-
     /// Applies or unapplies `style` to `cursor`, splitting or joining surrounding styles as necessary.
     fn apply_inline_style(
         &self,
@@ -947,8 +892,8 @@ impl<'ast> MdEdit {
         unapply: bool,
         operations: &mut Vec<Operation>,
     ) {
-        let selection = self.renderer.buffer.current.selection;
-        if self.renderer.buffer.current.text().is_empty() {
+        let selection = self.buffer.current.selection;
+        if self.buffer.current.text().is_empty() {
             self.insert_head(range.start(), style.clone(), operations);
             operations.push(Operation::Select(selection));
             self.insert_tail(range.start(), style, operations);
@@ -959,21 +904,14 @@ impl<'ast> MdEdit {
         let mut start_node: Option<&'ast AstNode<'ast>> = None;
         for node in root.descendants() {
             if node.node_type() == style
-                && self
-                    .renderer
-                    .node_range(node)
-                    .contains(range.start(), true, true)
+                && self.node_range(node).contains(range.start(), true, true)
             {
                 start_node = Some(node);
             }
         }
         let mut end_node: Option<&'ast AstNode<'ast>> = None;
         for node in root.descendants() {
-            if node.node_type() == style
-                && self
-                    .renderer
-                    .node_range(node)
-                    .contains(range.end(), true, true)
+            if node.node_type() == style && self.node_range(node).contains(range.end(), true, true)
             {
                 end_node = Some(node);
             }
@@ -997,7 +935,7 @@ impl<'ast> MdEdit {
         if unapply {
             // if unapplying, tail or dehead node containing start to crop styled region to selection
             if let Some(start_node) = start_node {
-                if self.renderer.head_range(start_node).unwrap().end() < range.start() {
+                if self.head_range(start_node).unwrap().end() < range.start() {
                     let offset = self.adjust_for_whitespace(range.start(), true);
                     self.insert_tail(offset, style.clone(), operations);
                 } else {
@@ -1010,7 +948,7 @@ impl<'ast> MdEdit {
 
             // if unapplying, head or detail node containing end to crop styled region to selection
             if let Some(end_node) = end_node {
-                if self.renderer.tail_range(end_node).unwrap().start() > range.end() {
+                if self.tail_range(end_node).unwrap().start() > range.end() {
                     let offset = self.adjust_for_whitespace(range.end(), false);
                     self.insert_head(offset, style.clone(), operations);
                 } else {
@@ -1052,7 +990,7 @@ impl<'ast> MdEdit {
             }
 
             let style_matches = node.node_type() == style;
-            if style_matches && self.renderer.node_range(node).intersects(&range, true) {
+            if style_matches && self.node_range(node).intersects(&range, true) {
                 self.dehead_ast_node(node, operations);
                 self.detail_ast_node(node, operations);
             }
@@ -1060,7 +998,11 @@ impl<'ast> MdEdit {
     }
 
     // todo: self by shared reference
-    pub fn region_to_range(&mut self, region: Region) -> (Grapheme, Grapheme) {
+    pub fn region_to_range(
+        &mut self,
+        region: Region,
+        layout: &dyn TextLayout,
+    ) -> (Grapheme, Grapheme) {
         // Pointer click ends an up/down chain — the next arrow must
         // start from the click x, not the stale column.
         let has_pos = |loc: &Location| matches!(loc, Location::Pos(_));
@@ -1073,15 +1015,16 @@ impl<'ast> MdEdit {
         if clicked {
             self.cursor.x_target = None;
         }
-        let mut current_selection = self.renderer.buffer.current.selection;
+        let mut current_selection = self.buffer.current.selection;
         match region {
-            Region::Location(location) => self.location_to_range(location),
-            Region::ToLocation(location) => {
-                (current_selection.0, self.location_to_char_offset(location))
-            }
+            Region::Location(location) => self.location_to_range(location, layout),
+            Region::ToLocation(location) => (
+                current_selection.0,
+                self.location_to_char_offset(location, layout),
+            ),
             Region::BetweenLocations { start, end } => (
-                self.location_to_char_offset(start),
-                self.location_to_char_offset(end),
+                self.location_to_char_offset(start, layout),
+                self.location_to_char_offset(end, layout),
             ),
             Region::Selection => current_selection,
             Region::SelectionOrAdvance {
@@ -1089,7 +1032,8 @@ impl<'ast> MdEdit {
                 backwards,
             } => {
                 if current_selection.is_empty() {
-                    current_selection.0 = self.advance(current_selection.0, offset, backwards);
+                    current_selection.0 =
+                        self.advance(current_selection.0, offset, backwards, layout);
                 }
                 current_selection
             }
@@ -1103,7 +1047,7 @@ impl<'ast> MdEdit {
                     || matches!(advance, Advance::To(..))
                 {
                     let mut selection = current_selection;
-                    selection.1 = self.advance(selection.1, advance, backwards);
+                    selection.1 = self.advance(selection.1, advance, backwards, layout);
                     if extend_selection {
                         selection.0 = current_selection.0;
                     } else {
@@ -1119,7 +1063,7 @@ impl<'ast> MdEdit {
             Region::Bound { bound, backwards } => {
                 let offset = current_selection.1;
                 offset
-                    .range_bound(bound, backwards, false, &self.renderer.bounds)
+                    .range_bound(bound, backwards, false, &self.bounds)
                     .unwrap_or((offset, offset))
             }
             Region::BoundAt {
@@ -1127,51 +1071,54 @@ impl<'ast> MdEdit {
                 location,
                 backwards,
             } => {
-                let offset = self.location_to_char_offset(location);
+                let offset = self.location_to_char_offset(location, layout);
                 offset
-                    .range_bound(bound, backwards, true, &self.renderer.bounds)
+                    .range_bound(bound, backwards, true, &self.bounds)
                     .unwrap_or((offset, offset))
             }
         }
     }
 
-    pub fn location_to_range(&self, location: Location) -> (Grapheme, Grapheme) {
+    pub fn location_to_range(
+        &self,
+        location: Location,
+        layout: &dyn TextLayout,
+    ) -> (Grapheme, Grapheme) {
         match location {
-            Location::CurrentCursor => self.renderer.buffer.current.selection,
+            Location::CurrentCursor => self.buffer.current.selection,
             Location::Grapheme(o) => o.into_range(),
-            Location::Pos(pos) => self.pos_to_range(pos),
+            Location::Pos(pos) => layout.pos_to_range(pos),
         }
     }
 
-    pub fn location_to_char_offset(&self, location: Location) -> Grapheme {
+    pub fn location_to_char_offset(&self, location: Location, layout: &dyn TextLayout) -> Grapheme {
         match location {
             // A pointer endpoint edge-snaps atomic fragments by x (see
             // `pos_to_char_offset`), rather than collapsing to the range
             // start — so a drag across an atomic span (e.g. a list marker
             // or one indentation column) selects the whole span instead
             // of an empty range.
-            Location::Pos(pos) => self.pos_to_char_offset(pos),
-            _ => self.location_to_range(location).0,
+            Location::Pos(pos) => layout.pos_to_offset(pos),
+            _ => self.location_to_range(location, layout).0,
         }
     }
 
     fn clipboard_current_line(&self) -> (Grapheme, Grapheme) {
-        let current_selection = self.renderer.buffer.current.selection;
+        let current_selection = self.buffer.current.selection;
         let paragraph_idx = self
-            .renderer
             .bounds
             .source_lines
             .find_containing(current_selection.1, true, true)
             .0;
 
-        let mut result = self.renderer.bounds.source_lines[paragraph_idx];
+        let mut result = self.bounds.source_lines[paragraph_idx];
 
         // capture leading newline, if any
         if paragraph_idx != 0 {
-            let line = self.renderer.bounds.source_lines[paragraph_idx];
-            let prev_line = self.renderer.bounds.source_lines[paragraph_idx - 1];
+            let line = self.bounds.source_lines[paragraph_idx];
+            let prev_line = self.bounds.source_lines[paragraph_idx - 1];
             let range_between_lines = (prev_line.1, line.0);
-            let rbl_text = &self.renderer.buffer[range_between_lines];
+            let rbl_text = &self.buffer[range_between_lines];
             if rbl_text.ends_with("\r\n") {
                 result.0 -= 2;
             } else if rbl_text.ends_with('\n') || rbl_text.ends_with('\r') {
@@ -1180,78 +1127,6 @@ impl<'ast> MdEdit {
         }
 
         result
-    }
-
-    // todo: find a better home
-    pub fn pos_to_range(&self, pos: Pos2) -> (Grapheme, Grapheme) {
-        let Some(frag_idx) = self.renderer.closest_fragment_at_pos(pos) else {
-            return Grapheme(0).into_range();
-        };
-        let frag = &self.renderer.fragments[frag_idx];
-
-        // Past the last fragment's bottom: jump to doc end.
-        let is_last = frag_idx + 1 == self.renderer.fragments.len();
-        if is_last && pos.y > frag.rect.max.y {
-            return self
-                .renderer
-                .buffer
-                .current
-                .segs
-                .last_cursor_position()
-                .into_range();
-        }
-
-        if frag.source_range.is_empty() {
-            // Anchor / empty-range fragment: every position maps to
-            // its source point.
-            frag.source_range.start().into_range()
-        } else if frag.atomic
-            && !matches!(
-                frag.content,
-                crate::widget::utils::wrap_layout::FragmentContent::Embed { .. }
-            )
-        {
-            // Atomic fragment (marker, indentation): a click selects the whole
-            // range. Images are excluded — clicking *near* one (resolved as the
-            // nearest fragment) places a cursor at its edge; selecting the image
-            // is reserved for a click on it via `handle_image_interactions`.
-            frag.source_range
-        } else {
-            self.renderer.fragment_offset(frag, pos.x).into_range()
-        }
-    }
-
-    /// Resolves a pointer position to a single cursor offset. Unlike
-    /// [`pos_to_range`] (which returns an atomic fragment's *whole*
-    /// range so a click selects it), this edge-snaps an atomic fragment
-    /// to the nearer edge by `pos.x` via [`fragment_offset`]. That lets
-    /// a drag's anchor and moving end land on opposite edges of a marker
-    /// / indentation column and select it, rather than both collapsing
-    /// to its start.
-    pub fn pos_to_char_offset(&self, pos: Pos2) -> Grapheme {
-        let Some(frag_idx) = self.renderer.closest_fragment_at_pos(pos) else {
-            return Grapheme(0);
-        };
-        let frag = &self.renderer.fragments[frag_idx];
-
-        // Past the last fragment's bottom: jump to doc end.
-        let is_last = frag_idx + 1 == self.renderer.fragments.len();
-        if is_last && pos.y > frag.rect.max.y {
-            return self.renderer.buffer.current.segs.last_cursor_position();
-        }
-
-        // The hit-test inverse: edge-snaps atomic fragments by the rect
-        // midpoint, walks clusters otherwise, and collapses an empty
-        // range to its start.
-        self.renderer.fragment_offset(frag, pos.x)
-    }
-}
-
-pub fn distance(coord: f32, range: Rangef) -> f32 {
-    if range.contains(coord) {
-        0.
-    } else {
-        (coord - range.min).abs().min((coord - range.max).abs())
     }
 }
 
@@ -1262,7 +1137,7 @@ pub fn distance(coord: f32, range: Rangef) -> f32 {
 /// nested inside another quote/alert (top-level deindent would
 /// silently demote `> foo` to a paragraph).
 fn deindent_replacement<'ast>(
-    renderer: &MdRender,
+    renderer: &MdDoc,
     ancestor: &'ast AstNode<'ast>,
     line: (Grapheme, Grapheme),
 ) -> Option<((Grapheme, Grapheme), String)> {
@@ -1313,7 +1188,7 @@ fn deindent_replacement<'ast>(
 /// when the cursor's on its marker line, so shift-tab there
 /// deindents the whole block instead of its content.
 fn find_deindent<'ast>(
-    renderer: &MdRender,
+    renderer: &MdDoc,
     root: &'ast AstNode<'ast>,
     line: (Grapheme, Grapheme),
 ) -> Option<((Grapheme, Grapheme), String)> {
@@ -1336,7 +1211,7 @@ fn find_deindent<'ast>(
 /// Grapheme range of an ordered-list item's leading marker digits on `line`
 /// (the `12` in `12. `), or `None` if `container` isn't an ordered list item.
 fn ordered_marker_digits<'ast>(
-    renderer: &MdRender,
+    renderer: &MdDoc,
     container: &'ast AstNode<'ast>,
     line: (Grapheme, Grapheme),
 ) -> Option<(Grapheme, Grapheme)> {
@@ -1358,7 +1233,7 @@ fn ordered_marker_digits<'ast>(
     (digits > 0).then(|| (own_prefix.start(), own_prefix.start() + Graphemes(digits)))
 }
 
-fn max_child_marker_col<'ast>(renderer: &MdRender, item: &'ast AstNode<'ast>) -> Option<usize> {
+fn max_child_marker_col<'ast>(renderer: &MdDoc, item: &'ast AstNode<'ast>) -> Option<usize> {
     item.children()
         .filter(|c| matches!(&c.data.borrow().value, NodeValue::List(_)))
         .flat_map(|list| list.children())
@@ -1387,7 +1262,7 @@ fn max_child_marker_col<'ast>(renderer: &MdRender, item: &'ast AstNode<'ast>) ->
 /// targeted line(s) can't strand a child (it always retains a list
 /// ancestor), so a tight child simply re-parents to a sibling.
 fn cascade_deindent_delta<'ast>(
-    renderer: &MdRender,
+    renderer: &MdDoc,
     container: &'ast AstNode<'ast>,
     delta_cols: isize,
     done: &mut std::collections::BTreeSet<usize>,
@@ -1417,9 +1292,9 @@ fn cascade_deindent_delta<'ast>(
     }
 }
 
-impl<'ast> MdEdit {
+impl<'ast> MdDoc {
     fn dehead_ast_node(&self, node: &'ast AstNode<'ast>, operations: &mut Vec<Operation>) {
-        if let Some(range) = self.renderer.head_range(node) {
+        if let Some(range) = self.head_range(node) {
             operations.push(Operation::Replace(Replace {
                 range,
                 text: "".into(),
@@ -1428,7 +1303,7 @@ impl<'ast> MdEdit {
     }
 
     fn detail_ast_node(&self, node: &'ast AstNode<'ast>, operations: &mut Vec<Operation>) {
-        if let Some(range) = self.renderer.tail_range(node) {
+        if let Some(range) = self.tail_range(node) {
             operations.push(Operation::Replace(Replace {
                 range,
                 text: "".into(),
@@ -1442,12 +1317,12 @@ impl<'ast> MdEdit {
                 if offset == 0 {
                     break;
                 }
-                &(&self.renderer.buffer)[(offset - 1, offset)]
+                &(&self.buffer)[(offset - 1, offset)]
             } else {
-                if offset == self.renderer.buffer.current.segs.last_cursor_position() {
+                if offset == self.buffer.current.segs.last_cursor_position() {
                     break;
                 }
-                &(&self.renderer.buffer)[(offset, offset + 1)]
+                &(&self.buffer)[(offset, offset + 1)]
             };
             if c == " " {
                 if tail { offset -= 1 } else { offset += 1 }

@@ -1,5 +1,5 @@
 use comrak::nodes::{AstNode, NodeValue};
-use editor_core::offset_types::{Grapheme, IntoRangeExt as _, RangeExt as _, RangeIterExt as _};
+use editor_core::offset_types::{Grapheme, RangeExt as _, RangeIterExt as _};
 use egui::{Pos2, Rect, Stroke, Ui, Vec2};
 
 use crate::MdRender;
@@ -116,18 +116,6 @@ impl<'ast> MdRender {
         let row_height = self.row_height(node);
         let layout = self.layout_setext_heading_line(node, node_line, reveal);
         self.compute_layout_from(layout, width, row_height).height
-    }
-
-    pub fn reveal_setext_syntax(&self, node: &'ast AstNode<'ast>) -> bool {
-        // reveal syntax even if the cursor is in the indentation before the node
-        for line in self.node_lines(node).iter() {
-            let line = self.bounds.source_lines[line];
-
-            if self.range_revealed(line, true) {
-                return true;
-            }
-        }
-        false
     }
 
     /// Build `Layout` for an ATX heading line (`# heading`).
@@ -327,84 +315,6 @@ impl<'ast> MdRender {
         );
     }
 
-    pub fn compute_bounds_heading(&mut self, node: &'ast AstNode<'ast>, _level: u8, setext: bool) {
-        if setext {
-            self.compute_bounds_setext_heading(node)
-        } else {
-            self.compute_bounds_atx_heading(node)
-        }
-    }
-
-    fn compute_bounds_setext_heading(&mut self, node: &'ast AstNode<'ast>) {
-        let reveal = self.reveal_setext_syntax(node);
-        let last_line_idx = self.node_last_line_idx(node);
-
-        for line_idx in self.node_lines(node).iter() {
-            let line = self.bounds.source_lines[line_idx];
-
-            if line_idx < last_line_idx {
-                // non-underline content
-                self.compute_bounds_setext_heading_line(node, line, reveal);
-            }
-        }
-    }
-
-    fn compute_bounds_setext_heading_line(
-        &mut self,
-        node: &'ast AstNode<'ast>,
-        line: (Grapheme, Grapheme),
-        reveal: bool,
-    ) {
-        let node_line = self.node_line(node, line);
-
-        if reveal {
-            let Some((_, _, children, postfix_whitespace, _)) = self.split_range(node, node_line)
-            else {
-                self.bounds.inline_paragraphs.push(node_line);
-                return;
-            };
-
-            if !postfix_whitespace.is_empty() {
-                self.bounds
-                    .inline_paragraphs
-                    .push((children.start(), postfix_whitespace.end()));
-            } else {
-                self.bounds.inline_paragraphs.push(children);
-            }
-        } else {
-            let Some((_indentation, _prefix, children, _postfix_whitespace, _)) =
-                self.split_range(node, node_line)
-            else {
-                self.bounds.inline_paragraphs.push(node_line);
-                return;
-            };
-
-            self.bounds.inline_paragraphs.push(children);
-        }
-    }
-
-    fn compute_bounds_atx_heading(&mut self, node: &'ast AstNode<'ast>) {
-        let line = self.node_first_line(node);
-        let node_line = self.node_line(node, line);
-
-        if let Some((_, _, _infix_range, postfix_range, _)) = self.split_range(node, node_line) {
-            if let Some(infix_range) = self.infix_range(node) {
-                if !postfix_range.is_empty() {
-                    self.bounds
-                        .inline_paragraphs
-                        .push((infix_range.start(), postfix_range.end()));
-                } else {
-                    self.bounds.inline_paragraphs.push(infix_range);
-                }
-            } else if !postfix_range.is_empty() {
-                self.bounds.inline_paragraphs.push(postfix_range);
-            }
-        } else {
-            // heading is empty - show the syntax regardless if cursored (Obsidian-inspired)
-            self.bounds.inline_paragraphs.push(node_line);
-        }
-    }
-
     fn heading_contained_siblings_height(&self, node: &'ast AstNode<'ast>) -> f32 {
         let NodeValue::Heading(heading) = &node.data.borrow().value else {
             panic!("heading_contained_siblings_height() invoked for non-heading")
@@ -424,28 +334,6 @@ impl<'ast> MdRender {
             sibling = s.next_sibling();
         }
         height_sum
-    }
-
-    /// Contents end at the last contained sibling's last line: blank
-    /// lines past that — before the next section or at doc end — render
-    /// as visible spacing rows.
-    pub fn heading_contents(&self, node: &'ast AstNode<'ast>) -> (Grapheme, Grapheme) {
-        let NodeValue::Heading(heading) = &node.data.borrow().value else {
-            panic!("heading_contents() invoked for non-heading")
-        };
-
-        let mut contents = self.node_range(node).end().into_range();
-        let mut sibling = node.next_sibling();
-        while let Some(s) = sibling {
-            if let NodeValue::Heading(sib_h) = &s.data.borrow().value
-                && sib_h.level <= heading.level
-            {
-                break;
-            }
-            contents.1 = self.node_last_line(s).end();
-            sibling = s.next_sibling();
-        }
-        contents
     }
 
     pub fn fold_button_size_icon_size_space(
@@ -549,10 +437,5 @@ impl<'ast> MdRender {
         if resp.clicked() {
             self.render_events.push(toggle);
         }
-    }
-
-    /// Returns true if the heading contents should be revealed whether the heading is folded or not
-    pub fn heading_fold_reveal(&self, node: &'ast AstNode<'ast>) -> bool {
-        self.range_contains_fold_revealed(self.heading_contents(node), false, true)
     }
 }

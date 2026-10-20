@@ -1,9 +1,8 @@
 use comrak::nodes::AstNode;
-use editor_core::offset_types::{Grapheme, Graphemes, RangeIterExt as _};
+use editor_core::offset_types::RangeIterExt as _;
 use egui::{Pos2, Rect, Stroke, Ui, Vec2};
 
 use crate::MdRender;
-use crate::widget::utils::consume_indent_columns_ceil;
 use crate::widget::utils::wrap_layout::Format;
 
 use crate::palette::ThemeExt as _;
@@ -93,71 +92,5 @@ impl<'ast> MdRender {
                 top_left.y += h;
             }
         }
-    }
-
-    pub fn compute_bounds_block_quote(&mut self, node: &'ast AstNode<'ast>) {
-        // Handle children or remaining lines
-        let any_children = node.children().next().is_some();
-        if any_children {
-            self.compute_bounds_block_children(node);
-        } else {
-            for line_idx in self.node_lines(node).iter() {
-                let line = self.bounds.source_lines[line_idx];
-                let line_content = self.line_content(node, line);
-                self.bounds.inline_paragraphs.push(line_content);
-            }
-        }
-    }
-
-    // This routine is standard-/reference-complexity, as the prefix len is
-    // line-by-line (unlike list items) and block quotes contain blocks
-    // including other block quotes. Most of the fundamental behavior with line
-    // prefix lengths can be observed with block quotes alone.
-    //
-    // This implementation does benefit from the simplicity of the node - there
-    // are only 8 cases.
-    pub fn own_prefix_len_block_quote(
-        &self,
-        node: &'ast AstNode<'ast>,
-        line: (Grapheme, Grapheme),
-    ) -> Option<Graphemes> {
-        let node_line = self.node_line(node, line);
-        let mut result = 0.into();
-
-        // "A block quote marker consists of 0-3 spaces of initial indent, plus
-        // (a) the character > together with a following space, or (b) a single
-        // character > not followed by a space."
-        //
-        // "If a string of lines Ls constitute a sequence of blocks Bs, then the
-        // result of prepending a block quote marker to the beginning of each
-        // line in Ls is a block quote containing Bs."
-        let text = &self.buffer[node_line];
-
-        // Up to 3 columns of leading whitespace before `>`. Ceil so a tab
-        // a parent level left straddling the boundary is claimed here
-        // rather than leaking into content (comrak already decided this is
-        // a blockquote; we just attribute the bytes). Leading whitespace is
-        // ' ' or '\t' only (both ASCII), so grapheme count equals byte count.
-        let lead = consume_indent_columns_ceil(text, 3);
-        let after_lead = &text[lead..];
-        if !after_lead.starts_with('>') {
-            // "If a string of lines Ls constitute a block quote with contents Bs,
-            // then the result of deleting the initial block quote marker from one
-            // or more lines in which the next non-whitespace character after the
-            // block quote marker is paragraph continuation text is a block quote
-            // with Bs as its content."
-            return None;
-        }
-        result += lead;
-        result += 1; // the `>`
-        // Optional single column of marker space — a literal space or a tab
-        // (the tab grapheme is consumed even though it represents more than
-        // 1 column, per CommonMark §2.2).
-        let after_marker = &after_lead[1..];
-        if after_marker.starts_with(' ') || after_marker.starts_with('\t') {
-            result += 1;
-        }
-
-        Some(result)
     }
 }

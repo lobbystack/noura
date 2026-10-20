@@ -6,10 +6,10 @@
 
 use std::borrow::Cow;
 
-use editor_core::offset_types::{Byte, Grapheme, RangeExt as _};
+use crate::offset_types::{Byte, Grapheme, RangeExt as _};
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use super::MdEdit;
+use super::MdDoc;
 
 type Range = (Grapheme, Grapheme);
 
@@ -64,7 +64,7 @@ pub fn boundary_from(units: &[Range], p: Grapheme, backward: bool) -> Option<Gra
     }
 }
 
-impl MdEdit {
+impl MdDoc {
     pub fn unit_enclosing(&self, unit: Unit, p: Grapheme, backward: bool) -> Option<Range> {
         enclosing(&self.units_near(unit, p), p, backward)
     }
@@ -82,7 +82,7 @@ impl MdEdit {
             return boundary_from(&self.units_near(unit, p), p, backward);
         }
         // Words and sentences stay inside a paragraph; walk paragraphs outward.
-        let paragraphs = &self.renderer.bounds.source_lines;
+        let paragraphs = &self.bounds.source_lines;
         let mut i = self.paragraph_index(p);
         loop {
             let found = boundary_from(&self.units_in_paragraph(unit, i), p, backward);
@@ -101,7 +101,7 @@ impl MdEdit {
     }
 
     fn units_near(&self, unit: Unit, p: Grapheme) -> Cow<'_, [Range]> {
-        let last = self.renderer.buffer.current.segs.last_cursor_position();
+        let last = self.buffer.current.segs.last_cursor_position();
         match unit {
             Unit::Character => {
                 let mut units = Vec::with_capacity(2);
@@ -125,13 +125,13 @@ impl MdEdit {
                 )
             }
             Unit::Line => {
-                let rows = &self.renderer.bounds.wrap_lines;
+                let rows = &self.bounds.wrap_lines;
                 let laid_out = rows.first().is_some_and(|first| first.0 <= p)
                     && rows.last().is_some_and(|row| p <= row.1);
                 Cow::Borrowed(if laid_out {
                     rows
                 } else {
-                    &self.renderer.bounds.source_lines
+                    &self.bounds.source_lines
                 })
             }
             Unit::Document => Cow::Owned(vec![(Grapheme(0), last)]),
@@ -142,7 +142,7 @@ impl MdEdit {
     /// collapsed images and fold chips. A fold's atom is its tag, not the
     /// hidden contents behind it, so a tap beside the chip lands beside it.
     pub fn atoms(&self) -> Vec<Range> {
-        let r = &self.renderer;
+        let r = self;
         let mut atoms = r.bounds.images.clone();
         atoms.extend(r.bounds.folds.iter().map(|f| f.tag));
         atoms.sort_unstable();
@@ -166,7 +166,7 @@ impl MdEdit {
     }
 
     fn paragraph_index(&self, p: Grapheme) -> usize {
-        let paragraphs = &self.renderer.bounds.source_lines;
+        let paragraphs = &self.bounds.source_lines;
         paragraphs
             .partition_point(|&(start, _)| start <= p)
             .saturating_sub(1)
@@ -175,7 +175,7 @@ impl MdEdit {
     /// A source line and the newline after it, as the platform counts a
     /// paragraph.
     fn paragraph_with_newline(&self, i: usize) -> Option<Range> {
-        let lines = &self.renderer.bounds.source_lines;
+        let lines = &self.bounds.source_lines;
         let &(start, end) = lines.get(i)?;
         let end = lines.get(i + 1).map(|&(next, _)| next).unwrap_or(end);
         Some((start, end))
@@ -188,7 +188,7 @@ impl MdEdit {
         let Some((start, end)) = self.paragraph_with_newline(i) else {
             return Vec::new();
         };
-        let snap = &self.renderer.buffer.current;
+        let snap = &self.buffer.current;
         let (start_byte, end_byte) = snap.segs.range_to_byte((start, end));
         let text = &snap.text()[start_byte.0..end_byte.0];
         let to_range = |offset: usize, segment: &str| {

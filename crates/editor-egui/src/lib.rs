@@ -7,21 +7,18 @@
 //! [`register_render_callback_resources`] before showing an [`Editor`].
 
 use std::mem;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bounds::Bounds;
+use comrak::Arena;
 use comrak::nodes::AstNode;
-use comrak::{Arena, Options};
-use editor_core::buffer::Buffer;
+use editor_core::doc::MdDoc;
 use editor_core::offset_types::{Byte, Grapheme};
 use egui::os::OperatingSystem;
 use egui::{Context, EventFilter, Frame, Id, Margin, Pos2, Rect, Stroke, Ui, UiBuilder, Vec2};
-use input::cursor::CursorState;
 use input::mutation::EventState;
 use widget::block::LayoutCache;
 
-pub mod bounds;
+pub use editor_core::bounds;
 pub mod fold;
 pub mod fonts;
 pub mod input;
@@ -31,7 +28,6 @@ mod scroll_content;
 pub mod seq;
 pub mod show;
 pub mod style;
-pub mod text_units;
 mod theme;
 pub(crate) mod widget;
 pub mod widgets;
@@ -85,12 +81,9 @@ pub struct MdRender {
     /// that shouldn't travel with it (the fold button) can opt out.
     pub painting_drag_float: bool,
 
-    // document
-    pub buffer: Buffer,
-    pub text_seq: u64, // buffer.seq includes selection changes
-
-    pub bounds: Bounds,
-    pub bounds_seq: u64,
+    /// The text side: buffer, parse, bounds, reveal state and edit
+    /// commands. The renderer derefs to it.
+    pub doc: MdDoc,
 
     // render output
     pub fragments: Vec<widget::utils::wrap_layout::Fragment>,
@@ -114,26 +107,15 @@ pub struct MdRender {
     /// Per-scope interact rects behind `interaction_responses`, whose merged
     /// rect is only a bounding box; read by `touch_consume_interaction`.
     pub interaction_rects: std::collections::HashMap<egui::Id, Vec<Rect>>,
-    /// Spoilers the user has tapped to reveal. Persistent across frames;
-    /// cleared by `bump_text_seq` whenever the doc text changes so a
-    /// fresh edit re-hides every spoiler.
-    pub revealed_spoilers: std::collections::HashSet<egui::Id>,
-
     // render input
     pub in_progress_selection: Option<(Grapheme, Grapheme)>,
     /// Active list-item drag, mirrored from `MdEdit` so the render pass
     /// can dim the source and draw the drop indicator.
     pub in_progress_block_drag: Option<widget::block::drag::BlockDrag>,
-    pub find_current_match: Option<(Grapheme, Grapheme)>,
     /// The platform text system's marked text (dictation in progress, an
     /// IME composition), painted so provisional text reads as such.
     pub platform_marked: Option<(Grapheme, Grapheme)>,
-    /// Read-only search-preview highlight: the snippet range to reveal,
-    /// scroll to, and box-highlight. Independent of the find feature.
-    pub preview_match: Option<(Grapheme, Grapheme)>,
     pub interactive: bool, // enables fold buttons
-    pub readonly: bool,    // disables task checkboxes and saving
-    pub plaintext: bool,   // render as source text, not parsed markdown
     /// Password mode: render every source byte as `*` while the buffer keeps
     /// the real text. Only meaningful with `plaintext` — masking a parsed
     /// markdown tree isn't defined. Byte-length preserving, so
@@ -144,22 +126,11 @@ pub struct MdRender {
     /// cursor-following horizontal scroll; the caller's rect clips the
     /// overflow.
     pub single_line: bool,
-    pub disable_images: bool, // skip image rendering
-
-    pub reveal_selection: Option<(Grapheme, Grapheme)>,
-    /// A preview atom entered via `Event::EnterAtom` whose whole range is
-    /// selected (a bare autolink capsule — its URL *is* its full source,
-    /// so no selection endpoint can land interior). Force-reveals the source;
-    /// re-resolved each frame and cleared when the selection leaves it.
-    pub entered_atom: Option<(Grapheme, Grapheme)>,
-    pub reveal_seq: u64, // includes selection and find matches
 
     pub search_range: Option<(Grapheme, Grapheme)>, // drawn in accent color for completions
 
     // capabilities
     pub embeds: Box<dyn EmbedResolver>,
-    pub link_resolver: Box<dyn LinkResolver>,
-    pub ws_seq: Arc<std::sync::atomic::AtomicU64>,
 
     // caches
     pub layout_cache: LayoutCache,
@@ -171,7 +142,6 @@ pub struct MdRender {
     pub viewport_height: f32,
 
     // debug
-    pub debug: bool,
     pub frame_times: [Instant; 100],
     pub frame_times_idx: usize,
 }
@@ -190,7 +160,6 @@ pub enum ScrollTarget {
 pub struct MdEdit {
     pub renderer: MdRender,
 
-    pub cursor: CursorState,
     pub event: EventState,
 
     /// Phone-sized layout (phone or iPad compact mode).
@@ -240,9 +209,6 @@ pub struct MdEdit {
     /// Momentum from the last scroll-area frame.
     pub scroll_area_velocity: Vec2,
 
-    /// Links opened since the embedding app last took them.
-    pub opened_links: Vec<resolvers::OpenedLink>,
-
     /// Owns the per-row scroll state (offset, momentum) and renders
     /// the scrollbar.
     pub scroll_area: AffineScrollArea<DocRowId>,
@@ -263,7 +229,6 @@ impl MdEdit {
     fn new(renderer: MdRender, phone_mode: bool, id_salt: Id) -> Self {
         Self {
             renderer,
-            cursor: Default::default(),
             event: Default::default(),
             phone_mode,
             in_progress_selection: None,
@@ -276,7 +241,6 @@ impl MdEdit {
             overflow_scroll: 0.0,
             overflow_follow: (0, Default::default(), Rect::ZERO),
             scroll_area_velocity: Default::default(),
-            opened_links: Vec::new(),
             scroll_area: AffineScrollArea::new(id_salt),
             cursor_last_interact: None,
         }
@@ -388,8 +352,9 @@ impl MdRender {
             MdLayout::desktop()
         };
         let dark_mode = ctx.global_style().visuals.dark_mode;
-        let ws_seq = crate::seq::ws_seq(&ctx);
-        let plaintext = !ext.eq_ignore_ascii_case("md");
+        let mut doc = MdDoc::with_seq(md, crate::seq::ws_seq(&ctx));
+        doc.readonly = readonly;
+        doc.plaintext = !ext.eq_ignore_ascii_case("md");
         Self {
             ctx,
             layout,
@@ -397,9 +362,7 @@ impl MdRender {
             ext: ext.into(),
             touch_mode,
             painting_drag_float: false,
-            buffer: md.into(),
-            bounds: Default::default(),
-            bounds_seq: 0,
+            doc,
             fragments: Vec::new(),
             block_boxes: Vec::new(),
             block_drag_action: None,
@@ -409,31 +372,18 @@ impl MdRender {
             touch_targets: Default::default(),
             interaction_responses: Default::default(),
             interaction_rects: Default::default(),
-            revealed_spoilers: Default::default(),
             in_progress_selection: None,
             in_progress_block_drag: None,
-            find_current_match: None,
             platform_marked: None,
-            preview_match: None,
             interactive: false,
-            readonly,
-            plaintext,
             mask: false,
             single_line: false,
-            disable_images: false,
-            reveal_selection: None,
-            entered_atom: None,
-            reveal_seq: 0,
-            text_seq: 0,
             search_range: None,
             embeds: Box::new(()),
-            link_resolver: Box::new(editor_core::resolvers::NotFound),
-            ws_seq,
             layout_cache: Default::default(),
             width: Default::default(),
             width_seq: 0,
             viewport_height: Default::default(),
-            debug: false,
             frame_times: [Instant::now(); 100],
             frame_times_idx: 0,
         }
@@ -479,91 +429,38 @@ impl MdRender {
         }
     }
 
-    /// Bump `text_seq`. Call after any buffer mutation that may change
-    /// text — `LayoutCache::ensure_text_consistent`, `bounds.text_seq`,
-    /// and find-match invalidation all key off this counter.
-    pub fn bump_text_seq(&mut self) {
-        self.text_seq = self
-            .ws_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.revealed_spoilers.clear();
-    }
-
     /// Re-parse the buffer into a fresh AST and rebuild all text-derived
-    /// bounds (source lines, words, inline paragraphs). The caller owns the
-    /// [`Arena`] — comrak's AST is arena-allocated. Callers who need heights
-    /// also invoke [`MdRender::height`] on the returned root.
+    /// bounds. Wipes the layout cache first if the text changed. The
+    /// caller owns the [`Arena`] — comrak's AST is arena-allocated.
     pub fn reparse<'a>(&mut self, arena: &'a Arena<'a>) -> &'a AstNode<'a> {
         // Width / link / embed / reveal invalidation flows through
         // dep-stamp mismatch in the height + spacing caches. Text changes
-        // can affect any entry (fold-tag-driven cascades, sourcepos shifts),
-        // so the layout cache wipes wholesale here before any reads.
-        // `reveal_seq` is bumped at its writers (selection in
-        // `MdEdit::handle_input`, find-match in `Editor::show`).
-        self.layout_cache.ensure_text_consistent(self.text_seq);
-
-        let options = Self::comrak_options();
-        let text_with_newline = format!("{}\n", self.buffer.current.text());
-        let root = comrak::parse_document(arena, &text_with_newline, &options);
-
-        // Bounds depend only on text. Skip rebuild + bump bounds_seq
-        // when text hasn't changed.
-        if self.bounds.text_seq != self.text_seq {
-            self.bounds.inline_paragraphs.clear();
-            self.calc_source_lines();
-            self.calc_fold_bounds(root);
-            self.calc_atom_bounds(root);
-            // Populate before compute_bounds: pre_spacing_lines (called
-            // from compute_bounds_block_pre_spacing) queries
-            // hidden_by_fold, which now expects every node already
-            // cached.
-            self.populate_hidden_by_fold(root);
-            self.compute_bounds(root);
-            self.bounds.inline_paragraphs.sort();
-            self.calc_words();
-            self.calc_syntax_words(root);
-            self.bounds.text_seq = self.text_seq;
-            self.bounds_seq = self
-                .ws_seq
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            // Still call populate — its own deps check skips when
-            // text+reveal haven't moved, but this catches reveal-only
-            // changes (text seq same, reveal_seq advanced).
-            self.populate_hidden_by_fold(root);
-        }
-
-        root
+        // can affect any entry, so the layout cache wipes wholesale here
+        // before any reads.
+        self.layout_cache.ensure_text_consistent(self.doc.text_seq);
+        self.doc.reparse(arena)
     }
 
-    pub fn comrak_options() -> Options<'static> {
-        let mut options = Options::default();
-        options.parse.smart = true;
-        options.parse.ignore_setext = true;
-        options.extension.alerts = true;
-        options.extension.autolink = true;
-        options.extension.description_lists = false;
-        options.extension.footnotes = false;
-        options.extension.front_matter_delimiter = Some("---".to_string());
-        options.extension.greentext = false;
-        options.extension.header_ids = None; // intended for HTML renderers
-        options.extension.highlight = true;
-        options.extension.math_code = true; // rendered as code for now
-        options.extension.math_dollars = true; // rendered as code for now
-        options.extension.multiline_block_quotes = false;
-        options.extension.shortcodes = true;
-        options.extension.spoiler = true;
-        options.extension.strikethrough = true;
-        options.extension.subscript = true;
-        options.extension.superscript = true;
-        options.extension.table = true;
-        options.extension.tagfilter = false; // intended for HTML renderers
-        options.extension.tasklist = true;
-        options.extension.underline = true;
-        options.extension.wikilinks_title_after_pipe = true; // matches obsidian
-        options.extension.wikilinks_title_before_pipe = false; // would not match obsidian
-        options.render.escaped_char_spans = true;
-        options
+    /// The fragments painted last frame, as `editor-core`'s layout.
+    pub fn text_layout(&self) -> input::layout::FragmentLayout<'_> {
+        input::layout::FragmentLayout {
+            fragments: widget::utils::wrap_layout::Fragments(&self.fragments),
+            last: self.doc.buffer.current.segs.last_cursor_position(),
+        }
+    }
+}
+
+impl std::ops::Deref for MdRender {
+    type Target = MdDoc;
+
+    fn deref(&self) -> &MdDoc {
+        &self.doc
+    }
+}
+
+impl std::ops::DerefMut for MdRender {
+    fn deref_mut(&mut self) -> &mut MdDoc {
+        &mut self.doc
     }
 }
 
@@ -600,7 +497,7 @@ impl Editor {
 
     /// Replaces the link resolver, which answers link and wikilink lookups.
     pub fn set_link_resolver(&mut self, resolver: Box<dyn LinkResolver>) {
-        self.edit.renderer.link_resolver = resolver;
+        self.edit.renderer.doc.link_resolver = resolver;
     }
 
     /// Replaces the embed resolver, which loads and paints images.
@@ -755,7 +652,7 @@ impl Editor {
         let arena = Arena::new();
         let root = {
             let _parse = tracing::trace_span!("MarkdownEditor::parse").entered();
-            let options = MdRender::comrak_options();
+            let options = MdDoc::comrak_options();
             let text_with_newline = self.edit.renderer.buffer.current.text().to_string() + "\n";
             comrak::parse_document(&arena, &text_with_newline, &options)
         };
@@ -827,6 +724,10 @@ impl Editor {
             .event
             .internal_events
             .append(&mut self.edit.renderer.render_events);
+        self.edit
+            .event
+            .internal_events
+            .append(&mut self.edit.renderer.doc.deferred_events);
 
         if !self.edit.event.internal_events.is_empty() {
             ui.ctx().request_repaint();
@@ -838,7 +739,7 @@ impl Editor {
             self.unprocessed_scroll = None;
         }
 
-        resp.opened_link = self.edit.opened_links.pop();
+        resp.opened_link = self.edit.renderer.doc.opened_links.pop();
 
         // focus editor when first shown or when nothing else has focus
         if !self.initialized || ui.memory(|m| m.focused().is_none()) {

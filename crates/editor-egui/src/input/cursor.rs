@@ -179,7 +179,7 @@ impl MdEdit {
             // raw .0/.1. Clamp the dragged handle so the two never cross and
             // the selection keeps ≥1 grapheme — matching Google Keep.
             let selection = self.renderer.buffer.current.selection;
-            let dragged = self.pos_to_char_offset(new_pos);
+            let dragged = self.renderer.text_layout().pos_to_char_offset(new_pos);
             let moving = if is_start {
                 dragged.min(selection.1 - 1)
             } else {

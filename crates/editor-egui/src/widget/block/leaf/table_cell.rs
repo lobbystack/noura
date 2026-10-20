@@ -32,10 +32,4 @@ impl<'ast> MdRender {
             self.compute_layout_from(self.layout_table_cell(node), width, self.layout.row_height);
         self.show_wrap_layout(ui, top_left, &result);
     }
-
-    pub fn compute_bounds_table_cell(&mut self, node: &'ast AstNode<'ast>) {
-        let node_line = self.node_range(node); // table cells are always single-line
-
-        self.bounds.inline_paragraphs.push(node_line);
-    }
 }

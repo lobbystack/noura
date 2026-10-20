@@ -986,8 +986,8 @@ fn drag_across_marker_selects_it() {
     // Drag from the gutter's left edge to its right edge.
     let y = marker.center().y;
     let sel = edit.region_to_range(Region::BetweenLocations {
-        start: Location::Pos(egui::Pos2::new(marker.min.x + 1.0, y)),
-        end: Location::Pos(egui::Pos2::new(marker.max.x - 1.0, y)),
+        start: Location::Pos(crate::input::pos(egui::Pos2::new(marker.min.x + 1.0, y))),
+        end: Location::Pos(crate::input::pos(egui::Pos2::new(marker.max.x - 1.0, y))),
     });
     assert_eq!(sel, marker_range, "drag should select the whole marker");
 
@@ -1889,7 +1889,7 @@ fn touch_link_tap_selects_link() {
         "link selected"
     );
     assert!(
-        ws.editor.edit.opened_links.is_empty(),
+        ws.editor.edit.renderer.doc.opened_links.is_empty(),
         "a touch tap doesn't open the link"
     );
 }
@@ -1936,7 +1936,7 @@ fn touch_image_tap_selects_image() {
         "image selected"
     );
     assert!(
-        ws.editor.edit.opened_links.is_empty(),
+        ws.editor.edit.renderer.doc.opened_links.is_empty(),
         "a touch tap doesn't open the image"
     );
 }

@@ -131,16 +131,4 @@ impl<'ast> MdRender {
         self.compute_layout_from(layout, width, self.layout.row_height)
             .height
     }
-
-    pub fn compute_bounds_document(&mut self, node: &'ast AstNode<'ast>) {
-        let any_children = node.children().next().is_some();
-        if any_children {
-            self.compute_bounds_block_children(node);
-        } else {
-            for line_idx in self.node_lines(node).iter() {
-                let line = self.bounds.source_lines[line_idx];
-                self.bounds.inline_paragraphs.push(line);
-            }
-        }
-    }
 }

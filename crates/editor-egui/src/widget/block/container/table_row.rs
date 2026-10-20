@@ -1,5 +1,4 @@
 use comrak::nodes::AstNode;
-use editor_core::offset_types::RangeExt;
 use egui::{Pos2, Rangef, Rect, Stroke, Ui, Vec2};
 
 use crate::MdRender;
@@ -103,53 +102,5 @@ impl<'ast> MdRender {
                 child_top_left.x += child_width;
             }
         }
-    }
-
-    /// Reveal the table row's source when the cursor sits between
-    /// cells or after the last cell. Reads `reveal_selection` rather
-    /// than `buffer.current.selection` so unfocused frames see stable
-    /// layout.
-    fn reveal_table_row(&self, node: &'ast AstNode<'ast>) -> bool {
-        let row_range = self.node_range(node);
-        let line = self.node_first_line(node);
-        let node_line = self.node_line(node, line);
-
-        // check for cursor between cells
-        let mut range_start = row_range.start();
-        for cell in node.children() {
-            let cell_range = if let Some((_, _, cell_children_range, _, _)) =
-                self.split_range(cell, node_line)
-            {
-                cell_children_range
-            } else {
-                self.node_range(cell)
-            };
-
-            let between_range = (range_start, cell_range.start());
-
-            if self.range_contains_revealed(between_range, false, false) {
-                return true;
-            }
-
-            range_start = cell_range.end();
-        }
-
-        // check for cursor after last cell
-        if let Some(cell) = node.children().last() {
-            let cell_range = if let Some((_, _, cell_children_range, _, _)) =
-                self.split_range(cell, node_line)
-            {
-                cell_children_range
-            } else {
-                self.node_range(cell)
-            };
-
-            let between_range = (cell_range.end(), row_range.end());
-            if self.range_contains_revealed(between_range, false, false) {
-                return true;
-            }
-        }
-
-        false
     }
 }

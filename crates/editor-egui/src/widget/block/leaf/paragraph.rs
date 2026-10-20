@@ -97,13 +97,4 @@ impl<'ast> MdRender {
         let result = self.compute_layout_from(layout, width, self.layout.row_height);
         self.show_wrap_layout(ui, top_left, &result);
     }
-
-    pub fn compute_bounds_paragraph(&mut self, node: &'ast AstNode<'ast>) {
-        for line in self.node_lines(node).iter() {
-            let line = self.bounds.source_lines[line];
-            let node_line = self.node_line(node, line);
-
-            self.bounds.inline_paragraphs.push(node_line);
-        }
-    }
 }

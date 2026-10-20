@@ -1,11 +1,10 @@
-use crate::MdRender;
+use crate::doc::MdDoc;
+use crate::input::Bound;
+use crate::offset_types::{Byte, Grapheme, RangeExt};
 use comrak::nodes::{LineColumn, Sourcepos};
-use editor_core::offset_types::{Byte, Grapheme, RangeExt};
 use std::cmp::Ordering;
 use std::ops::Sub;
 use unicode_segmentation::UnicodeSegmentation as _;
-
-use super::input::Bound;
 
 pub type SourceLines = Vec<(Grapheme, Grapheme)>;
 pub type Words = Vec<(Grapheme, Grapheme)>;
@@ -102,7 +101,7 @@ impl Default for Bounds {
     }
 }
 
-impl MdRender {
+impl MdDoc {
     pub fn calc_source_lines(&mut self) {
         self.bounds.source_lines.clear();
 
@@ -805,7 +804,7 @@ impl<'r, const N: usize> Iterator for RangeJoinIter<'r, N> {
     }
 }
 
-impl MdRender {
+impl MdDoc {
     pub fn print_bounds(&self) {
         self.print_words_bounds();
         self.print_wrap_lines_bounds();
@@ -852,12 +851,12 @@ impl MdRender {
 
 #[cfg(test)]
 mod test {
+    use crate::offset_types::Grapheme;
     use comrak::nodes::{LineColumn, Sourcepos};
-    use editor_core::offset_types::Grapheme;
 
     use super::Bounds;
-    use crate::MdRender;
     use crate::bounds::{BoundExt as _, RangesExt as _};
+    use crate::doc::MdDoc;
     use crate::input::Bound;
 
     #[test]
@@ -1972,7 +1971,7 @@ mod test {
     #[test]
     fn sourcepos_to_range_fenced_code_block() {
         let text = "```\nfn main() {}\n```";
-        let mut md = MdRender::test(text);
+        let mut md = MdDoc::new(text);
         md.calc_source_lines();
 
         let sourcepos = Sourcepos {
@@ -1988,7 +1987,7 @@ mod test {
     #[test]
     fn sourcepos_to_range_unclosed_fenced_code_block() {
         let text = "```\n";
-        let mut md = MdRender::test(text);
+        let mut md = MdDoc::new(text);
         md.calc_source_lines();
 
         let sourcepos = Sourcepos {

@@ -1,7 +1,7 @@
 use crate::palette::ThemeExt as _;
 use crate::widget::utils::wrap_layout::Format;
 use comrak::nodes::{AlertType, AstNode, NodeAlert};
-use editor_core::offset_types::{Grapheme, Graphemes, RangeExt as _, RangeIterExt as _};
+use editor_core::offset_types::RangeIterExt as _;
 use egui::{Pos2, Rect, Stroke, Ui, Vec2};
 
 use crate::MdRender;
@@ -222,73 +222,5 @@ impl<'ast> MdRender {
                 self.show_wrap_layout(ui, display_text_top_left, &result);
             }
         }
-    }
-
-    pub fn own_prefix_len_alert(
-        &self,
-        node: &'ast AstNode<'ast>,
-        line: (Grapheme, Grapheme),
-    ) -> Option<Graphemes> {
-        self.own_prefix_len_block_quote(node, line)
-    }
-
-    pub fn compute_bounds_alert(&mut self, node: &'ast AstNode<'ast>, _node_alert: &NodeAlert) {
-        // Handle children or remaining lines
-        let first_line = self.node_first_line(node);
-        let any_children = node.children().next().is_some();
-        if any_children {
-            self.compute_bounds_block_children(node);
-        } else {
-            for line in self.node_lines(node).iter() {
-                let line = self.bounds.source_lines[line];
-                let line_content = self.line_content(node, line);
-
-                if line != first_line {
-                    self.bounds.inline_paragraphs.push(line_content);
-                }
-            }
-        }
-    }
-
-    fn alert_type_title_ranges(
-        &self,
-        node: &'ast AstNode<'ast>,
-    ) -> ((Grapheme, Grapheme), (Grapheme, Grapheme)) {
-        let line = self.node_first_line(node);
-        let line_content = self.line_content(node, line);
-        let line_content_text = &self.buffer[line_content].to_uppercase();
-
-        let type_len = if line_content_text.starts_with("[!NOTE]") {
-            "[!NOTE]".len()
-        } else if line_content_text.starts_with("[!TIP]") {
-            "[!TIP]".len()
-        } else if line_content_text.starts_with("[!IMPORTANT]") {
-            "[!IMPORTANT]".len()
-        } else if line_content_text.starts_with("[!WARNING]") {
-            "[!WARNING]".len()
-        } else if line_content_text.starts_with("[!CAUTION]") {
-            "[!CAUTION]".len()
-        } else {
-            unreachable!("supported alert types are note, tip, important, warning, caution")
-        };
-        let _type = (line_content.start(), line_content.start() + type_len);
-
-        // todo: empty title
-        let untrimmed_title = (line_content.start() + type_len, line_content.end());
-        let untrimmed_title_text = &self.buffer[untrimmed_title];
-        let title = if untrimmed_title_text.trim().is_empty() {
-            untrimmed_title
-        } else {
-            let title_leading_whitespace_len = untrimmed_title_text.chars().count()
-                - untrimmed_title_text.trim_start().chars().count();
-            let title_trailing_whitespace_len = untrimmed_title_text.chars().count()
-                - untrimmed_title_text.trim_end().chars().count();
-            (
-                untrimmed_title.start() + title_leading_whitespace_len,
-                untrimmed_title.end() - title_trailing_whitespace_len,
-            )
-        };
-
-        (_type, title)
     }
 }

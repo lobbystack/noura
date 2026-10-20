@@ -824,16 +824,16 @@ fn layout_cache_consistent_check(buf: &[u8]) -> Result<(), &'static str> {
         // populate, unlike the others which are computed lazily on read).
         r.layout_cache.height.borrow_mut().clear();
         r.layout_cache.height_approx.borrow_mut().clear();
-        r.layout_cache.hidden_by_fold.borrow_mut().clear();
-        r.layout_cache.hidden_by_fold_deps.set(None);
-        r.layout_cache.line_prefix_len.borrow_mut().clear();
+        r.doc.cache.hidden_by_fold.borrow_mut().clear();
+        r.doc.cache.hidden_by_fold_deps.set(None);
+        r.doc.cache.line_prefix_len.borrow_mut().clear();
         r.populate_hidden_by_fold(root);
 
         // populate writes one entry per descendant; if the cache ends up
         // smaller, two different nodes mapped to the same key and one
         // silently clobbered the other.
         let descendant_count = root.descendants().count();
-        let cache_size = r.layout_cache.hidden_by_fold.borrow().len();
+        let cache_size = r.doc.cache.hidden_by_fold.borrow().len();
         if cache_size < descendant_count {
             violation = Some("hidden_by_fold cache key collision (cache shorter than node count)");
         }

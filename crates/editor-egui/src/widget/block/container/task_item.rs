@@ -1,10 +1,8 @@
-use comrak::nodes::{AstNode, NodeTaskItem, NodeValue};
-use editor_core::offset_types::{Grapheme, Graphemes, RangeExt as _};
+use comrak::nodes::{AstNode, NodeTaskItem};
 use egui::{CursorIcon, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::TouchTarget;
 use crate::palette::ThemeExt;
-use crate::widget::utils::consume_indent_columns_ceil;
 use crate::{Event, MdRender};
 
 impl<'ast> MdRender {
@@ -193,126 +191,5 @@ impl<'ast> MdRender {
             (fold_button_size, fold_button_icon_size, fold_button_space),
             self.item_fold_reveal(node),
         );
-    }
-
-    pub fn own_prefix_len_task_item(
-        &self,
-        node: &'ast AstNode<'ast>,
-        line: (Grapheme, Grapheme),
-    ) -> Option<Graphemes> {
-        let node_line = self.node_line(node, line);
-        let mut result = 0.into();
-
-        // "If a sequence of lines Ls constitutes a list item according to rule
-        // #1, #2, or #3, then the result of indenting each line of Ls by 1-3
-        // spaces (the same for each line) also constitutes a list item with the
-        // same contents and attributes."
-        let indentation = {
-            let first_line = self.node_first_line(node);
-            let node_line = self.node_line(node, first_line);
-
-            // 1-3 columns of relative indent before the marker; ceil so a
-            // straddling tab is claimed rather than leaking into content.
-            let text = &self.buffer[(node_line.start(), node_line.end())];
-            consume_indent_columns_ceil(text, 3)
-        };
-        let marker_width_including_spaces: usize = {
-            // task items don't have a NodeList so we have to do this ourselves
-            let first_line = self.node_first_line(node);
-
-            // "   - [ ]   item"
-            // indentation + marker + spaces + content
-            let node_line = self.node_line(node, first_line);
-
-            // spaces + content
-            let marker_width = 5;
-            let text = &self.buffer[(
-                node_line.start() + indentation + marker_width,
-                node_line.end(),
-            )];
-            marker_width
-                + if text.starts_with("   ") {
-                    "   ".len()
-                } else if text.starts_with("  ") {
-                    "  ".len()
-                } else if text.starts_with(" ") {
-                    " ".len()
-                } else {
-                    0
-                }
-        };
-        if line == self.node_first_line(node) {
-            result += indentation;
-
-            // "If a sequence of lines Ls constitute a sequence of blocks Bs starting
-            // with a non-whitespace character, and M is a list marker of width W
-            // followed by 1 ≤ N ≤ 4 spaces, then the result of prepending M and the
-            // following spaces to the first line of Ls, and indenting subsequent lines
-            // of Ls by W + N spaces, is a list item with Bs as its contents."
-            //
-            // "If a sequence of lines Ls starting with a single blank line
-            // constitute a (possibly empty) sequence of blocks Bs, not separated
-            // from each other by more than one blank line, and M is a list marker
-            // of width W, then the result of prepending M to the first line of Ls,
-            // and indenting subsequent lines of Ls by W + 1 spaces, is a list item
-            // with Bs as its contents."
-            result += marker_width_including_spaces;
-        } else {
-            // "If a string of lines Ls constitute a list item with contents Bs, then
-            // the result of deleting some or all of the indentation from one or
-            // more lines in which the next non-whitespace character after the
-            // indentation is paragraph continuation text is a list item with the
-            // same contents and attributes."
-            //
-            // "If a line is empty, then it need not be indented."
-            //
-            // The threshold here is the *list's* content column (= the
-            // bullet marker `- ` width, typically 2), not the visual
-            // `- [ ] ` width. Comrak parses `- [ ] foo` as a `- ` bullet
-            // item whose content begins with the task syntax `[ ] `, so an
-            // indented code block inside the item begins at content_col + 4
-            // (= 6). Stripping the full visual `- [ ] ` here would consume
-            // the very indent the code block is defined by — and the
-            // code block's own 4-space strip would then leave it empty.
-            let parent_padding = match &node.parent().unwrap().data.borrow().value {
-                NodeValue::List(node_list) => node_list.padding,
-                _ => marker_width_including_spaces, // fallback, shouldn't happen
-            };
-            let text = &self.buffer[node_line];
-            // Ceil so a straddling tab is claimed here rather than leaking
-            // into a nested block's prefix (per-level tab attribution).
-            result += consume_indent_columns_ceil(text, indentation + parent_padding);
-        }
-
-        Some(result)
-    }
-
-    pub fn compute_bounds_task_item(&mut self, node: &'ast AstNode<'ast>) {
-        let any_children = node.children().next().is_some();
-        if any_children {
-            self.compute_bounds_block_children(node);
-        } else {
-            let line = self.node_first_line(node);
-            let line_content = self.line_content(node, line);
-            self.bounds.inline_paragraphs.push(line_content);
-        }
-    }
-
-    fn check_offset(&self, node: &'ast AstNode<'ast>) -> Grapheme {
-        let line = self.node_first_line(node);
-        let node_line = self.node_line(node, line);
-
-        let text = &self.buffer[(node_line.start(), node_line.end())];
-        let indentation = if text.starts_with("   ") {
-            "   ".len()
-        } else if text.starts_with("  ") {
-            "  ".len()
-        } else if text.starts_with(" ") {
-            " ".len()
-        } else {
-            0
-        };
-
-        node_line.start() + indentation + 3
     }
 }

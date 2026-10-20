@@ -17,10 +17,8 @@ impl<'ast> MdRender {
         // `sourcepos_to_range` matches `node_range` for spoilers
         // (no node_range hacks apply to this NodeValue).
         let node_range = self.sourcepos_to_range(node.data.borrow().sourcepos);
-        let revealed = self
-            .revealed_spoilers
-            .contains(&Self::spoiler_interaction_id_salt(node))
-            || self.range_revealed(node_range, true);
+        let revealed =
+            self.revealed_spoilers.contains(&node_range) || self.range_revealed(node_range, true);
         Format {
             background: bg,
             // Hidden state: glyphs blend into the chip. Glyphon caches

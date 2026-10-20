@@ -2140,14 +2140,18 @@ fn corner_rounding(left_radius: f32, right_radius: f32) -> egui::CornerRadius {
 
 // ─── cursor + hit-test helpers (read-only over fragments) ────────────
 
-impl MdRender {
+/// Read-only hit-testing over the fragments painted last frame.
+#[derive(Clone, Copy)]
+pub struct Fragments<'a>(pub &'a [Fragment]);
+
+impl<'a> Fragments<'a> {
     /// Find the fragment whose `source_range` contains `offset`,
     /// inclusive of both endpoints (so cursor positions at line-
     /// trailing `\n` bytes — excluded from any source line by
     /// `range_split_newlines` — still resolve). Reverse search:
     /// at a shared boundary `(a, b)`/`(b, c)`, the *later* fragment
     /// wins (cursor-affinity matches paint).
-    pub fn fragment_at_offset(&self, offset: Grapheme) -> Option<&Fragment> {
+    pub fn fragment_at_offset(self, offset: Grapheme) -> Option<&'a Fragment> {
         // A caret at a chip's edge sits at the pill edge, not inside its padding
         // or favicon slot: prefer the chip's boundary anchor (a zero-width Spacer
         // at exactly `offset`, which `fragment_x` resolves to the pill edge) over
@@ -2155,7 +2159,7 @@ impl MdRender {
         // re-opens its scope per row, giving every row such anchors at the same
         // source positions — the caret belongs at the capsule's *true* edge:
         // the first anchor for its start, the last for its end.
-        let mut anchors = self.fragments.iter().filter(|f| {
+        let mut anchors = self.0.iter().filter(|f| {
             f.source_range == (offset, offset)
                 && matches!(f.content, FragmentContent::Spacer)
                 && f.style_stack.last().is_some_and(|s| s.chip)
@@ -2171,7 +2175,7 @@ impl MdRender {
                 anchors.next_back().unwrap_or(first)
             });
         }
-        self.fragments.iter().rev().find(|f| {
+        self.0.iter().rev().find(|f| {
             let (s, e) = f.source_range;
             s <= offset && offset <= e
         })
@@ -2181,60 +2185,8 @@ impl MdRender {
     /// hit-test). Atomic fragments are checked by the caller
     /// (`pos_to_range`) for edge-snap behavior; this routine just
     /// returns the rect owner.
-    pub fn fragment_at_pos(&self, pos: Pos2) -> Option<&Fragment> {
-        self.fragments.iter().rev().find(|f| f.rect.contains(pos))
-    }
-
-    /// Allocate `ui.interact` for every fragment tagged with
-    /// `(salt, sense)`; union the responses by parent id into
-    /// `self.interaction_responses` and record the per-fragment rects
-    /// into `self.interaction_rects`. Consumers compute
-    /// `ui.scope_id().with(salt)` to look up either.
-    ///
-    /// Must run after the editor's own `ui.interact` so per-fragment
-    /// rects sit on top in egui's z-order.
-    pub fn interact_fragments(&mut self, ui: &mut egui::Ui) {
-        let mut per_parent: std::collections::HashMap<egui::Id, egui::Response> =
-            std::collections::HashMap::new();
-        let mut per_parent_rects: std::collections::HashMap<egui::Id, Vec<Rect>> =
-            std::collections::HashMap::new();
-        let parent_base = ui.scope_id();
-        for (i, f) in self.fragments.iter().enumerate() {
-            let Some((salt, sense)) = f.interaction else {
-                continue;
-            };
-            // Chips paint their pill `inline_pad` (= row_spacing/2) beyond
-            // the text band; match the interact rect to the ink so a wrapped
-            // pill's rows meet across the gap and a tap between them hits it.
-            let rect = if f.style_stack.iter().any(|s| s.chip) {
-                f.rect
-                    .expand2(egui::vec2(0.0, self.layout.row_spacing / 2.0))
-            } else {
-                f.rect
-            };
-            let parent_id = parent_base.with(salt);
-            let r = ui.interact(rect, parent_id.with(i), sense);
-            let merged = match per_parent.remove(&parent_id) {
-                Some(prev) => prev.union(r),
-                None => r,
-            };
-            per_parent.insert(parent_id, merged);
-            per_parent_rects.entry(parent_id).or_default().push(rect);
-        }
-        self.interaction_responses = per_parent;
-        self.interaction_rects = per_parent_rects;
-    }
-
-    /// Register a scope's fragments as `target`. Per-fragment rects, not
-    /// the merged bounding box — a wrapped scope's bbox would eat cursor
-    /// taps in its gaps and trailing space. A text-band rect grows to its
-    /// row, as a finger sees a line.
-    pub fn touch_consume_interaction(&mut self, parent_id: egui::Id, target: TouchTarget) {
-        let Some(rects) = self.interaction_rects.get(&parent_id) else {
-            return;
-        };
-        self.touch_targets
-            .extend(rects.iter().map(|&rect| (rect, target.clone())));
+    pub fn fragment_at_pos(self, pos: Pos2) -> Option<&'a Fragment> {
+        self.0.iter().rev().find(|f| f.rect.contains(pos))
     }
 
     /// Find the closest fragment to `pos` by (y_dist, x_dist), with
@@ -2243,9 +2195,9 @@ impl MdRender {
     /// fold tag, which need to win the tie against the adjacent text
     /// box so a click resolves to "select the whole override" via
     /// `pos_to_range`'s atomic branch). Returns `None` only when
-    /// `self.fragments` is empty.
-    pub fn closest_fragment_at_pos(&self, pos: Pos2) -> Option<usize> {
-        if self.fragments.is_empty() {
+    /// `self.0` is empty.
+    pub fn closest_fragment_at_pos(self, pos: Pos2) -> Option<usize> {
+        if self.0.is_empty() {
             return None;
         }
 
@@ -2256,7 +2208,7 @@ impl MdRender {
 
         let mut closest: Option<usize> = None;
         let mut closest_dist = (f32::INFINITY, f32::INFINITY);
-        for (i, f) in self.fragments.iter().enumerate() {
+        for (i, f) in self.0.iter().enumerate() {
             if f.rect.contains(pos) {
                 return Some(i);
             }
@@ -2292,23 +2244,18 @@ impl MdRender {
     /// Each fragment's visual-row `(top, bottom)`: maximal runs of vertically-
     /// overlapping fragments, so a tall image bridges its row's marker and
     /// baseline text. Rows never overlap, so an interval-merge over tops finds them.
-    fn fragment_row_spans(&self) -> Vec<(f32, f32)> {
-        let mut order: Vec<usize> = (0..self.fragments.len()).collect();
-        order.sort_by(|&a, &b| {
-            self.fragments[a]
-                .rect
-                .top()
-                .total_cmp(&self.fragments[b].rect.top())
-        });
-        let mut spans = vec![(0.0f32, 0.0f32); self.fragments.len()];
+    fn fragment_row_spans(self) -> Vec<(f32, f32)> {
+        let mut order: Vec<usize> = (0..self.0.len()).collect();
+        order.sort_by(|&a, &b| self.0[a].rect.top().total_cmp(&self.0[b].rect.top()));
+        let mut spans = vec![(0.0f32, 0.0f32); self.0.len()];
         let mut i = 0;
         while i < order.len() {
-            let top = self.fragments[order[i]].rect.top();
-            let mut bottom = self.fragments[order[i]].rect.bottom();
+            let top = self.0[order[i]].rect.top();
+            let mut bottom = self.0[order[i]].rect.bottom();
             let start = i;
             i += 1;
-            while i < order.len() && self.fragments[order[i]].rect.top() <= bottom {
-                bottom = bottom.max(self.fragments[order[i]].rect.bottom());
+            while i < order.len() && self.0[order[i]].rect.top() <= bottom {
+                bottom = bottom.max(self.0[order[i]].rect.bottom());
                 i += 1;
             }
             for &idx in &order[start..i] {
@@ -2322,7 +2269,7 @@ impl MdRender {
     /// fragments, snap to the nearest edge of `source_range` by
     /// the offset's position within the range (midpoint rule). For
     /// non-atomic, sum cluster advances from `source_range.start`.
-    pub fn fragment_x(&self, fragment: &Fragment, offset: Grapheme) -> f32 {
+    pub fn fragment_x(self, fragment: &Fragment, offset: Grapheme) -> f32 {
         let chip_scope = fragment
             .style_stack
             .last()
@@ -2392,7 +2339,7 @@ impl MdRender {
     /// Inverse of `fragment_x` for hit-test: find the offset within
     /// `fragment` closest to screen x. Atomic fragments snap to
     /// source_range.start / .end based on the midpoint rule.
-    pub fn fragment_offset(&self, fragment: &Fragment, x: f32) -> Grapheme {
+    pub fn fragment_offset(self, fragment: &Fragment, x: f32) -> Grapheme {
         if fragment.atomic {
             let mid_x = (fragment.rect.min.x + fragment.rect.max.x) / 2.0;
             return if x < mid_x {
@@ -2423,6 +2370,80 @@ impl MdRender {
         } else {
             fragment.source_range.end()
         }
+    }
+}
+
+impl MdRender {
+    pub fn fragment_at_offset(&self, offset: Grapheme) -> Option<&Fragment> {
+        Fragments(&self.fragments).fragment_at_offset(offset)
+    }
+
+    pub fn fragment_at_pos(&self, pos: Pos2) -> Option<&Fragment> {
+        Fragments(&self.fragments).fragment_at_pos(pos)
+    }
+
+    pub fn closest_fragment_at_pos(&self, pos: Pos2) -> Option<usize> {
+        Fragments(&self.fragments).closest_fragment_at_pos(pos)
+    }
+
+    pub fn fragment_x(&self, fragment: &Fragment, offset: Grapheme) -> f32 {
+        Fragments(&self.fragments).fragment_x(fragment, offset)
+    }
+
+    pub fn fragment_offset(&self, fragment: &Fragment, x: f32) -> Grapheme {
+        Fragments(&self.fragments).fragment_offset(fragment, x)
+    }
+
+    /// Allocate `ui.interact` for every fragment tagged with
+    /// `(salt, sense)`; union the responses by parent id into
+    /// `self.interaction_responses` and record the per-fragment rects
+    /// into `self.interaction_rects`. Consumers compute
+    /// `ui.scope_id().with(salt)` to look up either.
+    ///
+    /// Must run after the editor's own `ui.interact` so per-fragment
+    /// rects sit on top in egui's z-order.
+    pub fn interact_fragments(&mut self, ui: &mut egui::Ui) {
+        let mut per_parent: std::collections::HashMap<egui::Id, egui::Response> =
+            std::collections::HashMap::new();
+        let mut per_parent_rects: std::collections::HashMap<egui::Id, Vec<Rect>> =
+            std::collections::HashMap::new();
+        let parent_base = ui.scope_id();
+        for (i, f) in self.fragments.iter().enumerate() {
+            let Some((salt, sense)) = f.interaction else {
+                continue;
+            };
+            // Chips paint their pill `inline_pad` (= row_spacing/2) beyond
+            // the text band; match the interact rect to the ink so a wrapped
+            // pill's rows meet across the gap and a tap between them hits it.
+            let rect = if f.style_stack.iter().any(|s| s.chip) {
+                f.rect
+                    .expand2(egui::vec2(0.0, self.layout.row_spacing / 2.0))
+            } else {
+                f.rect
+            };
+            let parent_id = parent_base.with(salt);
+            let r = ui.interact(rect, parent_id.with(i), sense);
+            let merged = match per_parent.remove(&parent_id) {
+                Some(prev) => prev.union(r),
+                None => r,
+            };
+            per_parent.insert(parent_id, merged);
+            per_parent_rects.entry(parent_id).or_default().push(rect);
+        }
+        self.interaction_responses = per_parent;
+        self.interaction_rects = per_parent_rects;
+    }
+
+    /// Register a scope's fragments as `target`. Per-fragment rects, not
+    /// the merged bounding box — a wrapped scope's bbox would eat cursor
+    /// taps in its gaps and trailing space. A text-band rect grows to its
+    /// row, as a finger sees a line.
+    pub fn touch_consume_interaction(&mut self, parent_id: egui::Id, target: TouchTarget) {
+        let Some(rects) = self.interaction_rects.get(&parent_id) else {
+            return;
+        };
+        self.touch_targets
+            .extend(rects.iter().map(|&rect| (rect, target.clone())));
     }
 }
 
