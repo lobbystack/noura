@@ -47,6 +47,7 @@ pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
     let Some(notice) = state.app.notice().cloned() else {
         return;
     };
+    let busy = state.app.is_busy();
     let palette = Palette::of(ui.ctx());
     let builder = UiBuilder::new().accessibility_role(Role::Alert);
     ui.scope_builder(builder, |ui| {
@@ -64,7 +65,9 @@ pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
                 ui.label(&notice.message);
                 ui.horizontal(|ui| {
                     if let Some(workspace_id) = &notice.remove_recent
-                        && ui.button("Remove from recents").clicked()
+                        && ui
+                            .add_enabled(!busy, Button::new("Remove from recents"))
+                            .clicked()
                     {
                         state.app.remove_recent(workspace_id);
                     }

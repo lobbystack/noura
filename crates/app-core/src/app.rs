@@ -65,11 +65,21 @@ impl Listeners {
     }
 }
 
+#[derive(Clone)]
 enum Job {
-    Restore,
+    /// Reopen the last workspace at launch, or again with Try again.
+    Restore {
+        workspace_id: String,
+    },
     OpenFolder(PathBuf),
-    Create { name: String, folder: PathBuf },
-    OpenRecent { workspace_id: String, name: String },
+    Create {
+        name: String,
+        folder: PathBuf,
+    },
+    OpenRecent {
+        workspace_id: String,
+        name: String,
+    },
 }
 
 struct Opened {
@@ -77,9 +87,10 @@ struct Opened {
     tree: FileTree,
 }
 
-struct Outcome {
+/// The job running in the background and where its result arrives.
+struct Pending {
     job: Job,
-    result: Result<Option<Opened>, AppError>,
+    result: Receiver<Result<Opened, AppError>>,
 }
 
 /// The state every client draws: which screen shows, the recent list, the
@@ -92,7 +103,9 @@ pub struct App {
     tree: Option<FileTree>,
     document: Option<OpenedFile>,
     notice: Option<Notice>,
-    pending: Option<Receiver<Outcome>>,
+    /// The workspace the launch couldn't reopen, which Try again retries.
+    failed_restore: Option<String>,
+    pending: Option<Pending>,
     listeners: Listeners,
 }
 
@@ -111,12 +124,14 @@ impl App {
             tree: None,
             document: None,
             notice: None,
+            failed_restore: None,
             pending: None,
             listeners: Listeners::default(),
         };
-        if !app.recents.is_empty() {
+        if let Some(last) = app.recents.first() {
+            let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;
-            app.start(Job::Restore);
+            app.start(Job::Restore { workspace_id });
         }
         app
     }
@@ -197,9 +212,13 @@ impl App {
         });
     }
 
-    /// Reopen the last workspace after it failed to open.
+    /// Retry the workspace the launch couldn't reopen. Never opens another
+    /// workspace instead, and does nothing once that workspace has left the
+    /// recent list.
     pub fn try_again(&mut self) {
-        self.start(Job::Restore);
+        if let Some(workspace_id) = self.failed_restore.clone() {
+            self.start(Job::Restore { workspace_id });
+        }
     }
 
     /// Drop a workspace from the recent list. Its folder stays as it is.
@@ -208,6 +227,14 @@ impl App {
             Ok(recents) => {
                 self.recents = recents;
                 self.listeners.emit(Change::Recents);
+                // The problem described a workspace that is no longer listed,
+                // so there is nothing left to try again.
+                if self.failed_restore.as_deref() == Some(workspace_id) {
+                    self.failed_restore = None;
+                    if matches!(self.screen, Screen::Chooser { problem: Some(_) }) {
+                        self.set_screen(Screen::Chooser { problem: None });
+                    }
+                }
                 if self
                     .notice
                     .as_ref()
@@ -248,27 +275,26 @@ impl App {
         let Some(pending) = &self.pending else {
             return false;
         };
-        let outcome = match pending.try_recv() {
-            Ok(outcome) => outcome,
+        let result = match pending.result.try_recv() {
+            Ok(result) => result,
             Err(TryRecvError::Empty) => return false,
-            Err(TryRecvError::Disconnected) => Outcome {
-                job: Job::Restore,
-                result: Err(AppError::new(
-                    "worker_failed",
-                    "Noura couldn't open the workspace.",
-                )),
-            },
+            Err(TryRecvError::Disconnected) => Err(AppError::new(
+                "worker_failed",
+                "Noura couldn't open the workspace.",
+            )),
         };
-        self.pending = None;
+        let Some(Pending { job, .. }) = self.pending.take() else {
+            return false;
+        };
         self.recents = self.service.recents();
         self.listeners.emit(Change::Recents);
-        match (outcome.result, outcome.job) {
-            (Ok(Some(opened)), _) => self.adopt(opened),
-            (Ok(None), _) => self.set_screen(Screen::Chooser { problem: None }),
-            (Err(error), Job::Restore) => {
+        match (result, job) {
+            (Ok(opened), _) => self.adopt(opened),
+            (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
                 self.document = None;
+                self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),
                 });
@@ -288,6 +314,7 @@ impl App {
     }
 
     fn adopt(&mut self, opened: Opened) {
+        self.failed_restore = None;
         self.workspace = Some(opened.workspace);
         self.tree = Some(opened.tree);
         self.document = None;
@@ -327,16 +354,22 @@ impl App {
         let (sender, receiver) = channel();
         let service = self.service.clone();
         let listeners = self.listeners.clone();
+        let work = job.clone();
         let spawned = std::thread::Builder::new()
             .name("workspace-open".into())
             .spawn(move || {
-                let result = run(&service, &job);
+                let result = run(&service, &work);
                 // The app may have closed meanwhile; nothing is waiting then.
-                let _ = sender.send(Outcome { job, result });
+                let _ = sender.send(result);
                 listeners.emit(Change::WorkFinished);
             });
         match spawned {
-            Ok(_) => self.pending = Some(receiver),
+            Ok(_) => {
+                self.pending = Some(Pending {
+                    job,
+                    result: receiver,
+                });
+            }
             Err(error) => {
                 tracing::error!(%error, "could not start the workspace thread");
                 let error = AppError::new("worker_failed", "Noura couldn't open the workspace.");
@@ -346,16 +379,14 @@ impl App {
     }
 }
 
-fn run(service: &WorkspaceService, job: &Job) -> Result<Option<Opened>, AppError> {
+fn run(service: &WorkspaceService, job: &Job) -> Result<Opened, AppError> {
     let workspace = match job {
-        Job::Restore => match service.restore_last()? {
-            Some(workspace) => workspace,
-            None => return Ok(None),
-        },
+        Job::Restore { workspace_id } | Job::OpenRecent { workspace_id, .. } => {
+            service.open_recent(workspace_id)?
+        }
         Job::OpenFolder(folder) => service.open_folder(folder)?,
         Job::Create { name, folder } => service.create(name, folder)?,
-        Job::OpenRecent { workspace_id, .. } => service.open_recent(workspace_id)?,
     };
     let tree = workspace.file_tree()?;
-    Ok(Some(Opened { workspace, tree }))
+    Ok(Opened { workspace, tree })
 }

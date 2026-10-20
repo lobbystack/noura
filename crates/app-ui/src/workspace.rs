@@ -92,7 +92,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
         if !others.is_empty() {
             ui.menu_button("Remove from recents", |ui| {
                 for recent in others {
-                    if ui.button(&recent.name).clicked() {
+                    if ui.add_enabled(!busy, Button::new(&recent.name)).clicked() {
                         remove = Some(recent.workspace_id.clone());
                         ui.close();
                     }

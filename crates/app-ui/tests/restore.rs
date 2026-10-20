@@ -117,3 +117,29 @@ fn a_recent_workspace_that_fails_to_open_offers_remove_from_recents() {
             .is_file()
     );
 }
+
+#[test]
+fn removing_the_workspace_that_failed_clears_the_problem_and_try_again() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Older", &parent.path().join("Older"));
+    let last = parent.path().join("Last");
+    create_workspace(app_data.path(), "Last", &last);
+    rename_with_retry(&last, &parent.path().join("Away"));
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+    harness.get_by_label("Can't open the workspace");
+
+    harness.get_by_role_and_label(Role::Button, "Last").click();
+    settle(&mut harness);
+    harness
+        .get_by_role_and_label(Role::Button, "Remove from recents")
+        .click();
+    harness.run();
+
+    assert!(harness.query_by_label("Can't open the workspace").is_none());
+    assert!(harness.query_by_label("Try again").is_none());
+    harness.get_by_label("Open a folder");
+    harness.get_by_role_and_label(Role::Button, "Older");
+    assert!(!harness.state().is_busy());
+}

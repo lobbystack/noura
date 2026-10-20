@@ -229,3 +229,79 @@ fn opening_a_file_shows_its_name_and_workspace_relative_path() {
         b"# Guide\n"
     );
 }
+
+#[test]
+fn opening_a_file_cloud_storage_has_not_downloaded_says_so_and_shows_nothing() {
+    let app_data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join(".Cloud note.md.icloud"), b"placeholder").unwrap();
+    let mut app = App::launch(app_data.path());
+    app.open_folder(folder.path().to_owned());
+    settle(&mut app);
+    assert!(app.tree().unwrap().rows()[0].not_downloaded);
+
+    app.open_file("Cloud note.md");
+
+    assert_eq!(app.document(), None);
+    let notice = app.notice().unwrap();
+    assert_eq!(notice.title, "Couldn't open \u{201c}Cloud note\u{201d}");
+    assert_eq!(
+        notice.message,
+        "This file isn't downloaded yet. Try again once it is."
+    );
+}
+
+#[test]
+fn try_again_retries_only_the_workspace_that_failed() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create(app_data.path(), "Older", &parent.path().join("Older"));
+    let last = parent.path().join("Last");
+    let last_id = create(app_data.path(), "Last", &last);
+    rename_with_retry(&last, &parent.path().join("Away"));
+    let mut app = App::launch(app_data.path());
+    settle(&mut app);
+    assert!(matches!(app.screen(), Screen::Chooser { problem: Some(_) }));
+
+    app.open_recent(&last_id);
+    settle(&mut app);
+    assert_eq!(
+        app.notice().unwrap().remove_recent.as_deref(),
+        Some(last_id.as_str())
+    );
+    app.remove_recent(&last_id);
+
+    assert_eq!(app.screen(), &Screen::Chooser { problem: None });
+    app.try_again();
+    assert!(
+        !app.is_busy(),
+        "Try again must not open the older workspace"
+    );
+    assert!(app.workspace().is_none());
+}
+
+#[test]
+fn a_last_workspace_that_lost_its_manifest_says_why_and_stays_as_it_was() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Last");
+    create(app_data.path(), "Last", &folder);
+    std::fs::remove_file(folder.join(".noura/workspace.yaml")).unwrap();
+    let saved_path = WorkspaceService::new(app_data.path()).recents()[0]
+        .path
+        .clone();
+
+    let mut app = App::launch(app_data.path());
+    settle(&mut app);
+
+    assert_eq!(
+        app.screen(),
+        &Screen::Chooser {
+            problem: Some(format!(
+                "The settings file .noura/workspace.yaml is missing from {saved_path}. Noura \
+                 left the folder as it was. Choose Open folder to use it as a new workspace."
+            ))
+        }
+    );
+    assert!(!folder.join(".noura/workspace.yaml").exists());
+}

@@ -1,6 +1,6 @@
 //! The recent-workspace list, kept in this device's app data.
 
-use std::{io::Write, path::PathBuf};
+use std::{io::Write, path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,12 +22,16 @@ pub struct RecentWorkspace {
 
 pub(crate) struct RecentStore {
     file: PathBuf,
+    /// Held across each load, change and save, so a change made on the UI
+    /// thread and one made by a background open never undo each other.
+    writing: Mutex<()>,
 }
 
 impl RecentStore {
     pub(crate) fn new(app_data: &std::path::Path) -> Self {
         Self {
             file: app_data.join("recent-workspaces.json"),
+            writing: Mutex::new(()),
         }
     }
 
@@ -50,6 +54,10 @@ impl RecentStore {
 
     /// Put `entry` first, dropping any older entry with the same ID.
     pub(crate) fn record(&self, entry: RecentWorkspace) -> Result<Vec<RecentWorkspace>, AppError> {
+        let _writing = self
+            .writing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut values = self.load();
         values.retain(|value| value.workspace_id != entry.workspace_id);
         values.insert(0, entry);
@@ -60,6 +68,10 @@ impl RecentStore {
 
     /// Drop one workspace from the list. Its folder stays as it is.
     pub(crate) fn remove(&self, workspace_id: &str) -> Result<Vec<RecentWorkspace>, AppError> {
+        let _writing = self
+            .writing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut values = self.load();
         let before = values.len();
         values.retain(|value| value.workspace_id != workspace_id);
@@ -85,5 +97,46 @@ impl RecentStore {
         let mut file = atomic_write_file::AtomicWriteFile::open(&self.file).map_err(failed)?;
         file.write_all(&bytes).map_err(failed)?;
         file.commit().map_err(failed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn entry(workspace_id: &str) -> RecentWorkspace {
+        RecentWorkspace {
+            workspace_id: workspace_id.to_owned(),
+            name: workspace_id.to_owned(),
+            path: format!("/{workspace_id}"),
+        }
+    }
+
+    #[test]
+    fn a_removal_made_while_another_thread_records_is_never_undone() {
+        let app_data = tempfile::tempdir().unwrap();
+        let store = Arc::new(RecentStore::new(app_data.path()));
+        let gone: Vec<String> = (0..10).map(|index| format!("gone-{index}")).collect();
+        for workspace_id in &gone {
+            store.record(entry(workspace_id)).unwrap();
+        }
+
+        let recorder = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for _ in 0..300 {
+                    store.record(entry("kept")).unwrap();
+                }
+            })
+        };
+        for workspace_id in &gone {
+            store.remove(workspace_id).unwrap();
+            std::thread::yield_now();
+        }
+        recorder.join().unwrap();
+
+        assert_eq!(store.load(), [entry("kept")]);
     }
 }
