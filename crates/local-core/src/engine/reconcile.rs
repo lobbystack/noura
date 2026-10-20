@@ -289,10 +289,13 @@ impl WorkspaceEngine {
                         .ok()
                         .is_some_and(|bytes| markdown::revision(&bytes) == expected)
                 };
-                journal.remove(&relative);
+                // While the file still holds what this engine wrote, any
+                // report of it is our own write: platforms often report one
+                // write several times. Another app's change ends the entry.
                 if matches {
                     continue;
                 }
+                journal.remove(&relative);
             }
             external.push(relative);
         }
@@ -436,6 +439,35 @@ mod tests {
                 })
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_write_of_ours_the_platform_reports_twice_never_reads_as_an_outside_change() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Ours".into(),
+                body: "Body".into(),
+                relative_path: Some("ours.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let path = engine.root().join("ours.md");
+
+        let first = engine.process_external_changes(vec![path.clone()]).unwrap();
+        let second = engine.process_external_changes(vec![path.clone()]).unwrap();
+        std::fs::write(&path, "# Theirs\n").unwrap();
+        let third = engine.process_external_changes(vec![path]).unwrap();
+
+        assert_eq!(
+            (first, second, third),
+            (Vec::new(), Vec::new(), vec!["ours.md".to_owned()])
         );
     }
 

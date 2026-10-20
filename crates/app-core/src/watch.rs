@@ -43,7 +43,7 @@ impl Default for Rescans {
     fn default() -> Self {
         Self {
             periodic: Duration::from_secs(60),
-            without_watcher: Duration::from_secs(2),
+            without_watcher: Duration::from_secs(5),
         }
     }
 }
@@ -61,7 +61,7 @@ impl Snapshot {
     pub(crate) fn of(engine: &WorkspaceEngine, root: &str) -> Result<Self, AppError> {
         let failed = |error| AppError::from_core(error, root, Access::ReadWorkspace);
         let entries = engine.list_workspace_entries().map_err(failed)?;
-        let problems = problems::collect(engine).map_err(failed)?;
+        let problems = problems::collect(engine, root)?;
         Ok(Self { entries, problems })
     }
 

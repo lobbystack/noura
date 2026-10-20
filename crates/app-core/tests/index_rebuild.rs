@@ -121,13 +121,16 @@ fn leftovers(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// One search result: the object ID, the path and the title.
+type Hit = (Option<String>, String, String);
+
 /// What you see of the workspace: the whole tree, the objects, search
 /// results and problems.
 #[derive(Debug, PartialEq)]
 struct Seen {
     tree: Vec<(String, bool)>,
     objects: Vec<(String, String, String)>,
-    search: Vec<(String, Vec<(Option<String>, String, String)>)>,
+    search: Vec<(String, Vec<Hit>)>,
     problems: Vec<Problem>,
 }
 

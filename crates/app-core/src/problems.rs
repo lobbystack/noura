@@ -1,7 +1,9 @@
 //! Workspace problems you can fix yourself, such as files that share an ID,
 //! properties Noura can't read and names it can't represent.
 
-use local_core::{CoreError, WorkspaceEngine};
+use local_core::WorkspaceEngine;
+
+use crate::{AppError, error::Access};
 
 /// One problem in the open workspace.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -18,8 +20,9 @@ pub struct Problem {
 }
 
 /// The workspace's problems, as the index and the last full scan found
-/// them, sorted and without repeats.
-pub(crate) fn collect(engine: &WorkspaceEngine) -> Result<Vec<Problem>, CoreError> {
+/// them, sorted and without repeats. `root` is the workspace folder, for
+/// the error.
+pub(crate) fn collect(engine: &WorkspaceEngine, root: &str) -> Result<Vec<Problem>, AppError> {
     let mut problems: Vec<Problem> = engine
         .state()
         .diagnostics
@@ -34,7 +37,10 @@ pub(crate) fn collect(engine: &WorkspaceEngine) -> Result<Vec<Problem>, CoreErro
             object_id: diagnostic.object_id,
         })
         .collect();
-    for conflict in engine.identity_conflicts()? {
+    let conflicts = engine
+        .identity_conflicts()
+        .map_err(|error| AppError::from_core(error, root, Access::ReadWorkspace))?;
+    for conflict in conflicts {
         problems.push(Problem {
             code: "identity_conflict".into(),
             message: shared_id(&conflict.relative_paths),
