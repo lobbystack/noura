@@ -63,6 +63,8 @@ pub enum Change {
     /// Files in the open workspace changed on disk; call [`App::poll`] to
     /// apply the change to the views.
     Files(Origin),
+    /// The open workspace's problems changed.
+    Problems,
 }
 
 type Listener = Box<dyn Fn(Change) + Send + Sync>;
@@ -203,6 +205,13 @@ impl App {
     /// The file shown in the document area.
     pub fn document(&self) -> Option<&OpenedFile> {
         self.document.as_ref()
+    }
+
+    /// The open workspace's problems, such as files that share an ID.
+    pub fn problems(&self) -> &[crate::Problem] {
+        self.snapshot
+            .as_ref()
+            .map_or(&[], |snapshot| snapshot.problems.as_slice())
     }
 
     pub fn notice(&self) -> Option<&Notice> {
@@ -369,6 +378,12 @@ impl App {
             self.listeners.emit(Change::Tree);
         }
         let previous = self.snapshot.replace(update.snapshot);
+        let before = previous
+            .as_ref()
+            .map(|snapshot| snapshot.problems.as_slice());
+        if before != Some(self.problems()) {
+            self.listeners.emit(Change::Problems);
+        }
         self.follow_document(previous.as_ref());
         true
     }
@@ -414,6 +429,7 @@ impl App {
         self.listeners.emit(Change::Tree);
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
+        self.listeners.emit(Change::Problems);
         self.set_screen(Screen::Workspace);
     }
 

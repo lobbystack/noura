@@ -19,9 +19,10 @@ use local_core::{CoreEvent, EventSource, WorkspaceEngine, WorkspaceEntry, Worksp
 use tokio::sync::broadcast::{self, error::TryRecvError as EventError};
 
 use crate::{
-    AppError, FileTree,
+    AppError, FileTree, Problem,
     app::{Change, Listeners, Origin},
     error::Access,
+    problems,
 };
 
 /// How long one wait on the native watcher lasts. The thread notices that
@@ -51,16 +52,17 @@ impl Default for Rescans {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Snapshot {
     pub(crate) entries: Vec<WorkspaceEntry>,
+    pub(crate) problems: Vec<Problem>,
 }
 
 impl Snapshot {
-    /// List the workspace. The listing reconciles the index first when the
-    /// watcher saw a change nobody reconciled yet.
+    /// List the workspace and its problems. The listing reconciles the
+    /// index first when the watcher saw a change nobody reconciled yet.
     pub(crate) fn of(engine: &WorkspaceEngine, root: &str) -> Result<Self, AppError> {
-        let entries = engine
-            .list_workspace_entries()
-            .map_err(|error| AppError::from_core(error, root, Access::ReadWorkspace))?;
-        Ok(Self { entries })
+        let failed = |error| AppError::from_core(error, root, Access::ReadWorkspace);
+        let entries = engine.list_workspace_entries().map_err(failed)?;
+        let problems = problems::collect(engine).map_err(failed)?;
+        Ok(Self { entries, problems })
     }
 
     /// The file listed at `relative_path`.

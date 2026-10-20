@@ -8,6 +8,8 @@
 mod app;
 mod error;
 mod files;
+mod objects;
+mod problems;
 mod recents;
 mod watch;
 mod workspace;
@@ -19,6 +21,8 @@ pub use files::{
 };
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
+pub use objects::ObjectRef;
+pub use problems::Problem;
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};

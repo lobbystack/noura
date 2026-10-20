@@ -118,6 +118,30 @@ fn note(id: &str, body: &str) -> String {
 }
 
 const PLAN_ID: &str = "note_01k00000000000000000000001";
+const TASK_ID: &str = "task_01k00000000000000000000002";
+const PROJECT_ID: &str = "project_01k00000000000000000000003";
+
+fn task() -> String {
+    format!("---\nid: {TASK_ID}\ntype: task\nstatus: todo\n---\n\nShip it.\n")
+}
+
+fn project() -> String {
+    format!("---\nid: {PROJECT_ID}\ntype: project\nstatus: active\n---\n\nLaunch.\n")
+}
+
+/// The path of each object the workspace knows, by ID.
+fn objects(app: &App) -> Vec<(String, String)> {
+    let mut objects: Vec<(String, String)> = app
+        .workspace()
+        .unwrap()
+        .objects()
+        .unwrap()
+        .into_iter()
+        .map(|object| (object.id, object.relative_path))
+        .collect();
+    objects.sort();
+    objects
+}
 
 #[test]
 fn a_file_another_app_creates_appears_in_the_tree_marked_as_from_outside() {
@@ -249,4 +273,132 @@ fn the_periodic_rescan_finds_a_change_the_watcher_missed() {
         rows(app) == ["A.md", "Missed.md"]
     });
     assert!(written.elapsed() < periodic + PATIENCE);
+}
+
+#[test]
+fn a_note_task_or_project_another_app_moves_keeps_its_id_whatever_order_the_events_arrive_in() {
+    let mut live = Live::open_with(
+        &[
+            ("Plan.md", &note(PLAN_ID, "The plan.")),
+            ("Ship.md", &task()),
+            ("Launch.md", &project()),
+        ],
+        NO_RESCANS,
+    );
+    // The test delivers each move's events itself, in the order it chooses.
+    live.workspace().force_watch_fault(WatchFault::Silent);
+    // (ID, from, to, batches of "old" and "new" events)
+    let moves: [(&str, &str, &str, &[&[&str]]); 4] = [
+        (PLAN_ID, "Plan.md", "Notes/Plan.md", &[&["new"], &["old"]]),
+        (
+            TASK_ID,
+            "Ship.md",
+            "Tasks/Ship it.md",
+            &[&["old"], &["new"]],
+        ),
+        (
+            PROJECT_ID,
+            "Launch.md",
+            "Projects/Launch.md",
+            &[&["new", "old"]],
+        ),
+        (
+            PLAN_ID,
+            "Notes/Plan.md",
+            "Plan again.md",
+            &[&["old", "new"]],
+        ),
+    ];
+    let mut expected = vec![
+        (PLAN_ID.to_owned(), "Plan.md".to_owned()),
+        (PROJECT_ID.to_owned(), "Launch.md".to_owned()),
+        (TASK_ID.to_owned(), "Ship.md".to_owned()),
+    ];
+    let mut batch_number = 0;
+    for (id, from, to, batches) in moves {
+        let destination = live.path(to);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::rename(live.path(from), destination).unwrap();
+        for batch in batches {
+            // A new file in each batch shows when the batch has landed.
+            batch_number += 1;
+            let marker = format!("Marker {batch_number}.txt");
+            write(&live.folder, &marker, "");
+            let mut paths: Vec<&str> = batch
+                .iter()
+                .map(|event| if *event == "old" { from } else { to })
+                .collect();
+            paths.push(&marker);
+            live.workspace().inject_watch_event(&paths);
+            live.wait_until("the batch lands", |app| rows(app).contains(&marker));
+            for (known, path) in &mut expected {
+                if known == id {
+                    *path = to.to_owned();
+                }
+            }
+            assert_eq!(objects(&live.app), expected, "after {batch:?} for {from}");
+            let found = live.workspace().find_object(id).unwrap().unwrap();
+            assert_eq!(found.relative_path, to);
+        }
+    }
+}
+
+fn identity_problems(app: &App) -> Vec<(Vec<String>, Option<String>)> {
+    app.problems()
+        .iter()
+        .filter(|problem| problem.code == "identity_conflict")
+        .map(|problem| (problem.paths.clone(), problem.object_id.clone()))
+        .collect()
+}
+
+#[test]
+fn two_files_that_share_an_id_stay_untouched_and_block_the_id_until_one_loses_it() {
+    let original = note(PLAN_ID, "The plan.");
+    let mut live = Live::open(&[("Plan.md", &original)]);
+
+    // Another app copies the note, ID and all.
+    write(&live.folder, "Plan copy.md", &original);
+
+    live.wait_until("the problem shows", |app| {
+        !identity_problems(app).is_empty()
+    });
+    assert_eq!(
+        identity_problems(&live.app),
+        [(
+            vec!["Plan copy.md".to_owned(), "Plan.md".to_owned()],
+            Some(PLAN_ID.to_owned())
+        )]
+    );
+    assert!(live.seen.contains(&Change::Problems));
+    let error = live.workspace().find_object(PLAN_ID).unwrap_err();
+    assert_eq!(error.code, "identity_conflict");
+    assert!(objects(&live.app).is_empty(), "neither copy may win");
+    for path in ["Plan.md", "Plan copy.md"] {
+        assert_eq!(std::fs::read_to_string(live.path(path)).unwrap(), original);
+    }
+
+    // You remove the ID from the copy in another app.
+    write(&live.folder, "Plan copy.md", "The plan.\n");
+
+    live.wait_until("the problem goes", |app| identity_problems(app).is_empty());
+    let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
+    assert_eq!(found.relative_path, "Plan.md");
+    assert_eq!(
+        std::fs::read_to_string(live.path("Plan.md")).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn a_workspace_that_opens_with_a_shared_id_reports_both_files() {
+    let original = note(PLAN_ID, "The plan.");
+    let live = Live::open(&[("A/Plan.md", &original), ("B/Plan.md", &original)]);
+
+    assert_eq!(
+        identity_problems(&live.app),
+        [(
+            vec!["A/Plan.md".to_owned(), "B/Plan.md".to_owned()],
+            Some(PLAN_ID.to_owned())
+        )]
+    );
 }

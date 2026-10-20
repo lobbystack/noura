@@ -336,6 +336,14 @@ impl WorkspaceEngine {
         }
     }
 
+    /// Every stable ID that more than one file uses, with those files.
+    pub fn identity_conflicts(&self) -> Result<Vec<crate::IdentityConflict>> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("diagnostics"))?
+            .identity_conflicts()
+    }
+
     fn write_lock(&self, operation: &str) -> Result<WorkspaceLock> {
         if let Some(parent) = self.lock_path.parent() {
             std::fs::create_dir_all(parent)
