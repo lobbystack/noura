@@ -10,6 +10,7 @@ members = [
     "crates/local-core",
     "crates/mcp-server",
     "crates/plugin-host",
+    "crates/plugin-host/trial/rust-hello",
     "crates/plugin-sdk",
     "crates/sync-key-envelope",
     "crates/sync-protocol",
@@ -49,6 +50,7 @@ diffy = "=0.5.1"
 # BSL-1.0, which waits for the owner's approval.
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
 egui = "0.37"
+egui_kittest = "0.37"
 fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
