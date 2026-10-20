@@ -189,7 +189,6 @@ fn an_input_method_commit_inserts_its_text() {
     press(&mut harness, Modifiers::NONE, Key::End);
 
     for event in [
-        egui::ImeEvent::Enabled,
         egui::ImeEvent::Preedit {
             text: "に".into(),
             active_range_chars: None,
@@ -199,7 +198,6 @@ fn an_input_method_commit_inserts_its_text() {
             active_range_chars: None,
         },
         egui::ImeEvent::Commit("日本".into()),
-        egui::ImeEvent::Disabled,
     ] {
         harness.event(Event::Ime(event));
     }
