@@ -35,13 +35,15 @@ async function openTasks(app: App, view = 'all') {
 async function newTask(app: App, title: string) {
 	await openTasks(app);
 	await app.page.getByRole('button', { name: 'New task' }).click();
-	const name = app.page.getByRole('textbox', { name: 'Task title' });
-	await expect(name).toHaveValue('New task');
-	await name.click();
-	await app.page.keyboard.press('ControlOrMeta+a');
+	const name = app.page.getByRole('textbox', { name: 'New task name' });
+	await expect(name).toBeFocused();
 	await app.page.keyboard.type(title);
-	// The file keeps the name it was created with; the title is inside it.
-	return taskPath(app, 'New task');
+	await app.page.keyboard.press('Enter');
+	await expect(
+		app.page.getByRole('textbox', { name: 'Task title' }),
+	).toHaveValue(title);
+	// The task's file is named after the name typed before it existed.
+	return taskPath(app, title);
 }
 
 test.describe('Inbox', () => {
@@ -91,6 +93,51 @@ test.describe('Inbox', () => {
 });
 
 test.describe('tasks', () => {
+	test('a new task exists only once named; Escape writes nothing', async ({
+		app,
+		page,
+	}) => {
+		await openTasks(app);
+		await page.getByRole('button', { name: 'New task' }).click();
+		await page.keyboard.type('Never mind');
+		await page.keyboard.press('Escape');
+		await expect(
+			page.getByRole('textbox', { name: 'New task name' }),
+		).toBeHidden();
+		const path = await newTask(app, 'Call the bank');
+		expect(path).toMatch(/^tasks\/call-the-bank--/);
+		expect(
+			(await app.storedPaths()).filter((entry) => entry.startsWith('tasks/')),
+		).toEqual([path]);
+	});
+
+	test('the right-click menu renames a task and moves it to the trash', async ({
+		app,
+		page,
+	}) => {
+		const path = await newTask(app, 'Old name');
+		const list = page.getByRole('region', { name: 'Task list' });
+		await list.getByRole('button', { name: 'Old name' }).click({
+			button: 'right',
+		});
+		await page.getByRole('menuitem', { name: 'Rename…' }).click();
+		const rename = page.getByRole('textbox', { name: 'New name for Old name' });
+		await expect(rename).toBeFocused();
+		await page.keyboard.press('ControlOrMeta+a');
+		await page.keyboard.type('New name');
+		await page.keyboard.press('Enter');
+		await expect(list.getByRole('button', { name: 'New name' })).toBeVisible();
+		await expect
+			.poll(async () => (await app.stored(path))?.includes('# New name'))
+			.toBe(true);
+		await list.getByRole('button', { name: 'New name' }).click({
+			button: 'right',
+		});
+		await page.getByRole('menuitem', { name: 'Move to Trash' }).click();
+		await expect(list.getByRole('button', { name: 'New name' })).toBeHidden();
+		await expect.poll(async () => app.stored(path)).toBeNull();
+	});
+
 	test('typing a task’s title and body across saves loses nothing', async ({
 		app,
 		page,

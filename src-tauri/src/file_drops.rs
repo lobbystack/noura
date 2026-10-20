@@ -26,6 +26,20 @@ pub struct FileDrops {
     /// page elements also raise drag events, with no paths.
     carrying_files: Mutex<bool>,
     pending: Mutex<Option<(u64, Vec<PathBuf>)>>,
+    /// The page zoom as `f64` bits; 0 until the page first sets it.
+    zoom: AtomicU64,
+}
+
+impl FileDrops {
+    /// Remember the page zoom, which turns window points into CSS pixels.
+    pub fn set_zoom(&self, factor: f64) {
+        self.zoom.store(factor.to_bits(), Ordering::Relaxed);
+    }
+
+    fn zoom(&self) -> f64 {
+        let factor = f64::from_bits(self.zoom.load(Ordering::Relaxed));
+        if factor > 0.0 { factor } else { 1.0 }
+    }
 }
 
 /// What the page hears about a drag from outside. Positions are in CSS
@@ -53,7 +67,11 @@ enum FileDropEvent {
 pub fn window_event(window: &Window, event: &DragDropEvent) {
     let state = window.state::<AppState>();
     let drops = &state.file_drops;
-    let at = |position: &tauri::PhysicalPosition<f64>| page_position(window, position);
+    let at = |position: &tauri::PhysicalPosition<f64>| {
+        let (x, y) = page_position(window, position);
+        let zoom = drops.zoom();
+        (x / zoom, y / zoom)
+    };
     let set_carrying = |value: bool| {
         if let Ok(mut carrying) = drops.carrying_files.lock() {
             *carrying = value;
@@ -105,7 +123,8 @@ pub fn window_event(window: &Window, event: &DragDropEvent) {
     }
 }
 
-/// The drop position in CSS pixels. Tauri types it as physical pixels, but
+/// The drop position in window points, before page zoom. Tauri types it as
+/// physical pixels, but
 /// only Windows reports physical pixels; macOS and GTK already report
 /// logical points.
 fn page_position(window: &Window, position: &tauri::PhysicalPosition<f64>) -> (f64, f64) {

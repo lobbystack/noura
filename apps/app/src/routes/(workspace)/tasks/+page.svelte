@@ -20,9 +20,15 @@
 	import Plus from 'phosphor-svelte/lib/Plus';
 	import { filterTasks, isDone, type TaskView } from '$lib/tasks/filters';
 	import { tabsStore } from '$lib/tabs.svelte';
+	import TaskNameInput from '$lib/components/task-name-input.svelte';
+	import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+	import { createTask, renameTask, trashTask } from '$lib/task-actions';
 
 	let selectedId = $state<string | null>(null);
 	let loading = $state(true);
+	/** A new task is being named; it exists only once named. */
+	let drafting = $state(false);
+	let renamingId = $state<string | null>(null);
 
 	// The view lives in the URL so the per-module sidebar section drives it
 	// and views stay linkable: /tasks?view=today, ?view=folder&folder=notes,
@@ -98,23 +104,53 @@
 		await tasksData.load();
 	}
 
-	async function create() {
-		if (!(await flushPendingDrafts())) return;
+	async function create(title: string): Promise<boolean> {
+		if (!(await flushPendingDrafts())) return false;
 		const properties =
 			view.mode === 'project' && view.projectId
 				? { project: view.projectId }
 				: undefined;
-		const result = await getNouraClient().tasks.create({
-			title: 'New task',
-			...(properties ? { properties } : {}),
-		});
+		const created = await createTask(title, properties);
+		if (!created) return false;
+		drafting = false;
 		await tasksData.load();
-		const created = result.value as Task;
 		// Show the new task wherever its due date would hide it.
 		if (view.mode !== 'all' && view.mode !== 'project') {
 			await goto('/tasks?view=all');
 		}
 		adoptSelection(created);
+		return true;
+	}
+
+	async function rename(task: Task, title: string): Promise<boolean> {
+		const renamed = await renameTask(task, title);
+		// A failed rename keeps the field open so the name can be saved again.
+		if (!renamed) return false;
+		renamingId = null;
+		await tasksData.load();
+		return true;
+	}
+
+	async function openInNewTab(task: Task) {
+		tabsStore.keepObject(task.id);
+		await select(task);
+	}
+
+	function deselect() {
+		selectedId = null;
+		if (page.url.searchParams.has('selected')) {
+			const next = new URL(page.url);
+			next.searchParams.delete('selected');
+			replaceState(next, {});
+		}
+	}
+
+	async function trash(task: Task) {
+		// Save the open task first, then close it, so it doesn't report its
+		// own file as deleted.
+		await flushPendingDrafts();
+		if (selectedId === task.id) deselect();
+		if (await trashTask(task)) await tasksData.load();
 	}
 
 	// Tree and sidebar deep links land on /tasks?selected=<id>.
@@ -135,7 +171,7 @@
 <div class="flex min-h-0 flex-1 flex-col">
 	<PageHeader title="Tasks" description={viewLabel}>
 		{#snippet actions()}
-			<Button size="sm" onclick={() => void create()}>
+			<Button size="sm" onclick={() => (drafting = true)}>
 				<Plus data-icon="inline-start" />
 				New task
 			</Button>
@@ -153,9 +189,21 @@
 						<Skeleton class="h-10 w-full" />
 					{/each}
 				</div>
-			{:else if visibleTasks.length === 0}
+			{:else if visibleTasks.length === 0 && !drafting}
 				<EmptyState icon={Checks} title="No tasks here" />
 			{:else}
+				{#if drafting}
+					<div
+						class="flex items-center gap-3 border-b border-border/60 px-4 py-2"
+					>
+						<Checkbox disabled aria-hidden="true" tabindex={-1} />
+						<TaskNameInput
+							label="New task name"
+							oncommit={create}
+							oncancel={() => (drafting = false)}
+						/>
+					</div>
+				{/if}
 				<ul class="min-h-0 flex-1 divide-y divide-border/60 overflow-y-auto">
 					{#each visibleTasks as task (task.id)}
 						{@const done = isDone(task)}
@@ -165,52 +213,99 @@
 								: ''}
 						{@const priority = task.properties?.priority}
 						{@const project = projectLabel(task)}
-						<li
-							class={cn(
-								'flex items-center gap-3 px-4 hover:bg-muted/40',
-								selectedId === task.id && 'bg-muted/60',
-							)}
-						>
-							<Checkbox
-								checked={done}
-								onCheckedChange={() => void toggleDone(task)}
-								aria-label={done
-									? `Mark ${task.title} as not done`
-									: `Mark ${task.title} as done`}
-							/>
-							<button
-								type="button"
-								class="min-w-0 flex-1 py-3 text-left"
-								aria-current={selectedId === task.id ? 'true' : undefined}
-								onclick={() => select(task)}
-							>
-								<span
-									class={cn(
-										'block truncate text-sm font-medium',
-										done && 'text-muted-foreground line-through',
-									)}>{task.title}</span
-								>
-								{#if project || due || (priority && priority !== 'medium')}
-									<span
-										class="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground"
+						<ContextMenu.Root>
+							<ContextMenu.Trigger>
+								{#snippet child({ props })}
+									<li
+										{...props}
+										class={cn(
+											'flex items-center gap-3 px-4 hover:bg-muted/40',
+											selectedId === task.id && 'bg-muted/60',
+										)}
 									>
-										{#if project}<span class="truncate">{project}</span>{/if}
-										{#if due}<span
-												class={cn(
-													'shrink-0',
-													!done &&
-														isOverdue(due, new Date()) &&
-														'text-destructive',
-												)}>{dueLabel(due, new Date())}</span
-											>{/if}
-										{#if priority && priority !== 'medium'}<Badge
-												variant="secondary"
-												class="capitalize">{priority}</Badge
-											>{/if}
-									</span>
-								{/if}
-							</button>
-						</li>
+										<Checkbox
+											checked={done}
+											onCheckedChange={() => void toggleDone(task)}
+											aria-label={done
+												? `Mark ${task.title} as not done`
+												: `Mark ${task.title} as done`}
+										/>
+										{#if renamingId === task.id}
+											<div class="min-w-0 flex-1 py-2">
+												<TaskNameInput
+													value={task.title}
+													label="New name for {task.title}"
+													oncommit={(title) => rename(task, title)}
+													oncancel={() => (renamingId = null)}
+												/>
+											</div>
+										{:else}
+											<button
+												type="button"
+												class="min-w-0 flex-1 py-3 text-left"
+												aria-current={selectedId === task.id
+													? 'true'
+													: undefined}
+												onclick={() => select(task)}
+											>
+												<span
+													class={cn(
+														'block truncate text-sm font-medium',
+														done && 'text-muted-foreground line-through',
+													)}>{task.title}</span
+												>
+												{#if project || due || (priority && priority !== 'medium')}
+													<span
+														class="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground"
+													>
+														{#if project}<span class="truncate">{project}</span
+															>{/if}
+														{#if due}<span
+																class={cn(
+																	'shrink-0',
+																	!done &&
+																		isOverdue(due, new Date()) &&
+																		'text-destructive',
+																)}>{dueLabel(due, new Date())}</span
+															>{/if}
+														{#if priority && priority !== 'medium'}<Badge
+																variant="secondary"
+																class="capitalize">{priority}</Badge
+															>{/if}
+													</span>
+												{/if}
+											</button>
+										{/if}
+									</li>
+								{/snippet}
+							</ContextMenu.Trigger>
+							<ContextMenu.Content class="w-52">
+								<ContextMenu.Group>
+									<ContextMenu.Item onclick={() => void select(task)}>
+										Open
+									</ContextMenu.Item>
+									<ContextMenu.Item onclick={() => void openInNewTab(task)}>
+										Open in new tab
+									</ContextMenu.Item>
+								</ContextMenu.Group>
+								<ContextMenu.Separator />
+								<ContextMenu.Group>
+									<ContextMenu.Item onclick={() => (renamingId = task.id)}>
+										Rename…
+									</ContextMenu.Item>
+									<ContextMenu.Item onclick={() => void toggleDone(task)}>
+										{done ? 'Mark as not done' : 'Mark as done'}
+									</ContextMenu.Item>
+								</ContextMenu.Group>
+								<ContextMenu.Separator />
+								<ContextMenu.Item
+									variant="destructive"
+									onclick={() => void trash(task)}
+								>
+									Move to Trash
+								</ContextMenu.Item>
+							</ContextMenu.Content>
+						</ContextMenu.Root>
 					{/each}
 				</ul>
 			{/if}

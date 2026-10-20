@@ -47,6 +47,8 @@ impl WorkspaceEngine {
         }
         let root = std::fs::canonicalize(&self.root)
             .map_err(|error| CoreError::io(error, operation, None))?;
+        let destination = std::fs::canonicalize(&target)
+            .map_err(|error| CoreError::io(error, operation, None))?;
         let mut import = Import {
             engine: self,
             operation,
@@ -67,6 +69,14 @@ impl WorkspaceEngine {
                 return Err(CoreError::validation(
                     "import_contains_workspace",
                     "A folder can't be copied into a workspace inside it",
+                    operation,
+                ));
+            }
+            // Copying a folder into itself would find each new copy and recurse.
+            if std::fs::canonicalize(source).is_ok_and(|source| destination.starts_with(source)) {
+                return Err(CoreError::validation(
+                    "import_into_itself",
+                    "A folder can't be copied into itself",
                     operation,
                 ));
             }

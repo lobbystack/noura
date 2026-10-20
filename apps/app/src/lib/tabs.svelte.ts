@@ -77,6 +77,7 @@ class TabsStore {
 			(tab) => tab.objectId === pageTabObjectId(route),
 		);
 		if (existing) {
+			this.#rememberDocument();
 			this.activeId = existing.id;
 			this.keep(existing.id);
 			this.#save();

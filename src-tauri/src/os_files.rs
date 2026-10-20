@@ -51,7 +51,11 @@ pub struct ZoomInput {
 /// Zoom the whole page, as a browser does. The page keeps the chosen level
 /// and sends it again at launch.
 #[tauri::command(async)]
-pub fn app_set_zoom(window: tauri::WebviewWindow, input: ZoomInput) -> Result<(), CoreError> {
+pub fn app_set_zoom(
+    window: tauri::WebviewWindow,
+    state: tauri::State<super::AppState>,
+    input: ZoomInput,
+) -> Result<(), CoreError> {
     if !(0.25..=4.0).contains(&input.factor) {
         return Err(CoreError::validation(
             "invalid_zoom",
@@ -61,7 +65,10 @@ pub fn app_set_zoom(window: tauri::WebviewWindow, input: ZoomInput) -> Result<()
     }
     window
         .set_zoom(input.factor)
-        .map_err(|_| CoreError::validation("zoom_failed", "Couldn't zoom", "app_set_zoom"))
+        .map_err(|_| CoreError::validation("zoom_failed", "Couldn't zoom", "app_set_zoom"))?;
+    // Drop positions arrive in window points; the page hit-tests in CSS pixels.
+    state.file_drops.set_zoom(input.factor);
+    Ok(())
 }
 
 /// The page background of the dark and light themes.

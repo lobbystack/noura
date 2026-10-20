@@ -9,6 +9,8 @@ test.describe('layout at a normal window width', () => {
 	}) => {
 		await page.goto('/tasks?view=all');
 		await page.getByRole('button', { name: 'New task' }).click();
+		await page.keyboard.type('Layout check');
+		await page.keyboard.press('Enter');
 		const toolbar = page.getByRole('toolbar', { name: 'Formatting' });
 		await expect(toolbar).toBeVisible();
 		const overflow = await toolbar.evaluate(

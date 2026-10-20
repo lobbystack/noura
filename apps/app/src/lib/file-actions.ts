@@ -43,6 +43,8 @@ function problem(error: unknown, fallback: string): string {
 			return 'Those files are no longer available. Drag them in again.';
 		if (error.code === 'import_contains_workspace')
 			return 'That folder holds this workspace, so it can’t be copied into it.';
+		if (error.code === 'import_into_itself')
+			return 'A folder can’t be copied into itself.';
 		if (error.code === 'collaboration_transaction_required')
 			return 'noura can’t rename, move or delete a file while it’s open for live editing.';
 	}
