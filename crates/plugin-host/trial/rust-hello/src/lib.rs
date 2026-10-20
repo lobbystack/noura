@@ -1,5 +1,10 @@
 //! Trial S7: a hello plugin in Rust. It shows a count and a button that adds
 //! one to it.
+//!
+//! A native build of this crate only type-checks the plugin, so it exports
+//! nothing: names such as `handle-event` belong in a component, not in a
+//! native library's export table.
+#![cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 
 wit_bindgen::generate!({
     path: "../wit",
@@ -42,4 +47,5 @@ impl Guest for Hello {
     }
 }
 
+#[cfg(target_family = "wasm")]
 export!(Hello);
