@@ -4,10 +4,11 @@
 //! cargo run -p editor-egui --example editor -- path/to/note.md
 //! ```
 //!
-//! Type to edit. Cmd+S (Ctrl+S elsewhere) writes the note back to the file.
-//! If another app changed the file since it was opened or last saved, the
-//! save merges those changes in first instead of overwriting them. Link
-//! lookups answer not found, and images draw as not found.
+//! Type to edit. Cmd+S (Ctrl+S elsewhere) writes the note back to the file;
+//! Cmd+Shift+S stays the editor's subscript shortcut. If another app changed
+//! the file since it was opened or last saved, the save merges those changes
+//! in first instead of overwriting them, even after undo went back past the
+//! last save. Link lookups answer not found, and images draw as not found.
 
 use std::path::{Path, PathBuf};
 
@@ -105,6 +106,30 @@ impl ExampleApp {
             Err(err) => format!("Couldn't save: {err}"),
         };
     }
+
+    /// One frame: the save shortcut, the status line and the editor.
+    fn show(&mut self, ui: &mut egui::Ui) {
+        if ui.input_mut(take_save_shortcut) {
+            self.save();
+        }
+
+        egui::Panel::bottom("status").show(ui, |ui| {
+            ui.label(&self.status);
+        });
+        egui::CentralPanel::default().show(ui, |ui| {
+            let response = self.editor.show(ui);
+            if response.text_updated && self.status.starts_with("Saved") {
+                self.status.clear();
+            }
+            if let Some(link) = response.opened_links.into_iter().last() {
+                self.status = match link {
+                    OpenedLink::File(file) => format!("Link to {file}"),
+                    OpenedLink::External(url) => format!("Link to {url}"),
+                    OpenedLink::NotFound { target } => format!("Nothing matches {target}"),
+                };
+            }
+        });
+    }
 }
 
 /// The file a note was opened from, and the bytes last read from or written
@@ -176,29 +201,30 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.commit()
 }
 
+/// Takes Cmd+S (Ctrl+S elsewhere) out of this frame's input and reports
+/// whether it was pressed. Only the exact chord counts: egui's `consume_key`
+/// ignores an extra Shift, which would also take the editor's Cmd+Shift+S.
+fn take_save_shortcut(input: &mut egui::InputState) -> bool {
+    let mut pressed = false;
+    input.events.retain(|event| {
+        let save = matches!(
+            event,
+            egui::Event::Key {
+                key: egui::Key::S,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.matches_exact(egui::Modifiers::COMMAND)
+        );
+        pressed |= save;
+        !save
+    });
+    pressed
+}
+
 impl eframe::App for ExampleApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let save = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
-        if save {
-            self.save();
-        }
-
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.label(&self.status);
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
-            let response = self.editor.show(ui);
-            if response.text_updated && self.status.starts_with("Saved") {
-                self.status.clear();
-            }
-            if let Some(link) = response.opened_links.into_iter().last() {
-                self.status = match link {
-                    OpenedLink::File(file) => format!("Link to {file}"),
-                    OpenedLink::External(url) => format!("Link to {url}"),
-                    OpenedLink::NotFound { target } => format!("Nothing matches {target}"),
-                };
-            }
-        });
+        self.show(ui);
     }
 }
 
@@ -225,10 +251,28 @@ mod tests {
             text: text.into(),
             advance_cursor: true,
         });
+        run_frame(ctx, editor);
+    }
+
+    /// Runs a frame so queued events apply.
+    fn run_frame(ctx: &egui::Context, editor: &mut Editor) {
         ctx.run_ui(egui::RawInput::default(), |ui| {
             editor.show(ui);
         })
         .drop_without_applying_deltas();
+    }
+
+    /// Deletes graphemes `start..end` and runs a frame so it applies.
+    fn delete(ctx: &egui::Context, editor: &mut Editor, start: usize, end: usize) {
+        editor.push_event(Event::Replace {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(Grapheme(start)),
+                end: Location::Grapheme(Grapheme(end)),
+            },
+            text: String::new(),
+            advance_cursor: true,
+        });
+        run_frame(ctx, editor);
     }
 
     #[test]
@@ -263,6 +307,93 @@ mod tests {
 
         // The merged text is now the base: saving again merges nothing.
         assert_eq!(file.save(&mut editor), Ok(Saved { merged: false }));
+    }
+
+    /// Undo back past the last save leaves the buffer without the version
+    /// the file holds. An outside edit still merges with the restored text.
+    #[test]
+    fn saving_after_undo_past_the_last_save_merges_an_outside_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "Keep this line\nSecond line here\n").unwrap();
+        let (ctx, mut editor, mut file) = open(&path);
+
+        delete(&ctx, &mut editor, 0, 15);
+        assert_eq!(file.save(&mut editor), Ok(Saved { merged: false }));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "Second line here\n"
+        );
+
+        editor.push_event(Event::Undo);
+        run_frame(&ctx, &mut editor);
+        assert_eq!(editor.text(), "Keep this line\nSecond line here\n");
+
+        std::fs::write(&path, "2nd line here\n").unwrap();
+        assert_eq!(file.save(&mut editor), Ok(Saved { merged: true }));
+
+        let expected = "Keep this line\n2nd line here\n";
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        assert_eq!(editor.text(), expected);
+    }
+
+    /// The example's window on the note at `path`, in an egui_kittest
+    /// harness. The app is created on the first frame because the editor
+    /// needs the harness's egui context.
+    fn app_harness(path: &Path) -> egui_kittest::Harness<'static, Option<ExampleApp>> {
+        let path = path.to_path_buf();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .with_context_setup(|ctx| {
+                editor_egui::register_font_system(ctx, editor_egui::fonts::default_font_database());
+            })
+            .build_ui_state(
+                move |ui, app: &mut Option<ExampleApp>| {
+                    app.get_or_insert_with(|| {
+                        let bytes = std::fs::read(&path).unwrap();
+                        let text = String::from_utf8(bytes.clone()).unwrap();
+                        ExampleApp {
+                            editor: Editor::new(ui.ctx(), &text, MdConfig::default()),
+                            file: NoteFile::new(path.clone(), bytes),
+                            status: String::new(),
+                        }
+                    })
+                    .show(ui);
+                },
+                None,
+            );
+        harness.run_steps(2);
+        harness
+    }
+
+    fn app<'a>(harness: &'a egui_kittest::Harness<'static, Option<ExampleApp>>) -> &'a ExampleApp {
+        harness
+            .state()
+            .as_ref()
+            .expect("the first frame created the app")
+    }
+
+    #[test]
+    fn cmd_shift_s_reaches_the_editor_and_only_cmd_s_saves() {
+        use egui::{Key, Modifiers};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "note\n").unwrap();
+        let mut harness = app_harness(&path);
+
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+        harness.run_steps(1);
+        // The caret sits at the start, so the editor writes an empty
+        // subscript there.
+        assert_eq!(app(&harness).editor.text(), "~~note\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "note\n");
+        assert_eq!(app(&harness).status, "");
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        harness.run_steps(1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "~~note\n");
+        assert!(app(&harness).status.starts_with("Saved"));
     }
 
     #[cfg(unix)]
