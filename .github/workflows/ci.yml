@@ -77,6 +77,11 @@ jobs:
       - run: cargo test --workspace --locked
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
+      # A report, not a gate: each checkpoint enforces the budget on the
+      # owner's Mac.
+      - name: Report the file tree's frame times
+        if: matrix.os == 'macos-latest'
+        run: cargo test -p app-ui --release --locked --test tree_scale -- --ignored --nocapture
 
   static-server:
     runs-on: ubuntu-latest
