@@ -176,3 +176,27 @@ fn renaming_an_item_that_left_the_workspace_says_so() {
     );
     assert!(!fixture.exists("Roadmap.md"));
 }
+
+#[test]
+fn leaving_the_field_saves_the_name_or_says_why_it_couldnt() {
+    let fixture = Fixture::new(&[("Plan.md", b"x")]);
+    let mut app = fixture.app();
+
+    app.start_rename("Plan.md");
+    app.finish_rename("Roadmap");
+    assert!(app.renaming().is_none());
+    assert_eq!(fixture.read("Roadmap.md"), b"x");
+
+    app.start_rename("Roadmap.md");
+    app.finish_rename("a/b");
+
+    assert!(app.renaming().is_none());
+    assert_eq!(
+        support::notice(&app),
+        Some((
+            "Couldn't rename \u{201c}Roadmap\u{201d}".to_owned(),
+            "Names can't contain \\ / : * ? \" < > or |.".to_owned()
+        ))
+    );
+    assert_eq!(fixture.read("Roadmap.md"), b"x");
+}

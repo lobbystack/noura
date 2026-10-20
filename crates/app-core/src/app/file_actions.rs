@@ -3,7 +3,7 @@
 
 use super::{App, Change, Notice, NoticeKind};
 use crate::{
-    EntryKind, OpenedFile, Platform, TreeAction, TreeKey,
+    AppError, EntryKind, OpenedFile, Platform, TreeAction, TreeKey,
     files::{remap, shown_name},
 };
 
@@ -366,6 +366,26 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Rename the row being renamed to `name` and stop renaming, as when
+    /// you leave the field. When Noura refuses the name, the row keeps its
+    /// old name and a notice says why.
+    pub fn finish_rename(&mut self, name: &str) {
+        let Some(path) = self.renaming.as_ref().map(|rename| rename.relative_path.clone()) else {
+            return;
+        };
+        if self.commit_rename(name) {
+            return;
+        }
+        let problem = self
+            .renaming
+            .take()
+            .and_then(|rename| rename.problem)
+            .unwrap_or_default();
+        let title = format!("Couldn't rename {}", self.quoted(&path));
+        self.show_notice(&title, AppError::new("rename_failed", problem), None);
+        self.listeners.emit(Change::Tree);
     }
 
     /// Stop renaming and keep the old name.
