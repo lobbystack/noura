@@ -29,8 +29,7 @@ impl PluginView {
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
-        let mut pressed = None;
-        draw_node(ui, &self.nodes, 0, 0, &mut pressed);
+        let pressed = draw_nodes(ui, &self.nodes);
         if let Some(node_id) = pressed {
             self.instance.handle_event(&node_id).expect("event");
             self.sent_events.push(node_id);
@@ -39,25 +38,45 @@ impl PluginView {
     }
 }
 
+/// How deep panels may nest. A deeper node draws nothing, so a long chain of
+/// panels can't exhaust the stack.
+const MAX_DEPTH: usize = 32;
+
+/// Draws a plugin's nodes from the root at index 0 and returns the id of the
+/// button pressed this frame, if any.
+///
+/// The node list comes from the plugin, so it is untrusted: a child index may
+/// point past the end, back up the list, or at a node another panel already
+/// drew. Each node draws at most once, which keeps a frame's work linear in
+/// the list's size.
+fn draw_nodes(ui: &mut egui::Ui, nodes: &[Node]) -> Option<String> {
+    let mut drawn = vec![false; nodes.len()];
+    let mut pressed = None;
+    draw_node(ui, nodes, 0, 0, &mut drawn, &mut pressed);
+    pressed
+}
+
 fn draw_node(
     ui: &mut egui::Ui,
     nodes: &[Node],
     index: u32,
     depth: usize,
+    drawn: &mut [bool],
     pressed: &mut Option<String>,
 ) {
-    // A child index past the end or a cycle back up the list draws nothing.
-    let Some(node) = nodes.get(index as usize) else {
+    let index = index as usize;
+    let (Some(node), Some(seen)) = (nodes.get(index), drawn.get_mut(index)) else {
         return;
     };
-    if depth > nodes.len() {
+    if *seen || depth > MAX_DEPTH {
         return;
     }
+    *seen = true;
     match &node.kind {
         NodeKind::Panel => {
             ui.vertical(|ui| {
                 for &child in &node.children {
-                    draw_node(ui, nodes, child, depth + 1, pressed);
+                    draw_node(ui, nodes, child, depth + 1, drawn, pressed);
                 }
             });
         }
@@ -99,4 +118,30 @@ fn clicking_a_plugin_button_redraws_the_plugins_new_count() {
             );
         }
     }
+}
+
+#[test]
+fn a_node_list_that_repeats_children_draws_each_node_once() {
+    // Each panel lists the next node twice, so drawing every reference would
+    // take about 2^30 calls a frame. The last panel lists the button.
+    let panels = 30;
+    let mut nodes: Vec<Node> = (0..panels)
+        .map(|index| Node {
+            id: format!("panel-{index}"),
+            kind: NodeKind::Panel,
+            children: vec![index + 1, index + 1],
+        })
+        .collect();
+    nodes.push(Node {
+        id: "only".into(),
+        kind: NodeKind::Button("Only button".into()),
+        children: Vec::new(),
+    });
+
+    let harness = Harness::new_ui(|ui| {
+        draw_nodes(ui, &nodes);
+    });
+
+    // `get_by_label` fails when the label matches more than one node.
+    harness.get_by_label("Only button");
 }

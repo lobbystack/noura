@@ -3,6 +3,7 @@
 //! Ticket 24 replaces this world with `noura:plugin@0.1.0`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -21,9 +22,19 @@ mod bindings {
 use bindings::Plugin;
 pub use bindings::noura_trial::s7::ui::{Node, NodeKind};
 
-/// Tables hold function references. This bounds them the way the memory cap
-/// bounds linear memory.
-const MAX_TABLE_ELEMENTS: usize = 1 << 20;
+/// Wasmtime stores one pointer per table element, so table elements count
+/// toward the store's memory cap at this size.
+const TABLE_ELEMENT_BYTES: usize = size_of::<usize>();
+
+/// The most core instances, tables and linear memories one store may create.
+/// The TypeScript hello plugin needs 11 core instances, 3 tables and 3
+/// memories. Each memory reserves address space, and Wasmtime's defaults allow
+/// 10,000 of each.
+pub const MAX_INSTANCES: usize = 32;
+/// See [`MAX_INSTANCES`].
+pub const MAX_TABLES: usize = 8;
+/// See [`MAX_INSTANCES`].
+pub const MAX_MEMORIES: usize = 8;
 
 /// How often the host advances the engine's epoch, which bounds how precisely
 /// a call deadline fires.
@@ -68,7 +79,8 @@ pub enum TrialError {
 /// What one plugin instance may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// The most linear memory the instance's store may hold, in bytes.
+    /// The most memory the instance's store may hold, in bytes: its linear
+    /// memories plus its table elements.
     pub memory_bytes: usize,
     /// How long one call into the plugin may run.
     pub call_deadline: Duration,
@@ -87,7 +99,7 @@ impl Default for Limits {
 pub struct TrialHost {
     engine: Engine,
     limits: Limits,
-    _epochs: EpochTicker,
+    epochs: Arc<EpochTicker>,
 }
 
 /// A component this host compiled.
@@ -109,17 +121,20 @@ impl CompiledPlugin {
 }
 
 /// Compiled code that this host wrote to disk. Only
-/// [`TrialHost::compile_to_cache`] creates one, so the host never loads
-/// compiled code from anywhere else.
+/// [`TrialHost::compile_to_cache`] creates one, so the host only loads paths
+/// it wrote compiled code to. It doesn't check that the file still holds that
+/// code.
 pub struct CachedPlugin {
     path: PathBuf,
 }
 
-/// One running plugin with its own store.
+/// One running plugin with its own store. It keeps the host's epoch ticker
+/// running, so its call deadline holds after the host is dropped.
 pub struct PluginInstance {
     store: Store<StoreLimiter>,
     bindings: Plugin,
     call_deadline: Duration,
+    _epochs: Arc<EpochTicker>,
 }
 
 impl TrialHost {
@@ -155,7 +170,7 @@ impl TrialHost {
         Ok(Self {
             engine,
             limits,
-            _epochs: epochs,
+            epochs: Arc::new(epochs),
         })
     }
 
@@ -174,7 +189,9 @@ impl TrialHost {
         Ok(compiled)
     }
 
-    /// Compiles a component and writes the compiled code to `path`.
+    /// Compiles a component and writes the compiled code to `path`. The host
+    /// later runs whatever that file holds, so `path` must sit where only this
+    /// process writes, such as a private temporary directory.
     pub fn compile_to_cache(
         &self,
         component: &[u8],
@@ -194,9 +211,11 @@ impl TrialHost {
     /// Loads compiled code that this host wrote. Wasmtime refuses code from
     /// another Wasmtime version or engine configuration.
     pub fn load_cached(&self, cached: &CachedPlugin) -> Result<CompiledPlugin, TrialError> {
-        // SAFETY: Wasmtime runs deserialized code without verifying it. The
-        // file came from `compile_to_cache`, and `CachedPlugin` has no other
-        // constructor, so it holds only output this host compiled.
+        // SAFETY: Wasmtime runs deserialized code without verifying it.
+        // `CachedPlugin` has no constructor besides `compile_to_cache`, so the
+        // path names a file this host wrote compiled code to. Nothing here
+        // stops another process from replacing that file before this load;
+        // `compile_to_cache` requires a path only this process writes.
         let component = unsafe { Component::deserialize_file(&self.engine, &cached.path) }
             .map_err(|error| TrialError::Cache(format!("{error:#}")))?;
         Ok(CompiledPlugin { component })
@@ -218,6 +237,7 @@ impl TrialHost {
             store,
             bindings,
             call_deadline,
+            _epochs: Arc::clone(&self.epochs),
         })
     }
 }
@@ -225,8 +245,7 @@ impl TrialHost {
 impl PluginInstance {
     /// Asks the plugin for its UI nodes.
     pub fn render(&mut self) -> Result<Vec<Node>, TrialError> {
-        self.store
-            .set_epoch_deadline(deadline_ticks(self.call_deadline));
+        self.start_call();
         self.bindings
             .call_render(&mut self.store)
             .map_err(|error| failure(&self.store, error, self.call_deadline, TrialError::Call))
@@ -234,8 +253,7 @@ impl PluginInstance {
 
     /// Tells the plugin that the node with this id was pressed.
     pub fn handle_event(&mut self, node_id: &str) -> Result<(), TrialError> {
-        self.store
-            .set_epoch_deadline(deadline_ticks(self.call_deadline));
+        self.start_call();
         self.bindings
             .call_handle_event(&mut self.store, node_id)
             .map_err(|error| failure(&self.store, error, self.call_deadline, TrialError::Call))
@@ -244,6 +262,14 @@ impl PluginInstance {
     /// The linear memory this instance's store holds, in bytes.
     pub fn memory_bytes(&self) -> usize {
         self.store.data().memory_bytes
+    }
+
+    /// Gives the next call a fresh deadline, and forgets a growth the cap
+    /// refused in an earlier call, so a later failure reports its own cause.
+    fn start_call(&mut self) {
+        self.store
+            .set_epoch_deadline(deadline_ticks(self.call_deadline));
+        self.store.data_mut().cap_hit = false;
     }
 }
 
@@ -274,11 +300,19 @@ fn failure(
     }
 }
 
-/// Caps the total linear memory of one store and counts what it holds.
+/// Caps the memory one store holds, its linear memories plus its table
+/// elements, and counts what it holds.
+///
+/// A growth the limiter grants stays counted even if Wasmtime then fails it.
+/// Wasmtime can report a failed growth that it never asked the limiter about,
+/// so a refund could free budget the store still uses. Refusing growth past a
+/// memory's or table's own maximum up front leaves allocation failures as the
+/// only granted growth that fails, and counting those errs on the safe side.
 struct StoreLimiter {
     cap_bytes: usize,
     memory_bytes: usize,
-    last_growth: usize,
+    table_bytes: usize,
+    /// The cap refused a growth since the current call or instantiation began.
     cap_hit: bool,
 }
 
@@ -287,9 +321,22 @@ impl StoreLimiter {
         Self {
             cap_bytes,
             memory_bytes: 0,
-            last_growth: 0,
+            table_bytes: 0,
             cap_hit: false,
         }
+    }
+
+    /// Whether `growth` more bytes fit under the cap, noting a refusal.
+    fn fits(&mut self, growth: usize) -> bool {
+        let total = self
+            .memory_bytes
+            .saturating_add(self.table_bytes)
+            .saturating_add(growth);
+        if total > self.cap_bytes {
+            self.cap_hit = true;
+            return false;
+        }
+        true
     }
 }
 
@@ -298,32 +345,48 @@ impl ResourceLimiter for StoreLimiter {
         &mut self,
         current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        let growth = desired.saturating_sub(current);
-        let total = self.memory_bytes.saturating_add(growth);
-        if total > self.cap_bytes {
-            self.cap_hit = true;
+        if maximum.is_some_and(|maximum| desired > maximum) {
             return Ok(false);
         }
-        self.memory_bytes = total;
-        self.last_growth = growth;
+        let growth = desired.saturating_sub(current);
+        if !self.fits(growth) {
+            return Ok(false);
+        }
+        self.memory_bytes += growth;
         Ok(true)
-    }
-
-    fn memory_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
-        self.memory_bytes -= self.last_growth;
-        self.last_growth = 0;
-        Ok(())
     }
 
     fn table_growing(
         &mut self,
-        _current: usize,
+        current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        Ok(desired <= MAX_TABLE_ELEMENTS)
+        if maximum.is_some_and(|maximum| desired > maximum) {
+            return Ok(false);
+        }
+        let growth = desired
+            .saturating_sub(current)
+            .saturating_mul(TABLE_ELEMENT_BYTES);
+        if !self.fits(growth) {
+            return Ok(false);
+        }
+        self.table_bytes += growth;
+        Ok(true)
+    }
+
+    fn instances(&self) -> usize {
+        MAX_INSTANCES
+    }
+
+    fn tables(&self) -> usize {
+        MAX_TABLES
+    }
+
+    fn memories(&self) -> usize {
+        MAX_MEMORIES
     }
 }
 
@@ -356,5 +419,73 @@ impl Drop for EpochTicker {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE: usize = 64 << 10;
+
+    #[test]
+    fn a_failed_growth_wasmtime_never_asked_about_refunds_nothing() {
+        let mut limiter = StoreLimiter::new(4 * PAGE);
+
+        for pages in 1..=4 {
+            assert!(
+                limiter
+                    .memory_growing((pages - 1) * PAGE, pages * PAGE, None)
+                    .expect("growth")
+            );
+            // Wasmtime reports growth past a memory type's own limits this
+            // way, without calling `memory_growing` first.
+            limiter
+                .memory_grow_failed(wasmtime::format_err!("exceeds the memory type's limits"))
+                .expect("failure noted");
+        }
+
+        assert_eq!(limiter.memory_bytes, 4 * PAGE);
+        assert!(
+            !limiter
+                .memory_growing(4 * PAGE, 5 * PAGE, None)
+                .expect("growth")
+        );
+    }
+
+    #[test]
+    fn growth_past_a_declared_maximum_is_refused_without_counting() {
+        let mut limiter = StoreLimiter::new(16 * PAGE);
+
+        assert!(
+            !limiter
+                .memory_growing(PAGE, 3 * PAGE, Some(2 * PAGE))
+                .expect("growth")
+        );
+        assert!(!limiter.table_growing(10, 20, Some(15)).expect("growth"));
+
+        assert_eq!((limiter.memory_bytes, limiter.table_bytes), (0, 0));
+        assert!(!limiter.cap_hit);
+    }
+
+    #[test]
+    fn table_elements_and_linear_memory_share_the_cap() {
+        let mut limiter = StoreLimiter::new(2 * PAGE);
+        let elements_per_page = PAGE / TABLE_ELEMENT_BYTES;
+
+        assert!(limiter.memory_growing(0, PAGE, None).expect("growth"));
+        assert!(
+            limiter
+                .table_growing(0, elements_per_page, None)
+                .expect("growth")
+        );
+        assert!(
+            !limiter
+                .table_growing(elements_per_page, elements_per_page + 1, None)
+                .expect("growth")
+        );
+
+        assert!(limiter.cap_hit);
+        assert_eq!(limiter.memory_bytes + limiter.table_bytes, 2 * PAGE);
     }
 }
