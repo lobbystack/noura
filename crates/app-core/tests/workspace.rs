@@ -86,6 +86,46 @@ fn open_folder_opens_an_existing_workspace() {
 }
 
 #[test]
+fn open_folder_opens_the_workspace_now_in_a_folder_recents_remember_differently() {
+    let app_data = tempfile::tempdir().unwrap();
+    let other_app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Reused");
+    std::fs::create_dir(&folder).unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    service.create("Old", &folder).unwrap();
+    rename_with_retry(&folder, &parent.path().join("Old moved"));
+    std::fs::create_dir(&folder).unwrap();
+    let new_id = WorkspaceService::new(other_app_data.path())
+        .create("New", &folder)
+        .unwrap()
+        .id()
+        .to_owned();
+
+    let workspace = service.open_folder(&folder).unwrap();
+
+    assert_eq!((workspace.id(), workspace.name()), (new_id.as_str(), "New"));
+    assert_eq!(service.recents()[0].workspace_id, new_id);
+}
+
+#[test]
+fn open_folder_restores_a_known_folder_s_identity_when_its_manifest_is_gone() {
+    let app_data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    let id = service
+        .create("Known", folder.path())
+        .unwrap()
+        .id()
+        .to_owned();
+    std::fs::remove_file(folder.path().join(".noura/workspace.yaml")).unwrap();
+
+    let workspace = service.open_folder(folder.path()).unwrap();
+
+    assert_eq!((workspace.id(), workspace.name()), (id.as_str(), "Known"));
+}
+
+#[test]
 fn open_folder_adds_a_manifest_named_after_a_plain_folder() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();

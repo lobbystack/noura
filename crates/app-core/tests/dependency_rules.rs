@@ -42,6 +42,7 @@ fn metadata() -> Graph {
             "metadata",
             "--format-version",
             "1",
+            "--locked",
             "--manifest-path",
             manifest,
         ])

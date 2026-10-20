@@ -97,14 +97,15 @@ impl WorkspaceService {
         self.opened(engine)
     }
 
-    /// Open the workspace in `folder`. A plain folder becomes a workspace
-    /// named after the folder, and its files keep their bytes. An invalid
-    /// manifest opens nothing and stays as it is.
+    /// Open the workspace in `folder`, whichever workspace it holds now. A
+    /// plain folder becomes a workspace named after the folder, and its
+    /// files keep their bytes. An invalid manifest opens nothing and stays
+    /// as it is.
     pub fn open_folder(&self, folder: &Path) -> Result<Workspace, AppError> {
         let path = representable(folder)?;
         check_folder(folder, path)?;
-        // A folder this device knew keeps its identity if its manifest went
-        // missing.
+        // A folder this device knew gets its identity back if its manifest
+        // went missing.
         let recents = self.recents.load();
         let known = recent_at(&recents, folder);
         let name = known.map_or_else(|| folder_name(folder), |recent| recent.name.clone());
@@ -116,9 +117,6 @@ impl WorkspaceService {
             &self.app_data,
         )
         .map_err(|error| AppError::from_core(error, path))?;
-        if let Some(saved_id) = saved_id {
-            check_identity(&engine, saved_id, path)?;
-        }
         self.opened(engine)
     }
 
