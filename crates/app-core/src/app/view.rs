@@ -337,6 +337,7 @@ impl App {
     pub(super) fn restore_view(&mut self) {
         let Some(workspace) = &self.workspace else {
             self.tabs.restore(Vec::new(), None);
+            self.rail.set_saved_order(Vec::new());
             return;
         };
         let stored = self.views.load(workspace.id());

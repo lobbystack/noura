@@ -199,7 +199,7 @@ impl Tabs {
         let documents = || self.tabs.iter().filter(|tab| tab.file().is_some());
         let target = documents()
             .find(|tab| Some(tab.id) == self.last_document)
-            .or_else(|| documents().last())
+            .or_else(|| documents().next_back())
             .map(|tab| tab.id);
         if target == self.active {
             return false;

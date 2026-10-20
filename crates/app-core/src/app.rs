@@ -299,7 +299,7 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
-                self.tabs = Tabs::default();
+                self.restore_view();
                 self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),

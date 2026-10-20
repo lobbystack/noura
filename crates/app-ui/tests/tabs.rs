@@ -180,6 +180,30 @@ fn focused_tab(harness: &Ui) -> Option<String> {
 }
 
 #[test]
+fn the_tab_key_reaches_the_selected_tab_from_the_tree() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    for name in ["Alpha", "Beta", "Gamma"] {
+        double_click(&mut harness, name);
+    }
+    harness.get_by_role_and_label(Role::Tab, "Beta").click();
+    harness.run();
+    row(&harness, "Alpha").focus();
+    harness.run();
+
+    let mut presses = 0;
+    while focused_tab(&harness).is_none() {
+        assert!(presses < 5, "Tab never reached the tab bar");
+        harness.key_press(Key::Tab);
+        harness.run();
+        presses += 1;
+    }
+
+    assert_eq!(focused_tab(&harness).as_deref(), Some("Beta"));
+}
+
+#[test]
 fn the_keyboard_moves_between_tabs_activates_and_closes_them() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();

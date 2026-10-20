@@ -21,8 +21,6 @@ const ITEM_GAP: f32 = 4.0;
 struct Drag {
     page_id: String,
     from: usize,
-    /// Escape cancelled the drag; the release changes nothing.
-    cancelled: bool,
 }
 
 /// What the rail remembers between frames.
@@ -167,18 +165,21 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
                 view.drag = Some(Drag {
                     page_id: page_id.clone(),
                     from: index,
-                    cancelled: false,
                 });
             }
             let dragging = view
                 .drag
                 .as_ref()
                 .is_some_and(|drag| drag.page_id == *page_id);
+            // egui ends a drag when you release the button, and also when
+            // you press Escape with the button still down, which cancels.
             if dragging && response.drag_stopped() {
+                let cancelled = ui.input(|input| input.pointer.any_down());
                 released = Some(
                     response
                         .interact_pointer_pos()
-                        .map_or(rect.center().y, |pointer| pointer.y),
+                        .filter(|_| !cancelled)
+                        .map(|pointer| pointer.y),
                 );
             }
 
@@ -208,22 +209,17 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
         }
     });
 
-    if let Some(y) = released
+    if let Some(released) = released
         && let Some(drag) = view.drag.take()
-        && !drag.cancelled
+        && let Some(y) = released
     {
         let gap = gap_at(&rects, y);
         // The gap counts the dragged page; its final index doesn't.
         let index = if gap > drag.from { gap - 1 } else { gap };
         moved = Some((drag.page_id, Move::To(index)));
     }
-    if let Some(drag) = &mut view.drag {
-        if ui.input(|input| input.key_pressed(Key::Escape)) {
-            drag.cancelled = true;
-        }
-        if !drag.cancelled
-            && let Some(pointer) = ui.input(|input| input.pointer.interact_pos())
-        {
+    if view.drag.is_some() {
+        if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
             let gap = gap_at(&rects, pointer.y);
             let y = match rects.get(gap) {
                 Some(rect) => rect.top() - ITEM_GAP / 2.0,
