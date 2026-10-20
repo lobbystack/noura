@@ -10,18 +10,18 @@ cd "$(dirname "$0")/.."
 
 fail=0
 
-# Prints each package in a crate's normal dependency tree as `name vX.Y.Z`
-# with its source, for every target platform.
+# Prints each package in a crate's dependency tree as `name vX.Y.Z` with its
+# source, for every target platform. Build dependencies count: they run on the
+# machine that builds Noura.
 tree() {
-  cargo tree --locked --package "$1" --edges normal --target all --prefix none \
-    --format '{p}' "${@:2}" | sort -u
+  cargo tree --locked --package "$1" --edges normal,build --target all --prefix none \
+    --format '{p}' | sort -u
 }
 
 check_absent() {
   local crate="$1" pattern="$2" what="$3"
-  shift 3
   local found
-  found="$(tree "$crate" "$@" | grep -E "$pattern" || true)"
+  found="$(tree "$crate" | grep -E "$pattern" || true)"
   if [ -n "$found" ]; then
     echo "error: $crate depends on $what:"
     echo "$found" | sed 's/^/  /'
@@ -43,7 +43,7 @@ for crate in editor-core editor-egui; do
   check_absent "$crate" '\((git\+|https?://)' 'a git source'
   # Lockbook's Android and iOS hosts reached the platform directly.
   check_absent "$crate" '^(jni|ndk|ndk-sys|ndk-context|android-activity|android_logger|objc2-ui-kit|uikit-sys) v' \
-    'a mobile host library' --depth 1
+    'a mobile host library'
 done
 
 wgpu_versions="$(grep -c '^name = "wgpu"$' Cargo.lock || true)"
