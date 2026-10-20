@@ -81,6 +81,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 ts-rs = { version = "11", features = ["serde-compat"] }
 ulid = { version = "1", default-features = false }
+unicode-normalization = "0.1.25"
 uuid = { version = "1", features = ["v4", "serde"] }
 # Stays on the 48.x LTS line. cargo deny fails the build on an unpatched advisory.
 wasmtime = { version = "48.0.7", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }

@@ -62,6 +62,18 @@ fn the_tree_lists_folders_first_and_sorts_siblings_by_name() {
 }
 
 #[test]
+fn siblings_sort_without_regard_to_accents_or_case() {
+    let (_folder, tree) = tree_of(
+        &["Zebra.md", "\u{c9}mile.md", "eagle.md", "Ostrich.md"],
+        &[],
+    );
+
+    let names: Vec<&str> = tree.rows().iter().map(|row| row.name.as_str()).collect();
+
+    assert_eq!(names, ["eagle", "\u{c9}mile", "Ostrich", "Zebra"]);
+}
+
+#[test]
 fn the_tree_hides_metadata_dot_names_and_top_level_build_folders() {
     let (_folder, mut tree) = tree_of(
         &[
@@ -216,4 +228,83 @@ fn type_ahead_jumps_to_the_next_name_starting_with_the_typed_letters() {
     assert_eq!(focused_name(&tree), "Blueberry");
     tree.type_ahead("b", later(4200));
     assert_eq!(focused_name(&tree), "Banana");
+}
+
+#[test]
+fn a_file_cloud_storage_has_not_downloaded_shows_as_not_downloaded_and_does_not_open() {
+    let app_data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    // iCloud keeps `.Cloud note.md.icloud` in place of `Cloud note.md`.
+    write(folder.path(), ".Cloud note.md.icloud", b"placeholder");
+    write(folder.path(), "Here.md", b"x");
+    let workspace = WorkspaceService::new(app_data.path())
+        .open_folder(folder.path())
+        .unwrap();
+
+    let tree = workspace.file_tree().unwrap();
+    let rows: Vec<(&str, &str, bool)> = tree
+        .rows()
+        .iter()
+        .map(|row| {
+            (
+                row.name.as_str(),
+                row.relative_path.as_str(),
+                row.not_downloaded,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Cloud note", "Cloud note.md", true),
+            ("Here", "Here.md", false)
+        ]
+    );
+
+    let error = workspace.open_file("Cloud note.md").err().unwrap();
+    assert_eq!(error.code, "file_not_downloaded");
+    assert_eq!(
+        error.message,
+        "This file isn't downloaded yet. Try again once it is."
+    );
+    assert_eq!(
+        std::fs::read(folder.path().join(".Cloud note.md.icloud")).unwrap(),
+        b"placeholder"
+    );
+    assert!(!folder.path().join("Cloud note.md").exists());
+}
+
+#[test]
+fn opening_a_file_that_is_gone_says_so() {
+    let app_data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let workspace = WorkspaceService::new(app_data.path())
+        .open_folder(folder.path())
+        .unwrap();
+
+    let error = workspace.open_file("Gone.md").err().unwrap();
+
+    assert_eq!(error.code, "file_missing");
+    assert_eq!(error.message, "Gone.md isn't in the workspace anymore.");
+}
+
+#[cfg(unix)]
+#[test]
+fn opening_a_linked_file_names_the_file_instead_of_the_noura_folder() {
+    let app_data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    write(folder.path(), "Real.md", b"x");
+    std::os::unix::fs::symlink(folder.path().join("Real.md"), folder.path().join("Link.md"))
+        .unwrap();
+    let workspace = WorkspaceService::new(app_data.path())
+        .open_folder(folder.path())
+        .unwrap();
+
+    let error = workspace.open_file("Link.md").err().unwrap();
+
+    assert_eq!(error.code, "symlink_escape");
+    assert_eq!(
+        error.message,
+        "Link.md is a link or sits in a linked folder, so Noura won't use it."
+    );
 }

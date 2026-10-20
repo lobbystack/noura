@@ -78,6 +78,51 @@ fn rows_expose_their_name_level_and_expanded_state() {
     assert!(harness.unnamed_widgets().is_empty());
 }
 
+fn description(harness: &Harness<'static, app_ui::NouraUi>, name: &str) -> Option<String> {
+    row(harness, name).accesskit_node().description()
+}
+
+/// accesskit_macos doesn't pass the expanded state to VoiceOver, so the
+/// row's description says it there.
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_a_folder_row_describes_whether_it_is_open() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    assert_eq!(description(&harness, "Docs").as_deref(), Some("collapsed"));
+    assert_eq!(description(&harness, "Readme"), None);
+
+    row(&harness, "Docs").click();
+    harness.run();
+
+    assert_eq!(description(&harness, "Docs").as_deref(), Some("expanded"));
+}
+
+#[test]
+fn a_file_cloud_storage_has_not_downloaded_says_so_and_does_not_open() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    std::fs::write(folder.join(".Cloud note.md.icloud"), b"placeholder").unwrap();
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+
+    assert_eq!(
+        description(&harness, "Cloud note").as_deref(),
+        Some("not downloaded")
+    );
+    row(&harness, "Cloud note").click();
+    harness.run();
+
+    harness.get_by_role(Role::Alert);
+    harness.get_by_label("Couldn't open \u{201c}Cloud note\u{201d}");
+    harness.get_by_label("This file isn't downloaded yet. Try again once it is.");
+    let document = harness.get_by_role_and_label(Role::Region, "Document");
+    assert!(document.query_by_label("Cloud note.md").is_none());
+}
+
 #[test]
 fn arrow_keys_home_end_and_type_ahead_move_through_the_tree() {
     let app_data = tempfile::tempdir().unwrap();

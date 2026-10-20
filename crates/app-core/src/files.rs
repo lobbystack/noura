@@ -7,6 +7,7 @@ use std::{
 };
 
 use local_core::WorkspaceEntryKind;
+use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
 use crate::{AppError, Workspace};
 
@@ -30,6 +31,9 @@ pub struct TreeRow {
     pub depth: usize,
     /// Whether a folder is open. `None` for files.
     pub expanded: Option<bool>,
+    /// The file lives only in cloud storage, such as iCloud, and isn't on
+    /// this device yet.
+    pub not_downloaded: bool,
 }
 
 /// A key the file tree understands.
@@ -61,11 +65,21 @@ pub struct OpenedFile {
     pub relative_path: String,
 }
 
+/// One file or folder from the workspace listing.
+pub(crate) struct TreeEntry {
+    pub(crate) relative_path: String,
+    pub(crate) kind: EntryKind,
+    pub(crate) not_downloaded: bool,
+}
+
 struct Node {
     file_name: String,
+    /// The file name folded for sorting: lowercase, without accents.
+    sort_key: String,
     shown: String,
     relative_path: String,
     kind: EntryKind,
+    not_downloaded: bool,
     children: Vec<usize>,
 }
 
@@ -85,7 +99,7 @@ pub struct FileTree {
 }
 
 impl FileTree {
-    pub(crate) fn new(entries: impl IntoIterator<Item = (String, EntryKind)>) -> Self {
+    pub(crate) fn new(entries: impl IntoIterator<Item = TreeEntry>) -> Self {
         let mut tree = Self {
             nodes: Vec::new(),
             top: Vec::new(),
@@ -98,13 +112,15 @@ impl FileTree {
             typed_at: None,
         };
         let mut folders: HashMap<String, usize> = HashMap::new();
-        for (relative_path, kind) in entries {
-            if kind == EntryKind::Folder {
-                tree.folder(&relative_path, &mut folders);
+        for entry in entries {
+            if entry.kind == EntryKind::Folder {
+                tree.folder(&entry.relative_path, &mut folders);
                 continue;
             }
-            let parent = parent_of(&relative_path).map(|path| tree.folder(path, &mut folders));
-            tree.add(relative_path, EntryKind::File, parent);
+            let parent =
+                parent_of(&entry.relative_path).map(|path| tree.folder(path, &mut folders));
+            let index = tree.add(entry.relative_path, EntryKind::File, parent);
+            tree.nodes[index].not_downloaded = entry.not_downloaded;
         }
         let order: Vec<usize> = (0..tree.nodes.len()).collect();
         for index in order {
@@ -137,9 +153,11 @@ impl FileTree {
         let index = self.nodes.len();
         self.nodes.push(Node {
             shown: shown_name(&file_name, kind),
+            sort_key: sort_key(&file_name),
             file_name,
             relative_path,
             kind,
+            not_downloaded: false,
             children: Vec::new(),
         });
         self.parents.push(parent);
@@ -158,7 +176,7 @@ impl FileTree {
         };
         rank(left)
             .cmp(&rank(right))
-            .then_with(|| natural_cmp(&left.file_name, &right.file_name))
+            .then_with(|| natural_cmp(&left.sort_key, &right.sort_key))
             .then_with(|| left.file_name.cmp(&right.file_name))
     }
 
@@ -176,6 +194,7 @@ impl FileTree {
                 kind: node.kind,
                 depth,
                 expanded: (node.kind == EntryKind::Folder).then_some(open),
+                not_downloaded: node.not_downloaded,
             });
             self.row_nodes.push(index);
             if open {
@@ -331,28 +350,34 @@ impl Workspace {
             .engine()
             .list_workspace_entries()
             .map_err(|error| AppError::from_core(error, self.root()))?;
-        Ok(FileTree::new(entries.into_iter().map(|entry| {
-            let kind = match entry.kind {
+        Ok(FileTree::new(entries.into_iter().map(|entry| TreeEntry {
+            kind: match entry.kind {
                 WorkspaceEntryKind::Folder => EntryKind::Folder,
                 WorkspaceEntryKind::File => EntryKind::File,
-            };
-            (entry.relative_path, kind)
+            },
+            relative_path: entry.relative_path,
+            not_downloaded: entry.not_downloaded,
         })))
     }
 
     /// The file at `relative_path`, for the document area. Reads nothing
-    /// and writes nothing.
+    /// and writes nothing. A file that cloud storage hasn't downloaded yet
+    /// doesn't open, as in the legacy app.
     pub fn open_file(&self, relative_path: &str) -> Result<OpenedFile, AppError> {
         let path = self
             .engine()
             .resolve_managed_path(relative_path, "file_open")
             .map_err(|error| AppError::from_core(error, relative_path))?;
-        let is_file = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file());
-        if !is_file {
-            return Err(AppError::new(
-                "file_missing",
-                format!("{relative_path} isn't in the workspace anymore."),
-            ));
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() && !is_dataless(&metadata) => {}
+            Ok(metadata) if metadata.is_file() => return Err(not_downloaded()),
+            _ if has_icloud_placeholder(&path) => return Err(not_downloaded()),
+            _ => {
+                return Err(AppError::new(
+                    "file_missing",
+                    format!("{relative_path} isn't in the workspace anymore."),
+                ));
+            }
         }
         let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
         Ok(OpenedFile {
@@ -360,6 +385,37 @@ impl Workspace {
             relative_path: relative_path.to_owned(),
         })
     }
+}
+
+fn not_downloaded() -> AppError {
+    AppError::new(
+        "file_not_downloaded",
+        "This file isn't downloaded yet. Try again once it is.",
+    )
+}
+
+/// Whether iCloud keeps `.Name.icloud` in place of the missing `Name`, as
+/// `local-core`'s scan lists it.
+fn has_icloud_placeholder(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let placeholder = path.with_file_name(format!(".{name}.icloud"));
+    std::fs::symlink_metadata(placeholder).is_ok_and(|metadata| metadata.is_file())
+}
+
+/// Whether macOS reports the file as dataless: its content lives only in
+/// cloud storage. `local-core`'s scan marks these rows as not downloaded.
+#[cfg(target_os = "macos")]
+fn is_dataless(metadata: &std::fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    const SF_DATALESS: u32 = 0x4000_0000;
+    metadata.st_flags() & SF_DATALESS != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_dataless(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 fn parent_of(path: &str) -> Option<&str> {
@@ -379,8 +435,17 @@ pub(crate) fn shown_name(file_name: &str, kind: EntryKind) -> String {
     }
 }
 
-/// Compare names ignoring case, with digit runs compared as numbers, so
-/// "Note 2" sorts before "Note 10".
+/// A name folded for sorting: lowercase and without accents, so "Émile"
+/// sorts with "emile", as the legacy app's base-sensitivity collator does.
+fn sort_key(name: &str) -> String {
+    name.nfd()
+        .filter(|character| !is_combining_mark(*character))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Compare folded names with digit runs compared as numbers, so "Note 2"
+/// sorts before "Note 10".
 fn natural_cmp(left: &str, right: &str) -> Ordering {
     let mut left = left.chars().peekable();
     let mut right = right.chars().peekable();
@@ -399,7 +464,7 @@ fn natural_cmp(left: &str, right: &str) -> Ordering {
                 }
             }
             (Some(a), Some(b)) => {
-                let order = a.to_lowercase().cmp(b.to_lowercase());
+                let order = a.cmp(&b);
                 if order != Ordering::Equal {
                     return order;
                 }

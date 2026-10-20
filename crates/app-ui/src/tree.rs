@@ -195,8 +195,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
 
 fn draw_row(ui: &mut Ui, id: Id, row: &TreeRow, selected: bool, palette: &Palette) -> Response {
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), ROW_HEIGHT));
-    let response = ui.interact(rect, id, Sense::click());
+    let mut response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::TreeItem, true, &row.name));
+    let description = row_description(row);
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_level(row.depth);
         if let Some(expanded) = row.expanded {
@@ -205,7 +206,13 @@ fn draw_row(ui: &mut Ui, id: Id, row: &TreeRow, selected: bool, palette: &Palett
         if selected {
             node.set_selected(true);
         }
+        if let Some(description) = description {
+            node.set_description(description);
+        }
     });
+    if row.not_downloaded {
+        response = response.on_hover_text("Not downloaded");
+    }
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -236,8 +243,30 @@ fn draw_row(ui: &mut Ui, id: Id, row: &TreeRow, selected: bool, palette: &Palett
         FontId::proportional(BODY_SIZE),
     );
     let text_rect = Align2::LEFT_CENTER.anchor_size(pos2(text_left, center_y), galley.size());
-    painter.galley(text_rect.min, galley, palette.foreground);
+    let color = if row.not_downloaded {
+        palette.muted_foreground
+    } else {
+        palette.foreground
+    };
+    painter.galley(text_rect.min, galley, color);
     response
+}
+
+/// What a screen reader hears after the row's name. A file cloud storage
+/// hasn't downloaded says so. On macOS a folder also says whether it is
+/// open: accesskit_macos 0.27 doesn't pass a row's expanded state or level
+/// to VoiceOver, while the Windows and Linux adapters do.
+fn row_description(row: &TreeRow) -> Option<String> {
+    let mut parts = Vec::new();
+    if cfg!(target_os = "macos")
+        && let Some(expanded) = row.expanded
+    {
+        parts.push(if expanded { "expanded" } else { "collapsed" });
+    }
+    if row.not_downloaded {
+        parts.push("not downloaded");
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// A small triangle: pointing right for a closed folder, down for an open one.
