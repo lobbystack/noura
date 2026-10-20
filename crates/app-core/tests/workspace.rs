@@ -595,3 +595,187 @@ fn new_workspace_in_a_folder_noura_cannot_represent_returns_unsupported_path() {
     assert_eq!(error.code, "unsupported_path");
     assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
 }
+
+/// Every file and folder under `root`, with each file's bytes.
+fn snapshot(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
+    walk(root)
+        .into_iter()
+        .map(|relative| {
+            let path = root.join(&relative);
+            let bytes = std::fs::symlink_metadata(&path)
+                .unwrap()
+                .is_file()
+                .then(|| std::fs::read(&path).unwrap());
+            (relative, bytes)
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_noura_cannot_write_to_says_so_and_stays_empty() {
+    use std::os::unix::fs::PermissionsExt;
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Read only");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("Kept.md"), b"kept").unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::create_dir(folder.join("probe")).is_ok() {
+        // Running as root: permissions don't apply.
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let path = folder.to_str().unwrap().to_owned();
+    let service = WorkspaceService::new(app_data.path());
+
+    let created = service.create("Read only", &folder).err().unwrap();
+    let opened = service.open_folder(&folder).err().unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let message =
+        format!("Noura doesn't have permission to add its .noura settings folder to {path}.");
+    assert_eq!(created.message, message);
+    assert_eq!(opened.message, message);
+    assert_eq!(walk(&folder), ["Kept.md"]);
+    assert!(service.recents().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_noura_folder_that_is_a_link_opens_nothing_and_says_so() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let original = parent.path().join("Original");
+    std::fs::create_dir(&original).unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    let id = service
+        .create("Original", &original)
+        .unwrap()
+        .id()
+        .to_owned();
+    let linked = parent.path().join("Linked");
+    std::fs::create_dir(&linked).unwrap();
+    std::os::unix::fs::symlink(original.join(".noura"), linked.join(".noura")).unwrap();
+    let path = linked.to_str().unwrap().to_owned();
+    let before = snapshot(&original);
+
+    let opened = service.open_folder(&linked).err().unwrap();
+    let created = service.create("Linked", &linked).err().unwrap();
+
+    let message = format!("The .noura folder in {path} is a link, so Noura won't use it.");
+    for error in [opened, created] {
+        assert_eq!(error.code, "symlink_escape");
+        assert_eq!(error.message, message);
+    }
+    assert_eq!(recent_ids(&service), [id]);
+    assert_eq!(std::fs::read_dir(&linked).unwrap().count(), 1);
+    assert!(
+        std::fs::symlink_metadata(linked.join(".noura"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(snapshot(&original), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_settings_file_that_links_to_another_workspace_never_lends_its_id() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let original = parent.path().join("Original");
+    std::fs::create_dir(&original).unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    let id = service
+        .create("Original", &original)
+        .unwrap()
+        .id()
+        .to_owned();
+    let linked = parent.path().join("Linked");
+    std::fs::create_dir_all(linked.join(".noura")).unwrap();
+    std::os::unix::fs::symlink(
+        original.join(".noura/workspace.yaml"),
+        linked.join(".noura/workspace.yaml"),
+    )
+    .unwrap();
+    let path = linked.to_str().unwrap().to_owned();
+
+    let error = service.open_folder(&linked).err().unwrap();
+
+    assert_eq!(error.code, "symlink_escape");
+    assert_eq!(
+        error.message,
+        format!(
+            "The settings file .noura/workspace.yaml in {path} is a link, so Noura won't use it."
+        )
+    );
+    assert_eq!(recent_ids(&service), [id]);
+    assert_eq!(
+        std::path::Path::new(&service.recents()[0].path),
+        original.canonicalize().unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_refuses_a_saved_workspace_whose_settings_file_became_a_link() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Saved");
+    std::fs::create_dir(&folder).unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    service.create("Saved", &folder).unwrap();
+    let saved_path = service.recents()[0].path.clone();
+    let elsewhere = parent.path().join("workspace.yaml");
+    std::fs::rename(folder.join(".noura/workspace.yaml"), &elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, folder.join(".noura/workspace.yaml")).unwrap();
+
+    let restored = service.restore_last().err().unwrap();
+    let reopened = service
+        .open_recent(&service.recents()[0].workspace_id)
+        .err()
+        .unwrap();
+
+    for error in [restored, reopened] {
+        assert_eq!(error.code, "symlink_escape");
+        assert_eq!(
+            error.message,
+            format!(
+                "The settings file .noura/workspace.yaml in {saved_path} is a link, so Noura \
+                 won't use it."
+            )
+        );
+    }
+}
+
+/// Known gap, recorded in ticket 06: a copy of a workspace folder keeps the
+/// original's ID. It opens as the same workspace, takes over the original's
+/// recent list entry and shares its index. The legacy app behaved the same
+/// way. When `local-core` learns to give a copy its own ID, this test
+/// changes with it.
+#[test]
+fn a_copied_workspace_folder_opens_with_the_original_id_today() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let original = parent.path().join("Garden");
+    std::fs::create_dir(&original).unwrap();
+    let service = WorkspaceService::new(app_data.path());
+    let id = service.create("Garden", &original).unwrap().id().to_owned();
+    std::fs::write(original.join("Note.md"), b"x").unwrap();
+    let copy = parent.path().join("Garden copy");
+    std::fs::create_dir_all(copy.join(".noura")).unwrap();
+    for relative in [".noura/workspace.yaml", "Note.md"] {
+        std::fs::copy(original.join(relative), copy.join(relative)).unwrap();
+    }
+
+    let workspace = service.open_folder(&copy).unwrap();
+
+    assert_eq!(workspace.id(), id);
+    let recents = service.recents();
+    assert_eq!(recents.len(), 1);
+    assert_eq!(
+        recents[0].path,
+        copy.canonicalize().unwrap().to_str().unwrap()
+    );
+}

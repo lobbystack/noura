@@ -30,7 +30,8 @@ impl AppError {
     }
 
     /// Translate a `local-core` error into words, logging the details.
-    pub(crate) fn from_core(error: CoreError, path: &str) -> Self {
+    /// `path` is the folder or file that `access` names.
+    pub(crate) fn from_core(error: CoreError, path: &str, access: Access) -> Self {
         tracing::warn!(
             code = %error.code,
             operation = %error.operation,
@@ -53,16 +54,25 @@ impl AppError {
                 .to_owned(),
             "workspace_identity_changed" => format!("A different workspace is now at {path}."),
             "unsupported_path" | "non_utf8_path" => return Self::unsupported_path(),
-            "symlink_escape" => match error.operation.as_str() {
-                "workspace_create" | "workspace_open" => {
-                    "The folder's .noura folder or settings file is a link, so Noura won't use it."
-                        .to_owned()
+            "symlink_escape" => match (access, error.operation.as_str()) {
+                (Access::ReadFile, _) => {
+                    format!("{path} is a link or sits in a linked folder, so Noura won't use it.")
                 }
-                _ => format!("{path} is a link or sits in a linked folder, so Noura won't use it."),
+                (_, "workspace_create" | "workspace_open") => format!(
+                    "The .noura folder or its settings file in {path} is a link, so Noura \
+                     won't use it."
+                ),
+                _ => format!("Something inside {path} is a link, and Noura won't follow it."),
             },
-            _ => match error.category {
-                ErrorCategory::Permission => {
+            _ => match (error.category, access) {
+                (ErrorCategory::Permission, Access::SetUpWorkspace) => format!(
+                    "Noura doesn't have permission to add its .noura settings folder to {path}."
+                ),
+                (ErrorCategory::Permission, _) => {
                     format!("Noura doesn't have permission to read {path}.")
+                }
+                (_, Access::SetUpWorkspace) => {
+                    format!("Noura couldn't set up a workspace in {path}.")
                 }
                 _ => format!("Noura couldn't open {path}."),
             },
@@ -72,6 +82,20 @@ impl AppError {
             message,
         }
     }
+}
+
+/// What the failed `local-core` call did with the path it names, so a
+/// permission or link error says the right thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    /// Opening or listing a workspace whose settings file exists. Noura
+    /// only reads the folder.
+    ReadWorkspace,
+    /// Creating a workspace, or adding settings to a plain folder. Noura
+    /// writes `.noura` into the folder.
+    SetUpWorkspace,
+    /// Reading the file at a workspace-relative path.
+    ReadFile,
 }
 
 impl fmt::Display for AppError {

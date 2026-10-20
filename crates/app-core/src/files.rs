@@ -9,7 +9,7 @@ use std::{
 use local_core::WorkspaceEntryKind;
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
-use crate::{AppError, Workspace};
+use crate::{AppError, Workspace, error::Access};
 
 /// Typed characters within this window extend the type-ahead search.
 pub const TYPE_AHEAD_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -349,7 +349,7 @@ impl Workspace {
         let entries = self
             .engine()
             .list_workspace_entries()
-            .map_err(|error| AppError::from_core(error, self.root()))?;
+            .map_err(|error| AppError::from_core(error, self.root(), Access::ReadWorkspace))?;
         Ok(FileTree::new(entries.into_iter().map(|entry| TreeEntry {
             kind: match entry.kind {
                 WorkspaceEntryKind::Folder => EntryKind::Folder,
@@ -367,7 +367,7 @@ impl Workspace {
         let path = self
             .engine()
             .resolve_managed_path(relative_path, "file_open")
-            .map_err(|error| AppError::from_core(error, relative_path))?;
+            .map_err(|error| AppError::from_core(error, relative_path, Access::ReadFile))?;
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() && !is_dataless(&metadata) => {}
             Ok(metadata) if metadata.is_file() => return Err(not_downloaded()),

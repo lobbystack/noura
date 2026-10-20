@@ -6,6 +6,7 @@ use local_core::{WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
 
 use crate::{
     AppError,
+    error::Access,
     recents::{RecentStore, RecentWorkspace},
 };
 
@@ -98,8 +99,9 @@ impl WorkspaceService {
             ));
         }
         let path = representable(folder)?;
+        check_links(folder, path)?;
         let engine = WorkspaceEngine::create_with_app_data(folder, name, &self.app_data)
-            .map_err(|error| AppError::from_core(error, path))?;
+            .map_err(|error| AppError::from_core(error, path, Access::SetUpWorkspace))?;
         self.opened(engine)
     }
 
@@ -111,13 +113,19 @@ impl WorkspaceService {
     pub fn open_folder(&self, folder: &Path) -> Result<Workspace, AppError> {
         let path = representable(folder)?;
         check_folder(folder, path)?;
+        check_links(folder, path)?;
+        let access = match folder.join(WORKSPACE_MANIFEST_PATH).try_exists() {
+            Ok(true) => Access::ReadWorkspace,
+            Ok(false) => Access::SetUpWorkspace,
+            Err(error) => return Err(unreadable(&error, path)),
+        };
         let engine = WorkspaceEngine::open_or_initialize_with_app_data(
             folder,
             &folder_name(folder),
             None,
             &self.app_data,
         )
-        .map_err(|error| AppError::from_core(error, path))?;
+        .map_err(|error| AppError::from_core(error, path, access))?;
         self.opened(engine)
     }
 
@@ -156,9 +164,10 @@ impl WorkspaceService {
     fn open_saved(&self, recent: &RecentWorkspace) -> Result<Workspace, AppError> {
         let folder = Path::new(&recent.path);
         check_folder(folder, &recent.path)?;
+        check_links(folder, &recent.path)?;
         check_manifest(folder, &recent.path)?;
         let engine = WorkspaceEngine::open_with_app_data(folder, &self.app_data)
-            .map_err(|error| AppError::from_core(error, &recent.path))?;
+            .map_err(|error| AppError::from_core(error, &recent.path, Access::ReadWorkspace))?;
         check_identity(&engine, &recent.workspace_id, &recent.path)?;
         self.opened(engine)
     }
@@ -212,6 +221,37 @@ fn unreadable(error: &std::io::Error, path: &str) -> AppError {
     } else {
         AppError::new("folder_unavailable", format!("Noura couldn't open {path}."))
     }
+}
+
+/// Refuse a `.noura` folder or settings file that is a link. `local-core`
+/// reads the settings file through a link, so a linked one would lend this
+/// folder another workspace's ID, recent list entry and index.
+fn check_links(folder: &Path, path: &str) -> Result<(), AppError> {
+    let linked = [
+        (".noura", format!("The .noura folder in {path} is a link")),
+        (
+            WORKSPACE_MANIFEST_PATH,
+            format!("The settings file .noura/workspace.yaml in {path} is a link"),
+        ),
+    ];
+    for (relative, what) in linked {
+        match std::fs::symlink_metadata(folder.join(relative)) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(AppError::new(
+                    "symlink_escape",
+                    format!("{what}, so Noura won't use it."),
+                ));
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(error) => return Err(unreadable(&error, path)),
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a saved folder whose manifest is gone instead of writing the
