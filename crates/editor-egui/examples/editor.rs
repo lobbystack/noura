@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use editor_egui::resolvers::OpenedLink;
 use editor_egui::{Editor, MdConfig};
 
 fn main() -> eframe::Result {
@@ -113,6 +114,10 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    // Keep the note's permissions rather than the temporary file's.
+    if let Ok(metadata) = std::fs::metadata(path) {
+        file.as_file().set_permissions(metadata.permissions())?;
+    }
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|err| err.error)?;
@@ -135,7 +140,11 @@ impl eframe::App for ExampleApp {
                 self.status.clear();
             }
             if let Some(link) = response.opened_link {
-                self.status = format!("Opened link: {link:?}");
+                self.status = match link {
+                    OpenedLink::File(file) => format!("Link to {file}"),
+                    OpenedLink::External(url) => format!("Link to {url}"),
+                    OpenedLink::NotFound { target } => format!("Nothing matches {target}"),
+                };
             }
         });
     }
