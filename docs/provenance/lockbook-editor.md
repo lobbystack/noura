@@ -95,6 +95,7 @@ Lockbook's editing behaviors stay as they were, including the ones that write fi
 | `tab/markdown_editor/widget/inline/link/card.rs`, `widget/inline/link/meta.rs` | Link cards fetch web pages |
 | `tab/markdown_editor/widget/toolbar.rs`, `widget/find.rs`, `widget/emoji_completions.rs`, `widget/link_completions.rs` | Chrome around the editor that later tickets rebuild for Noura. Link completions also listed files through `lb-rs` |
 | `tab/markdown_editor/commands.rs` | Platform commands for the iOS and Android hosts |
+| `tab/markdown_editor/input/events.rs` | `MdEdit::drain_workspace_events` took Markdown edits, Undo and Redo from Lockbook's workspace event queue. The fork has no such queue: the embedding app passes events to `Editor::push_event` |
 | `tab/markdown_editor/md_label.rs` | A read-only Markdown label for Lockbook's chat and search previews |
 | `tab/markdown_editor/docs/`, `README.md` | Design notes, linked from here instead |
 | `widgets/image_cache.rs`, `resolvers/image_embed.rs`, `file_cache.rs`, `egress.rs` | Read files through `lb-rs` and fetched remote images and pages |
