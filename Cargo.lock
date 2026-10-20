@@ -1925,8 +1925,10 @@ dependencies = [
 name = "editor-core"
 version = "0.2.0"
 dependencies = [
+ "comrak",
  "ropey",
  "similar",
+ "tempfile",
  "unicode-segmentation",
 ]
 

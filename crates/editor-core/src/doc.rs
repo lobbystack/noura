@@ -11,8 +11,9 @@ use comrak::nodes::AstNode;
 use comrak::{Arena, Options};
 
 use crate::bounds::Bounds;
-use crate::buffer::Buffer;
+use crate::buffer::{self, Buffer};
 use crate::input::cursor::CursorState;
+use crate::input::{Event, TextLayout};
 use crate::offset_types::{Grapheme, Graphemes};
 use crate::resolvers::{LinkResolver, NotFound, OpenedLink};
 
@@ -133,6 +134,64 @@ impl MdDoc {
             deferred_events: Vec::new(),
             debug: false,
         }
+    }
+
+    /// The note's text.
+    pub fn text(&self) -> &str {
+        self.buffer.current.text()
+    }
+
+    /// The selection as `(anchor, caret)`.
+    pub fn selection(&self) -> (Grapheme, Grapheme) {
+        self.buffer.current.selection
+    }
+
+    /// Applies a batch of events the way one frame of input applies them:
+    /// the edits they make undo together. `layout` answers the questions an
+    /// edit asks about where text was drawn; [`NoLayout`] answers for a
+    /// document with no UI. Events an edit defers, such as the tag a fold
+    /// command writes, apply in further batches.
+    ///
+    /// [`NoLayout`]: crate::input::NoLayout
+    pub fn apply(
+        &mut self,
+        events: impl IntoIterator<Item = Event>,
+        layout: &dyn TextLayout,
+    ) -> buffer::Response {
+        let mut response = self.apply_batch(events, layout);
+        // A deferred edit can't defer another forever; stop after a few.
+        for _ in 0..8 {
+            if self.deferred_events.is_empty() {
+                break;
+            }
+            let deferred = std::mem::take(&mut self.deferred_events);
+            response |= self.apply_batch(deferred, layout);
+        }
+        response
+    }
+
+    fn apply_batch(
+        &mut self,
+        events: impl IntoIterator<Item = Event>,
+        layout: &dyn TextLayout,
+    ) -> buffer::Response {
+        let arena = Arena::new();
+        let root = self.reparse(&arena);
+        let mut ops = Vec::new();
+        let mut response = buffer::Response::default();
+        let mut undo_redo = false;
+        for event in events {
+            undo_redo |= matches!(event, Event::Undo | Event::Redo);
+            response |= self.calc_operations(root, event, &mut ops, layout);
+        }
+        self.buffer.queue(ops);
+        response |= self.buffer.update();
+        if response.text_updated {
+            self.bump_text_seq();
+        }
+        let edited = response.text_updated || response.selection_user_moved;
+        response |= self.unfold_after_edit(&arena, edited, undo_redo);
+        response
     }
 
     /// The next value of the shared sequence counter.
