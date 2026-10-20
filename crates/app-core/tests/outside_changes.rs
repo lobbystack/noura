@@ -538,6 +538,99 @@ fn a_file_the_cloud_provider_marks_online_only_shows_marked_and_noura_never_read
 }
 
 #[test]
+fn an_edit_another_app_makes_reaches_search() {
+    let mut live = Live::open(&[("Plan.md", &note(PLAN_ID, "Morning pages."))]);
+
+    write(&live.folder, "Plan.md", &note(PLAN_ID, "Evening pages."));
+
+    live.wait_until("search finds the new words", |app| {
+        hit_paths(app, "evening") == ["Plan.md"] && hit_paths(app, "morning").is_empty()
+    });
+    assert!(live.seen.contains(&Change::Files(Origin::Outside)));
+}
+
+#[test]
+fn properties_another_app_breaks_show_as_a_problem_until_they_are_fixed() {
+    let original = note(PLAN_ID, "The plan.");
+    let mut live = Live::open(&[("Plan.md", &original)]);
+    let parse_problems = |app: &App| -> Vec<Vec<String>> {
+        app.problems()
+            .iter()
+            .filter(|problem| problem.code == "parse_error")
+            .map(|problem| problem.paths.clone())
+            .collect()
+    };
+
+    let broken = format!("---\nid: {PLAN_ID}\ntype: [note\n---\n\nThe plan.\n");
+    write(&live.folder, "Plan.md", &broken);
+
+    live.wait_until("the problem shows", |app| {
+        parse_problems(app) == [vec!["Plan.md".to_owned()]]
+    });
+    assert_eq!(rows(&live.app), ["Plan.md"]);
+    assert_eq!(
+        std::fs::read_to_string(live.path("Plan.md")).unwrap(),
+        broken
+    );
+
+    write(&live.folder, "Plan.md", &original);
+
+    live.wait_until("the problem goes", |app| parse_problems(app).is_empty());
+    let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
+    assert_eq!(found.relative_path, "Plan.md");
+}
+
+#[test]
+fn a_watcher_event_for_a_path_outside_the_workspace_changes_nothing() {
+    let mut live = Live::open_with(&[("A.md", "# A\n")], NO_RESCANS);
+    live.workspace().force_watch_fault(WatchFault::Silent);
+    let outside = live.folder.parent().unwrap().join("Outside.md");
+    std::fs::write(&outside, "# Outside\n").unwrap();
+    write(&live.folder, "Fresh.md", "# Fresh\n");
+
+    live.workspace().inject_watch_event(&[
+        outside.as_path(),
+        Path::new("../Outside.md"),
+        Path::new("Fresh.md"),
+    ]);
+
+    live.wait_until("the batch lands", |app| rows(app) == ["A.md", "Fresh.md"]);
+    assert!(hit_paths(&live.app, "outside").is_empty());
+}
+
+#[test]
+fn opening_a_path_that_climbs_out_of_the_workspace_reads_nothing() {
+    let mut live = Live::open(&[("A.md", "# A\n")]);
+    std::fs::write(
+        live.folder.parent().unwrap().join("Secret.md"),
+        "# Secret\n",
+    )
+    .unwrap();
+
+    live.app.open_file("../Secret.md");
+
+    assert_eq!(live.app.document(), None);
+    assert!(live.app.notice().is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_another_app_adds_to_a_folder_outside_the_workspace_brings_nothing_in() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("Secret.md"), "# Secret\n\nSaffron.\n").unwrap();
+    let mut live = Live::open(&[("A.md", "# A\n")]);
+
+    std::os::unix::fs::symlink(outside.path(), live.path("Linked")).unwrap();
+    write(&live.folder, "Fresh.md", "# Fresh\n\nSaffron.\n");
+
+    live.wait_until("the new note shows", |app| {
+        rows(app).contains(&"Fresh.md".to_owned())
+    });
+    assert!(!rows(&live.app).iter().any(|row| row.starts_with("Linked")));
+    assert_eq!(hit_paths(&live.app, "saffron"), ["Fresh.md"]);
+}
+
+#[test]
 fn a_workspace_that_opens_with_a_shared_id_reports_both_files() {
     let original = note(PLAN_ID, "The plan.");
     let live = Live::open(&[("A/Plan.md", &original), ("B/Plan.md", &original)]);
@@ -548,5 +641,88 @@ fn a_workspace_that_opens_with_a_shared_id_reports_both_files() {
             vec!["A/Plan.md".to_owned(), "B/Plan.md".to_owned()],
             Some(PLAN_ID.to_owned())
         )]
+    );
+}
+
+/// `{stem}�.md`, a name that has no UTF-8 form: an invalid byte on Unix,
+/// an unpaired surrogate on Windows. macOS refuses to create such names, so
+/// only Linux and Windows can put one on disk.
+#[cfg(unix)]
+fn unrepresentable(stem: &str) -> std::ffi::OsString {
+    use std::os::unix::ffi::OsStringExt;
+    std::ffi::OsString::from_vec([stem.as_bytes(), b"\xe9.md"].concat())
+}
+
+#[cfg(windows)]
+fn unrepresentable(stem: &str) -> std::ffi::OsString {
+    use std::os::windows::ffi::OsStringExt;
+    let mut wide: Vec<u16> = stem.encode_utf16().collect();
+    wide.push(0xD800);
+    wide.extend(".md".encode_utf16());
+    std::ffi::OsString::from_wide(&wide)
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn unsupported_problems(app: &App) -> Vec<Vec<String>> {
+    app.problems()
+        .iter()
+        .filter(|problem| problem.code == "unsupported_path")
+        .map(|problem| problem.paths.clone())
+        .collect()
+}
+
+#[test]
+fn a_watcher_event_for_a_name_noura_cannot_represent_leaves_the_rest_of_the_batch_working() {
+    let mut live = Live::open_with(&[("A.md", "# A\n")], NO_RESCANS);
+    live.workspace().force_watch_fault(WatchFault::Silent);
+    write(&live.folder, "Fresh.md", "# Fresh\n");
+    let ghost = unrepresentable("Ghost");
+
+    live.workspace()
+        .inject_watch_event(&[Path::new(&ghost), Path::new("Fresh.md")]);
+
+    live.wait_until("the rest of the batch lands", |app| {
+        rows(app) == ["A.md", "Fresh.md"]
+    });
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn names_noura_cannot_represent_stay_as_they_are_and_show_as_problems() {
+    let mut live = Live::open(&[
+        ("Good.md", "# Good\n\nSaffron buns.\n"),
+        ("Notes/Kept.md", "# Kept\n"),
+    ]);
+    expand(&mut live.app, "Notes");
+    let file = live.folder.join(unrepresentable("Caf"));
+    let folder = live.folder.join("Notes").join(unrepresentable("D"));
+
+    // Another app adds a file and a folder whose names have no UTF-8 form,
+    // and a file Noura can show.
+    std::fs::write(&file, "# Odd\n\nSaffron tea.\n").unwrap();
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("inside.md"), "# Inside\n").unwrap();
+    write(&live.folder, "Fresh.md", "# Fresh\n");
+
+    live.wait_until("the problems show", |app| {
+        rows(app).contains(&"Fresh.md".to_owned()) && unsupported_problems(app).len() == 2
+    });
+    assert_eq!(
+        rows(&live.app),
+        ["Notes", "Notes/Kept.md", "Fresh.md", "Good.md"]
+    );
+    assert_eq!(
+        unsupported_problems(&live.app),
+        [Vec::<String>::new(), vec!["Notes".to_owned()]]
+    );
+    assert_eq!(hit_paths(&live.app, "saffron"), ["Good.md"]);
+    // The names and their contents stay exactly as the other app left them.
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "# Odd\n\nSaffron tea.\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("inside.md")).unwrap(),
+        "# Inside\n"
     );
 }

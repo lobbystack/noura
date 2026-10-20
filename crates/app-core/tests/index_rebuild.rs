@@ -175,11 +175,32 @@ fn seen(app: &mut App) -> Seen {
     }
 }
 
+/// Every file under `folder` with its bytes, the workspace settings
+/// included.
+fn file_bytes(folder: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut pending = vec![folder.to_owned()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                files.push((path, bytes));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 #[test]
 fn deleting_every_index_file_rebuilds_the_same_workspace() {
     let device = Device::with_fixture();
     let mut app = device.launch();
     let before = seen(&mut app);
+    let bytes = file_bytes(&device.folder);
     let local = device.local_dir(&app);
     drop(app);
     assert!(!before.objects.is_empty() && !before.problems.is_empty());
@@ -191,6 +212,11 @@ fn deleting_every_index_file_rebuilds_the_same_workspace() {
 
     assert_eq!(seen(&mut app), before);
     assert_eq!(leftovers(&local), Vec::<String>::new());
+    drop(app);
+    assert!(
+        file_bytes(&device.folder) == bytes,
+        "the rebuild changed a file"
+    );
 }
 
 #[test]

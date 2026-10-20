@@ -107,13 +107,7 @@ pub(super) fn scan_workspace(
             continue;
         };
         let Ok(relative) = normalized_relative_path(root, entry.path(), "workspace_scan") else {
-            tracing::warn!("skipped a workspace path that is not UTF-8");
-            scan.diagnostics.push(crate::Diagnostic {
-                code: "unsupported_path".into(),
-                message: "A file or folder name can't be shown. Rename it to use it here.".into(),
-                relative_path: None,
-                object_id: None,
-            });
+            unrepresentable_name(root, entry.path(), &mut scan);
             continue;
         };
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -204,6 +198,24 @@ pub(super) fn scan_workspace(
         }
     }
     Ok(scan)
+}
+
+/// Leave a file or folder whose name has no UTF-8 form exactly as it is,
+/// and report the folder that holds it, which Noura can name.
+fn unrepresentable_name(root: &Path, path: &Path, scan: &mut WorkspaceScan) {
+    tracing::warn!("skipped a workspace name that has no UTF-8 form");
+    let folder = path
+        .parent()
+        .and_then(|parent| normalized_relative_path(root, parent, "workspace_scan").ok())
+        .filter(|folder| !folder.is_empty());
+    scan.diagnostics.push(crate::Diagnostic {
+        code: "unsupported_path".into(),
+        message: "A file or folder name here has characters Noura can't represent, so Noura \
+                  leaves it as it is. Rename it in another app to use it in Noura."
+            .into(),
+        relative_path: folder,
+        object_id: None,
+    });
 }
 
 fn unreadable_file(relative: &str, reason: &str, scan: &mut WorkspaceScan) {
@@ -368,6 +380,14 @@ fn index_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk>
                 .unwrap_or(entry.path());
             if relative.as_os_str().is_empty() {
                 return true;
+            }
+            // A folder whose name has no UTF-8 form is reported once, and
+            // nothing inside it can be named either.
+            if relative
+                .parent()
+                .is_some_and(|parent| parent.to_str().is_none())
+            {
+                return false;
             }
             let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
             let name = entry.file_name().to_string_lossy();

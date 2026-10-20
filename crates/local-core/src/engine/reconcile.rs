@@ -253,6 +253,9 @@ impl WorkspaceEngine {
         self.sync_external_manifest(&paths)?;
         let ignores = compile_workspace_ignores(&self.root, &self.current_ignore())?;
         let mut external = Vec::new();
+        // A name with no UTF-8 form can't be indexed or reported by path. The
+        // walk below records it as a problem and handles the rest.
+        let mut unrepresentable = false;
         let mut journal = self
             .self_writes
             .lock()
@@ -274,16 +277,10 @@ impl WorkspaceEngine {
             {
                 continue;
             }
-            let relative = relative
-                .to_str()
-                .map(|value| value.replace('\\', "/"))
-                .ok_or_else(|| {
-                    CoreError::validation(
-                        "non_utf8_path",
-                        "A changed workspace path is not UTF-8",
-                        "watcher_poll",
-                    )
-                })?;
+            let Some(relative) = relative.to_str().map(|value| value.replace('\\', "/")) else {
+                unrepresentable = true;
+                continue;
+            };
             if let Some(expected) = journal.get(&relative).cloned() {
                 let matches = if expected == "<deleted>" {
                     !path.exists()
@@ -302,7 +299,7 @@ impl WorkspaceEngine {
         drop(journal);
         external.sort();
         external.dedup();
-        if !external.is_empty() {
+        if !external.is_empty() || unrepresentable {
             self.reconcile_forced_with_source(
                 &external.iter().cloned().collect(),
                 EventSource::External,

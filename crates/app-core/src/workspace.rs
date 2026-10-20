@@ -78,7 +78,7 @@ impl Workspace {
 
     /// Test hook: deliver one native watcher event that names these
     /// workspace-relative paths, as the platform would.
-    pub fn inject_watch_event(&self, relative_paths: &[&str]) {
+    pub fn inject_watch_event(&self, relative_paths: &[impl AsRef<Path>]) {
         let root = self.engine.root();
         self.engine
             .inject_watch_event(relative_paths.iter().map(|path| root.join(path)).collect());
