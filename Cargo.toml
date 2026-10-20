@@ -43,12 +43,20 @@ zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 atomic-write-file = "0.3.1"
 blake3 = "1.8"
+# The editor's Markdown parser. Pinned to the release Lockbook's editor was
+# built and tested against; see docs/provenance/lockbook-editor.md.
+comrak = { version = "=0.50.0", default-features = false, features = ["shortcodes"] }
 directories = "6"
 diffy = "=0.5.1"
 # eframe's defaults minus `clipboard`: arboard's Windows clipboard crates are
 # BSL-1.0, which waits for the owner's approval.
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
 egui = "0.37"
+egui-wgpu = { version = "0.37", default-features = false }
+egui_kittest = "0.37"
+# Shapes the editor's text and paints it through eframe's wgpu renderer.
+# 0.12 targets wgpu 30, the version eframe 0.37 uses.
+glyphon = "0.12"
 fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
@@ -62,8 +70,10 @@ notify = "8"
 openssl = "0.10"
 pbkdf2 = "=0.12.2"
 pulldown-cmark = "0.13"
+rand = "0.8"
 ropey = "1.6.1"
 similar = { version = "2.7", features = ["unicode"] }
+unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
 rmcp = { version = "3.1", features = ["server", "transport-io"] }

@@ -16,6 +16,7 @@ ignore = [
   "RUSTSEC-2026-0371", # zbus_names, through zbus
   "RUSTSEC-2026-0372", # zvariant_derive, through zbus
   "RUSTSEC-2026-0374", # basic-toml, through age's i18n-embed
+  "RUSTSEC-2026-0192", # ttf-parser, through glyphon's cosmic-text and fontdb
   # yrs 0.26.0 enables `small-client` for Yjs interoperability and currently
   # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
   # not a reported vulnerability; decoder isolation remains a release gate.

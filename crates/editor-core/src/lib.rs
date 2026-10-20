@@ -9,4 +9,5 @@ pub mod buffer;
 pub mod diff;
 pub mod offset_types;
 pub mod operation_types;
+pub mod resolvers;
 pub mod unicode_segs;
