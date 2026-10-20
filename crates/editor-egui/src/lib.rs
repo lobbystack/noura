@@ -37,8 +37,8 @@ mod tests;
 
 pub use input::Event;
 pub use widgets::glyphon_render::{
-    GlyphonRenderCallbackResources, GlyphonRendererCallback, TextBufferArea, register_font_system,
-    register_render_callback_resources,
+    GlyphonRenderCallbackResources, GlyphonRendererCallback, TextBufferArea, install_font_system,
+    register_font_system, register_render_callback_resources,
 };
 
 use crate::palette::ThemeExt as _;
@@ -56,6 +56,15 @@ pub struct Response {
     /// A link the user opened this frame, resolved through the
     /// [`LinkResolver`]. The editor never opens it itself.
     pub opened_link: Option<resolvers::OpenedLink>,
+}
+
+/// A span of the note's source and where the last frame drew it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintedSpan {
+    pub source_range: (Grapheme, Grapheme),
+    pub rect: Rect,
+    /// Whether the span drew text, as opposed to spacing or an image.
+    pub glyphs: bool,
 }
 
 /// A region painted this frame that a platform deciding touches itself
@@ -512,6 +521,27 @@ impl Editor {
     /// The note's current text.
     pub fn text(&self) -> &str {
         self.edit.renderer.buffer.current.text()
+    }
+
+    /// The selection as `(anchor, caret)`.
+    pub fn selection(&self) -> (Grapheme, Grapheme) {
+        self.edit.renderer.buffer.current.selection
+    }
+
+    /// What the last frame drew, one span of source at a time, in source
+    /// order. Hidden syntax draws nothing, so it has no glyph span.
+    pub fn painted_spans(&self) -> Vec<PaintedSpan> {
+        use widget::utils::wrap_layout::FragmentContent;
+        self.edit
+            .renderer
+            .fragments
+            .iter()
+            .map(|fragment| PaintedSpan {
+                source_range: fragment.source_range,
+                rect: fragment.rect,
+                glyphs: matches!(fragment.content, FragmentContent::Glyphs { .. }),
+            })
+            .collect()
     }
 
     /// Queues an event for the next frame.

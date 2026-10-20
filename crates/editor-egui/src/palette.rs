@@ -678,9 +678,18 @@ impl ThemeExt for egui::Context {
         self.set_visuals(t.base_visuals());
     }
 
+    /// The theme an app set with [`ThemeExt::set_lb_theme`], or the default
+    /// theme for egui's light or dark mode.
     fn get_lb_theme(&self) -> Theme {
         self.memory_mut(|m| m.data.get_temp(Id::unique("theme")))
-            .unwrap()
+            .unwrap_or_else(|| {
+                let mode = if self.global_style().visuals.dark_mode {
+                    Mode::Dark
+                } else {
+                    Mode::Light
+                };
+                Theme::default(mode)
+            })
     }
 }
 

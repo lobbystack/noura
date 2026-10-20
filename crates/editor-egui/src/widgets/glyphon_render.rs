@@ -27,14 +27,21 @@ pub fn register_font_system(ctx: &egui::Context, db: fontdb::Database) -> Arc<Mu
         "en-US".into(),
         db,
     )));
-    ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, Arc::clone(&font_system)));
-
-    let glyphon_cache = Arc::new(Mutex::new(GlyphonCache::new()));
-    ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, glyphon_cache));
-
+    install_font_system(ctx, Arc::clone(&font_system));
     font_system
 }
 
+/// Gives the editor a font system an app already built, for an app that
+/// must hand the same font system to [`register_render_callback_resources`]
+/// before its egui context exists.
+pub fn install_font_system(ctx: &egui::Context, font_system: Arc<Mutex<FontSystem>>) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, font_system));
+    let glyphon_cache = Arc::new(Mutex::new(GlyphonCache::new()));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, glyphon_cache));
+}
+
+/// Gives eframe's wgpu renderer the resources the editor's paint callback
+/// draws text with. `font_system` must be the one the editor shapes with.
 pub fn register_render_callback_resources(
     device: &Device,
     queue: &Queue,
