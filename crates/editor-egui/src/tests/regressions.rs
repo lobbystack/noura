@@ -17,6 +17,65 @@ use super::render_props::{
 
 // ── renderer ──
 
+/// An image the embedding app can't find lays out as a broken-image marker
+/// at the marker's size. The resolver is never asked to paint it, and the
+/// note's bytes stay as they were.
+#[test]
+fn an_image_the_app_cant_find_draws_the_broken_image_marker() {
+    use super::super::widget::utils::wrap_layout::EmbedKind;
+    use crate::resolvers::{EmbedResolver, EmbedState};
+
+    struct NothingFound;
+    impl EmbedResolver for NothingFound {
+        fn state(&self, _url: &str) -> EmbedState {
+            EmbedState::NotFound
+        }
+        fn show(&self, _: &mut egui::Ui, url: &str, _: egui::Rect, _: egui::CornerRadius) {
+            panic!("asked to paint {url}, which wasn't found");
+        }
+        fn prefetch(&self, _url: &str) {}
+        fn seq(&self) -> u64 {
+            0
+        }
+    }
+
+    let md = "![diagram](missing.png)\n\nfollow\n";
+    for embeds in [
+        Box::new(NothingFound) as Box<dyn crate::resolvers::EmbedResolver>,
+        Box::new(()),
+    ] {
+        let mut ws = TestEditor::with_embeds(md, embeds);
+        // Caret off the image so it collapses instead of revealing.
+        ws.push(Event::Select {
+            region: Region::Location(Location::Grapheme(Grapheme(27))),
+        });
+        ws.enter_frame();
+        ws.enter_frame();
+
+        let markers: Vec<_> = ws
+            .editor
+            .edit
+            .renderer
+            .fragments
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.content,
+                    FragmentContent::Embed {
+                        kind: EmbedKind::Missing,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].source_range, (Grapheme(0), Grapheme(23)));
+        assert!((markers[0].rect.width() - 48.0).abs() < 1.0);
+        assert!((markers[0].rect.height() - 48.0).abs() < 1.0);
+        assert_eq!(ws.editor.text(), md);
+    }
+}
+
 /// Image fragments allocate exactly the image's logical size — no
 /// doubled advance or padding.
 #[test]

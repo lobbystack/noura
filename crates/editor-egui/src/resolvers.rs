@@ -7,16 +7,26 @@ pub use editor_core::resolvers::{
     LinkResolver, LinkState, NotFound, OpenedLink, ResolvedLink, open_link,
 };
 
+/// What the embedding app knows about the content a URL names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EmbedState {
+    /// Still loading. The editor reserves this size, in pixels, and `show`
+    /// paints a placeholder in it.
+    Loading(Vec2),
+    /// Loaded, at this size in pixels.
+    Loaded(Vec2),
+    /// Nothing to show: the URL names nothing the app has, or loading it
+    /// failed. The editor draws a broken-image marker in its place and
+    /// never asks `show` to paint it.
+    NotFound,
+}
+
 /// Loads and paints embedded content such as images. The editor asks by the
 /// URL written in the note; the embedding app decides what it names and
 /// whether to load it.
 pub trait EmbedResolver {
-    /// Size of the content at the url.
-    fn size(&self, url: &str) -> Vec2;
-
-    /// Whether `url` has finished loading, so `show` paints it rather than a
-    /// placeholder.
-    fn is_loaded(&self, url: &str) -> bool;
+    /// What the app knows about the content at `url`.
+    fn state(&self, url: &str) -> EmbedState;
 
     /// Shows the content in the provided Ui at the provided Rect, with the
     /// given corner rounding.
@@ -30,13 +40,10 @@ pub trait EmbedResolver {
     fn seq(&self) -> u64;
 }
 
-/// Loads nothing: every embed shows as a placeholder.
+/// Finds nothing: every embed draws as not found.
 impl EmbedResolver for () {
-    fn size(&self, _url: &str) -> Vec2 {
-        Vec2::splat(200.)
-    }
-    fn is_loaded(&self, _url: &str) -> bool {
-        false
+    fn state(&self, _url: &str) -> EmbedState {
+        EmbedState::NotFound
     }
     fn show(&self, _ui: &mut Ui, _url: &str, _rect: Rect, _rounding: CornerRadius) {}
     fn prefetch(&self, _url: &str) {}

@@ -190,12 +190,15 @@ pub struct EmbedSpec {
     pub kind: EmbedKind,
 }
 
-/// What an [`EmbedSpec`] box paints: a decoded image texture. It occupies
-/// an atomic inline slot with its own hit-test / reveal / selection
-/// machinery.
+/// What an [`EmbedSpec`] box paints. It occupies an atomic inline slot with
+/// its own hit-test / reveal / selection machinery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EmbedKind {
+    /// An image the embed resolver paints.
     Image,
+    /// An image the embedding app can't find, drawn as a broken-image
+    /// marker.
+    Missing,
 }
 
 /// Style record for one inline-box instance. Snapshotted into each
@@ -2040,6 +2043,11 @@ impl MdRender {
                             url,
                             screen_rect,
                             egui::CornerRadius::same(2),
+                        ),
+                        EmbedKind::Missing => crate::widget::inline::image::paint_missing_image(
+                            embed_ui.painter(),
+                            screen_rect,
+                            &self.ctx.get_lb_theme(),
                         ),
                     }
 

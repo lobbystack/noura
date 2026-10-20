@@ -7,10 +7,49 @@ use egui::{self, Vec2};
 
 use crate::TouchTarget;
 use crate::input::{Event, Location, Region};
+use crate::palette::Theme;
+use crate::resolvers::EmbedState;
 use crate::widget::utils::NodeValueExt as _;
 use crate::widget::utils::wrap_layout::{EmbedKind, EmbedSpec, Layout};
 use crate::{MdEdit, MdRender};
 use editor_core::images::ImageDims;
+
+/// Side, in points, of the broken-image marker drawn for an image the
+/// embedding app can't find.
+const MISSING_IMAGE_SIZE: f32 = 48.0;
+
+/// Paints the marker for an image the embedding app can't find: a framed
+/// picture crossed out.
+pub(crate) fn paint_missing_image(painter: &egui::Painter, rect: egui::Rect, theme: &Theme) {
+    let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, theme.neutral_bg_tertiary()),
+        egui::StrokeKind::Inside,
+    );
+
+    let side = (rect.width().min(rect.height()) * 0.5).clamp(6.0, 24.0);
+    let frame = egui::Rect::from_center_size(rect.center(), Vec2::splat(side));
+    let stroke = egui::Stroke::new(1.25, theme.neutral_fg_secondary());
+    painter.rect_stroke(frame, 1.0, stroke, egui::StrokeKind::Middle);
+    // A hill inside the frame, then a slash through the whole picture.
+    painter.line(
+        vec![
+            frame.left_bottom() + Vec2::new(side * 0.15, -side * 0.2),
+            frame.center() + Vec2::new(-side * 0.05, -side * 0.05),
+            frame.right_bottom() + Vec2::new(-side * 0.15, -side * 0.2),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            frame.right_top() + Vec2::new(side * 0.15, -side * 0.15),
+            frame.left_bottom() + Vec2::new(-side * 0.15, side * 0.15),
+        ],
+        stroke,
+    );
+}
 
 impl MdRender {
     /// Prefetch textures under `node` so the embed resolver does not drop
@@ -25,6 +64,19 @@ impl MdRender {
 }
 
 impl<'ast> MdRender {
+    /// The size, in pixels, an image's box is laid out from, and what the
+    /// box paints: the content at its own size, or the broken-image marker
+    /// when the embedding app can't find it.
+    pub fn embed_texture_size(&self, url: &str) -> (Vec2, EmbedKind) {
+        match self.embeds.state(url) {
+            EmbedState::Loading(size) | EmbedState::Loaded(size) => (size, EmbedKind::Image),
+            EmbedState::NotFound => (
+                Vec2::splat(MISSING_IMAGE_SIZE) * self.ctx.pixels_per_point(),
+                EmbedKind::Missing,
+            ),
+        }
+    }
+
     pub fn image_size(&self, texture_size: Vec2, width: f32, requested: ImageDims) -> Vec2 {
         // Constrain the image to fit the renderer with a margin of breathing
         // room. Clamp to non-negative — when the renderer is too small to
@@ -92,7 +144,7 @@ impl<'ast> MdRender {
             .skip(1)
             .find(|a| a.data.borrow().value.is_leaf_block())?;
         let width = self.width(block_ancestor);
-        let texture_size = self.embeds.size(&url);
+        let (texture_size, _) = self.embed_texture_size(&url);
         let size = self.image_size(texture_size, width, self.image_dims(node));
         (size.x > 0.0 && size.y > 0.0).then_some(size)
     }
@@ -120,6 +172,7 @@ impl<'ast> MdRender {
             comrak::nodes::NodeValue::Image(link) => link.url.clone(),
             _ => return,
         };
+        let (_, kind) = self.embed_texture_size(&url);
         // Always interactive: a plain tap selects, a cmd/keyboard-hidden tap opens.
         layout.interaction_open(
             Self::image_interaction_id_salt(node_range),
@@ -131,7 +184,7 @@ impl<'ast> MdRender {
             descent: 0.0,
             source_range: node_range,
             url,
-            kind: EmbedKind::Image,
+            kind,
         });
         layout.interaction_close();
     }

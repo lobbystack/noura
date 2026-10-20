@@ -5,7 +5,7 @@
 
 use crate::input::Event;
 use crate::palette::{Mode, Theme, ThemeExt as _};
-use crate::resolvers::{EmbedResolver, LinkResolver, LinkState, ResolvedLink};
+use crate::resolvers::{EmbedResolver, EmbedState, LinkResolver, LinkState, ResolvedLink};
 use crate::{Editor, MdConfig};
 use egui::{Pos2, RawInput, Rect, Ui, Vec2};
 use std::collections::HashMap;
@@ -150,16 +150,11 @@ impl TestEmbeds {
 }
 
 impl EmbedResolver for TestEmbeds {
-    fn size(&self, url: &str) -> Vec2 {
-        self.sizes
-            .lock()
-            .unwrap()
-            .get(url)
-            .copied()
-            .unwrap_or_else(|| Vec2::splat(200.))
-    }
-    fn is_loaded(&self, url: &str) -> bool {
-        self.sizes.lock().unwrap().contains_key(url)
+    fn state(&self, url: &str) -> EmbedState {
+        match self.sizes.lock().unwrap().get(url) {
+            Some(size) => EmbedState::Loaded(*size),
+            None => EmbedState::Loading(Vec2::splat(200.)),
+        }
     }
     /// Worst-case resolver: allocates its rect. Real resolvers are paint-only,
     /// but callers must survive an allocating one — embeds paint for
@@ -175,11 +170,8 @@ impl EmbedResolver for TestEmbeds {
 }
 
 impl EmbedResolver for Arc<TestEmbeds> {
-    fn size(&self, url: &str) -> Vec2 {
-        (**self).size(url)
-    }
-    fn is_loaded(&self, url: &str) -> bool {
-        (**self).is_loaded(url)
+    fn state(&self, url: &str) -> EmbedState {
+        (**self).state(url)
     }
     fn show(&self, ui: &mut Ui, url: &str, rect: Rect, rounding: egui::CornerRadius) {
         (**self).show(ui, url, rect, rounding)
