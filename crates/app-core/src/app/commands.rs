@@ -100,9 +100,10 @@ impl App {
     }
 
     /// The command a key press runs while `focus` has the keyboard: a
-    /// command for anywhere, or one for that area. While a text field has
-    /// it ([`Area::Writing`]), the keys it types and edits with stay with
-    /// it.
+    /// command for anywhere, or one for that area. The keys the focused
+    /// area handles itself, as the shortcuts list shows them, stay with
+    /// it. While a text field has the keyboard ([`Area::Writing`]), so do
+    /// the keys it types and edits with.
     pub fn command_for_key(&self, press: &KeyPress, focus: Option<Area>) -> Option<String> {
         self.registry
             .for_key(press, self.platform(), focus, &self.rail.ordered())

@@ -1,16 +1,22 @@
-//! The rail: a narrow column of pages, such as Files and the Inbox. A
-//! click shows a page, and you reorder pages by dragging them or with
-//! Alt-Up and Alt-Down. `app-core` owns the pages and their order.
+//! The rail: a narrow column of pages, such as Files and the Inbox, with
+//! the Search button at the bottom. A click shows a page, and you reorder
+//! pages by dragging them or with Alt-Up and Alt-Down. `app-core` owns
+//! the pages and their order.
 
-use app_core::{App, FILES_PAGE, INBOX_PAGE, OpenAs};
+use std::time::Instant;
+
+use app_core::{App, CommandSource, FILES_PAGE, INBOX_PAGE, OpenAs, command_id};
 use egui::{
-    Align2, Color32, DragAndDrop, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, Ui,
-    UiBuilder, WidgetInfo,
-    accesskit::{Action, AriaCurrent, Role},
+    Align, Align2, Color32, DragAndDrop, FontId, Id, Key, Layout, Modifiers, Pos2, Rect, Sense,
+    Shape, Stroke, Ui, UiBuilder, WidgetInfo,
+    accesskit::{Action, AriaCurrent, HasPopup, Role},
     pos2, vec2,
 };
 
-use crate::theme::{Palette, radius};
+use crate::{
+    keys,
+    theme::{Palette, radius},
+};
 
 /// The rail's width.
 pub(crate) const RAIL_WIDTH: f32 = 56.0;
@@ -26,6 +32,12 @@ struct Dragged {
 
 fn item_id(page_id: &str) -> Id {
     Id::unique(("rail-page", page_id))
+}
+
+/// Whether one of the rail's pages has keyboard focus.
+pub(crate) fn has_focus(ctx: &egui::Context, app: &App) -> bool {
+    ctx.memory(|memory| memory.focused())
+        .is_some_and(|focused| app.rail().iter().any(|page| item_id(&page.id) == focused))
 }
 
 /// Draw a page's symbol in `rect`: an outline icon for the kernel pages,
@@ -214,6 +226,17 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
         }
     });
 
+    ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+        ui.add_space(12.0);
+        if search_button(ui, app).clicked() {
+            app.run_command(
+                command_id::COMMAND_PALETTE,
+                CommandSource::Button,
+                Instant::now(),
+            );
+        }
+    });
+
     if let Some((page_id, how)) = open {
         app.open_page(&page_id, how);
     }
@@ -227,4 +250,48 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
 enum Move {
     By(isize),
     To(usize),
+}
+
+/// The Search button, which opens the command palette. Its tooltip
+/// shows the palette's shortcut.
+fn search_button(ui: &mut Ui, app: &App) -> egui::Response {
+    let shortcut = app
+        .commands()
+        .into_iter()
+        .find(|command| command.id == command_id::COMMAND_PALETTE)
+        .and_then(|command| command.shortcuts.first().copied())
+        .map(|shortcut| keys::shortcut_text(&shortcut, app.platform()));
+    let (rect, response) = ui.allocate_exact_size(vec2(ITEM_SIZE, ITEM_SIZE), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Search"));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_has_popup(HasPopup::Dialog);
+        if let Some(shortcut) = &shortcut {
+            node.set_keyboard_shortcut(shortcut.clone());
+        }
+    });
+    let palette = Palette::of(ui.ctx());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, radius(1.2), palette.sidebar_accent);
+        }
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                radius(1.2),
+                Stroke::new(1.0, palette.ring),
+                egui::StrokeKind::Inside,
+            );
+        }
+        // A magnifying glass.
+        let stroke = Stroke::new(1.5, palette.muted_foreground);
+        let center = rect.center() + vec2(-1.5, -1.5);
+        painter.circle_stroke(center, 5.5, stroke);
+        painter.line_segment([center + vec2(4.0, 4.0), center + vec2(8.0, 8.0)], stroke);
+    }
+    let tooltip = match &shortcut {
+        Some(shortcut) => format!("Search ({shortcut})"),
+        None => "Search".to_owned(),
+    };
+    response.on_hover_text(tooltip)
 }

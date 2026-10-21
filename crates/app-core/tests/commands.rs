@@ -402,6 +402,29 @@ fn a_command_for_one_area_runs_only_while_that_area_has_the_keyboard() {
 }
 
 #[test]
+fn keys_an_area_handles_itself_stay_with_it_while_it_has_the_keyboard() {
+    let fixture = Fixture::new(&[]);
+    let app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    let f2 = KeyPress::new(Key::F2);
+    let rename_file = Some(command_id::RENAME_FILE.to_owned());
+
+    // In the tree, F2 renames the current row, not the open file.
+    assert_eq!(app.command_for_key(&f2, Some(Area::FileTree)), None);
+    assert_eq!(app.command_for_key(&f2, Some(Area::Tabs)), rename_file);
+    assert_eq!(app.command_for_key(&f2, None), rename_file);
+    // Alt-Up moves a rail page; nothing else uses it.
+    let alt_up = KeyPress::new(Key::ArrowUp).with_alt();
+    assert_eq!(app.command_for_key(&alt_up, Some(Area::Pages)), None);
+    // The tree's keys don't reach past it.
+    let new_note = KeyPress::new(Key::N).with_cmd();
+    assert_eq!(
+        app.command_for_key(&new_note, Some(Area::FileTree))
+            .as_deref(),
+        Some(command_id::NEW_NOTE)
+    );
+}
+
+#[test]
 fn a_press_the_menu_and_the_window_both_report_runs_once_and_two_quick_presses_run_twice() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));

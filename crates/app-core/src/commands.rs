@@ -281,9 +281,9 @@ impl Registry {
     }
 
     /// The command a key press runs on `platform` while `focus` has the
-    /// keyboard: a command for anywhere, or one for that area. While a
-    /// text field has the keyboard, the keys it uses to type and edit stay
-    /// with it.
+    /// keyboard: a command for anywhere, or one for that area. Keys the
+    /// focused area handles itself stay with it, and so do the keys a
+    /// text field types and edits with.
     pub(crate) fn for_key(
         &self,
         press: &KeyPress,
@@ -292,6 +292,15 @@ impl Registry {
         pages: &[&Page],
     ) -> Option<String> {
         if focus == Some(Area::Writing) && press.edits_text(platform) {
+            return None;
+        }
+        let handled_by_focus = area_keys().iter().any(|(area, _, shortcuts)| {
+            Some(*area) == focus
+                && shortcuts
+                    .iter()
+                    .any(|shortcut| shortcut.matches(press, platform))
+        });
+        if handled_by_focus {
             return None;
         }
         let commands: Vec<Command> = self

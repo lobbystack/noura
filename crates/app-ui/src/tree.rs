@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use app_core::{App, DropSpot, EntryKind, OpenAs, TreeAction, TreeKey, TreeRow};
+use app_core::{App, DropSpot, EntryKind, FILES_SECTION, OpenAs, TreeAction, TreeKey, TreeRow};
 use egui::{
     Align, Align2, Event, EventFilter, FontId, Id, Key, LayerId, Layout, Modifiers, Order, Popup,
     PopupKind, Pos2, Rect, Response, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit,
@@ -45,6 +45,12 @@ impl TreeView {
     /// Give the tree's current row keyboard focus on the next frame.
     pub(crate) fn refocus(&mut self) {
         self.refocus = true;
+    }
+
+    /// Whether one of the rows drawn last frame has keyboard focus.
+    pub(crate) fn has_focus(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|memory| memory.focused())
+            .is_some_and(|focused| self.drawn.iter().any(|(id, _)| *id == focused))
     }
 }
 
@@ -166,10 +172,6 @@ fn take_input(ui: &Ui) -> Vec<Input> {
         taken
     })
 }
-
-/// The sidebar section that holds the file tree, as `app-core` names it
-/// when it remembers the section folded.
-const FILES_SECTION: &str = "files";
 
 /// The Files section's heading, which folds the section, with New note,
 /// New folder and Collapse all beside it. Returns whether the section is
