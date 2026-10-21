@@ -49,6 +49,7 @@ pub struct NouraUi {
     ignored: ignored_files::IgnoredFilesView,
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
+    shipped_plugins: plugins::ShippedView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// Keys typed in the same frame as the shortcut that opened the
@@ -70,6 +71,7 @@ impl NouraUi {
             ignored: ignored_files::IgnoredFilesView::default(),
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
+            shipped_plugins: plugins::ShippedView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             type_ahead: Vec::new(),
@@ -78,9 +80,10 @@ impl NouraUi {
         }
     }
 
-    /// Whether a workspace is opening in the background.
+    /// Whether work runs in the background: a workspace opening, or
+    /// plugin calls whose answers the window hasn't shown yet.
     pub fn is_busy(&self) -> bool {
-        self.app.is_busy()
+        self.app.is_busy() || self.app.is_plugin_work_pending()
     }
 
     /// The app this window draws.
@@ -165,7 +168,7 @@ impl NouraUi {
             return;
         }
         apply_preferences(ui.ctx(), &self.app);
-        if self.app.is_busy() {
+        if self.app.is_busy() || self.app.is_plugin_work_pending() {
             // The change stream wakes the window when the work finishes;
             // this also keeps the loading spinner turning.
             ui.ctx().request_repaint_after(Duration::from_millis(100));
@@ -190,6 +193,7 @@ impl NouraUi {
         updates::restart_offer(ui, &mut self.app);
         settings::show(ui, &mut self.app, &mut self.settings, &mut *self.picker);
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
+        plugins::shipped_dialog(ui, &mut self.app, &mut self.shipped_plugins);
         palette::show(ui, &mut self.app, &mut self.palette);
         self.close_requested_windows(ui.ctx());
     }

@@ -12,9 +12,29 @@ use std::{
 };
 
 use plugin_host::{
-    FileRead, Listed, Node, NodeKind, ObjectRead, PluginHost, PluginInstance, ServiceError,
-    WorkspacePath, WorkspaceReads,
+    Backend, FileRead, Limits, Listed, Node, NodeKind, ObjectRead, PluginHost, RunningPlugin,
+    ServiceError, Services, WorkspacePath, WorkspaceReads,
 };
+
+/// The code generator the tests run plugins on: Wasmtime's Pulley
+/// interpreter when the `pulley` feature is on, as CI runs the seam 3
+/// suite a second time, and Cranelift otherwise.
+pub fn backend() -> Backend {
+    #[cfg(feature = "pulley")]
+    return Backend::Pulley;
+    #[cfg(not(feature = "pulley"))]
+    Backend::Cranelift
+}
+
+/// A host on [`backend`] whose library is `library`.
+pub fn host(library: &Path) -> PluginHost {
+    host_with(library, Limits::default())
+}
+
+/// [`host`] with these limits.
+pub fn host_with(library: &Path, limits: Limits) -> PluginHost {
+    PluginHost::with_backend(library, backend(), limits).expect("the host starts")
+}
 
 /// The hello plugin's manifest, as `crates/plugins/hello` ships it.
 pub const HELLO_MANIFEST: &str = include_str!("../../../plugins/hello/plugin.toml");
@@ -74,22 +94,42 @@ pub fn running(
     component: &[u8],
     capabilities: &[&str],
     workspace: Option<Arc<dyn WorkspaceReads>>,
-) -> (PluginInstance, [tempfile::TempDir; 2]) {
+) -> (Arc<RunningPlugin>, [tempfile::TempDir; 2]) {
+    start(
+        "probe",
+        component,
+        capabilities,
+        Services {
+            workspace,
+            ..Services::default()
+        },
+        Limits::default(),
+    )
+}
+
+/// A plugin with the ID `id` installed from `component` and started with
+/// every capability its manifest declares, using `services`, under
+/// `limits`. Its folders last as long as the returned guard.
+pub fn start(
+    id: &str,
+    component: &[u8],
+    capabilities: &[&str],
+    services: Services,
+    limits: Limits,
+) -> (Arc<RunningPlugin>, [tempfile::TempDir; 2]) {
     let folder = tempfile::tempdir().unwrap();
     let library = tempfile::tempdir().unwrap();
     write_folder(
         folder.path(),
-        &manifest("probe", "plugin.wasm", capabilities),
+        &manifest(id, "plugin.wasm", capabilities),
         "plugin.wasm",
         component,
     );
-    let host = PluginHost::new(library.path()).unwrap();
+    let host = host_with(library.path(), limits);
     host.install(&host.inspect(folder.path()).unwrap()).unwrap();
-    let loaded = host.load("probe").unwrap();
-    let instance = host
-        .start(&loaded, &loaded.manifest().capabilities, workspace)
-        .unwrap();
-    (instance, [folder, library])
+    let loaded = host.load(id).unwrap();
+    let plugin = host.start(&loaded, &loaded.manifest().capabilities, services);
+    (plugin, [folder, library])
 }
 
 /// The text of each text node in `nodes`, in order.

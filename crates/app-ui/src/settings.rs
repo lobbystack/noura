@@ -150,8 +150,25 @@ fn content(
         settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
+        id if app.is_plugin_settings(id) => plugin_page(ui, app, id),
         // Sections that later areas register draw themselves later.
         _ => {}
+    }
+}
+
+/// A plugin's page in Settings, drawn from its nodes. Presses go back to
+/// the plugin by node ID.
+fn plugin_page(ui: &mut Ui, app: &mut App, id: &str) {
+    let Some(view) = app.plugin_settings_view(id) else {
+        muted(ui, "The plugin that adds this page isn't running.");
+        return;
+    };
+    let asked = crate::plugin_view::draw(ui, ("plugin-settings", id), &view);
+    if let Some(node) = asked.pressed {
+        app.press_plugin_settings_button(id, &node);
+    }
+    if let Some(url) = asked.link {
+        app.open_link(&url);
     }
 }
 

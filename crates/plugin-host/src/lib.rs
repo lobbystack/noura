@@ -4,14 +4,17 @@
 //! WebAssembly component built against `noura:plugin`, whose WIT lives in
 //! `plugin-sdk`. [`PluginHost`] reads such a folder, compiles the
 //! component on this device and keeps it in its library, and starts each
-//! plugin in its own store with the capabilities you approved. The
-//! services behind the capability interfaces, such as [`WorkspaceReads`],
-//! come from the app.
+//! plugin as a [`RunningPlugin`] with the capabilities you approved. Each
+//! call runs in the plugin's own store, under a memory cap and a deadline.
+//! The services behind the capability interfaces, such as
+//! [`WorkspaceReads`] and `local-core`'s web access boundary, come from the
+//! app, and a [`Router`] carries one plugin's command calls to another.
 
 mod error;
 mod host;
 mod instance;
 mod manifest;
+mod running;
 mod runtime;
 mod services;
 pub mod trial;
@@ -19,10 +22,15 @@ mod view;
 
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
-pub use instance::{Event, Node, NodeKind, Page, PluginError, PluginInstance};
+pub use instance::{
+    Command, Event, InboxSection, Node, NodeKind, Page, PluginError, Services, Tool,
+};
 pub use manifest::{
-    Capability, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
-    valid_plugin_id,
+    Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
+    valid_command_id, valid_plugin_id,
+};
+pub use running::{
+    CalledListener, FAILURE_WINDOW, Health, MAX_FAILURES, Router, RunningPlugin, Surface,
 };
 pub use runtime::{Backend, Limits};
 pub use services::{

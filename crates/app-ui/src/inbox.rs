@@ -12,6 +12,7 @@ use egui::{
 
 use crate::{
     common::muted,
+    plugin_view,
     theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, radius},
 };
 
@@ -20,10 +21,15 @@ const COLUMN_WIDTH: f32 = 640.0;
 /// The space between the Inbox's parts.
 const GAP: f32 = 20.0;
 
-/// A link you chose, and how to open what it names.
+/// A link you chose, and how to open what it names, or what you did in a
+/// plugin's section.
 enum Follow {
     Link(FileLink, OpenAs),
     Note(String, OpenAs),
+    /// A button pressed in a plugin's section: (plugin, section, node).
+    Press(String, String, String),
+    /// A link clicked in a plugin's section.
+    Web(String),
 }
 
 pub(crate) fn show(ui: &mut Ui, app: &mut App) {
@@ -43,6 +49,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
     match follow {
         Some(Follow::Link(link, how)) => app.follow_link(&link, how),
         Some(Follow::Note(path, how)) => app.open_file(&path, how),
+        Some(Follow::Press(plugin, section, node)) => {
+            app.press_inbox_button(&plugin, &section, &node);
+        }
+        Some(Follow::Web(url)) => app.open_link(&url),
         None => {}
     }
 }
@@ -56,7 +66,7 @@ fn page(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
     }
     for section in &inbox.sections {
         ui.add_space(GAP);
-        plugin_section(ui, section);
+        follow = plugin_section(ui, section).or(follow);
     }
     ui.add_space(GAP);
     follow.or(recent(ui, inbox))
@@ -144,36 +154,28 @@ fn needs_attention(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
     follow
 }
 
-/// A plugin's section: its lines, or why they couldn't load.
-fn plugin_section(ui: &mut Ui, section: &InboxSection) {
+/// A plugin's section: the view it drew, or why it couldn't load or draw,
+/// in its own place.
+fn plugin_section(ui: &mut Ui, section: &InboxSection) -> Option<Follow> {
     heading(ui, &section.title, 1, BODY_SIZE);
     ui.add_space(8.0);
-    match &section.content {
-        Ok(lines) if lines.is_empty() => {}
-        Ok(lines) => rows(ui, |ui| {
-            for line in lines {
-                ui.add(Label::new(RichText::new(line).size(BODY_SIZE)).wrap());
-            }
-        }),
-        Err(message) => {
-            let palette = Palette::of(ui.ctx());
-            let alert = UiBuilder::new()
-                .accessibility_role(Role::Alert)
-                .accessibility_label(message.clone());
-            ui.scope_builder(alert, |ui| {
-                rows(ui, |ui| {
-                    ui.add(
-                        Label::new(
-                            RichText::new(message)
-                                .size(BODY_SIZE)
-                                .color(palette.destructive),
-                        )
-                        .wrap(),
-                    );
-                });
-            });
-        }
+    let empty = section
+        .content
+        .as_ref()
+        .is_ok_and(|view| view.root().children.is_empty());
+    if empty {
+        return None;
     }
+    let salt = ("inbox-section", &section.plugin_id, &section.section_id);
+    let asked = plugin_view::draw(ui, salt, &section.content);
+    if let Some(node) = asked.pressed {
+        return Some(Follow::Press(
+            section.plugin_id.clone(),
+            section.section_id.clone(),
+            node,
+        ));
+    }
+    asked.link.map(Follow::Web)
 }
 
 fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {

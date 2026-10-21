@@ -5,7 +5,7 @@
 
 mod support;
 
-use app_core::{App, CapabilityLine, OpenAs, PluginRow, settings_section};
+use app_core::{App, CapabilityLine, Grant, OpenAs, PluginRow, settings_section};
 use support::{
     Fixture,
     plugins::{self, HELLO_PAGE, PluginFolder},
@@ -18,6 +18,15 @@ fn line(name: &str, description: &str) -> CapabilityLine {
     CapabilityLine {
         name: name.into(),
         description: description.into(),
+        grant: Grant::Capability(name.into()),
+    }
+}
+
+fn host_line(host: &str) -> CapabilityLine {
+    CapabilityLine {
+        name: "network".into(),
+        description: format!("Connect to {host}."),
+        grant: Grant::Host(host.into()),
     }
 }
 
@@ -184,9 +193,12 @@ fn approving_installs_the_plugin_on_this_device_and_changes_no_workspace_file() 
             version: Some("0.1.0".into()),
             folder: Some(folder.path().to_str().unwrap().to_owned()),
             approved: hello_capabilities(),
+            revoked: Vec::new(),
             installed: true,
+            shipped: false,
             enabled: false,
             running: false,
+            failed: false,
             problem: None,
             update: Vec::new(),
         }]
@@ -220,6 +232,7 @@ fn turning_a_plugin_on_writes_the_enabled_list_durably_and_adds_its_page() {
 
     let (turned_on, synced) =
         local_core::durability_probe::record(|| app.set_plugin_enabled("hello", true));
+    settle(&mut app);
 
     assert!(turned_on);
     assert!(enabled(&fixture, "hello"));
@@ -255,9 +268,11 @@ fn a_button_press_reaches_the_plugin_and_its_page_redraws() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
 
     app.press_plugin_button(HELLO_PAGE, "add-one");
     app.press_plugin_button(HELLO_PAGE, "add-one");
+    settle(&mut app);
 
     assert_eq!(
         plugins::texts(&app, HELLO_PAGE),
@@ -277,6 +292,7 @@ fn turning_a_plugin_off_stops_it_and_removes_its_page_leaving_every_other_file_a
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     app.open_page(HELLO_PAGE, OpenAs::Kept);
     assert_eq!(app.current_page(), HELLO_PAGE);
     let files = fixture.snapshot();
@@ -309,6 +325,7 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let root = app.workspace().unwrap().root().to_owned();
     drop(app);
     // Approval-shaped data and the plugin's code planted in the workspace.
@@ -336,9 +353,12 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
             version: None,
             folder: None,
             approved: Vec::new(),
+            revoked: Vec::new(),
             installed: false,
+            shipped: false,
             enabled: true,
             running: false,
+            failed: false,
             problem: None,
             update: Vec::new(),
         }
@@ -360,6 +380,7 @@ fn uninstalling_removes_code_cache_and_approvals_and_leaves_the_workspace_byte_i
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let before = everything(&fixture);
 
     assert!(app.uninstall_plugin("hello"));
@@ -397,6 +418,7 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     app.open_page(HELLO_PAGE, OpenAs::Kept);
 
     folder.write("hello_plugin.wasm", &probe);
@@ -430,6 +452,7 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let wider = format!(
         "{}\n[[capabilities]]\nname = \"network\"\nhosts = [\"api.example.com\"]\n",
         plugins::HELLO_MANIFEST
@@ -438,7 +461,7 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     folder.write("hello_plugin.wasm", &probe);
     folder.write("plugin.toml", wider.as_bytes());
 
-    let network = line("network", "Connect to api.example.com.");
+    let network = host_line("api.example.com");
     plugins::wait_until(&mut app, "the update asks for approval", |app| {
         row(&app.plugins(), "hello").update == [network.clone()]
     });
@@ -452,6 +475,7 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     );
 
     assert!(app.approve_plugin_update("hello"));
+    settle(&mut app);
 
     assert_eq!(
         plugins::texts(&app, HELLO_PAGE),
@@ -476,6 +500,7 @@ fn a_new_build_that_fails_to_install_installs_once_you_save_it_again() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let library = fixture.app_data.path().join("plugins").join("library");
     let set_mode = |mode| {
         std::fs::set_permissions(&library, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -521,6 +546,7 @@ fn an_unreadable_approvals_file_runs_no_plugin_and_the_plugin_installs_again() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     drop(app);
     let records = fixture
         .app_data
@@ -561,6 +587,7 @@ fn plugins_read_entries_files_and_objects_of_the_real_workspace() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("probe", true));
+    settle(&mut app);
 
     let lines = plugins::texts(&app, "plugin:probe:workspace").unwrap();
 
@@ -640,6 +667,7 @@ fn a_name_a_wit_string_cant_hold_lists_as_the_unsupported_path_error() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("probe", true));
+    settle(&mut app);
 
     let lines = plugins::texts(&app, "plugin:probe:workspace").unwrap();
 

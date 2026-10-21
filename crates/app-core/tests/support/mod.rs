@@ -281,7 +281,7 @@ pub fn settle(app: &mut App) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         app.poll();
-        if !app.is_busy() {
+        if !app.is_busy() && !app.is_plugin_work_pending() {
             return;
         }
         assert!(Instant::now() < deadline, "background work never finished");

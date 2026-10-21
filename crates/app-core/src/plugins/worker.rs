@@ -1,0 +1,326 @@
+//! The thread each running plugin's calls run on, so a plugin that loops,
+//! allocates or crashes never holds up a window. The service sends it
+//! jobs; it calls the plugin, draws the plugin's views and sends back what
+//! changed.
+
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender},
+    },
+    time::Duration,
+};
+
+use plugin_host::{
+    Command, Event, Health, InboxSection, Page, PluginError, RunningPlugin, Surface, View,
+};
+
+use super::{PluginView, Wake};
+
+/// Something for a running plugin to do.
+pub(super) enum Job {
+    /// Ask what the plugin registers under each capability, then draw
+    /// its views.
+    Refresh,
+    /// Tell the plugin about `event` at `surface`, then draw its views.
+    Event(Surface, Event),
+    /// Run the command palette's command `id`, then draw its views.
+    Command(String),
+    /// Draw the plugin's views again.
+    Redraw,
+}
+
+/// A tool a plugin offers, with its schema compiled.
+#[derive(Clone)]
+pub(super) struct ToolEntry {
+    pub(super) name: String,
+    pub(super) description: String,
+    pub(super) input_schema: String,
+    pub(super) validator: Arc<jsonschema::Validator>,
+}
+
+/// What a plugin registered under its registration capabilities.
+#[derive(Clone, Default)]
+pub(super) struct Registrations {
+    pub(super) pages: Vec<Page>,
+    /// The commands it adds to the command palette.
+    pub(super) commands: Vec<Command>,
+    pub(super) sections: Vec<InboxSection>,
+    /// The title of its page in Settings.
+    pub(super) settings: Option<String>,
+    pub(super) tools: Vec<ToolEntry>,
+}
+
+impl Registrations {
+    /// Every place the plugin draws a view.
+    pub(super) fn surfaces(&self) -> Vec<Surface> {
+        let pages = self.pages.iter().map(|page| Surface::Page(page.id.clone()));
+        let sections = self
+            .sections
+            .iter()
+            .map(|section| Surface::InboxSection(section.id.clone()));
+        let settings = self.settings.iter().map(|_| Surface::Settings);
+        pages.chain(sections).chain(settings).collect()
+    }
+
+    /// Keep only what the plugin may still register, after you revoked a
+    /// capability.
+    pub(super) fn keep(&mut self, holds: impl Fn(&str) -> bool) {
+        if !holds("views") {
+            self.pages.clear();
+        }
+        if !holds("commands") {
+            self.commands.clear();
+        }
+        if !holds("inbox-sections") {
+            self.sections.clear();
+        }
+        if !holds("settings") {
+            self.settings = None;
+        }
+        if !holds("tools") {
+            self.tools.clear();
+        }
+    }
+}
+
+/// What a job changed, for the service to show.
+pub(super) struct Outcome {
+    pub(super) id: String,
+    /// Which start of the plugin ran the job. The service ignores an
+    /// outcome from a start it replaced.
+    pub(super) generation: u64,
+    /// New registrations, after [`Job::Refresh`].
+    pub(super) registrations: Option<Registrations>,
+    /// Every view the plugin draws, as drawn now.
+    pub(super) views: BTreeMap<Surface, PluginView>,
+    pub(super) health: Health,
+}
+
+/// The worker's half of a running plugin.
+pub(super) struct Worker {
+    pub(super) id: String,
+    pub(super) generation: u64,
+    pub(super) plugin: Arc<RunningPlugin>,
+    pub(super) jobs: Receiver<Job>,
+    pub(super) outcomes: Sender<Outcome>,
+    pub(super) wake: Option<Wake>,
+    /// Set while a [`Job::Redraw`] waits, so the service queues no more.
+    pub(super) redraw_queued: Arc<AtomicBool>,
+}
+
+impl Worker {
+    /// Take jobs until the service drops the plugin.
+    pub(super) fn run(self) {
+        let mut registrations = Registrations::default();
+        while let Ok(job) = self.jobs.recv() {
+            let mut registered = None;
+            match job {
+                Job::Refresh => {
+                    registrations = register(&self.plugin);
+                    registered = Some(registrations.clone());
+                }
+                Job::Event(surface, event) => {
+                    if let Err(error) = self.plugin.handle_surface_event(&surface, &event) {
+                        tracing::warn!(%error, "a plugin failed to handle an event");
+                    }
+                }
+                Job::Command(id) => match self.plugin.run_command(&id, "") {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(message)) => {
+                        tracing::warn!(%message, "a plugin's command failed");
+                    }
+                    Err(error) => tracing::warn!(%error, "a plugin failed to run a command"),
+                },
+                Job::Redraw => self.redraw_queued.store(false, Ordering::Relaxed),
+            }
+            let views = draw(&self.plugin, &registrations);
+            let outcome = Outcome {
+                id: self.id.clone(),
+                generation: self.generation,
+                registrations: registered,
+                views,
+                health: self.plugin.health(),
+            };
+            if self.outcomes.send(outcome).is_err() {
+                return;
+            }
+            if let Some(wake) = &self.wake {
+                wake();
+            }
+        }
+    }
+}
+
+/// What the plugin registers under each capability it holds. A list the
+/// plugin can't give, because it lacks the capability or failed, is
+/// empty.
+fn register(plugin: &RunningPlugin) -> Registrations {
+    let mut pages = listed(plugin.pages());
+    pages.retain(valid_page);
+    dedup_by(&mut pages, |page| page.id.clone());
+    let mut commands = listed(plugin.commands());
+    commands.retain(|command| command.palette && valid_command(command));
+    dedup_by(&mut commands, |command| command.id.clone());
+    let mut sections = listed(plugin.inbox_sections());
+    sections.retain(|section| valid_id(&section.id) && valid_title(&section.title));
+    dedup_by(&mut sections, |section| section.id.clone());
+    let settings = match plugin.settings_page() {
+        Ok(title) => title.filter(|title| valid_title(title)),
+        Err(error) => {
+            warn_unless_declined(&error);
+            None
+        }
+    };
+    let mut tools: Vec<ToolEntry> = listed(plugin.tools())
+        .into_iter()
+        .filter_map(|tool| {
+            if !valid_tool_name(&tool.name) || tool.description.trim().is_empty() {
+                tracing::warn!("a plugin tool without a usable name or description was left out");
+                return None;
+            }
+            let schema: serde_json::Value = serde_json::from_str(&tool.input_schema).ok()?;
+            match jsonschema::validator_for(&schema) {
+                Ok(validator) => Some(ToolEntry {
+                    name: tool.name,
+                    description: tool.description,
+                    input_schema: tool.input_schema,
+                    validator: Arc::new(validator),
+                }),
+                Err(error) => {
+                    tracing::warn!(error = %error.masked(), "a plugin tool's schema isn't valid");
+                    None
+                }
+            }
+        })
+        .collect();
+    dedup_by(&mut tools, |tool| tool.name.clone());
+    Registrations {
+        pages,
+        commands,
+        sections,
+        settings,
+        tools,
+    }
+}
+
+fn listed<T>(result: Result<Vec<T>, PluginError>) -> Vec<T> {
+    result.unwrap_or_else(|error| {
+        warn_unless_declined(&error);
+        Vec::new()
+    })
+}
+
+/// Note a failed listing, unless the plugin just doesn't register
+/// anything there.
+fn warn_unless_declined(error: &PluginError) {
+    if !matches!(
+        error,
+        PluginError::CapabilityNotDeclared { .. } | PluginError::NotExported { .. }
+    ) {
+        tracing::warn!(%error, "a plugin didn't list what it registers");
+    }
+}
+
+/// Keep the first item with each key.
+fn dedup_by<T>(items: &mut Vec<T>, key: impl Fn(&T) -> String) {
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|item| seen.insert(key(item)));
+}
+
+/// Draw every view the plugin registered.
+fn draw(plugin: &RunningPlugin, registrations: &Registrations) -> BTreeMap<Surface, PluginView> {
+    registrations
+        .surfaces()
+        .into_iter()
+        .map(|surface| {
+            let view = match plugin.render_surface(&surface) {
+                Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+                Err(error) => {
+                    tracing::warn!(%error, "a plugin failed to draw a view");
+                    Err(failure_message(&error))
+                }
+            };
+            (surface, view)
+        })
+        .collect()
+}
+
+/// Why a plugin's call failed, in words for the place its view would be.
+pub(super) fn failure_message(error: &PluginError) -> String {
+    match error {
+        PluginError::Deadline { deadline } => format!(
+            "The plugin took longer than its {} limit, so Noura stopped it.",
+            seconds(*deadline)
+        ),
+        PluginError::MemoryCap { cap_bytes } => format!(
+            "The plugin needed more than its {} MB of memory, so Noura stopped it.",
+            cap_bytes >> 20
+        ),
+        PluginError::Stopped => {
+            "The plugin failed too often and stopped. Start it again in Settings, under Plugins."
+                .to_owned()
+        }
+        PluginError::Busy { .. } => "The plugin was busy. Try again.".to_owned(),
+        PluginError::CapabilityNotDeclared { capability } => {
+            format!("The plugin isn't allowed the {capability} capability.")
+        }
+        PluginError::NotExported { .. } => "The plugin doesn't draw this view.".to_owned(),
+        PluginError::Instantiate(_) | PluginError::Call(_) => {
+            "The plugin failed while drawing this view.".to_owned()
+        }
+    }
+}
+
+/// A duration in words, such as "1 second".
+fn seconds(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis % 1000 == 0 {
+        match millis / 1000 {
+            1 => "1 second".to_owned(),
+            seconds => format!("{seconds} seconds"),
+        }
+    } else {
+        format!("{millis} ms")
+    }
+}
+
+/// Whether a plugin's page has an ID and a title the rail can show.
+fn valid_page(page: &Page) -> bool {
+    let ok = valid_id(&page.id) && valid_title(&page.title);
+    if !ok {
+        tracing::warn!("a plugin page without a usable ID or title was left out");
+    }
+    ok
+}
+
+fn valid_command(command: &Command) -> bool {
+    let ok = plugin_host::valid_command_id(&command.id) && valid_title(&command.title);
+    if !ok {
+        tracing::warn!("a plugin command without a usable ID or title was left out");
+    }
+    ok
+}
+
+/// An ID without spaces or control characters, up to 64 bytes.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && !id.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+/// A title that isn't blank, up to 80 characters, without control
+/// characters.
+fn valid_title(title: &str) -> bool {
+    let title = title.trim();
+    !title.is_empty() && title.chars().count() <= 80 && !title.chars().any(char::is_control)
+}
+
+/// A tool name: a lowercase letter, then lowercase letters, digits,
+/// hyphens or underscores, up to 64 characters.
+fn valid_tool_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= 64
+        && chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}

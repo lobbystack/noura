@@ -1,8 +1,9 @@
-//! A plugin page: the view its plugin drew, with the kit's widgets and the
-//! theme's tokens, or the reason it can't be drawn in its place. Presses go
-//! back to the plugin by node ID.
+//! Plugin views: a plugin page, an Inbox section or a plugin's page in
+//! Settings, drawn from the nodes the plugin returned with the kit's
+//! widgets and the theme's tokens, or the reason it can't be drawn in its
+//! place. Presses go back to the plugin by node ID.
 
-use app_core::{App, ViewKind, ViewNode};
+use app_core::{App, PluginView, ViewKind, ViewNode};
 use egui::{Frame, Margin, RichText, Stroke, Ui, UiBuilder, accesskit::Role};
 
 use crate::{
@@ -11,40 +12,55 @@ use crate::{
     theme::{Palette, radius},
 };
 
-/// What a press or a click in the view asks for.
+/// What a press or a click in a view asks for.
 #[derive(Default)]
-struct Asked {
+pub(crate) struct Asked {
     /// The button pressed, by node ID.
-    pressed: Option<String>,
+    pub(crate) pressed: Option<String>,
     /// The link clicked in a Markdown node.
-    link: Option<String>,
+    pub(crate) link: Option<String>,
 }
 
+/// The plugin page `page_id`.
 pub(crate) fn show(ui: &mut Ui, app: &mut App, page_id: &str) {
-    match app.plugin_view(page_id) {
-        None => {
-            muted(ui, "The plugin that adds this page isn't running.");
-        }
-        Some(Err(reason)) => problem(ui, &reason),
-        Some(Ok(view)) => {
-            let mut asked = Asked::default();
-            ui.push_id(("plugin-view", page_id), |ui| {
+    let Some(view) = app.plugin_view(page_id) else {
+        muted(ui, "The plugin that adds this page isn't running.");
+        return;
+    };
+    let asked = draw(ui, ("plugin-view", page_id), &view);
+    if let Some(node) = asked.pressed {
+        app.press_plugin_button(page_id, &node);
+    }
+    if let Some(url) = asked.link {
+        app.open_link(&url);
+    }
+}
+
+/// Draw `view`, or why it can't be drawn, under the ID `salt`, and say
+/// what it asked for.
+pub(crate) fn draw(
+    ui: &mut Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    view: &PluginView,
+) -> Asked {
+    let mut asked = Asked::default();
+    match view {
+        Err(reason) => problem(ui, reason),
+        Ok(view) => {
+            ui.push_id(salt, |ui| {
                 node(ui, view.root(), &mut asked);
             });
-            if let Some(node) = asked.pressed {
-                app.press_plugin_button(page_id, &node);
-            }
-            if let Some(url) = asked.link {
-                app.open_link(&url);
-            }
         }
     }
+    asked
 }
 
 /// The reason a view can't be drawn, where the view would be.
 fn problem(ui: &mut Ui, reason: &str) {
     let palette = Palette::of(ui.ctx());
-    let builder = UiBuilder::new().accessibility_role(Role::Alert);
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Alert)
+        .accessibility_label(reason);
     ui.scope_builder(builder, |ui| {
         Frame::new()
             .stroke(Stroke::new(1.0, palette.border))
@@ -53,7 +69,7 @@ fn problem(ui: &mut Ui, reason: &str) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
-                    RichText::new("Noura can't show this page")
+                    RichText::new("Noura can't show this")
                         .strong()
                         .color(palette.destructive),
                 );

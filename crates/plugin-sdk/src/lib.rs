@@ -3,7 +3,9 @@
 //!
 //! `wit/plugin.wit` defines `noura:plugin@0.1.0`. A Rust plugin is a
 //! `cdylib` crate built for `wasm32-wasip2` that implements [`Plugin`] and
-//! names its type once with [`export!`]:
+//! names its type once with [`export!`]. Each method of [`Plugin`] has a
+//! default, so a plugin writes only the ones for the capabilities its
+//! manifest declares:
 //!
 //! ```
 //! use plugin_sdk::{Event, Node, Page, Plugin, View};
@@ -20,15 +22,14 @@
 //!         view.text(View::ROOT, "greeting", "Hello from a plugin.");
 //!         view.into_nodes()
 //!     }
-//!
-//!     fn handle_event(_page: String, _event: Event) {}
 //! }
 //!
 //! plugin_sdk::export!(Hello);
 //! ```
 //!
-//! Each capability interface sits in its own module, such as [`workspace`],
-//! and works only when the plugin's manifest declares its capability.
+//! Each capability interface the plugin calls sits in its own module, such
+//! as [`workspace`] and [`network`], and works only when the plugin holds
+//! its capability.
 
 // The generated bindings and their `export!` macro name this crate as
 // `plugin_sdk`, so plugin crates need no dependency on `wit-bindgen`.
@@ -45,18 +46,104 @@ wit_bindgen::generate!({
 
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::exports::noura::plugin::{
+        commands::Guest as Commands, inbox::Guest as Inbox, settings::Guest as Settings,
+        tools::Guest as Tools, view::Guest as View,
+    };
     pub use wit_bindgen::rt;
 }
 
-pub use exports::noura::plugin::view::{Event, Guest as Plugin, Page};
+pub use exports::noura::plugin::commands::Command;
+pub use exports::noura::plugin::inbox::Section as InboxSection;
+pub use exports::noura::plugin::tools::Tool;
+pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::Error;
-pub use noura::plugin::ui::{Node, NodeKind};
+pub use noura::plugin::ui::{Event, Node, NodeKind};
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
 pub mod workspace {
     pub use crate::noura::plugin::workspace::{
         Entry, EntryKind, File, Object, list_entries, read_file, read_object,
     };
+}
+
+/// Requests to the HTTPS hosts the manifest's `network` capability lists.
+pub mod network {
+    pub use crate::noura::plugin::network::{Header, Method, Request, Response, fetch};
+}
+
+/// Running commands that other plugins offer. Needs the `commands`
+/// capability with each command, or its plugin, among its `targets`.
+pub mod command_calls {
+    pub use crate::noura::plugin::command_calls::call;
+}
+
+/// What a plugin adds to Noura. Noura calls each method only when the
+/// plugin holds the capability it needs; the defaults add nothing.
+pub trait Plugin {
+    /// The pages the plugin adds to the rail. Needs `views`.
+    fn pages() -> Vec<Page> {
+        Vec::new()
+    }
+
+    /// The nodes of a page's view. Needs `views`.
+    fn render(_page: String) -> Vec<Node> {
+        Vec::new()
+    }
+
+    /// Something happened in a page's view. Needs `views`.
+    fn handle_event(_page: String, _event: Event) {}
+
+    /// The commands the plugin offers to the command palette and to other
+    /// plugins. Needs `commands`.
+    fn commands() -> Vec<Command> {
+        Vec::new()
+    }
+
+    /// Run the command `id` with `input`, which is empty from the command
+    /// palette. Needs `commands`.
+    fn run_command(id: String, _input: String) -> Result<String, String> {
+        Err(format!("This plugin has no command {id}."))
+    }
+
+    /// The sections the plugin adds to the Inbox. Needs `inbox-sections`.
+    fn inbox_sections() -> Vec<InboxSection> {
+        Vec::new()
+    }
+
+    /// The nodes of an Inbox section. Needs `inbox-sections`.
+    fn render_inbox_section(_section: String) -> Vec<Node> {
+        Vec::new()
+    }
+
+    /// Something happened in an Inbox section. Needs `inbox-sections`.
+    fn handle_inbox_event(_section: String, _event: Event) {}
+
+    /// The title of the plugin's page in Settings, if it has one. Needs
+    /// `settings`.
+    fn settings_page() -> Option<String> {
+        None
+    }
+
+    /// The nodes of the plugin's page in Settings. Needs `settings`.
+    fn render_settings() -> Vec<Node> {
+        Vec::new()
+    }
+
+    /// Something happened on the plugin's page in Settings. Needs
+    /// `settings`.
+    fn handle_settings_event(_event: Event) {}
+
+    /// The tools the plugin offers to AI assistants. Needs `tools`.
+    fn tools() -> Vec<Tool> {
+        Vec::new()
+    }
+
+    /// Run the tool `name` with JSON `arguments` that matched its schema.
+    /// Needs `tools`.
+    fn call_tool(name: String, _arguments: String) -> Result<String, String> {
+        Err(format!("This plugin has no tool {name}."))
+    }
 }
 
 /// Exports a type that implements [`Plugin`] as the plugin's component.
@@ -67,7 +154,71 @@ pub mod workspace {
 macro_rules! export {
     ($ty:ident) => {
         #[cfg(target_family = "wasm")]
-        $crate::__export_plugin!($ty);
+        const _: () = {
+            struct __NouraExports;
+
+            impl $crate::__private::View for __NouraExports {
+                fn pages() -> ::std::vec::Vec<$crate::Page> {
+                    <$ty as $crate::Plugin>::pages()
+                }
+                fn render(page: ::std::string::String) -> ::std::vec::Vec<$crate::Node> {
+                    <$ty as $crate::Plugin>::render(page)
+                }
+                fn handle_event(page: ::std::string::String, event: $crate::Event) {
+                    <$ty as $crate::Plugin>::handle_event(page, event)
+                }
+            }
+
+            impl $crate::__private::Commands for __NouraExports {
+                fn commands() -> ::std::vec::Vec<$crate::Command> {
+                    <$ty as $crate::Plugin>::commands()
+                }
+                fn run(
+                    id: ::std::string::String,
+                    input: ::std::string::String,
+                ) -> ::std::result::Result<::std::string::String, ::std::string::String> {
+                    <$ty as $crate::Plugin>::run_command(id, input)
+                }
+            }
+
+            impl $crate::__private::Inbox for __NouraExports {
+                fn sections() -> ::std::vec::Vec<$crate::InboxSection> {
+                    <$ty as $crate::Plugin>::inbox_sections()
+                }
+                fn render_section(section: ::std::string::String) -> ::std::vec::Vec<$crate::Node> {
+                    <$ty as $crate::Plugin>::render_inbox_section(section)
+                }
+                fn handle_section_event(section: ::std::string::String, event: $crate::Event) {
+                    <$ty as $crate::Plugin>::handle_inbox_event(section, event)
+                }
+            }
+
+            impl $crate::__private::Settings for __NouraExports {
+                fn page() -> ::std::option::Option<::std::string::String> {
+                    <$ty as $crate::Plugin>::settings_page()
+                }
+                fn render_settings() -> ::std::vec::Vec<$crate::Node> {
+                    <$ty as $crate::Plugin>::render_settings()
+                }
+                fn handle_settings_event(event: $crate::Event) {
+                    <$ty as $crate::Plugin>::handle_settings_event(event)
+                }
+            }
+
+            impl $crate::__private::Tools for __NouraExports {
+                fn tools() -> ::std::vec::Vec<$crate::Tool> {
+                    <$ty as $crate::Plugin>::tools()
+                }
+                fn call_tool(
+                    name: ::std::string::String,
+                    arguments: ::std::string::String,
+                ) -> ::std::result::Result<::std::string::String, ::std::string::String> {
+                    <$ty as $crate::Plugin>::call_tool(name, arguments)
+                }
+            }
+
+            $crate::__export_plugin!(__NouraExports);
+        };
         #[cfg(not(target_family = "wasm"))]
         const _: fn() = || {
             let _ = <$ty as $crate::Plugin>::pages;

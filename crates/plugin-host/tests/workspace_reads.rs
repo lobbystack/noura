@@ -57,7 +57,7 @@ fn listing_returns_entries_with_ids_and_revisions_and_an_error_for_a_name_it_can
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &READS, Some(Arc::new(workspace())));
+    let (instance, _folders) = plugins::running(&probe, &READS, Some(Arc::new(workspace())));
 
     let nodes = instance.render("list").unwrap();
 
@@ -76,7 +76,7 @@ fn a_file_reads_by_path_with_its_revision() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &READS, Some(Arc::new(workspace())));
+    let (instance, _folders) = plugins::running(&probe, &READS, Some(Arc::new(workspace())));
 
     let nodes = instance.render("read-file:Notes/Plan.md").unwrap();
     assert_eq!(
@@ -92,7 +92,7 @@ fn an_object_reads_by_its_stable_id_with_its_revision() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &READS, Some(Arc::new(workspace())));
+    let (instance, _folders) = plugins::running(&probe, &READS, Some(Arc::new(workspace())));
 
     let nodes = instance.render("read-object:note_01").unwrap();
 
@@ -111,7 +111,7 @@ fn a_path_that_isnt_workspace_relative_never_reaches_the_workspace() {
         return;
     };
     let workspace = Arc::new(workspace());
-    let (mut instance, _folders) = plugins::running(&probe, &READS, Some(workspace.clone()));
+    let (instance, _folders) = plugins::running(&probe, &READS, Some(workspace.clone()));
 
     for bad in [
         "../secret.md",

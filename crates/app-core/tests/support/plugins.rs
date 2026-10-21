@@ -95,6 +95,7 @@ pub fn install(app: &mut App, folder: &Path) {
     let review = app.plugin_install().expect("the install dialog opens");
     assert_eq!(review.problem, None, "the folder is refused");
     assert!(app.approve_plugin_install(), "the plugin installs");
+    super::settle(app);
 }
 
 /// The text of each text node in a plugin page's view, top to bottom, or
@@ -141,7 +142,7 @@ pub fn files_under(folder: &Path) -> Vec<String> {
 pub fn wait_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        app.poll();
+        super::settle(app);
         if done(app) {
             return;
         }

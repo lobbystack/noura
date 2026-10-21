@@ -22,7 +22,7 @@ fn a_flat_node_list_becomes_a_tree_of_panels_text_and_buttons() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     let view = View::from_nodes(instance.render("probe").unwrap()).expect("the view is valid");
 
@@ -51,7 +51,7 @@ fn presses_reach_the_plugin_by_node_id() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     instance
         .handle_event("probe", &Event::Pressed("press".into()))
@@ -66,7 +66,7 @@ fn a_node_list_that_breaks_the_rules_is_refused_with_a_reason() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     for (case, reason) in [
         ("out-of-range", "child 5"),
@@ -85,12 +85,41 @@ fn a_node_list_that_breaks_the_rules_is_refused_with_a_reason() {
 #[test]
 fn a_node_of_a_kind_the_host_doesnt_know_fails_the_render_and_the_plugin_keeps_running() {
     let component = wat::parse_str(UNKNOWN_KIND).unwrap();
-    let (mut instance, _folders) = plugins::running(&component, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&component, &VIEWS, None);
 
     let error = instance.render("any").expect_err("the render fails");
 
     assert!(matches!(error, PluginError::Call(_)), "{error:?}");
     assert_eq!(instance.pages().expect("the plugin still answers"), []);
+}
+
+#[test]
+fn a_component_that_exports_only_its_view_registers_nothing_else() {
+    let component = wat::parse_str(UNKNOWN_KIND).unwrap();
+    let (plugin, _folders) = plugins::running(
+        &component,
+        &[
+            "name = \"views\"",
+            "name = \"commands\"",
+            "name = \"tools\"",
+        ],
+        None,
+    );
+
+    assert_eq!(plugin.pages(), Ok(Vec::new()));
+    assert_eq!(
+        plugin.commands(),
+        Err(PluginError::NotExported {
+            interface: "noura:plugin/commands"
+        })
+    );
+    assert_eq!(
+        plugin.tools(),
+        Err(PluginError::NotExported {
+            interface: "noura:plugin/tools"
+        })
+    );
+    assert_eq!(plugin.health().recent_failures, 0);
 }
 
 /// A component exporting `noura:plugin/view@0.1.0` whose `render` returns
