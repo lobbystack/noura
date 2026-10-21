@@ -1494,8 +1494,8 @@ mod tests {
             (
                 "---\nid: note_missing_end\n# Broken\n",
                 Some("Frontmatter has no closing delimiter"),
-                "Draft",
-                "Visible body",
+                "draft",
+                "# Draft\n\nVisible body\n",
                 revision(unmanaged).as_str(),
             )
         );
@@ -1537,9 +1537,9 @@ mod tests {
         let second_id = new_object_id("task");
         let beta_id = new_object_id("task");
         for (id, title, property, path) in [
-            (&beta_id, "Beta", "due", "z.md"),
-            (&second_id, "Alpha", "start", "b.md"),
-            (&first_id, "Alpha", "due", "a.md"),
+            (&beta_id, "Beta", "due", "z/Beta.md"),
+            (&second_id, "Alpha", "start", "b/Alpha.md"),
+            (&first_id, "Alpha", "due", "a/Alpha.md"),
         ] {
             let object = WorkspaceObject {
                 id: id.clone(),

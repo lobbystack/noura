@@ -480,7 +480,7 @@ mod tests {
         let DraftReconcileResult::Merged { current, body } = result else {
             panic!("expected a clean merge");
         };
-        assert_eq!(body, "first in app\n\nsecond from file");
+        assert_eq!(body, "first in app\n\nsecond from file\n");
         assert_eq!(current.properties["tag"], "external");
         let history = workspace
             .path()
@@ -579,7 +579,7 @@ mod tests {
             })
             .unwrap();
         // Mutations return the canonical parse of the written file.
-        assert_eq!(replaced.value.body, "local");
+        assert_eq!(replaced.value.body, "local\n");
         let snapshots = std::fs::read_dir(
             workspace
                 .path()
@@ -631,7 +631,7 @@ mod tests {
                 resolution: ConflictResolution::UseExternal,
             })
             .unwrap();
-        assert_eq!(resolved.value.body, "external");
+        assert_eq!(resolved.value.body, "external\n");
         let history = workspace
             .path()
             .join(".noura/history")

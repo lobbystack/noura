@@ -1,6 +1,8 @@
 //! Seam 1: checking for, downloading and installing app updates, with a
 //! fake update source in place of the signed feed.
 
+mod support;
+
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -877,4 +879,63 @@ fn a_build_without_updates_says_why_and_never_checks() {
     );
     assert_eq!(app.updates().current_version(), "0.2.0");
     assert_eq!(app.updates().next_check(), None);
+}
+
+/// Restart saves the notes of every window before it installs, as Quit
+/// does.
+#[test]
+fn restart_saves_every_window_s_notes_before_installing() {
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    open_workspace(&mut app, folder.path(), now);
+    let mut second = app.new_window().expect("a workspace is open");
+    let tab = support::open_from_tree(&mut second, "Notes/Plan.md");
+    second.edit_note(tab, 1, "typed", now);
+
+    app.restart_to_update();
+    app.poll_at(now);
+    assert_eq!(
+        source.calls(),
+        ["check", "download"],
+        "nothing installs while a note waits to save"
+    );
+
+    // The second window saves its note, and the first goes ahead then.
+    support::settle_saves(&mut second);
+    settle(&mut app, now);
+    assert_eq!(
+        source.calls(),
+        ["check", "download", "install saw typed", "restart"]
+    );
+}
+
+/// A note that can't save asks before Restart goes ahead, as with Quit,
+/// and Keep editing keeps this version running.
+#[cfg(unix)]
+#[test]
+fn a_note_that_cant_save_stops_restart_and_asks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    open_workspace(&mut app, folder.path(), now);
+    let tab = support::open_from_tree(&mut app, "Notes/Plan.md");
+    let notes = folder.path().join("Notes");
+    let mode = |mode| std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(&notes, mode(0o555)).unwrap();
+    app.edit_note(tab, 1, "typed", now);
+
+    app.restart_to_update();
+    support::settle_saves(&mut app);
+    let asked = app.unsaved_prompt().is_some();
+    app.keep_editing();
+    settle(&mut app, now);
+    std::fs::set_permissions(&notes, mode(0o755)).unwrap();
+
+    assert!(asked, "the failed save asks");
+    assert!(app.note(tab).unwrap().is_unsaved());
+    assert!(matches!(app.updates().status(), UpdateStatus::Ready { .. }));
+    assert_eq!(source.calls(), ["check", "download"]);
+    assert_eq!(
+        std::fs::read_to_string(notes.join("Plan.md")).unwrap(),
+        "old"
+    );
 }

@@ -293,6 +293,39 @@ mod durability_tests {
     }
 
     #[test]
+    fn a_property_edit_at_a_path_syncs_its_folder_before_it_returns() {
+        let (_workspace, _app_data, engine) = engine();
+        write(
+            &engine,
+            "Docs/Plan.md",
+            b"---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\ncolor: green\n---\nBody\n",
+        );
+        let read = engine.read_raw_markdown("Docs/Plan.md").unwrap();
+
+        let (updated, synced) = durability_probe::record(|| {
+            engine.update_object_at(
+                "Docs/Plan.md",
+                crate::ObjectPatch {
+                    title: None,
+                    body: None,
+                    properties: std::collections::BTreeMap::from([(
+                        "color".into(),
+                        serde_json::json!("blue"),
+                    )]),
+                    remove_properties: Vec::new(),
+                    expected_revision: read.revision,
+                },
+            )
+        });
+
+        updated.unwrap();
+        assert_synced(&engine, &synced, &["Docs"]);
+        let written = std::fs::read_to_string(engine.root().join("Docs/Plan.md")).unwrap();
+        assert!(written.contains("\ncolor: blue\n"), "{written:?}");
+        assert!(written.ends_with("---\nBody\n"), "{written:?}");
+    }
+
+    #[test]
     fn moves_copies_and_new_folders_sync_every_folder_they_create() {
         let (_workspace, _app_data, engine) = engine();
         write(&engine, "Plan.md", b"plan");

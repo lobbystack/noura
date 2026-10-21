@@ -67,13 +67,12 @@ impl CoreError {
         } else {
             ErrorCategory::Filesystem
         };
-        let code = if matches!(
-            error.kind(),
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-        ) {
-            "filesystem_transient"
-        } else {
-            "filesystem_error"
+        let code = match error.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
+                "filesystem_transient"
+            }
+            std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => "disk_full",
+            _ => "filesystem_error",
         };
         let mut value = Self::new(code, category, "The filesystem operation failed", operation);
         value.retryable = matches!(
@@ -93,5 +92,21 @@ impl CoreError {
         );
         value.details = Some(serde_json::json!({ "diagnostic": error.to_string() }));
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_disk_has_its_own_code() {
+        for kind in [
+            std::io::ErrorKind::StorageFull,
+            std::io::ErrorKind::QuotaExceeded,
+        ] {
+            let error = CoreError::io(std::io::Error::from(kind), "raw_markdown_save", None);
+            assert_eq!(error.code, "disk_full");
+        }
     }
 }

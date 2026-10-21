@@ -29,10 +29,10 @@ fn duplicating_a_managed_note_gives_the_copy_a_new_id_and_the_same_properties_an
     assert!(copy.id.starts_with("note_"));
     assert_eq!(copy.object_type, "note");
     assert_eq!(copy.properties, original.properties);
-    // Today's format writes a managed body with one final line break and
-    // reads it back without one; ticket 17 keeps the final newline as is.
-    assert_eq!(copy.body.trim_end(), original.body.trim_end());
-    assert_eq!(copy.body.trim_end(), "First line\n\n- [ ] a task");
+    // The body is every byte after the frontmatter, blank first line and
+    // final newline included.
+    assert_eq!(copy.body, original.body);
+    assert_eq!(copy.body, "\nFirst line\n\n- [ ] a task\n");
     assert_eq!(current(&app).as_deref(), Some("Docs/Plan 1.md"));
     let opened = app.document().unwrap();
     assert_eq!(opened.relative_path, "Docs/Plan 1.md");

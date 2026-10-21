@@ -233,13 +233,15 @@ fn enter_or_space_toggles_a_folder_and_opens_a_file() {
     press(&mut harness, Key::ArrowDown);
     press(&mut harness, Key::Enter);
 
+    // The note opens in the editor, under its name.
     let document = harness.get_by_role_and_label(Role::Region, "Document");
-    document.get_by_label("Readme");
-    document.get_by_label("Readme.md");
+    let name = document.get_by_role_and_label(Role::TextInput, "File name");
+    assert_eq!(name.accesskit_node().value().as_deref(), Some("Readme"));
+    document.get_by_role_and_label(Role::Document, "Note text");
 }
 
 #[test]
-fn opening_a_file_shows_its_name_and_workspace_relative_path() {
+fn opening_a_note_shows_it_in_the_editor_under_its_name() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
@@ -248,13 +250,18 @@ fn opening_a_file_shows_its_name_and_workspace_relative_path() {
     harness.run();
 
     let document = harness.get_by_role_and_label(Role::Region, "Document");
-    assert!(document.query_by_label("Guide").is_none());
+    assert!(
+        document
+            .query_by_role_and_label(Role::Document, "Note text")
+            .is_none()
+    );
     row(&harness, "Guide").click();
-    harness.run();
+    harness.run_steps(4);
 
     let document = harness.get_by_role_and_label(Role::Region, "Document");
-    document.get_by_label("Guide");
-    document.get_by_label("Docs/Guide.md");
+    let name = document.get_by_role_and_label(Role::TextInput, "File name");
+    assert_eq!(name.accesskit_node().value().as_deref(), Some("Guide"));
+    document.get_by_role_and_label(Role::Document, "Note text");
     assert_eq!(
         row(&harness, "Guide").accesskit_node().is_selected(),
         Some(true)

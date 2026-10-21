@@ -5,7 +5,8 @@
 //! eframe quits when the root viewport closes, so closing the first
 //! window while others stay open hides the root viewport instead, and it
 //! keeps hosting the others. Closing the last window quits, and so does
-//! Quit, which keeps every window for the next launch.
+//! Quit, which keeps every window for the next launch. A window closes
+//! once its notes are saved, and Quit waits for every window's notes.
 //!
 //! The shell around the windows lives here too: the native menu bar,
 //! whose choices go to the window that had focus last, the Edit items'
@@ -37,6 +38,10 @@ use crate::{
 
 /// How far each new window sits from the window that opened it.
 const CASCADE: f32 = 28.0;
+
+/// How often Noura lets the windows that wait for notes to save catch up,
+/// in case nothing else wakes it.
+const WAITING_CHECK: Duration = Duration::from_millis(100);
 
 /// How long Noura keeps bringing a window forward after a later launch
 /// asks, and how often it tries again. A minimized window animates back
@@ -105,6 +110,9 @@ pub struct Windows {
     /// A later launch asked for a window to come forward, and it hasn't
     /// come yet.
     forward: Option<Forward>,
+    /// The window that came forward to ask about a note that couldn't
+    /// save before it, or every window, closed.
+    asking: Option<ViewportId>,
     picker: Box<dyn Fn() -> Box<dyn FolderPicker>>,
     next_id: u64,
     /// Menu choices, sent from muda's event handler.
@@ -162,6 +170,7 @@ impl Windows {
             recent: Arc::new(Mutex::new(ViewportId::ROOT)),
             instance,
             forward: None,
+            asking: None,
             picker: Box::new(picker),
             next_id: 0,
             choices,
@@ -299,10 +308,11 @@ impl Windows {
         });
     }
 
-    /// Close the windows whose close button was pressed. The root
-    /// viewport's close ends the app unless other windows stay open: then
-    /// only the first window closes. Quit lets it end the app with every
-    /// window open.
+    /// Close the windows whose close button was pressed, each once its
+    /// notes are saved. The root viewport's close ends the app unless
+    /// other windows stay open, or the first window has notes to save:
+    /// then the first window closes once they are, which ends the app if
+    /// it was the last. Quit lets it end the app with every window open.
     ///
     /// This runs in every pass, including the passes where every window
     /// is minimized or covered and eframe skips the ui, as when the first
@@ -318,7 +328,11 @@ impl Windows {
             })
         };
         if requested(ViewportId::ROOT) {
-            if !self.quitting && !self.others.is_empty() {
+            let first_waits = self
+                .first
+                .as_ref()
+                .is_some_and(NouraUi::must_save_before_closing);
+            if !self.quitting && !self.ending && (!self.others.is_empty() || first_waits) {
                 ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::CancelClose);
                 if let Some(first) = &mut self.first {
                     first.close_window();
@@ -334,6 +348,76 @@ impl Windows {
             {
                 ui.close_window();
             }
+        }
+    }
+
+    /// Keep the windows that wait for notes to save going, including
+    /// windows that draw no frame, such as minimized ones: a window
+    /// closing, or every window during a quit or a workspace switch. Each
+    /// one saves its own notes, and the window that asked for a quit or a
+    /// switch goes ahead once all have. A window that asks about a note
+    /// that couldn't save comes forward.
+    fn keep_up_waiting(&mut self, ctx: &Context) {
+        let mut waiting = false;
+        let mut asking = None;
+        if let Some(first) = &mut self.first
+            && first.is_waiting()
+        {
+            waiting = true;
+            first.keep_up(ctx);
+            if first.is_asking() {
+                asking = Some(ViewportId::ROOT);
+            }
+        }
+        for window in &self.others {
+            if let Some(ui) = &mut window.state.lock().ui
+                && ui.is_waiting()
+            {
+                waiting = true;
+                ui.keep_up(ctx);
+                if ui.is_asking() {
+                    asking = asking.or(Some(window.id));
+                }
+            }
+        }
+        if let Some(id) = asking
+            && self.asking != Some(id)
+        {
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+        }
+        self.asking = asking;
+        if waiting {
+            ctx.request_repaint_after_for(WAITING_CHECK, ViewportId::ROOT);
+        }
+    }
+
+    /// Start every window's note saves as they come due, including in
+    /// windows that draw no frame, such as minimized, hidden or covered
+    /// ones: eframe runs no ui for them, only this logic.
+    fn keep_saving(&mut self, ctx: &Context) {
+        if let Some(first) = &mut self.first {
+            first.keep_saving(ctx);
+        }
+        for window in &self.others {
+            if let Some(ui) = &mut window.state.lock().ui {
+                ui.keep_saving(ctx);
+            }
+        }
+    }
+
+    /// Save every window's notes and wait for the saves, as Noura ends
+    /// without its own Quit, as when the system quits it at logout. No
+    /// window can ask about a save that fails then.
+    fn save_before_exit(&mut self) {
+        let mut saved = self.first.as_mut().is_none_or(NouraUi::save_before_exit);
+        for window in &self.others {
+            if let Some(ui) = &mut window.state.lock().ui {
+                saved &= ui.save_before_exit();
+            }
+        }
+        if !saved {
+            tracing::error!("Noura ended with a note it couldn't save");
         }
     }
 
@@ -599,6 +683,8 @@ impl eframe::App for Windows {
     /// window is minimized or covered.
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.run_menu_choices(ctx);
+        self.keep_saving(ctx);
+        self.keep_up_waiting(ctx);
         if self.quit_request.take() {
             self.quit_app(ctx);
         }
@@ -629,6 +715,14 @@ impl eframe::App for Windows {
         self.edit.inject(raw_input);
     }
 
+    /// eframe calls this as Noura ends: after Quit or Restart to update,
+    /// which saved every note first, or when the system quits Noura, as
+    /// with Quit in the Dock or at logout. winit ends Noura then without
+    /// asking, and Noura doesn't take the system's quit request itself
+    /// yet, so the notes save here, and a note that can't save loses the
+    /// edits that aren't on disk. On macOS that request is the quit Apple
+    /// event, which `NSAppleEventManager` could hand to Noura's own Quit,
+    /// which asks. Typing during an update's install saves here too.
     fn on_exit(&mut self) {
         // A later launch from now on finds no copy to bring forward. It
         // waits for the lock, which goes once every window has let go of
@@ -636,6 +730,7 @@ impl eframe::App for Windows {
         if let Some(instance) = &mut self.instance {
             instance.stop_listening();
         }
+        self.save_before_exit();
         self.quit();
         self.instance = None;
     }
@@ -1257,5 +1352,277 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(matches!(later.join().unwrap(), Ok(Claim::Running)));
+    }
+
+    /// A workspace with a note at Docs/Plan.md.
+    fn workspace_with_note() -> tempfile::TempDir {
+        let app_data = workspace();
+        let docs = app_data.path().join("Current").join("Docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("Plan.md"), "Plan\n").unwrap();
+        app_data
+    }
+
+    fn plan(app_data: &std::path::Path) -> String {
+        std::fs::read_to_string(app_data.join("Current/Docs/Plan.md")).unwrap()
+    }
+
+    /// Show Docs/Plan.md in `window` and type in it, without saving yet.
+    fn type_in_plan(window: &mut NouraUi) {
+        type_in(window, "Docs/Plan.md");
+    }
+
+    /// Show the note at `relative_path` in `window` and type in it,
+    /// without saving yet.
+    fn type_in(window: &mut NouraUi, relative_path: &str) {
+        let app = window.app_mut();
+        app.open_file(relative_path, app_core::OpenAs::Kept);
+        let tab = app.active_tab().unwrap().id();
+        let text = format!("{}typed\n", app.note(tab).unwrap().text());
+        app.edit_note(tab, 1, &text, Instant::now());
+    }
+
+    /// Type in the second window's note.
+    fn type_in_second_window(harness: &Harness<'static, Windows>) {
+        type_in_plan(second_window(harness).lock().ui.as_mut().unwrap());
+    }
+
+    /// Hold the workspace's write lock, as another Noura process writing
+    /// would, until the returned file is unlocked or dropped. Saves wait
+    /// meanwhile.
+    fn hold_writes(
+        harness: &Harness<'static, Windows>,
+        app_data: &std::path::Path,
+    ) -> std::fs::File {
+        let id = harness
+            .state()
+            .first
+            .as_ref()
+            .unwrap()
+            .app()
+            .workspace()
+            .unwrap()
+            .id()
+            .to_owned();
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(app_data.join("workspaces").join(id).join("workspace.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        lock
+    }
+
+    /// Run passes as eframe does while both windows are minimized, until
+    /// `done`.
+    fn pass_until(
+        harness: &mut Harness<'static, Windows>,
+        second: ViewportId,
+        done: impl Fn(&Windows) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !done(harness.state()) {
+            assert!(Instant::now() < deadline, "the windows never settled");
+            logic_pass(
+                harness,
+                &[
+                    (ViewportId::ROOT, window(true, false)),
+                    (second, window(true, false)),
+                ],
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Quit from the first window waits for the note typed in the second,
+    /// even with both windows minimized and no ui running, then ends the
+    /// app.
+    #[test]
+    fn quit_waits_for_a_note_in_another_window() {
+        let app_data = workspace_with_note();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        type_in_second_window(&harness);
+        let lock = hold_writes(&harness, app_data.path());
+
+        choose(&mut harness, command_id::QUIT);
+        for _ in 0..10 {
+            let commands = logic_pass(
+                &mut harness,
+                &[
+                    (ViewportId::ROOT, window(true, false)),
+                    (second, window(true, false)),
+                ],
+            );
+            assert!(!commands.contains_key(&ViewportId::ROOT));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!harness.state().quitting, "Quit waits for the save");
+        assert_eq!(harness.state().others.len(), 1);
+        assert_eq!(plan(app_data.path()), "Plan\n");
+
+        lock.unlock().unwrap();
+        pass_until(&mut harness, second, |windows| windows.quitting);
+
+        assert!(harness.state().ending);
+        assert_eq!(plan(app_data.path()), "Plan\ntyped\n");
+    }
+
+    /// A secondary window's close button closes it once its note is
+    /// saved, with no ui running, and the app goes on.
+    #[test]
+    fn closing_a_second_window_waits_for_its_note_and_keeps_the_app() {
+        let app_data = workspace_with_note();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        type_in_second_window(&harness);
+        let lock = hold_writes(&harness, app_data.path());
+
+        let commands = logic_pass(
+            &mut harness,
+            &[(ViewportId::ROOT, window(true, false)), (second, closing())],
+        );
+
+        assert!(!commands.contains_key(&ViewportId::ROOT), "Noura goes on");
+        assert_eq!(harness.state().others.len(), 1, "the window waits");
+        assert!(!harness.state().quitting && !harness.state().ending);
+
+        lock.unlock().unwrap();
+        pass_until(&mut harness, second, |windows| windows.others.is_empty());
+
+        assert!(harness.state().first.is_some());
+        assert!(!harness.state().quitting && !harness.state().ending);
+        assert_eq!(plan(app_data.path()), "Plan\ntyped\n");
+    }
+
+    /// The only window's close button waits for its note, then ends the
+    /// app.
+    #[test]
+    fn closing_the_only_window_waits_for_its_note() {
+        let app_data = workspace_with_note();
+        let mut harness = harness(app_data.path());
+        type_in_plan(harness.state_mut().first.as_mut().unwrap());
+        let lock = hold_writes(&harness, app_data.path());
+
+        let commands = logic_pass(&mut harness, &[root_closing(true)]);
+
+        assert!(cancels_close(&commands), "the window waits for the save");
+        assert!(harness.state().first.is_some());
+        lock.unlock().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !harness.state().ending {
+            assert!(Instant::now() < deadline, "the window never closed");
+            logic_pass(&mut harness, &[(ViewportId::ROOT, window(false, true))]);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(harness.state().first.is_none());
+        assert_eq!(plan(app_data.path()), "Plan\ntyped\n");
+    }
+
+    /// A note that can't save in the second window stops Quit: that window
+    /// comes forward to ask, and nothing closes until you choose.
+    #[cfg(unix)]
+    #[test]
+    fn a_note_that_cant_save_in_another_window_asks_there_before_quitting() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_data = workspace_with_note();
+        let docs = app_data.path().join("Current/Docs");
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        type_in_second_window(&harness);
+        std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        // Quit from the menu while the second window is minimized.
+        let quit = Choice::Command(command_id::QUIT.to_owned());
+        harness.state().choice_sender.send(quit).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let sent = loop {
+            let commands = logic_pass(
+                &mut harness,
+                &[
+                    (ViewportId::ROOT, window(false, true)),
+                    (second, window(true, false)),
+                ],
+            );
+            if let Some(sent) = commands.get(&second) {
+                break sent.clone();
+            }
+            assert!(Instant::now() < deadline, "the window never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(sent.contains(&ViewportCommand::Minimized(false)));
+        assert!(sent.contains(&ViewportCommand::Focus));
+        assert!(!harness.state().quitting, "nothing closes until you choose");
+        let state = second_window(&harness);
+        assert!(state.lock().ui.as_ref().unwrap().is_asking());
+
+        state
+            .lock()
+            .ui
+            .as_mut()
+            .unwrap()
+            .app_mut()
+            .discard_and_leave();
+        pass_until(&mut harness, second, |windows| windows.quitting);
+
+        std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(plan(app_data.path()), "Plan\n");
+    }
+
+    /// Typing saves after its pause even when every window is minimized
+    /// and eframe runs `App::logic` alone, in the first window and in a
+    /// deferred one.
+    #[test]
+    fn notes_save_after_typing_pauses_with_every_window_minimized() {
+        let app_data = workspace_with_note();
+        std::fs::write(app_data.path().join("Current/Docs/Other.md"), "Other\n").unwrap();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        type_in_plan(harness.state_mut().first.as_mut().unwrap());
+        type_in(
+            second_window(&harness).lock().ui.as_mut().unwrap(),
+            "Docs/Other.md",
+        );
+
+        let other = app_data.path().join("Current/Docs/Other.md");
+        let folder = app_data.path().to_owned();
+        pass_until(&mut harness, second, |_| {
+            plan(&folder) == "Plan\ntyped\n"
+                && std::fs::read_to_string(&other).unwrap() == "Other\ntyped\n"
+        });
+
+        assert!(!harness.state().quitting && !harness.state().ending);
+    }
+
+    /// When the system quits Noura, as at logout, eframe calls `on_exit`
+    /// with no Quit before it: every window's notes save then.
+    #[test]
+    fn an_exit_noura_didn_t_ask_for_saves_every_window_s_notes() {
+        let app_data = workspace_with_note();
+        std::fs::write(app_data.path().join("Current/Docs/Other.md"), "Other\n").unwrap();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        type_in_plan(harness.state_mut().first.as_mut().unwrap());
+        type_in(
+            second_window(&harness).lock().ui.as_mut().unwrap(),
+            "Docs/Other.md",
+        );
+        assert_eq!(plan(app_data.path()), "Plan\n");
+
+        eframe::App::on_exit(harness.state_mut());
+
+        assert_eq!(plan(app_data.path()), "Plan\ntyped\n");
+        assert_eq!(
+            std::fs::read_to_string(app_data.path().join("Current/Docs/Other.md")).unwrap(),
+            "Other\ntyped\n"
+        );
+        assert!(harness.state().first.is_none());
     }
 }

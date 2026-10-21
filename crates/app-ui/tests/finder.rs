@@ -211,7 +211,8 @@ fn keys_typed_right_after_mod_o_land_in_quick_open_and_escape_gives_the_keyboard
         .get_by_role_and_label(Role::TreeItem, "Quiet")
         .click();
     run(&mut harness);
-    assert_eq!(focused_label(&harness).as_deref(), Some("Quiet"));
+    // A click puts the caret in the note's text.
+    assert_eq!(focused_label(&harness).as_deref(), Some("Note text"));
 
     let mod_o = |pressed| egui::Event::Key {
         key: Key::O,
@@ -220,23 +221,36 @@ fn keys_typed_right_after_mod_o_land_in_quick_open_and_escape_gives_the_keyboard
         repeat: false,
         modifiers: Modifiers::COMMAND,
     };
-    for _ in 0..3 {
+    let find_zeb_and_escape = |harness: &mut Ui, holder: &str| {
         // The shortcut and the typing arrive in one frame.
         harness.input_mut().events.extend([
             mod_o(true),
             mod_o(false),
             egui::Event::Text("zeb".to_owned()),
         ]);
-        run(&mut harness);
+        run(harness);
         let field = harness.get_by_role_and_label(Role::TextInput, "Find a file by name");
         assert_eq!(field.value().as_deref(), Some("zeb"));
         assert!(field.is_focused());
-        press(&mut harness, Key::Escape);
-        assert!(dialog(&harness, "Quick open").is_none());
-        // The tree row that had the keyboard has it again, and the typing
-        // never moved the tree's type-ahead to Zebra.
-        assert_eq!(focused_label(&harness).as_deref(), Some("Quiet"));
+        press(harness, Key::Escape);
+        assert!(dialog(harness, "Quick open").is_none());
+        // Whatever had the keyboard has it again.
+        assert_eq!(focused_label(harness).as_deref(), Some(holder));
+    };
+    find_zeb_and_escape(&mut harness, "Note text");
+
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Quiet")
+        .focus();
+    run(&mut harness);
+    for _ in 0..3 {
+        // The typing never moves the tree's type-ahead to Zebra.
+        find_zeb_and_escape(&mut harness, "Quiet");
     }
+    assert_eq!(
+        std::fs::read_to_string(folder.join("Quiet.md")).unwrap(),
+        "unchanged"
+    );
     assert_eq!(open_file(&harness), preview("Quiet"));
 }
 

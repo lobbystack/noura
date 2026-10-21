@@ -10,6 +10,7 @@ mod ignored_files;
 mod inbox;
 mod keys;
 mod markdown;
+mod note;
 mod palette;
 mod plugin_view;
 mod plugins;
@@ -28,7 +29,11 @@ use std::{
 };
 
 use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Palette, Screen, TabId};
-use egui::{Event, ThemePreference};
+use egui::{Event, ThemePreference, ViewportId};
+
+/// How often a window checks on a running note save while it draws no
+/// frame.
+const SAVE_CHECK: Duration = Duration::from_millis(100);
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -51,6 +56,8 @@ pub struct NouraUi {
     plugin_install: plugins::InstallView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
+    /// The editors of the notes open in tabs.
+    notes: note::NoteView,
     /// Keys typed in the same frame as the shortcut that opened the
     /// palette, for the palette's field on the next frame.
     type_ahead: Vec<Event>,
@@ -72,6 +79,7 @@ impl NouraUi {
             plugin_install: plugins::InstallView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
+            notes: note::NoteView::default(),
             type_ahead: Vec::new(),
             shown_tab: None,
             started: false,
@@ -100,10 +108,79 @@ impl NouraUi {
         self.app.take_opened_windows()
     }
 
-    /// Close this window, as its close button does. See
-    /// [`App::close_window`].
+    /// Close this window once its notes are saved, as its close button
+    /// does. What you typed in a note's name or property field goes in
+    /// first. See [`App::close_window`].
     pub fn close_window(&mut self) {
+        self.notes.commit_drafts(&mut self.app);
         self.app.close_window();
+    }
+
+    /// Whether this window must save notes, or wait for an answer about
+    /// one, before it closes. The desktop keeps the window open
+    /// meanwhile.
+    pub fn must_save_before_closing(&self) -> bool {
+        self.app.has_unsaved_notes()
+            || self.notes.has_drafts()
+            || self.app.unsaved_prompt().is_some()
+    }
+
+    /// Start the note saves that are due, whether or not this window draws
+    /// frames. eframe draws none for a minimized, hidden or covered window,
+    /// so the desktop calls this in every pass for each window with notes
+    /// to save, and the root viewport wakes again when the next save is
+    /// due or to check on a running one.
+    pub fn keep_saving(&mut self, ctx: &egui::Context) {
+        if self.app.is_closed() || !self.app.has_unsaved_notes() {
+            return;
+        }
+        self.app.poll();
+        let now = Instant::now();
+        self.app.save_due_notes(now);
+        if let Some(due) = self.app.next_note_save() {
+            ctx.request_repaint_after_for(due.saturating_duration_since(now), ViewportId::ROOT);
+        } else if self.app.is_saving_notes() {
+            ctx.request_repaint_after_for(SAVE_CHECK, ViewportId::ROOT);
+        }
+    }
+
+    /// Save every note this window shows and wait for the saves, as the
+    /// app ends without asking, as when the system quits Noura at logout.
+    /// What you typed in a note's name or property field goes in first.
+    /// Returns whether every note is on disk.
+    pub fn save_before_exit(&mut self) -> bool {
+        if self.app.is_closed() {
+            return true;
+        }
+        self.notes.commit_drafts(&mut self.app);
+        self.app.save_notes_before_exit()
+    }
+
+    /// Whether something waits for notes to save: this window closing, or
+    /// a quit or a workspace switch that waits for every window. See
+    /// [`Self::keep_up`].
+    pub fn is_waiting(&self) -> bool {
+        self.app.is_leaving()
+    }
+
+    /// Whether this window asks what to do about a note that couldn't
+    /// save.
+    pub fn is_asking(&self) -> bool {
+        self.app.unsaved_prompt().is_some()
+    }
+
+    /// Apply background work and carry out Quit without drawing a frame.
+    /// While a window waits for notes to save, the desktop calls this for
+    /// it even when it draws nothing, as when it is minimized, so it
+    /// closes once they are saved. During a quit or a workspace switch
+    /// every window waits, and the one that asked goes ahead once all of
+    /// them have saved.
+    pub fn keep_up(&mut self, ctx: &egui::Context) {
+        if self.app.is_closed() {
+            return;
+        }
+        self.app.poll();
+        self.close_requested_windows(ctx);
     }
 
     /// Whether this window has closed, so the desktop stops showing it.
@@ -124,7 +201,9 @@ impl NouraUi {
     }
 
     /// Run the command a native menu item stands for, chosen at `at`.
+    /// What you typed in a note's name or property field goes in first.
     pub fn run_menu_command(&mut self, id: &str, at: Instant) -> bool {
+        self.notes.commit_drafts(&mut self.app);
         self.app.run_command(id, CommandSource::Menu, at)
     }
 
@@ -151,6 +230,12 @@ impl NouraUi {
         if !self.started {
             self.started = true;
             theme::install(ui.ctx());
+            // The desktop app registers a font system with the system's
+            // fonts first; without one, the editor uses egui's own.
+            editor_egui::register_font_system(
+                ui.ctx(),
+                editor_egui::fonts::default_font_database(),
+            );
             let ctx = ui.ctx().clone();
             // Each window is its own viewport, which repaints on its own.
             let viewport = ctx.viewport_id();
@@ -165,6 +250,13 @@ impl NouraUi {
             return;
         }
         apply_preferences(ui.ctx(), &self.app);
+        let now = Instant::now();
+        self.app.save_due_notes(now);
+        if let Some(due) = self.app.next_note_save() {
+            ui.ctx()
+                .request_repaint_after(due.saturating_duration_since(now));
+        }
+        self.notes.retain(&self.app);
         if self.app.is_busy() {
             // The change stream wakes the window when the work finishes;
             // this also keeps the loading spinner turning.
@@ -182,6 +274,9 @@ impl NouraUi {
             // Close Window ran: the desktop stops showing this window.
             return;
         }
+        // A click on a tab's close button or in the tree can close a note
+        // before its fields draw again and report losing the keyboard.
+        self.notes.commit_drafts_left(ui.ctx(), &mut self.app);
         match screen {
             Screen::Loading => common::loading(ui),
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
@@ -191,6 +286,8 @@ impl NouraUi {
         settings::show(ui, &mut self.app, &mut self.settings, &mut *self.picker);
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
         palette::show(ui, &mut self.app, &mut self.palette);
+        note::unsaved_prompt(ui, &mut self.app);
+        self.notes.commit_hidden_drafts(&mut self.app);
         self.close_requested_windows(ui.ctx());
     }
 
@@ -209,7 +306,8 @@ impl NouraUi {
     /// The part of the window that has the keyboard, as the command
     /// registry names areas.
     fn focus_area(&self, ctx: &egui::Context) -> Option<Area> {
-        if ctx.text_edit_focused() {
+        let active = self.app.active_tab().map(app_core::Tab::id);
+        if ctx.text_edit_focused() || self.notes.editor_focused(ctx, active) {
             Some(Area::Writing)
         } else if self.tree.has_focus(ctx) {
             Some(Area::FileTree)
@@ -259,6 +357,13 @@ impl NouraUi {
                 _ => None,
             };
             let before = self.app.palette().map(Palette::mode);
+            if let Some(press) = &press
+                && self.app.command_for_key(press, focus).is_some()
+            {
+                // A command can close the note or move the keyboard before
+                // its fields report losing it.
+                self.notes.commit_drafts(&mut self.app);
+            }
             if press.is_some_and(|press| self.app.press_key(&press, focus, now)) {
                 let after = self.app.palette().map(Palette::mode);
                 palette_opened = after.is_some() && after != before;

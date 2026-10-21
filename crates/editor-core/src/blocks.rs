@@ -848,7 +848,10 @@ impl<'ast> MdDoc {
         } else if line_content_text.starts_with("[!CAUTION]") {
             "[!CAUTION]".len()
         } else {
-            unreachable!("supported alert types are note, tip, important, warning, caution")
+            // comrak found an alert whose first line the editor reads
+            // elsewhere, as after frontmatter that holds a lone carriage
+            // return: the type is empty and the whole line is the title.
+            0
         };
         let _type = (line_content.start(), line_content.start() + type_len);
 

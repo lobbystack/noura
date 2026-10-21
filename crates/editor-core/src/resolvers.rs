@@ -19,8 +19,9 @@ pub enum LinkState {
     Broken { message: String },
 }
 
-/// Answers the editor's link lookups.
-pub trait LinkResolver {
+/// Answers the editor's link lookups. It is `Send` so a document can move
+/// with the window that shows it.
+pub trait LinkResolver: Send {
     /// Where a Markdown link's destination leads, or `None` if it leads
     /// nowhere.
     fn resolve_link(&self, url: &str) -> Option<ResolvedLink>;

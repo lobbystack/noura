@@ -53,13 +53,13 @@
   ],
   "envelope": [
     {
-      "name": "an object of any type keeps its ID, type, properties, title and body",
+      "name": "an object of any type keeps its ID, type, properties and body, and a heading is body text",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncuisine: Italian\nservings: 4\nvegetarian: true\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Risotto\n\nStir often.\n",
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "Risotto",
-        "body": "Stir often.",
+        "title": "example",
+        "body": "\n# Risotto\n\nStir often.\n",
         "created": "2026-08-27T18:00:00Z",
         "updated": "2026-08-28T09:15:00Z",
         "properties": { "cuisine": "Italian", "servings": 4, "vegetarian": true }
@@ -72,8 +72,8 @@
       "object": {
         "id": "reading-list_01j00000000000000000000000",
         "type": "reading-list",
-        "title": "Books",
-        "body": "",
+        "title": "example",
+        "body": "\n# Books\n",
         "created": null,
         "updated": null,
         "properties": {}
@@ -86,41 +86,41 @@
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "Soup",
-        "body": "Hot.",
+        "title": "example",
+        "body": "# Soup\nHot.\n",
         "created": "2026-08-27T18:00:00Z",
         "updated": "2026-08-28T09:15:00Z",
         "properties": { "author": "Ada", "zone": "north" }
       },
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nauthor: Ada\nzone: north\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Soup\n\nHot.\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nauthor: Ada\nzone: north\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n# Soup\nHot.\n"
     },
     {
-      "name": "CRLF line breaks and trailing blank lines normalize",
+      "name": "CRLF line breaks read as LF, and trailing blank lines stay",
       "markdown": "---\r\nid: recipe_01j00000000000000000000000\r\ntype: recipe\r\n---\r\n\r\n# Bread\r\n\r\nKnead.\r\n\r\n",
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "Bread",
-        "body": "Knead.\n",
+        "title": "example",
+        "body": "\n# Bread\n\nKnead.\n\n",
         "created": null,
         "updated": null,
         "properties": {}
       },
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Bread\n\nKnead.\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Bread\n\nKnead.\n\n"
     },
     {
-      "name": "without a leading heading the title is empty and the text is the body",
+      "name": "the title is the file name with or without a heading, and the text is the body",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\nJust text.\n",
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "",
-        "body": "Just text.\n",
+        "title": "example",
+        "body": "\nJust text.\n",
         "created": null,
         "updated": null,
         "properties": {}
       },
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# \n\nJust text.\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\nJust text.\n"
     },
     {
       "name": "created and updated that aren't strings are dropped, as today",
@@ -128,8 +128,8 @@
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "Pie",
-        "body": "",
+        "title": "example",
+        "body": "\n# Pie\n",
         "created": null,
         "updated": null,
         "properties": {}
@@ -142,8 +142,8 @@
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "Pasta",
-        "body": "",
+        "title": "example",
+        "body": "\n# Pasta\n",
         "created": null,
         "updated": null,
         "properties": { "steps": "Boil.\nServe.\n" }
@@ -156,8 +156,8 @@
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "Pasta",
-        "body": "",
+        "title": "example",
+        "body": "\n# Pasta\n",
         "created": null,
         "updated": null,
         "properties": { "steps": "Boil.\n\n" }
@@ -170,8 +170,8 @@
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "Stew",
-        "body": "Simmer.\nServe.",
+        "title": "example",
+        "body": "\n# Stew\n\nSimmer.\nServe.\n",
         "created": null,
         "updated": null,
         "properties": {}
@@ -179,32 +179,32 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Stew\n\nSimmer.\nServe.\n"
     },
     {
-      "name": "carriage returns and a line feed before text without a heading read as a blank line and drop with the others",
+      "name": "carriage returns and a line feed before the text read as one line break",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\r\r\nHello\n",
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
-        "title": "",
-        "body": "Hello\n",
+        "title": "example",
+        "body": "\nHello\n",
         "created": null,
         "updated": null,
         "properties": {}
       },
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# \n\nHello\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\nHello\n"
     },
     {
-      "name": "carriage returns before line feeds in a CRLF file without a heading",
+      "name": "carriage returns before line feeds in a CRLF file",
       "markdown": "---\r\nid: task_01j00000000000000000000000\r\ntype: task\r\nstatus: todo\r\n---\r\n\r\r\nStep one.\r\r\nStep two.\r\n",
       "object": {
         "id": "task_01j00000000000000000000000",
         "type": "task",
-        "title": "",
-        "body": "Step one.\nStep two.\n",
+        "title": "example",
+        "body": "\nStep one.\nStep two.\n",
         "created": null,
         "updated": null,
         "properties": { "status": "todo" }
       },
-      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\n---\n\n# \n\nStep one.\nStep two.\n"
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\n---\n\nStep one.\nStep two.\n"
     }
   ],
   "schema_declaration": [
@@ -608,7 +608,7 @@
     {
       "name": "declared properties in declared order, then unknown properties by key",
       "markdown": "---\nzeta: last\nsource: Grandma\nupdated: 2026-08-28T09:15:00Z\nservings: 4\nid: recipe_01j00000000000000000000000\naardvark: first\ncourse: dessert\ntype: recipe\ncreated: 2026-08-27T18:00:00Z\ncooked: 2026-09-04\n---\n# Tiramisu\n\nLayer and chill.\n",
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncourse: dessert\nservings: 4\ncooked: 2026-09-04\nsource: Grandma\naardvark: first\nzeta: last\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Tiramisu\n\nLayer and chill.\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncourse: dessert\nservings: 4\ncooked: 2026-09-04\nsource: Grandma\naardvark: first\nzeta: last\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n# Tiramisu\n\nLayer and chill.\n"
     },
     {
       "name": "serialization writes null and adds no defaults",
@@ -805,30 +805,30 @@
     {
       "name": "CRLF line breaks in a caller's body are written as they are and read back as LF",
       "body": "line one\r\nline two",
-      "file_ends_with": "# Example\n\nline one\r\nline two\n",
+      "file_ends_with": "---\nline one\r\nline two",
       "expected_body": "line one\nline two",
-      "rewritten_ends_with": "# Example\n\nline one\nline two\n"
+      "rewritten_ends_with": "---\nline one\nline two"
     },
     {
       "name": "a run of carriage returns before a line feed in a caller's body is written as it is",
       "body": "a\r\r\nb",
-      "file_ends_with": "# Example\n\na\r\r\nb\n",
+      "file_ends_with": "---\na\r\r\nb",
       "expected_body": "a\nb",
-      "rewritten_ends_with": "# Example\n\na\nb\n"
+      "rewritten_ends_with": "---\na\nb"
     },
     {
-      "name": "a caller's body that starts with a line break loses it on the next read",
+      "name": "a caller's body that starts with a line break keeps it",
       "body": "\nHello",
-      "file_ends_with": "# Example\n\n\nHello\n",
-      "expected_body": "Hello",
-      "rewritten_ends_with": "# Example\n\nHello\n"
+      "file_ends_with": "---\n\nHello",
+      "expected_body": "\nHello",
+      "rewritten_ends_with": "---\n\nHello"
     },
     {
       "name": "a caller's body that a read keeps is written the same both times",
       "body": "Hello\nWorld",
-      "file_ends_with": "# Example\n\nHello\nWorld\n",
+      "file_ends_with": "---\nHello\nWorld",
       "expected_body": "Hello\nWorld",
-      "rewritten_ends_with": "# Example\n\nHello\nWorld\n"
+      "rewritten_ends_with": "---\nHello\nWorld"
     }
   ]
 }

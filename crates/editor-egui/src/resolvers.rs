@@ -23,8 +23,9 @@ pub enum EmbedState {
 
 /// Loads and paints embedded content such as images. The editor asks by the
 /// URL written in the note; the embedding app decides what it names and
-/// whether to load it.
-pub trait EmbedResolver {
+/// whether to load it. It is `Send` so an editor can live in a window that
+/// draws on its own schedule.
+pub trait EmbedResolver: Send {
     /// What the app knows about the content at `url`.
     fn state(&self, url: &str) -> EmbedState;
 

@@ -41,13 +41,19 @@ impl WorkspaceEngine {
         else {
             return Err(invalid("collaboration_invalid_managed_document"));
         };
-        let mut target = object.clone();
-        if let Some(title) = patch.title {
-            if title.trim().is_empty() {
-                return Err(invalid("title_required"));
+        let target_title = patch
+            .title
+            .map(|title| workspace_format::normalize_file_name(&title));
+        match target_title {
+            Some(title) if title.is_empty() => return Err(invalid("title_required")),
+            // The title is the file name: a new one renames the file, which
+            // live editing doesn't allow.
+            Some(title) if title != object.title => {
+                return Err(invalid("collaboration_transaction_required"));
             }
-            target.title = title.trim().into();
+            _ => {}
         }
+        let mut target = object.clone();
         for key in patch.remove_properties {
             if !matches!(key.as_str(), "id" | "type" | "created" | "updated") {
                 target.properties.remove(&key);

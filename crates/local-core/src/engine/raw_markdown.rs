@@ -118,6 +118,16 @@ impl WorkspaceEngine {
     /// is returned as-is; the editor owns complete raw contents.
     pub fn read_raw_markdown(&self, relative_path: &str) -> Result<RawMarkdownRead> {
         let path = validate_raw_markdown_path(&self.root, relative_path)?;
+        // A file only the cloud holds says so, and a missing file says it's
+        // gone, as a save of it does.
+        ensure_downloaded(&path, relative_path, "raw_markdown_read")?;
+        if !path.exists() {
+            return Err(CoreError::validation(
+                "raw_markdown_missing",
+                "The Markdown file no longer exists",
+                "raw_markdown_read",
+            ));
+        }
         let bytes = read_downloaded(&path, relative_path, "raw_markdown_read")?;
         let (body, layout) = split_raw_bytes(&bytes)?;
         Ok(RawMarkdownRead {
@@ -252,6 +262,7 @@ impl WorkspaceEngine {
         let path = validate_raw_markdown_path(&self.root, &relative)?;
         let _guard = self.write_lock("raw_markdown_save")?;
         self.collaboration_guard_file_mutation(&relative)?;
+        ensure_downloaded(&path, &relative, "raw_markdown_save")?;
         if !path.exists() {
             return Err(CoreError::validation(
                 "raw_markdown_missing",

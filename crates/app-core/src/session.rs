@@ -2,7 +2,8 @@
 //! index and watcher, the newest listing of its files, their problems and
 //! the notes changed last, the rail order, this device's preferences, the
 //! plugins service, each window's view state, which it saves together, the
-//! writes still on their way to disk, and the update service.
+//! writes still on their way to disk, the update service, and a quit or
+//! workspace switch that waits for every window's notes to save.
 //!
 //! Each [`App`](crate::App) is one window. A window that changes what
 //! the others show publishes it here and wakes them; each one applies it
@@ -84,6 +85,22 @@ struct State {
     windows: Vec<Window>,
     views: ViewStore,
     next_key: u64,
+    /// The quit or workspace switch waiting for the windows' notes.
+    departure: Option<Departure>,
+    /// Counts the departures so far.
+    departures: u64,
+}
+
+/// A quit, or a switch to another workspace, which closes every window,
+/// or a restart to update: it waits until each open window that shows
+/// notes has them on disk.
+struct Departure {
+    round: u64,
+    /// The window that asked, which quits or opens the workspace once
+    /// every window is ready.
+    by: WindowKey,
+    /// The windows whose notes are on disk.
+    ready: Vec<WindowKey>,
 }
 
 struct Window {
@@ -92,6 +109,8 @@ struct Window {
     /// closing, as when Noura quits: its view state stays saved.
     listeners: Option<Listeners>,
     view: StoredWindow,
+    /// Whether the window shows notes, which a departure waits for.
+    has_notes: bool,
 }
 
 /// What a window needs once it opened a workspace.
@@ -185,6 +204,8 @@ impl Session {
                 windows: Vec::new(),
                 views: ViewStore::new(app_data),
                 next_key: 0,
+                departure: None,
+                departures: 0,
             }),
             plugins: Mutex::new(plugins),
         }
@@ -229,6 +250,7 @@ impl Session {
             key,
             listeners: Some(listeners),
             view: StoredWindow::default(),
+            has_notes: false,
         });
         key
     }
@@ -236,9 +258,13 @@ impl Session {
     /// The window's `App` is gone without closing, as when Noura quits.
     /// Its view state stays saved, and it no longer counts as open.
     pub(crate) fn leave(&self, key: WindowKey) {
-        if let Some(window) = self.lock().window(key) {
+        let mut state = self.lock();
+        if let Some(window) = state.window(key) {
             window.listeners = None;
         }
+        let waiting = state.window_gone(key);
+        drop(state);
+        wake(waiting);
     }
 
     /// Close the window. Its view state leaves the saved windows while
@@ -256,6 +282,9 @@ impl Session {
         } else if let Some(window) = state.window(key) {
             window.listeners = None;
         }
+        let waiting = state.window_gone(key);
+        drop(state);
+        wake(waiting);
     }
 
     pub(crate) fn opening(&self) -> u64 {
@@ -299,6 +328,7 @@ impl Session {
             .filter_map(|window| window.listeners.clone())
             .collect();
         state.windows.retain(|window| window.key == key);
+        state.departure = None;
         let adopted = Adopted {
             opening: state.opening,
             listing: state.listing,
@@ -514,6 +544,111 @@ impl Session {
         (state.preferences_version > seen).then_some((state.preferences_version, preferences))
     }
 
+    /// The window `key` asks to quit or to open another workspace, which
+    /// closes every window, or to restart to update. The other windows
+    /// wake to save their notes.
+    /// Returns the departure's round, or `None` while another departure
+    /// waits.
+    pub(crate) fn begin_departure(&self, key: WindowKey) -> Option<u64> {
+        let mut state = self.lock();
+        if state.departure.is_some() {
+            return None;
+        }
+        state.departures += 1;
+        let round = state.departures;
+        state.departure = Some(Departure {
+            round,
+            by: key,
+            ready: Vec::new(),
+        });
+        let others = state.others(key);
+        drop(state);
+        wake(others);
+        Some(round)
+    }
+
+    /// Say whether the window `key` shows notes. A departure waits only
+    /// for the windows that do, since only they can hold edits that aren't
+    /// on disk.
+    pub(crate) fn set_has_notes(&self, key: WindowKey, has_notes: bool) {
+        let mut state = self.lock();
+        let Some(window) = state.window(key) else {
+            return;
+        };
+        if window.has_notes == has_notes {
+            return;
+        }
+        window.has_notes = has_notes;
+        let asker = state
+            .departure
+            .as_ref()
+            .map(|departure| departure.by)
+            .filter(|by| *by != key && state.all_ready())
+            .and_then(|by| state.listeners(by));
+        drop(state);
+        wake(asker.into_iter().collect());
+    }
+
+    /// The departure waiting now, and the window that asked for it.
+    pub(crate) fn departure(&self) -> Option<(u64, WindowKey)> {
+        self.lock()
+            .departure
+            .as_ref()
+            .map(|departure| (departure.round, departure.by))
+    }
+
+    /// Say whether the window `key` has its notes on disk for the
+    /// departure `round`. Returns whether every open window does; the
+    /// window that asked wakes then.
+    pub(crate) fn set_ready(&self, key: WindowKey, round: u64, ready: bool) -> bool {
+        let mut state = self.lock();
+        let Some(departure) = state
+            .departure
+            .as_mut()
+            .filter(|departure| departure.round == round)
+        else {
+            return false;
+        };
+        departure.ready.retain(|window| *window != key);
+        if ready {
+            departure.ready.push(key);
+        }
+        let by = departure.by;
+        let all = state.all_ready();
+        let asker = (all && by != key).then(|| state.listeners(by)).flatten();
+        drop(state);
+        wake(asker.into_iter().collect());
+        all
+    }
+
+    /// Whether every open window has its notes on disk for the departure
+    /// `round`.
+    pub(crate) fn all_ready(&self, round: u64) -> bool {
+        let state = self.lock();
+        state
+            .departure
+            .as_ref()
+            .is_some_and(|departure| departure.round == round)
+            && state.all_ready()
+    }
+
+    /// The departure `round` is over: it went ahead, or a window kept
+    /// editing. The other windows wake to stop waiting.
+    pub(crate) fn end_departure(&self, key: WindowKey, round: u64) {
+        let mut state = self.lock();
+        if state
+            .departure
+            .as_ref()
+            .is_none_or(|departure| departure.round != round)
+        {
+            return;
+        }
+        state.departure = None;
+        let others = state.others(key);
+        drop(state);
+        wake(others);
+    }
+
     /// Keep the window's view state with the others, and save them all
     /// in the background when `write` says so.
     pub(crate) fn save_window(
@@ -540,6 +675,38 @@ impl Session {
 impl State {
     fn window(&mut self, key: WindowKey) -> Option<&mut Window> {
         self.windows.iter_mut().find(|window| window.key == key)
+    }
+
+    /// Whether every open window that shows notes is ready for the
+    /// departure.
+    fn all_ready(&self) -> bool {
+        let Some(departure) = &self.departure else {
+            return false;
+        };
+        self.windows
+            .iter()
+            .filter(|window| window.listeners.is_some() && window.has_notes)
+            .all(|window| departure.ready.contains(&window.key))
+    }
+
+    /// The window `key` closed or went away. A departure it asked for
+    /// ends, and the windows that saved for it wake to stop waiting; once
+    /// the others are ready for another window's departure, that window
+    /// wakes to go ahead. Returns who to wake.
+    fn window_gone(&mut self, key: WindowKey) -> Vec<Listeners> {
+        let Some(departure) = &mut self.departure else {
+            return Vec::new();
+        };
+        departure.ready.retain(|window| *window != key);
+        if departure.by == key {
+            self.departure = None;
+            return self.others(key);
+        }
+        let by = departure.by;
+        if self.all_ready() {
+            return self.listeners(by).into_iter().collect();
+        }
+        Vec::new()
     }
 
     /// Save the open workspace's windows and rail order.

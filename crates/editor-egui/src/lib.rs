@@ -56,6 +56,10 @@ pub struct Response {
     /// Links the user opened this frame, resolved through the
     /// [`LinkResolver`]. The editor never opens them itself.
     pub opened_links: Vec<resolvers::OpenedLink>,
+
+    /// The changes made to the note's text since the last frame, one per
+    /// replacement, in order. See [`editor_core::buffer::TextChange`].
+    pub changes: Vec<editor_core::buffer::TextChange>,
 }
 
 /// A span of the note's source and where the last frame drew it.
@@ -518,9 +522,25 @@ impl Editor {
         Id::unique("md_editor").with(self.id_salt)
     }
 
+    /// Draw body text `points` high, and headings and spacing in
+    /// proportion. The next frame lays the note out again at the new size.
+    pub fn set_text_size(&mut self, points: f32) {
+        let renderer = &mut self.edit.renderer;
+        if renderer.layout.row_height != points {
+            renderer.layout.row_height = points;
+            renderer.layout_cache.clear();
+        }
+    }
+
     /// The note's current text.
     pub fn text(&self) -> &str {
         self.edit.renderer.buffer.current.text()
+    }
+
+    /// The buffer version of [`Self::text`], which [`Self::record_disk_save`]
+    /// takes once that text is on disk.
+    pub fn version(&self) -> usize {
+        self.edit.renderer.buffer.current.seq
     }
 
     /// The selection as `(anchor, caret)`.
@@ -771,6 +791,7 @@ impl Editor {
         }
 
         resp.opened_links = mem::take(&mut self.edit.renderer.doc.opened_links);
+        resp.changes = self.edit.renderer.doc.take_changes();
 
         // focus editor when first shown or when nothing else has focus
         if !self.initialized || ui.memory(|m| m.focused().is_none()) {
