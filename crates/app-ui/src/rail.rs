@@ -1,12 +1,13 @@
-//! The rail: a narrow column of pages, such as Files and the Inbox. A
-//! click shows a page, and you reorder pages by dragging them or with
-//! Alt-Up and Alt-Down. `app-core` owns the pages and their order.
+//! The rail: a narrow column of pages, such as Files and the Inbox, with
+//! the Settings button at the bottom. A click shows a page, and you
+//! reorder pages by dragging them or with Alt-Up and Alt-Down. `app-core`
+//! owns the pages and their order.
 
 use app_core::{App, FILES_PAGE, INBOX_PAGE, OpenAs};
 use egui::{
-    Align2, Color32, DragAndDrop, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, Ui,
-    UiBuilder, WidgetInfo,
-    accesskit::{Action, AriaCurrent, Role},
+    Align, Align2, Color32, DragAndDrop, FontId, Id, Key, Layout, Modifiers, Pos2, Rect, Sense,
+    Shape, Stroke, Ui, UiBuilder, WidgetInfo,
+    accesskit::{Action, AriaCurrent, HasPopup, Role},
     pos2, vec2,
 };
 
@@ -16,6 +17,12 @@ use crate::theme::{Palette, radius};
 pub(crate) const RAIL_WIDTH: f32 = 56.0;
 const ITEM_SIZE: f32 = 36.0;
 const ITEM_GAP: f32 = 4.0;
+
+/// The Settings button's ID, so focus can return to it when Settings
+/// closes.
+pub(crate) fn settings_button_id() -> Id {
+    Id::unique("rail-settings")
+}
 
 /// The page you're dragging to a new place, as egui's drag-and-drop
 /// payload. egui drops the payload when you press Escape.
@@ -214,6 +221,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
         }
     });
 
+    ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+        ui.add_space(12.0);
+        if settings_button(ui).clicked() {
+            app.open_settings();
+        }
+    });
+
     if let Some((page_id, how)) = open {
         app.open_page(&page_id, how);
     }
@@ -227,4 +241,39 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
 enum Move {
     By(isize),
     To(usize),
+}
+
+/// The Settings button: a gear.
+fn settings_button(ui: &mut Ui) -> egui::Response {
+    let rect = ui.allocate_space(vec2(ITEM_SIZE, ITEM_SIZE)).1;
+    let response = ui.interact(rect, settings_button_id(), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Settings"));
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_has_popup(HasPopup::Dialog));
+    let palette = Palette::of(ui.ctx());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, radius(1.2), palette.sidebar_accent);
+        }
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                radius(1.2),
+                Stroke::new(1.0, palette.ring),
+                egui::StrokeKind::Inside,
+            );
+        }
+        // A gear: a ring with eight teeth.
+        let stroke = Stroke::new(1.5, palette.muted_foreground);
+        let center = rect.center();
+        painter.circle_stroke(center, 3.0, stroke);
+        painter.circle_stroke(center, 6.5, stroke);
+        for tooth in 0..8 {
+            let angle = std::f32::consts::FRAC_PI_4 * tooth as f32;
+            let direction = vec2(angle.cos(), angle.sin());
+            painter.line_segment([center + direction * 6.5, center + direction * 9.0], stroke);
+        }
+    }
+    response.on_hover_text("Settings")
 }

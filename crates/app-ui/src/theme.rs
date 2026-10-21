@@ -94,11 +94,16 @@ pub const SUPPORTING_SIZE: f32 = 12.0;
 pub const BODY_SIZE: f32 = 14.0;
 pub const TITLE_SIZE: f32 = 16.0;
 
-/// Install the light and dark styles and follow the system appearance.
+/// Install the light and dark styles and follow the system appearance
+/// until the app applies this device's choice. egui's own zoom keys stay
+/// off: zoom steps through `app-core`'s levels instead.
 pub fn install(ctx: &egui::Context) {
     ctx.set_style_of(Theme::Light, style(Palette::light(), Visuals::light()));
     ctx.set_style_of(Theme::Dark, style(Palette::dark(), Visuals::dark()));
-    ctx.options_mut(|options| options.theme_preference = ThemePreference::System);
+    ctx.options_mut(|options| {
+        options.theme_preference = ThemePreference::System;
+        options.zoom_with_keyboard = false;
+    });
 }
 
 fn style(palette: Palette, mut visuals: Visuals) -> Style {
