@@ -17,7 +17,13 @@ use ts_rs::TS;
 
 pub mod calendar;
 pub mod merge;
+mod object_type;
 pub mod raw_text;
+
+pub use object_type::{
+    ObjectTypeRegistry, PropertyDeclaration, PropertyError, PropertyKind, PropertySchema,
+    RegistrationError,
+};
 
 /// Canonical workspace-relative location of Noura's durable manifest.
 pub const WORKSPACE_MANIFEST_PATH: &str = ".noura/workspace.yaml";
@@ -405,6 +411,16 @@ pub fn normalize_project_properties(
 }
 
 fn validate_task_due(value: &str) -> Result<(), FormatError> {
+    if valid_date_value(value) {
+        Ok(())
+    } else {
+        Err(FormatError::InvalidTaskDue)
+    }
+}
+
+/// Checks for a civil date (`YYYY-MM-DD`) or an RFC 3339 instant with an
+/// explicit offset.
+fn valid_date_value(value: &str) -> bool {
     let date_only = value.len() == 10
         && value.as_bytes().get(4) == Some(&b'-')
         && value.as_bytes().get(7) == Some(&b'-')
@@ -416,11 +432,7 @@ fn validate_task_due(value: &str) -> Result<(), FormatError> {
             .skip(10)
             .any(|byte| matches!(byte, b'+' | b'-')))
         && value.parse::<jiff::Timestamp>().is_ok();
-    if date_only || timed {
-        Ok(())
-    } else {
-        Err(FormatError::InvalidTaskDue)
-    }
+    date_only || timed
 }
 
 fn split_title(content: &str) -> (String, String) {
@@ -439,6 +451,29 @@ fn split_title(content: &str) -> (String, String) {
     }
 }
 
+/// Reads a run of carriage returns right before a line feed as one line
+/// break, for the title and body. Reading only CRLF as LF would leave `\r\n`
+/// of a `\r\r\n` in the body. The serializer writes that back as it is, and
+/// the next read would drop one more carriage return, so the bytes would
+/// change on every write. The frontmatter still reads only CRLF as LF, so
+/// no file moves between managed, malformed and unmanaged.
+fn single_line_breaks(text: &str) -> Cow<'_, str> {
+    if !text.contains("\r\n") {
+        return Cow::Borrowed(text);
+    }
+    let mut normalized = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        match line.strip_suffix('\n') {
+            Some(content) => {
+                normalized.push_str(content.trim_end_matches('\r'));
+                normalized.push('\n');
+            }
+            None => normalized.push_str(line),
+        }
+    }
+    Cow::Owned(normalized)
+}
+
 /// Parses a Markdown file without relying on a local filesystem or runtime.
 pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     let Ok(text) = std::str::from_utf8(bytes) else {
@@ -455,7 +490,7 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     };
     let text = text.as_ref();
     if !text.starts_with("---\n") {
-        let (title, body) = split_title(text);
+        let (title, body) = split_title(&single_line_breaks(text));
         return ParsedMarkdown::Unmanaged {
             title,
             body,
@@ -463,16 +498,18 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
         };
     }
     let Some(end) = text[4..].find("\n---\n").map(|index| index + 4) else {
-        let (title, body) = split_title(text);
+        let (title, body) = split_title(&single_line_breaks(text));
         return ParsedMarkdown::Malformed {
             title,
             body,
             error: "Frontmatter has no closing delimiter".into(),
         };
     };
-    let yaml = &text[4..end];
-    let markdown = text[end + 5..].trim_start_matches('\n');
-    let (title, body) = split_title(markdown);
+    // The line break before the closing delimiter ends the last YAML line.
+    // Without it, a block scalar written last would lose its final line break.
+    let yaml = &text[4..=end];
+    let markdown = single_line_breaks(&text[end + 5..]);
+    let (title, body) = split_title(markdown.trim_start_matches('\n'));
     let properties: BTreeMap<String, serde_json::Value> = match serde_yaml_ng::from_str(yaml) {
         Ok(properties) => properties,
         Err(error) => {
@@ -537,61 +574,57 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     })
 }
 
+/// The properties `serialize_object` writes first, in this order, before the
+/// sorted unknown properties. It applies to every type without a registered
+/// schema; schemas take over once the Tasks, Projects and Calendar plugins
+/// declare their types.
+const BUILT_IN_PROPERTY_ORDER: [&str; 8] = [
+    "status",
+    "priority",
+    "project",
+    "due",
+    "date",
+    "start",
+    "end",
+    "kanban_order",
+];
+
 /// Serializes a managed object using the deterministic workspace representation.
 pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError> {
+    serialize_envelope(object, &BUILT_IN_PROPERTY_ORDER)
+}
+
+/// Writes the managed-object envelope: `id` and `type`, the `leading`
+/// properties in that order, the other properties sorted by key, `created`
+/// and `updated`, then the title heading and the body.
+fn serialize_envelope(object: &WorkspaceObject, leading: &[&str]) -> Result<Vec<u8>, FormatError> {
     if !valid_object_id(&object.id, &object.object_type) {
         return Err(FormatError::InvalidObjectId);
     }
-    let mut ordered = serde_yaml_ng::Mapping::new();
-    let mut insert = |key: &str, value: serde_json::Value| -> Result<(), FormatError> {
-        let value = serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
-        ordered.insert(serde_yaml_ng::Value::String(key.into()), value);
-        Ok(())
-    };
-    insert("id", serde_json::Value::String(object.id.clone()))?;
-    insert(
-        "type",
-        serde_json::Value::String(object.object_type.clone()),
-    )?;
-    for key in [
-        "status",
-        "priority",
-        "project",
-        "due",
-        "date",
-        "start",
-        "end",
-        "kanban_order",
-    ] {
-        if let Some(value) = object.properties.get(key) {
-            insert(key, value.clone())?;
+    let mut entries = vec![
+        ("id", serde_json::Value::String(object.id.clone())),
+        (
+            "type",
+            serde_json::Value::String(object.object_type.clone()),
+        ),
+    ];
+    for key in leading {
+        if let Some(value) = object.properties.get(*key) {
+            entries.push((key, value.clone()));
         }
     }
     for (key, value) in &object.properties {
-        if !matches!(
-            key.as_str(),
-            "id" | "type"
-                | "status"
-                | "priority"
-                | "project"
-                | "due"
-                | "date"
-                | "start"
-                | "end"
-                | "kanban_order"
-                | "created"
-                | "updated"
-        ) {
-            insert(key, value.clone())?;
+        if !is_managed_property(key) && !leading.contains(&key.as_str()) {
+            entries.push((key, value.clone()));
         }
     }
     if let Some(created) = &object.created {
-        insert("created", serde_json::Value::String(created.clone()))?;
+        entries.push(("created", serde_json::Value::String(created.clone())));
     }
     if let Some(updated) = &object.updated {
-        insert("updated", serde_json::Value::String(updated.clone()))?;
+        entries.push(("updated", serde_json::Value::String(updated.clone())));
     }
-    let yaml = serde_yaml_ng::to_string(&ordered).map_err(|_| FormatError::ObjectSerialization)?;
+    let yaml = frontmatter_yaml(&entries)?;
     let mut result = format!("---\n{}---\n\n# {}\n", yaml, object.title.trim());
     // Only line breaks at the end are normalized. Trailing spaces stay: two
     // of them are a Markdown line break, and the editor may be mid-typing.
@@ -602,6 +635,91 @@ pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError
         result.push('\n');
     }
     Ok(result.into_bytes())
+}
+
+/// Writes frontmatter entries as a YAML mapping, in order, as libyaml writes
+/// it, with one exception.
+///
+/// YAML 1.1 readers such as libyaml read U+2028 and U+2029 as line breaks.
+/// libyaml writes them raw, and it writes a multi-line string as a literal
+/// block. When the last value it writes is a literal block that ends in one
+/// of them, its output ends without a line feed and the closing `---` loses
+/// its line. Only then is that last string written double-quoted. Every
+/// other value keeps libyaml's bytes. libyaml doesn't let a caller pick a
+/// scalar style, so it writes the mapping again with an empty string in that
+/// place, which ends its output as `''`, and the quoted string replaces it.
+fn frontmatter_yaml(entries: &[(&str, serde_json::Value)]) -> Result<String, FormatError> {
+    let mut mapping = serde_yaml_ng::Mapping::with_capacity(entries.len());
+    for (key, value) in entries {
+        let value = serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
+        mapping.insert(serde_yaml_ng::Value::String((*key).to_owned()), value);
+    }
+    let mut mapping = serde_yaml_ng::Value::Mapping(mapping);
+    let yaml = serde_yaml_ng::to_string(&mapping).map_err(|_| FormatError::ObjectSerialization)?;
+    if yaml.ends_with('\n') {
+        return Ok(yaml);
+    }
+    let last = last_string(&mut mapping).ok_or(FormatError::ObjectSerialization)?;
+    let text = std::mem::take(last);
+    let yaml = serde_yaml_ng::to_string(&mapping).map_err(|_| FormatError::ObjectSerialization)?;
+    let before = yaml
+        .strip_suffix("''\n")
+        .ok_or(FormatError::ObjectSerialization)?;
+    Ok(format!("{before}{}\n", double_quoted(&text)))
+}
+
+/// The last scalar libyaml writes for `value`, when it's a string. A mapping
+/// writes each key before its value, so its last scalar is a value.
+fn last_string(value: &mut serde_yaml_ng::Value) -> Option<&mut String> {
+    match value {
+        serde_yaml_ng::Value::String(text) => Some(text),
+        serde_yaml_ng::Value::Sequence(items) => items.last_mut().and_then(last_string),
+        serde_yaml_ng::Value::Mapping(map) => map.values_mut().last().and_then(last_string),
+        _ => None,
+    }
+}
+
+/// Writes `text` as a double-quoted YAML scalar, escaping exactly what
+/// libyaml escapes: characters outside YAML's printable set, the byte order
+/// mark, line breaks, `"` and `\`.
+fn double_quoted(text: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for character in text.chars() {
+        match character {
+            '\0' => quoted.push_str("\\0"),
+            '\u{7}' => quoted.push_str("\\a"),
+            '\u{8}' => quoted.push_str("\\b"),
+            '\t' => quoted.push_str("\\t"),
+            '\n' => quoted.push_str("\\n"),
+            '\u{b}' => quoted.push_str("\\v"),
+            '\u{c}' => quoted.push_str("\\f"),
+            '\r' => quoted.push_str("\\r"),
+            '\u{1b}' => quoted.push_str("\\e"),
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\u{85}' => quoted.push_str("\\N"),
+            '\u{2028}' => quoted.push_str("\\L"),
+            '\u{2029}' => quoted.push_str("\\P"),
+            '\u{feff}' => quoted.push_str("\\uFEFF"),
+            ' '..='~' | '\u{a0}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'.. => {
+                quoted.push(character);
+            }
+            _ => {
+                let code = u32::from(character);
+                // Writing to a String can't fail.
+                let _ = match code {
+                    ..=0xff => write!(quoted, "\\x{code:02X}"),
+                    0x100..=0xffff => write!(quoted, "\\u{code:04X}"),
+                    _ => write!(quoted, "\\U{code:08X}"),
+                };
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Decodes a manifest document without applying semantic validation.
@@ -983,5 +1101,122 @@ mod tests {
             Err(ManagedObjectPathError::Unsafe)
         );
         assert!(validate_managed_object_path("notes/note.md").is_ok());
+    }
+
+    proptest::proptest! {
+        /// libyaml double-quotes any string that holds U+0085, so its output
+        /// for such strings shows the escapes `double_quoted` has to match.
+        #[test]
+        fn double_quoted_strings_match_libyaml(
+            before in proptest::collection::vec(proptest::char::any(), 0..16),
+            after in proptest::collection::vec(proptest::char::any(), 0..16),
+        ) {
+            let text = format!(
+                "{}\u{85}{}",
+                String::from_iter(before),
+                String::from_iter(after)
+            );
+            let libyaml = serde_yaml_ng::to_string(&text).unwrap();
+            proptest::prop_assert_eq!(libyaml, format!("{}\n", double_quoted(&text)));
+        }
+    }
+
+    #[test]
+    fn double_quoted_strings_read_back_unchanged() {
+        let text = "\0\u{7}\u{8}\t\n\u{b}\u{c}\r\u{1b}\"\\\u{7f}\u{85}\u{9f}\u{a0}\u{2028}\u{2029}\u{feff}\u{fffe}\u{e000}\u{1f600}'#: -";
+        let quoted = double_quoted(text);
+        assert_eq!(serde_yaml_ng::from_str::<String>(&quoted).unwrap(), text);
+    }
+
+    /// Text heavy on the line breaks libyaml writes raw or escapes.
+    fn line_break_text() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::strategy::Strategy as _;
+        proptest::collection::vec(
+            proptest::sample::select(
+                &[
+                    "\u{2028}", "\u{2029}", "\n", "\r", "\u{85}", " ", "a", "'", "- ", "---",
+                ][..],
+            ),
+            0..8,
+        )
+        .prop_map(|pieces| pieces.concat())
+    }
+
+    fn line_break_value() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {
+        use proptest::strategy::Strategy as _;
+        let leaf = proptest::prop_oneof![
+            1 => proptest::strategy::Just(serde_json::Value::Null),
+            4 => line_break_text().prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(3, 12, 3, |inner| {
+            proptest::prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..3).prop_map(serde_json::Value::Array),
+                proptest::collection::btree_map(line_break_text(), inner, 0..3)
+                    .prop_map(|map| serde_json::Value::Object(map.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest::proptest! {
+        /// The frontmatter is libyaml's output unless that output lacks a
+        /// final line feed. Then it still reads back as the same mapping.
+        #[test]
+        fn frontmatter_keeps_libyaml_bytes_unless_they_lack_a_final_line_feed(
+            entries in proptest::collection::vec((line_break_text(), line_break_value()), 0..4),
+        ) {
+            let entries = entries
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect::<Vec<_>>();
+            let mut mapping = serde_yaml_ng::Mapping::new();
+            for (key, value) in &entries {
+                mapping.insert(
+                    serde_yaml_ng::Value::String((*key).to_owned()),
+                    serde_yaml_ng::to_value(value).unwrap(),
+                );
+            }
+            let libyaml = serde_yaml_ng::to_string(&mapping).unwrap();
+            let written = frontmatter_yaml(&entries).unwrap();
+            if libyaml.ends_with('\n') {
+                proptest::prop_assert_eq!(written, libyaml);
+            } else {
+                proptest::prop_assert!(written.ends_with("\"\n"), "{:?}", written);
+                let read: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(&written).unwrap();
+                proptest::prop_assert_eq!(read, mapping);
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_last_literal_block_ending_in_a_line_separator_is_double_quoted() {
+        let mut object = WorkspaceObject {
+            id: "note_01j00000000000000000000000".into(),
+            object_type: "note".into(),
+            title: "Example".into(),
+            body: String::new(),
+            relative_path: "notes/example.md".into(),
+            revision: String::new(),
+            created: None,
+            updated: Some("\na\u{2028}".into()),
+            properties: BTreeMap::from([
+                ("a".into(), serde_json::json!("Boil.\nServe.\u{2028}")),
+                (
+                    "b".into(),
+                    serde_json::json!(["x\u{2029}", {"k": "y\n\u{2029}"}]),
+                ),
+            ]),
+        };
+        let bytes = String::from_utf8(serialize_object(&object).unwrap()).unwrap();
+        // libyaml's own forms, with raw separators, except for the last value.
+        assert_eq!(
+            bytes,
+            "---\nid: note_01j00000000000000000000000\ntype: note\na: |\n  Boil.\n  Serve.\u{2028}b:\n- 'x\u{2029}  '\n- k: |+\n    y\n\u{2029}updated: \"\\na\\L\"\n---\n\n# Example\n"
+        );
+        let ParsedMarkdown::Managed(parsed) = parse_markdown("notes/example.md", bytes.as_bytes())
+        else {
+            panic!("the canonical bytes must stay managed");
+        };
+        object.revision = parsed.revision.clone();
+        assert_eq!(parsed, object);
     }
 }
