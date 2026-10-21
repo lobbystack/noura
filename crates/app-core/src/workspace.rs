@@ -340,10 +340,15 @@ fn check_identity(engine: &WorkspaceEngine, saved_id: &str, path: &str) -> Resul
     if engine.manifest().id == saved_id {
         return Ok(());
     }
-    Err(AppError::new(
+    Err(identity_changed(path))
+}
+
+/// A saved folder at `path` holds a workspace other than the saved one.
+pub(crate) fn identity_changed(path: &str) -> AppError {
+    AppError::new(
         "workspace_identity_changed",
         format!("A different workspace is now at {path}."),
-    ))
+    )
 }
 
 fn folder_name(folder: &Path) -> String {

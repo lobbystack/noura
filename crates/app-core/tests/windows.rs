@@ -386,6 +386,106 @@ fn the_open_workspace_spelled_another_way_opens_nothing_more() {
     }
 }
 
+/// Copy every file under `from` into `to`, as the file manager does.
+fn copy_folder(from: &Path, to: &Path) {
+    for (path, bytes) in snapshot(from) {
+        let relative = path.strip_prefix(from).unwrap();
+        write(to, relative.to_str().unwrap(), &bytes);
+    }
+}
+
+/// The Markdown files the open workspace's index lists.
+fn indexed(app_data: &Path, app: &App) -> Vec<String> {
+    let index = app_data
+        .join("workspaces")
+        .join(app.workspace().unwrap().id())
+        .join("index.sqlite");
+    let connection = rusqlite::Connection::open(index).unwrap();
+    let mut statement = connection
+        .prepare("SELECT relative_path FROM files WHERE relative_path LIKE '%.md' ORDER BY 1")
+        .unwrap();
+    statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A copy of the open workspace's folder, as the file manager makes,
+/// keeps the workspace ID and so shares its index. Opening the copy
+/// opens nothing and says why. The windows, the recent list and the next
+/// launch keep the folder that is open, and no second engine lists the
+/// copy's files in the shared index.
+#[test]
+fn a_copy_of_the_open_workspace_opens_nothing_and_says_why() {
+    let (app_data, folder, mut first) = opened(&["A.md"]);
+    let mut second = first.new_window().unwrap();
+    let root = first.workspace().unwrap().root().to_owned();
+    let copy = tempfile::tempdir().unwrap();
+    copy_folder(folder.path(), copy.path());
+    write(copy.path(), "Only in the copy.md", b"x");
+    let recents = app_data.path().join("recent-workspaces.json");
+    let listed = std::fs::read(&recents).unwrap();
+
+    second.open_folder(copy.path().to_owned());
+    settle(&mut second);
+    first.poll();
+
+    let notice = second.notice().expect("the window says why");
+    assert!(notice.message.contains(&root), "{}", notice.message);
+    assert_eq!(std::fs::read(&recents).unwrap(), listed);
+    assert_eq!(second.recents()[0].path, root);
+    assert!(!first.is_closed());
+    assert!(std::ptr::eq(
+        first.workspace().unwrap(),
+        second.workspace().unwrap()
+    ));
+    assert_eq!(rows(&second), ["A.md"]);
+    assert_eq!(indexed(app_data.path(), &second), ["A.md"]);
+
+    let (mut next, others) = relaunch(app_data.path(), vec![first, second]);
+    assert_eq!(next.workspace().unwrap().root(), root);
+    assert_eq!(rows(&next), ["A.md"]);
+    assert_eq!(others.len(), 1);
+
+    // Opening a folder records it in the recent list, so a list that stays
+    // gone shows that nothing opened.
+    drop(others);
+    std::fs::remove_file(&recents).unwrap();
+    next.open_folder(copy.path().join("."));
+    settle(&mut next);
+    assert!(next.notice().is_some());
+    assert!(!recents.exists(), "the copy opened");
+}
+
+/// A recent workspace whose folder now holds a copy of the open one
+/// opens nothing either, and leaves the shared index alone.
+#[test]
+fn a_recent_folder_that_now_holds_the_open_workspace_opens_nothing() {
+    let (app_data, folder, mut first) = opened(&["A.md"]);
+    let shown = first.workspace().unwrap().id().to_owned();
+    let other = tempfile::tempdir().unwrap();
+    first.open_folder(other.path().to_owned());
+    settle(&mut first);
+    let other_id = first.workspace().unwrap().id().to_owned();
+    first.open_recent(&shown);
+    settle(&mut first);
+    std::fs::remove_dir_all(other.path().join(".noura")).unwrap();
+    copy_folder(folder.path(), other.path());
+    write(other.path(), "Only in the copy.md", b"x");
+    let recents = app_data.path().join("recent-workspaces.json");
+    let listed = std::fs::read(&recents).unwrap();
+
+    first.open_recent(&other_id);
+    settle(&mut first);
+
+    let notice = first.notice().expect("the window says why");
+    assert_eq!(notice.remove_recent.as_deref(), Some(other_id.as_str()));
+    assert_eq!(first.workspace().unwrap().id(), shown);
+    assert_eq!(std::fs::read(&recents).unwrap(), listed);
+    assert_eq!(indexed(app_data.path(), &first), ["A.md"]);
+}
+
 /// The rail's page titles, top to bottom.
 fn rail(app: &App) -> Vec<String> {
     app.rail().iter().map(|page| page.title.clone()).collect()

@@ -14,6 +14,8 @@ use std::{
     },
 };
 
+use local_core::WorkspaceEngine;
+
 use crate::{
     AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
     PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
@@ -26,6 +28,7 @@ use crate::{
     settings::kernel_sections,
     tabs::Tabs,
     view_state::StoredWindow,
+    workspace::identity_changed,
 };
 
 mod commands;
@@ -139,6 +142,24 @@ enum Job {
 struct Opened {
     workspace: Workspace,
     tree: FileTree,
+}
+
+/// The workspace the windows show when a job starts. No job opens it a
+/// second time, from its own folder or from a copy.
+struct Shown {
+    id: String,
+    root: String,
+    name: String,
+}
+
+impl Shown {
+    fn of(workspace: &Workspace) -> Self {
+        Self {
+            id: workspace.id().to_owned(),
+            root: workspace.root().to_owned(),
+            name: workspace.name(),
+        }
+    }
 }
 
 /// The job running in the background and where its result arrives:
@@ -557,9 +578,13 @@ impl App {
         };
         self.recents = self.service.recents();
         self.listeners.emit(Change::Recents);
+        let result = match result {
+            Ok(Some(opened)) => self.adopt(opened),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
         match (result, job) {
-            (Ok(Some(opened)), _) => self.adopt(opened),
-            (Ok(None), _) => {}
+            (Ok(()), _) => {}
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
@@ -633,17 +658,16 @@ impl App {
         self.release();
     }
 
-    fn adopt(&mut self, opened: Opened) {
-        // The workspace was open already: every window keeps sharing the
-        // one that is open, with its index.
-        if self
+    /// Show the workspace a job opened in this window, and close the
+    /// others. A job that opened the workspace the windows show changes
+    /// nothing, and fails when it opened a copy of it.
+    fn adopt(&mut self, opened: Opened) -> Result<(), AppError> {
+        if let Some(shown) = self
             .workspace
-            .as_ref()
-            .is_some_and(|workspace| workspace.id() == opened.workspace.id())
+            .clone()
+            .filter(|workspace| workspace.id() == opened.workspace.id())
         {
-            drop(opened);
-            self.refresh_tree(None);
-            return;
+            return self.opened_again(&shown, opened);
         }
         let workspace = Arc::new(opened.workspace);
         let adopted = self
@@ -676,6 +700,35 @@ impl App {
             let window = self.spawn_window(stored);
             self.opened_windows.push(window);
         }
+        Ok(())
+    }
+
+    /// A job opened the workspace the windows show, which [`run`] checks
+    /// for before it opens anything, so a folder changed meanwhile. The
+    /// windows keep the engine they share, and the recent list, which the
+    /// job's engine changed, goes back to the folder they show. The job's
+    /// engine reconciled the shared index with its own folder, so the
+    /// open engine reconciles it again.
+    fn opened_again(&mut self, shown: &Arc<Workspace>, opened: Opened) -> Result<(), AppError> {
+        let copy = opened.workspace.root() != shown.root();
+        let folder = opened.workspace.root().to_owned();
+        drop(opened);
+        if !copy {
+            self.refresh_tree(None);
+            return Ok(());
+        }
+        match self.service.remember(shown) {
+            Ok(recents) => {
+                self.recents = recents;
+                self.recents_seen = self.session.recents_changed(self.key);
+                self.listeners.emit(Change::Recents);
+            }
+            Err(error) => {
+                tracing::warn!(code = %error.code, "the recent list kept a copy of the workspace");
+            }
+        }
+        self.rescan();
+        Err(copy_of_shown(&folder, &Shown::of(shown)))
     }
 
     fn set_screen(&mut self, screen: Screen) {
@@ -709,14 +762,11 @@ impl App {
         let service = self.service.clone();
         let listeners = self.listeners.clone();
         let work = job.clone();
-        let open_root = self
-            .workspace
-            .as_ref()
-            .map(|workspace| workspace.root().to_owned());
+        let shown = self.workspace.as_deref().map(Shown::of);
         let spawned = std::thread::Builder::new()
             .name("workspace-open".into())
             .spawn(move || {
-                let result = run(&service, &work, open_root.as_deref());
+                let result = run(&service, &work, shown.as_ref());
                 // The app may have closed meanwhile; nothing is waiting then.
                 let _ = sender.send(result);
                 listeners.emit(Change::WorkFinished);
@@ -737,21 +787,22 @@ impl App {
     }
 }
 
-/// Open what `job` asks for. `open_root` is the folder of the workspace the
-/// windows show, if any.
+/// Open what `job` asks for. `shown` is the workspace the windows show, if
+/// any. Returns `None` when the job names that workspace's folder.
 fn run(
     service: &WorkspaceService,
     job: &Job,
-    open_root: Option<&str>,
+    shown: Option<&Shown>,
 ) -> Result<Option<Opened>, AppError> {
+    if let Some(shown) = shown
+        && opens_shown(service, job, shown)?
+    {
+        return Ok(None);
+    }
     let workspace = match job {
         Job::Restore { workspace_id } | Job::OpenRecent { workspace_id, .. } => {
             service.open_recent(workspace_id)?
         }
-        // The open workspace's folder spelled another way: through a link,
-        // with `.` or `..`, or in other letter case. Opening it would start
-        // a second engine, with its own watcher, on the same index.
-        Job::OpenFolder(folder) if is_folder(folder, open_root) => return Ok(None),
         Job::OpenFolder(folder) => service.open_folder(folder)?,
         Job::Create { name, folder } => service.create(name, folder)?,
     };
@@ -759,12 +810,63 @@ fn run(
     Ok(Some(Opened { workspace, tree }))
 }
 
-/// Whether `folder` is the folder at `root`, which the workspace engine
-/// keeps in canonical form.
-fn is_folder(folder: &Path, root: Option<&str>) -> bool {
-    root.is_some_and(|root| {
-        std::fs::canonicalize(folder).is_ok_and(|folder| folder.as_os_str() == root)
-    })
+/// Whether `job` names the folder of the workspace the windows show,
+/// spelled any way: through a link, with `.` or `..`, or in other letter
+/// case. Fails when the job's folder holds that workspace somewhere else,
+/// as a copy made in the file manager does, since a copy keeps the
+/// workspace ID. Either way, opening the folder would start a second
+/// engine and watcher on the workspace's one index, and record the
+/// folder in the recent list, so this runs before anything opens.
+fn opens_shown(service: &WorkspaceService, job: &Job, shown: &Shown) -> Result<bool, AppError> {
+    let (folder, saved_id) = match job {
+        Job::OpenFolder(folder) => (folder.clone(), None),
+        Job::Restore { workspace_id } | Job::OpenRecent { workspace_id, .. } => {
+            let Some(recent) = service
+                .recents()
+                .into_iter()
+                .find(|recent| &recent.workspace_id == workspace_id)
+            else {
+                return Ok(false);
+            };
+            (PathBuf::from(recent.path), Some(workspace_id.as_str()))
+        }
+        // A new workspace gets its own ID, and a folder that holds a
+        // workspace already gets none.
+        Job::Create { .. } => return Ok(false),
+    };
+    // A path Noura can't show opens nothing; the job says why.
+    let Some(path) = folder.to_str() else {
+        return Ok(false);
+    };
+    let same_folder = std::fs::canonicalize(&folder)
+        .is_ok_and(|folder| folder.as_os_str() == shown.root.as_str());
+    // The open itself reports a folder it can't read.
+    let holds_shown = same_folder
+        || WorkspaceEngine::read_manifest_at(&folder)
+            .ok()
+            .flatten()
+            .is_some_and(|manifest| manifest.id == shown.id);
+    if !holds_shown {
+        return Ok(false);
+    }
+    match saved_id {
+        // The recent entry names another workspace than the folder holds.
+        Some(saved_id) if saved_id != shown.id => Err(identity_changed(path)),
+        _ if same_folder => Ok(true),
+        _ => Err(copy_of_shown(path, shown)),
+    }
+}
+
+/// The folder at `path` holds a copy of the workspace the windows show.
+fn copy_of_shown(path: &str, shown: &Shown) -> AppError {
+    let Shown { name, root, .. } = shown;
+    AppError::new(
+        "workspace_already_open",
+        format!(
+            "{path} holds a copy of \u{201c}{name}\u{201d}, which you have open from {root}. \
+             Noura opens one copy at a time."
+        ),
+    )
 }
 
 impl Drop for App {
