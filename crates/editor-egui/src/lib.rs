@@ -19,6 +19,7 @@ use input::mutation::EventState;
 use widget::block::LayoutCache;
 
 pub use editor_core::{bounds, commands, keymap};
+mod accesskit;
 mod chrome;
 pub mod fold;
 pub mod fonts;
@@ -271,6 +272,8 @@ pub struct MdConfig {
     /// Draws the formatting toolbar above the note and the small toolbar
     /// over a selection. Find opens with Mod-F either way.
     pub toolbar: bool,
+    /// What a screen reader calls the text.
+    pub label: String,
 }
 
 impl Default for MdConfig {
@@ -279,6 +282,7 @@ impl Default for MdConfig {
             readonly: false,
             ext: "md".into(),
             toolbar: false,
+            label: "Note text".into(),
         }
     }
 }
@@ -302,6 +306,9 @@ pub struct Editor {
 
     /// The toolbars and the find bar.
     chrome: chrome::Chrome,
+
+    /// What a screen reader calls the text.
+    label: String,
 }
 
 static PRINT: bool = false;
@@ -492,6 +499,7 @@ impl Editor {
             readonly,
             ext,
             toolbar,
+            label,
         } = config;
         let mut renderer = MdRender::new(ctx.clone(), md, &ext, readonly);
         renderer.interactive = true;
@@ -507,6 +515,7 @@ impl Editor {
             prev_dimensions: None,
             next_resp: Default::default(),
             chrome: chrome::Chrome::new(toolbar),
+            label,
         }
     }
 
@@ -517,8 +526,7 @@ impl Editor {
             md,
             MdConfig {
                 readonly: false,
-                ext: "md".into(),
-                toolbar: false,
+                ..MdConfig::default()
             },
         )
     }
@@ -766,6 +774,9 @@ impl Editor {
             self.edit.renderer.touch_targets.clear();
             self.show_scrollable_editor(ui, root);
         });
+        self.edit
+            .renderer
+            .update_accesskit(ui, self.id(), &self.label);
 
         let new_offset = self.edit.scroll_area.stored_offset();
         self.next_resp.scroll_updated = new_offset != prev_offset;
