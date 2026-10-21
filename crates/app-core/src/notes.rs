@@ -1,12 +1,15 @@
-//! The editor sessions service: each Markdown file open in a tab, what the
-//! editor shows of it, and the saves that bring its edits to disk.
+//! The editor sessions service: each Markdown, plain-text or code file open
+//! in a tab, what the editor shows of it, and the saves that bring its edits
+//! to disk.
 //!
 //! A managed note's editor shows the text after its frontmatter, and the
 //! properties panel shows the frontmatter. A Markdown file without an ID
-//! shows its whole text, frontmatter included. Saves write the file's whole
-//! text through `local-core`, which keeps the bytes nobody edited: the
-//! byte-order mark, each line's ending and the final newline. A save runs on
-//! a worker thread and counts only once the durable write returns.
+//! shows its whole text, frontmatter included. A plain-text or code file
+//! shows its whole text as source, with no Markdown drawn. Saves write the
+//! file's whole text through `local-core`, which keeps the bytes nobody
+//! edited: the byte-order mark, each line's ending and the final newline. A
+//! save runs on a worker thread and counts only once the durable write
+//! returns.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -240,6 +243,9 @@ pub struct NoteSession {
     /// Whether the editor shows the text as source, without the live
     /// preview. Decided when the note opens.
     source_only: bool,
+    /// Whether the file is a plain-text or code file rather than Markdown:
+    /// its text is never read as frontmatter. Decided when it opens.
+    text_file: bool,
     managed: Option<Managed>,
     /// The editor's text and its buffer version, as the editor last
     /// reported them.
@@ -281,11 +287,12 @@ pub struct NoteSession {
 }
 
 impl NoteSession {
-    /// Read the Markdown file at `relative_path`.
+    /// Read the Markdown, plain-text or code file at `relative_path`.
     pub(crate) fn open(engine: &WorkspaceEngine, relative_path: &str) -> Result<Self, AppError> {
         let read = engine
             .read_raw_markdown(relative_path)
             .map_err(|error| open_error(error, relative_path))?;
+        let text_file = !is_markdown(relative_path);
         let mut session = Self {
             relative_path: relative_path.to_owned(),
             base: String::new(),
@@ -293,6 +300,7 @@ impl NoteSession {
             body_start: 0,
             whole_file: true,
             source_only: false,
+            text_file,
             managed: None,
             text: String::new(),
             version: 0,
@@ -314,13 +322,14 @@ impl NoteSession {
             uses_crlf: false,
             has_bom: false,
         };
-        session.whole_file = !matches!(
-            local_core::parse_markdown(relative_path, read.body.as_bytes()),
-            ParsedMarkdown::Managed(_)
-        );
+        session.whole_file = text_file
+            || !matches!(
+                local_core::parse_markdown(relative_path, read.body.as_bytes()),
+                ParsedMarkdown::Managed(_)
+            );
         session.take(read);
         session.text = session.body().to_owned();
-        session.source_only = misread_frontmatter(&session.text);
+        session.source_only = text_file || misread_frontmatter(&session.text);
         Ok(session)
     }
 
@@ -333,9 +342,16 @@ impl NoteSession {
 
     /// Take `base`, the file's whole LF text, as what the file holds now.
     fn read(&mut self, base: String, revision: String) {
-        let parsed = local_core::parse_markdown(&self.relative_path, base.as_bytes());
+        let parsed = if self.whole_file {
+            None
+        } else {
+            Some(local_core::parse_markdown(
+                &self.relative_path,
+                base.as_bytes(),
+            ))
+        };
         self.managed = match parsed {
-            ParsedMarkdown::Managed(object) if !self.whole_file => Some(Managed {
+            Some(ParsedMarkdown::Managed(object)) => Some(Managed {
                 id: object.id,
                 object_type: object.object_type,
                 created: object.created,
@@ -379,7 +395,8 @@ impl NoteSession {
     }
 
     /// Whether the editor shows the text as source, without the live
-    /// preview. The preview misreads a file shown whole whose frontmatter
+    /// preview: a plain-text or code file, or a note the preview would
+    /// misread. The preview misreads a file shown whole whose frontmatter
     /// holds a lone carriage return: it reads the wrong lines after it,
     /// and a callout there crashes it. Ticket 18 replaces the frontmatter
     /// detection behind this; until then such a file shows as source.
@@ -1224,7 +1241,13 @@ fn misread_frontmatter(text: &str) -> bool {
             .any(|(index, _)| !text[index + 1..].starts_with('\n'))
 }
 
-/// Whether the file at `relative_path` opens in the note editor.
+/// Whether the file at `relative_path` opens in the editor: a Markdown file,
+/// or a plain-text or code file.
+pub(crate) fn opens_in_editor(relative_path: &str) -> bool {
+    is_markdown(relative_path) || local_core::is_plain_text_path(relative_path)
+}
+
+/// Whether the file at `relative_path` is Markdown, which opens as a note.
 pub(crate) fn is_markdown(relative_path: &str) -> bool {
     relative_path.len() > 3
         && relative_path.is_char_boundary(relative_path.len() - 3)

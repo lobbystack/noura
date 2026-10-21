@@ -74,8 +74,10 @@ impl<'ast> MdDoc {
     pub fn calc_atom_bounds<'a>(&mut self, root: &'a AstNode<'a>) {
         let mut images = Vec::new();
         for node in root.descendants() {
+            // A plain-text file shows an image's source as text.
             if let NodeValue::Image(_) = node.data.borrow().value
                 && !self.disable_images
+                && !self.plaintext
             {
                 images.push(self.node_range(node));
             }

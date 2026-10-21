@@ -46,8 +46,12 @@ pub struct Construct {
 }
 
 impl MdDoc {
-    /// Every construct the editor draws in place, in source order.
+    /// Every construct the editor draws in place, in source order. A
+    /// plain-text file draws none: it shows its source as it is.
     pub fn constructs(&mut self) -> Vec<Construct> {
+        if self.plaintext {
+            return Vec::new();
+        }
         let arena = Arena::new();
         let root = self.reparse(&arena);
         root.descendants()

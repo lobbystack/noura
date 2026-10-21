@@ -13,7 +13,7 @@ use crate::{
     files::remap,
     notes::{
         ConflictChoice, FileCheck, Finished, NoteSession, NoteSync, PropertyValue, Restored,
-        SaveProblem, is_markdown,
+        SaveProblem, opens_in_editor,
     },
 };
 
@@ -951,9 +951,9 @@ impl App {
         }
     }
 
-    /// Bring the note sessions in line with the tabs: open each Markdown
-    /// file a tab shows, follow tabs whose file moved, and drop the
-    /// sessions of closed tabs.
+    /// Bring the note sessions in line with the tabs: open each Markdown,
+    /// plain-text or code file a tab shows, follow tabs whose file moved,
+    /// and drop the sessions of closed tabs.
     pub(super) fn sync_notes(&mut self) {
         self.open_notes();
         self.session
@@ -971,7 +971,7 @@ impl App {
             .list()
             .iter()
             .filter_map(|tab| Some((tab.id(), tab.file()?.relative_path.clone())))
-            .filter(|(_, path)| is_markdown(path))
+            .filter(|(_, path)| opens_in_editor(path))
             .collect();
         let open = |tab: &TabId| files.iter().any(|(id, _)| id == tab);
         self.notes.sessions.retain(|tab, _| open(tab));

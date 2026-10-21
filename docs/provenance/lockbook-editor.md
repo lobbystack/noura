@@ -74,6 +74,7 @@ To the workspace crate's editor:
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
 - `alert_type_title_ranges` gives a callout whose first line names no known type an empty type and uses the whole line as its title. Lockbook panicked there. You can reach that case by typing `---` above a line that holds a lone carriage return, which makes frontmatter that comrak counts one line short.
 - `own_prefix_len_task_item` keeps a task item's prefix inside its line. A parent item's padding counts columns, so after a tab it can claim part of the task's marker, as in `-\t- [ ] `. Lockbook then read past the end of the line and panicked.
+- Ticket 23 made the plain-text mode leave Markdown out of editing too. Return only breaks the line, Backspace only deletes, Tab nests nothing, and the mode reports no constructs, folds or images. Lockbook's plain-text mode drew the source as it is but still continued lists and quotes on Return and removed their markers on Backspace.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
 - Inserts an input method's committed text the way a key press inserts text. Lockbook's desktop path ignored egui's input method events.
@@ -171,4 +172,4 @@ BSD-3-Clause requires binary distributions to reproduce the copyright notice, th
 ## Review
 
 - Reviewer: Claude (author review). Owner review pending.
-- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals.
+- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals, and for ticket 23's plain-text mode.
