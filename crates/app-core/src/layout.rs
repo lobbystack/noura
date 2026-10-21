@@ -1,12 +1,11 @@
 //! The window layout this device remembers for every workspace: whether
 //! the sidebar shows, its width and the sidebar sections you folded.
 
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::store::JsonStore;
 
 /// The sidebar's narrowest width in points, and its width until you
 /// resize it.
@@ -35,15 +34,14 @@ impl Default for Layout {
 }
 
 /// Reads and writes `layout.json` in the app data folder.
-#[derive(Debug)]
 pub(crate) struct LayoutStore {
-    file: PathBuf,
+    store: JsonStore<Layout>,
 }
 
 impl LayoutStore {
     pub(crate) fn new(app_data: &Path) -> Self {
         Self {
-            file: app_data.join("layout.json"),
+            store: JsonStore::new(app_data.join("layout.json"), "window layout"),
         }
     }
 
@@ -51,20 +49,7 @@ impl LayoutStore {
     /// can't read it. A width under the minimum comes back as the
     /// minimum.
     pub(crate) fn load(&self) -> Layout {
-        let bytes = match std::fs::read(&self.file) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Layout::default();
-            }
-            Err(error) => {
-                tracing::warn!(%error, "the window layout could not be read");
-                return Layout::default();
-            }
-        };
-        let mut layout: Layout = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            tracing::warn!(%error, "the window layout file is invalid");
-            Layout::default()
-        });
+        let mut layout = self.store.load();
         layout.sidebar_width = sidebar_width(layout.sidebar_width).unwrap_or(SIDEBAR_MIN_WIDTH);
         layout
     }
@@ -72,19 +57,9 @@ impl LayoutStore {
     /// Save the layout. A failure goes to the log: the layout still
     /// applies until Noura quits.
     pub(crate) fn save(&self, layout: &Layout) {
-        if let Err(error) = self.write(layout) {
+        if let Err(error) = self.store.save(layout) {
             tracing::warn!(%error, "the window layout could not be saved");
         }
-    }
-
-    fn write(&self, layout: &Layout) -> std::io::Result<()> {
-        if let Some(parent) = self.file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec_pretty(layout).map_err(std::io::Error::other)?;
-        let mut file = atomic_write_file::AtomicWriteFile::open(&self.file)?;
-        file.write_all(&bytes)?;
-        file.commit()
     }
 }
 

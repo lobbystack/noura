@@ -522,6 +522,27 @@ fn a_managed_note_another_app_moves_keeps_its_tab() {
 }
 
 #[test]
+fn two_tabs_that_end_up_on_one_file_become_one() {
+    let (_app_data, folder, mut app) = opened(&["A.md"]);
+    write(
+        folder.path(),
+        "Plan.md",
+        &managed_note("note_01k00000000000000000000023"),
+    );
+    app.rescan();
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("Plan.md", OpenAs::Kept);
+
+    // Another app replaces A.md with the note.
+    std::fs::remove_file(folder.path().join("A.md")).unwrap();
+    rename(folder.path(), "Plan.md", "A.md");
+    app.rescan();
+
+    assert_eq!(paths(&app), ["A.md"]);
+    assert_eq!(active(&app).as_deref(), Some("A"));
+}
+
+#[test]
 fn a_file_without_an_id_that_another_app_moves_closes_its_tab() {
     let (_app_data, folder, mut app) = opened(&["A.md", "Loose.md"]);
     app.open_file("A.md", OpenAs::Kept);

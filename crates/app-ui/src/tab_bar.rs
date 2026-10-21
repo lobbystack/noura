@@ -118,6 +118,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
         let focused = ui.memory(|memory| memory.focused())?;
         tabs.iter().position(|tab| tab_id(tab.id) == focused)
     });
+    if focused.is_none() && !view.grab {
+        // The keyboard left the bar; Tab comes back to the active tab.
+        view.focus = None;
+    }
     let mut close = None;
     if let Some(index) = focused {
         view.focus = Some(tabs[index].id);
@@ -161,10 +165,11 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
                         }
                         if drawn.tab.middle_clicked() || drawn.close.clicked() {
                             close = Some((index, false));
-                        } else if drawn.tab.double_clicked() {
-                            keep = Some(tab.id);
                         } else if drawn.tab.clicked() {
                             activate = Some(tab.id);
+                            if drawn.tab.double_clicked() {
+                                keep = Some(tab.id);
+                            }
                         }
                     }
                 });

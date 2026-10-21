@@ -336,6 +336,16 @@ impl Tabs {
                 None => gone.push(tab.id),
             }
         }
+        // Two tabs that now show one file become one: the first stays.
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if self.tabs[..index]
+                .iter()
+                .any(|earlier| earlier.shows(&tab.content))
+                && !gone.contains(&tab.id)
+            {
+                gone.push(tab.id);
+            }
+        }
         for id in gone {
             changed = true;
             active_changed |= self.active == Some(id);

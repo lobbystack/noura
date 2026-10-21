@@ -11,6 +11,7 @@ mod files;
 mod layout;
 mod rail;
 mod recents;
+mod store;
 mod tabs;
 mod view_state;
 mod workspace;
