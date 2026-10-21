@@ -7,7 +7,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, TryRecvError, channel},
     },
@@ -55,13 +55,21 @@ pub(crate) struct Snapshot {
 }
 
 impl Snapshot {
-    /// List the workspace and its problems. The listing reconciles the
-    /// index first when the watcher saw a change nobody reconciled yet.
-    pub(crate) fn of(engine: &WorkspaceEngine, root: &str) -> Result<Self, AppError> {
-        let failed = |error| AppError::from_core(error, root, Access::ReadWorkspace);
-        let entries = engine.list_workspace_entries().map_err(failed)?;
-        let problems = problems::collect(engine, root)?;
-        Ok(Self { entries, problems })
+    /// List the workspace and its problems, with the engine's change
+    /// counts at that moment. The listing reconciles the index first when
+    /// the watcher saw a change nobody reconciled yet. No change lands
+    /// while it lists, so the counts tell exactly which changes it shows.
+    pub(crate) fn of(
+        engine: &WorkspaceEngine,
+        root: &str,
+    ) -> Result<(Self, ChangeCounts), AppError> {
+        let (snapshot, counts) = engine.read_settled(|| {
+            let failed = |error| AppError::from_core(error, root, Access::ReadWorkspace);
+            let entries = engine.list_workspace_entries().map_err(failed)?;
+            let problems = problems::collect(engine, root)?;
+            Ok::<_, AppError>(Self { entries, problems })
+        });
+        Ok((snapshot?, counts))
     }
 }
 
@@ -70,50 +78,49 @@ pub(crate) struct Update {
     pub(crate) snapshot: Snapshot,
     pub(crate) tree: FileTree,
     pub(crate) origins: Vec<Origin>,
-    /// The engine's change counts, read just after the listing. A change
-    /// they don't count landed after the listing.
+    /// The engine's change counts when the snapshot was listed.
     pub(crate) counts: ChangeCounts,
 }
 
-/// Whether an update's listing is older than one the app made itself: a
-/// change landed after the update's counts were read and before `listed`,
-/// the counts read just before the app's own listing. Listings take turns
-/// with changes, so the app's listing shows that change and the update's
-/// misses it.
-pub(crate) fn is_older(update: &Update, listed: ChangeCounts) -> bool {
-    update.counts.own < listed.own || update.counts.outside < listed.outside
-}
+/// A listing of the files and the change counts it shows.
+type Listing = (Snapshot, ChangeCounts);
 
 /// The background thread that watches one open workspace. Dropping it
 /// tells the thread to stop.
 pub(crate) struct Watch {
     stop: Arc<AtomicBool>,
     updates: Receiver<Update>,
+    /// The app's own newest listing, waiting for the thread.
+    listed: Arc<Mutex<Option<Listing>>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Watch {
-    /// Start watching. `current` is what the views show now, so only later
-    /// changes produce updates.
+    /// Start watching. `current` is what the views show now, listed when
+    /// the engine's change counts were `counts`, so only later changes
+    /// produce updates.
     pub(crate) fn start(
         engine: Arc<WorkspaceEngine>,
         root: String,
         current: Snapshot,
+        counts: ChangeCounts,
         rescans: Rescans,
         listeners: Listeners,
     ) -> Option<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, updates) = channel();
-        let heard = engine.change_counts();
+        let listed = Arc::new(Mutex::new(None));
         let worker = Worker {
             engine,
             root,
-            last: current,
+            seen: current.clone(),
+            heard: counts,
+            shown: (current, counts),
+            listed: listed.clone(),
             rescans,
             stop: stop.clone(),
             sender,
             listeners,
-            heard,
         };
         let spawned = std::thread::Builder::new()
             .name("workspace-watch".into())
@@ -122,6 +129,7 @@ impl Watch {
             Ok(thread) => Some(Self {
                 stop,
                 updates,
+                listed,
                 thread: Some(thread),
             }),
             Err(error) => {
@@ -129,6 +137,18 @@ impl Watch {
                 None
             }
         }
+    }
+
+    /// Tell the thread the views now show a listing the app made itself,
+    /// after one of its own changes. The thread compares later listings
+    /// with it, so a change another app makes right after, back to what
+    /// the thread listed before, still reaches the views.
+    pub(crate) fn show(&self, snapshot: &Snapshot, counts: ChangeCounts) {
+        let mut listed = self
+            .listed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *listed = Some((snapshot.clone(), counts));
     }
 
     /// The newest update since the last call, carrying the origins of every
@@ -171,55 +191,66 @@ impl Drop for Watch {
 struct Worker {
     engine: Arc<WorkspaceEngine>,
     root: String,
-    last: Snapshot,
+    /// The thread's own last listing, which the change stream follows.
+    seen: Snapshot,
+    /// The change counts that listing shows.
+    heard: ChangeCounts,
+    /// What the views show, or will once the app takes the last update:
+    /// the newer of that update and the app's own last listing.
+    shown: Listing,
+    listed: Arc<Mutex<Option<Listing>>>,
     rescans: Rescans,
     stop: Arc<AtomicBool>,
     sender: Sender<Update>,
     listeners: Listeners,
-    /// The file changes `local-core` had announced at the last look.
-    heard: ChangeCounts,
 }
 
 impl Worker {
     fn run(mut self) {
         let mut last_rescan = Instant::now();
-        // Origins heard while listing, which the next listing may show.
-        let mut carried: Vec<Origin> = Vec::new();
         while !self.stop.load(Ordering::SeqCst) {
             let rescanned = self.wait_and_rescan(&mut last_rescan);
-            let mut origins = std::mem::take(&mut carried);
-            self.hear(&mut origins);
-            if origins.is_empty() && !rescanned {
+            if !rescanned && self.engine.change_counts() == self.heard {
                 continue;
             }
-            let snapshot = match Snapshot::of(&self.engine, &self.root) {
-                Ok(snapshot) => snapshot,
+            let (snapshot, counts) = match Snapshot::of(&self.engine, &self.root) {
+                Ok(listing) => listing,
                 Err(error) => {
                     tracing::warn!(code = %error.code, "could not list the workspace");
                     continue;
                 }
             };
-            // Changes that landed while listing may or may not show in this
-            // listing, so the next round lists again under their origin.
-            self.hear(&mut carried);
-            for origin in &carried {
-                if !origins.contains(origin) {
-                    origins.push(*origin);
-                }
-            }
-            if snapshot == self.last {
+            self.take_app_listing();
+            // The app listed the files after this listing, so the views
+            // show a newer state. The changes since then make the next
+            // round list again.
+            if counts.is_before(self.shown.1) {
                 continue;
             }
-            if origins.is_empty() {
+            // Compared with what the views show too: after the app lists
+            // the files itself, another app can put them back the way this
+            // thread saw them last.
+            let stale = snapshot != self.shown.0;
+            if snapshot == self.seen && !stale {
+                self.heard = counts;
+                continue;
+            }
+            let mut origins = origins_between(self.heard, counts);
+            // Only another app changes files without a count, so a listing
+            // that differs with nothing counted in between shows its change.
+            let unannounced = stale && origins_between(self.shown.1, counts).is_empty();
+            if (origins.is_empty() || unannounced) && !origins.contains(&Origin::Outside) {
                 origins.push(Origin::Outside);
             }
             let tree = FileTree::from_entries(&snapshot.entries);
-            self.last = snapshot.clone();
+            self.seen = snapshot.clone();
+            self.heard = counts;
+            self.shown = (snapshot.clone(), counts);
             let update = Update {
                 snapshot,
                 tree,
                 origins: origins.clone(),
-                counts: self.heard,
+                counts,
             };
             if self.sender.send(update).is_err() {
                 return;
@@ -227,6 +258,21 @@ impl Worker {
             for origin in origins {
                 self.listeners.emit(Change::Files(origin));
             }
+        }
+    }
+
+    /// Take the app's newest own listing, unless the views will show a
+    /// newer one.
+    fn take_app_listing(&mut self) {
+        let listed = self
+            .listed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(listed) = listed
+            && !listed.1.is_before(self.shown.1)
+        {
+            self.shown = listed;
         }
     }
 
@@ -266,20 +312,16 @@ impl Worker {
         *last_rescan = Instant::now();
         true
     }
+}
 
-    /// Collect the origins of the file changes `local-core` announced
-    /// since the last look. The counts never miss a change, however many
-    /// Noura makes at once.
-    fn hear(&mut self, origins: &mut Vec<Origin>) {
-        let now = self.engine.change_counts();
-        let heard = std::mem::replace(&mut self.heard, now);
-        for (origin, changed) in [
-            (Origin::Noura, now.own != heard.own),
-            (Origin::Outside, now.outside != heard.outside),
-        ] {
-            if changed && !origins.contains(&origin) {
-                origins.push(origin);
-            }
-        }
+/// Who made the changes counted in `later` and not in `earlier`.
+fn origins_between(earlier: ChangeCounts, later: ChangeCounts) -> Vec<Origin> {
+    let mut origins = Vec::new();
+    if later.own != earlier.own {
+        origins.push(Origin::Noura);
     }
+    if later.outside != earlier.outside {
+        origins.push(Origin::Outside);
+    }
+    origins
 }

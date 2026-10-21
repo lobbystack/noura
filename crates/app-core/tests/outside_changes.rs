@@ -385,6 +385,35 @@ fn the_periodic_rescan_finds_a_change_the_watcher_missed() {
 }
 
 #[test]
+fn another_app_undoing_a_rename_noura_just_made_reaches_the_tree() {
+    let mut live = Live::open_with(
+        &[("Photo.png", "png")],
+        Rescans {
+            periodic: Duration::from_millis(300),
+            ..NO_RESCANS
+        },
+    );
+    // Only the periodic rescan finds what the other app does.
+    live.workspace().force_watch_fault(WatchFault::Silent);
+
+    live.app.start_rename("Photo.png");
+    assert!(live.app.commit_rename("Picture.png"));
+    assert_eq!(rows(&live.app), ["Picture.png"]);
+    // Another app puts the old name back before the watch thread lists the
+    // files, so its next listing matches the one before the rename.
+    std::fs::rename(live.path("Picture.png"), live.path("Photo.png")).unwrap();
+
+    live.wait_until("the tree shows the old name again", |app| {
+        rows(app) == ["Photo.png"]
+    });
+    assert!(live.seen.contains(&Change::Files(Origin::Outside)));
+    // Later rescans leave the view as it is.
+    std::thread::sleep(Duration::from_millis(700));
+    live.app.poll();
+    assert_eq!(rows(&live.app), ["Photo.png"]);
+}
+
+#[test]
 fn a_note_task_or_project_another_app_moves_keeps_its_id_whatever_order_the_events_arrive_in() {
     let mut live = Live::open_with(
         &[
@@ -540,6 +569,13 @@ fn a_note_the_cloud_drive_evicts_keeps_its_entry_and_id_until_it_downloads_again
         live.app.notice().unwrap().message,
         "This file isn't downloaded yet. Try again once it is."
     );
+    // A copy would need the file's content.
+    live.app.duplicate("Journal/today.md");
+    assert_eq!(
+        live.app.notice().unwrap().message,
+        "This file isn't downloaded yet. Try again once it is."
+    );
+    assert!(!live.path("Journal/today 1.md").exists());
 
     // The download replaces the placeholder with the file.
     write(
@@ -572,6 +608,13 @@ fn any_file_the_cloud_drive_has_not_downloaded_shows_marked() {
         not_downloaded(app, "Scan.pdf") == Some(true)
     });
     assert_eq!(rows(&live.app), ["Notes.md", "Scan.pdf"]);
+
+    live.app.duplicate("Scan.pdf");
+    assert_eq!(
+        live.app.notice().unwrap().message,
+        "This file isn't downloaded yet. Try again once it is."
+    );
+    assert!(!live.path("Scan 1.pdf").exists());
 }
 
 /// Set or clear the attribute a cloud provider gives a file whose content
@@ -632,6 +675,17 @@ fn a_file_the_cloud_provider_marks_online_only_shows_marked_and_noura_never_read
         live.app.notice().unwrap().message,
         "This file isn't downloaded yet. Try again once it is."
     );
+    // Windows would let Noura read these files, so a copy would show that
+    // Noura read them.
+    for (file, copy) in [("Online.md", "Online 1.md"), ("Scan.pdf", "Scan 1.pdf")] {
+        live.app.duplicate(file);
+        assert_eq!(
+            live.app.notice().unwrap().message,
+            "This file isn't downloaded yet. Try again once it is.",
+            "{file}"
+        );
+        assert!(!live.path(copy).exists(), "{copy}");
+    }
 
     // The provider downloads both files.
     set_online_only(&live.path("Online.md"), false);

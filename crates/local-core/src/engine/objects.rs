@@ -89,8 +89,7 @@ impl WorkspaceEngine {
     ) -> Result<MutationResult<WorkspaceObject>> {
         validate_object_type(object_type)?;
         let path = resolve_for_write(&self.root, relative_path, "object_adopt")?;
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "object_adopt", Some(relative_path)))?;
+        let bytes = read_downloaded(&path, relative_path, "object_adopt")?;
         check_revision(&bytes, expected_revision, "object_adopt")?;
         let ParsedMarkdown::Unmanaged {
             title,
@@ -155,8 +154,11 @@ impl WorkspaceEngine {
                 "object_update",
             )
         })?;
-        let bytes = std::fs::read(self.root.join(&object.relative_path))
-            .map_err(|error| CoreError::io(error, "object_update", Some(&object.relative_path)))?;
+        let bytes = read_downloaded(
+            &self.root.join(&object.relative_path),
+            &object.relative_path,
+            "object_update",
+        )?;
         check_revision(&bytes, &patch.expected_revision, "object_update")?;
         if let Some(title) = patch.title {
             if title.trim().is_empty() {
@@ -232,8 +234,7 @@ impl WorkspaceEngine {
         let destination_path = resolve_for_write(&self.root, destination, "object_move")?;
         let _guard = self.write_lock("object_move")?;
         self.collaboration_guard_file_mutation(&object.relative_path)?;
-        let bytes = std::fs::read(&source)
-            .map_err(|error| CoreError::io(error, "object_move", Some(&object.relative_path)))?;
+        let bytes = read_downloaded(&source, &object.relative_path, "object_move")?;
         check_revision(&bytes, expected_revision, "object_move")?;
         if destination_path.exists() {
             return Err(CoreError::new(
@@ -300,8 +301,7 @@ impl WorkspaceEngine {
         let source = resolve_for_write(&self.root, &object.relative_path, "object_delete")?;
         let _guard = self.write_lock("object_delete")?;
         self.collaboration_guard_file_mutation(&object.relative_path)?;
-        let bytes = std::fs::read(&source)
-            .map_err(|error| CoreError::io(error, "object_delete", Some(&object.relative_path)))?;
+        let bytes = read_downloaded(&source, &object.relative_path, "object_delete")?;
         check_revision(&bytes, expected_revision, "object_delete")?;
         self.expect_own_write(&object.relative_path, None);
         let trash_path = self
@@ -340,8 +340,7 @@ impl WorkspaceEngine {
         let _guard = self.write_lock(operation)?;
         if let Some(expected) = expected {
             self.collaboration_guard_file_mutation(&object.relative_path)?;
-            let current = std::fs::read(&destination)
-                .map_err(|error| CoreError::io(error, operation, Some(&object.relative_path)))?;
+            let current = read_downloaded(&destination, &object.relative_path, operation)?;
             check_revision(&current, expected, operation)?;
         } else if destination.exists() {
             return Err(CoreError::new(
@@ -440,6 +439,7 @@ impl WorkspaceEngine {
                 continue;
             };
             let destination = resolve_for_write(&self.root, &relative, operation)?;
+            ensure_downloaded(&destination, &relative, operation)?;
             let bytes = match std::fs::read(&destination) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound && !walked => {

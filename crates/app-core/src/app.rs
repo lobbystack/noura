@@ -21,7 +21,7 @@ use crate::{
     rail::Rail,
     tabs::Tabs,
     view_state::ViewStore,
-    watch::{self, Rescans, Snapshot, Watch},
+    watch::{Rescans, Snapshot, Watch},
 };
 
 mod file_actions;
@@ -131,6 +131,8 @@ enum Job {
 struct Opened {
     workspace: Workspace,
     snapshot: Snapshot,
+    /// The engine's change counts when the snapshot was listed.
+    counts: ChangeCounts,
     tree: FileTree,
 }
 
@@ -171,9 +173,9 @@ pub struct App {
     watch: Option<Watch>,
     /// The listing the views show, which tells which object each file is.
     snapshot: Option<Snapshot>,
-    /// The engine's change counts just before the app last listed the files
-    /// itself, after one of its tree operations. A watch update listed
-    /// before then would undo that operation in the views.
+    /// The engine's change counts when the app last listed the files
+    /// itself, at open or after one of its tree operations. A watch update
+    /// listed before then would undo that operation in the views.
     listed: ChangeCounts,
 }
 
@@ -434,7 +436,7 @@ impl App {
         };
         // The views show a newer listing already. The watch thread lists
         // again after the change that made it newer.
-        if watch::is_older(&update, self.listed) {
+        if update.counts.is_before(self.listed) {
             return false;
         }
         let mut tree = update.tree;
@@ -475,11 +477,12 @@ impl App {
         // Stop watching the previous workspace before watching this one.
         self.watch = None;
         self.snapshot = Some(opened.snapshot.clone());
-        self.listed = ChangeCounts::default();
+        self.listed = opened.counts;
         self.watch = Watch::start(
             opened.workspace.shared_engine(),
             opened.workspace.root().to_owned(),
             opened.snapshot,
+            opened.counts,
             self.rescans,
             self.listeners.clone(),
         );
@@ -561,11 +564,12 @@ fn run(service: &WorkspaceService, job: &Job) -> Result<Opened, AppError> {
         Job::OpenFolder(folder) => service.open_folder(folder)?,
         Job::Create { name, folder } => service.create(name, folder)?,
     };
-    let snapshot = Snapshot::of(workspace.engine(), workspace.root())?;
+    let (snapshot, counts) = Snapshot::of(workspace.engine(), workspace.root())?;
     let tree = FileTree::from_entries(&snapshot.entries);
     Ok(Opened {
         workspace,
         snapshot,
+        counts,
         tree,
     })
 }

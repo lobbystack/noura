@@ -519,13 +519,15 @@ impl App {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        // Read before listing, so a watch update listed earlier is known
-        // to be older.
-        let counts = workspace.engine().change_counts();
         match Snapshot::of(workspace.engine(), workspace.root()) {
-            Ok(snapshot) => {
+            Ok((snapshot, counts)) => {
                 let tree = FileTree::from_entries(&snapshot.entries);
+                // A watch update listed before this is older, and the watch
+                // thread compares its next listings with this one.
                 self.listed = counts;
+                if let Some(watch) = &self.watch {
+                    watch.show(&snapshot, counts);
+                }
                 self.set_snapshot(snapshot);
                 self.replace_tree(Ok(tree), moved);
             }

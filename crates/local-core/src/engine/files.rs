@@ -29,6 +29,7 @@ impl WorkspaceEngine {
             ));
         }
         let path = resolve_for_write(&self.root, &relative_path, "raw_asset_read")?;
+        ensure_downloaded(&path, &relative_path, "raw_asset_read")?;
         let metadata = std::fs::metadata(&path)
             .map_err(|error| CoreError::io(error, "raw_asset_read", Some(&relative_path)))?;
         if metadata.len() as i64 > max_bytes {

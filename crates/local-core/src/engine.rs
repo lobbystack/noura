@@ -372,6 +372,17 @@ impl WorkspaceEngine {
         }
     }
 
+    /// Run `read` while no write, walk or watcher batch can change the
+    /// files or the index, and return its result with the change counts as
+    /// they stand when it ends. A listing made inside `read` shows exactly
+    /// the changes those counts count, so comparing two readings tells
+    /// which listing is newer.
+    pub fn read_settled<T>(&self, read: impl FnOnce() -> T) -> (T, ChangeCounts) {
+        let _changes = self.hold_changes();
+        let value = read();
+        (value, self.change_counts())
+    }
+
     /// Hold off walks and other writes until the guard drops. A write that
     /// reconciles after it releases [`Self::write_lock`] holds this across
     /// both, so no walk runs in between.
@@ -625,6 +636,14 @@ pub struct ChangeCounts {
     pub outside: u64,
 }
 
+impl ChangeCounts {
+    /// Whether these counts miss a change that `later` counts, so they were
+    /// read before it.
+    pub fn is_before(self, later: Self) -> bool {
+        self.own < later.own || self.outside < later.outside
+    }
+}
+
 /// Whether an event says files or their index entries changed.
 fn announces_file_change(event_type: &str) -> bool {
     event_type.starts_with("file:")
@@ -660,6 +679,37 @@ fn lock_error(operation: &str) -> CoreError {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn a_settled_read_shows_exactly_the_changes_its_counts_count() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let start = engine.change_counts();
+        let folders = 120;
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                for folder in 0..folders {
+                    engine.create_folder(&format!("F{folder:03}")).unwrap();
+                }
+            });
+            let mut reads = 0;
+            while !writer.is_finished() || reads == 0 {
+                let (entries, counts) =
+                    engine.read_settled(|| engine.list_workspace_entries().unwrap());
+                // Each new folder is one announced change.
+                assert_eq!(entries.len() as u64, counts.own - start.own);
+                reads += 1;
+            }
+            writer.join().unwrap();
+        });
+        let (entries, counts) = engine.read_settled(|| engine.list_workspace_entries().unwrap());
+        assert_eq!(entries.len(), folders);
+        assert_eq!(counts.own - start.own, folders as u64);
+        assert!(!counts.is_before(start) && start.is_before(counts));
+    }
 
     #[test]
     fn create_does_not_overwrite_an_existing_manifest() {

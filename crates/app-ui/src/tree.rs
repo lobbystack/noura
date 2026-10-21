@@ -769,7 +769,8 @@ fn row_menu(
             if item(ui, "Rename\u{2026}", Some("F2")) {
                 chosen = Some(Command::Rename(path.clone()));
             }
-            if row.kind == EntryKind::File && item(ui, "Duplicate", None) {
+            // A file that isn't downloaded has nothing on this device to copy.
+            if row.kind == EntryKind::File && !row.not_downloaded && item(ui, "Duplicate", None) {
                 chosen = Some(Command::Duplicate(path.clone()));
             }
             ui.separator();

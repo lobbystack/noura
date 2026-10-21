@@ -774,8 +774,8 @@ impl Workspace {
             .map_err(|error| AppError::from_core(error, relative_path, Access::ReadFile))?;
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() && !is_online_only(&metadata) => {}
-            Ok(metadata) if metadata.is_file() => return Err(not_downloaded()),
-            _ if has_icloud_placeholder(&path) => return Err(not_downloaded()),
+            Ok(metadata) if metadata.is_file() => return Err(AppError::not_downloaded()),
+            _ if has_icloud_placeholder(&path) => return Err(AppError::not_downloaded()),
             _ => {
                 return Err(AppError::new(
                     "file_missing",
@@ -787,16 +787,9 @@ impl Workspace {
     }
 }
 
-fn not_downloaded() -> AppError {
-    AppError::new(
-        "file_not_downloaded",
-        "This file isn't downloaded yet. Try again once it is.",
-    )
-}
-
 /// Whether iCloud keeps `.Name.icloud` in place of the missing `Name`, as
 /// `local-core`'s scan lists it.
-fn has_icloud_placeholder(path: &std::path::Path) -> bool {
+pub(crate) fn has_icloud_placeholder(path: &std::path::Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };

@@ -9,7 +9,7 @@ use std::{
 
 use local_core::CreateObjectInput;
 
-use crate::{AppError, Workspace};
+use crate::{AppError, Workspace, files::has_icloud_placeholder};
 
 /// The name new notes and folders start with.
 const UNTITLED: &str = "Untitled";
@@ -250,7 +250,8 @@ impl Workspace {
     }
 
     /// The file or folder at `relative_path` on disk, which must be inside
-    /// the workspace and not a link.
+    /// the workspace and not a link. A file that only an iCloud
+    /// placeholder stands for isn't downloaded yet.
     fn existing(&self, relative_path: &str) -> Result<PathBuf, AppError> {
         let path = self
             .engine()
@@ -258,6 +259,7 @@ impl Workspace {
             .map_err(|error| AppError::from_change(error, relative_path))?;
         match std::fs::symlink_metadata(&path) {
             Ok(_) => Ok(path),
+            Err(_) if has_icloud_placeholder(&path) => Err(AppError::not_downloaded()),
             Err(_) => Err(gone(relative_path)),
         }
     }

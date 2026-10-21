@@ -302,6 +302,43 @@ pub fn is_online_only(metadata: &std::fs::Metadata) -> bool {
     is_dataless(metadata)
 }
 
+/// Read the whole workspace file at `path`, which `relative` names. A file
+/// whose content lives only in the cloud, or that only an iCloud
+/// placeholder stands for, fails with `file_not_downloaded` and is never
+/// read, since reading it would start a download and block.
+pub(super) fn read_downloaded(path: &Path, relative: &str, operation: &str) -> Result<Vec<u8>> {
+    ensure_downloaded(path, relative, operation)?;
+    std::fs::read(path).map_err(|error| CoreError::io(error, operation, Some(relative)))
+}
+
+/// Fail with `file_not_downloaded` when the file at `path` exists only in
+/// the cloud, before anything reads it.
+pub(super) fn ensure_downloaded(path: &Path, relative: &str, operation: &str) -> Result<()> {
+    let online_only = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => is_dataless(&metadata),
+        Err(error) => {
+            error.kind() == std::io::ErrorKind::NotFound && icloud_placeholder(path).exists()
+        }
+    };
+    if online_only {
+        return Err(not_downloaded(relative, operation));
+    }
+    Ok(())
+}
+
+/// The error for a file this device hasn't downloaded from the cloud yet.
+pub(super) fn not_downloaded(relative: &str, operation: &str) -> CoreError {
+    let mut error = CoreError::new(
+        "file_not_downloaded",
+        ErrorCategory::Filesystem,
+        "This file isn't downloaded yet. Try again once it is.",
+        operation,
+    );
+    error.retryable = true;
+    error.path = Some(relative.to_owned());
+    error
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn is_dataless(metadata: &std::fs::Metadata) -> bool {
     use std::os::macos::fs::MetadataExt;
