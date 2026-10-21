@@ -6054,12 +6054,14 @@ dependencies = [
  "libc",
  "semver",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "wasmtime",
  "wat",
+ "workspace-format",
 ]
 
 [[package]]
@@ -6624,6 +6626,14 @@ dependencies = [
  "bytemuck",
  "font-types 0.12.7",
  "once_cell",
+]
+
+[[package]]
+name = "recipes-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+ "serde_json",
 ]
 
 [[package]]

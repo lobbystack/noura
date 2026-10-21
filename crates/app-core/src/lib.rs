@@ -30,6 +30,7 @@ mod menus;
 mod notes;
 mod objects;
 mod operations;
+mod plugin_objects;
 mod plugins;
 mod preferences;
 mod problems;

@@ -13,7 +13,7 @@ pub fn serialize_object_over(existing: &[u8], object: &WorkspaceObject) -> Resul
     workspace_format::serialize_object_over(existing, object).map_err(serialize_error)
 }
 
-fn serialize_error(error: workspace_format::FormatError) -> CoreError {
+pub(crate) fn serialize_error(error: workspace_format::FormatError) -> CoreError {
     match error {
         workspace_format::FormatError::InvalidObjectId => CoreError::new(
             "invalid_object_id",
