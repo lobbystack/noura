@@ -1,0 +1,6 @@
+id = "from-the-future"
+name = "From the future"
+version = "0.1.0"
+interface-version = "9.0.0"
+entry = "plugin.wasm"
+platforms = ["desktop"]

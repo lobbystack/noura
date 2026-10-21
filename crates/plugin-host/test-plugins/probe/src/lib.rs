@@ -1,0 +1,145 @@
+//! A test plugin for seam 3. The page ID passed to `render` names what to
+//! do, and the view reports what happened as one text node per line:
+//!
+//! - `list`: list the workspace's entries.
+//! - `read-file:<path>`: read a file.
+//! - `read-object:<id>`: read an object by its stable ID.
+//! - `nodes:<case>`: return a node list that breaks a rule of views.
+//! - `events`: the events the plugin received, oldest first.
+//! - anything else: a panel with a line of text and a button.
+
+use std::sync::Mutex;
+
+use plugin_sdk::{Error, Event, Node, NodeKind, Page, Plugin, View, workspace};
+
+static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct Probe;
+
+impl Plugin for Probe {
+    fn pages() -> Vec<Page> {
+        vec![Page {
+            id: "probe".into(),
+            title: "Probe".into(),
+        }]
+    }
+
+    fn render(page: String) -> Vec<Node> {
+        if let Some(case) = page.strip_prefix("nodes:") {
+            return broken(case);
+        }
+        let lines = if page == "list" {
+            list()
+        } else if let Some(path) = page.strip_prefix("read-file:") {
+            vec![match workspace::read_file(path) {
+                Ok(file) => format!(
+                    "file {} revision {} text {}",
+                    file.path,
+                    file.revision,
+                    String::from_utf8_lossy(&file.bytes)
+                ),
+                Err(error) => describe(&error),
+            }]
+        } else if let Some(id) = page.strip_prefix("read-object:") {
+            vec![match workspace::read_object(id) {
+                Ok(object) => format!(
+                    "object {} type {} title {} path {} revision {} body {}",
+                    object.id,
+                    object.object_type,
+                    object.title,
+                    object.path,
+                    object.revision,
+                    object.body.trim()
+                ),
+                Err(error) => describe(&error),
+            }]
+        } else if page == "events" {
+            EVENTS.lock().unwrap().clone()
+        } else {
+            let mut view = View::panel("root", Some("Probe"));
+            view.text(View::ROOT, "line", "Probe is running.");
+            view.button(View::ROOT, "press", "Press");
+            return view.into_nodes();
+        };
+        let mut view = View::panel("root", Some("Probe"));
+        for (index, line) in lines.iter().enumerate() {
+            view.text(View::ROOT, &format!("line-{index}"), line);
+        }
+        view.into_nodes()
+    }
+
+    fn handle_event(page: String, event: Event) {
+        let Event::Pressed(node) = event;
+        EVENTS
+            .lock()
+            .unwrap()
+            .push(format!("{page} pressed {node}"));
+    }
+}
+
+fn list() -> Vec<String> {
+    match workspace::list_entries() {
+        Ok(entries) => entries
+            .into_iter()
+            .map(|entry| match entry {
+                Ok(entry) => format!(
+                    "{} {} object {} type {} revision {}",
+                    match entry.kind {
+                        workspace::EntryKind::File => "file",
+                        workspace::EntryKind::Folder => "folder",
+                    },
+                    entry.path,
+                    entry.object_id.as_deref().unwrap_or("-"),
+                    entry.object_type.as_deref().unwrap_or("-"),
+                    entry.revision.as_deref().unwrap_or("-"),
+                ),
+                Err(error) => describe(&error),
+            })
+            .collect(),
+        Err(error) => vec![describe(&error)],
+    }
+}
+
+fn describe(error: &Error) -> String {
+    match error {
+        Error::CapabilityNotDeclared(capability) => {
+            format!("error capability-not-declared {capability}")
+        }
+        Error::UnsupportedPath => "error unsupported-path".to_owned(),
+        Error::InvalidPath(path) => format!("error invalid-path {path}"),
+        Error::NotFound(what) => format!("error not-found {what}"),
+        Error::Failed(message) => format!("error failed {message}"),
+    }
+}
+
+fn node(id: &str, kind: NodeKind, children: &[u32]) -> Node {
+    Node {
+        id: id.to_owned(),
+        kind,
+        children: children.to_vec(),
+    }
+}
+
+/// A node list that breaks one rule of views.
+fn broken(case: &str) -> Vec<Node> {
+    let root = |children: &[u32]| node("root", NodeKind::Panel(None), children);
+    let text = |id: &str| node(id, NodeKind::Text("text".into()), &[]);
+    match case {
+        "out-of-range" => vec![root(&[1, 5]), text("a")],
+        "cycle" => vec![
+            root(&[1]),
+            node("inner", NodeKind::Panel(None), &[2]),
+            node("deeper", NodeKind::Panel(None), &[1]),
+        ],
+        "unlabeled" => vec![
+            root(&[1]),
+            node("press", NodeKind::Button("  ".into()), &[]),
+        ],
+        "duplicate-id" => vec![root(&[1, 2]), text("same"), text("same")],
+        "children-of-text" => vec![root(&[1]), node("a", NodeKind::Text("a".into()), &[0])],
+        "empty" => Vec::new(),
+        _ => vec![root(&[])],
+    }
+}
+
+plugin_sdk::export!(Probe);

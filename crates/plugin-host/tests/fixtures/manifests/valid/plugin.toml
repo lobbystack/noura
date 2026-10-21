@@ -1,0 +1,20 @@
+id = "weather-board"
+name = "Weather board"
+version = "1.2.0"
+interface-version = "0.1.0"
+entry = "build/weather.wasm"
+platforms = ["desktop", "mobile"]
+
+[[capabilities]]
+name = "workspace-read"
+
+[[capabilities]]
+name = "views"
+
+[[capabilities]]
+name = "network"
+hosts = ["api.weather.example", "tiles.weather.example"]
+
+[[capabilities]]
+name = "commands"
+targets = ["tasks/create-task"]
