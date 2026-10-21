@@ -4,6 +4,7 @@ pub mod mutation;
 
 use comrak::nodes::NodeValue;
 
+use crate::commands::Format;
 use crate::offset_types::Grapheme;
 
 /*
@@ -109,16 +110,25 @@ pub enum Event {
     ToggleStyle {
         region: Region,
         style: NodeValue,
-    }, // supports toolbar and inline tyle keyboard shortcuts
+    }, // wraps or unwraps a region in a style's syntax
+    /// A toolbar button or formatting shortcut, run on the selection as
+    /// one undo step. See [`crate::commands`].
+    Format(Format),
+    /// Mod-Enter: check or uncheck the task on each selected line, add a
+    /// checkbox to a list item, or turn a plain line into a task.
+    ToggleTaskLine,
     Newline {
         shift: bool,
     }, // distinct from replace because it triggers auto-bullet, etc
     Delete {
         region: Region,
     }, // distinct from replace because it triggers numbered list renumber, etc
+    /// Tab nests the selected list items, with their children, under the
+    /// item above; Shift-Tab (`deindent`) lifts them out one level.
+    /// Outside a list it changes nothing; see [`crate::MdDoc::tab_indents`].
     Indent {
         deindent: bool,
-    }, // distinct from replace because it's a no-op for first list item, etc
+    },
     Undo,
     Redo,
     Cut,
@@ -146,6 +156,20 @@ pub enum Event {
     Unfold {
         tag: (Grapheme, Grapheme),
     }, // remove the fold tag at this range, showing the section it hid
+    /// An input method's marked text: shown at the caret while you
+    /// compose, and kept out of the text and its change events. Empty
+    /// text ends the composition and inserts nothing, as Escape does.
+    /// `selected` is the clause the input method is converting, in
+    /// characters of `text`.
+    Compose {
+        text: String,
+        selected: Option<std::ops::Range<usize>>,
+    },
+    /// An input method committed `text`: it ends the composition and
+    /// replaces the selection as one edit.
+    Commit {
+        text: String,
+    },
 }
 
 impl From<(Grapheme, Grapheme)> for Region {

@@ -72,11 +72,22 @@ fn click(harness: &mut Ui, label: &str) {
     harness.run();
 }
 
-fn document_shows(harness: &Ui, text: &str) -> bool {
+/// Whether the tree shows no field for renaming a row.
+fn no_rename_field(harness: &Ui) -> bool {
+    harness.query_all_by_role(Role::TextInput).all(|field| {
+        !field
+            .accesskit_node()
+            .label()
+            .is_some_and(|label| label.starts_with("New name for "))
+    })
+}
+
+/// Whether the document area shows the note named `name`.
+fn document_shows(harness: &Ui, name: &str) -> bool {
     harness
         .get_by_role_and_label(Role::Region, "Document")
-        .query_by_label(text)
-        .is_some()
+        .query_by_role_and_label(Role::TextInput, "File name")
+        .is_some_and(|field| field.accesskit_node().value().as_deref() == Some(name))
 }
 
 #[test]
@@ -94,7 +105,7 @@ fn the_header_creates_a_note_that_opens_and_a_folder_you_name_in_place() {
         row(&harness, "Untitled").accesskit_node().is_selected(),
         Some(true)
     );
-    assert!(document_shows(&harness, "Untitled.md"));
+    assert!(document_shows(&harness, "Untitled"));
 
     click(&mut harness, "New folder");
     let field = harness.get_by_role_and_label(Role::TextInput, "New name for Untitled");
@@ -104,7 +115,7 @@ fn the_header_creates_a_note_that_opens_and_a_folder_you_name_in_place() {
     press(&mut harness, Key::Enter);
 
     assert!(folder.join("Projects").is_dir());
-    assert!(harness.query_by_role(Role::TextInput).is_none());
+    assert!(no_rename_field(&harness));
     assert_eq!(
         rows(&harness),
         ["Docs", "Projects", "Readme", "Todo", "Untitled"]
@@ -146,7 +157,7 @@ fn f2_renames_in_place_where_enter_saves_and_escape_cancels() {
     press(&mut harness, Key::Escape);
 
     assert!(folder.join("About.md").is_file());
-    assert!(harness.query_by_role(Role::TextInput).is_none());
+    assert!(no_rename_field(&harness));
 }
 
 #[test]
@@ -157,8 +168,12 @@ fn enter_on_the_open_file_starts_a_rename() {
     focus_row(&mut harness, "Todo");
 
     press(&mut harness, Key::Enter);
-    assert!(document_shows(&harness, "Todo.md"));
-    assert!(harness.query_by_role(Role::TextInput).is_none());
+    assert!(document_shows(&harness, "Todo"));
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "New name for Todo")
+            .is_none()
+    );
     press(&mut harness, Key::Enter);
 
     harness.get_by_role_and_label(Role::TextInput, "New name for Todo");

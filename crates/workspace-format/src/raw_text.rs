@@ -78,8 +78,11 @@ pub fn compose_raw_bytes(body: &str, layout: &RawLayout) -> Vec<u8> {
     bytes
 }
 
-/// For each line of the new text, the index of the same unchanged line in
-/// `original`, found with a line diff. Lines are compared with their LF.
+/// For each line of the new text, the index of the line in `original`
+/// whose ending it keeps, found with a line diff: the same unchanged line,
+/// or the line it replaced. Within a change, replaced and new lines pair
+/// up in order; a new line left over takes the file's usual ending. Lines
+/// are compared with their LF.
 fn match_unchanged_lines(original: &str, lines: &[&str]) -> Vec<Option<usize>> {
     let old = original.split_inclusive('\n').collect::<Vec<_>>();
     let mut matches = vec![None; lines.len()];
@@ -115,16 +118,27 @@ fn match_unchanged_lines(original: &str, lines: &[&str]) -> Vec<Option<usize>> {
     let patch = options.create_patch(&old_text, &new_text);
     let mut paired = Vec::with_capacity(new_middle.len());
     let (mut old_index, mut new_index) = (0, 0);
+    // Lines the current change deleted that no new line took the place of.
+    let mut replaced = std::collections::VecDeque::new();
     for hunk in patch.hunks() {
         for line in hunk.lines() {
             match line {
                 diffy::Line::Context(_) => {
+                    replaced.clear();
                     paired.push((new_index, old_index));
                     old_index += 1;
                     new_index += 1;
                 }
-                diffy::Line::Delete(_) => old_index += 1,
-                diffy::Line::Insert(_) => new_index += 1,
+                diffy::Line::Delete(_) => {
+                    replaced.push_back(old_index);
+                    old_index += 1;
+                }
+                diffy::Line::Insert(_) => {
+                    if let Some(old_line) = replaced.pop_front() {
+                        paired.push((new_index, old_line));
+                    }
+                    new_index += 1;
+                }
             }
         }
     }
@@ -245,6 +259,23 @@ mod tests {
         assert_eq!(
             edit(bytes, |body| body.replace("c\n", "c\nc\n")),
             b"a\nb\r\nc\nc\nd\n"
+        );
+    }
+
+    #[test]
+    fn a_line_edited_in_place_keeps_its_own_ending() {
+        // Mostly LF, and the edited CRLF line stays CRLF.
+        let bytes = b"a\nb\r\nc\nd\n";
+        assert_eq!(
+            edit(bytes, |body| body.replace("b\n", "B!\n")),
+            b"a\nB!\r\nc\nd\n"
+        );
+        // Two lines replaced by three: the first two take the replaced
+        // lines' endings, the third the file's usual one.
+        let bytes = b"one\nx\r\ny\nz\n";
+        assert_eq!(
+            edit(bytes, |body| body.replace("x\ny\n", "X\nY\nW\n")),
+            b"one\nX\r\nY\nW\nz\n"
         );
     }
 

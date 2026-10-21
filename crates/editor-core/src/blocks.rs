@@ -8,7 +8,7 @@ use std::ops::Range;
 use comrak::nodes::{AstNode, NodeAlert, NodeCodeBlock, NodeList, NodeValue};
 
 use crate::bounds::RangesExt as _;
-use crate::doc::MdDoc;
+use crate::doc::{MdDoc, NodeKey};
 use crate::fold::FOLD_TAG;
 use crate::input::Event;
 use crate::nodes::{
@@ -270,6 +270,9 @@ impl<'ast> MdDoc {
     }
 
     pub fn hidden_by_fold(&self, node: &'ast AstNode<'ast>) -> bool {
+        if !self.bounds.has_fold_tags {
+            return false;
+        }
         self.get_cached_hidden_by_fold(node)
             .expect("hidden_by_fold queried for a node not in the current AST")
     }
@@ -285,6 +288,9 @@ impl<'ast> MdDoc {
             return;
         }
         self.cache.hidden_by_fold_deps.set(Some(deps));
+        if !self.bounds.has_fold_tags {
+            return;
+        }
 
         // The root is never hidden; cache it directly so a query for
         // `hidden_by_fold(root)` doesn't fall back to the unwrap
@@ -400,22 +406,24 @@ impl<'ast> MdDoc {
         self.cache.hidden_by_fold.borrow_mut().insert(key, hidden);
     }
 
-    /// Pack node info into u64 using bit manipulation - ultra fast cache key
-    pub fn pack_node_key(node: &AstNode) -> u64 {
+    /// A node's cache key: its kind and source position, which a parse of
+    /// the same text gives it again. Lines get 32 bits and columns 24, so
+    /// keys stay apart in notes far longer than 16,384 lines.
+    pub fn pack_node_key(node: &AstNode) -> NodeKey {
         let borrowed = node.data.borrow();
         let sp = borrowed.sourcepos;
         let (start_line, start_column, end_line, end_column, discriminant) = (
-            sp.start.line as u64,
-            sp.start.column as u64,
-            sp.end.line as u64,
-            sp.end.column as u64,
-            node_value_to_discriminant_id(&borrowed.value) as u64,
+            sp.start.line as u128,
+            sp.start.column as u128,
+            sp.end.line as u128,
+            sp.end.column as u128,
+            node_value_to_discriminant_id(&borrowed.value) as u128,
         );
-        ((start_line & 0x3FFF) << 50)
-            | ((start_column & 0x3FFF) << 36)
-            | ((end_line & 0x3FFF) << 22)
-            | ((end_column & 0x3FFF) << 8)
-            | (discriminant & 0xFF)
+        ((start_line & 0xFFFF_FFFF) << 96)
+            | ((start_column & 0xFF_FFFF) << 72)
+            | ((end_line & 0xFFFF_FFFF) << 40)
+            | ((end_column & 0xFF_FFFF) << 16)
+            | (discriminant & 0xFFFF)
     }
 }
 
@@ -848,7 +856,10 @@ impl<'ast> MdDoc {
         } else if line_content_text.starts_with("[!CAUTION]") {
             "[!CAUTION]".len()
         } else {
-            unreachable!("supported alert types are note, tip, important, warning, caution")
+            // comrak found an alert whose first line the editor reads
+            // elsewhere, as after frontmatter that holds a lone carriage
+            // return: the type is empty and the whole line is the title.
+            0
         };
         let _type = (line_content.start(), line_content.start() + type_len);
 
@@ -1163,21 +1174,55 @@ impl<'ast> MdDoc {
     pub fn selected_fold_item(&self, node: &'ast AstNode<'ast>) -> bool {
         // any items selected -> those items selected for fold
         let root = node.ancestors().last().unwrap();
-        for descendent in root.descendants() {
-            if self.selected_block(descendent)
-                && matches!(
-                    descendent.data().value,
-                    NodeValue::Item(_) | NodeValue::TaskItem(_)
-                )
-            {
-                return self.selected_block(node);
-            }
+        if self.any_item_selected(root) {
+            return self.selected_block(node);
         }
 
         // else -> parent item of any selected items selected for fold
         node.first_child()
             .map(|c| self.selected_block(c))
             .unwrap_or_default()
+    }
+
+    /// Whether any list item under `root` is a selected block. Only blocks
+    /// on the selection's lines can be, so the walk skips the rest; the
+    /// answer holds until the text or the selection changes.
+    fn any_item_selected(&self, root: &'ast AstNode<'ast>) -> bool {
+        let selection = self.buffer.current.selection;
+        if let Some((at, answer)) = self.cache.any_item_selected.get()
+            && at == selection
+        {
+            return answer;
+        }
+        let first = self.offset_line_number(selection.start());
+        let last = self.offset_line_number(selection.end());
+        let mut answer = false;
+        let mut stack = vec![root];
+        'walk: while let Some(node) = stack.pop() {
+            for child in node.children() {
+                let pos = child.data.borrow().sourcepos;
+                if pos.start.line > last {
+                    break;
+                }
+                if pos.end.line != 0 && pos.end.line < first {
+                    continue;
+                }
+                if self.selected_block(child)
+                    && matches!(
+                        child.data().value,
+                        NodeValue::Item(_) | NodeValue::TaskItem(_)
+                    )
+                {
+                    answer = true;
+                    break 'walk;
+                }
+                if child.is_container_block() {
+                    stack.push(child);
+                }
+            }
+        }
+        self.cache.any_item_selected.set(Some((selection, answer)));
+        answer
     }
 }
 
@@ -1615,15 +1660,31 @@ impl<'ast> MdDoc {
         if n == 0 {
             return;
         }
+        let blocks: Vec<_> = root.children().collect();
+        let mut words = std::mem::take(&mut self.bounds.words);
+        self.syntax_words_in(&blocks, 0..n, &mut words);
+        self.bounds.words = words;
+    }
+
+    /// [`Self::calc_syntax_words`] for the source lines `lines`, which the
+    /// top-level `blocks` cover, on those lines' `words`.
+    pub fn syntax_words_in(
+        &self,
+        blocks: &[&'ast AstNode<'ast>],
+        lines: std::ops::Range<usize>,
+        words: &mut Vec<(Grapheme, Grapheme)>,
+    ) {
         // One DFS resolves every line's deepest gutter container; a
         // per-line `deepest_container_block_at_offset` lookup would be
         // quadratic, and this runs every reparse.
-        let mut deepest_by_line: Vec<Option<&'ast AstNode<'ast>>> = vec![None; n];
-        self.assign_deepest_gutter(root, &mut deepest_by_line);
+        let mut deepest_by_line: Vec<Option<&'ast AstNode<'ast>>> = vec![None; lines.end];
+        for block in blocks {
+            self.assign_deepest_gutter_from(block, &mut deepest_by_line);
+        }
 
         let mut prefix_regions: Vec<(Grapheme, Grapheme)> = Vec::new();
         let mut columns: Vec<(Grapheme, Grapheme)> = Vec::new();
-        for (line_idx, &deepest) in deepest_by_line.iter().enumerate() {
+        for (line_idx, &deepest) in deepest_by_line.iter().enumerate().skip(lines.start) {
             let Some(deepest) = deepest else {
                 continue;
             };
@@ -1648,12 +1709,15 @@ impl<'ast> MdDoc {
         // Drop unicode words that fell in a prefix region; the columns
         // replace them. Both sets are non-overlapping and the regions are
         // disjoint from content, so the merged list stays sorted and
-        // non-overlapping as `range_bound` requires.
-        self.bounds
-            .words
-            .retain(|w| !prefix_regions.iter().any(|p| w.intersects(p, false)));
-        self.bounds.words.extend(columns);
-        self.bounds.words.sort();
+        // non-overlapping as `range_bound` requires. Both lists are sorted,
+        // so one pass walks them together.
+        let mut regions = prefix_regions.iter().peekable();
+        words.retain(|w| {
+            while regions.next_if(|p| p.end() <= w.start()).is_some() {}
+            !regions.peek().is_some_and(|p| w.intersects(p, false))
+        });
+        words.extend(columns);
+        words.sort();
     }
 
     /// Returns whether the given line is one of the source lines of the given node
@@ -1690,7 +1754,7 @@ impl<'ast> MdDoc {
         line: (Grapheme, Grapheme),
     ) -> Option<Graphemes> {
         let node_line = self.node_line(node, line);
-        let mut result = 0.into();
+        let mut result: Graphemes = 0.into();
 
         // "If a sequence of lines Ls constitutes a list item according to rule
         // #1, #2, or #3, then the result of indenting each line of Ls by 1-3
@@ -1715,10 +1779,12 @@ impl<'ast> MdDoc {
 
             // spaces + content
             let marker_width = 5;
-            let text = &self.buffer[(
-                node_line.start() + indentation + marker_width,
-                node_line.end(),
-            )];
+            // The parent item's padding counts columns, so after a tab it
+            // can claim part of the marker and leave a line shorter than
+            // the marker (`-\t- [ ] `); clamp rather than read past it.
+            let after_marker =
+                (node_line.start() + indentation + marker_width).min(node_line.end());
+            let text = &self.buffer[(after_marker, node_line.end())];
             marker_width
                 + if text.starts_with("   ") {
                     "   ".len()
@@ -1773,7 +1839,7 @@ impl<'ast> MdDoc {
             result += consume_indent_columns_ceil(text, indentation + parent_padding);
         }
 
-        Some(result)
+        Some(result.min(node_line.len()))
     }
 
     pub fn compute_bounds_task_item(&mut self, node: &'ast AstNode<'ast>) {

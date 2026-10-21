@@ -4,16 +4,18 @@
 //! Clients draw [`App`]'s view state and send it what people do. Each `App`
 //! is one window, and the windows of one launch share the open workspace
 //! and the update service. The workspace service opens workspaces and
-//! keeps the recent list, the files service builds the file tree, and the
-//! update service keeps the app current. The app keeps each workspace's
-//! windows with their tabs and open folders, its rail order, the sidebar's
-//! layout, and the appearance, text size and zoom, in this device's app
-//! data. One command registry feeds the key handling, the command palette,
-//! the native menus and the shortcuts list. Settings lists its sections
-//! from one list that later areas extend. The plugins service installs
-//! plugins from folders and the ones that ship with Noura, keeps this
-//! device's approvals, turns plugins on and off per workspace and runs
-//! them through `plugin-host`, each on a thread of its own.
+//! keeps the recent list, the files service builds the file tree, the
+//! editor sessions service keeps each note open in a tab and saves its
+//! edits, and the update service keeps the app current. The app keeps each
+//! workspace's windows with their tabs and open folders, its rail order,
+//! the sidebar's layout, and the appearance, text size, line width and
+//! zoom, in this device's app data. One command registry feeds the key
+//! handling, the command palette, the native menus and the shortcuts
+//! list. Settings lists its sections from one list that later areas
+//! extend. The plugins service installs plugins from folders and the ones
+//! that ship with Noura, keeps this device's approvals, turns plugins on
+//! and off per workspace and runs them through `plugin-host`, each on a
+//! thread of its own.
 
 mod app;
 mod commands;
@@ -26,6 +28,7 @@ mod keys;
 mod layout;
 mod login;
 mod menus;
+mod notes;
 mod objects;
 mod operations;
 mod plugins;
@@ -49,7 +52,7 @@ mod writes;
 
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
-    PaletteMode, Question, QuickOpen, Rename, Screen, Search,
+    PaletteMode, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
 };
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
@@ -70,13 +73,17 @@ pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
+pub use notes::{
+    ConflictChoice, NoteConflict, NoteSession, NoteSync, Property, PropertyValue,
+    SAVE_AT_LEAST_EVERY, SAVE_PAUSE, SaveProblem,
+};
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use plugin_host::{Grant, View, ViewKind, ViewNode};
 pub use plugins::{
     CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, ShippedPlugin,
 };
-pub use preferences::{ACTUAL_SIZE, Appearance, Preferences, TextSize, ZOOM_LEVELS};
+pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};

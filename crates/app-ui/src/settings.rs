@@ -3,8 +3,8 @@
 //! or Close closes it.
 
 use app_core::{
-    ABOUT_LINKS, ACTUAL_SIZE, App, Appearance, LICENSE, NoticeKind, Settings, TextSize, VERSION,
-    ZOOM_LEVELS, settings_section,
+    ABOUT_LINKS, ACTUAL_SIZE, App, Appearance, LICENSE, LineWidth, NoticeKind, Settings, TextSize,
+    VERSION, ZOOM_LEVELS, settings_section,
 };
 use egui::{
     Button, Frame, Id, Key, Margin, Modal, RichText, ScrollArea, Stroke, TextEdit, Ui, UiBuilder,
@@ -39,6 +39,7 @@ pub(crate) fn show(
     app: &mut App,
     view: &mut SettingsView,
     picker: &mut dyn FolderPicker,
+    spelling: bool,
 ) {
     let Some(settings) = app.settings().cloned() else {
         if view.open {
@@ -79,7 +80,7 @@ pub(crate) fn show(
                     .id_salt(("settings-content", &settings.section))
                     .auto_shrink(false)
                     .show(ui, |ui| {
-                        ui.vertical(|ui| content(ui, app, &settings, view, picker))
+                        ui.vertical(|ui| content(ui, app, &settings, view, picker, spelling))
                     });
             });
         });
@@ -131,6 +132,7 @@ fn content(
     settings: &Settings,
     view: &mut SettingsView,
     picker: &mut dyn FolderPicker,
+    spelling: bool,
 ) {
     let title = app
         .settings_sections()
@@ -144,7 +146,7 @@ fn content(
     notice(ui, settings);
     match settings.section.as_str() {
         settings_section::GENERAL => general(ui, app, settings),
-        settings_section::EDITOR => editor(ui, app),
+        settings_section::EDITOR => editor(ui, app, spelling),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
         settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
@@ -286,9 +288,11 @@ enum Zoom {
     Reset,
 }
 
-fn editor(ui: &mut Ui, app: &mut App) {
-    let current = app.preferences().text_size;
-    let mut text_size = current;
+/// The Editor section. `spelling` says whether the system has a spell
+/// checker to turn on.
+fn editor(ui: &mut Ui, app: &mut App, spelling: bool) {
+    let current = *app.preferences();
+    let mut text_size = current.text_size;
     field(ui, "Text size", Role::RadioGroup, |ui| {
         muted(ui, "Changes the text in notes on this computer.");
         ui.horizontal(|ui| {
@@ -297,8 +301,35 @@ fn editor(ui: &mut Ui, app: &mut App) {
             }
         });
     });
-    if text_size != current {
+    if text_size != current.text_size {
         app.set_text_size(text_size);
+    }
+
+    let mut line_width = current.line_width;
+    field(ui, "Line width", Role::RadioGroup, |ui| {
+        muted(
+            ui,
+            "Changes how wide the text in notes runs on this computer.",
+        );
+        ui.horizontal(|ui| {
+            for choice in LineWidth::ALL {
+                ui.radio_value(&mut line_width, choice, choice.title());
+            }
+        });
+    });
+    if line_width != current.line_width {
+        app.set_line_width(line_width);
+    }
+
+    if spelling {
+        let mut spell_check = current.spell_check;
+        field(ui, "Spelling", Role::Group, |ui| {
+            muted(ui, "Marks misspelled words in notes on this computer.");
+            ui.checkbox(&mut spell_check, "Check spelling");
+        });
+        if spell_check != current.spell_check {
+            app.set_spell_check(spell_check);
+        }
     }
 }
 

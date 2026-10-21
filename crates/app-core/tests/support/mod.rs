@@ -276,6 +276,53 @@ pub fn race<T: Send>(
     })
 }
 
+/// Poll until every note save finishes.
+pub fn settle_saves(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        app.poll();
+        if !app.is_saving_notes() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "a note save never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Hold the workspace's write lock, as another Noura process writing would,
+/// until the returned file is unlocked or dropped. Writes wait meanwhile.
+pub fn hold_writes(fixture: &Fixture, app: &App) -> std::fs::File {
+    let lock_path = fixture
+        .app_data
+        .path()
+        .join("workspaces")
+        .join(app.workspace().unwrap().id())
+        .join("workspace.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .unwrap();
+    lock.lock().unwrap();
+    lock
+}
+
+/// Open the file at `relative_path` from the file tree, as a click on its
+/// row does, and return its tab.
+pub fn open_from_tree(app: &mut App, relative_path: &str) -> app_core::TabId {
+    select(app, relative_path);
+    let row = app.tree().unwrap().focused().unwrap();
+    app.activate_tree_row(row, app_core::OpenAs::Preview);
+    let tab = app.active_tab().unwrap();
+    assert_eq!(
+        tab.file().map(|file| file.relative_path.as_str()),
+        Some(relative_path)
+    );
+    tab.id()
+}
+
 /// Poll until background work finishes.
 pub fn settle(app: &mut App) {
     let deadline = Instant::now() + Duration::from_secs(20);

@@ -17,6 +17,7 @@ mod login;
     allow(dead_code, reason = "Linux shows no native menu bar")
 )]
 mod menu;
+mod spelling;
 mod system;
 mod updates;
 mod windows;
@@ -115,6 +116,29 @@ fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<eframe
     let _ = builder;
 }
 
+/// Give the note editor its fonts, egui's own then the system's so text in
+/// other scripts finds glyphs, and the renderer resources it paints with.
+fn register_editor(
+    creation: &eframe::CreationContext<'_>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let render_state = creation
+        .wgpu_render_state
+        .as_ref()
+        .ok_or("Noura needs the wgpu renderer to draw notes")?;
+    let mut fonts = editor_egui::fonts::default_font_database();
+    fonts.load_system_fonts();
+    let font_system = editor_egui::register_font_system(&creation.egui_ctx, fonts);
+    editor_egui::register_render_callback_resources(
+        &render_state.device,
+        &render_state.queue,
+        render_state.target_format,
+        &mut render_state.renderer.write(),
+        font_system,
+        1,
+    );
+    Ok(())
+}
+
 fn main() -> eframe::Result {
     let launched = Instant::now();
     let smoke = std::env::args()
@@ -153,6 +177,7 @@ fn main() -> eframe::Result {
             let install_at_exit = install_at_exit.clone();
             move |creation| {
                 app_ui::theme::install(&creation.egui_ctx);
+                register_editor(creation)?;
                 // The last workspace starts reopening now, off the UI thread.
                 let system = system::DesktopSystem::new(creation.egui_ctx.clone());
                 let mut app = App::launch_with(&app_data, Arc::new(system));
@@ -176,8 +201,9 @@ fn main() -> eframe::Result {
                     let ctx = creation.egui_ctx.clone();
                     instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
                 }
-                let mut windows =
-                    Windows::new(app, instance, || Box::new(SystemFolderPicker)).quitting_on(quit);
+                let mut windows = Windows::new(app, instance, || Box::new(SystemFolderPicker))
+                    .quitting_on(quit)
+                    .checking_spelling_with(spelling::system_spell_checker());
                 if smoke {
                     windows = windows.smoke_test(smoke_report(&updates));
                 }

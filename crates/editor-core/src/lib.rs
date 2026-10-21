@@ -8,14 +8,22 @@
 //! [`doc::MdDoc`] is the entry point: it holds a note's [`buffer::Buffer`],
 //! parses it with comrak, and turns [`input::Event`]s into edits.
 
+pub mod ast;
+pub mod background;
 pub mod blocks;
 pub mod bounds;
 pub mod buffer;
+pub mod commands;
+pub mod constructs;
 pub mod diff;
 pub mod doc;
+pub mod find;
 pub mod fold;
 pub mod images;
+pub mod ime;
+mod incremental;
 pub mod input;
+pub mod keymap;
 pub mod links;
 pub mod nodes;
 pub mod offset_types;
@@ -26,5 +34,6 @@ pub mod reveal;
 pub mod text_units;
 pub mod unicode_segs;
 
+pub use ast::Ast;
 pub use comrak;
 pub use doc::MdDoc;

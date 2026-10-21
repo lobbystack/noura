@@ -72,7 +72,7 @@ pub use manifest::ManifestUpdateInput;
 pub use objects::{CreateObjectInput, ObjectPatch};
 pub use raw_markdown::{
     MarkdownLinkTarget, RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead,
-    RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult,
+    RawReconcileInput, RawReconcileResult, RawRestoreInput, RawSaveInput, RawSaveResult,
 };
 pub use scan::is_online_only;
 pub(crate) use scan::{ensure_downloaded, not_downloaded};

@@ -71,17 +71,6 @@ where
     });
 }
 
-/// Nested-blockquote structural corpus ([`gen_nested_bq_doc`]).
-fn run_quotes<C, E>(check: C, seeds: u64)
-where
-    C: Fn(&[u8]) -> Result<(), E>,
-    E: std::fmt::Display,
-{
-    crate::tests::test_utils::prop::run(seeds, 64, check, |b| {
-        format!("doc:\n{:?}", gen_nested_bq_doc(&mut ByteSource::new(b)).0)
-    });
-}
-
 /// Corpus is chosen inside the check (varies per seed), so the repro is the
 /// shrunken bytes — decode them with the check's own generator.
 fn run_raw<C, E>(check: C, seeds: u64)
@@ -180,14 +169,6 @@ fn layout_cache_consistent() {
 
 // indent / structure
 #[test]
-fn indent_only_moves_selected_line() {
-    run(
-        indent_only_moves_selected_line_check,
-        Features::nested_lists(),
-        1000,
-    );
-}
-#[test]
 fn indent_preserves_marker() {
     run(
         indent_preserves_marker_check,
@@ -200,18 +181,9 @@ fn indent_doesnt_break_document() {
     run_raw(indent_doesnt_break_document_check, 1000);
 }
 #[test]
-fn indent_is_permissive() {
-    run_raw(indent_is_permissive_check, 1000);
-}
-#[test]
 fn shift_tab_strips_one_level() {
     run_lists(shift_tab_strips_one_level_check, 1000);
 }
-#[test]
-fn shift_tab_strips_one_bq() {
-    run_quotes(shift_tab_strips_one_bq_check, 1000);
-}
-
 // ═══════════════════════════ implementations ═══════════════════════════
 
 /// Picks an offset in `[0, doc_len_chars]` (end inclusive so generators
@@ -829,12 +801,13 @@ fn layout_cache_consistent_check(buf: &[u8]) -> Result<(), &'static str> {
         r.doc.cache.line_prefix_len.borrow_mut().clear();
         r.populate_hidden_by_fold(root);
 
-        // populate writes one entry per descendant; if the cache ends up
-        // smaller, two different nodes mapped to the same key and one
-        // silently clobbered the other.
+        // populate writes one entry per descendant of a note with fold
+        // tags (without one nothing folds, and it writes none); if the cache
+        // ends up smaller, two different nodes mapped to the same key and
+        // one silently clobbered the other.
         let descendant_count = root.descendants().count();
         let cache_size = r.doc.cache.hidden_by_fold.borrow().len();
-        if cache_size < descendant_count {
+        if r.bounds.has_fold_tags && cache_size < descendant_count {
             violation = Some("hidden_by_fold cache key collision (cache shorter than node count)");
         }
 
@@ -1316,62 +1289,6 @@ fn leading_indent_cols(text: &str) -> usize {
     cols
 }
 
-/// Tab indents only the selected line; it never touches any other
-/// line's source. Children are not dragged along — a tight child
-/// simply re-parents to a sibling. This is the conservation form of
-/// "indenting a list item must not also indent its children": every
-/// non-selected line is byte-identical before and after.
-fn indent_only_moves_selected_line_check(buf: &[u8], f: &Features) -> Result<(), &'static str> {
-    let mut src = ByteSource::new(buf);
-    let doc = gen_doc(&mut src, f);
-    let before: Vec<&str> = doc.split_inclusive('\n').collect();
-    if before.len() < 2 {
-        return Ok(());
-    }
-
-    // A non-first line: indent only nests a line under a *prior* sibling,
-    // so first-line (and any-line) selection never fires a real indent
-    // (0%). Restricting to non-first lines exercises an actual indent on
-    // ~7% of seeds — the case where dragging a child would be the bug.
-    let line_idx = 1 + src.draw(usize::MAX) % (before.len() - 1);
-    let line_text = before[line_idx].trim_end_matches('\n');
-    let line_start: usize = before
-        .iter()
-        .take(line_idx)
-        .map(|l| l.chars().count())
-        .sum();
-    let line_len = line_text.chars().count();
-    if line_len == 0 {
-        return Ok(());
-    }
-    let in_line_offset = (src.draw(usize::MAX) % line_len).max(1);
-    let cursor = Grapheme(line_start + in_line_offset);
-
-    let mut ws = TestEditor::new(&doc);
-    ws.enter_frame();
-    ws.push(Event::Select {
-        region: Region::BetweenLocations {
-            start: Location::Grapheme(cursor),
-            end: Location::Grapheme(cursor),
-        },
-    });
-    ws.enter_frame();
-    ws.push(Event::Indent { deindent: false });
-    ws.enter_frame();
-
-    let after_text = ws.get_text().to_string();
-    let after: Vec<&str> = after_text.split_inclusive('\n').collect();
-    if before.len() != after.len() {
-        return Err("tab changed line count");
-    }
-    for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
-        if i != line_idx && b != a {
-            return Err("tab modified a line other than the selected one");
-        }
-    }
-    Ok(())
-}
-
 /// Encode `cols` of indentation using a randomly chosen mix of spaces
 /// and tabs. Tabs use 4-col stops; some col counts can only be
 /// produced by mixed encoding.
@@ -1742,165 +1659,6 @@ fn indent_preserves_marker_check(buf: &[u8], f: &Features) -> Result<(), String>
                 "line {i} stopped beginning a list item after indent: {doc:?}"
             ));
         }
-    }
-    Ok(())
-}
-
-/// Permissiveness — catches a trivial "always no-op" impl that would pass
-/// `indent_doesnt_break_document` vacuously. When shift-tab is clearly
-/// applicable (the cursor's line is structurally nested inside a same-family
-/// container), it must mutate.
-///
-/// Deindent only: the nested-list/quote generators emit strictly-deepening
-/// docs, so the prior line is always an ancestor of the cursor's and the
-/// tab-indent direction is never actually applicable here — testing it would
-/// be vacuous.
-fn indent_is_permissive_check(buf: &[u8]) -> Result<(), &'static str> {
-    use comrak::Arena;
-    use comrak::nodes::NodeValue;
-    use editor_core::offset_types::RangeExt as _;
-
-    let mut src = ByteSource::new(buf);
-    // One-item-per-line, single-family docs: this check predicts the
-    // editor's indent applicability and asserts the op isn't a no-op,
-    // so it needs whitespace-indented nesting. The unified generator's
-    // same-line marker nesting (`+ - [ ] foo`) deindents to a no-op the
-    // predictor doesn't model — a separate edge case, tracked apart.
-    let doc = if src.bias(&[1, 1]) == 0 {
-        gen_nested_list_doc(&mut src).0
-    } else {
-        gen_nested_bq_doc(&mut src).0
-    };
-    let lines: Vec<&str> = doc.split_inclusive('\n').collect();
-    if lines.is_empty() {
-        return Ok(());
-    }
-
-    let line_idx = src.draw(usize::MAX) % lines.len();
-    if lines[line_idx].trim_end_matches('\n').is_empty() {
-        return Ok(()); // blank-line cursor is a boundary case, out of scope
-    }
-    let cursor = pos_in_line(&mut src, &lines, line_idx);
-
-    let mut ws = TestEditor::new(&doc);
-    ws.enter_frame();
-
-    let should_change = {
-        let arena = Arena::new();
-        let root = ws.editor.edit.renderer.reparse(&arena);
-        let line = ws.editor.edit.renderer.bounds.source_lines[line_idx];
-        let cur = ws
-            .editor
-            .edit
-            .renderer
-            .deepest_container_block_at_offset(root, line.end());
-        let cur_kind = &cur.data.borrow().value;
-        let same_family = |a: &comrak::nodes::AstNode<'_>| match cur_kind {
-            NodeValue::Item(_) | NodeValue::TaskItem(_) => {
-                matches!(
-                    &a.data.borrow().value,
-                    NodeValue::Item(_) | NodeValue::TaskItem(_)
-                )
-            }
-            NodeValue::BlockQuote | NodeValue::Alert(_) => {
-                matches!(
-                    &a.data.borrow().value,
-                    NodeValue::BlockQuote | NodeValue::Alert(_)
-                )
-            }
-            _ => false,
-        };
-        // shift-tab mutates iff the cursor's container is nested inside a
-        // same-family container, so deindent pops it out one level.
-        cur.ancestors().skip(1).any(same_family)
-    };
-
-    if !should_change {
-        return Ok(());
-    }
-
-    let before = ws.get_text().to_string();
-    ws.push(Event::Select {
-        region: Region::BetweenLocations {
-            start: Location::Grapheme(cursor),
-            end: Location::Grapheme(cursor),
-        },
-    });
-    ws.enter_frame();
-    ws.push(Event::Indent { deindent: true });
-    ws.enter_frame();
-    let after = ws.get_text().to_string();
-
-    if before == after {
-        return Err("shift-tab was clearly applicable but produced a no-op");
-    }
-    Ok(())
-}
-
-/// Per CommonMark §5.1, a block quote marker is `>` optionally
-/// followed by a single space. Both forms must work — and they can
-/// be mixed at different nesting levels (e.g., `>> foo` is outer `>`
-/// + inner `> `).
-fn pick_bq_marker(src: &mut ByteSource) -> &'static str {
-    if src.bias(&[3, 1]) == 0 { "> " } else { ">" }
-}
-
-/// Generate a nested blockquote doc 1-4 levels deep with random
-/// space / no-space marker variants per level. Returns the doc plus
-/// per-level markers for prediction.
-fn gen_nested_bq_doc(src: &mut ByteSource) -> (String, Vec<&'static str>) {
-    let depth = 1 + src.bias(&[3, 3, 2, 1]);
-    let mut markers = Vec::new();
-    let mut prefix = String::new();
-    for _ in 0..depth {
-        let m = pick_bq_marker(src);
-        markers.push(m);
-        prefix += m;
-    }
-    (format!("{prefix}foo\n"), markers)
-}
-
-/// Property: shift-tab on the content of a nested blockquote removes
-/// exactly the innermost `>`/`> ` marker chars, leaving outer markers
-/// intact. Mirrors `shift_tab_strips_one_level` but for marker-based
-/// containers (bqs, where the level isn't whitespace).
-fn shift_tab_strips_one_bq_check(buf: &[u8]) -> Result<(), &'static str> {
-    let mut src = ByteSource::new(buf);
-    let (doc, markers) = gen_nested_bq_doc(&mut src);
-    if markers.len() < 2 {
-        return Ok(()); // single-level — shift-tab fully exits the bq, separate concern
-    }
-
-    let outer_prefix_len: usize = markers
-        .iter()
-        .take(markers.len() - 1)
-        .map(|m| m.chars().count())
-        .sum();
-    let inner_marker_len = markers.last().unwrap().chars().count();
-
-    let mut ws = TestEditor::new(&doc);
-    ws.enter_frame();
-
-    // Cursor at end of the line content (after all markers + "foo").
-    let total_prefix_len: usize = markers.iter().map(|m| m.chars().count()).sum();
-    let cursor = Grapheme(total_prefix_len + 3);
-    ws.push(Event::Select {
-        region: Region::BetweenLocations {
-            start: Location::Grapheme(cursor),
-            end: Location::Grapheme(cursor),
-        },
-    });
-    ws.enter_frame();
-
-    ws.push(Event::Indent { deindent: true });
-    ws.enter_frame();
-
-    let new_doc = ws.get_text().to_string();
-    let mut expected = String::new();
-    expected.extend(doc.chars().take(outer_prefix_len));
-    expected.extend(doc.chars().skip(outer_prefix_len + inner_marker_len));
-    if new_doc != expected {
-        return Err("shift-tab on nested bq didn't remove exactly the innermost marker");
     }
     Ok(())
 }

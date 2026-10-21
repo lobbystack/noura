@@ -119,14 +119,9 @@ pub(super) fn apply_metadata_patches(
             return Err(invalid("collaboration_metadata_conflict"));
         }
         match (patch.field.as_str(), &patch.value) {
-            ("title", CollaborativeMetadataValue::Value { value }) => {
-                let title = value
-                    .as_str()
-                    .filter(|title| !title.trim().is_empty())
-                    .ok_or_else(|| invalid("collaboration_invalid_metadata_patch"))?;
-                object.title = title.trim().into();
-            }
-            ("title", CollaborativeMetadataValue::Missing) => {
+            // The title is the file's name, which a metadata patch can't
+            // change.
+            ("title", _) => {
                 return Err(invalid("collaboration_invalid_metadata_patch"));
             }
             (field, value) => {

@@ -314,8 +314,11 @@ version = "0.2.0"
 dependencies = [
  "app-core",
  "comrak",
+ "editor-egui",
  "egui",
+ "egui_extras",
  "egui_kittest",
+ "jiff",
  "rusqlite",
  "tempfile",
 ]
@@ -2040,6 +2043,7 @@ dependencies = [
  "base64 0.22.1",
  "cargo-packager-updater",
  "drag",
+ "editor-egui",
  "eframe",
  "egui",
  "egui_kittest",
@@ -2053,6 +2057,7 @@ dependencies = [
  "opener",
  "rfd",
  "serde_json",
+ "spell-check",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -2293,7 +2298,11 @@ name = "editor-core"
 version = "0.2.0"
 dependencies = [
  "comrak",
+ "memchr",
+ "proptest",
+ "regex",
  "ropey",
+ "rustc-hash 2.1.3",
  "similar",
  "tempfile",
  "unicode-segmentation",
@@ -2316,10 +2325,12 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "spell-check",
  "tempfile",
  "tracing",
  "unicode-linebreak",
  "unicode-segmentation",
+ "workspace-format",
 ]
 
 [[package]]
@@ -2422,6 +2433,21 @@ dependencies = [
  "webbrowser",
  "windows-sys 0.61.2",
  "winit",
+]
+
+[[package]]
+name = "egui_extras"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "def286cf47194f3fe45b8e37c503ada7a20a64b59a903b4bc704baec943b1827"
+dependencies = [
+ "ahash",
+ "egui",
+ "enum-map",
+ "itertools 0.15.0",
+ "jiff",
+ "log",
+ "profiling",
 ]
 
 [[package]]
@@ -2558,6 +2584,26 @@ name = "entities"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5320ae4c3782150d900b79807611a59a99fc9a1d61d686faafc24b93fc8d7ca"
+
+[[package]]
+name = "enum-map"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4532960034c15ba2f55e9eee631040ecc473c32e6c4b200828c759840f13a06"
+dependencies = [
+ "enum-map-derive",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7127272f64b3e098f7d81f350d672081b879bff896d219c42370dc858b1af9ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
 
 [[package]]
 name = "enumflags2"
@@ -4369,10 +4415,12 @@ dependencies = [
  "jiff-core",
  "jiff-static",
  "jiff-tzdb-platform",
+ "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -7886,6 +7934,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spell-check"
+version = "0.2.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10654,7 +10712,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "slug",
  "thiserror 2.0.20",
  "ts-rs",
  "ulid",

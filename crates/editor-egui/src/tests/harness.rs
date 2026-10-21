@@ -213,6 +213,8 @@ fn build_editor(md: &str, ext: &str, embeds: Box<dyn EmbedResolver>) -> Editor {
         MdConfig {
             readonly: false,
             ext: ext.to_string(),
+            toolbar: false,
+            ..MdConfig::default()
         },
     );
     editor.set_link_resolver(Box::new(TestLinks));

@@ -34,7 +34,7 @@ impl App {
             Platform::Windows => "Exit",
             Platform::Linux => "Quit",
         };
-        let kernel: [(&str, &str, Run); 19] = [
+        let kernel: [(&str, &str, Run); 20] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -53,6 +53,7 @@ impl App {
                 Arc::new(App::toggle_palette),
             ),
             (RENAME_FILE, "Rename File", Arc::new(App::rename_open_file)),
+            (SAVE, "Save", Arc::new(App::save_active_note)),
             (CLOSE_TAB, "Close Tab", Arc::new(App::close_active_tab)),
             (NEW_WINDOW, "New Window", Arc::new(App::open_new_window)),
             (CLOSE_WINDOW, "Close Window", Arc::new(App::close_window)),
@@ -81,14 +82,7 @@ impl App {
                 "Keyboard Shortcuts",
                 Arc::new(|app| app.open_settings_at(settings_section::SHORTCUTS)),
             ),
-            (
-                QUIT,
-                quit,
-                Arc::new(|app| {
-                    app.quit = true;
-                    app.listeners.emit(Change::Window);
-                }),
-            ),
+            (QUIT, quit, Arc::new(App::request_quit)),
         ];
         for (id, label, run) in kernel {
             let mut command = Command::new(id, label, Area::Anywhere);
@@ -155,8 +149,9 @@ impl App {
     /// The command a key press runs while `focus` has the keyboard: a
     /// command for anywhere, or one for that area. The keys the focused
     /// area handles itself, as the shortcuts list shows them, stay with
-    /// it. While a text field has the keyboard ([`Area::Writing`]), so do
-    /// the keys it types and edits with. While no workspace is open, only
+    /// it. While a text field or a note's text has the keyboard
+    /// ([`Area::Writing`], [`Area::Note`]), so do the keys it types and
+    /// edits with. While no workspace is open, only
     /// Quit and Close Window take their keys.
     pub fn command_for_key(&self, press: &KeyPress, focus: Option<Area>) -> Option<String> {
         let id = self
@@ -213,8 +208,16 @@ impl App {
             .collect()
     }
 
-    /// Whether Quit ran since the last call, in this window. The app
-    /// closes every window, and they all come back at the next launch.
+    /// Quit once every window's notes are saved, as Quit does. Each
+    /// window saves its own, and asks when one fails; Keep editing in any
+    /// of them stays.
+    pub fn request_quit(&mut self) {
+        self.depart(super::notes::Departure::Quit);
+    }
+
+    /// Whether Quit ran since the last call, in this window, and every
+    /// window's notes are on disk. The app closes every window, and they
+    /// all come back at the next launch.
     pub fn take_quit(&mut self) -> bool {
         std::mem::take(&mut self.quit)
     }

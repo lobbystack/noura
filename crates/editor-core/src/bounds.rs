@@ -61,6 +61,10 @@ pub struct Bounds {
     /// navigation: the cursor steps past a whole image rather than into its
     /// `![alt](url)` source, and a backspace against one selects it.
     pub images: Vec<(Grapheme, Grapheme)>,
+
+    /// Whether the text holds a fold tag. Without one nothing folds, so
+    /// no node needs to know whether a fold hides it.
+    pub has_fold_tags: bool,
 }
 
 /// Tag + hidden-contents ranges of one actively folded section. Both act
@@ -68,7 +72,7 @@ pub struct Bounds {
 /// steps past the contents (a cursor right of the `···` chip has cursored
 /// *past* the section), and edits against either resolve whole-fold
 /// (engulf the tag / unfold) rather than touching hidden text.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FoldBounds {
     /// The fold tag's range. Never empty.
     pub tag: (Grapheme, Grapheme),
@@ -90,6 +94,20 @@ impl FoldBounds {
     }
 }
 
+impl Bounds {
+    /// Whether `other` holds the same bounds of the text: everything but
+    /// the wrap lines, which come from layout.
+    pub fn same_text_bounds(&self, other: &Bounds) -> bool {
+        self.text_seq == other.text_seq
+            && self.has_fold_tags == other.has_fold_tags
+            && self.source_lines == other.source_lines
+            && self.words == other.words
+            && self.inline_paragraphs == other.inline_paragraphs
+            && self.folds == other.folds
+            && self.images == other.images
+    }
+}
+
 impl Default for Bounds {
     fn default() -> Self {
         Self {
@@ -100,6 +118,7 @@ impl Default for Bounds {
             inline_paragraphs: Paragraphs::default(),
             folds: Vec::default(),
             images: Vec::default(),
+            has_fold_tags: false,
         }
     }
 }
@@ -113,14 +132,20 @@ impl MdDoc {
     }
 
     pub fn calc_words(&mut self) {
-        self.bounds.words.clear();
+        self.bounds.words = self.words_in((Grapheme(0), self.last_cursor_position()));
+    }
+
+    /// The words of the whole lines `range` spans, as [`Self::calc_words`]
+    /// finds them. Words never cross a line ending, so the words of the
+    /// whole text are the words of its lines.
+    pub fn words_in(&self, range: (Grapheme, Grapheme)) -> Words {
+        let mut words = Words::new();
+        let (start, end) = self.range_to_byte(range);
         // ~1 word per 6 bytes is a generous floor on English; oversize
         // is harmless, undersize forces ~log(n) Vec doublings during
         // the loop. dhat showed 300KB across the doublings without a
         // capacity hint.
-        self.bounds
-            .words
-            .reserve(self.buffer.current.len_bytes() / 6);
+        words.reserve((end.0 - start.0) / 6);
 
         // The editor cursor only stops at grapheme boundaries, so words are
         // ranges of graphemes here. UAX #29 word boundaries are *almost* a
@@ -150,24 +175,27 @@ impl MdDoc {
             }
         };
 
-        let mut prev_char_offset = Grapheme(0);
+        // The text's last word ends where a space after it starts.
+        let text = &self.buffer.current.text()[start.0..end.0];
+        let text = if range.1 == self.last_cursor_position() {
+            std::borrow::Cow::Owned(format!("{text} "))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        };
+        let mut prev_char_offset = range.0;
         let mut prev_word = "";
-        for (byte_offset, word) in self
-            .buffer
-            .current
-            .text_with(" ")
-            .split_word_bound_indices()
-        {
-            let char_offset = snap(byte_offset);
+        for (byte_offset, word) in text.split_word_bound_indices() {
+            let char_offset = snap(start.0 + byte_offset);
 
             if !prev_word.trim().is_empty() {
                 // whitespace-only sequences don't count as words
-                self.bounds.words.push((prev_char_offset, char_offset));
+                words.push((prev_char_offset, char_offset));
             }
 
             prev_char_offset = char_offset;
             prev_word = word;
         }
+        words
     }
 
     /// Translates a comrak::LineColumn into an lb_rs::Grapheme. Note that comrak's text ranges, represented using

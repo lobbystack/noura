@@ -152,7 +152,10 @@ fn typing_filters_the_palette_and_enter_runs_the_highlighted_command() {
         .map(|tab| tab.title().to_owned());
     assert_eq!(active.as_deref(), Some("Ideas"));
 
-    // No match says so.
+    // No match says so. The note's text has the keyboard now, where Mod-K
+    // inserts a link, so the palette opens from the tree.
+    tree_row(&harness, "Plan").focus();
+    harness.run();
     press(&mut harness, Modifiers::COMMAND, Key::K);
     harness.get_by_label("Search commands").type_text("zzz");
     harness.run();
@@ -340,9 +343,12 @@ fn on_linux_every_shortcut_runs_from_the_window() {
     press(&mut harness, ctrl, Key::Backslash);
     assert!(harness.state().app().layout().sidebar_shown);
 
+    // The open note's text has the keyboard, so F2 moves to its name.
     press(&mut harness, Modifiers::NONE, Key::F2);
     assert!(
-        harness.state().app().renaming().is_some(),
+        harness
+            .get_by_role_and_label(Role::TextInput, "File name")
+            .is_focused(),
         "F2 renames the open file"
     );
     press(&mut harness, Modifiers::NONE, Key::Escape);
@@ -444,7 +450,7 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
     harness.run();
     press(&mut harness, Modifiers::NONE, Key::Enter);
 
-    for area in ["Anywhere", "File tree", "Tabs", "Pages", "Writing"] {
+    for area in ["Anywhere", "File tree", "Tabs", "Pages", "Writing", "Notes"] {
         let list = harness.get_by_role_and_label(Role::List, area);
         assert!(
             list.query_all_by_role(Role::ListItem).next().is_some(),
@@ -466,18 +472,32 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
         ("Open or close a folder", "Right or Left or Enter or Space"),
         ("Show the focused tab", "Enter or Space"),
         ("Open a page", "Enter or Space"),
-        ("Undo", "Ctrl+Z"),
-        ("Redo", "Ctrl+Shift+Z or Ctrl+Y"),
         ("Cut", "Ctrl+X"),
         ("Copy", "Ctrl+C"),
         ("Paste", "Ctrl+V"),
         ("Select All", "Ctrl+A"),
+        ("Bold", "Ctrl+B"),
+        ("Strikethrough", "Ctrl+Shift+X"),
+        ("Heading 1", "Ctrl+Alt+1"),
+        ("Check or uncheck a task", "Ctrl+Enter"),
+        ("Find in the note", "Ctrl+F"),
     ] {
         let description = harness
             .get_by_role_and_label(Role::ListItem, label)
             .accesskit_node()
             .description();
         assert_eq!(description.as_deref(), Some(keys), "{label}");
+    }
+    // Text fields and a note's text both undo and redo.
+    for area in ["Writing", "Notes"] {
+        let list = harness.get_by_role_and_label(Role::List, area);
+        for (label, keys) in [("Undo", "Ctrl+Z"), ("Redo", "Ctrl+Shift+Z or Ctrl+Y")] {
+            let description = list
+                .get_by_role_and_label(Role::ListItem, label)
+                .accesskit_node()
+                .description();
+            assert_eq!(description.as_deref(), Some(keys), "{area}: {label}");
+        }
     }
 
     // The page is a section of Settings.

@@ -1,5 +1,6 @@
-//! Appearance, text size and zoom: choices that stay on this device, kept
-//! in `preferences.json` in the app data folder and never in a workspace.
+//! Appearance, text size, line width, zoom and spell check: choices that
+//! stay on this device, kept in `preferences.json` in the app data folder and never in
+//! a workspace.
 
 use std::path::Path;
 
@@ -79,6 +80,47 @@ impl TextSize {
     }
 }
 
+/// How wide a note's lines run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum LineWidth {
+    Narrow,
+    #[default]
+    Default,
+    /// The whole width of the window.
+    Full,
+}
+
+impl LineWidth {
+    /// Every width, in the order Settings offers them.
+    pub const ALL: [Self; 3] = [Self::Narrow, Self::Default, Self::Full];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Narrow => "Narrow",
+            Self::Default => "Default",
+            Self::Full => "Full width",
+        }
+    }
+
+    /// The widest a note's text runs, in points, as the legacy app sized it
+    /// (40rem and 48rem), or `None` for the whole width.
+    pub fn points(self) -> Option<f32> {
+        match self {
+            Self::Narrow => Some(640.0),
+            Self::Default => Some(768.0),
+            Self::Full => None,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Narrow => "narrow",
+            Self::Default => "default",
+            Self::Full => "full",
+        }
+    }
+}
+
 /// The zoom levels, in percent, that zoom in and zoom out step through,
 /// as in a web browser.
 pub const ZOOM_LEVELS: [u16; 11] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
@@ -91,8 +133,13 @@ pub const ACTUAL_SIZE: u16 = 100;
 pub struct Preferences {
     pub appearance: Appearance,
     pub text_size: TextSize,
+    /// How wide every open note's lines run.
+    pub line_width: LineWidth,
     /// The zoom level in percent, one of [`ZOOM_LEVELS`].
     pub zoom: u16,
+    /// Whether every open note marks misspelled words, where the system
+    /// has a spell checker.
+    pub spell_check: bool,
 }
 
 impl Default for Preferences {
@@ -100,7 +147,9 @@ impl Default for Preferences {
         Self {
             appearance: Appearance::default(),
             text_size: TextSize::default(),
+            line_width: LineWidth::default(),
             zoom: ACTUAL_SIZE,
+            spell_check: true,
         }
     }
 }
@@ -132,7 +181,9 @@ impl Preferences {
 struct Saved {
     appearance: Value,
     text_size: Value,
+    line_width: Value,
     zoom: Value,
+    spell_check: Value,
 }
 
 impl From<Saved> for Preferences {
@@ -146,14 +197,21 @@ impl From<Saved> for Preferences {
             .into_iter()
             .find(|size| saved.text_size.as_str() == Some(size.key()))
             .unwrap_or(defaults.text_size);
+        let line_width = LineWidth::ALL
+            .into_iter()
+            .find(|width| saved.line_width.as_str() == Some(width.key()))
+            .unwrap_or(defaults.line_width);
         let zoom = ZOOM_LEVELS
             .into_iter()
             .find(|level| saved.zoom.as_u64() == Some(u64::from(*level)))
             .unwrap_or(defaults.zoom);
+        let spell_check = saved.spell_check.as_bool().unwrap_or(defaults.spell_check);
         Self {
             appearance,
             text_size,
+            line_width,
             zoom,
+            spell_check,
         }
     }
 }
@@ -163,7 +221,9 @@ impl From<&Preferences> for Saved {
         Self {
             appearance: preferences.appearance.key().into(),
             text_size: preferences.text_size.key().into(),
+            line_width: preferences.line_width.key().into(),
             zoom: preferences.zoom.into(),
+            spell_check: preferences.spell_check.into(),
         }
     }
 }

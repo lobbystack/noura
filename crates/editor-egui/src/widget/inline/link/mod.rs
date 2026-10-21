@@ -81,23 +81,6 @@ impl<'ast> MdRender {
         }
     }
 
-    /// Open every link and image in the current selection (desktop
-    /// Cmd+Enter): one [`Event::OpenLink`] each, applied next frame.
-    pub fn open_links_in_selection(&mut self, root: &'ast AstNode<'ast>) {
-        let selection = self.buffer.current.selection;
-        for node in root.descendants() {
-            if !self.node_range(node).intersects(&selection, true) {
-                continue;
-            }
-            let (url, wikilink) = match &node.data.borrow().value {
-                NodeValue::WikiLink(nwl) => (nwl.url.clone(), true),
-                NodeValue::Link(nl) | NodeValue::Image(nl) => (nl.url.clone(), false),
-                _ => continue,
-            };
-            self.render_events.push(Event::OpenLink { url, wikilink });
-        }
-    }
-
     /// Hover → `PointingHand` when a click opens; click → open. The
     /// producer's interaction scope is the gate: cmd held (desktop),
     /// read-only, or touch — where the click instead selects the link
@@ -173,7 +156,7 @@ impl<'ast> MdEdit {
                 None => continue,
             };
             if response.clicked() {
-                ui.memory_mut(|m| m.request_focus(id));
+                self.request_focus(ui.ctx(), id);
                 let region = Region::BetweenLocations {
                     start: Location::Grapheme(node_range.start()),
                     end: Location::Grapheme(node_range.end()),

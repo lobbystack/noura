@@ -8,9 +8,8 @@
 use comrak::nodes::{AstNode, NodeHeading, NodeValue};
 
 use crate::bounds::RangesExt as _;
-use crate::buffer::Buffer;
 use crate::doc::MdDoc;
-use crate::offset_types::{Byte, Grapheme, Graphemes, RangeExt as _, RangeIterExt as _};
+use crate::offset_types::{Byte, Grapheme, RangeExt as _, RangeIterExt as _};
 
 impl<'ast> MdDoc {
     /// Returns the range for the node.
@@ -400,36 +399,6 @@ pub fn consume_indent_columns_ceil(text: &str, target_columns: usize) -> usize {
     graphemes
 }
 
-/// Grapheme range of the leading ` ` / `\t` run. Lexical, not
-/// structural — see [`consume_indent_columns`] for why ownership
-/// is ambiguous.
-pub fn leading_indent_range(buffer: &Buffer, line: (Grapheme, Grapheme)) -> (Grapheme, Grapheme) {
-    let text = &buffer[line];
-    let mut graphemes = 0usize;
-    for c in text.chars() {
-        if c == ' ' || c == '\t' {
-            graphemes += 1;
-        } else {
-            break;
-        }
-    }
-    (line.start(), line.start() + Graphemes(graphemes))
-}
-
-/// Column count of leading whitespace, expanding tabs to 4-col
-/// stops.
-pub fn leading_indent_cols(text: &str) -> usize {
-    let mut cols = 0;
-    for c in text.chars() {
-        match c {
-            ' ' => cols += 1,
-            '\t' => cols = (cols / 4 + 1) * 4,
-            _ => break,
-        }
-    }
-    cols
-}
-
 /// Width, in columns, of `text`'s leading indentation, measured until it
 /// reaches `target` columns. A space is one column; a tab advances to the
 /// next 4-column stop (CommonMark §2.2), so the width can exceed the
@@ -749,6 +718,30 @@ impl<'ast> MdDoc {
         result
     }
 
+    /// The 1-based line `offset` is on, as comrak numbers lines.
+    pub(crate) fn offset_line_number(&self, offset: Grapheme) -> usize {
+        self.bounds
+            .source_lines
+            .find_containing(offset, true, true)
+            .start()
+            + 1
+    }
+
+    /// Whether `node`'s source lines end before `line` (1-based), start
+    /// after it, or reach it. A node's lines as the editor counts them lie
+    /// within the lines comrak gives it, so this skips the nodes that
+    /// can't hold an offset on `line` without working out their ranges.
+    fn lines_reach(node: &'ast AstNode<'ast>, line: usize) -> std::cmp::Ordering {
+        let pos = node.data.borrow().sourcepos;
+        if pos.end.line != 0 && pos.end.line < line {
+            std::cmp::Ordering::Less
+        } else if pos.start.line > line {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }
+
     pub fn selection_offset(&self) -> Option<Grapheme> {
         if self.buffer.current.selection.is_empty() {
             Some(self.buffer.current.selection.0)
@@ -763,7 +756,13 @@ impl<'ast> MdDoc {
         node: &'ast AstNode<'ast>,
         offset: Grapheme,
     ) -> &'ast AstNode<'ast> {
+        let line = self.offset_line_number(offset);
         for child in node.children() {
+            match Self::lines_reach(child, line) {
+                std::cmp::Ordering::Less => continue,
+                std::cmp::Ordering::Greater => break,
+                std::cmp::Ordering::Equal => {}
+            }
             if !child.data.borrow().value.is_container_block() {
                 continue;
             }
@@ -784,7 +783,13 @@ impl<'ast> MdDoc {
         node: &'ast AstNode<'ast>,
         offset: Grapheme,
     ) -> &'ast AstNode<'ast> {
+        let line = self.offset_line_number(offset);
         for child in node.children() {
+            match Self::lines_reach(child, line) {
+                std::cmp::Ordering::Less => continue,
+                std::cmp::Ordering::Greater => break,
+                std::cmp::Ordering::Equal => {}
+            }
             for line_idx in self.node_lines(child).iter() {
                 let line = self.bounds.source_lines[line_idx];
                 let node_line = self.node_line(child, line);

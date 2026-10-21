@@ -317,6 +317,9 @@ fn a_workspace_opened_again_brings_back_the_windows_it_had() {
     second.open_file("B.md", OpenAs::Kept);
     let other = tempfile::tempdir().unwrap();
     first.open_folder(other.path().to_owned());
+    // The switch waits for the second window, which shows a note, to have
+    // it on disk.
+    second.poll();
     settle(&mut first);
     assert!(second.is_closed());
 
@@ -531,6 +534,12 @@ fn the_windows_share_this_device_s_preferences() {
     assert_eq!(first.preferences(), second.preferences());
     let third = first.new_window().unwrap();
     assert_eq!(third.preferences(), first.preferences());
+
+    // Turning spell check off in one window turns it off in every note of
+    // every window.
+    first.set_spell_check(false);
+    second.poll();
+    assert!(!second.preferences().spell_check);
 }
 
 /// The workspace's name in one window's Settings shows in every window.

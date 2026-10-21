@@ -29,7 +29,18 @@
 //! outside edit into unsaved edits leaves the buffer with no version that
 //! held the file's text. The update then merges three texts instead: the
 //! last text loaded or saved, the buffer's and the file's. Either way, where
-//! an outside edit overlaps a local one, the local edit wins.
+//! an outside edit overlaps a local one, the local edit wins. A replacement
+//! keeps out text inserted at either end of its range, so a keystroke typed
+//! right after a word the file replaced stays after the new word.
+//!
+//! # Change events
+//!
+//! Every replacement that reaches the rope, typed, undone, redone or merged
+//! from the file, also lands in a list of [`TextChange`]s: the bytes it
+//! replaced and the text it inserted. [`Buffer::take_changes`] drains the
+//! list. Replaying the changes on the text the buffer started from gives
+//! its text now. IME composition never reaches the buffer, so marked text
+//! makes no change until the input method commits it.
 //!
 //! # Undo
 //!
@@ -37,6 +48,12 @@
 //! A frame that only moves the selection joins the unit before it, and
 //! single-keystroke frames typed within half a second of each other join
 //! into one unit.
+//!
+//! Undo takes back only your own edits. An outside edit is a unit of its
+//! own that undo never takes back. When one arrived after your last unit,
+//! undo first rewrites that stretch of the history so the outside edit
+//! comes before your unit, then takes your unit back: the outside edit
+//! stays, and redo brings your unit back on top of it.
 
 use std::ops::Index;
 use std::time::{Duration, Instant};
@@ -60,6 +77,20 @@ pub struct Buffer {
     external: External,
     /// File contents passed to [`Self::reload`], merged by the next update.
     disk: Option<String>,
+    /// The changes made to the rope since the last [`Self::take_changes`].
+    changes: Vec<TextChange>,
+}
+
+/// One change to the buffer's text: the bytes in `range` of the text
+/// before it gave way to `text`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextChange {
+    /// Byte offsets into the text as it was just before this change.
+    pub range: std::ops::Range<usize>,
+    pub text: String,
+    /// Whether the change came from the editor: typing, a command, undo or
+    /// redo. A merged outside edit of the file isn't local.
+    pub local: bool,
 }
 
 /// A version of the buffer's text with its selection.
@@ -151,9 +182,15 @@ impl Snapshot {
         self.rope.remove(start_char..end_char);
         self.rope.insert(start_char, &replace.text);
 
-        let before = std::mem::take(&mut self.segs);
-        self.flatten();
-        let added = before.measure_replace(&self.segs, replace.range);
+        // The flat view and the grapheme index change only around the
+        // replacement: clusters never cross a line ending.
+        let before = self.segs.last_cursor_position();
+        self.flat.replace_range(start.0..end.0, &replace.text);
+        self.segs
+            .replace_lines(&self.flat, start.0..end.0, replace.text.len());
+        let added = Graphemes(
+            (self.segs.last_cursor_position().0 + replace.range.len().0).saturating_sub(before.0),
+        );
 
         adjust_subsequent_range(replace.range, added, false, &mut self.selection);
         (
@@ -190,6 +227,8 @@ struct Received {
     op: Operation,
     base: usize,
     at: Instant,
+    /// False for an outside edit of the file.
+    local: bool,
 }
 
 /// An operation as it applied: transformed to the version it applied to,
@@ -212,15 +251,18 @@ struct History {
 
 impl History {
     /// The operations sharing the base of operation `index`, as an index
-    /// range. They were queued together.
+    /// range. They were queued together, and are all local or all outside
+    /// edits.
     fn frame_at(&self, index: usize) -> (usize, usize) {
         let base = self.received[index].base;
+        let local = self.received[index].local;
+        let same = |received: &Received| received.base == base && received.local == local;
         let mut start = index;
-        while start > 0 && self.received[start - 1].base == base {
+        while start > 0 && same(&self.received[start - 1]) {
             start -= 1;
         }
         let mut end = index + 1;
-        while end < self.received.len() && self.received[end].base == base {
+        while end < self.received.len() && same(&self.received[end]) {
             end += 1;
         }
         (start, end)
@@ -256,6 +298,10 @@ impl History {
         if index == 0 || index >= self.received.len() {
             return true;
         }
+        // Another app's edits never share a unit with yours.
+        if self.received[index].local != self.received[index - 1].local {
+            return true;
+        }
         if self.received[index].base == self.received[index - 1].base {
             return false;
         }
@@ -282,7 +328,9 @@ impl History {
 
         match previous {
             Some(previous)
-                if self.frame_is_keystroke(frame) && self.frame_is_keystroke(previous) =>
+                if self.received[previous.0].local
+                    && self.frame_is_keystroke(frame)
+                    && self.frame_is_keystroke(previous) =>
             {
                 let gap = self.received[frame.0]
                     .at
@@ -359,7 +407,17 @@ impl Buffer {
 
         self.history
             .received
-            .extend(joined.into_iter().map(|op| Received { op, base, at }));
+            .extend(joined.into_iter().map(|op| Received {
+                op,
+                base,
+                at,
+                local: true,
+            }));
+    }
+
+    /// The changes made to the text since the last call, in order.
+    pub fn take_changes(&mut self) -> Vec<TextChange> {
+        std::mem::take(&mut self.changes)
     }
 
     /// Loads new file contents. The next [`Self::update`] merges the edits
@@ -415,17 +473,18 @@ impl Buffer {
                 (self.current.seq, diff(self.current.text(), &merged))
             }
         };
-        self.queue_replacements(ops, base, Instant::now());
+        self.queue_replacements(ops, base, Instant::now(), false);
     }
 
     /// Queues replacements made against version `base`.
-    fn queue_replacements(&mut self, ops: Vec<Replace>, base: usize, at: Instant) {
+    fn queue_replacements(&mut self, ops: Vec<Replace>, base: usize, at: Instant, local: bool) {
         self.history
             .received
             .extend(ops.into_iter().map(|replace| Received {
                 op: Operation::Replace(replace),
                 base,
                 at,
+                local,
             }));
     }
 
@@ -452,10 +511,11 @@ impl Buffer {
         while self.history.applied.len() < self.history.received.len() {
             let index = self.history.applied.len();
             let received = &self.history.received[index];
+            let local = received.local;
             let op = self.transform(received.op.clone(), received.base);
 
             let (inverse, start) = self.current.inverse_before(&op);
-            let (op_response, added) = self.apply(&op);
+            let (op_response, added) = self.apply(&op, local);
             response |= op_response;
 
             let mut inverse = inverse;
@@ -469,11 +529,27 @@ impl Buffer {
         Some(response)
     }
 
-    fn apply(&mut self, op: &Operation) -> (Response, Graphemes) {
+    fn apply(&mut self, op: &Operation, local: bool) -> (Response, Graphemes) {
         match op {
             Operation::Select(range) => (self.current.select(*range), Graphemes(0)),
-            Operation::Replace(replace) => self.current.replace(replace),
+            Operation::Replace(replace) => self.replace(replace, local),
         }
+    }
+
+    /// Applies a replacement to the text and records its change event.
+    fn replace(&mut self, replace: &Replace, local: bool) -> (Response, Graphemes) {
+        let bytes = self.current.segs.range_to_byte(replace.range);
+        let range = bytes.start().0..bytes.end().0;
+        let changed = !range.is_empty() || !replace.text.is_empty();
+        let result = self.current.replace(replace);
+        if changed {
+            self.changes.push(TextChange {
+                range,
+                text: replace.text.clone(),
+                local,
+            });
+        }
+        result
     }
 
     /// Rewrites an operation made against version `base` to apply to the
@@ -494,8 +570,28 @@ impl Buffer {
             }
 
             match &mut op {
-                Operation::Select(range) | Operation::Replace(Replace { range, .. }) => {
+                Operation::Select(range) => {
                     adjust_subsequent_range(earlier.range, applied.added, true, range);
+                }
+                // A replacement keeps out text inserted at its end, which
+                // stays after it, as text inserted at its start stays
+                // before it. An insertion lands after the earlier one.
+                Operation::Replace(Replace { range, .. }) => {
+                    let (start, end) = (range.start(), range.end());
+                    let start =
+                        adjust_subsequent_position(earlier.range, applied.added, true, start);
+                    let end = adjust_subsequent_position(
+                        earlier.range,
+                        applied.added,
+                        range.is_empty(),
+                        end,
+                    )
+                    .max(start);
+                    *range = if range.0 <= range.1 {
+                        (start, end)
+                    } else {
+                        (end, start)
+                    };
                 }
             }
         }
@@ -514,25 +610,36 @@ impl Buffer {
         op
     }
 
+    /// Whether undo has one of your edits to take back. Another app's
+    /// edits aren't yours to undo.
     pub fn can_undo(&self) -> bool {
-        self.current.seq > 0
+        let done = &self.history.received[..self.current.seq];
+        done.iter()
+            .any(|received| received.local && matches!(received.op, Operation::Replace(_)))
+            || (!done.is_empty() && done.iter().all(|received| received.local))
     }
 
     pub fn can_redo(&self) -> bool {
         self.current.seq < self.history.applied.len()
     }
 
-    /// Takes back the last undo unit.
+    /// Takes back the last undo unit of your own edits. Another app's
+    /// edits made since stay.
     pub fn undo(&mut self) -> Response {
         let mut response = Response {
             seq_before: self.current.seq,
             ..Default::default()
         };
-        while self.can_undo() {
+        if !self.can_undo() {
+            response.seq_after = self.current.seq;
+            return response;
+        }
+        self.move_outside_edits_back();
+        while self.current.seq > 0 && self.history.received[self.current.seq - 1].local {
             self.current.seq -= 1;
             let inverse = self.history.applied[self.current.seq].inverse.clone();
             if let Some(replace) = &inverse.replace {
-                response |= self.current.replace(replace).0;
+                response |= self.replace(replace, true).0;
             }
             response |= self.current.select(inverse.select);
 
@@ -553,7 +660,7 @@ impl Buffer {
         while self.can_redo() {
             let index = self.current.seq;
             let op = self.history.applied[index].op.clone();
-            let (op_response, added) = self.apply(&op);
+            let (op_response, added) = self.apply(&op, true);
             response |= op_response;
             self.history.applied[index].added = added;
             self.current.seq += 1;
@@ -564,6 +671,99 @@ impl Buffer {
         }
         response.seq_after = self.current.seq;
         response
+    }
+
+    /// Before undo: when another app's edits arrived after your last edit
+    /// still in effect, rewrite the history from the start of that edit's
+    /// unit so their edits come first. The rewritten stretch holds the
+    /// other app's edits, applied to the text before your unit, then your
+    /// unit as one replacement, padded with selections so every version
+    /// after it keeps its number. The text and selection on screen stay
+    /// as they are, and the undo that follows takes back your unit alone.
+    ///
+    /// Where the other app edited text your unit wrote, its edit stays.
+    fn move_outside_edits_back(&mut self) {
+        let seq = self.current.seq;
+        let received = &self.history.received;
+        let Some(last) = (0..seq).rev().find(|&index| {
+            received[index].local && matches!(received[index].op, Operation::Replace(_))
+        }) else {
+            return;
+        };
+        if received[last + 1..seq]
+            .iter()
+            .all(|received| received.local)
+        {
+            return;
+        }
+        let mut start = last;
+        while !self.history.is_unit_boundary(start) {
+            start -= 1;
+        }
+
+        // The text before the other app's edits, then before your unit.
+        let mut scratch = Snapshot::new(self.current.text());
+        for applied in self.history.applied[last + 1..seq].iter().rev() {
+            if let Some(replace) = &applied.inverse.replace {
+                scratch.replace(replace);
+            }
+        }
+        let before_outside = scratch.text().to_owned();
+        for applied in self.history.applied[start..=last].iter().rev() {
+            if let Some(replace) = &applied.inverse.replace {
+                scratch.replace(replace);
+            }
+        }
+        let undone = take_back(&before_outside, self.current.text(), scratch.text());
+
+        let before_unit = self.history.applied[start].inverse.select;
+        let at = self.history.received[start].at;
+        scratch.selection = before_unit;
+        let mut rewritten: Vec<(Received, Applied)> = Vec::with_capacity(seq - start);
+        if let Some(outside) = span(&scratch, &undone) {
+            let applied = apply_to(&mut scratch, Operation::Replace(outside));
+            let received = Received {
+                op: applied.op.clone(),
+                base: start,
+                at,
+                local: false,
+            };
+            rewritten.push((received, applied));
+        }
+        let base = start + rewritten.len();
+        if let Some(yours) = span(&scratch, self.current.text()) {
+            let applied = apply_to(&mut scratch, Operation::Replace(yours));
+            let received = Received {
+                op: applied.op.clone(),
+                base,
+                at,
+                local: true,
+            };
+            rewritten.push((received, applied));
+        }
+        while start + rewritten.len() < seq {
+            let applied = apply_to(&mut scratch, Operation::Select(self.current.selection));
+            let received = Received {
+                op: applied.op.clone(),
+                base,
+                at,
+                local: true,
+            };
+            rewritten.push((received, applied));
+        }
+        debug_assert_eq!(scratch.text(), self.current.text());
+
+        let (received, applied): (Vec<_>, Vec<_>) = rewritten.into_iter().unzip();
+        self.history.received.splice(start..seq, received);
+        self.history.applied.splice(start..seq, applied);
+        // A version inside the stretch no longer holds what it did.
+        if self
+            .external
+            .seq
+            .is_some_and(|saved| saved > start && saved < seq)
+        {
+            self.external.seq = None;
+        }
     }
 
     /// Moves `range`, which referred to version `since_seq`, through the
@@ -604,6 +804,7 @@ impl From<&str> for Buffer {
                 seq: Some(0),
             },
             disk: None,
+            changes: Vec::new(),
         }
     }
 }
@@ -641,14 +842,104 @@ fn adjust_subsequent_position(
     }
 }
 
+/// `outside`, another app's edit of `base`, with the edit that turns
+/// `base` into `undone` applied too, as undo applies it. Where the other
+/// app edited text the undo would take out or put back, its edit stays,
+/// and the undo takes out only the rest.
+fn take_back(base: &str, outside: &str, undone: &str) -> String {
+    let theirs = diff(base, outside);
+    let mut undo = Vec::new();
+    for replace in diff(base, undone) {
+        let mut cursor = replace.range.start();
+        let mut split = false;
+        for edit in theirs
+            .iter()
+            .filter(|edit| edit.range.intersects(&replace.range, false))
+        {
+            split = true;
+            if edit.range.start() > cursor {
+                undo.push(Replace {
+                    range: (cursor, edit.range.start()),
+                    text: String::new(),
+                });
+            }
+            cursor = cursor.max(edit.range.end());
+        }
+        if !split {
+            undo.push(replace);
+        } else if cursor < replace.range.end() {
+            undo.push(Replace {
+                range: (cursor, replace.range.end()),
+                text: String::new(),
+            });
+        }
+    }
+    let mut buffer = Buffer::from(base);
+    let at = Instant::now();
+    buffer.queue_replacements(theirs, 0, at, false);
+    buffer.apply_queued();
+    buffer.queue_replacements(undo, 0, at, true);
+    buffer.apply_queued();
+    buffer.current.rope().to_string()
+}
+
+/// One replacement that turns the text of `snapshot` into `to`: the
+/// clusters between their common start and their common end. `None` when
+/// the texts are the same.
+fn span(snapshot: &Snapshot, to: &str) -> Option<Replace> {
+    let from = snapshot.text();
+    if from == to {
+        return None;
+    }
+    let prefix: usize = from
+        .chars()
+        .zip(to.chars())
+        .take_while(|(left, right)| left == right)
+        .map(|(left, _)| left.len_utf8())
+        .sum();
+    let suffix: usize = from[prefix..]
+        .chars()
+        .rev()
+        .zip(to[prefix..].chars().rev())
+        .take_while(|(left, right)| left == right)
+        .map(|(left, _)| left.len_utf8())
+        .sum();
+    // Widen to whole clusters; the texts match outside the change, so the
+    // replacement widens with it.
+    let start = snapshot.segs.byte_to_char_floor(Byte(prefix));
+    let end = snapshot.segs.byte_to_char_ceil(Byte(from.len() - suffix));
+    let (start_byte, end_byte) = snapshot.segs.range_to_byte((start, end));
+    Some(Replace {
+        range: (start, end),
+        text: to[start_byte.0..to.len() - (from.len() - end_byte.0)].to_owned(),
+    })
+}
+
+/// Applies `op` to `snapshot` and returns it as the history keeps it, with
+/// what undoing it takes.
+fn apply_to(snapshot: &mut Snapshot, op: Operation) -> Applied {
+    let (mut inverse, start) = snapshot.inverse_before(&op);
+    let added = match &op {
+        Operation::Select(range) => {
+            snapshot.select(*range);
+            Graphemes(0)
+        }
+        Operation::Replace(replace) => snapshot.replace(replace).1,
+    };
+    if let (Some(replace), Some(start)) = (&mut inverse.replace, start) {
+        replace.range = (start, start + added);
+    }
+    Applied { op, inverse, added }
+}
+
 /// Merges two edits of `base`, one that produced `local` and one that
 /// produced `outside`. Where they overlap, `local`'s edit wins.
 fn merge(base: &str, local: &str, outside: &str) -> String {
     let mut buffer = Buffer::from(base);
     let at = Instant::now();
-    buffer.queue_replacements(diff(base, local), 0, at);
+    buffer.queue_replacements(diff(base, local), 0, at, true);
     buffer.apply_queued();
-    buffer.queue_replacements(diff(base, outside), 0, at);
+    buffer.queue_replacements(diff(base, outside), 0, at, false);
     buffer.apply_queued();
     buffer.current.rope().to_string()
 }

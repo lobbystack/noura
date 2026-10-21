@@ -14,8 +14,9 @@ use crate::{
     error::Access,
     files::{remap, shown_name},
     layout::sidebar_width,
+    notes::NoteSession,
     rail::FILES_PAGE,
-    tabs::{Restored, TabContent},
+    tabs::{Followed, Restored, TabContent},
     view_state::StoredWindow,
     watch::Snapshot,
 };
@@ -24,6 +25,10 @@ impl App {
     /// Show a file in a tab: its own tab when it has one, otherwise as
     /// `how` says.
     pub fn open_file(&mut self, relative_path: &str, how: OpenAs) {
+        if self.workspace.is_none() {
+            return;
+        }
+        self.save_leaving_note();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -111,6 +116,7 @@ impl App {
             page_id: page.id.clone(),
             title: page.title.clone(),
         };
+        self.save_leaving_note();
         self.tabs.open(content, how);
         self.tabs_changed(true);
     }
@@ -161,6 +167,9 @@ impl App {
 
     /// Show the tab `id`.
     pub fn activate_tab(&mut self, id: TabId) {
+        if self.tabs.active().map(Tab::id) != Some(id) {
+            self.save_leaving_note();
+        }
         if self.tabs.activate(id) {
             self.tabs_changed(true);
         }
@@ -190,8 +199,15 @@ impl App {
     }
 
     /// Close a tab. Closing the active tab shows the tab that takes its
-    /// place; closing the last one leaves nothing open.
+    /// place; closing the last one leaves nothing open. A note's tab saves
+    /// first, and stays open while the save runs or after it failed, until
+    /// [`App::unsaved_prompt`] gets an answer.
     pub fn close_tab(&mut self, id: TabId) {
+        self.leave(super::notes::Leave::CloseTabs(vec![id]));
+    }
+
+    /// Close a tab whose note, if any, is on disk.
+    pub(super) fn close_tab_now(&mut self, id: TabId) {
         let was_active = self.tabs.active().map(Tab::id) == Some(id);
         if self.tabs.close(id) {
             self.tabs_changed(was_active);
@@ -240,7 +256,7 @@ impl App {
         self.layout_changed();
     }
 
-    fn layout_changed(&mut self) {
+    pub(super) fn layout_changed(&mut self) {
         self.listeners.emit(Change::Layout);
         self.layouts.save(&self.layout);
     }
@@ -308,7 +324,8 @@ impl App {
     /// Read the workspace folder again, every file included, and bring the
     /// tree and the tabs in line with it. A managed note's tab follows its
     /// stable ID, even when another file now sits at its old path; a tab
-    /// whose file is gone, or moved without an ID to follow, closes. The
+    /// whose file is gone, or moved without an ID to follow, closes unless
+    /// its note has edits that aren't on disk. The
     /// watch thread does the same on its own after outside changes, and
     /// [`App::poll`] applies it; this does it now.
     pub fn rescan(&mut self) {
@@ -431,6 +448,8 @@ impl App {
             self.rank_files();
         }
         self.follow_files();
+        self.retry_unreadable_notes();
+        self.check_notes_on_disk();
         if folders_changed {
             self.save_view();
         }
@@ -439,48 +458,71 @@ impl App {
     /// Close the tabs of the item at `relative_path`, a file or a folder,
     /// and of everything inside it, as when it goes to the trash.
     pub(super) fn close_tabs_inside(&mut self, relative_path: &str) {
-        let (changed, active_changed) = self.tabs.follow_files(|path, id| {
+        let unsaved = self.unsaved_note_tabs();
+        let followed = self.tabs.follow_files(&unsaved, |path, id| {
             remap(path, relative_path, relative_path)
                 .is_none()
                 .then(|| (path.to_owned(), id.map(str::to_owned)))
         });
-        if changed {
-            self.tabs_changed(active_changed);
-        }
+        self.tabs_followed(followed);
     }
 
     /// The item at `from`, a file or a folder, moved to `to`: point its
     /// tabs, and the tabs of everything inside it, at the new path.
     pub(super) fn move_tabs(&mut self, from: &str, to: &str) {
-        let (changed, active_changed) = self.tabs.follow_files(|path, id| {
+        let unsaved = self.unsaved_note_tabs();
+        let followed = self.tabs.follow_files(&unsaved, |path, id| {
             let path = remap(path, from, to).unwrap_or_else(|| path.to_owned());
             Some((path, id.map(str::to_owned)))
         });
-        if changed {
-            self.tabs_changed(active_changed);
-        }
+        self.tabs_followed(followed);
     }
 
     /// Point each file tab at its file in the tree: a managed object's
     /// file by its stable ID, any other file by its path. Tabs whose file
-    /// is gone close.
+    /// is gone close, except a note with edits that aren't on disk: it
+    /// stays open at its path, so its save says the file is gone and
+    /// closing it asks first. Such a note also keeps its tab when another
+    /// tab now shows its file, until its edits are on disk.
     pub(super) fn follow_files(&mut self) {
+        let unsaved_tabs = self.unsaved_note_tabs();
         let Some(tree) = &self.tree else {
             return;
         };
-        let (changed, active_changed) = self.tabs.follow_files(|path, id| {
-            let path = tree.follow(path, id)?;
+        let unsaved: Vec<&str> = self
+            .notes
+            .sessions
+            .values()
+            .filter(|session| session.is_unsaved())
+            .map(NoteSession::relative_path)
+            .collect();
+        let followed = self.tabs.follow_files(&unsaved_tabs, |path, id| {
+            let Some(path) = tree.follow(path, id) else {
+                return unsaved
+                    .contains(&path)
+                    .then(|| (path.to_owned(), id.map(str::to_owned)));
+            };
             let id = tree.object_id(&path).map(str::to_owned);
             Some((path, id))
         });
-        if changed {
-            self.tabs_changed(active_changed);
+        self.tabs_followed(followed);
+    }
+
+    /// Announce what [`Tabs::follow_files`] changed. A tab that took the
+    /// place of another tab showing its file reads the file again, since
+    /// it may hold another file's text now, as when another program moved
+    /// a note over it.
+    fn tabs_followed(&mut self, followed: Followed) {
+        if followed.changed {
+            self.tabs_changed(followed.active_changed);
         }
+        self.reread_notes(&followed.merged);
     }
 
     /// Announce a change to the tabs and save them. `document` says
     /// whether what the window shows changed too.
     pub(super) fn tabs_changed(&mut self, document: bool) {
+        self.sync_notes();
         self.listeners.emit(Change::Tabs);
         if document {
             self.listeners.emit(Change::Document);
@@ -521,6 +563,7 @@ impl App {
     pub(super) fn restore_view(&mut self, stored: StoredWindow) {
         let Some(workspace) = &self.workspace else {
             self.tabs.restore(Vec::new(), None);
+            self.sync_notes();
             return;
         };
         if let Some(tree) = &mut self.tree {
@@ -562,6 +605,7 @@ impl App {
             })
             .collect();
         self.tabs.restore(restored, stored.active);
+        self.sync_notes();
         // The session saves this window with the others from now on.
         self.keep_view(false);
     }

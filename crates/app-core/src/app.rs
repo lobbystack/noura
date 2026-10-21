@@ -42,6 +42,7 @@ mod file_actions;
 mod finder;
 mod ignored_files;
 mod inbox;
+mod notes;
 mod palette;
 mod plugins;
 mod preferences;
@@ -52,6 +53,7 @@ pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
 pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
+pub use notes::UnsavedPrompt;
 pub use palette::{CommandPalette, Palette, PaletteMode};
 
 /// What the window shows.
@@ -126,6 +128,9 @@ pub enum Change {
     /// [`App::is_closed`], [`App::take_opened_windows`] and
     /// [`App::take_quit`].
     Window,
+    /// An open note changed: its text, a save, its properties or its name,
+    /// or the prompt about a note that couldn't save.
+    Note,
     /// Background work finished, or another window changed what this one
     /// shows, such as the files; call [`App::poll`] to apply it.
     WorkFinished,
@@ -280,6 +285,13 @@ pub struct App {
     searcher: Searcher,
     /// Quit ran and the app hasn't closed yet.
     quit: bool,
+    /// The Markdown files open in tabs, and their saves.
+    notes: crate::notes::Notes,
+    /// What waits for notes to save before it happens.
+    leaving: Option<notes::Leaving>,
+    /// The last quit or workspace switch this window saved its notes
+    /// for, which any window may ask for.
+    departure_seen: u64,
     /// The open workspace's problems, such as files that share an ID, as
     /// this window shows them.
     problems: Vec<Problem>,
@@ -376,6 +388,9 @@ impl App {
             palette: None,
             searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
             quit: false,
+            notes: crate::notes::Notes::default(),
+            leaving: None,
+            departure_seen: 0,
             problems: Vec::new(),
             recent: Vec::new(),
             inbox_sections: Sections::default(),
@@ -444,11 +459,21 @@ impl App {
         window
     }
 
-    /// Close this window. The other windows keep their tabs, and this
-    /// one's tabs leave the windows that come back at the next launch,
-    /// unless it was the last window open: then it comes back, as when
-    /// Noura quits.
+    /// Close this window once its notes are saved, as Close Window and
+    /// the window's close button do: the window stays while saves run,
+    /// and asks when one fails. The other windows keep their tabs, and
+    /// this one's tabs leave the windows that come back at the next
+    /// launch, unless it was the last window open: then it comes back, as
+    /// when Noura quits.
     pub fn close_window(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.leave(notes::Leave::CloseWindow);
+    }
+
+    /// Close this window now: its notes are on disk.
+    fn close_window_now(&mut self) {
         if self.closed {
             return;
         }
@@ -473,6 +498,9 @@ impl App {
         self.searcher.cancel();
         self.palette = None;
         self.settings = None;
+        self.notes.sessions.clear();
+        self.notes.unreadable.clear();
+        self.leaving = None;
         self.plugin_install = None;
         self.listeners.emit(Change::Screen);
     }
@@ -553,7 +581,8 @@ impl App {
         }
     }
 
-    /// Open the workspace in `folder`, or make one of a plain folder.
+    /// Open the workspace in `folder`, or make one of a plain folder. Every
+    /// window's open notes save first, since the other windows close.
     pub fn open_folder(&mut self, folder: PathBuf) {
         // It's open already, in every window. The background job also
         // catches the folder spelled another way, before it opens anything.
@@ -564,18 +593,20 @@ impl App {
         {
             return;
         }
-        self.start(Job::OpenFolder(folder));
+        self.depart(notes::Departure::Open(Job::OpenFolder(folder)));
     }
 
-    /// Create a workspace named `name` in `folder` and open it.
+    /// Create a workspace named `name` in `folder` and open it. Every
+    /// window's open notes save first.
     pub fn create_workspace(&mut self, name: &str, folder: PathBuf) {
-        self.start(Job::Create {
+        self.depart(notes::Departure::Open(Job::Create {
             name: name.to_owned(),
             folder,
-        });
+        }));
     }
 
-    /// Open a workspace from the recent list.
+    /// Open a workspace from the recent list. Every window's open notes
+    /// save first.
     pub fn open_recent(&mut self, workspace_id: &str) {
         // It's open already, in every window.
         if self
@@ -590,10 +621,10 @@ impl App {
             .iter()
             .find(|recent| recent.workspace_id == workspace_id)
             .map_or_else(String::new, |recent| recent.name.clone());
-        self.start(Job::OpenRecent {
+        self.depart(notes::Departure::Open(Job::OpenRecent {
             workspace_id: workspace_id.to_owned(),
             name,
-        });
+        }));
     }
 
     /// Retry the workspace the launch couldn't reopen. Never opens another
@@ -665,12 +696,14 @@ impl App {
         self.updates.check();
     }
 
-    /// Save every change still waiting, wait for pending writes, then
-    /// install the downloaded update, save and wait again for changes made
-    /// during the install, and restart. If a save, a write or the install
+    /// Save every window's notes, then save every change still waiting,
+    /// wait for pending writes, install the downloaded update, save and
+    /// wait again for changes made during the install, and restart. A note
+    /// that couldn't save asks first, as when Noura quits, and Keep editing
+    /// keeps this version running. If a save, a write or the install
     /// fails, this version keeps running and the update status says why.
     pub fn restart_to_update(&mut self) {
-        self.updates.restart(self.pending_saves.clone());
+        self.depart(notes::Departure::Restart);
     }
 
     /// Stop offering Restart outside Settings until the next update, in
@@ -679,9 +712,9 @@ impl App {
         self.updates.hide_offer();
     }
 
-    /// Apply finished background work and what other windows changed,
-    /// such as the files, and start an update check that is due. Returns
-    /// whether anything changed.
+    /// Apply finished background work, such as note saves, and what other
+    /// windows changed, such as the files, and start an update check that
+    /// is due. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
         self.poll_at(Instant::now())
     }
@@ -696,6 +729,7 @@ impl App {
             self.closed_by_another_window();
             return true;
         }
+        let saved = self.collect_note_writes();
         let updated = self.updates.poll(now);
         let searched = self.take_search_answer();
         let opened = self.take_opened();
@@ -703,8 +737,18 @@ impl App {
         let rail = self.poll_rail();
         let recents = self.poll_recents();
         let preferences = self.poll_preferences();
+        let departing = self.poll_departure();
         let plugins = self.poll_plugins();
-        updated | searched | opened | listed | rail | recents | preferences | plugins
+        saved
+            | updated
+            | searched
+            | opened
+            | listed
+            | rail
+            | recents
+            | preferences
+            | departing
+            | plugins
     }
 
     /// Take the workspace a background job opened, or why it couldn't.

@@ -11,6 +11,7 @@ use std::{
 
 use app_core::{ABOUT_LINKS, LoginItem, Platform, VERSION, command_id};
 use app_ui::theme::Palette;
+use editor_egui::SpellChecker;
 use egui::{
     Key, Modifiers, Theme,
     accesskit::{Role, Toggled},
@@ -51,10 +52,18 @@ struct Opened {
 /// A workspace named Garden, opened at launch, with a fake system and a
 /// fake login item.
 fn opened() -> Opened {
+    opened_with(&[])
+}
+
+/// [`opened`], with `files` in the workspace.
+fn opened_with(files: &[(&str, &str)]) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
     create_workspace(app_data.path(), "Garden", &folder);
+    for (name, text) in files {
+        std::fs::write(folder.join(name), text).unwrap();
+    }
     let system = FakeSystem::new(Platform::MacOs);
     let login = Arc::new(FakeLoginItem::default());
     let item = login.clone();
@@ -265,6 +274,47 @@ fn settings_works_from_the_keyboard() {
     assert_eq!(preferences.appearance, app_core::Appearance::Dark);
     assert_eq!(preferences.zoom, 110);
     assert!(*login.0.lock().unwrap());
+}
+
+#[test]
+fn the_editor_section_sets_the_line_width_of_every_open_note() {
+    let Opened {
+        mut harness,
+        folders: _folders,
+        ..
+    } = opened_with(&[("Plan.md", "Plan\n")]);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Plan")
+        .click();
+    harness.run();
+    let width = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .rect()
+            .width()
+    };
+    assert!(width(&harness) > 640.0, "{}", width(&harness));
+
+    open_settings(&mut harness);
+    choose_section(&mut harness, "Editor");
+    let group = dialog(&harness).get_by_role_and_label(Role::RadioGroup, "Line width");
+    let choices: Vec<String> = group
+        .get_all_by_role(Role::RadioButton)
+        .filter_map(|choice| choice.accesskit_node().label())
+        .collect();
+    assert_eq!(choices, ["Narrow", "Default", "Full width"]);
+    group
+        .get_by_role_and_label(Role::RadioButton, "Narrow")
+        .click();
+    harness.run();
+    assert_eq!(
+        harness.state().app().preferences().line_width,
+        app_core::LineWidth::Narrow
+    );
+
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert_eq!(width(&harness), 640.0);
 }
 
 /// The window's theme and the background it paints.
@@ -551,4 +601,91 @@ fn settings_lists_every_shortcut_by_area() {
     }
     dialog(&harness).get_by_role_and_label(Role::List, "File tree");
     dialog(&harness).get_by_role_and_label(Role::List, "Writing");
+}
+
+/// A spell checker that notes each text it's asked about and flags
+/// nothing.
+#[derive(Default)]
+struct RecordingSpellChecker(Mutex<Vec<String>>);
+
+impl SpellChecker for RecordingSpellChecker {
+    fn misspelled(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        self.0.lock().unwrap().push(text.to_owned());
+        Vec::new()
+    }
+}
+
+impl RecordingSpellChecker {
+    fn asked_about(&self, word: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|text| text.contains(word))
+    }
+}
+
+#[test]
+fn turning_spell_check_off_stops_checking_the_open_note() {
+    let Opened {
+        mut harness,
+        folders: _folders,
+        ..
+    } = opened_with(&[("Plan.md", "I recieve it.\n")]);
+    let checker = Arc::new(RecordingSpellChecker::default());
+    harness
+        .state_mut()
+        .set_spell_checker(Some(checker.clone() as Arc<dyn SpellChecker>));
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Plan")
+        .click();
+    harness.run();
+    assert!(
+        checker.asked_about("recieve"),
+        "the note's prose is checked"
+    );
+
+    open_settings(&mut harness);
+    choose_section(&mut harness, "Editor");
+    let check = dialog(&harness).get_by_role_and_label(Role::CheckBox, "Check spelling");
+    assert_eq!(check.accesskit_node().toggled(), Some(Toggled::True));
+    check.click();
+    harness.run();
+    assert!(!harness.state().app().preferences().spell_check);
+    harness.key_press(Key::Escape);
+    harness.run();
+
+    let note = harness.get_by_role_and_label(Role::MultilineTextInput, "Note text");
+    note.focus();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+        .type_text(" Zebras");
+    harness.run();
+    assert!(
+        harness
+            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .value()
+            .is_some_and(|text| text.contains("Zebras")),
+        "the typing reached the note"
+    );
+    assert!(!checker.asked_about("Zebras"), "new prose isn't checked");
+}
+
+#[test]
+fn without_a_system_spell_checker_settings_offers_no_spell_check() {
+    let Opened {
+        mut harness,
+        folders: _folders,
+        ..
+    } = opened();
+
+    open_settings(&mut harness);
+    choose_section(&mut harness, "Editor");
+
+    assert!(
+        dialog(&harness)
+            .query_by_role_and_label(Role::CheckBox, "Check spelling")
+            .is_none()
+    );
 }

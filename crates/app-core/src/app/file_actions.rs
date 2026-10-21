@@ -75,6 +75,9 @@ impl App {
     pub fn move_into(&mut self, relative_path: &str, folder: &str) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
+        if !self.save_before(relative_path, "moving it") {
+            return;
+        }
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -95,6 +98,9 @@ impl App {
     pub fn duplicate(&mut self, relative_path: &str) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
+        if !self.save_before(relative_path, "duplicating it") {
+            return;
+        }
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -294,6 +300,9 @@ impl App {
     pub fn trash(&mut self, relative_path: &str) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
+        if !self.save_before(relative_path, "moving it to the trash") {
+            return;
+        }
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -373,7 +382,7 @@ impl App {
     /// renaming stops, the tree shows where the item is, and a notice says
     /// what went wrong.
     pub fn commit_rename(&mut self, name: &str) -> bool {
-        let (Some(workspace), Some(rename)) = (&self.workspace, &mut self.renaming) else {
+        let (Some(_), Some(rename)) = (&self.workspace, &mut self.renaming) else {
             return false;
         };
         if name == rename.name {
@@ -381,6 +390,14 @@ impl App {
             return true;
         }
         let from = rename.relative_path.clone();
+        if !self.save_before(&from, "renaming it") {
+            self.renaming = None;
+            self.listeners.emit(Change::Tree);
+            return true;
+        }
+        let Some(workspace) = &self.workspace else {
+            return false;
+        };
         match workspace.rename(&from, name) {
             Ok(to) => {
                 self.renaming = None;
@@ -507,7 +524,7 @@ impl App {
 
     /// After the item at `from` moved to `to`: its tabs and open folders
     /// follow it, and the tree reads the files again and selects it.
-    fn follow_move(&mut self, from: &str, to: &str) {
+    pub(super) fn follow_move(&mut self, from: &str, to: &str) {
         self.writes.moved(from, to);
         self.move_tabs(from, to);
         self.refresh_tree(Some((from, to)));
