@@ -111,6 +111,17 @@ fn registering_a_command_with_a_taken_shortcut_fails() {
         "shortcut_taken"
     );
 
+    // The Edit menu's keys, Quit and Find (tickets 19 and 40) stay theirs.
+    for key in [Key::Z, Key::X, Key::C, Key::V, Key::A, Key::Q, Key::F] {
+        let (command, runs) = counting("test.count", "Count");
+        let edit = command.with_shortcuts([Shortcut::command(key)]);
+        assert_eq!(
+            register_counting(&mut app, edit, &runs).unwrap_err().code,
+            "shortcut_taken",
+            "Mod-{key:?}"
+        );
+    }
+
     let (command, runs) = counting("test.count", "Count");
     let free = command.with_shortcuts([Shortcut::command(Key::J)]);
     register_counting(&mut app, free, &runs).unwrap();
@@ -336,19 +347,17 @@ fn brackets_and_backslash_also_match_by_their_place_on_a_us_keyboard() {
 fn keys_the_focused_text_field_types_or_edits_with_run_no_command() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app_with(FakeSystem::on(Platform::Windows));
-    let (command, runs) = counting("test.select-all", "Select Everything");
-    let command = command.with_shortcuts([Shortcut::command(Key::A)]);
+    let (command, runs) = counting("test.erase", "Erase");
+    let command = command.with_shortcuts([Shortcut::new(Key::Backspace).with_alt()]);
     register_counting(&mut app, command, &runs).unwrap();
 
     let in_field = |app: &App, press: KeyPress| app.command_for_key(&press, Some(Area::Writing));
-    // Outside a text field the test command takes Ctrl-A; inside one,
-    // Ctrl-A selects the field's text.
-    let select_all = KeyPress::new(Key::A).with_ctrl();
-    assert_eq!(
-        command_for(&app, select_all).as_deref(),
-        Some("test.select-all")
-    );
-    assert_eq!(in_field(&app, select_all), None);
+    // Outside a text field the test command takes Alt-Backspace; inside
+    // one, Alt-Backspace deletes a word.
+    let erase = KeyPress::new(Key::Backspace).with_alt();
+    assert_eq!(command_for(&app, erase).as_deref(), Some("test.erase"));
+    assert_eq!(in_field(&app, erase), None);
+    assert_eq!(in_field(&app, KeyPress::new(Key::A).with_ctrl()), None);
     // F2 renames the open file, except while you type in a field.
     assert_eq!(in_field(&app, KeyPress::new(Key::F2)), None);
     assert_eq!(
@@ -370,9 +379,9 @@ fn keys_the_focused_text_field_types_or_edits_with_run_no_command() {
     );
 
     let at = Instant::now();
-    assert!(!app.press_key(&select_all, Some(Area::Writing), at));
+    assert!(!app.press_key(&erase, Some(Area::Writing), at));
     assert_eq!(runs.load(Ordering::SeqCst), 0);
-    assert!(app.press_key(&select_all, None, at));
+    assert!(app.press_key(&erase, None, at));
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 

@@ -188,8 +188,21 @@ fn page_shortcuts(pages: &[&Page]) -> Vec<(String, Option<Shortcut>)> {
         .collect()
 }
 
-/// Whether `shortcut` belongs to the default keymap under another ID, or
-/// to a page.
+/// Keys no command takes: the Edit menu's, which act on the focused text
+/// field, Quit, and Find, which the open note or PDF handles.
+const KEPT_KEYS: [Shortcut; 8] = [
+    Shortcut::command(Key::Z),
+    Shortcut::command(Key::Z).with_shift(),
+    Shortcut::command(Key::X),
+    Shortcut::command(Key::C),
+    Shortcut::command(Key::V),
+    Shortcut::command(Key::A),
+    Shortcut::command(Key::Q),
+    Shortcut::command(Key::F),
+];
+
+/// Whether `shortcut` belongs to the default keymap under another ID, to
+/// a page, or to the keys no command takes.
 fn reserved(shortcut: &Shortcut, id: &str) -> bool {
     let keymap = KEYMAP_ORDER
         .iter()
@@ -198,6 +211,7 @@ fn reserved(shortcut: &Shortcut, id: &str) -> bool {
     let pages = Key::DIGITS[1..].iter().map(|key| Shortcut::command(*key));
     keymap
         .chain(pages)
+        .chain(KEPT_KEYS)
         .any(|taken| taken.conflicts_with(shortcut))
 }
 
@@ -223,7 +237,7 @@ impl Registry {
         if taken {
             return Err(AppError::new(
                 "command_exists",
-                format!("Another command already has the ID {}.", command.id),
+                format!("The ID {} belongs to another command.", command.id),
             ));
         }
         for shortcut in &command.shortcuts {
@@ -237,7 +251,7 @@ impl Registry {
                 return Err(AppError::new(
                     "shortcut_taken",
                     format!(
-                        "Another command already uses a shortcut of {}.",
+                        "One of the shortcuts of {} belongs to another command.",
                         command.label
                     ),
                 ));

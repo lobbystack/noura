@@ -250,8 +250,8 @@ fn a_key_the_focused_text_field_handles_runs_no_command() {
         &parent.path().join("Garden"),
         Platform::MacOs,
         move |app| {
-            let command = Command::new("test.select", "Select Everything", Area::Anywhere)
-                .with_shortcuts([Shortcut::command(app_core::Key::A)]);
+            let command = Command::new("test.erase", "Erase", Area::Anywhere)
+                .with_shortcuts([Shortcut::new(app_core::Key::Backspace).with_alt()]);
             app.register_command(command, move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
             })
@@ -260,26 +260,28 @@ fn a_key_the_focused_text_field_handles_runs_no_command() {
     );
     tree_row(&harness, "Ideas").focus();
     harness.run();
-    press(&mut harness, Modifiers::COMMAND, Key::A);
-    assert_eq!(runs.load(Ordering::SeqCst), 1, "the tree doesn't use Mod-A");
+    press(&mut harness, Modifiers::ALT, Key::Backspace);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the tree doesn't use Alt-Backspace"
+    );
 
     // F2 in the tree renames its row.
     press(&mut harness, Modifiers::NONE, Key::F2);
     let field = harness.get_by_label("New name for Ideas");
     assert!(field.is_focused());
-    // In the rename field, Mod-A selects its text.
-    press(&mut harness, Modifiers::COMMAND, Key::A);
-    assert_eq!(runs.load(Ordering::SeqCst), 1);
-    harness
-        .get_by_label("New name for Ideas")
-        .type_text("Notes");
+    field.type_text("Big plans");
     harness.run();
+    // In the rename field, Alt-Backspace deletes a word.
+    press(&mut harness, Modifiers::ALT, Key::Backspace);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
     assert_eq!(
         harness
             .get_by_label("New name for Ideas")
             .value()
             .as_deref(),
-        Some("Notes")
+        Some("Big ")
     );
     // F2 in a text field keeps typing there.
     press(&mut harness, Modifiers::NONE, Key::F2);
