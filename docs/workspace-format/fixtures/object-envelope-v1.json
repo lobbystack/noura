@@ -638,7 +638,7 @@
   ],
   "line_separators": [
     {
-      "name": "a multi-line value ending in U+2028 is written double-quoted, type without a schema",
+      "name": "a multi-line value ending in U+2028 and written last is double-quoted, type without a schema",
       "registry": "empty",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\u2028\"\n---\n\n# Pasta\n",
       "properties": { "steps": "Boil.\nServe.\u2028" },
@@ -646,7 +646,7 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\L\"\n---\n\n# Pasta\n"
     },
     {
-      "name": "a multi-line value ending in U+2028 is written double-quoted, registered type",
+      "name": "a multi-line value ending in U+2028 and written last is double-quoted, registered type",
       "registry": "schemas",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\u2028\"\n---\n\n# Pasta\n",
       "properties": { "source": "Boil.\nServe.\u2028" },
@@ -654,7 +654,23 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\L\"\n---\n\n# Pasta\n"
     },
     {
-      "name": "an updated value ending in U+2028 is written double-quoted, type without a schema",
+      "name": "a multi-line value ending in U+2028 keeps libyaml's literal block when a value follows it, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\u2028\"\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n",
+      "properties": { "steps": "Boil.\nServe.\u2028" },
+      "updated": "2026-08-27T18:00:00Z",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |\n  Boil.\n  Serve.\u2028updated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a multi-line value ending in U+2028 keeps libyaml's literal block when a value follows it, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\u2028\"\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n",
+      "properties": { "source": "Boil.\nServe.\u2028" },
+      "updated": "2026-08-27T18:00:00Z",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: |\n  Boil.\n  Serve.\u2028updated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "an updated value ending in U+2028 is written last and double-quoted, type without a schema",
       "registry": "empty",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\u2028\"\n---\n\n# Pasta\n",
       "properties": {},
@@ -662,7 +678,7 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\L\"\n---\n\n# Pasta\n"
     },
     {
-      "name": "an updated value ending in U+2028 is written double-quoted, registered type",
+      "name": "an updated value ending in U+2028 is written last and double-quoted, registered type",
       "registry": "schemas",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\u2028\"\n---\n\n# Pasta\n",
       "properties": {},
@@ -670,7 +686,7 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\L\"\n---\n\n# Pasta\n"
     },
     {
-      "name": "a last value ending in a line break and U+2029 is written double-quoted, type without a schema",
+      "name": "a last value ending in a line break and U+2029 is double-quoted, type without a schema",
       "registry": "empty",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"a\\n\\u2029\"\n---\n\n# Pasta\n",
       "properties": { "steps": "a\n\u2029" },
@@ -678,7 +694,7 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"a\\n\\P\"\n---\n\n# Pasta\n"
     },
     {
-      "name": "a last value ending in a line break and U+2029 is written double-quoted, registered type",
+      "name": "a last value ending in a line break and U+2029 is double-quoted, registered type",
       "registry": "schemas",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"a\\n\\u2029\"\n---\n\n# Pasta\n",
       "properties": { "source": "a\n\u2029" },
@@ -686,20 +702,28 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"a\\n\\P\"\n---\n\n# Pasta\n"
     },
     {
-      "name": "a one-line value holding U+2028 is written double-quoted, not single-quoted with the raw character",
+      "name": "a one-line value holding U+2028 keeps libyaml's single-quoted form with the raw character",
       "registry": "empty",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: 'a\u2028  b'\nzeta: end\n---\n\n# Pasta\n",
       "properties": { "note": "a\u2028b", "zeta": "end" },
       "updated": null,
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\Lb\"\nzeta: end\n---\n\n# Pasta\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: 'a\u2028  b'\nzeta: end\n---\n\n# Pasta\n"
     },
     {
-      "name": "a nested value holding U+2029 is written double-quoted",
+      "name": "a nested one-line value holding U+2029 keeps libyaml's single-quoted form, even when written last",
       "registry": "schemas",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\u2029\"\n---\n\n# Pasta\n",
       "properties": { "steps": [{ "first": "Boil.\u2029" }] },
       "updated": null,
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\P\"\n---\n\n# Pasta\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: 'Boil.\u2029    '\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a nested multi-line value ending in U+2029 and written last is double-quoted",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\nServe.\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "steps": [{ "first": "Boil.\nServe.\u2029" }] },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\nServe.\\P\"\n---\n\n# Pasta\n"
     },
     {
       "name": "U+0085 keeps the double quotes libyaml already writes",
@@ -734,12 +758,12 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  ? |+\n    x\n\u2029  : v\n---\n\n# Pasta\n"
     },
     {
-      "name": "a key holding U+2028 in a list item is written as libyaml writes it, and its value double-quoted",
+      "name": "a key and a one-line value holding line separators in a list item are written as libyaml writes them",
       "registry": "empty",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- \"a\\u2028\": \"b\\u2029\"\n  c: d\n---\n\n# Pasta\n",
       "properties": { "steps": [{ "a\u2028": "b\u2029", "c": "d" }] },
       "updated": null,
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- ? 'a\u2028    '\n  : \"b\\P\"\n  c: d\n---\n\n# Pasta\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- ? 'a\u2028    '\n  : 'b\u2029    '\n  c: d\n---\n\n# Pasta\n"
     },
     {
       "name": "a key holding U+0085 keeps the explicit double-quoted form libyaml already writes",

@@ -395,10 +395,11 @@ fn an_unregistered_type_stays_a_managed_object_with_every_property() {
     }
 }
 
-/// Strings that hold a line separator are written double-quoted. Keys are
-/// written as libyaml writes them, and read back the same.
+/// Keys and values that hold U+2028 or U+2029 keep the form libyaml gives
+/// them and read back the same. The one exception is a last value that
+/// libyaml writes as a literal block ending in one: it's double-quoted.
 #[test]
-fn strings_with_line_separators_are_written_double_quoted() {
+fn line_separators_keep_libyamls_form_unless_a_literal_block_ends_the_frontmatter() {
     let fixture = fixture();
     for case in cases(&fixture, "line_separators") {
         let types = registry_for(&fixture, case);
@@ -464,7 +465,9 @@ fn the_format_spec_string_example_is_what_the_serializer_writes() {
     let section = &spec[spec.find("### Envelope").unwrap()..];
     let start = section.find("```yaml\n").unwrap() + "```yaml\n".len();
     let end = start + section[start..].find("```").unwrap();
-    let object = object_with("note", &json!({ "steps": "Boil.\nServe.\u{2028}" }));
+    let mut object = object_with("note", &json!({ "steps": "Boil.\nServe.\u{2028}" }));
+    object.created = None;
+    object.updated = None;
     let written = text(serialize_object(&object).unwrap());
     assert!(written.contains(&section[start..end]), "{written}");
 }
@@ -491,12 +494,11 @@ fn note_task_and_project_files_serialize_to_the_same_bytes_as_before() {
     }
 }
 
-/// Hostile frontmatter: a long run of the first private-use character next
-/// to thousands of strings that hold U+2028, under keys that hold it too.
-/// Serializing it must stay linear in its size, as it was before line
-/// separators were quoted.
+/// A large frontmatter full of line separators, whose last value libyaml
+/// writes as a literal block ending in one. Serializing it must stay linear
+/// in its size: the serializer writes the mapping at most twice.
 #[test]
-fn quoting_line_separators_stays_linear_in_the_frontmatter_size() {
+fn serializing_line_separators_stays_linear_in_the_frontmatter_size() {
     let count = 5_000;
     let keys = (0..count)
         .map(|index| (format!("k{index}\u{2028}"), Value::Null))
@@ -504,12 +506,12 @@ fn quoting_line_separators_stays_linear_in_the_frontmatter_size() {
     let mut object = object_with(
         "note",
         &json!({
-            "a": "\u{e000}".repeat(100_000),
             "b": vec!["\u{2028}"; count],
             "c": keys,
         }),
     );
-    object.updated = Some("\u{2029}".into());
+    object.created = None;
+    object.updated = Some("x\n\u{2029}".into());
     let started = Instant::now();
     let bytes = serialize_object(&object).unwrap();
     let elapsed = started.elapsed();

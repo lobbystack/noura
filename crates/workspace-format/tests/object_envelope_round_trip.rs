@@ -222,23 +222,6 @@ fn registry(case: &Case) -> ObjectTypeRegistry {
     types
 }
 
-/// Whether a key at any depth holds a line separator. The serializer
-/// writes keys as libyaml does, raw.
-fn keys_hold_line_separators(properties: &BTreeMap<String, Value>) -> bool {
-    fn nested(value: &Value) -> bool {
-        match value {
-            Value::Array(items) => items.iter().any(nested),
-            Value::Object(map) => map
-                .iter()
-                .any(|(key, item)| key.contains(['\u{2028}', '\u{2029}']) || nested(item)),
-            _ => false,
-        }
-    }
-    properties
-        .iter()
-        .any(|(key, value)| key.contains(['\u{2028}', '\u{2029}']) || nested(value))
-}
-
 fn reparse(bytes: &[u8]) -> WorkspaceObject {
     match parse_markdown("objects/example.md", bytes) {
         ParsedMarkdown::Managed(object) => object,
@@ -247,13 +230,6 @@ fn reparse(bytes: &[u8]) -> WorkspaceObject {
             String::from_utf8_lossy(bytes)
         ),
     }
-}
-
-/// The YAML between the opening `---` line and the closing one.
-fn frontmatter(bytes: &[u8]) -> &str {
-    let text = std::str::from_utf8(bytes).unwrap();
-    let end = text[4..].find("\n---\n").unwrap() + 4;
-    &text[4..end]
 }
 
 /// 2048 cases, or the number `PROPTEST_CASES` sets.
@@ -272,15 +248,6 @@ proptest! {
     fn parsing_serializing_and_parsing_again_gives_identical_bytes(case in case()) {
         let types = registry(&case);
         let written = types.serialize(&case.object).unwrap();
-        // Strings holding a YAML 1.1 line break other than LF are
-        // double-quoted, so YAML 1.2 readers get the same text.
-        let frontmatter = frontmatter(&written);
-        prop_assert!(
-            keys_hold_line_separators(&case.object.properties)
-                || !frontmatter.contains(['\u{85}', '\u{2028}', '\u{2029}']),
-            "a raw line separator in {:?}",
-            frontmatter
-        );
         if !case.registered {
             // Without a schema the registry writes the built-in order.
             prop_assert_eq!(&written, &serialize_object(&case.object).unwrap());
