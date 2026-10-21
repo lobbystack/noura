@@ -281,8 +281,20 @@ impl App {
             return;
         }
         self.closed = true;
-        self.pending = None;
         self.session.close(self.key);
+        self.release();
+    }
+
+    /// Let go of the workspace once the window closed, so a workspace
+    /// another window replaced closes its index without waiting for the
+    /// client to drop this window.
+    fn release(&mut self) {
+        self.pending = None;
+        self.workspace = None;
+        self.tree = None;
+        self.renaming = None;
+        self.ignored_files = None;
+        self.pending_trash = None;
         self.listeners.emit(Change::Screen);
     }
 
@@ -516,8 +528,7 @@ impl App {
     /// Its tabs stay saved with the workspace it showed.
     fn closed_by_another_window(&mut self) {
         self.closed = true;
-        self.pending = None;
-        self.listeners.emit(Change::Screen);
+        self.release();
     }
 
     fn adopt(&mut self, opened: Opened) {
