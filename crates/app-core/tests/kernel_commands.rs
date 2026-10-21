@@ -123,15 +123,46 @@ fn rename_file_does_nothing_without_an_open_file() {
 }
 
 #[test]
-fn close_window_asks_the_window_to_close_once() {
+fn close_window_closes_the_window() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app();
-    assert!(!app.take_close_window());
+    assert!(!app.is_closed());
 
     run(&mut app, command_id::CLOSE_WINDOW);
 
-    assert!(app.take_close_window());
-    assert!(!app.take_close_window());
+    assert!(app.is_closed());
+}
+
+#[test]
+fn new_window_opens_another_window_on_the_open_workspace() {
+    let fixture = Fixture::new(&[("Plan.md", b"plan")]);
+    let mut app = fixture.app();
+    app.open_file("Plan.md", OpenAs::Kept);
+    assert!(app.take_opened_windows().is_empty());
+
+    run(&mut app, command_id::NEW_WINDOW);
+
+    let windows = app.take_opened_windows();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(
+        windows[0].workspace().map(|workspace| workspace.id()),
+        app.workspace().map(|workspace| workspace.id())
+    );
+    assert!(windows[0].tabs().is_empty(), "a new window has no tabs");
+    assert_eq!(app.tabs().len(), 1);
+    assert!(app.take_opened_windows().is_empty());
+    // The new window runs the same commands, New Window among them.
+    assert_eq!(windows[0].commands(), app.commands());
+}
+
+#[test]
+fn new_window_does_nothing_without_a_workspace() {
+    let app_data = tempfile::tempdir().unwrap();
+    let mut app = App::launch(app_data.path());
+
+    run(&mut app, command_id::NEW_WINDOW);
+
+    assert!(app.take_opened_windows().is_empty());
 }
 
 #[test]
@@ -146,7 +177,7 @@ fn quit_asks_the_app_to_close_once_from_its_key_anywhere() {
 
     assert!(app.take_quit());
     assert!(!app.take_quit());
-    assert!(!app.take_close_window(), "Quit isn't Close Window");
+    assert!(!app.is_closed(), "Quit isn't Close Window");
 }
 
 #[test]

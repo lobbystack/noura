@@ -28,15 +28,17 @@ use egui::{Event, ThemePreference};
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
-pub trait FolderPicker {
+pub trait FolderPicker: Send {
     /// The chosen folder, or `None` when the person cancels.
     fn pick_folder(&mut self, title: &str) -> Option<PathBuf>;
 }
 
-/// The window's contents.
+/// A window's contents.
 pub struct NouraUi {
     app: App,
     picker: Box<dyn FolderPicker>,
+    /// Quit ran in this window.
+    quitting: bool,
     /// The New workspace form, while it is open.
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
@@ -59,6 +61,7 @@ impl NouraUi {
         Self {
             app,
             picker,
+            quitting: false,
             new_workspace: None,
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
@@ -85,6 +88,64 @@ impl NouraUi {
     /// The app, to register commands and pages.
     pub fn app_mut(&mut self) -> &mut App {
         &mut self.app
+    }
+
+    /// The windows this one opened since the last call: with New Window,
+    /// or the workspace's other saved windows when it opened. The desktop
+    /// shows each one.
+    pub fn take_new_windows(&mut self) -> Vec<App> {
+        self.app.take_opened_windows()
+    }
+
+    /// Close this window once its notes are saved, as its close button
+    /// does. See [`App::close_window`].
+    pub fn close_window(&mut self) {
+        self.app.close_window();
+    }
+
+    /// Whether this window must save notes, or wait for an answer about
+    /// one, before it closes. The desktop keeps the window open
+    /// meanwhile.
+    pub fn must_save_before_closing(&self) -> bool {
+        self.app.has_unsaved_notes() || self.app.unsaved_prompt().is_some()
+    }
+
+    /// Whether something waits for notes to save: this window closing, or
+    /// a quit or a workspace switch that waits for every window. See
+    /// [`Self::keep_up`].
+    pub fn is_waiting(&self) -> bool {
+        self.app.is_leaving()
+    }
+
+    /// Whether this window asks what to do about a note that couldn't
+    /// save.
+    pub fn is_asking(&self) -> bool {
+        self.app.unsaved_prompt().is_some()
+    }
+
+    /// Apply background work and carry out Quit without drawing a frame.
+    /// While a window waits for notes to save, the desktop calls this for
+    /// it even when it draws nothing, as when it is minimized, so it
+    /// closes once they are saved. During a quit or a workspace switch
+    /// every window waits, and the one that asked goes ahead once all of
+    /// them have saved.
+    pub fn keep_up(&mut self, ctx: &egui::Context) {
+        if self.app.is_closed() {
+            return;
+        }
+        self.app.poll();
+        self.close_requested_windows(ctx);
+    }
+
+    /// Whether this window has closed, so the desktop stops showing it.
+    pub fn is_closed(&self) -> bool {
+        self.app.is_closed()
+    }
+
+    /// Whether Quit ran in this window. The desktop then lets every
+    /// window go at once, and they all come back at the next launch.
+    pub fn is_quitting(&self) -> bool {
+        self.quitting
     }
 
     /// The menu bar the native menus show, built from the command
@@ -128,9 +189,18 @@ impl NouraUi {
                 editor_egui::fonts::default_font_database(),
             );
             let ctx = ui.ctx().clone();
-            self.app.subscribe(move |_| ctx.request_repaint());
+            // Each window is its own viewport, which repaints on its own.
+            let viewport = ctx.viewport_id();
+            self.app
+                .subscribe(move |_| ctx.request_repaint_of(viewport));
+        }
+        if self.app.is_closed() {
+            return;
         }
         self.app.poll();
+        if self.app.is_closed() {
+            return;
+        }
         apply_preferences(ui.ctx(), &self.app);
         let now = Instant::now();
         self.app.save_due_notes(now);
@@ -138,7 +208,6 @@ impl NouraUi {
             ui.ctx()
                 .request_repaint_after(due.saturating_duration_since(now));
         }
-        self.guard_window_close(ui.ctx());
         self.notes.retain(&self.app);
         if self.app.is_busy() {
             // The change stream wakes the window when the work finishes;
@@ -148,6 +217,10 @@ impl NouraUi {
         let screen = self.app.screen().clone();
         // Without a workspace, only Quit and Close Window take their keys.
         self.dispatch_keys(ui);
+        if self.app.is_closed() {
+            // Close Window ran: the desktop stops showing this window.
+            return;
+        }
         match screen {
             Screen::Loading => common::loading(ui),
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
@@ -159,27 +232,15 @@ impl NouraUi {
         self.close_requested_windows(ui.ctx());
     }
 
-    /// The window's close button closes the app once every note is saved:
-    /// the window stays while saves run, and asks when one fails.
-    fn guard_window_close(&mut self, ctx: &egui::Context) {
-        let requested = ctx.input(|input| input.viewport().close_requested());
-        if requested && (self.app.has_unsaved_notes() || self.app.unsaved_prompt().is_some()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.app.request_quit();
-        }
-    }
-
-    /// Close what Quit or Close Window asked to close: Quit closes the
-    /// main window, which ends the app, and Close Window this one. Each
+    /// Carry out Quit: close the main window, which ends the app. Each
     /// frame does this; the desktop shell also calls it after menu
     /// choices, which can arrive while the window is hidden and draws no
-    /// frame.
+    /// frame. Close Window needs nothing here: the window has closed, see
+    /// [`Self::is_closed`], and the desktop stops showing it.
     pub fn close_requested_windows(&mut self, ctx: &egui::Context) {
         if self.app.take_quit() {
+            self.quitting = true;
             ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-        }
-        if self.app.take_close_window() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 

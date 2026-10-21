@@ -665,13 +665,13 @@ mod failures {
         let mut app = fixture.app();
         failing(&fixture, &mut app);
 
-        app.request_close_window();
+        assert!(app.run_command("close-window", CommandSource::Key, Instant::now()));
         settle_saves(&mut app);
 
-        assert!(!app.take_close_window());
+        assert!(!app.is_closed());
         assert!(app.unsaved_prompt().is_some());
         app.discard_and_leave();
-        assert!(app.take_close_window());
+        assert!(app.is_closed());
         read_only(&fixture, "Docs", false);
         assert_eq!(fixture.read("Docs/Plan.md"), managed("\n", "Body\n"));
     }

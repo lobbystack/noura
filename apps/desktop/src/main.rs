@@ -1,6 +1,7 @@
 //! The Noura desktop app.
 
 mod file_drag;
+mod instance;
 mod login;
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows")),
@@ -8,20 +9,21 @@ mod login;
 )]
 mod menu;
 mod system;
+mod windows;
 
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        mpsc::{Receiver, channel},
-    },
-    time::Instant,
+    sync::{Arc, Mutex},
 };
 
 use app_core::App;
-use app_ui::{FolderPicker, NouraUi};
+use app_ui::FolderPicker;
 use eframe::egui;
-use menu::{Choice, EditInput};
+
+use crate::{
+    instance::{Claim, Instance},
+    windows::Windows,
+};
 
 /// The system folder dialog.
 struct SystemFolderPicker;
@@ -29,80 +31,6 @@ struct SystemFolderPicker;
 impl FolderPicker for SystemFolderPicker {
     fn pick_folder(&mut self, title: &str) -> Option<PathBuf> {
         rfd::FileDialog::new().set_title(title).pick_folder()
-    }
-}
-
-struct Desktop {
-    ui: NouraUi,
-    file_drag: file_drag::FileDrag,
-    /// Menu choices, sent from muda's event handler.
-    choices: Receiver<Choice>,
-    edit: EditInput,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    native_menu: Option<menu::native::NativeMenu>,
-}
-
-impl Desktop {
-    fn new(cc: &eframe::CreationContext<'_>, ui: NouraUi) -> Self {
-        let (sender, choices) = channel();
-        let ctx = cc.egui_ctx.clone();
-        muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
-            if let Some(choice) = menu::choice_for(event.id())
-                && sender.send(choice).is_ok()
-            {
-                ctx.request_repaint_of(egui::ViewportId::ROOT);
-            }
-        }));
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let native_menu = match menu::native::install(cc, &ui.menu_bar()) {
-            Ok(native_menu) => Some(native_menu),
-            Err(error) => {
-                tracing::error!(%error, "the native menu bar failed to install");
-                None
-            }
-        };
-        Self {
-            ui,
-            file_drag: file_drag::FileDrag::default(),
-            choices,
-            edit: EditInput::default(),
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            native_menu,
-        }
-    }
-}
-
-impl eframe::App for Desktop {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        while let Ok(choice) = self.choices.try_recv() {
-            match choice {
-                Choice::Command(id) => {
-                    self.ui.run_menu_command(&id, Instant::now());
-                }
-                Choice::System(item) => self.edit.run(ctx, item),
-            }
-        }
-        // Quit from the menu works while the window is hidden too.
-        self.ui.close_requested_windows(ctx);
-        // A command that registered, or a page that moved, changes the
-        // menus.
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(native_menu) = &mut self.native_menu
-            && let Err(error) = native_menu.update(&self.ui.menu_bar())
-        {
-            tracing::error!(%error, "the native menu bar failed to update");
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.ui.ui(ui);
-        let ctx = ui.ctx().clone();
-        self.file_drag.after_frame(&mut self.ui, &ctx, frame);
-    }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        self.file_drag.complete_input(ctx, raw_input);
-        self.edit.inject(raw_input);
     }
 }
 
@@ -203,12 +131,19 @@ fn main() -> eframe::Result {
     if !has_app_data {
         tracing::warn!("the system has no app data folder; using the temporary folder");
     }
+    // A launch while Noura runs brings the running copy forward and stops
+    // here, before it opens a workspace or an index.
+    let instance: Option<Instance> = match instance::claim(&app_data) {
+        Ok(Claim::First(instance)) => Some(instance),
+        Ok(Claim::Running) => return Ok(()),
+        Err(error) => {
+            tracing::warn!(%error, "couldn't check for a running copy of Noura");
+            None
+        }
+    };
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Noura")
-            .with_inner_size([1100.0, 720.0])
-            .with_min_inner_size([640.0, 420.0]),
+        viewport: windows::builder(None),
         event_loop_builder: Some(Box::new(configure_event_loop)),
         ..Default::default()
     };
@@ -222,8 +157,13 @@ fn main() -> eframe::Result {
             let system = system::DesktopSystem::new(creation.egui_ctx.clone());
             let mut app = App::launch_with(&app_data, Arc::new(system));
             app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
-            let ui = NouraUi::new(app, Box::new(SystemFolderPicker));
-            Ok(Box::new(Desktop::new(creation, ui)))
+            if let Some(instance) = &instance {
+                let ctx = creation.egui_ctx.clone();
+                instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
+            }
+            let mut windows = Windows::new(app, instance, || Box::new(SystemFolderPicker));
+            windows.install_menu_bar(creation);
+            Ok(Box::new(windows))
         }),
     )
 }

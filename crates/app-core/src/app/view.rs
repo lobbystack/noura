@@ -1,7 +1,7 @@
 //! Tabs, the rail, the sidebar's layout and the file tree's open folders:
 //! what the window shows and how you move between it. Every refresh of
 //! the tree runs through `App::replace_tree`, where the tabs follow their
-//! files and the open folders are saved.
+//! files, the open folders are saved and the other windows learn of it.
 
 use std::time::Instant;
 
@@ -12,6 +12,7 @@ use crate::{
     layout::sidebar_width,
     rail::FILES_PAGE,
     tabs::{Restored, TabContent},
+    view_state::StoredWindow,
 };
 
 impl App {
@@ -99,6 +100,12 @@ impl App {
     pub fn move_page(&mut self, page_id: &str, index: usize) {
         if self.rail.move_page(page_id, index) {
             self.listeners.emit(Change::Rail);
+            // The workspace's other windows show the same order.
+            self.rail_seen = self.session.set_rail_order(
+                self.key,
+                self.opening,
+                self.rail.saved_order().to_vec(),
+            );
             self.save_view();
         }
     }
@@ -300,25 +307,77 @@ impl App {
     /// current row, which follow the item that moved from `moved.0` to
     /// `moved.1`, and the tabs follow their files into it. Every refresh
     /// of the tree comes through here, so the open folders it carries over
-    /// are saved.
+    /// are saved, and the other windows show the new tree too.
     pub(super) fn replace_tree(
         &mut self,
         tree: Result<FileTree, AppError>,
         moved: Option<(&str, &str)>,
     ) {
         match tree {
-            Ok(mut tree) => {
-                if let Some(old) = &self.tree {
-                    tree.carry_over(old, moved);
-                }
-                self.tree = Some(tree);
-                self.listeners.emit(Change::Tree);
-                self.rank_files();
-                self.follow_files();
-                self.save_view();
+            Ok(tree) => {
+                self.listing_seen =
+                    self.session
+                        .publish_listing(self.key, self.opening, &tree, moved);
+                self.show_tree(tree, moved.as_slice());
             }
             Err(error) => self.show_notice("Couldn't read the files", error, None),
         }
+    }
+
+    /// Show the files as another window listed them last, after the moves
+    /// it made since this window's listing.
+    pub(super) fn poll_listing(&mut self) -> bool {
+        let Some(listing) = self.session.listing_since(self.listing_seen) else {
+            return false;
+        };
+        self.listing_seen = listing.version;
+        for (from, to) in &listing.moves {
+            self.move_tabs(from, to);
+            if let Some(rename) = &mut self.renaming
+                && let Some(path) = remap(&rename.relative_path, from, to)
+            {
+                rename.relative_path = path;
+            }
+        }
+        let moves: Vec<(&str, &str)> = listing
+            .moves
+            .iter()
+            .map(|(from, to)| (from.as_str(), to.as_str()))
+            .collect();
+        self.show_tree(listing.tree, &moves);
+        // A row being renamed, or a folder waiting for the trash, that
+        // another window took away stops waiting.
+        let tree = self.tree.as_ref();
+        let gone = |path: &str| tree.is_none_or(|tree| tree.follow(path, None).is_none());
+        if self
+            .renaming
+            .as_ref()
+            .is_some_and(|rename| gone(&rename.relative_path))
+        {
+            self.renaming = None;
+        }
+        if self
+            .pending_trash
+            .as_ref()
+            .is_some_and(|(path, _)| gone(path))
+        {
+            self.pending_trash = None;
+        }
+        true
+    }
+
+    /// Show `tree`, keeping the old tree's open folders and current row,
+    /// which follow the items in `moves`, let the tabs follow their files
+    /// into it, and rank quick open's matches again.
+    fn show_tree(&mut self, mut tree: FileTree, moves: &[(&str, &str)]) {
+        if let Some(old) = &self.tree {
+            tree.carry_over(old, moves);
+        }
+        self.tree = Some(tree);
+        self.listeners.emit(Change::Tree);
+        self.rank_files();
+        self.follow_files();
+        self.save_view();
     }
 
     /// Close the tabs of the item at `relative_path`, a file or a folder,
@@ -374,40 +433,42 @@ impl App {
         self.save_view();
     }
 
-    /// Save the open workspace's view state to this device's app data,
-    /// in the background.
+    /// Save this window's view state, with the workspace's other windows,
+    /// to this device's app data, in the background.
     pub(super) fn save_view(&mut self) {
-        let Some(workspace) = &self.workspace else {
+        self.keep_view(true);
+    }
+
+    /// Hand this window's view state to the session, which saves it with
+    /// the other windows' when `write` says so.
+    fn keep_view(&mut self, write: bool) {
+        if self.workspace.is_none() || self.closed {
             return;
-        };
+        }
         let (tabs, active) = self.tabs.stored();
         let expanded_folders = self
             .tree
             .as_ref()
             .map(FileTree::expanded_folders)
             .unwrap_or_default();
-        let view = crate::view_state::StoredView {
+        let view = StoredWindow {
             tabs,
             active,
             expanded_folders,
-            rail_order: self.rail.saved_order().to_vec(),
         };
-        self.views.save(workspace.id(), view);
+        self.session
+            .save_window(self.key, self.opening, view, write);
     }
 
-    /// Bring back the open workspace's saved view state: the tabs whose
-    /// file or page is still there, and the active tab. Tabs for pages
-    /// that haven't registered yet wait for them.
-    pub(super) fn restore_view(&mut self) {
+    /// Bring back a window's saved view state: the tabs whose file or
+    /// page is still there, the active tab and the open folders. Tabs for
+    /// pages that haven't registered yet wait for them.
+    pub(super) fn restore_view(&mut self, stored: StoredWindow) {
         let Some(workspace) = &self.workspace else {
             self.tabs.restore(Vec::new(), None);
-            self.rail.set_saved_order(Vec::new());
             self.sync_notes();
             return;
         };
-        let stored = self.views.load(workspace.id());
-        self.rail.set_saved_order(stored.rail_order);
-        self.listeners.emit(Change::Rail);
         if let Some(tree) = &mut self.tree {
             tree.expand_folders(stored.expanded_folders.iter().map(String::as_str));
         }
@@ -448,5 +509,7 @@ impl App {
             .collect();
         self.tabs.restore(restored, stored.active);
         self.sync_notes();
+        // The session saves this window with the others from now on.
+        self.keep_view(false);
     }
 }

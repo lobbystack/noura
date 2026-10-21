@@ -28,6 +28,9 @@ pub mod command_id {
     /// Save the open note now.
     pub const SAVE: &str = "save";
     pub const CLOSE_TAB: &str = "close-tab";
+    /// Open another window on the open workspace. It has no default
+    /// shortcut.
+    pub const NEW_WINDOW: &str = "new-window";
     pub const CLOSE_WINDOW: &str = "close-window";
     pub const NEXT_TAB: &str = "next-tab";
     pub const PREVIOUS_TAB: &str = "previous-tab";
@@ -232,6 +235,14 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
+    /// The same commands for another window, which hasn't run any yet.
+    pub(crate) fn copy(&self) -> Self {
+        Self {
+            commands: self.commands.clone(),
+            recent: RecentRuns::default(),
+        }
+    }
+
     /// Add a command. Fails when its ID is taken, or one of its keys
     /// belongs to another command or to the default keymap.
     pub(crate) fn register(&mut self, command: Command, run: Run) -> Result<(), AppError> {

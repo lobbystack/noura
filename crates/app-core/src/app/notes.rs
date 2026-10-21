@@ -19,16 +19,29 @@ const FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) enum Leave {
     CloseTab(TabId),
     CloseWindow,
+    /// A quit or a switch to another workspace, which closes every
+    /// window: each window saves its notes for the departure `round`, and
+    /// the window that asked does `then` once all of them have. The other
+    /// windows have no `then`.
+    Depart {
+        round: u64,
+        then: Option<Departure>,
+    },
+}
+
+/// What a departure does once every window's notes are on disk.
+#[derive(Clone)]
+pub(super) enum Departure {
     Quit,
     /// Open another workspace, or create one.
     Open(Job),
 }
 
-/// The leave waiting for notes to save, and the prompt once a save failed.
+/// The leave waiting for notes to save, and the prompt once a save failed,
+/// with the tab of the note it names.
 pub(super) struct Leaving {
     action: Leave,
-    tabs: Vec<TabId>,
-    prompt: Option<UnsavedPrompt>,
+    prompt: Option<(TabId, UnsavedPrompt)>,
 }
 
 /// What Noura asks when a note couldn't save before a tab, the window, the
@@ -62,6 +75,7 @@ impl App {
         if session.edited(version, text, at) {
             self.keep_tab(tab);
             self.listeners.emit(Change::Note);
+            self.edited_while_leaving();
         }
     }
 
@@ -152,6 +166,7 @@ impl App {
         session.queue_property(key.to_owned(), json);
         self.start_note_write(tab);
         self.listeners.emit(Change::Note);
+        self.edited_while_leaving();
     }
 
     /// Rename the note in the tab `tab` from its name field to `typed`. The
@@ -207,7 +222,19 @@ impl App {
 
     /// The prompt about a note that couldn't save before something closed.
     pub fn unsaved_prompt(&self) -> Option<&UnsavedPrompt> {
-        self.leaving.as_ref()?.prompt.as_ref()
+        self.leaving
+            .as_ref()?
+            .prompt
+            .as_ref()
+            .map(|(_, prompt)| prompt)
+    }
+
+    /// Whether something waits for notes to save before it happens: a tab
+    /// or this window closing, or a quit or a switch to another workspace
+    /// that any window asked for. A client keeps polling the window
+    /// meanwhile, even while it draws no frame, as when it is minimized.
+    pub fn is_leaving(&self) -> bool {
+        self.leaving.is_some() || self.session.departure().is_some()
     }
 
     /// Try the failed saves again, and close once they succeed.
@@ -216,8 +243,8 @@ impl App {
             return;
         };
         leaving.prompt = None;
-        let tabs = leaving.tabs.clone();
-        for tab in tabs {
+        let action = leaving.action.clone();
+        for tab in self.leaving_tabs(&action) {
             if let Some(session) = self.notes.sessions.get_mut(&tab)
                 && session.is_unsaved()
             {
@@ -229,38 +256,38 @@ impl App {
         self.advance_leaving();
     }
 
-    /// Close nothing and show the note that couldn't save.
+    /// Close nothing and show the note that couldn't save. A quit or a
+    /// workspace switch stops in every window.
     pub fn keep_editing(&mut self) {
         let Some(leaving) = self.leaving.take() else {
             return;
         };
-        let failed = leaving.tabs.iter().copied().find(|tab| {
-            self.notes
-                .sessions
-                .get(tab)
-                .is_some_and(|session| session.save_problem().is_some())
-        });
-        if let Some(tab) = failed {
+        if let Leave::Depart { round, .. } = leaving.action {
+            self.session.end_departure(self.key, round);
+        }
+        if let Some((tab, _)) = leaving.prompt {
             self.activate_tab(tab);
         }
         self.listeners.emit(Change::Note);
     }
 
-    /// Drop the edits that couldn't save, leaving each file as it is on
-    /// disk, and close.
+    /// Drop the edits of the note the prompt names, leaving its file as it
+    /// is on disk, and close once the other notes are saved.
     pub fn discard_and_leave(&mut self) {
-        let Some(leaving) = self.leaving.take() else {
+        let Some((tab, _)) = self
+            .leaving
+            .as_mut()
+            .and_then(|leaving| leaving.prompt.take())
+        else {
             return;
         };
-        for tab in &leaving.tabs {
-            if let Some(session) = self.notes.sessions.get_mut(tab)
-                && !session.is_saving()
-            {
-                session.discard();
-            }
+        if let Some(session) = self.notes.sessions.get_mut(&tab)
+            && !session.is_saving()
+        {
+            session.discard();
         }
         self.listeners.emit(Change::Note);
-        self.carry_out(leaving.action);
+        self.advance_leaving();
     }
 
     /// Do `action` once the notes it closes are on disk. Their saves start
@@ -269,40 +296,104 @@ impl App {
         if self.leaving.is_some() {
             return;
         }
-        let tabs: Vec<TabId> = match &action {
-            Leave::CloseTab(tab) => vec![*tab],
-            _ => self.notes.sessions.keys().copied().collect(),
-        };
-        let unsaved: Vec<TabId> = tabs
-            .into_iter()
-            .filter(|tab| {
-                self.notes
-                    .sessions
-                    .get(tab)
-                    .is_some_and(NoteSession::is_unsaved)
-            })
-            .collect();
-        if unsaved.is_empty() {
-            self.carry_out(action);
-            return;
-        }
-        for tab in &unsaved {
-            if let Some(session) = self.notes.sessions.get_mut(tab) {
+        for tab in self.leaving_tabs(&action) {
+            if let Some(session) = self.notes.sessions.get_mut(&tab)
+                && session.is_unsaved()
+            {
                 session.save_soon();
+                self.start_note_write(tab);
             }
-            self.start_note_write(*tab);
         }
         self.leaving = Some(Leaving {
             action,
-            tabs: unsaved,
             prompt: None,
         });
         self.listeners.emit(Change::Note);
         self.advance_leaving();
     }
 
+    /// Ask every window to save its notes, and then quit or open another
+    /// workspace as `then` says. Nothing happens while this window waits
+    /// for something else, or while another window's departure waits.
+    pub(super) fn depart(&mut self, then: Departure) {
+        if self.leaving.is_some() {
+            return;
+        }
+        let Some(round) = self.session.begin_departure(self.key) else {
+            return;
+        };
+        self.departure_seen = round;
+        self.leave(Leave::Depart {
+            round,
+            then: Some(then),
+        });
+    }
+
+    /// Take part in another window's quit or workspace switch, and go
+    /// ahead with this window's own once every window is ready. Returns
+    /// whether anything changed.
+    pub(super) fn poll_departure(&mut self) -> bool {
+        let current = self.session.departure();
+        // Windows that wait for the client to show them take part too.
+        if current.is_some() {
+            for window in &mut self.opened_windows {
+                window.poll();
+            }
+        }
+        if let Some(Leaving {
+            action: Leave::Depart { round, then },
+            prompt,
+        }) = &self.leaving
+        {
+            let (round, then, asking) = (*round, then.clone(), prompt.is_some());
+            if current.map(|(current, _)| current) != Some(round) {
+                // It went ahead, or a window kept editing.
+                self.leaving = None;
+                self.listeners.emit(Change::Note);
+                return true;
+            }
+            if let Some(then) = then
+                && !asking
+                && self.session.all_ready(round)
+            {
+                self.go_ahead(round, then);
+                return true;
+            }
+            return false;
+        }
+        let Some((round, by)) = current else {
+            return false;
+        };
+        if by == self.key || round <= self.departure_seen {
+            return false;
+        }
+        self.departure_seen = round;
+        let action = Leave::Depart { round, then: None };
+        match &mut self.leaving {
+            // Closing a tab or this window waits too; the departure closes
+            // them anyway.
+            Some(leaving) => {
+                leaving.action = action;
+                self.advance_leaving();
+            }
+            None => self.leave(action),
+        }
+        true
+    }
+
+    /// The tabs whose notes `action` waits for.
+    fn leaving_tabs(&self, action: &Leave) -> Vec<TabId> {
+        match action {
+            Leave::CloseTab(tab) => vec![*tab],
+            Leave::CloseWindow | Leave::Depart { .. } => {
+                self.notes.sessions.keys().copied().collect()
+            }
+        }
+    }
+
     /// Close once every note the leave waits for is on disk, or ask once a
-    /// save failed and no save runs.
+    /// save failed and no save runs. A departure waits on until every
+    /// window is ready, and an edit made meanwhile saves first.
     fn advance_leaving(&mut self) {
         let Some(leaving) = &self.leaving else {
             return;
@@ -310,59 +401,94 @@ impl App {
         if leaving.prompt.is_some() {
             return;
         }
-        let mut failed: Option<(String, SaveProblem)> = None;
+        let action = leaving.action.clone();
+        let mut failed: Option<(TabId, String, SaveProblem)> = None;
         let mut waiting = Vec::new();
-        for tab in &leaving.tabs {
-            let Some(session) = self.notes.sessions.get(tab) else {
+        for tab in self.leaving_tabs(&action) {
+            let Some(session) = self.notes.sessions.get(&tab) else {
                 continue;
             };
             if !session.is_unsaved() {
                 continue;
             }
             match session.save_problem() {
-                _ if session.is_saving() => waiting.push(*tab),
+                _ if session.is_saving() => waiting.push(tab),
                 Some(problem) => {
-                    failed.get_or_insert((session.name(), problem.clone()));
+                    failed.get_or_insert((tab, session.name(), problem.clone()));
                 }
-                None => waiting.push(*tab),
+                None => waiting.push(tab),
             }
+        }
+        if let Leave::Depart { round, .. } = action
+            && (failed.is_some() || !waiting.is_empty())
+        {
+            self.session.set_ready(self.key, round, false);
         }
         if !waiting.is_empty() {
             for tab in waiting {
+                if let Some(session) = self.notes.sessions.get_mut(&tab)
+                    && !session.is_saving()
+                {
+                    session.save_soon();
+                }
                 self.start_note_write(tab);
             }
             return;
         }
-        match failed {
-            Some((name, problem)) => {
-                if let Some(leaving) = &mut self.leaving {
-                    leaving.prompt = Some(UnsavedPrompt {
+        if let Some((tab, name, problem)) = failed {
+            if let Some(leaving) = &mut self.leaving {
+                leaving.prompt = Some((
+                    tab,
+                    UnsavedPrompt {
                         title: format!("Couldn\u{2019}t save \u{201c}{name}\u{201d}"),
                         message: format!("{} Your changes are still in the note.", problem.reason),
-                    });
-                }
-                self.listeners.emit(Change::Note);
+                    },
+                ));
             }
-            None => {
-                if let Some(leaving) = self.leaving.take() {
-                    self.carry_out(leaving.action);
+            self.listeners.emit(Change::Note);
+            return;
+        }
+        match action {
+            Leave::Depart { round, then } => {
+                let all = self.session.set_ready(self.key, round, true);
+                if all && let Some(then) = then {
+                    self.go_ahead(round, then);
                 }
             }
+            action => {
+                self.leaving = None;
+                self.carry_out(action);
+            }
+        }
+    }
+
+    /// An edit while something waits for the notes to save: it saves
+    /// before anything closes.
+    fn edited_while_leaving(&mut self) {
+        if self.leaving.is_some() {
+            self.advance_leaving();
         }
     }
 
     fn carry_out(&mut self, action: Leave) {
         match action {
             Leave::CloseTab(tab) => self.close_tab_now(tab),
-            Leave::CloseWindow => {
-                self.close_window = true;
-                self.listeners.emit(Change::Window);
-            }
-            Leave::Quit => {
+            Leave::CloseWindow => self.close_window_now(),
+            Leave::Depart { .. } => {}
+        }
+    }
+
+    /// Every window's notes are on disk: quit, or open the workspace.
+    fn go_ahead(&mut self, round: u64, then: Departure) {
+        self.leaving = None;
+        self.session.end_departure(self.key, round);
+        self.listeners.emit(Change::Note);
+        match then {
+            Departure::Quit => {
                 self.quit = true;
                 self.listeners.emit(Change::Window);
             }
-            Leave::Open(job) => self.start(job),
+            Departure::Open(job) => self.start(job),
         }
     }
 
@@ -492,6 +618,12 @@ impl App {
     /// file a tab shows, follow tabs whose file moved, and drop the
     /// sessions of closed tabs.
     pub(super) fn sync_notes(&mut self) {
+        self.open_notes();
+        self.session
+            .set_has_notes(self.key, !self.notes.sessions.is_empty());
+    }
+
+    fn open_notes(&mut self) {
         let Some(workspace) = &self.workspace else {
             self.notes.sessions.clear();
             self.notes.unreadable.clear();
