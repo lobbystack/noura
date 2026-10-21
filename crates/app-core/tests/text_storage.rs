@@ -165,20 +165,28 @@ fn a_deleted_index_doesnt_stop_a_text_files_saves() {
     assert!(app.note(tab).unwrap().save_problem().is_none());
 }
 
-#[test]
-fn a_text_files_save_reaches_disk_when_the_index_refuses_writes() {
-    let fixture = Fixture::new(&[("notes.txt", b"one\n"), ("Plan.md", &note(A, "Body\n"))]);
-    let mut app = fixture.app();
-    let tab = open_from_tree(&mut app, "notes.txt");
-    let connection = rusqlite::Connection::open(&index_files(&fixture, &app)[0]).unwrap();
+/// Make the workspace's index refuse every write to its files table, as
+/// an index update interrupted by a full disk would.
+fn refuse_index_writes(fixture: &Fixture, app: &App) {
+    let connection = rusqlite::Connection::open(&index_files(fixture, app)[0]).unwrap();
     connection
         .execute_batch(
             "CREATE TRIGGER refuse_insert BEFORE INSERT ON files \
                BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;
              CREATE TRIGGER refuse_update BEFORE UPDATE ON files \
+               BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;
+             CREATE TRIGGER refuse_delete BEFORE DELETE ON files \
                BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;",
         )
         .unwrap();
+}
+
+#[test]
+fn a_text_files_save_reaches_disk_when_the_index_refuses_writes() {
+    let fixture = Fixture::new(&[("notes.txt", b"one\n"), ("Plan.md", &note(A, "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "notes.txt");
+    refuse_index_writes(&fixture, &app);
 
     let at = type_into(&mut app, tab, |text| format!("{text}two\n"));
     save(&mut app, at);
@@ -186,6 +194,46 @@ fn a_text_files_save_reaches_disk_when_the_index_refuses_writes() {
     assert_eq!(fixture.read("notes.txt"), b"one\ntwo\n");
     assert!(app.note(tab).unwrap().save_problem().is_none());
     assert!(!app.note(tab).unwrap().is_unsaved());
+}
+
+#[test]
+fn a_save_that_fixes_a_notes_properties_opens_the_note_when_the_index_refuses_writes() {
+    let broken = format!("---\nid: note_{A}\n---\n\nBody\n");
+    let fixture = Fixture::new(&[("Plan.md", broken.as_bytes())]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    assert!(app.note(tab).unwrap().broken_properties().is_some());
+    refuse_index_writes(&fixture, &app);
+
+    let at = type_into(&mut app, tab, |text| {
+        text.replace("---\n\nBody", "type: note\n---\n\nBody")
+    });
+    save(&mut app, at);
+
+    let fixed = format!("---\nid: note_{A}\ntype: note\n---\n\nBody\n");
+    assert_eq!(String::from_utf8(fixture.read("Plan.md")).unwrap(), fixed);
+    let shown = app.note(tab).unwrap();
+    assert!(shown.save_problem().is_none());
+    assert!(!shown.is_unsaved());
+    assert_eq!(shown.broken_properties(), None);
+    assert!(!shown.shows_whole_file());
+    assert_eq!(shown.object_id(), Some(format!("note_{A}").as_str()));
+    assert!(shown.properties().is_some());
+    assert_eq!(shown.text(), "\nBody\n");
+
+    // The index missed the save; a rebuild from the files lists the note.
+    let objects = app.workspace().unwrap().objects().unwrap();
+    assert!(objects.is_empty(), "{objects:?}");
+    let files = index_files(&fixture, &app);
+    drop(app);
+    for file in &files {
+        let _ = std::fs::remove_file(file);
+    }
+    let app = fixture.app();
+    let objects = app.workspace().unwrap().objects().unwrap();
+    assert_eq!(objects.len(), 1, "{objects:?}");
+    assert_eq!(objects[0].id, format!("note_{A}"));
+    assert_eq!(String::from_utf8(fixture.read("Plan.md")).unwrap(), fixed);
 }
 
 #[test]
