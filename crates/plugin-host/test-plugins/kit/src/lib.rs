@@ -11,6 +11,9 @@
 //!   updates. Submitting adds the plant to the table.
 //! - `seeds`, titled Seeds: the virtual list Seeds of 10,000 rows. Each
 //!   row's detail names the fetch that returned it, such as `Batch 1`.
+//! - `broken-rows`, titled Broken rows: the virtual list Broken of 100
+//!   rows, which returns one row more than Noura asks for. A text node
+//!   says which rows Noura asked for, such as `Asked for rows: 0 to 63`.
 
 use std::sync::Mutex;
 
@@ -20,6 +23,9 @@ use plugin_sdk::{
 
 /// The rows the Seeds list holds.
 const SEEDS: u32 = 10_000;
+
+/// The rows the Broken list holds.
+const BROKEN: u32 = 100;
 
 struct Plant {
     id: String,
@@ -39,6 +45,8 @@ struct State {
     sown: Option<String>,
     transplant: Option<String>,
     batches: u32,
+    /// The rows of the Broken list Noura asked for, as `first to last`.
+    broken_asks: Vec<String>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -68,6 +76,7 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
         sown: None,
         transplant: Some("2026-10-21T09:30:00-04:00".to_owned()),
         batches: 0,
+        broken_asks: Vec::new(),
     });
     f(state)
 }
@@ -81,6 +90,7 @@ impl Plugin for Kit {
             ("table", "Table"),
             ("form", "Form"),
             ("seeds", "Seeds"),
+            ("broken-rows", "Broken rows"),
         ]
         .into_iter()
         .map(|(id, title)| Page {
@@ -96,6 +106,7 @@ impl Plugin for Kit {
                 "lists" => "Lists",
                 "table" => "Table",
                 "form" => "Form",
+                "broken-rows" => "Broken rows",
                 _ => "Seeds",
             };
             let mut view = View::panel("root", Some(title));
@@ -104,6 +115,15 @@ impl Plugin for Kit {
                 "lists" => lists(&mut view),
                 "table" => table(&mut view, state),
                 "form" => form(&mut view, state),
+                "broken-rows" => {
+                    let asked = if state.broken_asks.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        state.broken_asks.join(", ")
+                    };
+                    view.text(View::ROOT, "asked", &format!("Asked for rows: {asked}"));
+                    view.virtual_list(View::ROOT, "broken", "Broken", BROKEN);
+                }
                 _ => {
                     view.virtual_list(View::ROOT, "seeds", "Seeds", SEEDS);
                 }
@@ -113,6 +133,9 @@ impl Plugin for Kit {
     }
 
     fn rows(_page: String, node: String, start: u32, count: u32) -> Vec<VirtualRow> {
+        if node == "broken" {
+            return with_state(|state| broken_rows(state, start, count));
+        }
         if node != "seeds" {
             return Vec::new();
         }
@@ -161,6 +184,23 @@ impl Plugin for Kit {
             }
         });
     }
+}
+
+/// One row more than Noura asked for.
+fn broken_rows(state: &mut State, start: u32, count: u32) -> Vec<VirtualRow> {
+    let end = start.saturating_add(count).min(BROKEN);
+    state
+        .broken_asks
+        .push(format!("{start} to {}", end.saturating_sub(1)));
+    (start..=end)
+        .map(|index| VirtualRow {
+            id: format!("broken-{index}"),
+            item: Item {
+                label: format!("Broken {index}"),
+                detail: None,
+            },
+        })
+        .collect()
 }
 
 fn lists(view: &mut View) {

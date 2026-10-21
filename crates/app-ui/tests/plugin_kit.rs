@@ -6,7 +6,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use app_core::PluginEvent;
+use app_core::{ColumnPress, PluginEvent};
 use egui::{
     Event, Key, Modifiers, MouseWheelSource, MouseWheelUnit, TouchPhase,
     accesskit::{Role, SortDirection, Toggled},
@@ -531,6 +531,26 @@ fn a_virtual_list_of_ten_thousand_rows_fetches_rows_as_they_scroll_into_view() {
 }
 
 #[test]
+fn a_virtual_list_whose_rows_break_the_rules_shows_why_and_noura_keeps_running() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut opened = opened(&kit);
+    let harness = &mut opened.harness;
+    open_page(harness, "Broken rows");
+
+    let list = harness.get_by_role_and_label(Role::ListBox, "Broken");
+    assert!(list.query_by_role(Role::ListBoxOption).is_none());
+    list.get_by_role(Role::Alert)
+        .get_by_label("The plugin returned 65 rows when Noura asked for 64.");
+
+    open_page(harness, "Lists");
+    option(harness, "North bed").click();
+    harness.run();
+    assert_eq!(last_event(harness), "selected north in beds");
+}
+
+#[test]
 fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
@@ -552,6 +572,24 @@ fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
     redraw(harness, "plugin:kit:lists");
     assert!(option(harness, "South bed").is_focused());
     assert!(is_selected(&option(harness, "South bed")));
+
+    // A table finds its selected row by ID wherever the redraw put it.
+    open_page(harness, "Table");
+    row(harness, "Bean").click();
+    harness.run();
+    harness.state_mut().app_mut().send_plugin_event(
+        "plugin:kit:table",
+        &PluginEvent::Sorted(ColumnPress {
+            node: "plants".into(),
+            column: "sown".into(),
+        }),
+    );
+    harness.run();
+    assert_eq!(cells(harness)[6], "Bean");
+    let bean = row(harness, "Bean");
+    assert!(bean.is_focused());
+    assert!(is_selected(&bean));
+    assert!(!is_selected(&row(harness, "Basil")));
 
     open_page(harness, "Seeds");
     option(harness, "Seed 1").click();
