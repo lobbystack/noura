@@ -11,6 +11,7 @@ use std::{
 
 use crate::{
     App, AppError, FILES_PAGE, INBOX_PAGE, Key, KeyPress, MenuName, Page, Platform, Shortcut,
+    SystemItem,
 };
 
 /// The IDs of the kernel's commands. Features that haven't landed yet
@@ -36,6 +37,8 @@ pub mod command_id {
     /// Settings (ticket 15).
     pub const SETTINGS: &str = "settings";
     pub const KEYBOARD_SHORTCUTS: &str = "keyboard-shortcuts";
+    /// Quit on macOS and Linux, Exit on Windows.
+    pub const QUIT: &str = "quit";
     /// The prefix of the commands that show a rail page, followed by the
     /// page's ID.
     pub const GO_TO_PAGE: &str = "go-to-page:";
@@ -147,13 +150,14 @@ pub fn default_shortcuts(id: &str) -> Vec<Shortcut> {
         ZOOM_OUT => vec![command(Key::Minus)],
         ZOOM_RESET => vec![command(Key::Num0)],
         SETTINGS => vec![command(Key::Comma)],
+        QUIT => vec![command(Key::Q)],
         _ => Vec::new(),
     }
 }
 
 /// The kernel commands the default keymap names, in the order lists show
 /// them.
-const KEYMAP_ORDER: [&str; 15] = [
+const KEYMAP_ORDER: [&str; 16] = [
     command_id::NEW_NOTE,
     command_id::NEW_FOLDER,
     command_id::QUICK_OPEN,
@@ -169,6 +173,7 @@ const KEYMAP_ORDER: [&str; 15] = [
     command_id::ZOOM_OUT,
     command_id::ZOOM_RESET,
     command_id::SETTINGS,
+    command_id::QUIT,
 ];
 
 /// The keys that show rail pages: Mod-1 the Inbox, Mod-2 Files, and Mod-3
@@ -189,17 +194,13 @@ fn page_shortcuts(pages: &[&Page]) -> Vec<(String, Option<Shortcut>)> {
 }
 
 /// Keys no command takes: the Edit menu's, which act on the focused text
-/// field, Quit, and Find, which the open note or PDF handles.
-const KEPT_KEYS: [Shortcut; 8] = [
-    Shortcut::command(Key::Z),
-    Shortcut::command(Key::Z).with_shift(),
-    Shortcut::command(Key::X),
-    Shortcut::command(Key::C),
-    Shortcut::command(Key::V),
-    Shortcut::command(Key::A),
-    Shortcut::command(Key::Q),
-    Shortcut::command(Key::F),
-];
+/// field, and Find, which the open note or PDF handles.
+fn kept_keys() -> impl Iterator<Item = Shortcut> {
+    SystemItem::EDIT
+        .into_iter()
+        .filter_map(SystemItem::shortcut)
+        .chain([Shortcut::command(Key::F)])
+}
 
 /// Whether `shortcut` belongs to the default keymap under another ID, to
 /// a page, or to the keys no command takes.
@@ -211,7 +212,7 @@ fn reserved(shortcut: &Shortcut, id: &str) -> bool {
     let pages = Key::DIGITS[1..].iter().map(|key| Shortcut::command(*key));
     keymap
         .chain(pages)
-        .chain(KEPT_KEYS)
+        .chain(kept_keys())
         .any(|taken| taken.conflicts_with(shortcut))
 }
 
@@ -308,7 +309,7 @@ impl Registry {
         if focus == Some(Area::Writing) && press.edits_text(platform) {
             return None;
         }
-        let handled_by_focus = area_keys().iter().any(|(area, _, shortcuts)| {
+        let handled_by_focus = area_keys(platform).iter().any(|(area, _, shortcuts)| {
             Some(*area) == focus
                 && shortcuts
                     .iter()
@@ -397,12 +398,12 @@ pub struct ShortcutGroup {
     pub entries: Vec<ShortcutEntry>,
 }
 
-/// Keys the kernel's views handle themselves while they have the
-/// keyboard, for the shortcuts list.
-pub(crate) fn area_keys() -> Vec<(Area, &'static str, Vec<Shortcut>)> {
+/// Keys the kernel's views handle themselves on `platform` while they
+/// have the keyboard, for the shortcuts list.
+pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
     use Key::*;
     let key = Shortcut::new;
-    vec![
+    let mut keys = vec![
         (Area::Anywhere, "Close a dialog", vec![key(Escape)]),
         (
             Area::FileTree,
@@ -417,9 +418,9 @@ pub(crate) fn area_keys() -> Vec<(Area, &'static str, Vec<Shortcut>)> {
         (
             Area::FileTree,
             "Open or close a folder",
-            vec![key(ArrowRight), key(ArrowLeft)],
+            vec![key(ArrowRight), key(ArrowLeft), key(Enter), key(Space)],
         ),
-        (Area::FileTree, "Open a file", vec![key(Enter)]),
+        (Area::FileTree, "Open a file", vec![key(Enter), key(Space)]),
         (Area::FileTree, "Rename", vec![key(F2)]),
         (
             Area::FileTree,
@@ -448,19 +449,29 @@ pub(crate) fn area_keys() -> Vec<(Area, &'static str, Vec<Shortcut>)> {
         ),
         (
             Area::Tabs,
+            "Show the focused tab",
+            vec![key(Enter), key(Space)],
+        ),
+        (
+            Area::Tabs,
             "Close the focused tab",
             vec![key(Delete), key(Backspace)],
         ),
+        (Area::Pages, "Open a page", vec![key(Enter), key(Space)]),
         (
             Area::Pages,
             "Move a page up or down",
             vec![key(ArrowUp).with_alt(), key(ArrowDown).with_alt()],
         ),
-        (Area::Writing, "Undo", vec![Shortcut::command(Z)]),
-        (
-            Area::Writing,
-            "Redo",
-            vec![Shortcut::command(Z).with_shift()],
-        ),
-    ]
+    ];
+    // A text field answers to the Edit menu's keys, and to Ctrl-Y for
+    // Redo outside macOS.
+    for item in SystemItem::EDIT {
+        let mut shortcuts: Vec<Shortcut> = item.shortcut().into_iter().collect();
+        if item == SystemItem::Redo && platform != Platform::MacOs {
+            shortcuts.push(Shortcut::command(Y));
+        }
+        keys.push((Area::Writing, item.label(), shortcuts));
+    }
+    keys
 }

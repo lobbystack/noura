@@ -5,17 +5,26 @@ use std::{sync::Arc, time::Instant};
 
 use super::{App, Change};
 use crate::{
-    Area, Command, CommandSource, KeyPress, Menu, ShortcutEntry, ShortcutGroup, Tab,
+    Area, Command, CommandSource, KeyPress, Menu, Platform, ShortcutEntry, ShortcutGroup, Tab,
     commands::{Run, area_keys, command_id},
     layout::FILES_SECTION,
     menus,
 };
 
+/// The commands whose keys work while no workspace is open, as on the
+/// chooser.
+const WITHOUT_WORKSPACE: [&str; 2] = [command_id::QUIT, command_id::CLOSE_WINDOW];
+
 impl App {
     /// Register the kernel's commands, with the default keymap's keys.
     pub(super) fn register_kernel_commands(&mut self) {
         use command_id::*;
-        let kernel: [(&str, &str, Run); 10] = [
+        let quit = match self.platform() {
+            Platform::MacOs => "Quit Noura",
+            Platform::Windows => "Exit",
+            Platform::Linux => "Quit",
+        };
+        let kernel: [(&str, &str, Run); 11] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -56,6 +65,14 @@ impl App {
                 KEYBOARD_SHORTCUTS,
                 "Keyboard Shortcuts",
                 Arc::new(App::open_shortcuts),
+            ),
+            (
+                QUIT,
+                quit,
+                Arc::new(|app| {
+                    app.quit = true;
+                    app.listeners.emit(Change::Window);
+                }),
             ),
         ];
         for (id, label, run) in kernel {
@@ -103,10 +120,13 @@ impl App {
     /// command for anywhere, or one for that area. The keys the focused
     /// area handles itself, as the shortcuts list shows them, stay with
     /// it. While a text field has the keyboard ([`Area::Writing`]), so do
-    /// the keys it types and edits with.
+    /// the keys it types and edits with. While no workspace is open, only
+    /// Quit and Close Window take their keys.
     pub fn command_for_key(&self, press: &KeyPress, focus: Option<Area>) -> Option<String> {
-        self.registry
-            .for_key(press, self.platform(), focus, &self.rail.ordered())
+        let id = self
+            .registry
+            .for_key(press, self.platform(), focus, &self.rail.ordered())?;
+        (self.workspace.is_some() || WITHOUT_WORKSPACE.contains(&id.as_str())).then_some(id)
     }
 
     /// Run the command a key press at `at` stands for. Returns whether a
@@ -131,7 +151,7 @@ impl App {
     /// part of the window handles while it has the keyboard.
     pub fn shortcut_groups(&self) -> Vec<ShortcutGroup> {
         let commands = self.commands();
-        let areas = area_keys();
+        let areas = area_keys(self.platform());
         Area::ALL
             .into_iter()
             .map(|area| {
@@ -181,6 +201,12 @@ impl App {
     /// it closes.
     pub fn take_close_window(&mut self) -> bool {
         std::mem::take(&mut self.close_window)
+    }
+
+    /// Whether Quit ran since the last call. The app closes its main
+    /// window, which ends it.
+    pub fn take_quit(&mut self) -> bool {
+        std::mem::take(&mut self.quit)
     }
 
     /// Show the tab after the active one, or before it when `offset` is

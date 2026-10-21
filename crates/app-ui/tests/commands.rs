@@ -356,19 +356,67 @@ fn on_linux_every_shortcut_runs_from_the_window() {
     assert!(!palette_open(&harness));
 
     // One event, so one frame whose output holds the window's commands.
-    harness.event(egui::Event::Key {
-        key: Key::W,
+    harness.event(key_down(Key::W, shift));
+    harness.step();
+    assert!(closes_the_main_window(&harness));
+
+    // Ctrl+Q quits, which closes the main window and ends the app, even
+    // from a text field.
+    tree_row(&harness, "Ideas").focus();
+    harness.run();
+    press(&mut harness, Modifiers::NONE, Key::F2);
+    assert!(harness.ctx.text_edit_focused());
+    harness.event(key_down(Key::Q, ctrl));
+    harness.step();
+    assert!(closes_the_main_window(&harness));
+}
+
+fn key_down(key: Key, modifiers: Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
         physical_key: None,
         pressed: true,
         repeat: false,
-        modifiers: shift,
-    });
+        modifiers,
+    }
+}
+
+/// Whether the last frame asked the main window to close.
+fn closes_the_main_window(harness: &Harness<'static, NouraUi>) -> bool {
+    harness.output().viewport_output[&egui::ViewportId::ROOT]
+        .commands
+        .contains(&egui::ViewportCommand::Close)
+}
+
+#[test]
+fn on_linux_ctrl_q_quits_from_the_chooser_too() {
+    let app_data = tempfile::tempdir().unwrap();
+    let mut harness = harness_for(app_data.path(), Platform::Linux, |_| {});
+    settle(&mut harness);
+    assert!(harness.state().app().workspace().is_none());
+
+    harness.event(key_down(Key::Q, Modifiers::CTRL | Modifiers::COMMAND));
     harness.step();
-    let commands = &harness.output().viewport_output[&egui::ViewportId::ROOT].commands;
-    assert!(
-        commands.contains(&egui::ViewportCommand::Close),
-        "{commands:?}"
+    assert!(closes_the_main_window(&harness));
+}
+
+#[test]
+fn quit_from_the_menu_closes_the_main_window_without_drawing_a_frame() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::MacOs,
+        |_| {},
     );
+    let ui = harness.state_mut();
+    assert!(ui.run_menu_command(app_core::command_id::QUIT, std::time::Instant::now()));
+    // The desktop shell does this after menu choices, frame or not.
+    let ctx = harness.ctx.clone();
+    harness.state_mut().close_requested_windows(&ctx);
+    harness.step();
+    assert!(closes_the_main_window(&harness));
 }
 
 #[test]
@@ -405,7 +453,17 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
         ("Jump to a name by typing it", "A–Z"),
         ("Close the focused tab", "Delete or Backspace"),
         ("Move a page up or down", "Alt+Up or Alt+Down"),
-        ("Redo", "Ctrl+Shift+Z"),
+        ("Exit", "Ctrl+Q"),
+        ("Open a file", "Enter or Space"),
+        ("Open or close a folder", "Right or Left or Enter or Space"),
+        ("Show the focused tab", "Enter or Space"),
+        ("Open a page", "Enter or Space"),
+        ("Undo", "Ctrl+Z"),
+        ("Redo", "Ctrl+Shift+Z or Ctrl+Y"),
+        ("Cut", "Ctrl+X"),
+        ("Copy", "Ctrl+C"),
+        ("Paste", "Ctrl+V"),
+        ("Select All", "Ctrl+A"),
     ] {
         let description = harness
             .get_by_role_and_label(Role::ListItem, label)

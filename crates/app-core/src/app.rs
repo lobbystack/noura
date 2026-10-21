@@ -82,7 +82,8 @@ pub enum Change {
     Commands,
     /// The command palette opened, closed or changed.
     Palette,
-    /// Close Window ran; see [`App::take_close_window`].
+    /// Close Window or Quit ran; see [`App::take_close_window`] and
+    /// [`App::take_quit`].
     Window,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
@@ -169,6 +170,8 @@ pub struct App {
     shortcuts_open: bool,
     /// Close Window ran and the window hasn't closed yet.
     close_window: bool,
+    /// Quit ran and the app hasn't closed yet.
+    quit: bool,
 }
 
 impl App {
@@ -215,6 +218,7 @@ impl App {
             palette: None,
             shortcuts_open: false,
             close_window: false,
+            quit: false,
         };
         app.register_kernel_commands();
         app.layout = app.layouts.load();

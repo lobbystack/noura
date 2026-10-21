@@ -4,8 +4,10 @@ mod support;
 
 use std::time::Instant;
 
-use app_core::{App, CommandSource, FILES_SECTION, OpenAs, command_id};
-use support::{Fixture, document};
+use app_core::{
+    App, Area, CommandSource, FILES_SECTION, Key, KeyPress, OpenAs, Platform, command_id,
+};
+use support::{FakeSystem, Fixture, document};
 
 fn run(app: &mut App, id: &str) {
     assert!(
@@ -129,6 +131,37 @@ fn close_window_asks_the_window_to_close_once() {
 
     assert!(app.take_close_window());
     assert!(!app.take_close_window());
+}
+
+#[test]
+fn quit_asks_the_app_to_close_once_from_its_key_anywhere() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::Linux));
+    assert!(!app.take_quit());
+
+    // Ctrl-Q quits even while a text field has the keyboard.
+    let ctrl_q = KeyPress::new(Key::Q).with_ctrl();
+    assert!(app.press_key(&ctrl_q, Some(Area::Writing), Instant::now()));
+
+    assert!(app.take_quit());
+    assert!(!app.take_quit());
+    assert!(!app.take_close_window(), "Quit isn't Close Window");
+}
+
+#[test]
+fn without_a_workspace_only_quit_and_close_window_take_their_keys() {
+    let app_data = tempfile::tempdir().unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::on(Platform::Linux));
+    assert!(app.workspace().is_none());
+    let ctrl = |key| KeyPress::new(key).with_ctrl();
+
+    let quit = app.command_for_key(&ctrl(Key::Q), None);
+    assert_eq!(quit.as_deref(), Some(command_id::QUIT));
+    let close = app.command_for_key(&ctrl(Key::W).with_shift(), None);
+    assert_eq!(close.as_deref(), Some(command_id::CLOSE_WINDOW));
+    for key in [Key::N, Key::K, Key::W, Key::Backslash, Key::Num2] {
+        assert_eq!(app.command_for_key(&ctrl(key), None), None, "Ctrl+{key:?}");
+    }
 }
 
 #[test]

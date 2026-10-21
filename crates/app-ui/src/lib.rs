@@ -123,17 +123,28 @@ impl NouraUi {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         let screen = self.app.screen().clone();
-        if screen == Screen::Workspace {
-            self.dispatch_keys(ui);
-        }
+        // Without a workspace, only Quit and Close Window take their keys.
+        self.dispatch_keys(ui);
         match screen {
             Screen::Loading => common::loading(ui),
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
         palette::show(ui, &mut self.app, &mut self.palette);
+        self.close_requested_windows(ui.ctx());
+    }
+
+    /// Close what Quit or Close Window asked to close: Quit closes the
+    /// main window, which ends the app, and Close Window this one. Each
+    /// frame does this; the desktop shell also calls it after menu
+    /// choices, which can arrive while the window is hidden and draws no
+    /// frame.
+    pub fn close_requested_windows(&mut self, ctx: &egui::Context) {
+        if self.app.take_quit() {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        }
         if self.app.take_close_window() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 

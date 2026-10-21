@@ -81,6 +81,8 @@ impl eframe::App for Desktop {
                 Choice::System(item) => self.edit.run(ctx, item),
             }
         }
+        // Quit from the menu works while the window is hidden too.
+        self.ui.close_requested_windows(ctx);
         // A command that registered, or a page that moved, changes the
         // menus.
         #[cfg(any(target_os = "macos", target_os = "windows"))]

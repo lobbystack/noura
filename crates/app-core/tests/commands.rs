@@ -111,7 +111,8 @@ fn registering_a_command_with_a_taken_shortcut_fails() {
         "shortcut_taken"
     );
 
-    // The Edit menu's keys, Quit and Find (tickets 19 and 40) stay theirs.
+    // The Edit menu's keys, Quit's and Find's (tickets 19 and 40) stay
+    // theirs.
     for key in [Key::Z, Key::X, Key::C, Key::V, Key::A, Key::Q, Key::F] {
         let (command, runs) = counting("test.count", "Count");
         let edit = command.with_shortcuts([Shortcut::command(key)]);
@@ -194,6 +195,7 @@ fn the_default_keymap_keeps_today_s_keys() {
             (shift(KeyPress::new(Key::Tab).with_ctrl()), PREVIOUS_TAB),
             (shift(with_mod(platform, Key::OpenBracket)), PREVIOUS_TAB),
             (with_mod(platform, Key::Backslash), TOGGLE_SIDEBAR),
+            (with_mod(platform, Key::Q), QUIT),
         ];
         for (press, id) in cases {
             assert_eq!(
@@ -473,7 +475,7 @@ fn a_press_the_menu_and_the_window_both_report_runs_once_and_two_quick_presses_r
 #[test]
 fn the_shortcuts_list_groups_every_shortcut_by_area() {
     let fixture = Fixture::new(&[]);
-    let mut app = fixture.app();
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
     let (command, runs) = counting("test.count", "Count");
     let command = command.with_shortcuts([Shortcut::command(Key::J)]);
     register_counting(&mut app, command, &runs).unwrap();
@@ -543,9 +545,93 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
         ])
     );
     assert_eq!(
+        entry(Area::Anywhere, "Quit Noura"),
+        Some(vec![Shortcut::command(Key::Q)])
+    );
+    assert_eq!(
+        entry(Area::FileTree, "Open a file"),
+        Some(vec![Shortcut::new(Key::Enter), Shortcut::new(Key::Space)])
+    );
+    assert_eq!(
+        entry(Area::Tabs, "Show the focused tab"),
+        Some(vec![Shortcut::new(Key::Enter), Shortcut::new(Key::Space)])
+    );
+    assert_eq!(
+        entry(Area::Pages, "Open a page"),
+        Some(vec![Shortcut::new(Key::Enter), Shortcut::new(Key::Space)])
+    );
+    assert_eq!(
         entry(Area::Writing, "Undo"),
         Some(vec![Shortcut::command(Key::Z)])
     );
+    // The Edit menu's keys act on the focused text field.
+    for (label, key) in [
+        ("Cut", Key::X),
+        ("Copy", Key::C),
+        ("Paste", Key::V),
+        ("Select All", Key::A),
+    ] {
+        assert_eq!(
+            entry(Area::Writing, label),
+            Some(vec![Shortcut::command(key)])
+        );
+    }
+    assert_eq!(
+        entry(Area::Writing, "Redo"),
+        Some(vec![Shortcut::command(Key::Z).with_shift()])
+    );
     // Commands without keys stay off the list.
     assert_eq!(entry(Area::Anywhere, "Keyboard Shortcuts"), None);
+    drop(app);
+
+    // Outside macOS, Quit is Exit on Windows, and Ctrl-Y also redoes.
+    for (platform, quit) in [(Platform::Windows, "Exit"), (Platform::Linux, "Quit")] {
+        let fixture = Fixture::new(&[]);
+        let app = fixture.app_with(FakeSystem::on(platform));
+        let groups = app.shortcut_groups();
+        let entry = |area: Area, label: &str| {
+            groups
+                .iter()
+                .find(|group| group.area == area)
+                .and_then(|group| group.entries.iter().find(|entry| entry.label == label))
+                .map(|entry| entry.shortcuts.clone())
+        };
+        assert_eq!(
+            entry(Area::Anywhere, quit),
+            Some(vec![Shortcut::command(Key::Q)]),
+            "{platform:?}"
+        );
+        assert_eq!(
+            entry(Area::Writing, "Redo"),
+            Some(vec![
+                Shortcut::command(Key::Z).with_shift(),
+                Shortcut::command(Key::Y)
+            ]),
+            "{platform:?}"
+        );
+    }
+}
+
+#[test]
+fn keys_the_tree_tabs_and_pages_open_things_with_stay_with_them() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    // A command on a plain key runs only where no area uses that key.
+    let (command, runs) = counting("test.count", "Count");
+    let command = command.with_shortcuts([Shortcut::new(Key::Space), Shortcut::new(Key::Enter)]);
+    register_counting(&mut app, command, &runs).unwrap();
+    for key in [Key::Space, Key::Enter] {
+        let press = KeyPress::new(key);
+        for area in [Area::FileTree, Area::Tabs, Area::Pages, Area::Writing] {
+            assert_eq!(
+                app.command_for_key(&press, Some(area)),
+                None,
+                "{key:?} in {area:?}"
+            );
+        }
+        assert_eq!(
+            app.command_for_key(&press, None).as_deref(),
+            Some("test.count")
+        );
+    }
 }

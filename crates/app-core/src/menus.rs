@@ -1,7 +1,7 @@
 //! The native menu bar as data. The desktop app builds macOS's and
 //! Windows' menus from it and sends each choice back as a command.
 
-use crate::{Command, Platform, Shortcut, commands::command_id};
+use crate::{Command, Key, Platform, Shortcut, commands::command_id};
 
 /// The menus a command can name to be listed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,8 +34,8 @@ pub enum MenuItem {
     System(SystemItem),
 }
 
-/// Menu items that aren't commands: the operating system's own, the Edit
-/// items that act on the focused text field, and quitting.
+/// Menu items that aren't commands: the operating system's own, and the
+/// Edit items that act on the focused text field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SystemItem {
     About,
@@ -43,8 +43,6 @@ pub enum SystemItem {
     Hide,
     HideOthers,
     ShowAll,
-    /// Quit on macOS, Exit on Windows.
-    Quit,
     Undo,
     Redo,
     Cut,
@@ -55,6 +53,53 @@ pub enum SystemItem {
     Minimize,
     /// Zoom on macOS, Maximize on Windows.
     Zoom,
+}
+
+impl SystemItem {
+    /// The Edit items, which act on the focused text field.
+    pub const EDIT: [Self; 6] = [
+        Self::Undo,
+        Self::Redo,
+        Self::Cut,
+        Self::Copy,
+        Self::Paste,
+        Self::SelectAll,
+    ];
+
+    /// The item's label in the menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::About => "About Noura",
+            Self::Services => "Services",
+            Self::Hide => "Hide Noura",
+            Self::HideOthers => "Hide Others",
+            Self::ShowAll => "Show All",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
+            Self::SelectAll => "Select All",
+            Self::FullScreen => "Enter Full Screen",
+            Self::Minimize => "Minimize",
+            Self::Zoom => "Zoom",
+        }
+    }
+
+    /// The shortcut an Edit item shows and answers to. The operating
+    /// system binds its own items' keys.
+    pub fn shortcut(self) -> Option<Shortcut> {
+        let command = Shortcut::command;
+        Some(match self {
+            Self::Undo => command(Key::Z),
+            Self::Redo => command(Key::Z).with_shift(),
+            Self::Cut => command(Key::X),
+            Self::Copy => command(Key::C),
+            Self::Paste => command(Key::V),
+            Self::SelectAll => command(Key::A),
+            _ => return None,
+        })
+    }
 }
 
 /// A slot in the menu layout.
@@ -112,7 +157,7 @@ pub(crate) fn menu_bar(platform: Platform, commands: &[Command]) -> Vec<Menu> {
                         vec![Item(SETTINGS)],
                         vec![System(Services)],
                         vec![System(Hide), System(HideOthers), System(ShowAll)],
-                        vec![System(Quit)],
+                        vec![Item(QUIT)],
                     ],
                 ),
                 ("File", file),
@@ -125,7 +170,7 @@ pub(crate) fn menu_bar(platform: Platform, commands: &[Command]) -> Vec<Menu> {
         Platform::Windows | Platform::Linux => {
             let mut file = file;
             file.push(vec![Item(SETTINGS)]);
-            file.push(vec![System(Quit)]);
+            file.push(vec![Item(QUIT)]);
             vec![
                 ("File", file),
                 ("Edit", edit),

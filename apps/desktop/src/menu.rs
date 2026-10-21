@@ -1,7 +1,8 @@
 //! The native menu bar on macOS and Windows, built with muda from the
-//! menu model in `app-core`. Choosing a command item runs the command
-//! through the same dispatch as its shortcut; the Edit items act on the
-//! focused text field, as the S6 trial (ticket 04) proved.
+//! menu model in `app-core`. Choosing a command item, Quit among them,
+//! runs the command through the same dispatch as its shortcut; the Edit
+//! items act on the focused text field, as the S6 trial (ticket 04)
+//! proved.
 
 use std::collections::HashMap;
 
@@ -20,16 +21,8 @@ pub(crate) enum Choice {
 const COMMAND_PREFIX: &str = "command:";
 const SYSTEM_PREFIX: &str = "system:";
 
-/// Every system item the desktop app carries out itself.
-const OWN_ITEMS: [SystemItem; 7] = [
-    SystemItem::Quit,
-    SystemItem::Undo,
-    SystemItem::Redo,
-    SystemItem::Cut,
-    SystemItem::Copy,
-    SystemItem::Paste,
-    SystemItem::SelectAll,
-];
+/// Every system item the desktop app carries out itself: the Edit items.
+const OWN_ITEMS: [SystemItem; 6] = SystemItem::EDIT;
 
 /// The muda menu item ID of a choice.
 pub(crate) fn item_id(choice: &Choice) -> String {
@@ -49,36 +42,6 @@ pub(crate) fn choice_for(id: &muda::MenuId) -> Option<Choice> {
         .into_iter()
         .find(|item| id == item_id(&Choice::System(*item)))
         .map(Choice::System)
-}
-
-/// The shortcut the Edit items and Quit answer to.
-pub(crate) fn system_shortcut(item: SystemItem) -> Option<Shortcut> {
-    let command = Shortcut::command;
-    Some(match item {
-        SystemItem::Quit => command(Key::Q),
-        SystemItem::Undo => command(Key::Z),
-        SystemItem::Redo => command(Key::Z).with_shift(),
-        SystemItem::Cut => command(Key::X),
-        SystemItem::Copy => command(Key::C),
-        SystemItem::Paste => command(Key::V),
-        SystemItem::SelectAll => command(Key::A),
-        _ => return None,
-    })
-}
-
-/// The label of a system item the app draws itself.
-pub(crate) fn system_label(item: SystemItem) -> &'static str {
-    match item {
-        SystemItem::Quit if cfg!(target_os = "macos") => "Quit Noura",
-        SystemItem::Quit => "Exit",
-        SystemItem::Undo => "Undo",
-        SystemItem::Redo => "Redo",
-        SystemItem::Cut => "Cut",
-        SystemItem::Copy => "Copy",
-        SystemItem::Paste => "Paste",
-        SystemItem::SelectAll => "Select All",
-        _ => "",
-    }
 }
 
 /// muda's key code for a key. + and = share a key, so a menu shows Zoom
@@ -185,20 +148,19 @@ pub(crate) struct EditInput {
 }
 
 impl EditInput {
-    /// Carry out an Edit item or Quit for the focused window. Undo, Redo
-    /// and Select All send the key press their shortcut makes; Cut, Copy
-    /// and Paste ask eframe for the clipboard events the shortcuts make.
+    /// Carry out an Edit item for the focused window. Undo, Redo and
+    /// Select All send the key press their shortcut makes; Cut, Copy and
+    /// Paste ask eframe for the clipboard events the shortcuts make.
     pub(crate) fn run(&mut self, ctx: &egui::Context, item: SystemItem) {
         let viewport = focused_viewport(ctx);
         match item {
-            SystemItem::Quit => ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close),
             SystemItem::Cut => ctx.send_viewport_cmd_to(viewport, ViewportCommand::RequestCut),
             SystemItem::Copy => ctx.send_viewport_cmd_to(viewport, ViewportCommand::RequestCopy),
             SystemItem::Paste => {
                 ctx.send_viewport_cmd_to(viewport, ViewportCommand::RequestPaste);
             }
             SystemItem::Undo | SystemItem::Redo | SystemItem::SelectAll => {
-                let Some(shortcut) = system_shortcut(item) else {
+                let Some(shortcut) = item.shortcut() else {
                     return;
                 };
                 let key = match shortcut.key {
@@ -267,8 +229,8 @@ pub(crate) fn own_item(item: &MenuItem) -> Option<(Choice, String, Option<Shortc
         } => Some((Choice::Command(id.clone()), label.clone(), *shortcut)),
         MenuItem::System(system) if OWN_ITEMS.contains(system) => Some((
             Choice::System(*system),
-            system_label(*system).to_owned(),
-            system_shortcut(*system),
+            system.label().to_owned(),
+            system.shortcut(),
         )),
         _ => None,
     }
@@ -489,26 +451,20 @@ mod tests {
     #[test]
     fn the_edit_items_answer_to_their_usual_shortcuts() {
         let shortcut = Shortcut::command;
-        let items: Vec<_> = [
-            SystemItem::Undo,
-            SystemItem::Redo,
-            SystemItem::Cut,
-            SystemItem::Copy,
-            SystemItem::Paste,
-            SystemItem::SelectAll,
-        ]
-        .into_iter()
-        .map(|item| (system_label(item), system_shortcut(item)))
-        .collect();
+        let items: Vec<_> = OWN_ITEMS
+            .into_iter()
+            .filter_map(|item| own_item(&MenuItem::System(item)))
+            .map(|(_, label, shortcut)| (label, shortcut))
+            .collect();
         assert_eq!(
             items,
             [
-                ("Undo", Some(shortcut(Key::Z))),
-                ("Redo", Some(shortcut(Key::Z).with_shift())),
-                ("Cut", Some(shortcut(Key::X))),
-                ("Copy", Some(shortcut(Key::C))),
-                ("Paste", Some(shortcut(Key::V))),
-                ("Select All", Some(shortcut(Key::A))),
+                ("Undo".to_owned(), Some(shortcut(Key::Z))),
+                ("Redo".to_owned(), Some(shortcut(Key::Z).with_shift())),
+                ("Cut".to_owned(), Some(shortcut(Key::X))),
+                ("Copy".to_owned(), Some(shortcut(Key::C))),
+                ("Paste".to_owned(), Some(shortcut(Key::V))),
+                ("Select All".to_owned(), Some(shortcut(Key::A))),
             ]
         );
     }
@@ -573,12 +529,11 @@ mod tests {
     }
 
     #[test]
-    fn cut_copy_paste_and_quit_ask_eframe_for_the_matching_window_command() {
+    fn cut_copy_and_paste_ask_eframe_for_the_matching_window_command() {
         for (item, request) in [
             (SystemItem::Cut, ViewportCommand::RequestCut),
             (SystemItem::Copy, ViewportCommand::RequestCopy),
             (SystemItem::Paste, ViewportCommand::RequestPaste),
-            (SystemItem::Quit, ViewportCommand::Close),
         ] {
             let mut harness = egui_kittest::Harness::new_ui(|ui| {
                 ui.label("Window");

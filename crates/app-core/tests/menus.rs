@@ -83,7 +83,7 @@ fn the_macos_menu_bar_keeps_today_s_menus() {
             "HideOthers",
             "ShowAll",
             "-",
-            "Quit"
+            "Quit Noura"
         ])
     );
     assert_eq!(
@@ -147,7 +147,7 @@ fn the_windows_menu_bar_puts_settings_and_exit_under_file_and_about_under_help()
             "-",
             "Settings…",
             "-",
-            "Quit"
+            "Exit"
         ])
     );
     assert_eq!(items(&menus, "Help"), strings(&["About"]));
@@ -188,11 +188,23 @@ fn menu_items_carry_the_command_s_id_and_first_shortcut() {
         next_tab,
         Some(Shortcut::command(Key::CloseBracket).with_shift())
     );
+    // Quit is a command too, so it runs from the window where no menu
+    // bar takes its key.
+    let quit = MenuItem::Command {
+        id: command_id::QUIT.to_owned(),
+        label: "Quit Noura".to_owned(),
+        shortcut: Some(Shortcut::command(Key::Q)),
+    };
     assert!(
         menus
             .iter()
             .flat_map(|menu| &menu.items)
-            .any(|item| *item == MenuItem::System(SystemItem::Quit))
+            .any(|item| *item == quit)
+    );
+    let edit = menus.iter().find(|menu| menu.title == "Edit").unwrap();
+    assert!(
+        edit.items
+            .contains(&MenuItem::System(SystemItem::SelectAll))
     );
 }
 
