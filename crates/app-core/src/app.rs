@@ -24,6 +24,7 @@ use crate::{
     layout::LayoutStore,
     preferences::PreferencesStore,
     rail::Rail,
+    search::Searcher,
     session::{Session, WindowKey},
     settings::kernel_sections,
     tabs::Tabs,
@@ -34,6 +35,7 @@ use crate::{
 mod commands;
 mod drops;
 mod file_actions;
+mod finder;
 mod ignored_files;
 mod palette;
 mod preferences;
@@ -42,8 +44,9 @@ mod view;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
+pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
-pub use palette::CommandPalette;
+pub use palette::{CommandPalette, Palette, PaletteMode};
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +100,7 @@ pub enum Change {
     Preferences,
     /// A command registered.
     Commands,
-    /// The command palette opened, closed or changed.
+    /// The palette opened, closed, or changed what it shows.
     Palette,
     /// The window closed, opened another window, or Quit ran; see
     /// [`App::is_closed`], [`App::take_opened_windows`] and
@@ -193,6 +196,8 @@ pub struct App {
     system: Arc<dyn System>,
     screen: Screen,
     recents: Vec<RecentWorkspace>,
+    /// The open workspace, which the other windows and background
+    /// searches share.
     workspace: Option<Arc<Workspace>>,
     tree: Option<FileTree>,
     tabs: Tabs,
@@ -230,7 +235,11 @@ pub struct App {
     /// tree moves it instead of copying it.
     dragged_out: Option<String>,
     registry: Registry,
-    palette: Option<CommandPalette>,
+    /// Commands, quick open or search, while this window's palette is
+    /// open.
+    palette: Option<Palette>,
+    /// This window's searches, which run off the UI thread.
+    searcher: Searcher,
     /// Quit ran and the app hasn't closed yet.
     quit: bool,
 }
@@ -266,6 +275,7 @@ impl App {
     fn join(session: &Arc<Session>) -> Self {
         let listeners = Listeners::default();
         let key = session.join(listeners.clone());
+        let answered = listeners.clone();
         Self {
             session: session.clone(),
             key,
@@ -304,6 +314,7 @@ impl App {
             dragged_out: None,
             registry: Registry::default(),
             palette: None,
+            searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
             quit: false,
         }
     }
@@ -388,6 +399,7 @@ impl App {
         self.pending_trash = None;
         self.drag_out = None;
         self.dragged_out = None;
+        self.searcher.cancel();
         self.palette = None;
         self.settings = None;
         self.listeners.emit(Change::Screen);
@@ -553,15 +565,17 @@ impl App {
             self.closed_by_another_window();
             return true;
         }
-        let opened = self.poll_job();
+        let searched = self.take_search_answer();
+        let opened = self.take_opened();
         let listed = self.poll_listing();
         let rail = self.poll_rail();
         let recents = self.poll_recents();
         let preferences = self.poll_preferences();
-        opened || listed || rail || recents || preferences
+        searched || opened || listed || rail || recents || preferences
     }
 
-    fn poll_job(&mut self) -> bool {
+    /// Take the workspace a background job opened, or why it couldn't.
+    fn take_opened(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };
@@ -588,6 +602,7 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
+                self.close_palette();
                 self.rail.set_saved_order(Vec::new());
                 self.restore_view(StoredWindow::default());
                 self.renaming = None;
@@ -678,6 +693,7 @@ impl App {
         self.rail_seen = adopted.rail;
         self.recents_seen = adopted.recents;
         self.failed_restore = None;
+        self.close_palette();
         self.workspace = Some(workspace);
         self.tree = Some(opened.tree);
         self.rail.set_saved_order(adopted.view.rail_order);

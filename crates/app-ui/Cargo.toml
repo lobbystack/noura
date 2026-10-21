@@ -11,4 +11,6 @@ egui = { workspace = true, features = ["default_fonts"] }
 
 [dev-dependencies]
 egui_kittest.workspace = true
+# A test breaks the index to see search say it isn't available.
+rusqlite.workspace = true
 tempfile.workspace = true

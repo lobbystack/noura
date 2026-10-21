@@ -180,6 +180,10 @@ fn the_rail_s_search_button_opens_the_palette_and_a_click_runs_a_command() {
     harness.run();
     assert!(palette_open(&harness));
 
+    // The list is taller than the palette, so narrow it to bring the row
+    // into view.
+    harness.get_by_label("Search commands").type_text("sidebar");
+    harness.run();
     row(&harness, "Toggle Sidebar").click();
     harness.run();
     assert!(!palette_open(&harness));
@@ -227,7 +231,7 @@ fn keys_typed_right_after_mod_k_land_in_the_palette_and_escape_returns_focus() {
             .state()
             .app()
             .palette()
-            .map(|palette| palette.query.clone()),
+            .map(|palette| palette.query().to_owned()),
         Some("plan".to_owned())
     );
     let current = harness.state().app().tree().unwrap().focused();

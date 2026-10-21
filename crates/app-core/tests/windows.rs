@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Change, OpenAs, Screen, TabId};
+use app_core::{App, Change, OpenAs, Palette, Screen, TabId};
 use tempfile::TempDir;
 
 /// Poll until background work finishes.
@@ -567,4 +567,40 @@ fn the_last_window_closed_comes_back_at_the_next_launch() {
 
     assert_eq!(titles(&relaunched), ["B"]);
     assert!(others.is_empty());
+}
+
+/// The paths `app`'s quick open lists, best first.
+fn quick_open_paths(app: &App) -> Vec<String> {
+    match app.palette() {
+        Some(Palette::QuickOpen(quick_open)) => quick_open
+            .matches
+            .iter()
+            .map(|found| found.relative_path.clone())
+            .collect(),
+        other => panic!("quick open isn't showing: {other:?}"),
+    }
+}
+
+/// Each window has its own palette, and the files another window lists
+/// rank again in a window's quick open.
+#[test]
+fn each_window_has_its_own_palette_and_quick_open_follows_the_shared_files() {
+    let (_app_data, _folder, mut first) = opened(&["Plan.md", "Notes.md"]);
+    let mut second = first.new_window().unwrap();
+
+    second.open_quick_open();
+    second.set_palette_query("pla");
+    assert_eq!(quick_open_paths(&second), ["Plan.md"]);
+    assert!(first.palette().is_none());
+
+    first.start_rename("Plan.md");
+    assert!(first.commit_rename("Planning"));
+    second.poll();
+    assert_eq!(quick_open_paths(&second), ["Planning.md"]);
+    assert!(first.palette().is_none());
+
+    first.toggle_palette();
+    second.close_palette();
+    assert!(matches!(first.palette(), Some(Palette::Commands(_))));
+    assert!(second.palette().is_none());
 }

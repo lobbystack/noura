@@ -29,8 +29,8 @@ fn the_palette_lists_every_command_until_you_type() {
     let listed: Vec<String> = app.palette_matches().into_iter().map(|c| c.id).collect();
     let every: Vec<String> = app.commands().into_iter().map(|c| c.id).collect();
     assert_eq!(listed, every);
-    assert_eq!(app.palette().unwrap().query, "");
-    assert_eq!(app.palette().unwrap().selected, 0);
+    assert_eq!(app.palette().unwrap().query(), "");
+    assert_eq!(app.palette().unwrap().selected(), 0);
 }
 
 #[test]
@@ -75,15 +75,15 @@ fn arrows_move_the_highlight_within_the_list() {
     assert!(matches.len() >= 2, "{matches:?}");
 
     app.move_palette_selection(-1);
-    assert_eq!(app.palette().unwrap().selected, 0);
+    assert_eq!(app.palette().unwrap().selected(), 0);
     app.move_palette_selection(1);
-    assert_eq!(app.palette().unwrap().selected, 1);
+    assert_eq!(app.palette().unwrap().selected(), 1);
     app.move_palette_selection(100);
-    assert_eq!(app.palette().unwrap().selected, matches.len() - 1);
+    assert_eq!(app.palette().unwrap().selected(), matches.len() - 1);
 
     // Typing again highlights the best match.
     app.set_palette_query("tabs");
-    assert_eq!(app.palette().unwrap().selected, 0);
+    assert_eq!(app.palette().unwrap().selected(), 0);
 
     // Enter runs the highlighted row, not the first.
     app.set_palette_query("close");

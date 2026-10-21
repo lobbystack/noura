@@ -352,14 +352,15 @@ impl App {
     }
 
     /// Show `tree`, keeping the old tree's open folders and current row,
-    /// which follow the items in `moves`, and let the tabs follow their
-    /// files into it.
+    /// which follow the items in `moves`, let the tabs follow their files
+    /// into it, and rank quick open's matches again.
     fn show_tree(&mut self, mut tree: FileTree, moves: &[(&str, &str)]) {
         if let Some(old) = &self.tree {
             tree.carry_over(old, moves);
         }
         self.tree = Some(tree);
         self.listeners.emit(Change::Tree);
+        self.rank_files();
         self.follow_files();
         self.save_view();
     }

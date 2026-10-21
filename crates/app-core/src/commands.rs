@@ -19,9 +19,9 @@ use crate::{
 pub mod command_id {
     pub const NEW_NOTE: &str = "new-note";
     pub const NEW_FOLDER: &str = "new-folder";
-    /// Open a file by name (ticket 14).
+    /// Open a file by name: quick open.
     pub const QUICK_OPEN: &str = "quick-open";
-    /// Search file contents (ticket 14).
+    /// Search file contents.
     pub const SEARCH: &str = "search";
     pub const COMMAND_PALETTE: &str = "command-palette";
     pub const RENAME_FILE: &str = "rename-file";

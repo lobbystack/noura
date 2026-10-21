@@ -33,7 +33,7 @@ impl App {
             Platform::Windows => "Exit",
             Platform::Linux => "Quit",
         };
-        let kernel: [(&str, &str, Run); 17] = [
+        let kernel: [(&str, &str, Run); 19] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -44,6 +44,8 @@ impl App {
                     app.new_folder(None);
                 }),
             ),
+            (QUICK_OPEN, "Quick Open…", Arc::new(App::open_quick_open)),
+            (SEARCH, "Search Files…", Arc::new(App::open_search)),
             (
                 COMMAND_PALETTE,
                 "Command Palette",

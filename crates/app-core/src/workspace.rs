@@ -18,7 +18,8 @@ pub struct Workspace {
     engine: WorkspaceEngine,
     system: Arc<dyn System>,
     id: String,
-    /// The display name, which any window can change.
+    /// The display name, which any window can change while the other
+    /// windows and background searches share the workspace.
     name: RwLock<String>,
     root: String,
 }

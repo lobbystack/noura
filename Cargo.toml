@@ -81,7 +81,8 @@ logroller = "0.1.12"
 muda = { version = "0.21.2", default-features = false }
 trash = "5"
 notify = "8"
-# Ranks the command palette's matches. MPL-2.0, used unmodified.
+# Ranks the command palette's and quick open's matches. MPL-2.0, used
+# unmodified.
 nucleo-matcher = "0.3.1"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
