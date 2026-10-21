@@ -273,14 +273,56 @@ impl Fixture {
     }
 
     pub fn to_json(&self) -> String {
+        // Cases name account chain links by their digests, and `links` holds
+        // each link's bytes once. A case's `account_chains` names each chain
+        // by its last link's digest, and `chains` lists each chain's links.
+        let mut links_map = BTreeMap::new();
+        let mut chains = BTreeMap::new();
+        let mut name_links = |links: &mut Vec<Value>| {
+            for link in links.iter_mut() {
+                let bytes = sync_protocol::types::from_hex(link.as_str().unwrap()).unwrap();
+                let name = sync_protocol::crypto::hash(&bytes).to_hex();
+                links_map.insert(name.clone(), link.clone());
+                *link = Value::String(name);
+            }
+        };
+        let cases: Vec<Value> = self
+            .cases
+            .iter()
+            .map(|case| {
+                let mut case = case.clone();
+                for key in ["links", "own_chain"] {
+                    if let Some(Value::Array(links)) = case.get_mut(key) {
+                        name_links(links);
+                    }
+                }
+                if let Some(Value::Array(list)) = case.get_mut("account_chains") {
+                    for chain in list.iter_mut() {
+                        if let Value::Array(links) = chain {
+                            name_links(links);
+                            let name = links.last().unwrap().as_str().unwrap().to_owned();
+                            chains.insert(name.clone(), Value::Array(links.clone()));
+                            *chain = Value::String(name);
+                        }
+                    }
+                }
+                case
+            })
+            .collect();
         let doc = json!({
             "description": self.description,
             "fixture_keys_are_public_test_values": true,
             "keys": self.keys,
             "records": self.records,
-            "cases": self.cases,
+            "cases": cases,
         });
         let mut doc = doc.as_object().unwrap().clone();
+        if !chains.is_empty() {
+            doc.insert("chains".to_owned(), json!(chains));
+        }
+        if !links_map.is_empty() {
+            doc.insert("links".to_owned(), json!(links_map));
+        }
         for (k, v) in &self.extra {
             doc.insert(k.clone(), v.clone());
         }

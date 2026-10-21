@@ -17,6 +17,18 @@ pub fn fixture() -> Fixture {
         "sync-v2-device.json",
         "Devices (sync-v2.md §7): a card with a real X-Wing public key and its fingerprint, and the enrollment proof that the server's verifier accepts, refusing a proof for another origin, account, key or challenge.",
     );
+    // The example of §32, whose X-Wing key bytes are filler: a card's
+    // encoding doesn't check them.
+    let example =
+        sync_protocol::records::Card::new(Id([0x11; 16]), Key([0x33; 32]), vec![0x44; 1_216])
+            .unwrap();
+    f.accept(
+        "card_example_section_32",
+        "card",
+        &example,
+        None,
+        Shape::Tagged,
+    );
     let laptop = Actor::new("ida", "ida laptop");
     f.actor(&laptop);
     let card = laptop.card();

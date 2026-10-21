@@ -345,7 +345,23 @@ fn every_case_reaches_its_stated_outcome() {
             continue;
         }
         let doc = load(file);
-        for case in doc["cases"].as_array().cloned().unwrap_or_default() {
+        for mut case in doc["cases"].as_array().cloned().unwrap_or_default() {
+            // A case names account chain links by their digests and each
+            // account chain by its last link's digest.
+            let link = |name: &Value| doc["links"][name.as_str().unwrap()].clone();
+            for key in ["links", "own_chain"] {
+                if let Some(Value::Array(links)) = case.get_mut(key) {
+                    links.iter_mut().for_each(|l| *l = link(l));
+                }
+            }
+            if let Some(Value::Array(list)) = case.get_mut("account_chains") {
+                for chain in list.iter_mut() {
+                    if let Value::String(name) = chain {
+                        let links = doc["chains"][name.as_str()].as_array().unwrap();
+                        *chain = Value::Array(links.iter().map(link).collect());
+                    }
+                }
+            }
             if let Err(e) = cases::run(file, &doc, &case) {
                 failures.push(format!("{file} {} ({}): {e}", case["name"], case["kind"]));
             }
