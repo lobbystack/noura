@@ -78,8 +78,9 @@ fn copying_a_note_creates_a_new_identity() {
     assert_eq!(copy.title, "Launch brief 1");
     let unchanged = engine.get_object(&original.id).unwrap().unwrap();
     let copy_bytes = std::fs::read_to_string(workspace.path().join("Launch brief 1.md")).unwrap();
-    assert!(copy_bytes.ends_with("# Launch brief 1\n\nShip it.\n"));
-    assert_eq!(copy.body.trim_end(), unchanged.body.trim_end());
+    // The copy's title is its file name; no heading names it.
+    assert!(copy_bytes.ends_with("---\nShip it.\n"));
+    assert_eq!(copy.body, unchanged.body);
     assert_eq!(
         copy.properties.get("tags"),
         Some(&serde_json::json!(["plans"]))

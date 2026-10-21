@@ -273,11 +273,11 @@ fn create_managed_object(
     }
     let relative_path = input
         .relative_path
-        .unwrap_or_else(|| default_managed_object_path(object_type, &input.title, &id));
+        .unwrap_or_else(|| default_managed_object_path(object_type, &input.title));
     Ok(WorkspaceObject {
         id,
         object_type: object_type.into(),
-        title: input.title.trim().into(),
+        title: title_from_path(&relative_path),
         body: input.body,
         relative_path,
         revision: String::new(),
@@ -324,11 +324,15 @@ fn update_managed_object(
         return Err(FormatError::InvalidObjectId);
     }
     validate_timestamp(&input.now)?;
+    // The title is the file name, so a new title moves the file to a new
+    // name in the same folder. The filesystem adapter carries out the move.
     if let Some(title) = input.title {
-        if title.trim().is_empty() {
+        let name = normalize_file_name(&title);
+        if name.is_empty() {
             return Err(FormatError::TitleRequired);
         }
-        object.title = title.trim().into();
+        object.relative_path = renamed_path(&object.relative_path, &name);
+        object.title = name;
     }
     if let Some(body) = input.body {
         object.body = body;
@@ -435,28 +439,77 @@ fn valid_date_value(value: &str) -> bool {
     date_only || timed
 }
 
-fn split_title(content: &str) -> (String, String) {
-    let mut lines = content.lines();
-    match lines.next() {
-        Some(first) if first.starts_with("# ") => {
-            let title = first[2..].trim().to_owned();
-            let body = lines
-                .collect::<Vec<_>>()
-                .join("\n")
-                .trim_start_matches('\n')
-                .to_owned();
-            (title, body)
-        }
-        _ => (String::new(), content.to_owned()),
+/// The title of the file at `relative_path`: its file name without the
+/// extension. A note, task or project is named by its file, and a heading
+/// inside the file is ordinary text.
+pub fn title_from_path(relative_path: &str) -> String {
+    let name = relative_path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(relative_path);
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => name[..dot].to_owned(),
+        _ => name.to_owned(),
     }
 }
 
+/// The longest file name, in characters, that [`normalize_file_name`]
+/// keeps.
+pub const MAX_FILE_NAME_CHARS: usize = 200;
+
+/// Turns a typed name into a file name that works on macOS, Windows and
+/// Linux: no path separators, no characters macOS or Windows reject, no
+/// leading dots (which would hide the file), no surrounding spaces, and at
+/// most [`MAX_FILE_NAME_CHARS`] characters. An empty result means the name
+/// had nothing usable.
+pub fn normalize_file_name(typed: &str) -> String {
+    let kept: String = typed
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+        })
+        .collect();
+    let name = kept.trim().trim_start_matches(['.', ' ']).trim();
+    let cut: String = name.chars().take(MAX_FILE_NAME_CHARS).collect();
+    cut.trim_end().to_owned()
+}
+
+/// The path of the file at `relative_path` once it's named `name`, in the
+/// same folder and with the same extension.
+pub fn renamed_path(relative_path: &str, name: &str) -> String {
+    let (folder, file) = match relative_path.rfind('/') {
+        Some(slash) => (&relative_path[..=slash], &relative_path[slash + 1..]),
+        None => ("", relative_path),
+    };
+    let extension = match file.rfind('.') {
+        Some(dot) if dot > 0 => &file[dot..],
+        _ => "",
+    };
+    format!("{folder}{name}{extension}")
+}
+
+/// Where the frontmatter of LF `text` ends: the byte offset just past its
+/// closing `---` line, or `None` when the text has no complete frontmatter.
+/// A leading byte-order mark must already be gone.
+pub fn frontmatter_end(text: &str) -> Option<usize> {
+    if !text.starts_with("---\n") {
+        return None;
+    }
+    text[4..]
+        .find("\n---\n")
+        .map(|index| index + 4 + "\n---\n".len())
+}
+
 /// Reads a run of carriage returns right before a line feed as one line
-/// break, for the title and body. Reading only CRLF as LF would leave `\r\n`
-/// of a `\r\r\n` in the body. The serializer writes that back as it is, and
-/// the next read would drop one more carriage return, so the bytes would
-/// change on every write. The frontmatter still reads only CRLF as LF, so
-/// no file moves between managed, malformed and unmanaged.
+/// break, for the body. Reading only CRLF as LF would leave `\r\n` of a
+/// `\r\r\n` in the body. The serializer writes that back as it is, and the
+/// next read would drop one more carriage return, so the bytes would change
+/// on every write. The frontmatter still reads only CRLF as LF, so no file
+/// moves between managed, malformed and unmanaged.
 fn single_line_breaks(text: &str) -> Cow<'_, str> {
     if !text.contains("\r\n") {
         return Cow::Borrowed(text);
@@ -476,13 +529,16 @@ fn single_line_breaks(text: &str) -> Cow<'_, str> {
 
 /// Parses a Markdown file without relying on a local filesystem or runtime.
 pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
+    let title = title_from_path(relative_path);
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ParsedMarkdown::Malformed {
-            title: String::new(),
+            title,
             body: String::new(),
             error: "The file is not UTF-8".into(),
         };
     };
+    // A byte-order mark isn't part of the text. Writers keep it.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = if text.contains("\r\n") {
         Cow::Owned(text.replace("\r\n", "\n"))
     } else {
@@ -490,26 +546,23 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     };
     let text = text.as_ref();
     if !text.starts_with("---\n") {
-        let (title, body) = split_title(&single_line_breaks(text));
         return ParsedMarkdown::Unmanaged {
             title,
-            body,
+            body: single_line_breaks(text).into_owned(),
             frontmatter: None,
         };
     }
-    let Some(end) = text[4..].find("\n---\n").map(|index| index + 4) else {
-        let (title, body) = split_title(&single_line_breaks(text));
+    let Some(end) = frontmatter_end(text) else {
         return ParsedMarkdown::Malformed {
             title,
-            body,
+            body: single_line_breaks(text).into_owned(),
             error: "Frontmatter has no closing delimiter".into(),
         };
     };
     // The line break before the closing delimiter ends the last YAML line.
     // Without it, a block scalar written last would lose its final line break.
-    let yaml = &text[4..=end];
-    let markdown = single_line_breaks(&text[end + 5..]);
-    let (title, body) = split_title(markdown.trim_start_matches('\n'));
+    let yaml = &text[4..end - "---\n".len()];
+    let body = single_line_breaks(&text[end..]).into_owned();
     let properties: BTreeMap<String, serde_json::Value> = match serde_yaml_ng::from_str(yaml) {
         Ok(properties) => properties,
         Err(error) => {
@@ -594,10 +647,68 @@ pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError
     serialize_envelope(object, &BUILT_IN_PROPERTY_ORDER)
 }
 
+/// Serializes `object` over `existing`, the bytes its file holds now. The
+/// frontmatter and the body each keep their bytes when they didn't change,
+/// and the file keeps its byte-order mark, the ending of each line nobody
+/// changed, and its final line break or the lack of one. A file that isn't
+/// managed yet gets [`serialize_object`]'s text with its own byte-order mark
+/// and line endings.
+pub fn serialize_object_over(
+    existing: &[u8],
+    object: &WorkspaceObject,
+) -> Result<Vec<u8>, FormatError> {
+    rewrite_envelope(existing, object, &BUILT_IN_PROPERTY_ORDER)
+}
+
+pub(crate) fn rewrite_envelope(
+    existing: &[u8],
+    object: &WorkspaceObject,
+    leading: &[&str],
+) -> Result<Vec<u8>, FormatError> {
+    let Ok((text, layout)) = raw_text::split_raw_bytes(existing) else {
+        return serialize_envelope(object, leading);
+    };
+    let (ParsedMarkdown::Managed(current), Some(end)) = (
+        parse_markdown(&object.relative_path, existing),
+        frontmatter_end(&text),
+    ) else {
+        // A file becoming managed, as when it's adopted, keeps its
+        // byte-order mark and the endings of the lines it already had.
+        let written = serialize_envelope(object, leading)?;
+        let written = String::from_utf8(written).map_err(|_| FormatError::ObjectSerialization)?;
+        return Ok(raw_text::compose_raw_bytes(&written, &layout));
+    };
+    let same_envelope = current.id == object.id
+        && current.object_type == object.object_type
+        && current.created == object.created
+        && current.updated == object.updated
+        && current.properties == object.properties;
+    let mut next = if same_envelope {
+        text[..end].to_owned()
+    } else {
+        envelope_frontmatter(object, leading)?
+    };
+    if current.body == object.body {
+        next.push_str(&text[end..]);
+    } else {
+        next.push_str(&object.body);
+    }
+    Ok(raw_text::compose_raw_bytes(&next, &layout))
+}
+
 /// Writes the managed-object envelope: `id` and `type`, the `leading`
 /// properties in that order, the other properties sorted by key, `created`
-/// and `updated`, then the title heading and the body.
+/// and `updated`, then the body as it is. The title is the file's name, so
+/// no heading is written.
 fn serialize_envelope(object: &WorkspaceObject, leading: &[&str]) -> Result<Vec<u8>, FormatError> {
+    let mut result = envelope_frontmatter(object, leading)?;
+    result.push_str(&object.body);
+    Ok(result.into_bytes())
+}
+
+/// The frontmatter block of the managed-object envelope, closing `---`
+/// line included.
+fn envelope_frontmatter(object: &WorkspaceObject, leading: &[&str]) -> Result<String, FormatError> {
     if !valid_object_id(&object.id, &object.object_type) {
         return Err(FormatError::InvalidObjectId);
     }
@@ -625,16 +736,7 @@ fn serialize_envelope(object: &WorkspaceObject, leading: &[&str]) -> Result<Vec<
         entries.push(("updated", serde_json::Value::String(updated.clone())));
     }
     let yaml = frontmatter_yaml(&entries)?;
-    let mut result = format!("---\n{}---\n\n# {}\n", yaml, object.title.trim());
-    // Only line breaks at the end are normalized. Trailing spaces stay: two
-    // of them are a Markdown line break, and the editor may be mid-typing.
-    let body = object.body.trim_end_matches(['\n', '\r']);
-    if !body.trim().is_empty() {
-        result.push('\n');
-        result.push_str(body);
-        result.push('\n');
-    }
-    Ok(result.into_bytes())
+    Ok(format!("---\n{yaml}---\n"))
 }
 
 /// Writes frontmatter entries as a YAML mapping, in order, as libyaml writes
@@ -778,16 +880,17 @@ pub fn valid_object_id(id: &str, object_type: &str) -> bool {
     value.len() == 26 && value == value.to_ascii_lowercase() && value.parse::<ulid::Ulid>().is_ok()
 }
 
-/// Returns the canonical initial file location for a managed object. Project
-/// files are folder notes so their enclosing folder can hold related files.
-pub fn default_managed_object_path(object_type: &str, title: &str, id: &str) -> String {
-    let value = slug::slugify(title);
-    let slug = if value.is_empty() { "untitled" } else { &value };
-    let short = &id[id.len().saturating_sub(6)..];
+/// Returns the canonical initial file location for a managed object, named
+/// after its title, since the title is the file name. Project files are
+/// folder notes, named like their folder, so the folder can hold related
+/// files. The filesystem adapter picks another name when this one is taken.
+pub fn default_managed_object_path(object_type: &str, title: &str) -> String {
+    let name = normalize_file_name(title);
+    let name = if name.is_empty() { "Untitled" } else { &name };
     if object_type == "project" {
-        format!("projects/{slug}--{short}/project.md")
+        format!("projects/{name}/{name}.md")
     } else {
-        format!("{object_type}s/{slug}--{short}.md")
+        format!("{object_type}s/{name}.md")
     }
 }
 
@@ -849,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_bodies_keep_trailing_spaces_and_drop_trailing_line_breaks() {
+    fn managed_bodies_are_written_as_they_are() {
         let object = |body: &str| WorkspaceObject {
             id: "note_01j00000000000000000000000".into(),
             object_type: "note".into(),
@@ -871,12 +974,152 @@ mod tests {
         // A trailing space, or two for a Markdown line break, survives a save.
         assert_eq!(body_after_round_trip("Typing "), "Typing ");
         assert_eq!(body_after_round_trip("Line  \nnext"), "Line  \nnext");
-        // Line breaks at the end are normalized; the file ends with one.
-        assert_eq!(body_after_round_trip("Text\n\n"), "Text");
-        let bytes = serialize_object(&object("Text\n\n")).unwrap();
-        assert!(bytes.ends_with(b"Text\n"));
-        // A body of only whitespace is written as no body.
-        assert_eq!(body_after_round_trip("  \n"), "");
+        // Line breaks at the end, or none, stay as they are.
+        assert_eq!(body_after_round_trip("Text\n\n"), "Text\n\n");
+        let bytes = serialize_object(&object("Text")).unwrap();
+        assert!(bytes.ends_with(b"---\nText"));
+        assert_eq!(body_after_round_trip("  \n"), "  \n");
+    }
+
+    fn note(relative_path: &str, body: &str) -> WorkspaceObject {
+        WorkspaceObject {
+            id: "note_01j00000000000000000000000".into(),
+            object_type: "note".into(),
+            title: String::new(),
+            body: body.into(),
+            relative_path: relative_path.into(),
+            revision: String::new(),
+            created: Some("2026-08-27T12:00:00Z".into()),
+            updated: Some("2026-08-27T12:00:00Z".into()),
+            properties: BTreeMap::from([("custom".into(), serde_json::json!("kept"))]),
+        }
+    }
+
+    #[test]
+    fn a_title_is_the_file_name_and_a_heading_is_body_text() {
+        let bytes = b"---\nid: note_01j00000000000000000000000\ntype: note\n---\n# Agenda\n\nBody";
+        let ParsedMarkdown::Managed(object) = parse_markdown("notes/Team sync.v2.md", bytes) else {
+            panic!("managed object expected")
+        };
+        assert_eq!(object.title, "Team sync.v2");
+        assert_eq!(object.body, "# Agenda\n\nBody");
+        let ParsedMarkdown::Unmanaged { title, body, .. } =
+            parse_markdown("Plain.md", b"# Heading\nText")
+        else {
+            panic!("unmanaged file expected")
+        };
+        assert_eq!(
+            (title.as_str(), body.as_str()),
+            ("Plain", "# Heading\nText")
+        );
+    }
+
+    #[test]
+    fn serialization_writes_no_heading_and_the_body_as_given() {
+        let mut object = note("notes/Plan.md", "Body without a final newline");
+        object.title = "Ignored title".into();
+        let bytes = String::from_utf8(serialize_object(&object).unwrap()).unwrap();
+        assert_eq!(
+            bytes,
+            "---\nid: note_01j00000000000000000000000\ntype: note\ncustom: kept\n\
+             created: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\n---\n\
+             Body without a final newline"
+        );
+        assert!(!bytes.contains("# "));
+    }
+
+    #[test]
+    fn a_byte_order_mark_before_the_frontmatter_keeps_a_file_managed() {
+        let bytes = b"\xEF\xBB\xBF---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n---\r\nBody\r\n";
+        let ParsedMarkdown::Managed(object) = parse_markdown("Note.md", bytes) else {
+            panic!("managed object expected")
+        };
+        assert_eq!(object.body, "Body\n");
+        assert_eq!(object.revision, revision(bytes));
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_body_bytes_line_endings_bom_and_final_newline() {
+        let existing = "\u{feff}---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n\
+            custom: kept\r\ncreated: 2026-08-27T12:00:00Z\r\nupdated: 2026-08-27T12:00:00Z\r\n\
+            ---\r\n\r\n# Heading\r\nLine\nmixed\r\nno final newline";
+        let ParsedMarkdown::Managed(mut object) = parse_markdown("Note.md", existing.as_bytes())
+        else {
+            panic!("managed object expected")
+        };
+        object
+            .properties
+            .insert("status".into(), serde_json::json!("done"));
+        let written =
+            String::from_utf8(serialize_object_over(existing.as_bytes(), &object).unwrap())
+                .unwrap();
+        assert_eq!(
+            written,
+            "\u{feff}---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n\
+             status: done\r\ncustom: kept\r\ncreated: 2026-08-27T12:00:00Z\r\n\
+             updated: 2026-08-27T12:00:00Z\r\n---\r\n\r\n# Heading\r\nLine\nmixed\r\n\
+             no final newline"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_keeps_unchanged_frontmatter_bytes_and_changes_only_the_body() {
+        let existing = "---\nid: note_01j00000000000000000000000\ntype: note\n\
+            custom:   'hand written'   # a comment\n---\nOld body\r\nkept line\r\n";
+        let ParsedMarkdown::Managed(mut object) = parse_markdown("Note.md", existing.as_bytes())
+        else {
+            panic!("managed object expected")
+        };
+        object.body = "New body\nkept line\n".into();
+        let written =
+            String::from_utf8(serialize_object_over(existing.as_bytes(), &object).unwrap())
+                .unwrap();
+        assert_eq!(
+            written,
+            "---\nid: note_01j00000000000000000000000\ntype: note\n\
+             custom:   'hand written'   # a comment\n---\nNew body\r\nkept line\r\n"
+        );
+        // Nothing changed: the bytes stay as they are.
+        let ParsedMarkdown::Managed(unchanged) = parse_markdown("Note.md", existing.as_bytes())
+        else {
+            panic!("managed object expected")
+        };
+        assert_eq!(
+            serialize_object_over(existing.as_bytes(), &unchanged).unwrap(),
+            existing.as_bytes()
+        );
+    }
+
+    #[test]
+    fn file_names_lose_separators_reserved_characters_leading_dots_and_spaces() {
+        assert_eq!(normalize_file_name("  ..My/plan: v2?  "), "Myplan v2");
+        assert_eq!(
+            normalize_file_name("a\\b*c\"d<e>f|g\u{7}h\u{7f}"),
+            "abcdefgh"
+        );
+        assert_eq!(normalize_file_name(" . . "), "");
+        let long = "é".repeat(250);
+        assert_eq!(normalize_file_name(&long).chars().count(), 200);
+        assert_eq!(
+            normalize_file_name(&format!("{} b", "a".repeat(199))),
+            "a".repeat(199)
+        );
+    }
+
+    #[test]
+    fn new_objects_are_named_after_their_title() {
+        assert_eq!(
+            default_managed_object_path("note", " Team: sync "),
+            "notes/Team sync.md"
+        );
+        assert_eq!(
+            default_managed_object_path("project", "Launch"),
+            "projects/Launch/Launch.md"
+        );
+        assert_eq!(
+            default_managed_object_path("task", "///"),
+            "tasks/Untitled.md"
+        );
     }
 
     #[test]
@@ -895,7 +1138,8 @@ mod tests {
         let ParsedMarkdown::Managed(object) = parse_markdown("note.md", bytes.as_bytes()) else {
             panic!("CRLF frontmatter should be managed");
         };
-        assert_eq!(object.body, "Body");
+        assert_eq!(object.title, "note");
+        assert_eq!(object.body, "# Title\n\nBody\n");
     }
 
     #[derive(Deserialize)]
@@ -905,6 +1149,93 @@ mod tests {
         task_properties: Vec<TaskPropertiesFixture>,
         project_properties: Vec<TaskPropertiesFixture>,
         object_body: Vec<ObjectBodyFixture>,
+        titles: Vec<TitleFixture>,
+        file_names: Vec<FileNameFixture>,
+        rewrites: Vec<RewriteFixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct TitleFixture {
+        name: String,
+        path: String,
+        markdown: String,
+        title: String,
+        body: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FileNameFixture {
+        typed: String,
+        name: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RewriteFixture {
+        name: String,
+        path: String,
+        existing: String,
+        #[serde(default)]
+        set_properties: BTreeMap<String, serde_json::Value>,
+        body: Option<String>,
+        expected: String,
+    }
+
+    fn conformance() -> Fixtures {
+        serde_json::from_str(include_str!(
+            "../../../docs/workspace-format/fixtures/conformance-v1.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn titles_come_from_file_names_as_the_shared_fixtures_say() {
+        for fixture in conformance().titles {
+            let (title, body) = match parse_markdown(&fixture.path, fixture.markdown.as_bytes()) {
+                ParsedMarkdown::Managed(object) => (object.title, object.body),
+                ParsedMarkdown::Unmanaged { title, body, .. } => (title, body),
+                ParsedMarkdown::Malformed { error, .. } => panic!("{}: {error}", fixture.name),
+            };
+            assert_eq!(
+                (title, body),
+                (fixture.title, fixture.body),
+                "{}",
+                fixture.name
+            );
+        }
+    }
+
+    #[test]
+    fn typed_names_become_file_names_as_the_shared_fixtures_say() {
+        for fixture in conformance().file_names {
+            assert_eq!(
+                normalize_file_name(&fixture.typed),
+                fixture.name,
+                "{:?}",
+                fixture.typed
+            );
+        }
+    }
+
+    #[test]
+    fn rewrites_keep_bytes_as_the_shared_fixtures_say() {
+        for fixture in conformance().rewrites {
+            let ParsedMarkdown::Managed(mut object) =
+                parse_markdown(&fixture.path, fixture.existing.as_bytes())
+            else {
+                panic!("{}: managed object expected", fixture.name)
+            };
+            object.properties.extend(fixture.set_properties);
+            if let Some(body) = fixture.body {
+                object.body = body;
+            }
+            let written = serialize_object_over(fixture.existing.as_bytes(), &object).unwrap();
+            assert_eq!(
+                String::from_utf8(written).unwrap(),
+                fixture.expected,
+                "{}",
+                fixture.name
+            );
+        }
     }
 
     #[derive(Deserialize)]
@@ -1018,7 +1349,7 @@ mod tests {
         .unwrap();
         assert!(valid_object_id(&note.id, "note"));
         assert_eq!(note.title, "Browser note");
-        assert!(note.relative_path.starts_with("notes/browser-note--"));
+        assert_eq!(note.relative_path, "notes/Browser note.md");
         assert!(!note.properties.contains_key("id"));
     }
 
@@ -1039,7 +1370,7 @@ mod tests {
         assert_eq!(task.properties["status"], "todo");
         assert_eq!(task.properties["priority"], "medium");
         assert_eq!(task.properties["custom"], "kept");
-        assert!(task.relative_path.starts_with("tasks/browser-task--"));
+        assert_eq!(task.relative_path, "tasks/Browser task.md");
     }
 
     #[test]
@@ -1078,12 +1409,10 @@ mod tests {
         assert_eq!(project.object_type, "project");
         assert_eq!(project.properties["status"], "planned");
         assert_eq!(project.properties["custom"], "kept");
-        assert!(
-            project
-                .relative_path
-                .starts_with("projects/browser-project--")
+        assert_eq!(
+            project.relative_path,
+            "projects/Browser project/Browser project.md"
         );
-        assert!(project.relative_path.ends_with("/project.md"));
     }
 
     #[test]
@@ -1192,7 +1521,7 @@ mod tests {
         let mut object = WorkspaceObject {
             id: "note_01j00000000000000000000000".into(),
             object_type: "note".into(),
-            title: "Example".into(),
+            title: "example".into(),
             body: String::new(),
             relative_path: "notes/example.md".into(),
             revision: String::new(),
@@ -1210,7 +1539,7 @@ mod tests {
         // libyaml's own forms, with raw separators, except for the last value.
         assert_eq!(
             bytes,
-            "---\nid: note_01j00000000000000000000000\ntype: note\na: |\n  Boil.\n  Serve.\u{2028}b:\n- 'x\u{2029}  '\n- k: |+\n    y\n\u{2029}updated: \"\\na\\L\"\n---\n\n# Example\n"
+            "---\nid: note_01j00000000000000000000000\ntype: note\na: |\n  Boil.\n  Serve.\u{2028}b:\n- 'x\u{2029}  '\n- k: |+\n    y\n\u{2029}updated: \"\\na\\L\"\n---\n"
         );
         let ParsedMarkdown::Managed(parsed) = parse_markdown("notes/example.md", bytes.as_bytes())
         else {

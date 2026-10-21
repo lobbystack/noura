@@ -389,7 +389,7 @@ mod tests {
             .await
             .unwrap();
         let result: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(result["value"]["body"], "Edited through MCP");
+        assert_eq!(result["value"]["body"], "Edited through MCP\n");
         let on_disk = std::fs::read_to_string(workspace.path().join("note.md")).unwrap();
         assert!(on_disk.contains("Edited through MCP"));
     }
@@ -565,7 +565,7 @@ mod tests {
         let created = server
             .tasks_create(Parameters(TaskCreateParams {
                 title: "MCP follow-up".into(),
-                body: Some("Second canonical task".into()),
+                body: Some("Second canonical task from MCP".into()),
                 relative_path: Some("projects/alpha/tasks/follow-up.md".into()),
                 status: Some("todo".into()),
                 priority: Some("high".into()),

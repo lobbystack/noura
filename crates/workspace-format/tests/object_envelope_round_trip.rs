@@ -11,7 +11,7 @@ use proptest::prelude::*;
 use serde_json::Value;
 use workspace_format::{
     ObjectTypeRegistry, ParsedMarkdown, PropertyDeclaration, PropertyKind, PropertySchema,
-    WorkspaceObject, parse_markdown, serialize_object,
+    WorkspaceObject, parse_markdown, serialize_object, serialize_object_over,
 };
 
 /// Text that YAML reads in a special way: the line breaks of YAML 1.1 and
@@ -263,6 +263,38 @@ proptest! {
         let first = types.serialize(&parsed).unwrap();
         let second = types.serialize(&reparse(&first)).unwrap();
         prop_assert_eq!(String::from_utf8(first).unwrap(), String::from_utf8(second).unwrap());
+    }
+
+    /// Writing an object over its own file changes nothing, and a property
+    /// edit leaves every byte after the frontmatter as it was, the
+    /// byte-order mark and line endings included.
+    #[test]
+    fn rewrites_keep_the_bytes_nobody_changed(file in file_case(), bom in any::<bool>()) {
+        let bytes = if bom {
+            format!("\u{feff}{}", file.bytes)
+        } else {
+            file.bytes.clone()
+        };
+        let mut parsed = reparse(bytes.as_bytes());
+        let unchanged = serialize_object_over(bytes.as_bytes(), &parsed).unwrap();
+        prop_assert_eq!(String::from_utf8(unchanged).unwrap(), bytes.clone());
+        parsed.properties.insert("edited".into(), Value::Bool(true));
+        let edited = String::from_utf8(serialize_object_over(bytes.as_bytes(), &parsed).unwrap())
+            .unwrap();
+        let after_frontmatter = |text: &str| {
+            let closing = text
+                .find("\n---\r\n")
+                .map(|index| index + "\n---\r\n".len())
+                .into_iter()
+                .chain(text.find("\n---\n").map(|index| index + "\n---\n".len()))
+                .min()
+                .unwrap();
+            text[closing..].to_owned()
+        };
+        prop_assert_eq!(after_frontmatter(&edited), after_frontmatter(&bytes));
+        prop_assert_eq!(edited.starts_with('\u{feff}'), bom);
+        let reread = reparse(edited.as_bytes());
+        prop_assert_eq!(reread.properties.get("edited"), Some(&Value::Bool(true)));
     }
 
     #[test]

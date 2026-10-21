@@ -885,7 +885,8 @@ fn managed_draft_save_updates_an_unchanged_canonical_file() {
         panic!("expected clean-base save, got {result:?}");
     };
 
-    assert_eq!(current.title, "Renamed");
+    // The title is the file name, which a draft doesn't rename.
+    assert_eq!(current.title, "Original");
     assert_eq!(current.body, "edited body");
     assert_eq!(current.properties["status"], "in-progress");
     assert_eq!(current.properties["priority"], "high");
@@ -962,7 +963,8 @@ fn idless_markdown_requires_explicit_adoption() {
         parse_markdown("draft.md", &std::fs::read(path).unwrap()),
         ParsedMarkdown::Managed(_)
     ));
-    assert_eq!(adopted.value.title, "Draft");
+    assert_eq!(adopted.value.title, "draft");
+    assert_eq!(adopted.value.body, "# Draft\n\nText\n");
 }
 
 #[test]

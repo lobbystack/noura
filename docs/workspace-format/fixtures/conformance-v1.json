@@ -589,31 +589,146 @@
 			"name": "trailing space typed at the end stays",
 			"body": "Typing ",
 			"expected_body": "Typing ",
-			"file_ends_with": "Typing \n"
+			"file_ends_with": "---\nTyping "
 		},
 		{
 			"name": "two trailing spaces keep a Markdown line break",
 			"body": "Line  \nnext",
 			"expected_body": "Line  \nnext",
-			"file_ends_with": "Line  \nnext\n"
+			"file_ends_with": "---\nLine  \nnext"
 		},
 		{
-			"name": "trailing line breaks normalize to one final newline",
+			"name": "trailing line breaks stay as they are",
 			"body": "Text\n\n",
-			"expected_body": "Text",
-			"file_ends_with": "Text\n"
+			"expected_body": "Text\n\n",
+			"file_ends_with": "---\nText\n\n"
 		},
 		{
-			"name": "CRLF line breaks at the end normalize too",
+			"name": "a body without a final line break gets none",
+			"body": "Text",
+			"expected_body": "Text",
+			"file_ends_with": "---\nText"
+		},
+		{
+			"name": "CRLF line breaks are written as they are and read as LF",
 			"body": "Text\r\n",
-			"expected_body": "Text",
-			"file_ends_with": "Text\n"
+			"expected_body": "Text\n",
+			"file_ends_with": "---\nText\r\n"
 		},
 		{
-			"name": "a body of only whitespace is written as no body",
+			"name": "a body of only whitespace stays",
 			"body": "  \n",
+			"expected_body": "  \n",
+			"file_ends_with": "---\n  \n"
+		},
+		{
+			"name": "a heading in the body is ordinary text",
+			"body": "# Plan\n\nSteps\n",
+			"expected_body": "# Plan\n\nSteps\n",
+			"file_ends_with": "---\n# Plan\n\nSteps\n"
+		},
+		{
+			"name": "an empty body ends the file with the frontmatter",
+			"body": "",
 			"expected_body": "",
-			"file_ends_with": "# Example\n"
+			"file_ends_with": ":00Z\n---\n"
+		}
+	],
+	"titles": [
+		{
+			"name": "a managed note is named by its file, not its heading",
+			"path": "notes/Team sync.md",
+			"markdown": "---\nid: note_01j00000000000000000000000\ntype: note\n---\n# Agenda\n",
+			"title": "Team sync",
+			"body": "# Agenda\n"
+		},
+		{
+			"name": "a Markdown file without an ID is named by its file too",
+			"path": "Plain.md",
+			"markdown": "# A heading\nText",
+			"title": "Plain",
+			"body": "# A heading\nText"
+		},
+		{
+			"name": "only the last extension leaves the name",
+			"path": "notes/v1.2 notes.md",
+			"markdown": "---\nid: note_01j00000000000000000000000\ntype: note\n---\n",
+			"title": "v1.2 notes",
+			"body": ""
+		},
+		{
+			"name": "a project folder note is named like its folder",
+			"path": "projects/Launch/Launch.md",
+			"markdown": "---\nid: project_01j00000000000000000000000\ntype: project\nstatus: active\n---\nShip it.\n",
+			"title": "Launch",
+			"body": "Ship it.\n"
+		},
+		{
+			"name": "a byte-order mark before the frontmatter leaves the file managed",
+			"path": "Marked.md",
+			"markdown": "\ufeff---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n---\r\nBody\r\n",
+			"title": "Marked",
+			"body": "Body\n"
+		}
+	],
+	"file_names": [
+		{
+			"typed": "Meeting notes",
+			"name": "Meeting notes"
+		},
+		{
+			"typed": "  Plan: v2?  ",
+			"name": "Plan v2"
+		},
+		{
+			"typed": "a/b\\c",
+			"name": "abc"
+		},
+		{
+			"typed": "*\"<>|",
+			"name": ""
+		},
+		{
+			"typed": "..hidden",
+			"name": "hidden"
+		},
+		{
+			"typed": " . . ",
+			"name": ""
+		},
+		{
+			"typed": "tab\there",
+			"name": "tabhere"
+		},
+		{
+			"typed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+			"name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+		},
+		{
+			"typed": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy z",
+			"name": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+		}
+	],
+	"rewrites": [
+		{
+			"name": "a property edit keeps the body, CRLF, the byte-order mark and the missing final line break",
+			"path": "Note.md",
+			"existing": "\ufeff---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\ncreated: 2026-08-27T12:00:00Z\r\nupdated: 2026-08-27T12:00:00Z\r\n---\r\n\r\n# Heading\r\nText",
+			"set_properties": {"status": "done"},
+			"expected": "\ufeff---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\nstatus: done\r\ncreated: 2026-08-27T12:00:00Z\r\nupdated: 2026-08-27T12:00:00Z\r\n---\r\n\r\n# Heading\r\nText"
+		},
+		{
+			"name": "a body edit keeps hand-written frontmatter bytes and each line's ending",
+			"path": "Note.md",
+			"existing": "---\nid: note_01j00000000000000000000000\ntype: note\ncustom:   'hand written'   # a comment\n---\nOld line\r\nkept line\nlast\r\n",
+			"body": "New line\nkept line\nlast\nadded\n",
+			"expected": "---\nid: note_01j00000000000000000000000\ntype: note\ncustom:   'hand written'   # a comment\n---\nNew line\r\nkept line\nlast\r\nadded\n"
+		},
+		{
+			"name": "an unchanged object writes the same bytes",
+			"path": "Note.md",
+			"existing": "---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\ntags: [a,   b]\r\n---\r\nBody",
+			"expected": "---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\ntags: [a,   b]\r\n---\r\nBody"
 		}
 	]
 }

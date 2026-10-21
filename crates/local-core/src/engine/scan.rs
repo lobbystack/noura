@@ -731,7 +731,7 @@ mod tests {
                     base_body: current.body.clone(),
                     base_properties: current.properties.clone(),
                     local_title: current.title.clone(),
-                    // A trailing newline is not canonical; the file trims it.
+                    // The file keeps the trailing newline as it is.
                     local_body: format!("{}\nline {step}\n", current.body),
                     local_properties: current.properties.clone(),
                 })
@@ -741,7 +741,7 @@ mod tests {
                 other => panic!("step {step} must save cleanly, got {other:?}"),
             };
         }
-        assert!(current.body.ends_with("line 2"));
+        assert!(current.body.ends_with("line 2\n"));
     }
 
     #[test]
