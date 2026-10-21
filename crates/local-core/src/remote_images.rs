@@ -4,6 +4,7 @@
 //! most 5 redirects, 20 seconds, an image content type and 20 MB. Every
 //! address the request connects to, redirects included, must be public:
 //! local, private and loopback addresses are refused before connecting.
+//! Loads never go through a proxy, which would resolve hosts itself.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -125,7 +126,10 @@ impl RemoteImageFetcher {
                 attempt.follow()
             }
         });
+        // A proxy would resolve the host itself, out of PublicResolver's
+        // reach, so loads ignore the system's and the environment's proxies.
         let client = reqwest::Client::builder()
+            .no_proxy()
             .timeout(self.timeout)
             .redirect(redirects)
             .dns_resolver(Arc::new(PublicResolver(self.clone())))
