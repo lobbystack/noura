@@ -21,11 +21,7 @@ impl App {
                 .map(|problem| Attention::of(problem, platform))
                 .collect(),
             sections: self.inbox_sections.ordered(&self.rail.ordered()),
-            recent: self
-                .recent
-                .iter()
-                .map(|path| RecentNote::at(path))
-                .collect(),
+            recent: RecentNote::list(&self.recent),
         }
     }
 

@@ -183,7 +183,7 @@ pub enum LinkAction {
 impl Attention {
     pub(crate) fn of(problem: &Problem, platform: Platform) -> Self {
         let action = match problem.code.as_str() {
-            "unsupported_path" | "unreadable_file" => LinkAction::Reveal,
+            "unsupported_path" | "unreadable_file" | "unreadable_folder" => LinkAction::Reveal,
             _ => LinkAction::Open,
         };
         let links = problem
@@ -221,14 +221,31 @@ pub struct RecentNote {
     /// The note's title: its file name without the extension.
     pub title: String,
     pub relative_path: String,
+    /// Whether another note in Recent has the same title, such as
+    /// `Plan.md` and `Ideas/Plan.md`, so the note shows its path to tell
+    /// them apart.
+    pub shares_title: bool,
 }
 
 impl RecentNote {
-    pub(crate) fn at(relative_path: &str) -> Self {
-        let name = relative_path.rsplit('/').next().unwrap_or(relative_path);
-        Self {
-            title: shown_name(name, EntryKind::File),
-            relative_path: relative_path.to_owned(),
-        }
+    /// The notes at `paths`, in their order, each marked when its title
+    /// isn't unique among them.
+    pub(crate) fn list(paths: &[String]) -> Vec<Self> {
+        let titles: Vec<String> = paths
+            .iter()
+            .map(|path| {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                shown_name(name, EntryKind::File)
+            })
+            .collect();
+        paths
+            .iter()
+            .zip(&titles)
+            .map(|(path, title)| Self {
+                title: title.clone(),
+                relative_path: path.clone(),
+                shares_title: titles.iter().filter(|other| *other == title).count() > 1,
+            })
+            .collect()
     }
 }

@@ -89,9 +89,11 @@ fn rows<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// How a click on a link opens what it names, as a click in the file tree
 /// does: a preview, or a kept tab with Cmd-click (Ctrl-click on Windows
-/// and Linux), a middle-click or a double-click.
+/// and Linux) or a middle-click. A double-click can't keep the tab here as
+/// it does in the tree: the first click's preview takes the Inbox's place,
+/// so the second lands on the note.
 fn opened_as(ui: &Ui, response: &Response) -> Option<OpenAs> {
-    if response.double_clicked() || response.middle_clicked() {
+    if response.middle_clicked() {
         Some(OpenAs::Kept)
     } else if response.clicked() {
         let command = ui.input(|input| input.modifiers.command);
@@ -181,13 +183,34 @@ fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
         muted(ui, "No notes yet.");
         return None;
     }
+    let palette = Palette::of(ui.ctx());
     let mut follow = None;
     rows(ui, |ui| {
         for note in &inbox.recent {
-            let response = ui.link(RichText::new(&note.title).size(BODY_SIZE));
+            // Notes that share a title show their paths to tell them apart.
+            let response = ui
+                .horizontal_wrapped(|ui| {
+                    let response = ui.link(RichText::new(&note.title).size(BODY_SIZE));
+                    if note.shares_title {
+                        ui.label(
+                            RichText::new(&note.relative_path)
+                                .size(SUPPORTING_SIZE)
+                                .color(palette.muted_foreground),
+                        );
+                    }
+                    response
+                })
+                .inner;
+            let label = if note.shares_title {
+                format!("{}, {}", note.title, note.relative_path)
+            } else {
+                note.title.clone()
+            };
             let path = note.relative_path.clone();
-            ui.ctx()
-                .accesskit_node_builder(response.id, |node| node.set_description(path));
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_label(label);
+                node.set_description(path);
+            });
             let response = response.on_hover_text(&note.relative_path);
             if let Some(how) = opened_as(ui, &response) {
                 follow = Some(Follow::Note(note.relative_path.clone(), how));

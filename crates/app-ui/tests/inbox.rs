@@ -6,7 +6,7 @@ mod support;
 use std::{path::Path, sync::Arc};
 
 use app_core::{App, AppError, Platform};
-use egui::{Key, accesskit::Role};
+use egui::{Key, Modifiers, PointerButton, accesskit::Role};
 use egui_kittest::{
     Harness,
     kittest::{By, NodeT, Queryable},
@@ -261,6 +261,63 @@ fn recent_opens_a_note_on_click_or_enter_as_the_file_tree_does() {
     harness.run();
     assert_eq!(tabs(&harness), ["Pears (preview)"]);
     assert_eq!(selected_tab(&harness).as_deref(), Some("Pears (preview)"));
+}
+
+/// Cmd-click (Ctrl-click on Windows and Linux) or a middle-click keeps a
+/// tab, as in the file tree.
+#[test]
+fn cmd_click_or_a_middle_click_on_a_recent_note_keeps_its_tab() {
+    let Opened {
+        mut harness,
+        _folders,
+        ..
+    } = opened(
+        &[("Ideas/Apples.md", "# Apples\n"), ("Pears.md", "# Pears\n")],
+        |_| {},
+    );
+    open_inbox(&mut harness);
+
+    document(&harness)
+        .get_by_role_and_label(Role::Link, "Apples")
+        .click_modifiers(Modifiers::COMMAND);
+    harness.run();
+    assert!(tabs(&harness).contains(&"Apples".to_owned()));
+    assert_eq!(selected_tab(&harness).as_deref(), Some("Apples"));
+
+    open_inbox(&mut harness);
+    document(&harness)
+        .get_by_role_and_label(Role::Link, "Pears")
+        .click_button(PointerButton::Middle);
+    harness.run();
+    assert!(tabs(&harness).contains(&"Pears".to_owned()));
+    assert_eq!(selected_tab(&harness).as_deref(), Some("Pears"));
+    assert!(tabs(&harness).contains(&"Apples".to_owned()));
+}
+
+/// Two notes with the same name show their paths, so their links don't
+/// read the same.
+#[test]
+fn recent_notes_that_share_a_title_show_their_paths() {
+    let Opened {
+        mut harness,
+        _folders,
+        ..
+    } = opened(
+        &[("Plan.md", "# Plan\n"), ("Ideas/Plan.md", "# Plan\n")],
+        |_| {},
+    );
+    open_inbox(&mut harness);
+
+    let mut shown = links(&harness);
+    shown.sort();
+    assert_eq!(shown, ["Plan, Ideas/Plan.md", "Plan, Plan.md"]);
+    assert!(document(&harness).query_by_label("Ideas/Plan.md").is_some());
+
+    document(&harness)
+        .get_by_role_and_label(Role::Link, "Plan, Ideas/Plan.md")
+        .click();
+    harness.run();
+    assert_eq!(tabs(&harness), ["Plan (preview)"]);
 }
 
 #[test]

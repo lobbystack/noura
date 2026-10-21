@@ -136,6 +136,34 @@ fn pages_that_appear_later_join_the_end_without_losing_the_saved_order() {
     assert_eq!(rail(&app), ["Beta", "Inbox", "Files", "Alpha", "Gamma"]);
 }
 
+/// A rail order saved before the Inbox was a kernel page has no place
+/// for it, so the Inbox goes first.
+#[test]
+fn the_inbox_goes_first_when_the_saved_order_has_no_place_for_it() {
+    let (app_data, _folder, mut app) = opened();
+    app.move_page("test-beta", 0);
+    drop(app);
+    let mut rewritten = 0;
+    for entry in walk(app_data.path()) {
+        let Ok(text) = std::fs::read_to_string(&entry) else {
+            continue;
+        };
+        let Ok(mut saved) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if let Some(order) = saved.get_mut("railOrder") {
+            *order = serde_json::json!(["test-alpha", "files"]);
+            std::fs::write(&entry, saved.to_string()).unwrap();
+            rewritten += 1;
+        }
+    }
+    assert_eq!(rewritten, 1);
+
+    let app = launch(app_data.path(), with_pages);
+
+    assert_eq!(rail(&app), ["Inbox", "Alpha", "Files", "Beta"]);
+}
+
 #[test]
 fn an_unreadable_saved_order_falls_back_to_the_default() {
     let (app_data, _folder, mut app) = opened();

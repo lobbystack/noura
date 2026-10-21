@@ -72,6 +72,11 @@ fn in_plain_words(code: &str, path: Option<&str>, message: String) -> String {
         ("unreadable_file", Some(path)) => {
             format!("Noura can't open {path}. Check that you have permission to read it.")
         }
+        ("unreadable_folder", Some(path)) => {
+            format!(
+                "Noura can't open the folder {path}. Check that you have permission to read it."
+            )
+        }
         ("unsupported_path", folder) => {
             let place = folder.map_or_else(
                 || "at the top of the workspace".to_owned(),

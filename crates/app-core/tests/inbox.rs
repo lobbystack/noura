@@ -110,6 +110,38 @@ fn recent_lists_the_five_notes_changed_last_newest_first() {
 }
 
 #[test]
+fn notes_that_share_a_title_in_recent_are_marked_to_show_their_paths() {
+    let fixture = Fixture::new(&[
+        ("Plan.md", b"# Plan\n"),
+        ("Ideas/Plan.md", b"# Plan\n"),
+        ("Ideas/Apples.md", b"# Apples\n"),
+    ]);
+    for (minute, path) in ["Plan.md", "Ideas/Plan.md", "Ideas/Apples.md"]
+        .into_iter()
+        .enumerate()
+    {
+        touch(&fixture, path, 1_800_000_000 + minute as u64 * 60);
+    }
+
+    let app = fixture.app();
+
+    let marked: Vec<(String, String, bool)> = app
+        .inbox()
+        .recent
+        .into_iter()
+        .map(|note| (note.title, note.relative_path, note.shares_title))
+        .collect();
+    assert_eq!(
+        marked,
+        [
+            ("Apples".to_owned(), "Ideas/Apples.md".to_owned(), false),
+            ("Plan".to_owned(), "Ideas/Plan.md".to_owned(), true),
+            ("Plan".to_owned(), "Plan.md".to_owned(), true),
+        ]
+    );
+}
+
+#[test]
 fn an_empty_workspace_has_no_recent_notes() {
     let fixture = Fixture::new(&[]);
 
@@ -153,6 +185,55 @@ fn a_file_noura_cannot_read_links_to_the_file_manager() {
     app.follow_link(&link, app_core::OpenAs::Preview);
     assert_eq!(system.calls(), [support::Call::Reveal(locked.clone())]);
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// A folder Noura can't open is fixed in another app too, so its problem
+/// names it and links to it in the file manager instead of trying to open
+/// it in a tab.
+#[cfg(unix)]
+#[test]
+fn a_folder_noura_cannot_open_links_to_the_file_manager() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(&[("Open.md", b"# Open\n"), ("Locked/Kept.md", b"# Kept\n")]);
+    let locked = fixture.root.join("Locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        // An administrator opens every folder, so there's nothing to show.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let system = support::FakeSystem::on(app_core::Platform::MacOs);
+
+    let mut app = fixture.app_with(system.clone());
+    let shown = attention(&app);
+    let tabs_before = app.tabs().len();
+    let link = app
+        .inbox()
+        .needs_attention
+        .first()
+        .map(|item| item.links[0].clone());
+    if let Some(link) = &link {
+        app.follow_link(link, app_core::OpenAs::Preview);
+    }
+    let tabs_after = app.tabs().len();
+    let notice = support::notice(&app);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        shown,
+        [(
+            "Noura can't open the folder Locked. Check that you have permission to read it."
+                .to_owned(),
+            vec![(
+                "Show Locked in Finder".to_owned(),
+                "Locked".to_owned(),
+                LinkAction::Reveal,
+            )],
+        )]
+    );
+    assert_eq!(system.calls(), [support::Call::Reveal(locked)]);
+    assert_eq!((tabs_after, notice), (tabs_before, None));
 }
 
 /// A name with no UTF-8 form on Linux, or with an unpaired surrogate on
