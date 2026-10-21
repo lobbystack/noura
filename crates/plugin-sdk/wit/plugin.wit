@@ -1,0 +1,140 @@
+// The first version of Noura's plugin interface. Tickets before the first
+// release extend this package; once a release ships it, a change needs a new
+// version and the host keeps loading plugins built against this one.
+package noura:plugin@0.1.0;
+
+// What a capability interface returns when it refuses or fails a call.
+interface types {
+  variant error {
+    // The plugin's manifest doesn't declare the capability this call needs.
+    // Holds the capability's name, such as `workspace-read`. The host ran
+    // nothing for the call.
+    capability-not-declared(string),
+    // A file or folder name that a WIT string can't hold, such as one that
+    // isn't valid UTF-8. Noura never passes a changed copy of a name.
+    unsupported-path,
+    // The path isn't a workspace-relative path with `/` between its parts:
+    // it is empty, absolute, holds `.`, `..` or `\`, or names a folder
+    // Noura keeps to itself, such as `.noura`. Holds the path.
+    invalid-path(string),
+    // Nothing in the workspace has this path or ID. Holds the path or ID.
+    not-found(string),
+    // The host couldn't finish the call. Holds a message for the plugin's
+    // author.
+    failed(string),
+  }
+}
+
+// Reads the open workspace. Needs the `workspace-read` capability.
+interface workspace {
+  use types.{error};
+
+  enum entry-kind {
+    file,
+    folder,
+  }
+
+  // One file or folder in the workspace.
+  record entry {
+    // The workspace-relative path, with `/` between its parts.
+    path: string,
+    kind: entry-kind,
+    // The stable ID of a file that holds a Noura object. It stays the same
+    // when the file moves or is renamed.
+    object-id: option<string>,
+    // The object's type, such as `note`.
+    object-type: option<string>,
+    // The revision of the file's content, once Noura has read the file.
+    revision: option<string>,
+  }
+
+  // A file's bytes and the revision of those bytes.
+  record file {
+    path: string,
+    bytes: list<u8>,
+    revision: string,
+  }
+
+  // A Noura object, read by its stable ID.
+  record object {
+    id: string,
+    object-type: string,
+    // The object's title: its file name without the extension.
+    title: string,
+    // Where the object's file is now.
+    path: string,
+    // The Markdown after the frontmatter.
+    body: string,
+    // The frontmatter's other properties, as a JSON object.
+    properties: string,
+    revision: string,
+  }
+
+  // Every file and folder in the workspace, by path. An item whose name a
+  // WIT string can't hold appears as `unsupported-path` in its place.
+  list-entries: func() -> result<list<result<entry, error>>, error>;
+
+  // The file at a workspace-relative path.
+  read-file: func(path: string) -> result<file, error>;
+
+  // The object with this stable ID, wherever its file is now.
+  read-object: func(id: string) -> result<object, error>;
+}
+
+// UI as data. WIT has no recursive types, so a view is a flat list of nodes
+// whose `children` hold indices into the list. The first node is the root.
+interface ui {
+  variant node-kind {
+    // Lays out its children from top to bottom. The label names the panel
+    // for screen readers.
+    panel(option<string>),
+    // A line of plain text.
+    text(string),
+    // Markdown, drawn by Noura. Images show as their description and never
+    // load from the network.
+    markdown(string),
+    // A button with this label. Presses come back by the node's ID.
+    button(string),
+  }
+
+  record node {
+    // Unique within the view. Events name the node by this ID.
+    id: string,
+    kind: node-kind,
+    // Indices into the view's node list. Only panels hold children.
+    children: list<u32>,
+  }
+}
+
+// Pages in Noura's rail, drawn from the plugin's nodes. Noura calls these
+// only when the manifest declares the `views` capability.
+interface view {
+  use ui.{node};
+
+  record page {
+    // Unique within the plugin.
+    id: string,
+    // The name the rail and the page's tab show.
+    title: string,
+  }
+
+  variant event {
+    // The button with this node ID was pressed.
+    pressed(string),
+  }
+
+  // The pages the plugin adds to the rail.
+  pages: func() -> list<page>;
+
+  // The nodes of a page's view.
+  render: func(page: string) -> list<node>;
+
+  // Something happened in a page's view. Noura renders the page again
+  // afterwards.
+  handle-event: func(page: string, event: event);
+}
+
+world plugin {
+  import workspace;
+  export view;
+}

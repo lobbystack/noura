@@ -1,0 +1,6 @@
+id = "absolute"
+name = "Absolute"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "/etc/hosts"
+platforms = ["desktop"]

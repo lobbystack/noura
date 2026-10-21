@@ -1,0 +1,6 @@
+id = "phone-only"
+name = "Phone only"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "plugin.wasm"
+platforms = ["mobile"]

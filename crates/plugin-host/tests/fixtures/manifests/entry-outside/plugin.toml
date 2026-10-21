@@ -1,0 +1,6 @@
+id = "escape"
+name = "Escape"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "../valid/plugin.toml"
+platforms = ["desktop"]

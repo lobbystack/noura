@@ -10,7 +10,9 @@
 //! layout, and the appearance, text size and zoom, in this device's app
 //! data. One command registry feeds the key handling, the command palette,
 //! the native menus and the shortcuts list. Settings lists its sections
-//! from one list that later areas extend.
+//! from one list that later areas extend. The plugins service installs
+//! plugins from folders, keeps this device's approvals, turns plugins on
+//! and off per workspace and runs them through `plugin-host`.
 
 mod app;
 mod commands;
@@ -25,6 +27,7 @@ mod login;
 mod menus;
 mod objects;
 mod operations;
+mod plugins;
 mod preferences;
 mod problems;
 mod quick_open;
@@ -68,6 +71,8 @@ pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use objects::ObjectRef;
 pub use operations::Imported;
+pub use plugin_host::{View, ViewKind, ViewNode};
+pub use plugins::{CapabilityLine, PluginInstall, PluginRow, PluginView};
 pub use preferences::{ACTUAL_SIZE, Appearance, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
