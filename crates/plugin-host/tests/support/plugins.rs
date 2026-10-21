@@ -6,7 +6,15 @@
 //! workspace tests. CI sets `NOURA_REQUIRE_PLUGINS=1`, which turns a
 //! missing plugin into a failure.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+use plugin_host::{
+    FileRead, Listed, Node, NodeKind, ObjectRead, PluginHost, PluginInstance, ServiceError,
+    WorkspacePath, WorkspaceReads,
+};
 
 /// The hello plugin's manifest, as `crates/plugins/hello` ships it.
 pub const HELLO_MANIFEST: &str = include_str!("../../../plugins/hello/plugin.toml");
@@ -57,4 +65,81 @@ pub fn write_folder(folder: &Path, manifest: &str, entry: &str, component: &[u8]
     let entry = folder.join(entry);
     std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
     std::fs::write(entry, component).unwrap();
+}
+
+/// A plugin installed from `component` and started with every capability
+/// its manifest declares, as `capabilities` lists them. Its folders last as
+/// long as the returned guard.
+pub fn running(
+    component: &[u8],
+    capabilities: &[&str],
+    workspace: Option<Arc<dyn WorkspaceReads>>,
+) -> (PluginInstance, [tempfile::TempDir; 2]) {
+    let folder = tempfile::tempdir().unwrap();
+    let library = tempfile::tempdir().unwrap();
+    write_folder(
+        folder.path(),
+        &manifest("probe", "plugin.wasm", capabilities),
+        "plugin.wasm",
+        component,
+    );
+    let host = PluginHost::new(library.path()).unwrap();
+    host.install(&host.inspect(folder.path()).unwrap()).unwrap();
+    let loaded = host.load("probe").unwrap();
+    let instance = host
+        .start(&loaded, &loaded.manifest().capabilities, workspace)
+        .unwrap();
+    (instance, [folder, library])
+}
+
+/// The text of each text node in `nodes`, in order.
+pub fn texts(nodes: &[Node]) -> Vec<String> {
+    nodes
+        .iter()
+        .filter_map(|node| match &node.kind {
+            NodeKind::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A workspace that answers from fixed lists and counts the calls that
+/// reach it.
+#[derive(Default)]
+pub struct FakeWorkspace {
+    pub listing: Vec<Listed>,
+    pub files: Vec<FileRead>,
+    pub objects: Vec<ObjectRead>,
+    pub calls: Mutex<Vec<String>>,
+}
+
+impl FakeWorkspace {
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl WorkspaceReads for FakeWorkspace {
+    fn list_entries(&self) -> Result<Vec<Listed>, ServiceError> {
+        self.calls.lock().unwrap().push("list".into());
+        Ok(self.listing.clone())
+    }
+
+    fn read_file(&self, path: &WorkspacePath) -> Result<FileRead, ServiceError> {
+        self.calls.lock().unwrap().push(format!("read-file {path}"));
+        self.files
+            .iter()
+            .find(|file| &file.path == path)
+            .cloned()
+            .ok_or_else(|| ServiceError::NotFound(path.to_string()))
+    }
+
+    fn read_object(&self, id: &str) -> Result<ObjectRead, ServiceError> {
+        self.calls.lock().unwrap().push(format!("read-object {id}"));
+        self.objects
+            .iter()
+            .find(|object| object.id == id)
+            .cloned()
+            .ok_or_else(|| ServiceError::NotFound(id.to_owned()))
+    }
 }

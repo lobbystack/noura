@@ -15,6 +15,7 @@ mod manifest;
 mod runtime;
 mod services;
 pub mod trial;
+mod view;
 
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
@@ -27,3 +28,4 @@ pub use runtime::{Backend, Limits};
 pub use services::{
     Entry, EntryKind, FileRead, Listed, ObjectRead, ServiceError, WorkspacePath, WorkspaceReads,
 };
+pub use view::{MAX_DEPTH, MAX_NODES, View, ViewError, ViewKind, ViewNode};

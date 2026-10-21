@@ -26,3 +26,5 @@ egui_kittest.workspace = true
 libc.workspace = true
 tempfile.workspace = true
 wasmtime = { workspace = true, features = ["wat"] }
+# Writes hand-made test components as WebAssembly binaries.
+wat = "1.262.0"
