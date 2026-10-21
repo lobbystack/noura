@@ -296,7 +296,6 @@ impl FileTree {
             .position(|candidate| *candidate == node)
     }
 
-    /// The visible rows, top to bottom.
     /// Every file and folder name in the tree, as on disk and as shown.
     pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
         self.nodes
@@ -304,6 +303,7 @@ impl FileTree {
             .flat_map(|node| [node.file_name.as_str(), node.shown.as_str()])
     }
 
+    /// The visible rows, top to bottom.
     pub fn rows(&self) -> &[TreeRow] {
         &self.rows
     }

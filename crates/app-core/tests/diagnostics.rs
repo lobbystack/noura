@@ -6,7 +6,7 @@ mod support;
 use std::path::Path;
 
 use app_core::{App, NoticeKind, VERSION, WorkspaceService, settings_section};
-use support::{Call, FakeSystem, note, settle, write};
+use support::{Call, FakeSystem, note, rows, settle, write};
 
 /// Names that appear only in the workspace, its folder's path and the log,
 /// so the report must contain none of them.
@@ -158,4 +158,97 @@ fn without_a_workspace_or_a_log_the_report_says_so() {
     assert!(report.contains(&format!("Noura {VERSION}")), "{report}");
     assert!(report.contains("Workspace: none open"), "{report}");
     assert!(report.contains("(no log entries)"), "{report}");
+}
+
+/// Words the log holds that no list of known names covers: a path in
+/// another workspace, a file's name before it was renamed, a path outside
+/// any workspace, and a quoted path with quotes in it.
+const UNKNOWN: [&str; 19] = [
+    "Divorce",
+    "Lawyer",
+    "Meeting",
+    "Custody",
+    "Lantern",
+    "Keeper",
+    "Diary",
+    "someone",
+    "Desktop",
+    "Tax",
+    "Return",
+    "Final",
+    "Draft",
+    "Hidden",
+    "Affair",
+    "Harbor",
+    "Ledger",
+    "Volumes",
+    "Saltmarsh",
+];
+
+#[test]
+fn names_no_list_knows_stay_out_of_the_report() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    std::fs::create_dir_all(&folder).unwrap();
+    let root = WorkspaceService::new(app_data.path())
+        .create("Garden", &folder)
+        .unwrap()
+        .root()
+        .to_owned();
+    let root = std::path::PathBuf::from(root);
+    write(&root, "Lantern Keeper Diary.md", b"before");
+    let system = FakeSystem::new();
+    let mut app = App::launch_with(app_data.path(), system.clone());
+    settle(&mut app);
+    // The file's old name is in the log, but no longer in the tree.
+    std::fs::rename(
+        root.join("Lantern Keeper Diary.md"),
+        root.join("Fresh start.md"),
+    )
+    .unwrap();
+    app.rescan();
+    settle(&mut app);
+    assert_eq!(rows(&app), ["Fresh start"]);
+
+    let lines = [
+        // Another workspace's file, logged unquoted.
+        "2026-10-21T09:00:00.000000Z  WARN local_core::engine::reconcile: a Markdown file \
+         could not be read path=Divorce Lawyer Meeting/Custody Plan.md error=denied",
+        // The renamed file, by its old name, quoted and unquoted.
+        "2026-10-21T09:00:01.000000Z  WARN local_core::engine::scan: a workspace file could \
+         not be read path=\"Lantern Keeper Diary.md\" reason=\"busy\"",
+        "2026-10-21T09:00:02.000000Z  INFO app_core: moved from=Lantern Keeper Diary.md \
+         to=Fresh start.md",
+        // A path outside any workspace, in an error and in a message.
+        "2026-10-21T09:00:03.000000Z  WARN app_core: the file manager didn't open \
+         error=failed for /Users/someone/Desktop/Tax Return Final Draft.pdf",
+        "2026-10-21T09:00:04.000000Z  WARN app_core: could not watch /Volumes/Harbor \
+         Ledger/Saltmarsh notes",
+        // A Debug path with escaped quotes, and the walker's error naming it.
+        "2026-10-21T09:00:05.000000Z  WARN local_core::engine::scan: the workspace walk \
+         skipped an entry path=Some(\"/x/My \\\"Hidden Affair\\\" notes\") error=IO error \
+         for operation on /x/My \"Hidden Affair\" notes: Permission denied (os error 13)",
+    ];
+    let folder = app_core::log_folder(app_data.path());
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("noura.log"), lines.join("\n") + "\n").unwrap();
+
+    app.copy_diagnostics();
+    let report = copied(&system);
+
+    for word in UNKNOWN {
+        assert!(!report.contains(word), "the report names {word}:\n{report}");
+    }
+    for readable in [
+        "a Markdown file could not be read path=<redacted> error=denied",
+        "a workspace file could not be read path=<redacted> reason=<text>",
+        // The tree knows the new name.
+        "moved from=<redacted> to=<name>",
+        "the file manager didn't open error=<redacted>",
+        "could not watch <path>",
+        "the workspace walk skipped an entry path=<redacted> error=<redacted>",
+    ] {
+        assert!(report.contains(readable), "{readable}:\n{report}");
+    }
 }

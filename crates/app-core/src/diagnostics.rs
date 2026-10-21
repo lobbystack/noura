@@ -183,64 +183,127 @@ impl Redactor {
 }
 
 /// Fields whose values name files, folders or what someone typed.
-const NAMED_FIELDS: [&str; 7] = ["path", "name", "file", "folder", "dir", "title", "query"];
+const NAMED_FIELDS: [&str; 8] = [
+    "path", "name", "file", "folder", "dir", "title", "query", "pattern",
+];
 
 /// Replace what could name a person's files or content without knowing
-/// the names: quoted text, absolute and relative paths, file names with
-/// an extension, and fields such as `path=` or `name=`.
+/// the names: quoted text, paths, file names with an extension, and the
+/// values of fields such as `path=` or `name=`.
 fn redact(line: &str) -> String {
+    redact_words(&replace_quoted(line))
+}
+
+/// Replace each quoted span with `<text>`. Inside quotes a backslash
+/// escapes the next character, as Debug formatting writes `\"`, and a
+/// quote left open runs to the end of the line. An apostrophe inside a
+/// word, as in "couldn't", isn't a quote.
+fn replace_quoted(line: &str) -> String {
     let mut output = String::with_capacity(line.len());
-    let mut word = String::new();
     let mut chars = line.chars().peekable();
     let mut previous: Option<char> = None;
     while let Some(character) = chars.next() {
-        // An apostrophe inside a word, as in "couldn't", isn't a quote.
         let apostrophe = character == '\''
             && previous.is_some_and(char::is_alphanumeric)
             && chars.peek().is_some_and(|next| next.is_alphanumeric());
         if matches!(character, '"' | '\'' | '`') && !apostrophe {
-            flush(&mut word, &mut output);
-            for next in chars.by_ref() {
-                if next == character {
+            while let Some(next) = chars.next() {
+                if next == '\\' {
+                    chars.next();
+                } else if next == character {
                     break;
                 }
             }
             output.push_str("<text>");
-        } else if character.is_whitespace() {
-            flush(&mut word, &mut output);
-            output.push(character);
         } else {
-            word.push(character);
+            output.push(character);
         }
         previous = Some(character);
     }
-    flush(&mut word, &mut output);
     output
 }
 
-/// Add one word of a log line to `output`, replaced when it could name
-/// something.
-fn flush(word: &mut String, output: &mut String) {
-    if word.is_empty() {
-        return;
-    }
-    let path_like = word.contains('/') || word.contains('\\');
-    match word.split_once('=') {
-        Some((key, value))
-            if path_like
-                || is_file_name(value)
-                || NAMED_FIELDS
-                    .iter()
-                    .any(|field| key.to_ascii_lowercase().contains(field)) =>
-        {
-            output.push_str(key);
-            output.push_str("=<redacted>");
+/// A `key=value` word: the text up to and including the key, such as
+/// `path` or a span's `open{path`, and the value's first word. Keys are
+/// letters, digits, `_` and `.`, starting with a letter or `_`.
+fn field(word: &str) -> Option<(&str, &str, &str)> {
+    let (left, value) = word.split_once('=')?;
+    let key = left.rsplit('{').next().unwrap_or(left);
+    let is_key = key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+    is_key.then_some((left, key, value))
+}
+
+/// Whether `word` is, or holds, a path.
+fn is_path(word: &str) -> bool {
+    word.contains(['/', '\\'])
+}
+
+/// Replace, word by word, what could name something. A field's value runs
+/// through the following words up to the next `key=` word or the end of
+/// the line, since a value such as a path can hold spaces. A named
+/// field's value goes whole, and so does any value that holds a path or a
+/// file name. Outside a field, a path runs on to the next field too.
+fn redact_words(line: &str) -> String {
+    let words: Vec<(&str, &str)> = split_words(line);
+    let next_field = |from: usize| {
+        (from..words.len())
+            .find(|&index| field(words[index].1).is_some())
+            .unwrap_or(words.len())
+    };
+    let mut output = String::with_capacity(line.len());
+    let mut index = 0;
+    while index < words.len() {
+        let (space, word) = words[index];
+        output.push_str(space);
+        if let Some((left, key, first)) = field(word) {
+            let end = next_field(index + 1);
+            let named = NAMED_FIELDS
+                .iter()
+                .any(|field| key.to_ascii_lowercase().contains(field));
+            let mut value =
+                std::iter::once(first).chain(words[index + 1..end].iter().map(|(_, word)| *word));
+            if named || value.any(|word| is_path(word) || is_file_name(word)) {
+                output.push_str(left);
+                output.push_str("=<redacted>");
+                index = end;
+                continue;
+            }
+            output.push_str(word);
+        } else if is_path(word) {
+            output.push_str("<path>");
+            index = next_field(index + 1);
+            continue;
+        } else if is_file_name(word) {
+            output.push_str("<file>");
+        } else {
+            output.push_str(word);
         }
-        _ if path_like => output.push_str("<path>"),
-        _ if is_file_name(word) => output.push_str("<file>"),
-        _ => output.push_str(word),
+        index += 1;
     }
-    word.clear();
+    // The spaces after the last word.
+    output.push_str(&line[line.trim_end().len()..]);
+    output
+}
+
+/// Each word of `line` with the spaces before it.
+fn split_words(line: &str) -> Vec<(&str, &str)> {
+    let mut words = Vec::new();
+    let mut rest = line;
+    loop {
+        let start = rest.len() - rest.trim_start().len();
+        let (space, after) = rest.split_at(start);
+        if after.is_empty() {
+            break;
+        }
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let (word, remaining) = after.split_at(end);
+        words.push((space, word));
+        rest = remaining;
+    }
+    words
 }
 
 /// Whether `word` looks like a file name: a name, a dot and an extension
@@ -276,8 +339,64 @@ mod tests {
     #[test]
     fn reports_hide_absolute_and_windows_paths() {
         let redacted = redact(r"open failed for /Users/someone/Notes and C:\Users\someone\Notes");
-        assert!(!redacted.contains("someone"));
-        assert_eq!(redacted.matches("<path>").count(), 2);
+        assert_eq!(redacted, "open failed for <path>");
+        assert_eq!(
+            redact(r"open failed for C:\Users\someone\My Notes code=busy"),
+            "open failed for <path> code=busy"
+        );
+    }
+
+    #[test]
+    fn a_named_field_hides_every_word_up_to_the_next_field() {
+        assert_eq!(
+            redact("could not be read path=Divorce Lawyer Meeting/Custody Plan.md error=denied"),
+            "could not be read path=<redacted> error=denied"
+        );
+        assert_eq!(
+            redact("rename failed name=Lantern Keeper Diary"),
+            "rename failed name=<redacted>"
+        );
+        assert_eq!(
+            redact("open{path=Lantern Keeper}: app_core: opened"),
+            "open{path=<redacted>"
+        );
+    }
+
+    #[test]
+    fn a_value_that_holds_a_path_or_a_file_name_goes_whole() {
+        assert_eq!(
+            redact("didn't open error=failed for /Users/someone/Tax Return Final Draft.pdf"),
+            "didn't open error=<redacted>"
+        );
+        assert_eq!(
+            redact("moved from=Secret Project Alpha/Draft.md to=Archive/Box Two code=moved"),
+            "moved from=<redacted> to=<redacted> code=moved"
+        );
+        assert_eq!(
+            redact("kept error=Big Plan.md is busy code=busy"),
+            "kept error=<redacted> code=busy"
+        );
+        assert_eq!(
+            redact("failed error=No such file or directory (os error 2)"),
+            "failed error=No such file or directory (os error 2)"
+        );
+    }
+
+    #[test]
+    fn an_escaped_quote_doesn_t_end_quoted_text() {
+        assert_eq!(
+            redact(r#"skipped path=Some("/x/My \"Hidden Affair\" notes") code=io"#),
+            "skipped path=<redacted> code=io"
+        );
+        assert_eq!(
+            redact(r#"read reason="a \"Hidden Affair\" note" code=io"#),
+            "read reason=<text> code=io"
+        );
+        // A quote left open hides the rest of the line.
+        assert_eq!(
+            redact(r#"read reason="Hidden \" Affair"#),
+            "read reason=<text>"
+        );
     }
 
     #[test]
