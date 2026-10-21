@@ -221,6 +221,36 @@ fn rows_that_break_the_rules_show_why_until_the_page_draws_again() {
 }
 
 #[test]
+fn a_row_id_that_repeats_one_from_another_batch_shows_why_until_the_page_draws_again() {
+    let Some((_fixture, mut app, _folder)) = with_kit() else {
+        return;
+    };
+    let reason = "Two rows have the ID repeated-0. Each row needs its own ID.".to_owned();
+    let labels = |app: &mut App, range| {
+        app.plugin_rows(BROKEN_ROWS, "repeated", range).map(|rows| {
+            rows.into_iter()
+                .map(|row| row.expect("the plugin returned the row").item.label)
+                .collect::<Vec<_>>()
+        })
+    };
+
+    // Rows 80 to 99 repeat the IDs of rows 0 to 19. Each batch holds
+    // its own IDs once.
+    assert_eq!(
+        labels(&mut app, 0..2),
+        Ok(vec!["Repeated 0".to_owned(), "Repeated 1".to_owned()])
+    );
+    assert_eq!(labels(&mut app, 64..70), Err(reason.clone()));
+    assert_eq!(labels(&mut app, 0..2), Err(reason.clone()));
+
+    // A redraw asks again, and the later batch alone holds no repeat
+    // until the first comes back.
+    app.press_plugin_button(BROKEN_ROWS, "anything");
+    assert_eq!(labels(&mut app, 80..81), Ok(vec!["Repeated 80".to_owned()]));
+    assert_eq!(labels(&mut app, 0..2), Err(reason));
+}
+
+#[test]
 fn a_date_field_holds_a_whole_date_or_nothing() {
     for (typed, value) in [
         ("", Some(None)),

@@ -26,8 +26,8 @@ use std::{
 use local_core::{CoreError, WatchCoordinator, WorkspaceEntryKind};
 use plugin_host::{
     Candidate, Capability, Entry, EntryKind, Event, FileRead, InstallError, Listed, ObjectRead,
-    Page, PluginHost, PluginInstance, PluginManifest, ServiceError, Value, View, ViewKind,
-    ViewNode, VirtualRow, WorkspacePath, WorkspaceReads, check_rows,
+    Page, PluginHost, PluginInstance, PluginManifest, ServiceError, Value, View, ViewError,
+    ViewKind, ViewNode, VirtualRow, WorkspacePath, WorkspaceReads, check_rows,
 };
 use serde::{Deserialize, Serialize};
 
@@ -162,6 +162,8 @@ struct Rows {
     /// The start of each batch asked for, whatever came back.
     asked: std::collections::HashSet<u32>,
     rows: HashMap<u32, VirtualRow>,
+    /// The ID of every row fetched, which no other row may repeat.
+    ids: std::collections::HashSet<String>,
     /// Why the plugin's rows can't be shown.
     problem: Option<String>,
 }
@@ -746,7 +748,8 @@ impl Plugins {
     /// The rows in `range` of the virtual list `node` in the plugin page
     /// `page_id`, each `None` until the plugin returns it. Rows the
     /// plugin hasn't returned yet are asked for in batches of
-    /// [`ROW_BATCH`], once each until the page draws again.
+    /// [`ROW_BATCH`], once each until the page draws again. A row whose ID
+    /// repeats one fetched before breaks the list's rules.
     pub(crate) fn virtual_rows(
         &mut self,
         page_id: &str,
@@ -782,9 +785,20 @@ impl Plugins {
                     tracing::warn!(%error, "a plugin failed to list rows");
                     "The plugin failed while listing these rows.".to_owned()
                 })
-                .and_then(|fetched| check_rows(fetched, count).map_err(|error| error.to_string()));
+                .and_then(|fetched| check_rows(fetched, count).map_err(|error| error.to_string()))
+                .and_then(|fetched| {
+                    // `check_rows` checks one batch; a row may not repeat
+                    // the ID of a row in another.
+                    match fetched.iter().find(|row| rows.ids.contains(&row.id)) {
+                        Some(row) => {
+                            Err(ViewError::DuplicateRowId { id: row.id.clone() }.to_string())
+                        }
+                        None => Ok(fetched),
+                    }
+                });
             match fetched {
                 Ok(fetched) => {
+                    rows.ids.extend(fetched.iter().map(|row| row.id.clone()));
                     rows.rows.extend((start..).zip(fetched));
                 }
                 Err(problem) => {

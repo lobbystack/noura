@@ -3,17 +3,21 @@
 //! `Last event: selected south in beds`:
 //!
 //! - `lists`, titled Lists: the list Beds, whose items each have a menu,
-//!   a More menu button and a Redraw button.
+//!   a More menu button, a Redraw button and a Remove first bed button,
+//!   which takes the list's first item away.
 //! - `table`, titled Table: the table Plants, which sorts by the column
 //!   whose header you press, and whose rows each have a menu.
 //! - `form`, titled Form: the form New plant with one input of each kind.
 //!   The inputs show the values the plugin holds, which each change
 //!   updates. Submitting adds the plant to the table.
 //! - `seeds`, titled Seeds: the virtual list Seeds of 10,000 rows. Each
-//!   row's detail names the fetch that returned it, such as `Batch 1`.
+//!   row's detail names the fetch that returned it, such as `Batch 1`. A
+//!   press of `insert` puts three rows, New seed 1 to 3, above them.
 //! - `broken-rows`, titled Broken rows: the virtual list Broken of 100
 //!   rows, which returns one row more than Noura asks for. A text node
 //!   says which rows Noura asked for, such as `Asked for rows: 0 to 63`.
+//!   Below it, the virtual list Repeated of 100 rows, whose row IDs start
+//!   over at the 81st row.
 
 use std::sync::Mutex;
 
@@ -27,6 +31,13 @@ const SEEDS: u32 = 10_000;
 /// The rows the Broken list holds.
 const BROKEN: u32 = 100;
 
+/// The rows the Repeated list holds, and how many have their own ID.
+const REPEATED: u32 = 100;
+const REPEATED_IDS: u32 = 80;
+
+/// The rows a press of `insert` puts above the seeds.
+const INSERTED: u32 = 3;
+
 struct Plant {
     id: String,
     name: String,
@@ -36,6 +47,10 @@ struct Plant {
 
 struct State {
     last: String,
+    /// The Beds list's items: ID, label and detail.
+    beds: Vec<(&'static str, &'static str, Option<&'static str>)>,
+    /// The rows above the seeds.
+    new_seeds: u32,
     sort: (String, SortOrder),
     plants: Vec<Plant>,
     name: String,
@@ -55,6 +70,12 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
     let mut state = STATE.lock().unwrap();
     let state = state.get_or_insert_with(|| State {
         last: "none".to_owned(),
+        beds: vec![
+            ("north", "North bed", Some("Tomatoes")),
+            ("south", "South bed", Some("Beans")),
+            ("herbs", "Herb spiral", None),
+        ],
+        new_seeds: 0,
         sort: ("name".to_owned(), SortOrder::Ascending),
         plants: [
             ("basil", "Basil", "Herb spiral", "2026-04-02"),
@@ -112,7 +133,7 @@ impl Plugin for Kit {
             let mut view = View::panel("root", Some(title));
             view.text(View::ROOT, "last", &format!("Last event: {}", state.last));
             match page.as_str() {
-                "lists" => lists(&mut view),
+                "lists" => lists(&mut view, state),
                 "table" => table(&mut view, state),
                 "form" => form(&mut view, state),
                 "broken-rows" => {
@@ -123,9 +144,11 @@ impl Plugin for Kit {
                     };
                     view.text(View::ROOT, "asked", &format!("Asked for rows: {asked}"));
                     view.virtual_list(View::ROOT, "broken", "Broken", BROKEN);
+                    view.virtual_list(View::ROOT, "repeated", "Repeated", REPEATED);
                 }
                 _ => {
-                    view.virtual_list(View::ROOT, "seeds", "Seeds", SEEDS);
+                    let rows = SEEDS + state.new_seeds;
+                    view.virtual_list(View::ROOT, "seeds", "Seeds", rows);
                 }
             }
             view.into_nodes()
@@ -136,19 +159,42 @@ impl Plugin for Kit {
         if node == "broken" {
             return with_state(|state| broken_rows(state, start, count));
         }
+        if node == "repeated" {
+            return (start..start.saturating_add(count).min(REPEATED))
+                .map(|index| VirtualRow {
+                    id: format!("repeated-{}", index % REPEATED_IDS),
+                    item: Item {
+                        label: format!("Repeated {index}"),
+                        detail: None,
+                    },
+                })
+                .collect();
+        }
         if node != "seeds" {
             return Vec::new();
         }
         with_state(|state| {
             state.batches += 1;
             let batch = state.batches;
-            (start..start.saturating_add(count).min(SEEDS))
-                .map(|index| VirtualRow {
-                    id: format!("seed-{}", index + 1),
-                    item: Item {
-                        label: format!("Seed {}", index + 1),
-                        detail: Some(format!("Batch {batch}")),
-                    },
+            let new = state.new_seeds;
+            (start..start.saturating_add(count).min(SEEDS + new))
+                .map(|index| {
+                    let (id, label) = if index < new {
+                        (
+                            format!("new-seed-{}", index + 1),
+                            format!("New seed {}", index + 1),
+                        )
+                    } else {
+                        let seed = index - new + 1;
+                        (format!("seed-{seed}"), format!("Seed {seed}"))
+                    };
+                    VirtualRow {
+                        id,
+                        item: Item {
+                            label,
+                            detail: Some(format!("Batch {batch}")),
+                        },
+                    }
                 })
                 .collect()
         })
@@ -158,6 +204,10 @@ impl Plugin for Kit {
         with_state(|state| {
             state.last = describe(&event);
             match event {
+                Event::Pressed(node) if node == "trim" && !state.beds.is_empty() => {
+                    state.beds.remove(0);
+                }
+                Event::Pressed(node) if node == "insert" => state.new_seeds = INSERTED,
                 Event::Sorted(press) => {
                     let order =
                         if state.sort.0 == press.column && state.sort.1 == SortOrder::Ascending {
@@ -203,13 +253,9 @@ fn broken_rows(state: &mut State, start: u32, count: u32) -> Vec<VirtualRow> {
         .collect()
 }
 
-fn lists(view: &mut View) {
+fn lists(view: &mut View, state: &State) {
     let beds = view.list(View::ROOT, "beds", "Beds");
-    for (id, label, detail) in [
-        ("north", "North bed", Some("Tomatoes")),
-        ("south", "South bed", Some("Beans")),
-        ("herbs", "Herb spiral", None),
-    ] {
+    for &(id, label, detail) in &state.beds {
         let item = view.item(beds, id, label, detail);
         let menu = view.menu(item, &format!("{id}-menu"), &format!("Actions for {label}"));
         view.menu_item(menu, &format!("{id}-water"), "Water", true);
@@ -222,6 +268,7 @@ fn lists(view: &mut View) {
     view.menu_item(menu, "refresh", "Refresh", true);
     view.menu_item(menu, "export", "Export", false);
     view.button(View::ROOT, "redraw", "Redraw");
+    view.button(View::ROOT, "trim", "Remove first bed");
 }
 
 fn table(view: &mut View, state: &State) {

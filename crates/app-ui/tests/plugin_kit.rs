@@ -46,7 +46,7 @@ fn opened(kit: &[u8]) -> Opened {
     }
 }
 
-fn open_page(harness: &mut Ui, title: &str) {
+fn open_page<S>(harness: &mut Harness<'static, S>, title: &str) {
     harness
         .get_by_role_and_label(Role::Navigation, "Pages")
         .get_by_role_and_label(Role::Link, title)
@@ -54,18 +54,18 @@ fn open_page(harness: &mut Ui, title: &str) {
     harness.run();
 }
 
-fn press(harness: &mut Ui, key: Key) {
+fn press<S>(harness: &mut Harness<'static, S>, key: Key) {
     harness.key_press(key);
     harness.run();
 }
 
-fn press_with(harness: &mut Ui, modifiers: Modifiers, key: Key) {
+fn press_with<S>(harness: &mut Harness<'static, S>, modifiers: Modifiers, key: Key) {
     harness.key_press_modifiers(modifiers, key);
     harness.run();
 }
 
 /// What the plugin says the last event was.
-fn last_event(harness: &Ui) -> String {
+fn last_event<S>(harness: &Harness<'static, S>) -> String {
     let said: Vec<String> = harness
         .query_all(By::new().role(Role::Label))
         .filter_map(|label| label.accesskit_node().value())
@@ -81,7 +81,7 @@ fn labels<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<String
         .collect()
 }
 
-fn option<'a>(harness: &'a Ui, label: &'a str) -> egui_kittest::Node<'a> {
+fn option<'a, S>(harness: &'a Harness<'static, S>, label: &'a str) -> egui_kittest::Node<'a> {
     harness.get_by_role_and_label(Role::ListBoxOption, label)
 }
 
@@ -90,7 +90,7 @@ fn is_selected(node: &egui_kittest::Node<'_>) -> bool {
 }
 
 /// The label of the widget with keyboard focus.
-fn focused(harness: &Ui) -> Option<String> {
+fn focused<S>(harness: &Harness<'static, S>) -> Option<String> {
     harness
         .query_all(By::new())
         .find(|node| node.is_focused())
@@ -370,14 +370,18 @@ fn table_rows_select_from_the_keyboard_and_open_their_menu_by_right_click_or_key
     assert_eq!(last_event(harness), "chose tomato-remove");
 }
 
-fn form_field<'a>(harness: &'a Ui, role: Role, label: &'a str) -> egui_kittest::Node<'a> {
+fn form_field<'a, S>(
+    harness: &'a Harness<'static, S>,
+    role: Role,
+    label: &'a str,
+) -> egui_kittest::Node<'a> {
     harness
         .get_by_role_and_label(Role::Form, "New plant")
         .get_by_role_and_label(role, label)
 }
 
 /// Select everything in the focused text field and type `text` over it.
-fn retype(harness: &mut Ui, text: &str) {
+fn retype<S>(harness: &mut Harness<'static, S>, text: &str) {
     press_with(harness, Modifiers::COMMAND, Key::A);
     harness
         .query_all(By::new())
@@ -666,4 +670,221 @@ fn virtual_list_scroll_frame_times() {
         harness.query_by_label("Seed 2").is_none(),
         "the list scrolled"
     );
+}
+
+/// Windows on one workspace, drawn by one egui context as the desktop
+/// draws its windows, so they share egui's memory. Each frame draws the
+/// window `shown` names.
+struct Windows {
+    windows: Vec<app_ui::NouraUi>,
+    shown: usize,
+}
+
+type Pair = Harness<'static, Windows>;
+
+struct TwoWindows {
+    harness: Pair,
+    _folders: (tempfile::TempDir, tempfile::TempDir),
+}
+
+/// Draw the window `index` until its background work ends.
+fn show(harness: &mut Pair, index: usize) {
+    harness.state_mut().shown = index;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        harness.step();
+        let state = harness.state();
+        if !state.windows[state.shown].is_busy() {
+            harness.run();
+            return;
+        }
+        assert!(Instant::now() < deadline, "background work never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A workspace with the kit plugin installed and on, opened at launch in
+/// one window, and a second window on it from New Window.
+fn two_windows(kit: &[u8]) -> TwoWindows {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    let folder = plugins::folder(parent.path(), &plugins::kit_manifest(), "plugin.wasm", kit);
+    install_and_enable(app_data.path(), &folder, "kit");
+    let platform = app_core::Platform::current();
+    let app = app_core::App::launch_with(app_data.path(), support::FakeSystem::new(platform));
+    let first = app_ui::NouraUi::new(app, Box::new(FakePicker::default()));
+    let mut builder = Harness::<Windows>::builder()
+        .with_size([1000.0, 700.0])
+        .with_max_steps(12);
+    if platform == app_core::Platform::MacOs {
+        builder = builder.allow_missing_glyphs();
+    }
+    let mut harness = builder.build_ui_state(
+        |ui, state: &mut Windows| state.windows[state.shown].ui(ui),
+        Windows {
+            windows: vec![first],
+            shown: 0,
+        },
+    );
+    show(&mut harness, 0);
+    let second = harness.state_mut().windows[0]
+        .app_mut()
+        .new_window()
+        .expect("the workspace is open");
+    harness.state_mut().windows.push(app_ui::NouraUi::new(
+        second,
+        Box::new(FakePicker::default()),
+    ));
+    TwoWindows {
+        harness,
+        _folders: (app_data, parent),
+    }
+}
+
+#[test]
+fn each_window_keeps_its_own_selection_menu_and_typing_on_a_page() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut two = two_windows(&kit);
+    let harness = &mut two.harness;
+    open_page(harness, "Lists");
+    option(harness, "North bed").click_secondary();
+    harness.run();
+    assert!(is_selected(&option(harness, "North bed")));
+    assert!(harness.query_by_label("Actions for North bed").is_some());
+
+    show(harness, 1);
+    open_page(harness, "Lists");
+    assert!(!is_selected(&option(harness, "North bed")));
+    assert!(harness.query_by_label("Actions for North bed").is_none());
+
+    show(harness, 0);
+    assert!(is_selected(&option(harness, "North bed")));
+    assert!(harness.query_by_label("Actions for North bed").is_some());
+    press(harness, Key::Escape);
+    open_page(harness, "Form");
+    form_field(harness, Role::TextInput, "Sown on").focus();
+    harness.run();
+    // Half a date stays in this window's field and never reaches the
+    // plugin.
+    retype(harness, "2026-10");
+    assert!(
+        harness
+            .query_by_label("Type a date as YYYY-MM-DD.")
+            .is_some()
+    );
+
+    show(harness, 1);
+    open_page(harness, "Form");
+    let sown = form_field(harness, Role::TextInput, "Sown on").value();
+    assert_eq!(sown.as_deref().unwrap_or_default(), "");
+    assert!(
+        harness
+            .query_by_label("Type a date as YYYY-MM-DD.")
+            .is_none()
+    );
+
+    show(harness, 0);
+    assert_eq!(
+        form_field(harness, Role::TextInput, "Sown on").value(),
+        Some("2026-10".into())
+    );
+}
+
+#[test]
+fn a_menu_whose_row_a_redraw_takes_away_closes_and_gives_the_keyboard_back() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut two = two_windows(&kit);
+    let harness = &mut two.harness;
+    open_page(harness, "Lists");
+    option(harness, "North bed").click();
+    harness.run();
+    press_with(harness, Modifiers::SHIFT, Key::F10);
+    assert!(harness.query_by_label("Actions for North bed").is_some());
+
+    // The other window takes the row away while the menu is open here.
+    show(harness, 1);
+    open_page(harness, "Lists");
+    harness
+        .get_by_role_and_label(Role::Button, "Remove first bed")
+        .click();
+    harness.run();
+    assert_eq!(last_event(harness), "pressed trim");
+
+    show(harness, 0);
+    assert!(harness.query_by_label("Actions for North bed").is_none());
+    assert!(harness.query_by_label("North bed").is_none());
+    let south = option(harness, "South bed");
+    assert!(south.is_focused());
+    assert!(is_selected(&south));
+    assert_eq!(last_event(harness), "selected south in beds");
+    // The list takes its keys again.
+    press(harness, Key::ArrowDown);
+    assert_eq!(last_event(harness), "selected herbs in beds");
+    press_with(harness, Modifiers::SHIFT, Key::F10);
+    assert!(harness.query_by_label("Actions for Herb spiral").is_some());
+}
+
+#[test]
+fn a_virtual_lists_selection_follows_its_row_when_rows_come_in_above_it() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut opened = opened(&kit);
+    let harness = &mut opened.harness;
+    open_page(harness, "Seeds");
+    option(harness, "Seed 2").click();
+    harness.run();
+    assert_eq!(last_event(harness), "selected seed-2 in seeds");
+
+    harness
+        .state_mut()
+        .app_mut()
+        .send_plugin_event("plugin:kit:seeds", &PluginEvent::Pressed("insert".into()));
+    harness.run();
+    assert_eq!(last_event(harness), "pressed insert");
+    // Seed 2 moved from the second row to the fifth.
+    assert_eq!(
+        option(harness, "Seed 2").accesskit_node().position_in_set(),
+        Some(5)
+    );
+    assert!(is_selected(&option(harness, "Seed 2")));
+    assert!(!is_selected(&option(harness, "New seed 2")));
+
+    // The list's stop in the Tab order is the selected row, which selects
+    // nothing new as it takes the keyboard back.
+    press_with(harness, Modifiers::SHIFT, Key::Tab);
+    assert!(!option(harness, "Seed 2").is_focused());
+    press(harness, Key::Tab);
+    assert!(option(harness, "Seed 2").is_focused());
+    assert_eq!(last_event(harness), "pressed insert");
+}
+
+#[test]
+fn a_table_row_whose_first_cell_is_blank_is_named_by_its_next_cell() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut opened = opened(&kit);
+    let harness = &mut opened.harness;
+    // A plant added without a name has a blank first cell.
+    open_page(harness, "Form");
+    form_field(harness, Role::Button, "Add plant").click();
+    harness.run();
+    assert!(last_event(harness).starts_with("submitted new-plant: name text \"\""));
+
+    open_page(harness, "Table");
+    assert_eq!(row(harness, "Pots").get_all_by_role(Role::Cell).count(), 3);
+    // Each row of plants has a name; the header row holds column headers.
+    let table = harness.get_by_role_and_label(Role::Table, "Plants");
+    let names: Vec<String> = table
+        .get_all_by_role(Role::Row)
+        .filter(|row| row.query_all_by_role(Role::ColumnHeader).next().is_none())
+        .map(|row| row.accesskit_node().label().unwrap_or_default())
+        .collect();
+    assert_eq!(names, ["Pots", "Basil", "Bean", "Tomato"]);
 }

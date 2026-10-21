@@ -3,9 +3,11 @@
 //! selections, header presses, menu choices, input changes and submits go
 //! back to the plugin by node ID.
 //!
-//! What the widgets remember between frames, such as a list's selection or
-//! the text you typed, lives in egui's memory under IDs made from the page
-//! and the node ID, so a redraw with the same node IDs keeps it.
+//! What the widgets remember between frames, such as a list's selection,
+//! an open menu or the text you typed, lives in egui's memory under IDs
+//! made from the window, the page and the node ID. A redraw with the same
+//! node IDs keeps it, and each window that shows the page keeps its own:
+//! every window draws with one egui context and shares its memory.
 
 mod form;
 mod menu;
@@ -22,6 +24,8 @@ use crate::{
 
 /// The page being drawn and what its widgets ask for.
 struct Kit<'a> {
+    /// The window's salt for IDs.
+    window: Id,
     page: &'a str,
     app: &'a mut App,
     /// What happened in the view this frame, oldest first.
@@ -31,13 +35,15 @@ struct Kit<'a> {
 }
 
 impl Kit<'_> {
-    /// The ID of the widget that draws the node `node` of this page.
+    /// The ID of the widget that draws the node `node` of this page in
+    /// this window.
     fn id(&self, node: &str) -> Id {
-        Id::unique(("plugin-node", self.page, node))
+        Id::unique(("plugin-node", self.window, self.page, node))
     }
 }
 
-pub(crate) fn show(ui: &mut Ui, app: &mut App, page_id: &str) {
+/// The plugin page `page_id` in the window whose ID salt is `window`.
+pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id, page_id: &str) {
     match app.plugin_view(page_id) {
         None => {
             muted(ui, "The plugin that adds this page isn't running.");
@@ -45,12 +51,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, page_id: &str) {
         Some(Err(reason)) => problem(ui, &reason),
         Some(Ok(view)) => {
             let mut kit = Kit {
+                window,
                 page: page_id,
                 app,
                 events: Vec::new(),
                 link: None,
             };
-            ui.push_id(("plugin-view", page_id), |ui| {
+            ui.push_id(("plugin-view", window, page_id), |ui| {
                 node(ui, view.root(), &mut kit);
             });
             let Kit { events, link, .. } = kit;

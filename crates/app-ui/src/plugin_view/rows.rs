@@ -102,11 +102,7 @@ impl<'a> Row<'a> {
     fn of(node: &'a ViewNode) -> Self {
         let (label, detail, cells) = match &node.kind {
             ViewKind::Item { label, detail } => (label.clone(), detail.clone(), Vec::new()),
-            ViewKind::Row { cells } => (
-                cells.first().cloned().unwrap_or_default(),
-                None,
-                cells.clone(),
-            ),
+            ViewKind::Row { cells } => (row_label(cells), None, cells.clone()),
             _ => (String::new(), None, Vec::new()),
         };
         Self {
@@ -176,6 +172,25 @@ impl<'a> Source<'a> {
             .next()
             .flatten()
     }
+}
+
+/// The name screen readers give a table row: its first cell with text,
+/// which `plugin-host` makes sure it has.
+fn row_label(cells: &[String]) -> String {
+    cells
+        .iter()
+        .find(|cell| !cell.trim().is_empty())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The rows of a list of `count` rows laid out in `area` that meet `clip`.
+/// Empty when `clip` holds none of them, even upside down.
+fn visible_rows(clip: Rect, area: Rect, count: usize) -> Range<usize> {
+    let first = ((clip.top() - area.top()) / ROW_HEIGHT).floor().max(0.0) as usize;
+    let last = ((clip.bottom() - area.top()) / ROW_HEIGHT).ceil().max(0.0) as usize;
+    let first = first.min(count);
+    first..last.clamp(first, count)
 }
 
 fn to_u32(index: usize) -> u32 {
@@ -336,7 +351,8 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
         Role::ListBoxOption
     };
     // A list of nodes finds its selected row by ID, wherever a redraw put
-    // it. A virtual list keeps the index it had.
+    // it. A virtual list looks for it among the rows it fetches below, and
+    // meanwhile keeps the index it had.
     if let Source::Nodes(nodes) = source {
         state.selected = state.selected.take().and_then(|(id, _)| {
             let index = nodes.iter().position(|node| node.id == id)?;
@@ -388,19 +404,17 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
     let mut select = keyboard.filter(|_| moved);
 
     let (_, area) = ui.allocate_space(vec2(ui.available_width(), count as f32 * ROW_HEIGHT));
-    let clip = ui.clip_rect();
-    let visible = {
-        let first = ((clip.top() - area.top()) / ROW_HEIGHT).floor().max(0.0) as usize;
-        let last = ((clip.bottom() - area.top()) / ROW_HEIGHT).ceil().max(0.0) as usize;
-        first.min(count)..last.min(count)
-    };
+    let visible = visible_rows(ui.clip_rect(), area, count);
     // The selected row stays the list's stop in the Tab order, and the row
     // with the keyboard keeps its focus, even scrolled out of view.
-    let tab_stop = state
-        .selected
-        .as_ref()
-        .map(|(_, index)| *index)
-        .or((count > 0).then_some(0));
+    let tab_stop_of = |state: &State| {
+        state
+            .selected
+            .as_ref()
+            .map(|(_, index)| *index)
+            .or((count > 0).then_some(0))
+    };
+    let tab_stop = tab_stop_of(&state);
     let mut indices: Vec<usize> = visible.clone().collect();
     for extra in [keyboard, tab_stop].into_iter().flatten() {
         if !indices.contains(&extra) {
@@ -426,6 +440,18 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
             rows_by_index.push((index, row));
         }
     }
+    // A redraw may have moved a virtual list's selected row, such as when
+    // rows came in above it. Where it is among the rows fetched, the
+    // selection follows it. Elsewhere the selection stays at its index,
+    // and the row there shows it, so the highlight and the Tab stop are
+    // always the same row.
+    if let Some((id, index)) = &mut state.selected
+        && let Some((at, _)) = rows_by_index.iter().find(|(_, row)| row.id == *id)
+    {
+        *index = *at;
+    }
+    let tab_stop = tab_stop_of(&state);
+    let selected_index = state.selected.as_ref().map(|(_, index)| *index);
 
     let palette = Palette::of(ui.ctx());
     let selected_id = state.selected.as_ref().map(|(id, _)| id.clone());
@@ -443,7 +469,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
             pos2(area.left(), area.top() + index as f32 * ROW_HEIGHT),
             vec2(area.width(), ROW_HEIGHT),
         );
-        let is_selected = selected_id.as_deref() == Some(row.id.as_str());
+        let is_selected = Some(index) == selected_index;
         let sense = if Some(index) == tab_stop {
             Sense::click()
         } else {
@@ -514,6 +540,21 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
     state.drawn = drawn;
     if menu_closed || chosen.is_some() {
         state.menu = None;
+    }
+    // A redraw took away the row with the open menu, or the row's menu.
+    // The menu closes and the keyboard goes back to the list's stop in the
+    // Tab order, which it selects, as a row does when it takes the
+    // keyboard.
+    if let Some(open) = &state.menu
+        && !rows_by_index
+            .iter()
+            .any(|(_, row)| row.id == open.row && row.menu.is_some())
+    {
+        state.menu = None;
+        if let Some((index, row)) = rows_by_index.iter().find(|(at, _)| Some(*at) == tab_stop) {
+            ui.memory_mut(|memory| memory.request_focus(row_id(&row.id)));
+            select = select.or(Some(*index));
+        }
     }
     if let Some(item) = chosen {
         kit.events.push(PluginEvent::Chosen(item));
@@ -664,5 +705,48 @@ fn paint_row(
         let at = Align2::RIGHT_CENTER
             .anchor_size(pos2(inner.right() - 8.0, rect.center().y), detail.size());
         painter.galley(at.min, detail, palette.muted_foreground);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Rect, pos2};
+
+    use super::{ROW_HEIGHT, row_label, visible_rows};
+
+    fn band(top: f32, bottom: f32) -> Rect {
+        Rect::from_min_max(pos2(0.0, top), pos2(400.0, bottom))
+    }
+
+    #[test]
+    fn the_visible_rows_are_those_that_meet_the_clip_rect() {
+        let area = band(100.0, 100.0 + 50.0 * ROW_HEIGHT);
+        assert_eq!(visible_rows(band(0.0, 200.0), area, 50), 0..4);
+        assert_eq!(
+            visible_rows(band(100.0 + 10.0 * ROW_HEIGHT, 2000.0), area, 50),
+            10..50
+        );
+        // A clip below the list holds none of its rows.
+        assert_eq!(visible_rows(band(5000.0, 6000.0), area, 50), 50..50);
+    }
+
+    #[test]
+    fn an_upside_down_clip_rect_holds_no_rows() {
+        let area = band(0.0, 50.0 * ROW_HEIGHT);
+        let upside_down = Rect::from_min_max(pos2(0.0, 600.0), pos2(400.0, 100.0));
+        assert!(visible_rows(upside_down, area, 50).is_empty());
+        assert!(visible_rows(Rect::NOTHING, area, 50).is_empty());
+    }
+
+    #[test]
+    fn a_table_row_is_named_by_its_first_cell_with_text() {
+        let cells = |cells: &[&str]| {
+            cells
+                .iter()
+                .map(|cell| (*cell).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(row_label(&cells(&["Basil", "Herb spiral"])), "Basil");
+        assert_eq!(row_label(&cells(&["", " ", "Pots"])), "Pots");
     }
 }

@@ -278,7 +278,7 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
                 ui.label(RichText::new(title).size(TITLE_SIZE).strong());
                 if state.app.is_plugin_page(page_id) {
                     ui.add_space(8.0);
-                    crate::plugin_view::show(ui, &mut state.app, page_id);
+                    crate::plugin_view::show(ui, &mut state.app, state.window, page_id);
                 }
             }
         });
