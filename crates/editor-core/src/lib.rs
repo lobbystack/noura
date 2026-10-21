@@ -11,6 +11,7 @@
 pub mod blocks;
 pub mod bounds;
 pub mod buffer;
+pub mod callouts;
 pub mod constructs;
 pub mod diff;
 pub mod doc;
@@ -24,6 +25,7 @@ pub mod operation_types;
 pub mod reorder;
 pub mod resolvers;
 pub mod reveal;
+pub mod spans;
 pub mod text_units;
 pub mod unicode_segs;
 

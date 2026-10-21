@@ -178,6 +178,10 @@ impl<'ast> MdDoc {
     /// An endpoint can only reveal the column it sits in, so the scan is
     /// over the (typically 0–2) reveal endpoints, one line each.
     pub fn reveal(&self, node: &'ast AstNode<'ast>) -> bool {
+        // A callout shows its whole source while the caret is anywhere in it.
+        if self.callout(node).is_some() {
+            return self.callout_revealed(node);
+        }
         for reveal_range in self.reveal_ranges() {
             for endpoint in [reveal_range.start(), reveal_range.end()] {
                 let (line_idx, _) = self

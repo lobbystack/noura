@@ -235,6 +235,7 @@ impl MdDoc {
             self.calc_source_lines();
             self.calc_fold_bounds(root);
             self.calc_atom_bounds(root);
+            self.calc_inline_spans(root);
             // Populate before compute_bounds: pre_spacing_lines (called
             // from compute_bounds_block_pre_spacing) queries
             // hidden_by_fold, which expects every node already cached.
@@ -263,7 +264,9 @@ impl MdDoc {
         let mut options = Options::default();
         options.parse.smart = true;
         options.parse.ignore_setext = false;
-        options.extension.alerts = true;
+        // Callouts of any type are quotes the editor reads itself; comrak's
+        // alerts know only GitHub's five types.
+        options.extension.alerts = false;
         options.extension.autolink = true;
         options.extension.description_lists = false;
         options.extension.footnotes = false;

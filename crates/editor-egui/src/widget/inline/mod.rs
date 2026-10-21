@@ -51,6 +51,24 @@ impl<'ast> MdRender {
         node: &'ast AstNode<'ast>,
         range: (Grapheme, Grapheme),
     ) {
+        // Syntax inside a hidden comment, and hidden `<u>` tags, draw
+        // nothing. Text splits itself around them in `layout_text`.
+        if !matches!(node.data.borrow().value, NodeValue::Text(_)) {
+            let node_range = self.node_range(node);
+            let hidden = self.spans_in(node_range).find_map(|span| {
+                span.syntax
+                    .iter()
+                    .find(|syntax| syntax.contains_range(&node_range, true, true))
+                    .filter(|_| !self.span_revealed(span))
+                    .copied()
+            });
+            if let Some(syntax) = hidden {
+                if node_range.start() == syntax.start() && !syntax.trim(&range).is_empty() {
+                    layout.push_override(syntax.trim(&range), "", self.text_format_syntax());
+                }
+                return;
+            }
+        }
         match &node.data.borrow().value {
             NodeValue::FrontMatter(_) => {}
             NodeValue::Raw(_) => unreachable!("can only be created programmatically"),

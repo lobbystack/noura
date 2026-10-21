@@ -61,6 +61,10 @@ pub struct Bounds {
     /// navigation: the cursor steps past a whole image rather than into its
     /// `![alt](url)` source, and a backspace against one selects it.
     pub images: Vec<(Grapheme, Grapheme)>,
+
+    /// Obsidian-style syntax found in text, sorted by range: callout
+    /// markers and titles, comments, tags, block IDs and underlines.
+    pub spans: Vec<crate::spans::InlineSpan>,
 }
 
 /// Tag + hidden-contents ranges of one actively folded section. Both act
@@ -100,6 +104,7 @@ impl Default for Bounds {
             inline_paragraphs: Paragraphs::default(),
             folds: Vec::default(),
             images: Vec::default(),
+            spans: Vec::default(),
         }
     }
 }
