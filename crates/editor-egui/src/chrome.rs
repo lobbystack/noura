@@ -23,6 +23,9 @@ use crate::input::Event;
 use crate::input::canonical::is_apple;
 use crate::{Editor, ScrollTarget};
 
+/// The text version and selection formats were read at.
+type FormatsKey = (u64, (Grapheme, Grapheme));
+
 /// What the editor draws around its text, and the state those parts keep.
 #[derive(Default)]
 pub(crate) struct Chrome {
@@ -35,9 +38,10 @@ pub(crate) struct Chrome {
     last_query: String,
     /// An input method is composing text.
     composing: bool,
-    /// The formats at the selection, and the text version and selection
-    /// they were read at.
-    formats: (Vec<Format>, Option<(u64, (Grapheme, Grapheme))>),
+    /// The formats at the selection, for the toolbars' pressed states.
+    formats: Vec<Format>,
+    /// The text version and selection `formats` were read at.
+    formats_read_at: Option<FormatsKey>,
     /// Where the selection toolbar drew last frame.
     selection_toolbar: Option<Rect>,
     /// Where the text drew, below the toolbar and the find bar.
@@ -446,13 +450,14 @@ impl Editor {
     pub(crate) fn update_formats<'a>(&mut self, root: &'a comrak::nodes::AstNode<'a>) {
         let doc = &self.edit.renderer.doc;
         let key = Some((doc.text_seq, doc.selection()));
-        if self.chrome.formats.1 != key {
-            self.chrome.formats = (doc.formats_in(root), key);
+        if self.chrome.formats_read_at != key {
+            self.chrome.formats = doc.formats_in(root);
+            self.chrome.formats_read_at = key;
         }
     }
 
     fn pressed(&self, command: Command) -> bool {
-        matches!(command, Command::Format(format) if self.chrome.formats.0.contains(&format))
+        matches!(command, Command::Format(format) if self.chrome.formats.contains(&format))
     }
 
     /// Runs a command a toolbar button stands for and gives the keyboard
