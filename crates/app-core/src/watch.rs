@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use local_core::{ChangeCounts, WorkspaceEngine, WorkspaceEntry, WorkspaceEntryKind};
+use local_core::{ChangeCounts, WorkspaceEngine, WorkspaceEntry};
 
 use crate::{
     AppError, FileTree, Problem,
@@ -62,24 +62,6 @@ impl Snapshot {
         let entries = engine.list_workspace_entries().map_err(failed)?;
         let problems = problems::collect(engine, root)?;
         Ok(Self { entries, problems })
-    }
-
-    /// The file listed at `relative_path`.
-    pub(crate) fn file(&self, relative_path: &str) -> Option<&WorkspaceEntry> {
-        self.entries.iter().find(|entry| {
-            entry.kind == WorkspaceEntryKind::File && entry.relative_path == relative_path
-        })
-    }
-
-    /// The one file that holds object `id`, or `None` when no file or
-    /// several files hold it.
-    pub(crate) fn only_file_with_id(&self, id: &str) -> Option<&WorkspaceEntry> {
-        let mut holders = self
-            .entries
-            .iter()
-            .filter(|entry| entry.object_id.as_deref() == Some(id));
-        let first = holders.next()?;
-        holders.next().is_none().then_some(first)
     }
 }
 

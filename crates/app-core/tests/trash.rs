@@ -3,7 +3,7 @@
 
 mod support;
 
-use app_core::NoticeKind;
+use app_core::{NoticeKind, OpenAs};
 use support::{Call, FakeSystem, Fixture, current, document, notice, rows};
 
 /// The one folder in the workspace's trash folder, named for when the item
@@ -130,7 +130,7 @@ fn trashing_the_open_file_closes_it_and_the_next_row_becomes_current() {
     let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b"), ("C.md", b"c")]);
     let mut app = fixture.app();
     support::select(&mut app, "B.md");
-    app.open_file("B.md");
+    app.open_file("B.md", OpenAs::Preview);
 
     app.trash("B.md");
 
@@ -147,7 +147,7 @@ fn trashing_the_open_file_closes_it_and_the_next_row_becomes_current() {
 fn trashing_a_folder_closes_a_file_open_inside_it() {
     let fixture = Fixture::new(&[("Docs/Plan.md", b"plan"), ("Readme.md", b"r")]);
     let mut app = fixture.app();
-    app.open_file("Docs/Plan.md");
+    app.open_file("Docs/Plan.md", OpenAs::Preview);
 
     app.trash("Docs");
 
@@ -250,7 +250,7 @@ fn the_workspace_trash_folder_holds_the_item_on_disk_when_the_trash_returns() {
 fn trashing_an_item_that_left_closes_it_and_drops_its_row() {
     let fixture = Fixture::new(&[("Plan.md", b"plan"), ("Readme.md", b"r")]);
     let mut app = fixture.app();
-    app.open_file("Plan.md");
+    app.open_file("Plan.md", OpenAs::Preview);
     std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
 
     app.trash("Plan.md");

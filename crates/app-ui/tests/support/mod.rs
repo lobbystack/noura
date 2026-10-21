@@ -47,7 +47,33 @@ pub fn harness_with(
     picker: FakePicker,
     system: Arc<FakeSystem>,
 ) -> Harness<'static, NouraUi> {
-    let ui = NouraUi::new(App::launch_with(app_data, system), Box::new(picker));
+    harness_on(app_data, picker, system, |_| {})
+}
+
+/// A harness whose app runs `register` first, such as to add test pages
+/// to the rail.
+pub fn harness_registering(
+    app_data: &Path,
+    picker: FakePicker,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    harness_on(
+        app_data,
+        picker,
+        FakeSystem::new(Platform::current()),
+        register,
+    )
+}
+
+pub fn harness_on(
+    app_data: &Path,
+    picker: FakePicker,
+    system: Arc<FakeSystem>,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    let mut app = App::launch_with(app_data, system);
+    register(&mut app);
+    let ui = NouraUi::new(app, Box::new(picker));
     Harness::builder()
         .with_size([1000.0, 700.0])
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)

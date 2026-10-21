@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Change, NoSystem, Origin, Rescans, Screen, WatchFault, Workspace};
+use app_core::{App, Change, NoSystem, OpenAs, Origin, Rescans, Screen, WatchFault, Workspace};
 
 /// How long a test waits for the change stream before it fails.
 const PATIENCE: Duration = Duration::from_secs(15);
@@ -183,7 +183,7 @@ fn renames_moves_and_deletes_by_another_app_reach_the_tree_and_keep_open_folders
 #[test]
 fn the_open_document_follows_a_note_another_app_moves_and_closes_once_it_is_deleted() {
     let mut live = Live::open(&[("Plan.md", &note(PLAN_ID, "The plan."))]);
-    live.app.open_file("Plan.md");
+    live.app.open_file("Plan.md", OpenAs::Kept);
 
     std::fs::create_dir(live.path("Archive")).unwrap();
     std::fs::rename(live.path("Plan.md"), live.path("Archive/Plan 2026.md")).unwrap();
@@ -203,7 +203,7 @@ fn the_open_document_follows_a_note_another_app_moves_and_closes_once_it_is_dele
 #[test]
 fn a_plain_file_that_another_app_renames_closes_in_the_document_area() {
     let mut live = Live::open(&[("Loose.md", "# Loose\n")]);
-    live.app.open_file("Loose.md");
+    live.app.open_file("Loose.md", OpenAs::Kept);
 
     std::fs::rename(live.path("Loose.md"), live.path("Elsewhere.md")).unwrap();
 
@@ -463,7 +463,7 @@ fn a_note_the_cloud_drive_evicts_keeps_its_entry_and_id_until_it_downloads_again
     assert_eq!(hit_paths(&live.app, "morning"), ["Journal/today.md"]);
     assert!(live.app.problems().is_empty(), "{:?}", live.app.problems());
 
-    live.app.open_file("Journal/today.md");
+    live.app.open_file("Journal/today.md", OpenAs::Kept);
     assert_eq!(live.app.document(), None);
     assert_eq!(
         live.app.notice().unwrap().message,
@@ -484,7 +484,7 @@ fn a_note_the_cloud_drive_evicts_keeps_its_entry_and_id_until_it_downloads_again
     });
     let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
     assert_eq!(found.relative_path, "Journal/today.md");
-    live.app.open_file("Journal/today.md");
+    live.app.open_file("Journal/today.md", OpenAs::Kept);
     assert_eq!(
         live.app.document().map(|file| file.relative_path.as_str()),
         Some("Journal/today.md")
@@ -555,7 +555,7 @@ fn a_file_the_cloud_provider_marks_online_only_shows_marked_and_noura_never_read
     assert!(hit_paths(&live.app, "evening").is_empty());
     let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
     assert_eq!(found.relative_path, "Online.md");
-    live.app.open_file("Online.md");
+    live.app.open_file("Online.md", OpenAs::Kept);
     assert_eq!(live.app.document(), None);
     assert_eq!(
         live.app.notice().unwrap().message,
@@ -645,7 +645,7 @@ fn opening_a_path_that_climbs_out_of_the_workspace_reads_nothing() {
     )
     .unwrap();
 
-    live.app.open_file("../Secret.md");
+    live.app.open_file("../Secret.md", OpenAs::Kept);
 
     assert_eq!(live.app.document(), None);
     assert!(live.app.notice().is_some());

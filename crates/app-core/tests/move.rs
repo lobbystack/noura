@@ -4,7 +4,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use app_core::{App, DropSpot, SPRING_OPEN_DELAY, TreeAction};
+use app_core::{App, DropSpot, OpenAs, SPRING_OPEN_DELAY, TreeAction};
 use support::{Fixture, current, document, note, notice, object_id, rows};
 
 const PLAN_ID: &str = "01jbcdefghjkmnpqrstvwxyz00";
@@ -44,7 +44,7 @@ fn dropping_a_row_on_a_folder_moves_it_there_and_keeps_its_id_and_bytes() {
     let bytes = note(PLAN_ID, "Body\n");
     let fixture = Fixture::new(&[("Plan.md", &bytes), ("Docs/Guide.md", b"g")]);
     let mut app = fixture.app();
-    app.open_file("Plan.md");
+    app.open_file("Plan.md", OpenAs::Preview);
 
     drag(&mut app, "Plan.md", &["Docs"], Instant::now());
 
@@ -321,7 +321,7 @@ fn a_move_that_fails_because_the_item_left_shows_where_it_is() {
         ("Docs/Guide.md", b"g"),
     ]);
     let mut app = fixture.app();
-    app.open_file("Plan.md");
+    app.open_file("Plan.md", OpenAs::Preview);
     // Another app put the note where the drop would have.
     std::fs::rename(
         fixture.root.join("Plan.md"),

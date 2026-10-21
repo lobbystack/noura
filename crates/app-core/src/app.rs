@@ -15,13 +15,18 @@ use std::{
 use local_core::ChangeCounts;
 
 use crate::{
-    AppError, FileTree, NoSystem, OpenedFile, RecentWorkspace, System, Workspace, WorkspaceService,
-    files::shown_name,
+    AppError, FileTree, Layout, NoSystem, OpenedFile, RecentWorkspace, System, Tab, Workspace,
+    WorkspaceService,
+    layout::LayoutStore,
+    rail::Rail,
+    tabs::Tabs,
+    view_state::ViewStore,
     watch::{self, Rescans, Snapshot, Watch},
 };
 
 mod file_actions;
 mod ignored_files;
+mod view;
 
 pub use file_actions::{Question, Rename};
 pub use ignored_files::IgnoredFiles;
@@ -73,6 +78,12 @@ pub enum Change {
     Screen,
     Recents,
     Tree,
+    /// The open tabs or the active tab changed.
+    Tabs,
+    /// The rail's pages or their order changed.
+    Rail,
+    /// The sidebar showed, hid, resized or folded a section.
+    Layout,
     Document,
     Notice,
     /// The Ignored files page changed.
@@ -130,7 +141,7 @@ struct Pending {
 }
 
 /// The state every client draws: which screen shows, the recent list, the
-/// open workspace with its file tree, and the open file.
+/// open workspace with its file tree, and its tabs.
 pub struct App {
     service: Arc<WorkspaceService>,
     system: Arc<dyn System>,
@@ -138,7 +149,12 @@ pub struct App {
     recents: Vec<RecentWorkspace>,
     workspace: Option<Workspace>,
     tree: Option<FileTree>,
-    document: Option<OpenedFile>,
+    tabs: Tabs,
+    rail: Rail,
+    /// Each workspace's tabs, kept in this device's app data.
+    views: ViewStore,
+    layout: Layout,
+    layouts: LayoutStore,
     notice: Option<Notice>,
     /// The tree row being renamed in place.
     renaming: Option<Rename>,
@@ -196,7 +212,11 @@ impl App {
             recents,
             workspace: None,
             tree: None,
-            document: None,
+            tabs: Tabs::default(),
+            rail: Rail::default(),
+            views: ViewStore::new(app_data.as_ref()),
+            layout: Layout::default(),
+            layouts: LayoutStore::new(app_data.as_ref()),
             notice: None,
             renaming: None,
             ignored_files: None,
@@ -209,6 +229,7 @@ impl App {
             snapshot: None,
             listed: ChangeCounts::default(),
         };
+        app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;
@@ -248,13 +269,27 @@ impl App {
         self.tree.as_ref()
     }
 
+    /// The file tree, to move its focus or type ahead in it. Opening and
+    /// closing folders goes through `App`'s own methods, such as
+    /// [`App::activate_tree_row`] and [`App::collapse_all`], so the
+    /// workspace remembers which folders are open.
     pub fn tree_mut(&mut self) -> Option<&mut FileTree> {
         self.tree.as_mut()
     }
 
-    /// The file shown in the document area.
+    /// The file shown in the document area: the active tab's file.
     pub fn document(&self) -> Option<&OpenedFile> {
-        self.document.as_ref()
+        self.tabs.active().and_then(Tab::file)
+    }
+
+    /// The open tabs, in order.
+    pub fn tabs(&self) -> &[Tab] {
+        self.tabs.list()
+    }
+
+    /// The tab the window shows.
+    pub fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.active()
     }
 
     /// The open workspace's problems, such as files that share an ID.
@@ -335,29 +370,6 @@ impl App {
         }
     }
 
-    /// Show a file from the tree in the document area.
-    pub fn open_file(&mut self, relative_path: &str) {
-        let Some(workspace) = &self.workspace else {
-            return;
-        };
-        match workspace.open_file(relative_path) {
-            Ok(file) => {
-                self.document = Some(file);
-                self.listeners.emit(Change::Document);
-            }
-            Err(error) => {
-                let title = format!(
-                    "Couldn't open \u{201c}{}\u{201d}",
-                    shown_name(
-                        relative_path.rsplit('/').next().unwrap_or(relative_path),
-                        crate::EntryKind::File
-                    )
-                );
-                self.show_notice(&title, error, None);
-            }
-        }
-    }
-
     /// Apply finished background work and changes to the open workspace's
     /// files. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
@@ -390,7 +402,7 @@ impl App {
                 self.snapshot = None;
                 self.workspace = None;
                 self.tree = None;
-                self.document = None;
+                self.restore_view();
                 self.renaming = None;
                 self.ignored_files = None;
                 self.pending_trash = None;
@@ -413,7 +425,8 @@ impl App {
         true
     }
 
-    /// Apply the newest view of the open workspace's files.
+    /// Apply the newest view of the open workspace's files. The tabs
+    /// follow their files into it.
     fn poll_watch(&mut self) -> bool {
         let Some(update) = self.watch.as_ref().and_then(Watch::take) else {
             return false;
@@ -424,8 +437,10 @@ impl App {
             return false;
         }
         let mut tree = update.tree;
+        let mut folders_changed = false;
         if let Some(old) = &self.tree {
             tree.keep_state_from(old);
+            folders_changed = old.expanded_folders() != tree.expanded_folders();
         }
         let rows_changed = self
             .tree
@@ -435,37 +450,23 @@ impl App {
         if rows_changed {
             self.listeners.emit(Change::Tree);
         }
-        let previous = self.snapshot.replace(update.snapshot);
+        self.set_snapshot(update.snapshot);
+        self.follow_files();
+        if folders_changed {
+            self.save_view();
+        }
+        true
+    }
+
+    /// Show the problems of a new listing of the files.
+    fn set_snapshot(&mut self, snapshot: Snapshot) {
+        let previous = self.snapshot.replace(snapshot);
         let before = previous
             .as_ref()
             .map(|snapshot| snapshot.problems.as_slice());
         if before != Some(self.problems()) {
             self.listeners.emit(Change::Problems);
         }
-        self.follow_document(previous.as_ref());
-        true
-    }
-
-    /// Keep the document area on the file it shows. A note that moved keeps
-    /// its ID, so the document follows it to the new path. A file that is
-    /// gone, or moved without an ID to follow, closes.
-    fn follow_document(&mut self, previous: Option<&Snapshot>) {
-        let (Some(document), Some(current)) = (&self.document, &self.snapshot) else {
-            return;
-        };
-        let path = document.relative_path.as_str();
-        if current.file(path).is_some() {
-            return;
-        }
-        let moved_to = previous
-            .and_then(|previous| previous.file(path))
-            .and_then(|entry| entry.object_id.as_deref())
-            .and_then(|id| current.only_file_with_id(id));
-        self.document = moved_to.map(|entry| OpenedFile {
-            name: shown_name(&entry.name, crate::EntryKind::File),
-            relative_path: entry.relative_path.clone(),
-        });
-        self.listeners.emit(Change::Document);
     }
 
     fn adopt(&mut self, opened: Opened) {
@@ -483,12 +484,13 @@ impl App {
         );
         self.workspace = Some(opened.workspace);
         self.tree = Some(opened.tree);
-        self.document = None;
+        self.restore_view();
         self.notice = None;
         self.renaming = None;
         self.ignored_files = None;
         self.pending_trash = None;
         self.listeners.emit(Change::Tree);
+        self.listeners.emit(Change::Tabs);
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
         self.listeners.emit(Change::Problems);

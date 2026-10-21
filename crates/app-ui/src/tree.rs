@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use app_core::{App, DropSpot, EntryKind, TreeAction, TreeKey, TreeRow};
+use app_core::{App, DropSpot, EntryKind, OpenAs, TreeAction, TreeKey, TreeRow};
 use egui::{
     Align, Align2, Event, EventFilter, FontId, Id, Key, LayerId, Layout, Modifiers, Order, Popup,
     PopupKind, Pos2, Rect, Response, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit,
@@ -70,6 +70,8 @@ struct RenameField {
 
 /// A choice from a row's menu.
 enum Command {
+    Open(String),
+    OpenInNewTab(String),
     NewNote(String),
     NewFolder(String),
     Rename(String),
@@ -165,17 +167,20 @@ fn take_input(ui: &Ui) -> Vec<Input> {
     })
 }
 
-/// The header above the tree: New note, New folder and Collapse all.
-fn header(ui: &mut Ui, app: &mut App) {
-    let palette = Palette::of(ui.ctx());
+/// The sidebar section that holds the file tree, as `app-core` names it
+/// when it remembers the section folded.
+const FILES_SECTION: &str = "files";
+
+/// The Files section's heading, which folds the section, with New note,
+/// New folder and Collapse all beside it. Returns whether the section is
+/// folded.
+fn header(ui: &mut Ui, app: &mut App) -> bool {
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Files")
-                .size(SUPPORTING_SIZE)
-                .color(palette.muted_foreground),
-        );
+        let spacing = 2.0;
+        let actions = 3.0 * ICON_SIZE + 2.0 * spacing + ui.spacing().item_spacing.x;
+        let collapsed = section_heading(ui, app, (ui.available_width() - actions).max(0.0));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().item_spacing.x = spacing;
             if icon_button(ui, "Collapse all", Icon::CollapseAll).clicked() {
                 app.collapse_all();
             }
@@ -186,8 +191,55 @@ fn header(ui: &mut Ui, app: &mut App) {
                 app.new_note(None);
             }
         });
-    });
+        collapsed
+    })
+    .inner
 }
+
+/// The Files heading: a button that folds and unfolds the section.
+/// Returns whether the section is folded.
+fn section_heading(ui: &mut Ui, app: &mut App, width: f32) -> bool {
+    let title = "Files";
+    let collapsed = app.is_section_collapsed(FILES_SECTION);
+    let palette = Palette::of(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, ICON_SIZE), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, title));
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_expanded(!collapsed));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, radius(0.6), palette.sidebar_accent);
+        }
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                radius(0.6),
+                Stroke::new(1.0, palette.ring),
+                StrokeKind::Inside,
+            );
+        }
+        painter.add(chevron(
+            pos2(rect.left() + 10.0, rect.center().y),
+            !collapsed,
+            &palette,
+        ));
+        painter.text(
+            pos2(rect.left() + 20.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            title,
+            FontId::proportional(SUPPORTING_SIZE),
+            palette.muted_foreground,
+        );
+    }
+    if response.clicked() {
+        app.toggle_section(FILES_SECTION);
+    }
+    collapsed
+}
+
+/// The size of the header's buttons.
+const ICON_SIZE: f32 = 24.0;
 
 #[derive(Clone, Copy)]
 enum Icon {
@@ -199,7 +251,7 @@ enum Icon {
 /// A small button that shows an icon and names itself for screen readers
 /// and in its tooltip.
 fn icon_button(ui: &mut Ui, label: &str, icon: Icon) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ICON_SIZE, ICON_SIZE), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), label));
     let palette = Palette::of(ui.ctx());
     if ui.is_rect_visible(rect) {
@@ -262,7 +314,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
             ..TreeView::default()
         };
     }
-    header(ui, app);
+    if header(ui, app) {
+        return;
+    }
     follow_rename(app, view);
 
     // The tree has the keyboard when one of last frame's rows has focus, or
@@ -312,11 +366,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         }
         follow_rename(app, view);
     }
-    if let Some(tree) = app.tree_mut()
-        && tree.dragging().is_some()
+    if app.tree().is_some_and(|tree| tree.dragging().is_some())
         && ui.input(|input| input.key_pressed(Key::Escape))
     {
-        tree.cancel_drag();
+        app.cancel_tree_drag();
     }
 
     let open_path = app.document().map(|file| file.relative_path.clone());
@@ -355,6 +408,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     }
 
     let mut clicked = None;
+    let mut kept = None;
     let mut gained = None;
     let mut secondary = None;
     let mut drag_started = None;
@@ -379,7 +433,18 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         };
         let response = draw_row(ui, rect, id, row, &state, &palette);
         if response.clicked() {
-            clicked = Some(index);
+            // Cmd-click (Ctrl-click on Windows and Linux) opens a file in
+            // a new tab, as Open in new tab does.
+            let how = if ui.input(|input| input.modifiers.command) {
+                OpenAs::Kept
+            } else {
+                OpenAs::Preview
+            };
+            clicked = Some((index, how));
+        }
+        // A double-click keeps the preview tab the first click opened.
+        if row.kind == EntryKind::File && response.double_clicked() {
+            kept = Some(row.relative_path.clone());
         }
         if response.secondary_clicked() {
             secondary = Some((index, ui.input(|input| input.pointer.interact_pos())));
@@ -488,13 +553,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
             focus_first: false,
         });
     }
-    if let Some(row) = clicked {
+    if let Some((row, how)) = clicked {
         if let Some(path) = tree.rows().get(row).map(|row| row.relative_path.clone()) {
             ui.memory_mut(|memory| memory.request_focus(row_id(&path)));
         }
-        if let Some(action) = tree.activate(row) {
-            app.apply(action);
-        }
+        app.activate_tree_row(row, how);
+    }
+    if let Some(path) = kept {
+        app.open_file(&path, OpenAs::Kept);
     }
     drag(ui, app, drag_started, &rects, area);
     if view.refocus {
@@ -556,13 +622,14 @@ fn finish_rename(app: &mut App, view: &mut TreeView, outcome: RenameOutcome) {
 /// over a file into the file's folder, and over the blank part of the tree
 /// to the top of the workspace.
 fn drag(ui: &mut Ui, app: &mut App, started: Option<usize>, rects: &[(usize, Rect)], area: Rect) {
-    let Some(tree) = app.tree_mut() else {
-        return;
-    };
     if let Some(row) = started {
-        tree.start_drag(row);
+        app.start_tree_drag(row);
     }
-    let Some(dragged) = tree.dragging().map(str::to_owned) else {
+    let Some(dragged) = app
+        .tree()
+        .and_then(|tree| tree.dragging())
+        .map(str::to_owned)
+    else {
         return;
     };
     let (pointer, released) =
@@ -575,13 +642,14 @@ fn drag(ui: &mut Ui, app: &mut App, started: Option<usize>, rects: &[(usize, Rec
         _ => DropSpot::Away,
     };
     let now = Instant::now();
-    tree.drag_over(spot, now);
+    app.drag_tree_over(spot, now);
     if released {
-        if let Some(action) = tree.finish_drag() {
-            app.apply(action);
-        }
+        app.finish_tree_drag();
         return;
     }
+    let Some(tree) = app.tree() else {
+        return;
+    };
     if let Some(open_at) = tree.spring_open_at() {
         ui.ctx()
             .request_repaint_after(open_at.saturating_duration_since(now));
@@ -617,6 +685,8 @@ fn drag(ui: &mut Ui, app: &mut App, started: Option<usize>, rects: &[(usize, Rec
 
 fn run(app: &mut App, command: Command) {
     match command {
+        Command::Open(path) => app.open_file(&path, OpenAs::Preview),
+        Command::OpenInNewTab(path) => app.open_file(&path, OpenAs::Kept),
         Command::NewNote(folder) => app.new_note(Some(&folder)),
         Command::NewFolder(folder) => app.new_folder(Some(&folder)),
         Command::Rename(path) => app.start_rename(&path),
@@ -678,6 +748,15 @@ fn row_menu(
                 first = false;
                 response.clicked()
             };
+            if row.kind == EntryKind::File {
+                if item(ui, "Open", None) {
+                    chosen = Some(Command::Open(path.clone()));
+                }
+                if item(ui, "Open in new tab", None) {
+                    chosen = Some(Command::OpenInNewTab(path.clone()));
+                }
+                ui.separator();
+            }
             if row.kind == EntryKind::Folder {
                 if item(ui, "New note", None) {
                     chosen = Some(Command::NewNote(path.clone()));

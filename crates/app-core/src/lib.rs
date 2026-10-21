@@ -3,17 +3,24 @@
 //! This crate depends on no UI crate, so a mobile client can reuse it later.
 //! Clients draw [`App`]'s view state and send it what people do. The
 //! workspace service opens workspaces and keeps the recent list, and the
-//! files service builds the file tree.
+//! files service builds the file tree. The app keeps each workspace's tabs,
+//! open folders and rail order, and the sidebar's layout, in this device's
+//! app data.
 
 mod app;
 mod error;
 mod files;
 mod ignored;
+mod layout;
 mod objects;
 mod operations;
 mod problems;
+mod rail;
 mod recents;
+mod store;
 mod system;
+mod tabs;
+mod view_state;
 mod watch;
 mod workspace;
 
@@ -23,13 +30,16 @@ pub use files::{
     DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
     TreeKey, TreeRow,
 };
+pub use layout::{Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use objects::{ObjectRef, SearchHit};
 pub use operations::Imported;
 pub use problems::Problem;
+pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
+pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
 
