@@ -452,6 +452,29 @@ fn split_title(content: &str) -> (String, String) {
     }
 }
 
+/// Reads a run of carriage returns right before a line feed as one line
+/// break, for the title and body. Reading only CRLF as LF would leave `\r\n`
+/// of a `\r\r\n` in the body. The serializer writes that back as it is, and
+/// the next read would drop one more carriage return, so the bytes would
+/// change on every write. The frontmatter still reads only CRLF as LF, so
+/// no file moves between managed, malformed and unmanaged.
+fn single_line_breaks(text: &str) -> Cow<'_, str> {
+    if !text.contains("\r\n") {
+        return Cow::Borrowed(text);
+    }
+    let mut normalized = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        match line.strip_suffix('\n') {
+            Some(content) => {
+                normalized.push_str(content.trim_end_matches('\r'));
+                normalized.push('\n');
+            }
+            None => normalized.push_str(line),
+        }
+    }
+    Cow::Owned(normalized)
+}
+
 /// Parses a Markdown file without relying on a local filesystem or runtime.
 pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     let Ok(text) = std::str::from_utf8(bytes) else {
@@ -468,7 +491,7 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     };
     let text = text.as_ref();
     if !text.starts_with("---\n") {
-        let (title, body) = split_title(text);
+        let (title, body) = split_title(&single_line_breaks(text));
         return ParsedMarkdown::Unmanaged {
             title,
             body,
@@ -476,7 +499,7 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
         };
     }
     let Some(end) = text[4..].find("\n---\n").map(|index| index + 4) else {
-        let (title, body) = split_title(text);
+        let (title, body) = split_title(&single_line_breaks(text));
         return ParsedMarkdown::Malformed {
             title,
             body,
@@ -486,8 +509,8 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     // The line break before the closing delimiter ends the last YAML line.
     // Without it, a block scalar written last would lose its final line break.
     let yaml = &text[4..=end];
-    let markdown = text[end + 5..].trim_start_matches('\n');
-    let (title, body) = split_title(markdown);
+    let markdown = single_line_breaks(&text[end + 5..]);
+    let (title, body) = split_title(markdown.trim_start_matches('\n'));
     let properties: BTreeMap<String, serde_json::Value> = match serde_yaml_ng::from_str(yaml) {
         Ok(properties) => properties,
         Err(error) => {
@@ -604,37 +627,15 @@ fn serialize_envelope(object: &WorkspaceObject, leading: &[&str]) -> Result<Vec<
     }
     let yaml = frontmatter_yaml(&entries)?;
     let mut result = format!("---\n{}---\n\n# {}\n", yaml, object.title.trim());
-    // Only line breaks are normalized. Trailing spaces stay: two of them are
-    // a Markdown line break, and the editor may be mid-typing.
-    let body = without_carriage_returns_before_line_feeds(&object.body);
-    let body = body.trim_end_matches(['\n', '\r']);
+    // Only line breaks at the end are normalized. Trailing spaces stay: two
+    // of them are a Markdown line break, and the editor may be mid-typing.
+    let body = object.body.trim_end_matches(['\n', '\r']);
     if !body.trim().is_empty() {
         result.push('\n');
         result.push_str(body);
         result.push('\n');
     }
     Ok(result.into_bytes())
-}
-
-/// Parsers turn each CRLF into LF, so a body with a carriage return right
-/// before a line feed loses one carriage return on every read (`\r\r\n`
-/// reads as `\r\n`). Writing a bare LF there keeps canonical bytes a fixed
-/// point.
-fn without_carriage_returns_before_line_feeds(text: &str) -> Cow<'_, str> {
-    if !text.contains("\r\n") {
-        return Cow::Borrowed(text);
-    }
-    let mut normalized = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        match line.strip_suffix('\n') {
-            Some(content) => {
-                normalized.push_str(content.trim_end_matches('\r'));
-                normalized.push('\n');
-            }
-            None => normalized.push_str(line),
-        }
-    }
-    Cow::Owned(normalized)
 }
 
 /// U+2028 and U+2029 are line breaks to YAML 1.1 readers such as libyaml and
@@ -652,22 +653,19 @@ const STAND_IN_CHARACTERS: [RangeInclusive<char>; 3] = [
     '\u{100000}'..='\u{10fffd}',
 ];
 
-/// libyaml writes a mapping key longer than this many bytes in the explicit
-/// `? ` form, the form it also uses for every key that holds a line break.
-const SIMPLE_KEY_MAX_BYTES: usize = 128;
-
 /// Writes frontmatter entries as a YAML mapping, in order.
 ///
-/// A string value or mapping key that holds a line separator is written
-/// double-quoted with libyaml's escapes, and such a key takes the explicit
-/// `? ` form, as libyaml writes a key that holds U+0085. libyaml doesn't let
-/// a caller pick a scalar style, so each such string goes to it as a plain
-/// stand-in, and one pass over its output swaps the quoted strings in.
+/// A string value that holds a line separator is written double-quoted with
+/// libyaml's escapes. Mapping keys go to libyaml as they are, and libyaml
+/// reads its own output back as the same key. libyaml doesn't let a caller
+/// pick a scalar style, so each such string goes to it as a plain stand-in,
+/// and one pass over its output swaps the quoted strings in.
 fn frontmatter_yaml(entries: &[(&str, serde_json::Value)]) -> Result<String, FormatError> {
     let mut stand_ins = StandIns::for_entries(entries)?;
     let mut mapping = serde_yaml_ng::Mapping::with_capacity(entries.len());
     for (key, value) in entries {
-        mapping.insert(stand_ins.key(key), stand_ins.value(value)?);
+        let key = serde_yaml_ng::Value::String((*key).to_owned());
+        mapping.insert(key, stand_ins.value(value)?);
     }
     let yaml = serde_yaml_ng::to_string(&mapping).map_err(|_| FormatError::ObjectSerialization)?;
     stand_ins.restore(&yaml)
@@ -688,14 +686,19 @@ struct StandIns {
 }
 
 impl StandIns {
-    /// Picks a marker when some key or string holds a line separator.
+    /// Picks a marker when some string value holds a line separator. Keys
+    /// can't hold the marker either, since libyaml writes them raw too.
     fn for_entries(entries: &[(&str, serde_json::Value)]) -> Result<Self, FormatError> {
         let mut texts = Vec::new();
+        let mut needs_quotes = false;
         for (key, value) in entries {
             texts.push(*key);
-            visit_text(value, &mut |text| texts.push(text));
+            visit_text(value, &mut |text, is_key| {
+                needs_quotes |= !is_key && text.contains(LINE_SEPARATORS);
+                texts.push(text);
+            });
         }
-        let marker = if texts.iter().any(|text| text.contains(LINE_SEPARATORS)) {
+        let marker = if needs_quotes {
             unused_pair(&texts).ok_or(FormatError::ObjectSerialization)?
         } else {
             String::new()
@@ -707,10 +710,10 @@ impl StandIns {
     }
 
     /// Converts a JSON value to YAML, putting a stand-in in place of each
-    /// string and mapping key that holds a line separator.
+    /// string value that holds a line separator.
     fn value(&mut self, value: &serde_json::Value) -> Result<serde_yaml_ng::Value, FormatError> {
         Ok(match value {
-            serde_json::Value::String(text) => self.scalar(text, 0),
+            serde_json::Value::String(text) => self.string(text),
             serde_json::Value::Array(items) => serde_yaml_ng::Value::Sequence(
                 items
                     .iter()
@@ -720,7 +723,7 @@ impl StandIns {
             serde_json::Value::Object(map) => {
                 let mut mapping = serde_yaml_ng::Mapping::with_capacity(map.len());
                 for (key, item) in map {
-                    mapping.insert(self.key(key), self.value(item)?);
+                    mapping.insert(serde_yaml_ng::Value::String(key.clone()), self.value(item)?);
                 }
                 serde_yaml_ng::Value::Mapping(mapping)
             }
@@ -730,19 +733,13 @@ impl StandIns {
         })
     }
 
-    /// A key's stand-in is too long for a simple key, so libyaml writes it in
-    /// the explicit `? ` form.
-    fn key(&mut self, text: &str) -> serde_yaml_ng::Value {
-        self.scalar(text, SIMPLE_KEY_MAX_BYTES + 1)
-    }
-
-    fn scalar(&mut self, text: &str, digits: usize) -> serde_yaml_ng::Value {
+    fn string(&mut self, text: &str) -> serde_yaml_ng::Value {
         if !text.contains(LINE_SEPARATORS) {
             return serde_yaml_ng::Value::String(text.to_owned());
         }
         let index = self.quoted.len();
         self.quoted.push(double_quoted(text));
-        serde_yaml_ng::Value::String(format!("{0}{index:0digits$}{0}", self.marker))
+        serde_yaml_ng::Value::String(format!("{0}{index}{0}", self.marker))
     }
 
     /// Swaps each stand-in in libyaml's output for its quoted string, in one
@@ -778,10 +775,11 @@ impl StandIns {
     }
 }
 
-/// Calls `visit` with every string and mapping key inside `value`.
-fn visit_text<'a>(value: &'a serde_json::Value, visit: &mut impl FnMut(&'a str)) {
+/// Calls `visit` with every string and mapping key inside `value`, and
+/// whether it is a key.
+fn visit_text<'a>(value: &'a serde_json::Value, visit: &mut impl FnMut(&'a str, bool)) {
     match value {
-        serde_json::Value::String(text) => visit(text),
+        serde_json::Value::String(text) => visit(text, false),
         serde_json::Value::Array(items) => {
             for item in items {
                 visit_text(item, visit);
@@ -789,7 +787,7 @@ fn visit_text<'a>(value: &'a serde_json::Value, visit: &mut impl FnMut(&'a str))
         }
         serde_json::Value::Object(map) => {
             for (key, item) in map {
-                visit(key);
+                visit(key, true);
                 visit_text(item, visit);
             }
         }
@@ -1363,7 +1361,7 @@ mod tests {
         let bytes = String::from_utf8(serialize_object(&object).unwrap()).unwrap();
         assert_eq!(
             bytes,
-            "---\nid: note_01j00000000000000000000000\ntype: note\na: \u{e000}\u{e000}0\u{e000}\u{e000}\nb: \u{e000}\u{e001}0\u{e000}\u{e001}\n? \"c\\L\"\n: \u{e000}\u{e000}1\u{e000}\u{e000}: \"x\\P\"\n---\n\n# Example\n"
+            "---\nid: note_01j00000000000000000000000\ntype: note\na: \u{e000}\u{e000}0\u{e000}\u{e000}\nb: \u{e000}\u{e001}0\u{e000}\u{e001}\n? 'c\u{2028}  '\n: \u{e000}\u{e000}1\u{e000}\u{e000}: \"x\\P\"\n---\n\n# Example\n"
         );
     }
 }

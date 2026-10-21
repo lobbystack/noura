@@ -165,18 +165,46 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |+\n  Boil.\n\n---\n\n# Pasta\n"
     },
     {
-      "name": "a carriage return left before a line feed in the body is dropped",
+      "name": "a run of carriage returns before a line feed in the body reads as one line break",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Stew\n\nSimmer.\r\r\r\nServe.\n",
       "object": {
         "id": "recipe_01j00000000000000000000000",
         "type": "recipe",
         "title": "Stew",
-        "body": "Simmer.\r\nServe.",
+        "body": "Simmer.\nServe.",
         "created": null,
         "updated": null,
         "properties": {}
       },
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Stew\n\nSimmer.\nServe.\n"
+    },
+    {
+      "name": "carriage returns and a line feed before text without a heading read as a blank line and drop with the others",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\r\r\nHello\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "",
+        "body": "Hello\n",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# \n\nHello\n"
+    },
+    {
+      "name": "carriage returns before line feeds in a CRLF file without a heading",
+      "markdown": "---\r\nid: task_01j00000000000000000000000\r\ntype: task\r\nstatus: todo\r\n---\r\n\r\r\nStep one.\r\r\nStep two.\r\n",
+      "object": {
+        "id": "task_01j00000000000000000000000",
+        "type": "task",
+        "title": "",
+        "body": "Step one.\nStep two.\n",
+        "created": null,
+        "updated": null,
+        "properties": { "status": "todo" }
+      },
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\n---\n\n# \n\nStep one.\nStep two.\n"
     }
   ],
   "schema_declaration": [
@@ -682,36 +710,36 @@
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\Nb\"\n---\n\n# Pasta\n"
     },
     {
-      "name": "a key holding U+2028 is written double-quoted as an explicit key, type without a schema",
+      "name": "a key holding U+2028 is written as libyaml writes it and reads back the same, type without a schema",
       "registry": "empty",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\u2028b\": v\nzeta: end\n---\n\n# Pasta\n",
       "properties": { "a\u2028b": "v", "zeta": "end" },
       "updated": null,
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? \"a\\Lb\"\n: v\nzeta: end\n---\n\n# Pasta\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? 'a\u2028  b'\n: v\nzeta: end\n---\n\n# Pasta\n"
     },
     {
-      "name": "a key ending in a line break and U+2028 is written double-quoted as an explicit key, registered type",
+      "name": "a key ending in a line break and U+2028 is written as libyaml writes it and reads back the same, registered type",
       "registry": "schemas",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\n\\u2028\": null\n---\n\n# Pasta\n",
       "properties": { "a\n\u2028": null },
       "updated": null,
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? \"a\\n\\L\"\n: null\n---\n\n# Pasta\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? |+\n  a\n\u2028: null\n---\n\n# Pasta\n"
     },
     {
-      "name": "a nested key ending in a line break and U+2029 is written double-quoted as an explicit key",
+      "name": "a nested key ending in a line break and U+2029 is written as libyaml writes it and reads back the same",
       "registry": "schemas",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  \"x\\n\\u2029\": v\n---\n\n# Pasta\n",
       "properties": { "steps": { "x\n\u2029": "v" } },
       "updated": null,
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  ? \"x\\n\\P\"\n  : v\n---\n\n# Pasta\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  ? |+\n    x\n\u2029  : v\n---\n\n# Pasta\n"
     },
     {
-      "name": "a key holding U+2028 in a list item is written double-quoted as an explicit key",
+      "name": "a key holding U+2028 in a list item is written as libyaml writes it, and its value double-quoted",
       "registry": "empty",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- \"a\\u2028\": \"b\\u2029\"\n  c: d\n---\n\n# Pasta\n",
       "properties": { "steps": [{ "a\u2028": "b\u2029", "c": "d" }] },
       "updated": null,
-      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- ? \"a\\L\"\n  : \"b\\P\"\n  c: d\n---\n\n# Pasta\n"
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- ? 'a\u2028    '\n  : \"b\\P\"\n  c: d\n---\n\n# Pasta\n"
     },
     {
       "name": "a key holding U+0085 keeps the explicit double-quoted form libyaml already writes",
@@ -747,6 +775,36 @@
       "name": "a kanban_order that isn't a string",
       "properties": { "kanban_order": 5 },
       "schema_error": { "code": "wrong_type", "property": "kanban_order" }
+    }
+  ],
+  "caller_bodies": [
+    {
+      "name": "CRLF line breaks in a caller's body are written as they are and read back as LF",
+      "body": "line one\r\nline two",
+      "file_ends_with": "# Example\n\nline one\r\nline two\n",
+      "expected_body": "line one\nline two",
+      "rewritten_ends_with": "# Example\n\nline one\nline two\n"
+    },
+    {
+      "name": "a run of carriage returns before a line feed in a caller's body is written as it is",
+      "body": "a\r\r\nb",
+      "file_ends_with": "# Example\n\na\r\r\nb\n",
+      "expected_body": "a\nb",
+      "rewritten_ends_with": "# Example\n\na\nb\n"
+    },
+    {
+      "name": "a caller's body that starts with a line break loses it on the next read",
+      "body": "\nHello",
+      "file_ends_with": "# Example\n\n\nHello\n",
+      "expected_body": "Hello",
+      "rewritten_ends_with": "# Example\n\nHello\n"
+    },
+    {
+      "name": "a caller's body that a read keeps is written the same both times",
+      "body": "Hello\nWorld",
+      "file_ends_with": "# Example\n\nHello\nWorld\n",
+      "expected_body": "Hello\nWorld",
+      "rewritten_ends_with": "# Example\n\nHello\nWorld\n"
     }
   ]
 }

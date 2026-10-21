@@ -58,27 +58,19 @@ fn text(bytes: Vec<u8>) -> String {
 fn any_managed_object_parses_and_serializes_through_the_envelope() {
     let fixture = fixture();
     let types = ObjectTypeRegistry::new();
+    let registered = registry(&fixture);
     for case in cases(&fixture, "envelope") {
         let object = managed(case);
         assert_eq!(envelope_fields(&object), case["object"], "{}", name(case));
-        let canonical = text(types.serialize(&object).unwrap());
-        assert_eq!(
-            canonical,
+        assert_canonical(
+            &types,
+            &object,
             case["canonical"].as_str().unwrap(),
-            "{}",
-            name(case)
+            name(case),
         );
-        let ParsedMarkdown::Managed(reparsed) =
-            parse_markdown("objects/example.md", canonical.as_bytes())
-        else {
-            panic!("{}: canonical bytes must stay managed", name(case));
-        };
-        assert_eq!(
-            text(types.serialize(&reparsed).unwrap()),
-            canonical,
-            "{}",
-            name(case)
-        );
+        // A registered schema changes the order, not the title and body.
+        let canonical = text(registered.serialize(&object).unwrap());
+        assert_canonical(&registered, &object, &canonical, name(case));
     }
 }
 
@@ -327,6 +319,48 @@ fn registered_types_keep_todays_body_rules() {
     }
 }
 
+/// The serializer writes a body a caller passes in as it is, apart from its
+/// final line breaks. The next read applies the parser's line break rules,
+/// and from then on the bytes stay the same. An empty registry writes
+/// `serialize_object`'s bytes, and the fixture's registry has a recipe
+/// schema.
+#[test]
+fn caller_bodies_settle_after_one_read() {
+    let fixture = fixture();
+    let registries = [
+        ("no schema", ObjectTypeRegistry::new()),
+        ("recipe schema", registry(&fixture)),
+    ];
+    for case in cases(&fixture, "caller_bodies") {
+        for (registry, types) in &registries {
+            let label = format!("{} ({registry})", name(case));
+            let mut object = object_with("recipe", &json!({}));
+            object.body = case["body"].as_str().unwrap().into();
+            let written = text(types.serialize(&object).unwrap());
+            assert!(
+                written.ends_with(case["file_ends_with"].as_str().unwrap()),
+                "{label}: {written:?}"
+            );
+            let ParsedMarkdown::Managed(parsed) =
+                parse_markdown(&object.relative_path, written.as_bytes())
+            else {
+                panic!("{label}: managed object expected");
+            };
+            assert_eq!(
+                parsed.body,
+                case["expected_body"].as_str().unwrap(),
+                "{label}"
+            );
+            let rewritten = text(types.serialize(&parsed).unwrap());
+            assert!(
+                rewritten.ends_with(case["rewritten_ends_with"].as_str().unwrap()),
+                "{label}: {rewritten:?}"
+            );
+            assert_canonical(types, &parsed, &rewritten, &label);
+        }
+    }
+}
+
 #[test]
 fn an_unregistered_type_stays_a_managed_object_with_every_property() {
     let fixture = fixture();
@@ -361,8 +395,10 @@ fn an_unregistered_type_stays_a_managed_object_with_every_property() {
     }
 }
 
+/// Strings that hold a line separator are written double-quoted. Keys are
+/// written as libyaml writes them, and read back the same.
 #[test]
-fn strings_and_keys_with_line_separators_are_written_double_quoted() {
+fn strings_with_line_separators_are_written_double_quoted() {
     let fixture = fixture();
     for case in cases(&fixture, "line_separators") {
         let types = registry_for(&fixture, case);
@@ -423,12 +459,12 @@ fn the_format_spec_schema_example_registers() {
 }
 
 #[test]
-fn the_format_spec_key_example_is_what_the_serializer_writes() {
+fn the_format_spec_string_example_is_what_the_serializer_writes() {
     let spec = include_str!("../../../docs/workspace-format/v1.md");
     let section = &spec[spec.find("### Envelope").unwrap()..];
     let start = section.find("```yaml\n").unwrap() + "```yaml\n".len();
     let end = start + section[start..].find("```").unwrap();
-    let object = object_with("note", &json!({ "a\u{2028}b": "v" }));
+    let object = object_with("note", &json!({ "steps": "Boil.\nServe.\u{2028}" }));
     let written = text(serialize_object(&object).unwrap());
     assert!(written.contains(&section[start..end]), "{written}");
 }
@@ -456,8 +492,9 @@ fn note_task_and_project_files_serialize_to_the_same_bytes_as_before() {
 }
 
 /// Hostile frontmatter: a long run of the first private-use character next
-/// to thousands of strings and keys that hold U+2028. Serializing it must
-/// stay linear in its size, as it was before line separators were quoted.
+/// to thousands of strings that hold U+2028, under keys that hold it too.
+/// Serializing it must stay linear in its size, as it was before line
+/// separators were quoted.
 #[test]
 fn quoting_line_separators_stays_linear_in_the_frontmatter_size() {
     let count = 5_000;

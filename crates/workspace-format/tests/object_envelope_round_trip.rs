@@ -1,7 +1,9 @@
-//! Canonical serialization is a fixed point: for any managed object, parsing
-//! its bytes and serializing again gives the same bytes, whether or not its
-//! type is registered. Without a registered schema, the registry writes the
-//! same bytes as `serialize_object`.
+//! Serialization settles after one read: for any managed file, parsing it
+//! and serializing the object gives canonical bytes, and parsing and
+//! serializing those bytes again gives them unchanged, whether or not the
+//! type is registered. The first test starts from an object a caller built,
+//! the second from file bytes. Without a registered schema, the registry
+//! writes the same bytes as `serialize_object`.
 
 use std::collections::BTreeMap;
 
@@ -96,6 +98,24 @@ fn object_type() -> impl Strategy<Value = String> {
     "[a-z][a-z-]{0,12}"
 }
 
+/// Line breaks as files hold them, with runs of carriage returns.
+const LINE_BREAKS: &[&str] = &["\n", "\r\n", "\r\r\n", "\r\r\r\n", "\r"];
+
+/// Markdown after the frontmatter: any text, heavy on line breaks, carriage
+/// returns and the text that starts a heading or closes frontmatter.
+fn markdown_text() -> impl Strategy<Value = String> {
+    prop::collection::vec(
+        prop_oneof![
+            3 => any::<char>().prop_map(String::from),
+            3 => prop::sample::select(LINE_BREAKS).prop_map(String::from),
+            1 => prop::sample::select(&["# ", "#", " ", "\t", "---", "\u{85}", "\u{2028}"][..])
+                .prop_map(String::from),
+        ],
+        0..24,
+    )
+    .prop_map(|pieces| pieces.concat())
+}
+
 #[derive(Debug)]
 struct Case {
     registered: bool,
@@ -150,6 +170,75 @@ fn case() -> impl Strategy<Value = Case> {
         )
 }
 
+/// A file whose frontmatter is the serializer's, with any text after it.
+#[derive(Debug)]
+struct FileCase {
+    case: Case,
+    bytes: String,
+}
+
+fn file_case() -> impl Strategy<Value = FileCase> {
+    (
+        case(),
+        any::<bool>(),
+        prop::collection::vec(prop::sample::select(LINE_BREAKS), 0..3),
+        prop::option::of((any_text(), prop::sample::select(LINE_BREAKS))),
+        markdown_text(),
+    )
+        .prop_map(|(case, crlf, gap, heading, markdown)| {
+            let written = String::from_utf8(serialize_object(&case.object).unwrap()).unwrap();
+            let end = written.find("\n---\n").unwrap() + "\n---\n".len();
+            let mut bytes = written[..end].to_owned();
+            if crlf {
+                bytes = bytes.replace('\n', "\r\n");
+            }
+            bytes.push_str(&gap.concat());
+            if let Some((title, line_break)) = heading {
+                bytes.push_str(&format!("# {title}{line_break}"));
+            }
+            bytes.push_str(&markdown);
+            FileCase { case, bytes }
+        })
+}
+
+/// A registry that holds the case's schema when the case is registered.
+fn registry(case: &Case) -> ObjectTypeRegistry {
+    let mut types = ObjectTypeRegistry::new();
+    if case.registered {
+        let schema = PropertySchema {
+            properties: case
+                .declared
+                .iter()
+                .map(|name| PropertyDeclaration {
+                    name: name.clone(),
+                    kind: PropertyKind::String,
+                    nullable: false,
+                    default: None,
+                })
+                .collect(),
+        };
+        types.register(&case.object.object_type, schema).unwrap();
+    }
+    types
+}
+
+/// Whether a key at any depth holds a line separator. The serializer
+/// writes keys as libyaml does, raw.
+fn keys_hold_line_separators(properties: &BTreeMap<String, Value>) -> bool {
+    fn nested(value: &Value) -> bool {
+        match value {
+            Value::Array(items) => items.iter().any(nested),
+            Value::Object(map) => map
+                .iter()
+                .any(|(key, item)| key.contains(['\u{2028}', '\u{2029}']) || nested(item)),
+            _ => false,
+        }
+    }
+    properties
+        .iter()
+        .any(|(key, value)| key.contains(['\u{2028}', '\u{2029}']) || nested(value))
+}
+
 fn reparse(bytes: &[u8]) -> WorkspaceObject {
     match parse_markdown("objects/example.md", bytes) {
         ParsedMarkdown::Managed(object) => object,
@@ -181,28 +270,14 @@ proptest! {
 
     #[test]
     fn parsing_serializing_and_parsing_again_gives_identical_bytes(case in case()) {
-        let mut types = ObjectTypeRegistry::new();
-        if case.registered {
-            let schema = PropertySchema {
-                properties: case
-                    .declared
-                    .iter()
-                    .map(|name| PropertyDeclaration {
-                        name: name.clone(),
-                        kind: PropertyKind::String,
-                        nullable: false,
-                        default: None,
-                    })
-                    .collect(),
-            };
-            types.register(&case.object.object_type, schema).unwrap();
-        }
+        let types = registry(&case);
         let written = types.serialize(&case.object).unwrap();
-        // Keys and strings holding a YAML 1.1 line break other than LF are
+        // Strings holding a YAML 1.1 line break other than LF are
         // double-quoted, so YAML 1.2 readers get the same text.
         let frontmatter = frontmatter(&written);
         prop_assert!(
-            !frontmatter.contains(['\u{85}', '\u{2028}', '\u{2029}']),
+            keys_hold_line_separators(&case.object.properties)
+                || !frontmatter.contains(['\u{85}', '\u{2028}', '\u{2029}']),
             "a raw line separator in {:?}",
             frontmatter
         );
@@ -220,6 +295,18 @@ proptest! {
         prop_assert_eq!(&parsed.updated, &case.object.updated);
         let first = types.serialize(&parsed).unwrap();
         let second = types.serialize(&reparse(&first)).unwrap();
+        prop_assert_eq!(String::from_utf8(first).unwrap(), String::from_utf8(second).unwrap());
+    }
+
+    #[test]
+    fn files_settle_after_one_read(file in file_case()) {
+        let types = registry(&file.case);
+        let parsed = reparse(file.bytes.as_bytes());
+        let first = types.serialize(&parsed).unwrap();
+        let reparsed = reparse(&first);
+        prop_assert_eq!(&reparsed.properties, &parsed.properties);
+        prop_assert_eq!(&reparsed.title, &parsed.title);
+        let second = types.serialize(&reparsed).unwrap();
         prop_assert_eq!(String::from_utf8(first).unwrap(), String::from_utf8(second).unwrap());
     }
 }
