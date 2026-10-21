@@ -237,7 +237,9 @@ impl<'ast> MdRender {
                 n * row_height + (n - 1.0).max(0.0) * self.layout.row_spacing
             }
             NodeValue::ThematicBreak => self.height_thematic_break(),
-            NodeValue::FrontMatter(_) => self.height_front_matter(node),
+            // Front matter lays out like a code block, whose fences show
+            // with the caret in it: measured, not estimated or kept.
+            NodeValue::FrontMatter(_) => return self.height_front_matter(node),
             _ => 0.,
         };
         self.set_cached_node_height_approx(node, height);
@@ -546,6 +548,19 @@ impl<'ast> MdRender {
         [self.width_seq, self.embeds.seq(), self.reveal_seq]
     }
 
+    /// An estimate counts characters rather than laying text out, so the
+    /// syntax the caret reveals doesn't change it; only a fold the reveal
+    /// state opens does. Without fold tags, moving the caret keeps every
+    /// estimate.
+    fn approx_deps(&self) -> HeightDeps {
+        let reveal = if self.bounds.has_fold_tags {
+            self.reveal_seq
+        } else {
+            0
+        };
+        [self.width_seq, self.embeds.seq(), reveal]
+    }
+
     pub fn get_cached_node_height(&self, node: &'ast AstNode<'ast>) -> Option<f32> {
         let key = editor_core::MdDoc::pack_node_key(node);
         let deps = self.height_deps();
@@ -565,7 +580,7 @@ impl<'ast> MdRender {
 
     pub fn get_cached_node_height_approx(&self, node: &'ast AstNode<'ast>) -> Option<f32> {
         let key = editor_core::MdDoc::pack_node_key(node);
-        let deps = self.height_deps();
+        let deps = self.approx_deps();
         let cache = self.layout_cache.height_approx.borrow();
         let (v, stamps) = cache.get(&key)?;
         (*stamps == deps).then_some(*v)
@@ -573,7 +588,7 @@ impl<'ast> MdRender {
 
     pub fn set_cached_node_height_approx(&self, node: &'ast AstNode<'ast>, height: f32) {
         let key = editor_core::MdDoc::pack_node_key(node);
-        let deps = self.height_deps();
+        let deps = self.approx_deps();
         self.layout_cache
             .height_approx
             .borrow_mut()
