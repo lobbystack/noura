@@ -422,6 +422,11 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         .accessibility_label("Files");
     let output = ui
         .scope_builder(builder, |ui| {
+            if drop_target.as_deref() == Some("") {
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_description(DROP_TARGET);
+                });
+            }
             ui.spacing_mut().item_spacing.y = 0.0;
             scroll.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
                 // The current row exists even while it is scrolled out of
@@ -497,6 +502,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         }
     }
     drag(ui, app, drag_started, &rects, area);
+    files(ui, app, &rects, area);
     if view.refocus {
         view.refocus = false;
         if let Some(tree) = app.tree()
@@ -552,9 +558,62 @@ fn finish_rename(app: &mut App, view: &mut TreeView, outcome: RenameOutcome) {
     }
 }
 
+/// Read by screen readers after a folder's name, and by tests, while a
+/// drop would land in that folder.
+const DROP_TARGET: &str = "drop target";
+
+/// Where `pointer` is: over a row, over the blank part of the tree below
+/// the rows, or away from the tree.
+fn spot_at(pointer: Pos2, rects: &[(usize, Rect)], area: Rect) -> DropSpot {
+    if !area.contains(pointer) {
+        return DropSpot::Away;
+    }
+    rects
+        .iter()
+        .find(|(_, rect)| rect.contains(pointer))
+        .map_or(DropSpot::Blank, |(row, _)| DropSpot::Row(*row))
+}
+
+/// Files dragged in from the file manager: the folder under the pointer
+/// lights up, and dropped files are copied into it. When the window can't
+/// tell where the pointer is, as on Linux, they go to the top of the
+/// workspace.
+fn files(ui: &Ui, app: &mut App, rects: &[(usize, Rect)], area: Rect) {
+    let (hovering, dropped, pointer) = ui.input(|input| {
+        let dropped: Vec<_> = input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_owned())
+            .collect();
+        (
+            !input.raw.hovered_files.is_empty(),
+            dropped,
+            input.pointer.latest_pos(),
+        )
+    });
+    let Some(tree) = app.tree_mut() else {
+        return;
+    };
+    if !hovering && dropped.is_empty() {
+        tree.files_left();
+        return;
+    }
+    let spot = pointer.map_or(DropSpot::Blank, |pointer| spot_at(pointer, rects, area));
+    let now = Instant::now();
+    tree.files_over(spot, now);
+    if !dropped.is_empty() {
+        app.drop_files(&dropped);
+    } else if let Some(open_at) = tree.spring_open_at() {
+        ui.ctx()
+            .request_repaint_after(open_at.saturating_duration_since(now));
+    }
+}
+
 /// Start, follow and drop a row drag. Over a folder the drop goes into it,
 /// over a file into the file's folder, and over the blank part of the tree
-/// to the top of the workspace.
+/// to the top of the workspace. Past the window's edge `app-core` turns the
+/// row into a native drag where the platform has one.
 fn drag(ui: &mut Ui, app: &mut App, started: Option<usize>, rects: &[(usize, Rect)], area: Rect) {
     let Some(tree) = app.tree_mut() else {
         return;
@@ -565,21 +624,32 @@ fn drag(ui: &mut Ui, app: &mut App, started: Option<usize>, rects: &[(usize, Rec
     let Some(dragged) = tree.dragging().map(str::to_owned) else {
         return;
     };
-    let (pointer, released) =
-        ui.input(|input| (input.pointer.interact_pos(), input.pointer.any_released()));
-    let spot = match pointer {
-        Some(pointer) if area.contains(pointer) => rects
-            .iter()
-            .find(|(_, rect)| rect.contains(pointer))
-            .map_or(DropSpot::Blank, |(row, _)| DropSpot::Row(*row)),
-        _ => DropSpot::Away,
-    };
+    let (pointer, latest, released, window) = ui.input(|input| {
+        (
+            input.pointer.interact_pos(),
+            input.pointer.latest_pos(),
+            input.pointer.any_released(),
+            input.viewport_rect(),
+        )
+    });
+    let spot = pointer.map_or(DropSpot::Away, |pointer| spot_at(pointer, rects, area));
     let now = Instant::now();
     tree.drag_over(spot, now);
     if released {
         if let Some(action) = tree.finish_drag() {
             app.apply(action);
         }
+        return;
+    }
+    // Past the window's edge the row becomes a native drag, where the
+    // platform has one, so it can land in the file manager.
+    if latest.is_none_or(|pointer| !window.shrink(1.0).contains(pointer)) {
+        app.drag_row_out();
+    }
+    let Some(tree) = app.tree() else {
+        return;
+    };
+    if tree.dragging().is_none() {
         return;
     }
     if let Some(open_at) = tree.spring_open_at() {
@@ -825,7 +895,7 @@ fn draw_row(
     };
     let mut response = ui.interact(rect, id, sense);
     response.widget_info(|| WidgetInfo::labeled(Role::TreeItem, true, &row.name));
-    let description = row_description(row);
+    let description = row_description(row, state.drop_target);
     ui.ctx().accesskit_node_builder(id, |node| {
         node.add_action(Action::Focus);
         node.set_level(row.depth);
@@ -888,7 +958,7 @@ fn draw_row(
 /// hasn't downloaded says so. On macOS a folder also says whether it is
 /// open: accesskit_macos 0.27 doesn't pass a row's expanded state or level
 /// to VoiceOver, while the Windows and Linux adapters do.
-fn row_description(row: &TreeRow) -> Option<String> {
+fn row_description(row: &TreeRow, drop_target: bool) -> Option<String> {
     let mut parts = Vec::new();
     if cfg!(target_os = "macos")
         && let Some(expanded) = row.expanded
@@ -897,6 +967,9 @@ fn row_description(row: &TreeRow) -> Option<String> {
     }
     if row.not_downloaded {
         parts.push("not downloaded");
+    }
+    if drop_target {
+        parts.push(DROP_TARGET);
     }
     (!parts.is_empty()).then(|| parts.join(", "))
 }

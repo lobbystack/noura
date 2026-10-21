@@ -65,7 +65,9 @@ pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(&notice.title).strong().color(title_color));
-                ui.label(&notice.message);
+                if !notice.message.is_empty() {
+                    ui.label(&notice.message);
+                }
                 ui.horizontal(|ui| {
                     if let Some(workspace_id) = &notice.remove_recent
                         && ui

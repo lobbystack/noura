@@ -12,7 +12,7 @@ mod workspace;
 
 use std::{path::PathBuf, time::Duration};
 
-use app_core::{App, Screen};
+use app_core::{App, DragOut, Screen};
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -47,6 +47,18 @@ impl NouraUi {
     /// Whether a workspace is opening in the background.
     pub fn is_busy(&self) -> bool {
         self.app.is_busy()
+    }
+
+    /// The native drag of a tree row that left the window, for the desktop
+    /// shell to start now.
+    pub fn take_drag_out(&mut self) -> Option<DragOut> {
+        self.app.take_drag_out()
+    }
+
+    /// The desktop shell couldn't start the native drag from
+    /// [`Self::take_drag_out`].
+    pub fn drag_out_failed(&mut self) {
+        self.app.drag_out_failed();
     }
 
     /// Draw one frame.
