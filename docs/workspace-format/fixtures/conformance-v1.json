@@ -701,6 +701,34 @@
 			"name": "tabhere"
 		},
 		{
+			"typed": "Plan.",
+			"name": "Plan"
+		},
+		{
+			"typed": "Draft . . ",
+			"name": "Draft"
+		},
+		{
+			"typed": "v1.2",
+			"name": "v1.2"
+		},
+		{
+			"typed": "CON",
+			"name": "CON_"
+		},
+		{
+			"typed": "nul",
+			"name": "nul_"
+		},
+		{
+			"typed": "lpt9.backup",
+			"name": "lpt9_.backup"
+		},
+		{
+			"typed": "COM0",
+			"name": "COM0"
+		},
+		{
 			"typed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 			"name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 		},

@@ -459,9 +459,11 @@ pub const MAX_FILE_NAME_CHARS: usize = 200;
 
 /// Turns a typed name into a file name that works on macOS, Windows and
 /// Linux: no path separators, no characters macOS or Windows reject, no
-/// leading dots (which would hide the file), no surrounding spaces, and at
-/// most [`MAX_FILE_NAME_CHARS`] characters. An empty result means the name
-/// had nothing usable.
+/// leading dots (which would hide the file), no surrounding spaces, no
+/// trailing dots (which Windows drops), and at most [`MAX_FILE_NAME_CHARS`]
+/// characters. A name Windows keeps for a device, such as `CON` or `com1`,
+/// gets an underscore after it. An empty result means the name had
+/// nothing usable.
 pub fn normalize_file_name(typed: &str) -> String {
     let kept: String = typed
         .chars()
@@ -473,9 +475,31 @@ pub fn normalize_file_name(typed: &str) -> String {
                 )
         })
         .collect();
-    let name = kept.trim().trim_start_matches(['.', ' ']).trim();
+    let dot_or_space = |character: char| character == '.' || character.is_whitespace();
+    let name = kept.trim_start_matches(dot_or_space).trim_end();
     let cut: String = name.chars().take(MAX_FILE_NAME_CHARS).collect();
-    cut.trim_end().to_owned()
+    let name = cut.trim_end_matches(dot_or_space);
+    // Windows reads `CON` as the device even with an extension after it.
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    if is_windows_device_name(stem) {
+        let (stem, rest) = name.split_at(stem.len());
+        return format!("{stem}_{rest}");
+    }
+    name.to_owned()
+}
+
+/// Whether Windows keeps `name` for a device: `CON`, `PRN`, `AUX`, `NUL`,
+/// or `COM` or `LPT` followed by a digit from 1 to 9, in any letter case.
+fn is_windows_device_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    match upper.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            upper.len() == 4
+                && (upper.starts_with("COM") || upper.starts_with("LPT"))
+                && matches!(upper.as_bytes()[3], b'1'..=b'9')
+        }
+    }
 }
 
 /// The path of the file at `relative_path` once it's named `name`, in the
@@ -1103,6 +1127,29 @@ mod tests {
         assert_eq!(
             normalize_file_name(&format!("{} b", "a".repeat(199))),
             "a".repeat(199)
+        );
+        assert_eq!(
+            normalize_file_name(&format!("{}. b", "a".repeat(198))),
+            "a".repeat(198)
+        );
+    }
+
+    #[test]
+    fn file_names_lose_trailing_dots_and_dodge_windows_device_names() {
+        assert_eq!(normalize_file_name("Plan."), "Plan");
+        assert_eq!(normalize_file_name("Plan . . "), "Plan");
+        assert_eq!(normalize_file_name("v1.2"), "v1.2");
+        assert_eq!(normalize_file_name("CON"), "CON_");
+        assert_eq!(normalize_file_name("nul"), "nul_");
+        assert_eq!(normalize_file_name("Com1"), "Com1_");
+        assert_eq!(normalize_file_name("lpt9.backup"), "lpt9_.backup");
+        assert_eq!(normalize_file_name("con ."), "con_");
+        assert_eq!(normalize_file_name("COM0"), "COM0");
+        assert_eq!(normalize_file_name("CONSOLE"), "CONSOLE");
+        assert_eq!(normalize_file_name("Auxiliary"), "Auxiliary");
+        assert_eq!(
+            default_managed_object_path("project", "Plan."),
+            "projects/Plan/Plan.md"
         );
     }
 
