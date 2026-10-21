@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, OpenAs, SIDEBAR_MIN_WIDTH};
+use app_core::{App, OpenAs, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 use tempfile::TempDir;
 
 /// Poll until background work finishes.
@@ -84,6 +84,34 @@ fn the_sidebar_is_never_narrower_than_224_points() {
     assert_eq!(app.layout().sidebar_width, 224.0);
     app.set_sidebar_width(f32::NAN);
     assert_eq!(app.layout().sidebar_width, 224.0);
+}
+
+#[test]
+fn the_sidebar_is_never_wider_than_480_points() {
+    let app_data = tempfile::tempdir().unwrap();
+    let mut app = App::launch(app_data.path());
+
+    app.set_sidebar_width(10_000.0);
+    assert_eq!(app.layout().sidebar_width, 480.0);
+    assert_eq!(SIDEBAR_MAX_WIDTH, 480.0);
+    app.set_sidebar_width(f32::INFINITY);
+    assert_eq!(app.layout().sidebar_width, 480.0);
+}
+
+#[test]
+fn a_stored_width_out_of_range_comes_back_in_range() {
+    let app_data = tempfile::tempdir().unwrap();
+    let mut app = App::launch(app_data.path());
+    app.set_sidebar_width(300.0);
+    drop(app);
+    let stored = app_data.path().join("layout.json");
+    let text = std::fs::read_to_string(&stored).unwrap();
+    assert!(text.contains("300"), "{text}");
+
+    std::fs::write(&stored, text.replace("300", "100000")).unwrap();
+    assert_eq!(launch(app_data.path()).layout().sidebar_width, 480.0);
+    std::fs::write(&stored, text.replace("300", "-5")).unwrap();
+    assert_eq!(launch(app_data.path()).layout().sidebar_width, 224.0);
 }
 
 #[test]

@@ -6,7 +6,7 @@ use crate::{
     files::{remap, shown_name},
     layout::sidebar_width,
     rail::FILES_PAGE,
-    tabs::TabContent,
+    tabs::{Restored, TabContent},
 };
 
 impl App {
@@ -41,10 +41,22 @@ impl App {
     }
 
     /// Add a page to the rail. Kernel pages such as the Inbox and plugin
-    /// pages register here; registering a page again renames it.
+    /// pages register here; registering a page again renames it. A saved
+    /// tab that was waiting for the page opens in its place, and shows if
+    /// it was the active tab and you haven't picked another since.
     pub fn register_page(&mut self, id: &str, title: &str) {
         self.rail.register(id, title);
         self.listeners.emit(Change::Rail);
+        let Some(page) = self.rail.page(id) else {
+            return;
+        };
+        let content = TabContent::Page {
+            page_id: page.id.clone(),
+            title: page.title.clone(),
+        };
+        if let Some(active_changed) = self.tabs.page_registered(content) {
+            self.tabs_changed(active_changed);
+        }
     }
 
     /// Show a rail page. Files shows a document tab; any other page shows
@@ -155,8 +167,8 @@ impl App {
         self.layout_changed();
     }
 
-    /// Resize the sidebar, to no less than
-    /// [`SIDEBAR_MIN_WIDTH`](crate::SIDEBAR_MIN_WIDTH).
+    /// Resize the sidebar, within [`SIDEBAR_MIN_WIDTH`](crate::SIDEBAR_MIN_WIDTH)
+    /// and [`SIDEBAR_MAX_WIDTH`](crate::SIDEBAR_MAX_WIDTH).
     pub fn set_sidebar_width(&mut self, width: f32) {
         if let Some(width) = sidebar_width(width)
             && width != self.layout.sidebar_width
@@ -226,10 +238,11 @@ impl App {
         result
     }
 
-    /// Read the workspace folder again and bring the tree and the tabs in
-    /// line with it. A tab whose managed note moved follows its stable
-    /// ID; a tab whose file is gone, or moved without an ID to follow,
-    /// closes. The watcher (ticket 10) runs this after outside changes.
+    /// Read the workspace folder again, every file included, and bring the
+    /// tree and the tabs in line with it. A managed note's tab follows its
+    /// stable ID, even when another file now sits at its old path; a tab
+    /// whose file is gone, or moved without an ID to follow, closes. The
+    /// watcher (ticket 10) runs this after outside changes.
     pub fn rescan(&mut self) {
         self.reread_tree(None);
     }
@@ -254,7 +267,13 @@ impl App {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        let mut tree = match workspace.file_tree() {
+        // An item the tree moved went through the index; anything else
+        // may have changed outside Noura.
+        let tree = match moved {
+            Some(_) => workspace.file_tree(),
+            None => workspace.changed_file_tree(),
+        };
+        let mut tree = match tree {
             Ok(tree) => tree,
             Err(error) => {
                 self.show_notice("Couldn't read the files", error, None);
@@ -284,18 +303,17 @@ impl App {
         self.save_view();
     }
 
-    /// Point each file tab at its file in the tree: the same path, or the
-    /// one file with the tab's stable ID. Tabs whose file is gone close.
+    /// Point each file tab at its file in the tree: a managed object's
+    /// file by its stable ID, any other file by its path. Tabs whose file
+    /// is gone close.
     fn follow_files(&mut self) {
         let Some(tree) = &self.tree else {
             return;
         };
         let (changed, active_changed) = self.tabs.follow_files(|path, id| {
-            if tree.is_file(path) {
-                return Some((path.to_owned(), tree.object_id(path).map(str::to_owned)));
-            }
-            let moved = tree.only_file_with_object(id?)?;
-            Some((moved.to_owned(), id.map(str::to_owned)))
+            let path = tree.follow(path, id)?;
+            let id = tree.object_id(&path).map(str::to_owned);
+            Some((path, id))
         });
         if changed {
             self.tabs_changed(active_changed);
@@ -312,8 +330,9 @@ impl App {
         self.save_view();
     }
 
-    /// Save the open workspace's view state to this device's app data.
-    pub(super) fn save_view(&self) {
+    /// Save the open workspace's view state to this device's app data,
+    /// in the background.
+    pub(super) fn save_view(&mut self) {
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -329,11 +348,12 @@ impl App {
             expanded_folders,
             rail_order: self.rail.saved_order().to_vec(),
         };
-        self.views.save(workspace.id(), &view);
+        self.views.save(workspace.id(), view);
     }
 
     /// Bring back the open workspace's saved view state: the tabs whose
-    /// file or page is still there, and the active tab.
+    /// file or page is still there, and the active tab. Tabs for pages
+    /// that haven't registered yet wait for them.
     pub(super) fn restore_view(&mut self) {
         let Some(workspace) = &self.workspace else {
             self.tabs.restore(Vec::new(), None);
@@ -351,29 +371,34 @@ impl App {
             .into_iter()
             .map(|tab| match (tab.file, tab.page) {
                 (Some(path), None) => {
-                    let tree = self.tree.as_ref()?;
-                    // A managed note moved while Noura was closed comes
-                    // back at its new path.
-                    let path = if tree.is_file(&path) {
-                        path
-                    } else {
-                        tree.only_file_with_object(tab.object_id.as_deref()?)?
-                            .to_owned()
-                    };
-                    let file = workspace.open_file(&path).ok()?;
-                    let object_id = tree.object_id(&path).map(str::to_owned);
-                    Some((TabContent::File { file, object_id }, tab.preview))
+                    let file = self.tree.as_ref().and_then(|tree| {
+                        // A managed note moved while Noura was closed
+                        // comes back at its new path.
+                        let path = tree.follow(&path, tab.object_id.as_deref())?;
+                        let file = workspace.open_file(&path).ok()?;
+                        let object_id = tree.object_id(&path).map(str::to_owned);
+                        Some(TabContent::File { file, object_id })
+                    });
+                    file.map_or(Restored::Gone, |file| Restored::Open(file, tab.preview))
                 }
-                (None, Some(page_id)) if page_id != FILES_PAGE => {
-                    self.rail.page(&page_id).map(|page| {
-                        let content = TabContent::Page {
-                            page_id: page.id.clone(),
-                            title: page.title.clone(),
-                        };
-                        (content, tab.preview)
-                    })
+                (None, Some(page_id)) if page_id != FILES_PAGE && !page_id.is_empty() => {
+                    match self.rail.page(&page_id) {
+                        Some(page) => {
+                            let content = TabContent::Page {
+                                page_id: page.id.clone(),
+                                title: page.title.clone(),
+                            };
+                            Restored::Open(content, tab.preview)
+                        }
+                        // A page that registers later, such as a plugin's,
+                        // gets its tab back then.
+                        None => Restored::Waiting {
+                            page_id,
+                            preview: tab.preview,
+                        },
+                    }
                 }
-                _ => None,
+                _ => Restored::Gone,
             })
             .collect();
         self.tabs.restore(restored, stored.active);

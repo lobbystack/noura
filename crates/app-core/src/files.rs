@@ -248,28 +248,36 @@ impl FileTree {
             .find(|node| node.kind == EntryKind::File && node.relative_path == relative_path)
     }
 
-    /// Whether the workspace listing has a file at `relative_path`.
-    pub(crate) fn is_file(&self, relative_path: &str) -> bool {
-        self.file(relative_path).is_some()
-    }
-
     /// The stable ID of the managed object at `relative_path`.
     pub(crate) fn object_id(&self, relative_path: &str) -> Option<&str> {
         self.file(relative_path)?.object_id.as_deref()
     }
 
-    /// The path of the one file whose stable ID is `object_id`. `None`
-    /// when no file has it, or when two files share it.
-    pub(crate) fn only_file_with_object(&self, object_id: &str) -> Option<&str> {
-        let mut found = self
-            .nodes
-            .iter()
-            .filter(|node| node.object_id.as_deref() == Some(object_id));
-        let first = found.next()?;
-        found
-            .next()
-            .is_none()
-            .then_some(first.relative_path.as_str())
+    /// Where the file a tab showed at `relative_path` is now, given the
+    /// stable ID `object_id` it held then, or `None` when it's gone.
+    ///
+    /// A managed object follows its ID, never its old path: it stays put
+    /// while the file at `relative_path` still holds the ID, and otherwise
+    /// moves to the one file that holds it. When two files hold the ID,
+    /// Noura can't tell which one the tab showed, so it's gone. Only a file
+    /// with no ID, or one whose ID no file holds any more, stays at its
+    /// path.
+    pub(crate) fn follow(&self, relative_path: &str, object_id: Option<&str>) -> Option<String> {
+        let at_path = self.file(relative_path);
+        let Some(object_id) = object_id else {
+            return at_path.map(|_| relative_path.to_owned());
+        };
+        if at_path.is_some_and(|node| node.object_id.as_deref() == Some(object_id)) {
+            return Some(relative_path.to_owned());
+        }
+        let mut holders = self.nodes.iter().filter(|node| {
+            node.kind == EntryKind::File && node.object_id.as_deref() == Some(object_id)
+        });
+        match (holders.next(), holders.next()) {
+            (Some(only), None) => Some(only.relative_path.clone()),
+            (Some(_), Some(_)) => None,
+            (None, _) => at_path.map(|_| relative_path.to_owned()),
+        }
     }
 
     /// The open folders' paths, sorted.
@@ -430,6 +438,18 @@ impl FileTree {
 }
 
 impl Workspace {
+    /// The file tree after reading every file again, for when files may
+    /// have changed outside Noura. Until the index's watcher reports a
+    /// change, the plain listing trusts the index for paths it already
+    /// knows, so a file that another app replaced would keep the old
+    /// file's stable ID.
+    pub(crate) fn changed_file_tree(&self) -> Result<FileTree, AppError> {
+        self.engine()
+            .reconcile()
+            .map_err(|error| AppError::from_core(error, self.root(), Access::ReadWorkspace))?;
+        self.file_tree()
+    }
+
     /// The workspace's file tree with every folder closed.
     pub fn file_tree(&self) -> Result<FileTree, AppError> {
         let entries = self

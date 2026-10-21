@@ -132,6 +132,28 @@ pub(crate) fn takes_place(kept: &[bool], index: usize) -> Option<usize> {
     }
 }
 
+/// A saved tab as it comes back with its workspace.
+#[derive(Debug)]
+pub(crate) enum Restored {
+    /// The tab opens: what it shows, and whether it's the preview.
+    Open(TabContent, bool),
+    /// A page tab whose page isn't in the rail yet, such as a plugin's
+    /// page that registers after the workspace opens.
+    Waiting { page_id: String, preview: bool },
+    /// The tab's file or page is gone: it drops out as if closed.
+    Gone,
+}
+
+/// A saved page tab waiting for its page to register. It keeps its place
+/// in the saved tabs meanwhile, as the rail keeps a missing page's place.
+#[derive(Debug)]
+struct WaitingPage {
+    page_id: String,
+    preview: bool,
+    /// Its place among the saved tabs.
+    index: usize,
+}
+
 /// A window's tabs, in order, and the active one.
 #[derive(Debug, Default)]
 pub(crate) struct Tabs {
@@ -139,6 +161,11 @@ pub(crate) struct Tabs {
     active: Option<TabId>,
     /// The document tab that was active before a page tab took over.
     last_document: Option<TabId>,
+    /// Saved page tabs waiting for their page, in saved order.
+    waiting: Vec<WaitingPage>,
+    /// The waiting page whose tab was active when the tabs were saved. It
+    /// shows once its page registers, unless you pick a tab first.
+    active_waiting: Option<String>,
     next_id: u64,
 }
 
@@ -162,8 +189,7 @@ impl Tabs {
             self.set_active(Some(id));
             return id;
         }
-        let id = TabId(self.next_id);
-        self.next_id += 1;
+        let id = self.new_id();
         let tab = Tab {
             id,
             content,
@@ -175,13 +201,28 @@ impl Tabs {
             Some(index) if how == OpenAs::Preview => self.tabs[index] = tab,
             _ => self.tabs.push(tab),
         }
+        if how == OpenAs::Preview {
+            // The new preview replaces a waiting one too.
+            self.waiting.retain(|waiting| !waiting.preview);
+        }
         self.set_active(Some(id));
+        id
+    }
+
+    fn new_id(&mut self) -> TabId {
+        let id = TabId(self.next_id);
+        self.next_id += 1;
         id
     }
 
     /// Show the tab `id`. Returns whether it changed the active tab.
     pub(crate) fn activate(&mut self, id: TabId) -> bool {
-        if self.active == Some(id) || !self.tabs.iter().any(|tab| tab.id == id) {
+        if !self.tabs.iter().any(|tab| tab.id == id) {
+            return false;
+        }
+        if self.active == Some(id) {
+            // Picking the tab that shows keeps it over a waiting page.
+            self.active_waiting = None;
             return false;
         }
         self.set_active(Some(id));
@@ -217,6 +258,7 @@ impl Tabs {
             self.last_document = Some(current.id);
         }
         self.active = id;
+        self.active_waiting = None;
     }
 
     pub(crate) fn get(&self, id: TabId) -> Option<&Tab> {
@@ -241,49 +283,113 @@ impl Tabs {
         }
     }
 
-    /// Replace every tab with `restored`, as `(content, preview)` in order.
-    /// `None` stands for a tab that couldn't come back: it drops out as if
-    /// closed, and when it was the active one the tab that takes its place
-    /// becomes active.
-    pub(crate) fn restore(
-        &mut self,
-        restored: Vec<Option<(TabContent, bool)>>,
-        active: Option<usize>,
-    ) {
+    /// Replace every tab with the saved tabs as they come back, in order.
+    /// A tab that is gone drops out as if closed; when it, or a waiting
+    /// page tab, was the active one, the tab that takes its place becomes
+    /// active.
+    pub(crate) fn restore(&mut self, restored: Vec<Restored>, active: Option<usize>) {
         self.tabs.clear();
+        self.waiting.clear();
+        self.active_waiting = None;
         self.last_document = None;
-        let mut kept = Vec::with_capacity(restored.len());
+        // Which saved tabs open now.
+        let mut opened = Vec::with_capacity(restored.len());
+        // Only one tab may be the preview.
         let mut has_preview = false;
-        for entry in restored {
+        for (index, entry) in restored.into_iter().enumerate() {
+            let place = self.tabs.len() + self.waiting.len();
             // A saved list can name a file or page twice; keep the first.
-            let Some((content, preview)) =
-                entry.filter(|(content, _)| !self.tabs.iter().any(|tab| tab.shows(content)))
-            else {
-                kept.push(false);
-                continue;
-            };
-            kept.push(true);
-            let id = TabId(self.next_id);
-            self.next_id += 1;
-            // Only one tab may be the preview.
-            let preview = preview && !has_preview;
-            has_preview |= preview;
-            self.tabs.push(Tab {
-                id,
-                content,
-                preview,
-                place: TabPlace::default(),
-            });
+            match entry {
+                Restored::Open(content, preview)
+                    if !self.tabs.iter().any(|tab| tab.shows(&content)) =>
+                {
+                    let preview = preview && !has_preview;
+                    has_preview |= preview;
+                    let id = self.new_id();
+                    self.tabs.push(Tab {
+                        id,
+                        content,
+                        preview,
+                        place: TabPlace::default(),
+                    });
+                    opened.push(true);
+                }
+                Restored::Waiting { page_id, preview }
+                    if !self
+                        .waiting
+                        .iter()
+                        .any(|waiting| waiting.page_id == page_id) =>
+                {
+                    let preview = preview && !has_preview;
+                    has_preview |= preview;
+                    if active == Some(index) {
+                        self.active_waiting = Some(page_id.clone());
+                    }
+                    self.waiting.push(WaitingPage {
+                        page_id,
+                        preview,
+                        index: place,
+                    });
+                    opened.push(false);
+                }
+                _ => opened.push(false),
+            }
         }
         self.active = active
-            .and_then(|active| takes_place(&kept, active))
+            .and_then(|active| takes_place(&opened, active))
             .and_then(|index| self.tabs.get(index))
             .map(|tab| tab.id);
     }
 
-    /// The tabs as saved in the view state.
+    /// The page in `content` just joined the rail: open the tab that was
+    /// waiting for it, in its saved place, and show it if it was the
+    /// active tab. Returns `None` when no tab was waiting, or else whether
+    /// the active tab changed.
+    pub(crate) fn page_registered(&mut self, content: TabContent) -> Option<bool> {
+        let TabContent::Page { page_id, .. } = &content else {
+            return None;
+        };
+        let page_id = page_id.clone();
+        let position = self
+            .waiting
+            .iter()
+            .position(|waiting| waiting.page_id == page_id)?;
+        let waiting = self.waiting.remove(position);
+        if self.tabs.iter().any(|tab| tab.shows(&content)) {
+            return Some(false);
+        }
+        // Its saved place, less the tabs before it that still wait.
+        let waiting_before = self
+            .waiting
+            .iter()
+            .filter(|other| other.index < waiting.index)
+            .count();
+        let at = waiting
+            .index
+            .saturating_sub(waiting_before)
+            .min(self.tabs.len());
+        let id = self.new_id();
+        let preview = waiting.preview && !self.tabs.iter().any(|tab| tab.preview);
+        self.tabs.insert(
+            at,
+            Tab {
+                id,
+                content,
+                preview,
+                place: TabPlace::default(),
+            },
+        );
+        if self.active_waiting.as_deref() == Some(page_id.as_str()) {
+            self.set_active(Some(id));
+            return Some(true);
+        }
+        Some(false)
+    }
+
+    /// The tabs as saved in the view state, with the page tabs that are
+    /// still waiting in their places.
     pub(crate) fn stored(&self) -> (Vec<StoredTab>, Option<usize>) {
-        let tabs = self
+        let mut tabs: Vec<StoredTab> = self
             .tabs
             .iter()
             .map(|tab| match &tab.content {
@@ -293,17 +399,21 @@ impl Tabs {
                     page: None,
                     preview: tab.preview,
                 },
-                TabContent::Page { page_id, .. } => StoredTab {
-                    file: None,
-                    object_id: None,
-                    page: Some(page_id.clone()),
-                    preview: tab.preview,
-                },
+                TabContent::Page { page_id, .. } => StoredTab::page(page_id, tab.preview),
             })
             .collect();
-        let active = self
+        let mut active = self
             .active
             .and_then(|active| self.tabs.iter().position(|tab| tab.id == active));
+        for waiting in &self.waiting {
+            let at = waiting.index.min(tabs.len());
+            tabs.insert(at, StoredTab::page(&waiting.page_id, waiting.preview));
+            if self.active_waiting.as_deref() == Some(waiting.page_id.as_str()) {
+                active = Some(at);
+            } else if let Some(shifted) = active.filter(|active| *active >= at) {
+                active = Some(shifted + 1);
+            }
+        }
         (tabs, active)
     }
 
@@ -336,14 +446,22 @@ impl Tabs {
                 None => gone.push(tab.id),
             }
         }
-        // Two tabs that now show one file become one: the first stays.
-        for (index, tab) in self.tabs.iter().enumerate() {
-            if self.tabs[..index]
+        // Two tabs that now show one file become one: the first stays, in
+        // place of the later one.
+        let mut index = 0;
+        while index < self.tabs.len() {
+            let tab = &self.tabs[index];
+            let survivor = self.tabs[..index]
                 .iter()
-                .any(|earlier| earlier.shows(&tab.content))
-                && !gone.contains(&tab.id)
-            {
-                gone.push(tab.id);
+                .position(|earlier| !gone.contains(&earlier.id) && earlier.shows(&tab.content));
+            match survivor {
+                Some(survivor) if !gone.contains(&tab.id) => {
+                    changed = true;
+                    active_changed |= self.active == Some(tab.id);
+                    let merged = self.tabs.remove(index);
+                    self.merge_into(merged, survivor);
+                }
+                _ => index += 1,
             }
         }
         for id in gone {
@@ -352,6 +470,22 @@ impl Tabs {
             self.close(id);
         }
         (changed, active_changed)
+    }
+
+    /// Fold the tab `merged`, already out of the list, into the tab at
+    /// `survivor`, which shows the same file: the survivor stays kept if
+    /// either was, and shows when `merged` did.
+    fn merge_into(&mut self, merged: Tab, survivor: usize) {
+        let survivor = &mut self.tabs[survivor];
+        survivor.preview &= merged.preview;
+        let survivor = survivor.id;
+        if self.active == Some(merged.id) {
+            self.active = Some(survivor);
+            self.active_waiting = None;
+        }
+        if self.last_document == Some(merged.id) {
+            self.last_document = Some(survivor);
+        }
     }
 
     /// Close a tab. Closing the active tab activates the tab that takes
@@ -363,6 +497,7 @@ impl Tabs {
         };
         self.tabs.remove(index);
         if self.active == Some(id) {
+            self.active_waiting = None;
             self.active = self
                 .tabs
                 .get(index.min(self.tabs.len().saturating_sub(1)))

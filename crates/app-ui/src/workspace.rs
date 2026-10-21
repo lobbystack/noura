@@ -1,7 +1,7 @@
 //! The workspace screen: the rail, the sidebar with the workspace switcher
 //! and the file tree, the tab bar, and the document area.
 
-use app_core::{SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
+use app_core::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
     Button, CentralPanel, Frame, Id, Key, Margin, Modal, Modifiers, Panel, RichText, ScrollArea,
     Sense, Ui, UiBuilder, WidgetInfo, accesskit::Role, containers::menu::MenuButton, pos2, vec2,
@@ -15,9 +15,6 @@ use crate::{
     theme::{Palette, SUPPORTING_SIZE, TITLE_SIZE},
     tree,
 };
-
-/// The widest you can drag the sidebar.
-const SIDEBAR_MAX_WIDTH: f32 = 480.0;
 
 /// The sidebar section that holds the file tree.
 const FILES_SECTION: &str = "files";
@@ -74,7 +71,7 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
     let panel = Panel::left("sidebar")
         .resizable(true)
         .default_size(width)
-        .size_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH.max(width))
+        .size_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
         .frame(
             Frame::new()
                 .fill(palette.sidebar)

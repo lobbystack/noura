@@ -11,13 +11,17 @@ use crate::store::JsonStore;
 /// resize it.
 pub const SIDEBAR_MIN_WIDTH: f32 = 224.0;
 
+/// The sidebar's widest width in points.
+pub const SIDEBAR_MAX_WIDTH: f32 = 480.0;
+
 /// The layout this device remembers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Layout {
     /// False once you hide the sidebar.
     pub sidebar_shown: bool,
-    /// The sidebar's width in points, at least [`SIDEBAR_MIN_WIDTH`].
+    /// The sidebar's width in points, from [`SIDEBAR_MIN_WIDTH`] to
+    /// [`SIDEBAR_MAX_WIDTH`].
     pub sidebar_width: f32,
     /// The sidebar sections you folded, by section key.
     pub collapsed_sections: Vec<String>,
@@ -46,8 +50,8 @@ impl LayoutStore {
     }
 
     /// The saved layout, or the default one when there is none or Noura
-    /// can't read it. A width under the minimum comes back as the
-    /// minimum.
+    /// can't read it. A width out of range comes back as the nearest
+    /// width in range.
     pub(crate) fn load(&self) -> Layout {
         let mut layout = self.store.load();
         layout.sidebar_width = sidebar_width(layout.sidebar_width).unwrap_or(SIDEBAR_MIN_WIDTH);
@@ -63,10 +67,10 @@ impl LayoutStore {
     }
 }
 
-/// `width` rounded to whole points and kept at the minimum or wider, or
-/// `None` when it isn't a number.
+/// `width` rounded to whole points and kept from the minimum to the
+/// maximum, or `None` when it isn't a number.
 pub(crate) fn sidebar_width(width: f32) -> Option<f32> {
     width
         .is_finite()
-        .then(|| width.round().max(SIDEBAR_MIN_WIDTH))
+        .then(|| width.round().clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH))
 }

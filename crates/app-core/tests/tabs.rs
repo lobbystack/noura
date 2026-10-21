@@ -522,24 +522,70 @@ fn a_managed_note_another_app_moves_keeps_its_tab() {
 }
 
 #[test]
-fn two_tabs_that_end_up_on_one_file_become_one() {
+fn a_managed_note_follows_its_id_when_another_file_takes_its_old_path() {
     let (_app_data, folder, mut app) = opened(&["A.md"]);
+    write(
+        folder.path(),
+        "Plan.md",
+        &managed_note("note_01k00000000000000000000031"),
+    );
+    app.rescan();
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("Plan.md", OpenAs::Kept);
+
+    // Another app moves the note away, then writes a different file where
+    // it was.
+    rename(folder.path(), "Plan.md", "Archive/Plan.md");
+    write(folder.path(), "Plan.md", b"Someone else's plan");
+    app.rescan();
+
+    assert_eq!(paths(&app), ["A.md", "Archive/Plan.md"]);
+    assert_eq!(app.document().unwrap().relative_path, "Archive/Plan.md");
+}
+
+#[test]
+fn a_note_that_loses_its_id_keeps_its_tab() {
+    let (_app_data, folder, mut app) = opened(&["A.md"]);
+    write(
+        folder.path(),
+        "Plan.md",
+        &managed_note("note_01k00000000000000000000034"),
+    );
+    app.rescan();
+    app.open_file("Plan.md", OpenAs::Kept);
+
+    // Another app strips the note's front matter.
+    write(folder.path(), "Plan.md", b"# Plan");
+    app.rescan();
+
+    assert_eq!(paths(&app), ["Plan.md"]);
+}
+
+#[test]
+fn two_tabs_that_end_up_on_one_file_become_one() {
+    let (_app_data, folder, mut app) = opened(&["A.md", "C.md"]);
     write(
         folder.path(),
         "Plan.md",
         &managed_note("note_01k00000000000000000000023"),
     );
     app.rescan();
-    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("A.md", OpenAs::Preview);
     app.open_file("Plan.md", OpenAs::Kept);
+    app.open_file("C.md", OpenAs::Kept);
+    app.activate_tab(tab_id(&app, "Plan"));
 
-    // Another app replaces A.md with the note.
+    // Another app replaces A.md with the note you're reading.
     std::fs::remove_file(folder.path().join("A.md")).unwrap();
     rename(folder.path(), "Plan.md", "A.md");
     app.rescan();
 
-    assert_eq!(paths(&app), ["A.md"]);
+    // The first tab stays, kept like the tab that merged into it, and
+    // still shows the note.
+    assert_eq!(paths(&app), ["A.md", "C.md"]);
+    assert_eq!(shown(&app), ["A", "C"]);
     assert_eq!(active(&app).as_deref(), Some("A"));
+    assert_eq!(app.document().unwrap().relative_path, "A.md");
 }
 
 #[test]
@@ -641,6 +687,106 @@ fn a_managed_note_moved_while_noura_was_closed_comes_back_at_its_new_path() {
     let app = launch(app_data.path());
 
     assert_eq!(paths(&app), ["Done/Plan.md"]);
+}
+
+#[test]
+fn a_managed_note_moved_while_noura_was_closed_follows_its_id_past_a_new_file_at_its_path() {
+    let (app_data, folder, mut app) = opened(&[]);
+    write(
+        folder.path(),
+        "Plan.md",
+        &managed_note("note_01k00000000000000000000032"),
+    );
+    app.rescan();
+    app.open_file("Plan.md", OpenAs::Kept);
+    drop(app);
+
+    rename(folder.path(), "Plan.md", "Done/Plan.md");
+    write(
+        folder.path(),
+        "Plan.md",
+        &managed_note("note_01k00000000000000000000033"),
+    );
+    let app = launch(app_data.path());
+
+    assert_eq!(paths(&app), ["Done/Plan.md"]);
+}
+
+/// Launch on `app_data` before any test page registers, and wait for the
+/// last workspace to reopen, as when a plugin's page registers late.
+fn launch_without_pages(app_data: &Path) -> App {
+    let mut app = App::launch(app_data);
+    settle(&mut app);
+    app
+}
+
+#[test]
+fn a_page_tab_comes_back_when_its_page_registers_after_launch() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md"]);
+    with_pages(&mut app);
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_page("test-alpha", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    app.activate_tab(tab_id(&app, "Alpha"));
+    drop(app);
+
+    let mut app = launch_without_pages(app_data.path());
+    assert_eq!(shown(&app), ["A", "B"]);
+    app.register_page("test-alpha", "Alpha");
+
+    assert_eq!(shown(&app), ["A", "Alpha", "B"]);
+    assert_eq!(active(&app).as_deref(), Some("Alpha"));
+}
+
+#[test]
+fn a_page_tab_stays_saved_through_a_launch_without_its_page() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md"]);
+    with_pages(&mut app);
+    app.open_page("test-alpha", OpenAs::Kept);
+    app.open_file("A.md", OpenAs::Kept);
+    drop(app);
+
+    // The page's plugin is off for one launch, and you keep working.
+    let mut app = launch_without_pages(app_data.path());
+    assert_eq!(shown(&app), ["A"]);
+    app.open_file("B.md", OpenAs::Kept);
+    let app = relaunch(app, app_data.path());
+
+    assert_eq!(shown(&app), ["Alpha", "A", "B"]);
+    assert_eq!(active(&app).as_deref(), Some("B"));
+}
+
+#[test]
+fn a_tab_you_pick_before_a_late_page_registers_stays_active() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md"]);
+    with_pages(&mut app);
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    app.open_page("test-alpha", OpenAs::Kept);
+    drop(app);
+
+    let mut app = launch_without_pages(app_data.path());
+    assert_eq!(active(&app).as_deref(), Some("B"));
+    app.activate_tab(tab_id(&app, "A"));
+    app.register_page("test-alpha", "Alpha");
+
+    assert_eq!(shown(&app), ["A", "B", "Alpha"]);
+    assert_eq!(active(&app).as_deref(), Some("A"));
+}
+
+#[test]
+fn a_new_preview_replaces_a_page_tab_waiting_as_the_preview() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md"]);
+    with_pages(&mut app);
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_page("test-alpha", OpenAs::Preview);
+    drop(app);
+
+    let mut app = launch_without_pages(app_data.path());
+    app.open_file("B.md", OpenAs::Preview);
+    app.register_page("test-alpha", "Alpha");
+
+    assert_eq!(shown(&app), ["A", "B (preview)"]);
 }
 
 #[test]

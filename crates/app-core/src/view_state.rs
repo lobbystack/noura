@@ -2,7 +2,11 @@
 //! the file tree's open folders and the rail's order. It lives in the app
 //! data folder, never in the workspace.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc::{Receiver, Sender, channel},
+    thread::JoinHandle,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,6 +45,18 @@ pub(crate) struct StoredTab {
     pub(crate) page: Option<String>,
     #[serde(default)]
     pub(crate) preview: bool,
+}
+
+impl StoredTab {
+    /// A saved tab for the rail page `page_id`.
+    pub(crate) fn page(page_id: &str, preview: bool) -> Self {
+        Self {
+            file: None,
+            object_id: None,
+            page: Some(page_id.to_owned()),
+            preview,
+        }
+    }
 }
 
 /// The file's shape, read field by field so one bad value drops only
@@ -113,49 +129,157 @@ fn strings(values: Vec<Value>) -> Vec<String> {
 /// Each workspace's view state, in `workspaces/<workspace ID>/view-state.json`
 /// under the app data folder, next to `local-core`'s index for that
 /// workspace.
-#[derive(Debug, Clone)]
+///
+/// Saves happen on a background thread, so a click never waits for the
+/// disk. It writes only the newest state for each workspace, a load first
+/// waits for the saves before it, and dropping the store waits for every
+/// save.
 pub(crate) struct ViewStore {
     app_data: PathBuf,
+    writer: Option<Writer>,
+}
+
+/// The background thread that writes view state.
+struct Writer {
+    sender: Sender<Message>,
+    thread: JoinHandle<()>,
+}
+
+enum Message {
+    Save {
+        workspace_id: String,
+        view: StoredView,
+    },
+    /// Answer once every save sent before this is on disk.
+    Flush(Sender<()>),
 }
 
 impl ViewStore {
     pub(crate) fn new(app_data: &Path) -> Self {
         Self {
             app_data: app_data.to_owned(),
+            writer: None,
         }
     }
 
-    fn store(&self, workspace_id: &str) -> Option<JsonStore<StoredView>> {
-        // The ID comes from a manifest that `local-core` validated; this
-        // check keeps a bad one from naming another folder.
-        let safe = !workspace_id.is_empty()
-            && workspace_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
-        safe.then(|| {
-            let file = self
-                .app_data
-                .join("workspaces")
-                .join(workspace_id)
-                .join("view-state.json");
-            JsonStore::new(file, "workspace view state")
-        })
-    }
-
     /// The workspace's saved view state, or an empty one.
-    pub(crate) fn load(&self, workspace_id: &str) -> StoredView {
-        self.store(workspace_id)
+    pub(crate) fn load(&mut self, workspace_id: &str) -> StoredView {
+        self.flush();
+        store(&self.app_data, workspace_id)
             .map(|store| store.load())
             .unwrap_or_default()
     }
 
-    /// Save the workspace's view state. A failure goes to the log: the
-    /// view still works for this session.
-    pub(crate) fn save(&self, workspace_id: &str, view: &StoredView) {
-        if let Some(store) = self.store(workspace_id)
-            && let Err(error) = store.save(view)
-        {
-            tracing::warn!(%error, "a workspace's view state could not be saved");
+    /// Save the workspace's view state in the background. A failure goes
+    /// to the log: the view still works for this session.
+    pub(crate) fn save(&mut self, workspace_id: &str, view: StoredView) {
+        let message = Message::Save {
+            workspace_id: workspace_id.to_owned(),
+            view,
+        };
+        let message = match self.writer() {
+            Some(writer) => match writer.sender.send(message) {
+                Ok(()) => return,
+                Err(unsent) => unsent.0,
+            },
+            None => message,
+        };
+        // Without the thread, save here.
+        self.writer = None;
+        if let Message::Save { workspace_id, view } = message {
+            write(&self.app_data, &workspace_id, &view);
         }
+    }
+
+    /// Wait until every save sent so far is on disk.
+    fn flush(&mut self) {
+        let Some(writer) = &self.writer else {
+            return;
+        };
+        let (done, wait) = channel();
+        if writer.sender.send(Message::Flush(done)).is_err() || wait.recv().is_err() {
+            self.writer = None;
+        }
+    }
+
+    /// The writer thread, started on the first save.
+    fn writer(&mut self) -> Option<&Writer> {
+        if self.writer.is_none() {
+            let (sender, receiver) = channel();
+            let app_data = self.app_data.clone();
+            let spawned = std::thread::Builder::new()
+                .name("view-state".into())
+                .spawn(move || run_writer(&app_data, &receiver));
+            match spawned {
+                Ok(thread) => self.writer = Some(Writer { sender, thread }),
+                Err(error) => {
+                    tracing::warn!(%error, "could not start the view state thread");
+                }
+            }
+        }
+        self.writer.as_ref()
+    }
+}
+
+impl Drop for ViewStore {
+    fn drop(&mut self) {
+        if let Some(Writer { sender, thread }) = self.writer.take() {
+            // The thread writes what it has, then stops.
+            drop(sender);
+            if thread.join().is_err() {
+                tracing::warn!("the view state thread stopped early");
+            }
+        }
+    }
+}
+
+/// Write each batch of saves as it arrives, keeping only the newest state
+/// for each workspace, until the store is dropped.
+fn run_writer(app_data: &Path, receiver: &Receiver<Message>) {
+    while let Ok(first) = receiver.recv() {
+        let mut views: Vec<(String, StoredView)> = Vec::new();
+        let mut flushes = Vec::new();
+        for message in std::iter::once(first).chain(receiver.try_iter()) {
+            match message {
+                Message::Save { workspace_id, view } => {
+                    match views.iter_mut().find(|(saved, _)| *saved == workspace_id) {
+                        Some(entry) => entry.1 = view,
+                        None => views.push((workspace_id, view)),
+                    }
+                }
+                Message::Flush(done) => flushes.push(done),
+            }
+        }
+        for (workspace_id, view) in &views {
+            write(app_data, workspace_id, view);
+        }
+        for done in flushes {
+            // The store may have stopped waiting; nothing to answer then.
+            let _ = done.send(());
+        }
+    }
+}
+
+fn store(app_data: &Path, workspace_id: &str) -> Option<JsonStore<StoredView>> {
+    // The ID comes from a manifest that `local-core` validated; this
+    // check keeps a bad one from naming another folder.
+    let safe = !workspace_id.is_empty()
+        && workspace_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+    safe.then(|| {
+        let file = app_data
+            .join("workspaces")
+            .join(workspace_id)
+            .join("view-state.json");
+        JsonStore::new(file, "workspace view state")
+    })
+}
+
+fn write(app_data: &Path, workspace_id: &str, view: &StoredView) {
+    if let Some(store) = store(app_data, workspace_id)
+        && let Err(error) = store.save(view)
+    {
+        tracing::warn!(%error, "a workspace's view state could not be saved");
     }
 }
