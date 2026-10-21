@@ -76,6 +76,25 @@ fn everything(fixture: &Fixture) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
+/// The workspace manifest apart from what turning a plugin on or off
+/// changes: the enabled plugins list and the time of the change.
+fn manifest_apart_from_enabled(fixture: &Fixture) -> local_core::WorkspaceManifest {
+    let mut manifest: local_core::WorkspaceManifest =
+        serde_yaml_ng::from_slice(&fixture.read(MANIFEST)).unwrap();
+    manifest.enabled_plugins.clear();
+    manifest.updated.clear();
+    manifest
+}
+
+/// The files Noura keeps in `.noura` other than the manifest, the index and
+/// locks, with their bytes.
+fn other_noura_files(fixture: &Fixture) -> Vec<(String, Vec<u8>)> {
+    everything(fixture)
+        .into_iter()
+        .filter(|(path, _)| path.starts_with(".noura/") && path != MANIFEST)
+        .collect()
+}
+
 #[test]
 fn the_install_dialog_lists_every_capability_before_any_code_runs() {
     let Some(folder) = PluginFolder::hello() else {
@@ -196,6 +215,8 @@ fn turning_a_plugin_on_writes_the_enabled_list_durably_and_adds_its_page() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     let files = fixture.snapshot();
+    let manifest = manifest_apart_from_enabled(&fixture);
+    let noura = other_noura_files(&fixture);
 
     let (turned_on, synced) =
         local_core::durability_probe::record(|| app.set_plugin_enabled("hello", true));
@@ -207,6 +228,8 @@ fn turning_a_plugin_on_writes_the_enabled_list_durably_and_adds_its_page() {
         "the manifest's folder wasn't synced: {synced:?}"
     );
     assert_eq!(fixture.snapshot(), files);
+    assert_eq!(manifest_apart_from_enabled(&fixture), manifest);
+    assert_eq!(other_noura_files(&fixture), noura);
     assert_eq!(rail_titles(&app), ["Files", "Hello"]);
     assert_eq!(
         plugins::texts(&app, HELLO_PAGE),
@@ -257,6 +280,8 @@ fn turning_a_plugin_off_stops_it_and_removes_its_page_leaving_every_other_file_a
     app.open_page(HELLO_PAGE, OpenAs::Kept);
     assert_eq!(app.current_page(), HELLO_PAGE);
     let files = fixture.snapshot();
+    let manifest = manifest_apart_from_enabled(&fixture);
+    let noura = other_noura_files(&fixture);
 
     let (turned_off, synced) =
         local_core::durability_probe::record(|| app.set_plugin_enabled("hello", false));
@@ -265,6 +290,8 @@ fn turning_a_plugin_off_stops_it_and_removes_its_page_leaving_every_other_file_a
     assert!(!enabled(&fixture, "hello"));
     assert!(synced.contains(&fixture.root.join(".noura")));
     assert_eq!(fixture.snapshot(), files);
+    assert_eq!(manifest_apart_from_enabled(&fixture), manifest);
+    assert_eq!(other_noura_files(&fixture), noura);
     assert_eq!(rail_titles(&app), ["Files"]);
     assert!(app.plugin_view(HELLO_PAGE).is_none());
     assert!(app.tabs().is_empty(), "{:?}", app.tabs());
@@ -380,7 +407,7 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
     assert_eq!(app.current_page(), HELLO_PAGE);
     assert_eq!(
         rail_titles(&app),
-        ["Files", "Probe", "Workspace", "Markdown", "Broken"]
+        ["Files", "Probe", "Workspace", "Markdown", "Deep", "Broken"]
     );
     assert_eq!(app.active_tab().unwrap().title(), "Probe");
 }
@@ -426,6 +453,85 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     let hello = row(&rows, "hello");
     assert!(hello.update.is_empty());
     assert!(hello.approved.contains(&network));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_build_that_fails_to_install_installs_once_you_save_it_again() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (Some(folder), Some(probe)) = (PluginFolder::hello(), plugins::built("probe_plugin"))
+    else {
+        return;
+    };
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    plugins::install(&mut app, folder.path());
+    assert!(app.set_plugin_enabled("hello", true));
+    let library = fixture.app_data.path().join("plugins").join("library");
+    let set_mode = |mode| {
+        std::fs::set_permissions(&library, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    // The plugin library can't take a new build.
+    set_mode(0o555);
+
+    folder.write("hello_plugin.wasm", &probe);
+
+    plugins::wait_until(&mut app, "the new build fails to install", |app| {
+        row(&app.plugins(), "hello").problem.is_some()
+    });
+    let rows = app.plugins();
+    let problem = row(&rows, "hello").problem.clone().unwrap();
+    assert!(
+        problem.ends_with("Save the build again to retry."),
+        "{problem}"
+    );
+    // The build that installed keeps running.
+    assert_eq!(
+        plugins::texts(&app, HELLO_PAGE),
+        Ok(vec![
+            "This workspace has 0 files.".to_owned(),
+            "Count: 0".to_owned()
+        ])
+    );
+
+    set_mode(0o755);
+    folder.write("hello_plugin.wasm", &probe);
+
+    plugins::wait_until(&mut app, "the build saved again installs", |app| {
+        plugins::texts(app, HELLO_PAGE) == Ok(vec!["Probe is running.".to_owned()])
+    });
+    assert_eq!(row(&app.plugins(), "hello").problem, None);
+}
+
+#[test]
+fn an_unreadable_approvals_file_runs_no_plugin_and_the_plugin_installs_again() {
+    let Some(folder) = PluginFolder::hello() else {
+        return;
+    };
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    plugins::install(&mut app, folder.path());
+    assert!(app.set_plugin_enabled("hello", true));
+    drop(app);
+    let records = fixture
+        .app_data
+        .path()
+        .join("plugins")
+        .join("installed.json");
+    std::fs::write(&records, b"{\"plugins\": {\"hello\": ").unwrap();
+
+    let mut app = fixture.app();
+
+    assert_eq!(rail_titles(&app), ["Files"]);
+    assert!(app.plugin_view(HELLO_PAGE).is_none());
+    let rows = app.plugins();
+    assert!(!row(&rows, "hello").installed && row(&rows, "hello").enabled);
+    // The folder it came from installs it again, in place of the copy
+    // that lost its approvals.
+    plugins::install(&mut app, folder.path());
+    assert_eq!(rail_titles(&app), ["Files", "Hello"]);
+    assert!(row(&app.plugins(), "hello").running);
 }
 
 #[test]

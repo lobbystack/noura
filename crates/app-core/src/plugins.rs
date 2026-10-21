@@ -15,7 +15,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
@@ -157,7 +157,14 @@ struct Reload {
 /// Stops its reload watcher when dropped.
 struct Watcher {
     stop: Arc<AtomicBool>,
+    /// The digest of the build the watcher offered last, shared with it.
+    offered: Offered,
 }
+
+/// The digest of the build a reload watcher offered last. The watcher
+/// skips a build with this digest; clearing it makes the next change in
+/// the folder offer the build again.
+type Offered = Arc<Mutex<String>>;
 
 impl Drop for Watcher {
     fn drop(&mut self) {
@@ -247,8 +254,11 @@ impl Plugins {
     }
 
     /// The plugin host, started the first time something needs it. Starting
-    /// it drops library entries this device has no record of and watches
-    /// each installed plugin's folder for new builds.
+    /// it drops library entries this device has no record of, as after the
+    /// records file was lost or couldn't be read: such an entry holds no
+    /// approval, and installing the plugin from its folder again needs its
+    /// ID free. It also watches each installed plugin's folder for new
+    /// builds.
     fn host(&mut self) -> Result<Arc<PluginHost>, AppError> {
         if let Some(host) = &self.host {
             return Ok(host.clone());
@@ -561,7 +571,9 @@ impl Plugins {
                 }
             }
         })?;
-        self.apply(id, &candidate)
+        self.apply(id, &candidate).inspect_err(|error| {
+            self.failed_update(id, error);
+        })
     }
 
     /// Take the builds the reload watchers found. A build that asks for no
@@ -582,7 +594,7 @@ impl Plugins {
                     if approved {
                         self.updates.remove(&reload.id);
                         if let Err(error) = self.apply(&reload.id, &candidate) {
-                            self.problems.insert(reload.id.clone(), error.message);
+                            self.failed_update(&reload.id, &error);
                         }
                     } else {
                         self.updates.insert(reload.id.clone(), candidate);
@@ -597,6 +609,23 @@ impl Plugins {
             }
             self.changed();
         }
+    }
+
+    /// Show why a new build of the plugin `id` didn't install, and let its
+    /// watcher offer that build again when the folder next changes.
+    fn failed_update(&mut self, id: &str, error: &AppError) {
+        if let Some(watcher) = self.watchers.get(id) {
+            watcher
+                .offered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+        }
+        self.problems.insert(
+            id.to_owned(),
+            format!("{} Save the build again to retry.", error.message),
+        );
+        self.changed();
     }
 
     /// Install `candidate` over the plugin `id`, and run it in place of the
@@ -621,11 +650,12 @@ impl Plugins {
             return;
         };
         let stop = Arc::new(AtomicBool::new(false));
+        let offered = Arc::new(Mutex::new(installed));
         let watcher = ReloadWatcher {
             id: id.to_owned(),
             folder: PathBuf::from(folder),
             host,
-            installed,
+            offered: offered.clone(),
             sender: self.reload_sender.clone(),
             wake: self.wake.clone(),
             stop: stop.clone(),
@@ -635,7 +665,8 @@ impl Plugins {
             .spawn(move || watcher.run());
         match spawned {
             Ok(_) => {
-                self.watchers.insert(id.to_owned(), Watcher { stop });
+                self.watchers
+                    .insert(id.to_owned(), Watcher { stop, offered });
             }
             Err(error) => tracing::warn!(%error, "a plugin's folder isn't watched for new builds"),
         }
@@ -741,16 +772,20 @@ struct ReloadWatcher {
     id: String,
     folder: PathBuf,
     host: Arc<PluginHost>,
-    /// The digest of the build installed last, which a change must differ
-    /// from.
-    installed: String,
+    /// The digest of the build offered last, which a change must differ
+    /// from. It starts as the installed build's.
+    offered: Offered,
     sender: Sender<Reload>,
     wake: Option<Wake>,
     stop: Arc<AtomicBool>,
 }
 
 impl ReloadWatcher {
-    fn run(mut self) {
+    fn offered(&self) -> std::sync::MutexGuard<'_, String> {
+        self.offered.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn run(self) {
         let watcher = WatchCoordinator::new(&self.folder, |_| {});
         let mut last_problem: Option<String> = None;
         // The folder may have changed while Noura wasn't running.
@@ -779,13 +814,13 @@ impl ReloadWatcher {
                 return;
             }
             let result = match self.host.folder_digest(&self.folder) {
-                Ok(digest) if digest == self.installed => continue,
+                Ok(digest) if digest == *self.offered() => continue,
                 Ok(_) => self.host.inspect_update(&self.id, &self.folder),
                 Err(error) => Err(error),
             };
             match &result {
                 Ok(candidate) => {
-                    self.installed = candidate.digest();
+                    *self.offered() = candidate.digest();
                     last_problem = None;
                 }
                 Err(error) if last_problem.as_ref() == Some(&error.message) => continue,
