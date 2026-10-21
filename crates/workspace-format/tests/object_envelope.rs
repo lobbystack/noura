@@ -292,6 +292,26 @@ fn registered_types_serialize_declared_properties_in_declared_order() {
 }
 
 #[test]
+fn saving_over_a_registered_types_file_rewrites_changed_properties_in_declared_order() {
+    let fixture = fixture();
+    let types = registry(&fixture);
+    for case in cases(&fixture, "registered_rewrites") {
+        let existing = case["markdown"].as_str().unwrap();
+        let mut object = managed(case);
+        for (key, value) in case["set"].as_object().unwrap() {
+            object.properties.insert(key.clone(), value.clone());
+        }
+        let written = types.serialize_over(existing.as_bytes(), &object).unwrap();
+        assert_eq!(
+            text(written),
+            case["expected"].as_str().unwrap(),
+            "{}",
+            name(case)
+        );
+    }
+}
+
+#[test]
 fn registered_types_keep_todays_body_rules() {
     let fixture = fixture();
     let types = registry(&fixture);

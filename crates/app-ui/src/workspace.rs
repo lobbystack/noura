@@ -248,7 +248,7 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             return;
         };
         if matches!(content, TabContent::File { .. })
-            && crate::note::show(ui, &mut state.app, &mut state.notes, id)
+            && crate::note::show(ui, &mut state.app, &mut state.notes, state.window, id)
         {
             state.shown_tab = Some(id);
             return;

@@ -243,12 +243,9 @@ impl<'a, 'ast> Rows for DocScrollContent<'a, 'ast> {
     fn approx(&self, id: &DocRowId) -> f32 {
         match id {
             DocRowId::Leading => self.leading_precise,
-            DocRowId::Block(i) => {
-                let n = self.blocks[*i];
-                self.renderer.block_pre_spacing_height_approx(n)
-                    + self.renderer.height_approx(n)
-                    + self.renderer.block_post_spacing_height_approx(n)
-            }
+            DocRowId::Block(i) => self
+                .renderer
+                .row_approx(*i, self.blocks[*i], self.blocks.len()),
             // Per-line plaintext rows: monospace char-count estimate
             // (no shaping); precise reflects actual cosmic-text wrap.
             DocRowId::Line(i) => {

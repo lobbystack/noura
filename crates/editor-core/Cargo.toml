@@ -7,6 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 comrak.workspace = true
+# Finds line endings in a note's text when an edit reparses part of it.
+memchr.workspace = true
+# Hashes the caches' node keys.
+rustc-hash.workspace = true
 # Find matches literal text ignoring case, and the formatting commands read
 # list and quote markers.
 regex.workspace = true

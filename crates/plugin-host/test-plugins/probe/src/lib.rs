@@ -210,6 +210,7 @@ fn describe(error: &Error) -> String {
         Error::InvalidPath(path) => format!("error invalid-path {path}"),
         Error::NotFound(what) => format!("error not-found {what}"),
         Error::Failed(message) => format!("error failed {message}"),
+        other => format!("error {other:?}"),
     }
 }
 

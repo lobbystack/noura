@@ -93,6 +93,11 @@ jobs:
         run: cargo test -p app-ui --release --locked --test plugin_kit -- --ignored --nocapture
         env:
           NOURA_REQUIRE_PLUGINS: '1'
+      # Also a report: the 95th-percentile keystroke-to-frame time of typing
+      # in the 1 MB note, against the 16 ms budget.
+      - name: Report the editor's typing time on a 1 MB note
+        if: matrix.os == 'macos-latest'
+        run: cargo bench -p editor-egui --locked --bench typing
 
   # Release checks: build each desktop package with cargo-packager, sign it
   # with a throwaway updater key, install or mount it, and launch the app to

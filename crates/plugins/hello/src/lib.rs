@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use plugin_sdk::{Event, Node, Page, Plugin, View, VirtualRow, workspace};
+use plugin_sdk::{Event, Node, Page, Plugin, View, workspace};
 
 static COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -27,10 +27,6 @@ impl Plugin for Hello {
         view.text(View::ROOT, "count", &format!("Count: {count}"));
         view.button(View::ROOT, "add-one", "Add one");
         view.into_nodes()
-    }
-
-    fn rows(_page: String, _node: String, _start: u32, _count: u32) -> Vec<VirtualRow> {
-        Vec::new()
     }
 
     fn handle_event(_page: String, event: Event) {

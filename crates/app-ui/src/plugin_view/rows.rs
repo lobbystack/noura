@@ -148,7 +148,7 @@ impl<'a> Source<'a> {
                 .collect()),
             Self::Fetched { .. } => {
                 let range = to_u32(range.start)..to_u32(range.end);
-                let rows = kit.app.plugin_rows(kit.page, list, range)?;
+                let rows = kit.rows(list, range)?;
                 Ok(rows
                     .into_iter()
                     .map(|row| {

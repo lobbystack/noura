@@ -830,5 +830,29 @@
       "expected_body": "Hello\nWorld",
       "rewritten_ends_with": "---\nHello\nWorld"
     }
+  ],
+  "registered_rewrites": [
+    {
+      "name": "a property change rewrites the frontmatter in declared order and keeps the body's bytes",
+      "markdown": "---\nzeta: last\nservings: 4\nid: recipe_01j00000000000000000000000\ncourse: dessert\ntype: recipe\n---\n\nLayer and chill.\r\n",
+      "set": {
+        "servings": 6
+      },
+      "expected": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncourse: dessert\nservings: 6\nzeta: last\n---\n\nLayer and chill.\r\n"
+    },
+    {
+      "name": "unchanged properties keep the frontmatter's bytes, comments included",
+      "markdown": "---\n# kept\nzeta: last\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\nBody\n",
+      "set": {},
+      "expected": "---\n# kept\nzeta: last\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\nBody\n"
+    },
+    {
+      "name": "a rewrite keeps the byte-order mark and CRLF line endings",
+      "markdown": "\ufeff---\r\nid: recipe_01j00000000000000000000000\r\ntype: recipe\r\nsource: Grandma\r\n---\r\nBody\r\n",
+      "set": {
+        "course": "main"
+      },
+      "expected": "\ufeff---\r\nid: recipe_01j00000000000000000000000\r\ntype: recipe\r\ncourse: main\r\nsource: Grandma\r\n---\r\nBody\r\n"
+    }
   ]
 }
