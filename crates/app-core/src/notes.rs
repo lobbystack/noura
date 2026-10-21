@@ -273,6 +273,7 @@ pub struct NoteSession {
     /// Another program deleted the file while the note had unsaved edits:
     /// saves wait, and Restore writes the note back.
     deleted: bool,
+    restore_problem: Option<String>,
     /// Whether most lines ended in CRLF and a byte-order mark came first
     /// when Noura last read the file, for Restore.
     uses_crlf: bool,
@@ -309,6 +310,7 @@ impl NoteSession {
             look_again: false,
             conflict: None,
             deleted: false,
+            restore_problem: None,
             uses_crlf: false,
             has_bom: false,
         };
@@ -712,6 +714,7 @@ impl NoteSession {
     /// Write the note back where its file was, after another program
     /// deleted it. Saves run again afterwards.
     pub(crate) fn restore(&mut self, engine: &WorkspaceEngine) -> Result<(), CoreError> {
+        self.restore_problem = None;
         let body = format!("{}{}", &self.base[..self.body_start], self.text);
         let restored = engine.restore_raw_markdown(RawRestoreInput {
             relative_path: self.relative_path.clone(),
@@ -736,9 +739,12 @@ impl NoteSession {
     /// Restore failed: the note says why and keeps offering it.
     pub(crate) fn restore_failed(&mut self, error: &CoreError) {
         tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't restore");
-        self.problem = Some(SaveProblem {
-            reason: save_reason(error),
-        });
+        self.restore_problem = Some(save_reason(error));
+    }
+
+    /// Why Restore didn't write the file back, until the next try.
+    pub fn restore_problem(&self) -> Option<&str> {
+        self.restore_problem.as_deref()
     }
 
     fn failed(&mut self, reason: String, now: Instant) {
@@ -877,6 +883,7 @@ impl NoteSession {
             // app's edit would.
             self.deleted = false;
             self.problem = None;
+            self.restore_problem = None;
             return FileCheck::Changed;
         }
         match &self.conflict {
