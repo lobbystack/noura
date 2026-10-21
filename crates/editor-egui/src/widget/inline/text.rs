@@ -43,7 +43,7 @@ impl<'ast> MdRender {
         // Misspelled words get their own style scope, which paints the
         // wavy line under them.
         let mut at = node_range.0;
-        for word in self.misspelled_in(node_range) {
+        for word in self.misspelled_in(node, node_range) {
             if at < word.0 {
                 let r = (at, word.0);
                 layout.push_source(r, &self.buffer[r], text_format.clone());

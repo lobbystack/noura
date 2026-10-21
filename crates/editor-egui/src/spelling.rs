@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use comrak::nodes::{AstNode, NodeValue};
 use editor_core::offset_types::Grapheme;
 
 use crate::MdRender;
@@ -57,9 +58,17 @@ impl Spelling {
 }
 
 impl MdRender {
-    /// The misspelled words in the source text `range`, as grapheme
-    /// ranges, leaving out the word the caret is typing.
-    pub(crate) fn misspelled_in(&self, range: (Grapheme, Grapheme)) -> Vec<(Grapheme, Grapheme)> {
+    /// The misspelled words in the source text `range` of the text node
+    /// `node`, as grapheme ranges, leaving out the word the caret is typing
+    /// and the address an autolink shows.
+    pub(crate) fn misspelled_in<'ast>(
+        &self,
+        node: &'ast AstNode<'ast>,
+        range: (Grapheme, Grapheme),
+    ) -> Vec<(Grapheme, Grapheme)> {
+        if node.parent().is_some_and(|parent| self.is_autolink(parent)) {
+            return Vec::new();
+        }
         let text = &self.buffer[range];
         let Some(found) = self.spelling.misspelled(text) else {
             return Vec::new();
@@ -78,5 +87,16 @@ impl MdRender {
             .filter(|(start, end)| start < end)
             .filter(|(start, end)| !caret.is_some_and(|caret| *start <= caret && caret <= *end))
             .collect()
+    }
+
+    /// Whether `node` is an autolink: a URL or email address, bare or in
+    /// angle brackets, whose text is its address. A labeled link starts
+    /// with `[`.
+    fn is_autolink<'ast>(&self, node: &'ast AstNode<'ast>) -> bool {
+        if !matches!(node.data.borrow().value, NodeValue::Link(_)) {
+            return false;
+        }
+        let (start, end) = self.node_range(node);
+        start < end && !self.buffer[(start, start + 1)].starts_with('[')
     }
 }

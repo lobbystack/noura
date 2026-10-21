@@ -33,6 +33,10 @@ impl SpellChecker for Fake {
 type EditorHarness = Harness<'static, Option<Editor>>;
 
 fn harness(checker: Option<Arc<dyn SpellChecker>>) -> EditorHarness {
+    harness_on(NOTE, checker)
+}
+
+fn harness_on(note: &'static str, checker: Option<Arc<dyn SpellChecker>>) -> EditorHarness {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(800.0, 600.0))
         .with_context_setup(|ctx| {
@@ -42,7 +46,7 @@ fn harness(checker: Option<Arc<dyn SpellChecker>>) -> EditorHarness {
             move |ui, editor: &mut Option<Editor>| {
                 editor
                     .get_or_insert_with(|| {
-                        let mut editor = Editor::new(ui.ctx(), NOTE, MdConfig::default());
+                        let mut editor = Editor::new(ui.ctx(), note, MdConfig::default());
                         editor.set_spell_checker(checker.clone());
                         editor
                     })
@@ -129,4 +133,32 @@ fn turning_spell_check_off_clears_the_marks() {
     harness.run_steps(1);
 
     assert_eq!(marked(&harness), Vec::<String>::new());
+}
+
+/// Bare URLs and email addresses are links whose text is their address, so
+/// the editor leaves them unmarked, angle brackets or not; a labeled
+/// link's text is still prose.
+#[test]
+fn urls_and_email_addresses_are_not_marked() {
+    const LINKS: &str = "See https://teh.example/teh/path and www.teh.example, \
+        write to teh@teh.example or <https://teh.example/a>, \
+        [teh label](https://teh.example) and teh word.\n";
+    let mut harness = harness_on(LINKS, Some(Arc::new(Fake)));
+    place_caret(&mut harness, LINKS.len() - 1);
+
+    assert_eq!(marked(&harness), ["teh", "teh"]);
+    let editor = editor(&harness);
+    let marked_at: Vec<usize> = editor
+        .painted_spans()
+        .into_iter()
+        .filter(|span| span.misspelled)
+        .map(|span| span.source_range.0.0)
+        .collect();
+    assert_eq!(
+        marked_at,
+        [
+            LINKS.find("[teh").unwrap() + 1,
+            LINKS.find("teh word").unwrap()
+        ]
+    );
 }
