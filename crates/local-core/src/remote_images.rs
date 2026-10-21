@@ -31,11 +31,23 @@ pub struct RemoteImage {
 
 /// Fetches remote images. Each [`fetch`](Self::fetch) sends at most one
 /// request chain and blocks until it ends.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RemoteImageFetcher {
     /// Lets tests serve images from a loopback server. Never set in a
     /// shipped build.
     allow_loopback: bool,
+    /// How long one load may take: [`REMOTE_IMAGE_TIMEOUT`], shorter only
+    /// in tests.
+    timeout: Duration,
+}
+
+impl Default for RemoteImageFetcher {
+    fn default() -> Self {
+        Self {
+            allow_loopback: false,
+            timeout: REMOTE_IMAGE_TIMEOUT,
+        }
+    }
 }
 
 impl RemoteImageFetcher {
@@ -49,6 +61,7 @@ impl RemoteImageFetcher {
     pub fn allowing_loopback() -> Self {
         Self {
             allow_loopback: true,
+            ..Self::default()
         }
     }
 
@@ -113,7 +126,7 @@ impl RemoteImageFetcher {
             }
         });
         let client = reqwest::Client::builder()
-            .timeout(REMOTE_IMAGE_TIMEOUT)
+            .timeout(self.timeout)
             .redirect(redirects)
             .dns_resolver(Arc::new(PublicResolver(self.clone())))
             .build()
@@ -122,13 +135,7 @@ impl RemoteImageFetcher {
             .get(url)
             .send()
             .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    timed_out()
-                } else {
-                    unavailable()
-                }
-            })?
+            .map_err(request_failed)?
             .error_for_status()
             .map_err(|_| unavailable())?;
         let content_type = response
@@ -146,7 +153,7 @@ impl RemoteImageFetcher {
             return Err(too_large());
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
+        while let Some(chunk) = response.chunk().await.map_err(request_failed)? {
             if bytes.len() + chunk.len() > MAX_REMOTE_IMAGE_BYTES {
                 return Err(too_large());
             }
@@ -180,6 +187,15 @@ impl reqwest::dns::Resolve for PublicResolver {
             }
             Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
         })
+    }
+}
+
+/// Why a request or the read of its answer failed.
+fn request_failed(error: reqwest::Error) -> CoreError {
+    if error.is_timeout() {
+        timed_out()
+    } else {
+        unavailable()
     }
 }
 
@@ -235,7 +251,52 @@ fn timed_out() -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteImageFetcher;
+    use std::io::{Read as _, Write as _};
+    use std::time::{Duration, Instant};
+
+    use super::{REMOTE_IMAGE_TIMEOUT, RemoteImageFetcher};
+
+    /// The address of a server on this computer that reads each request,
+    /// sends `reply`, and then holds the connection open without a word
+    /// more.
+    fn stalling_server(reply: &'static [u8]) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for mut stream in listener.incoming().flatten() {
+                let _ = stream.read(&mut [0; 1024]);
+                let _ = stream.write_all(reply);
+                held.push(stream);
+            }
+        });
+        format!("http://127.0.0.1:{port}/slow.png")
+    }
+
+    #[test]
+    fn a_load_gives_up_after_its_timeout() {
+        assert_eq!(RemoteImageFetcher::new().timeout, Duration::from_secs(20));
+        assert_eq!(REMOTE_IMAGE_TIMEOUT, Duration::from_secs(20));
+        let fetcher = RemoteImageFetcher {
+            allow_loopback: true,
+            timeout: Duration::from_millis(300),
+        };
+
+        for (stalls, reply) in [
+            ("before answering", &b""[..]),
+            (
+                "in the middle of the image",
+                &b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 100\r\n\r\nabc"[..],
+            ),
+        ] {
+            let started = Instant::now();
+            let error = fetcher.fetch(&stalling_server(reply)).unwrap_err();
+
+            assert_eq!(error.code, "image_timeout", "a server that stalls {stalls}");
+            assert!(error.retryable);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+    }
 
     #[test]
     fn only_public_web_addresses_without_credentials_pass() {
