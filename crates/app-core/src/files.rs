@@ -47,14 +47,71 @@ pub enum TreeKey {
     Right,
     /// Close an open folder, or move to the parent folder.
     Left,
-    /// Enter or Space: open a file or toggle a folder.
+    /// Space: open a file or toggle a folder.
     Activate,
+    /// Enter: as Space, except that on the file that's already open it
+    /// starts renaming the file. [`crate::App::press_tree_key`] knows which
+    /// file is open.
+    Enter,
+    /// F2: rename the current row.
+    Rename,
+    /// Delete, or Cmd-Backspace on macOS and Ctrl-Backspace elsewhere: move
+    /// the current row to the trash.
+    Trash,
+    /// Shift-F10 or the menu key: open the current row's menu.
+    Menu,
 }
 
 /// What the tree asks its owner to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeAction {
-    OpenFile { relative_path: String },
+    OpenFile {
+        relative_path: String,
+    },
+    /// Start renaming the item in place.
+    Rename {
+        relative_path: String,
+    },
+    /// Move the item to the trash, asking first for a folder.
+    Trash {
+        relative_path: String,
+    },
+    /// Open the item's row menu.
+    Menu {
+        relative_path: String,
+    },
+    /// Move the item at `relative_path` into `folder` (`""` is the top of
+    /// the workspace).
+    Move {
+        relative_path: String,
+        folder: String,
+    },
+}
+
+/// Resting on a closed folder this long while dragging opens it.
+pub const SPRING_OPEN_DELAY: Duration = Duration::from_millis(1000);
+
+/// Where the pointer is while a row is dragged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropSpot {
+    /// Over the visible row at this index.
+    Row(usize),
+    /// Over the tree but below its rows: the top of the workspace.
+    Blank,
+    /// Outside the tree.
+    Away,
+}
+
+/// A row being dragged.
+struct Drag {
+    node: usize,
+    /// The closed folder under the pointer and when the pointer got there.
+    resting: Option<(usize, Instant)>,
+    /// The folder a drop would move the row into.
+    target: Option<String>,
+    /// Folders this drag opened, which close again unless they hold the
+    /// drop.
+    opened: Vec<usize>,
 }
 
 /// A file shown in the document area.
@@ -74,17 +131,6 @@ impl OpenedFile {
             relative_path: relative_path.to_owned(),
         }
     }
-}
-
-/// `path` after the item at `from`, a file or a folder, moved to `to`, or
-/// `None` when `path` isn't `from` or inside it.
-pub(crate) fn remap(path: &str, from: &str, to: &str) -> Option<String> {
-    if path == from {
-        return Some(to.to_owned());
-    }
-    path.strip_prefix(from)
-        .filter(|rest| rest.starts_with('/'))
-        .map(|rest| format!("{to}{rest}"))
 }
 
 /// One file or folder from the workspace listing.
@@ -118,9 +164,12 @@ pub struct FileTree {
     /// The node behind each visible row.
     row_nodes: Vec<usize>,
     parents: Vec<Option<usize>>,
+    /// The node at each workspace path.
+    by_path: HashMap<String, usize>,
     focused: Option<usize>,
     typed: String,
     typed_at: Option<Instant>,
+    drag: Option<Drag>,
 }
 
 impl FileTree {
@@ -132,9 +181,11 @@ impl FileTree {
             rows: Vec::new(),
             row_nodes: Vec::new(),
             parents: Vec::new(),
+            by_path: HashMap::new(),
             focused: None,
             typed: String::new(),
             typed_at: None,
+            drag: None,
         };
         let mut folders: HashMap<String, usize> = HashMap::new();
         for entry in entries {
@@ -188,6 +239,8 @@ impl FileTree {
             children: Vec::new(),
         });
         self.parents.push(parent);
+        self.by_path
+            .insert(self.nodes[index].relative_path.clone(), index);
         match parent {
             Some(parent) => self.nodes[parent].children.push(index),
             None => self.top.push(index),
@@ -243,9 +296,10 @@ impl FileTree {
     }
 
     fn file(&self, relative_path: &str) -> Option<&Node> {
-        self.nodes
-            .iter()
-            .find(|node| node.kind == EntryKind::File && node.relative_path == relative_path)
+        self.by_path
+            .get(relative_path)
+            .map(|node| &self.nodes[*node])
+            .filter(|node| node.kind == EntryKind::File)
     }
 
     /// The stable ID of the managed object at `relative_path`.
@@ -294,19 +348,14 @@ impl FileTree {
     /// Open the folders at `paths`; paths that aren't folders are left
     /// out.
     pub(crate) fn expand_folders<'a>(&mut self, paths: impl IntoIterator<Item = &'a str>) {
-        let wanted: HashSet<&str> = paths.into_iter().collect();
-        for (index, node) in self.nodes.iter().enumerate() {
-            if node.kind == EntryKind::Folder && wanted.contains(node.relative_path.as_str()) {
-                self.expanded.insert(index);
+        for path in paths {
+            if let Some(&node) = self.by_path.get(path)
+                && self.nodes[node].kind == EntryKind::Folder
+            {
+                self.expanded.insert(node);
             }
         }
         self.refresh_rows();
-    }
-
-    /// The path of the row with keyboard focus.
-    pub(crate) fn focused_path(&self) -> Option<&str> {
-        self.focused
-            .map(|row| self.rows[row].relative_path.as_str())
     }
 
     /// The row with keyboard focus.
@@ -324,6 +373,196 @@ impl FileTree {
     pub fn set_focus(&mut self, row: usize) {
         if row < self.rows.len() {
             self.focused = Some(row);
+        }
+    }
+
+    /// Open the folders above the item at `relative_path` and make its row
+    /// the current row. Returns whether the tree shows the item.
+    pub fn select(&mut self, relative_path: &str) -> bool {
+        let Some(&node) = self.by_path.get(relative_path) else {
+            return false;
+        };
+        let mut parent = self.parents[node];
+        while let Some(folder) = parent {
+            self.expanded.insert(folder);
+            parent = self.parents[folder];
+        }
+        self.refresh_rows();
+        self.focused = self.row_of(node);
+        true
+    }
+
+    /// The folder new notes and folders go in: the current row when it is
+    /// a folder, the current file's folder, or the top of the workspace
+    /// (`""`) when no row is current.
+    pub fn target_folder(&self) -> String {
+        let Some(row) = self.focused.and_then(|row| self.rows.get(row)) else {
+            return String::new();
+        };
+        match row.kind {
+            EntryKind::Folder => row.relative_path.clone(),
+            EntryKind::File => parent_of(&row.relative_path).unwrap_or("").to_owned(),
+        }
+    }
+
+    /// Close every folder. The current row moves to the top-level row that
+    /// held it.
+    pub fn collapse_all(&mut self) {
+        let focused = self.focused.map(|row| {
+            let mut node = self.row_nodes[row];
+            while let Some(parent) = self.parents[node] {
+                node = parent;
+            }
+            node
+        });
+        self.expanded.clear();
+        self.refresh_rows();
+        self.focused = focused.and_then(|node| self.row_of(node));
+    }
+
+    /// Start dragging the row at `row`.
+    pub fn start_drag(&mut self, row: usize) {
+        self.cancel_drag();
+        if let Some(&node) = self.row_nodes.get(row) {
+            self.drag = Some(Drag {
+                node,
+                resting: None,
+                target: None,
+                opened: Vec::new(),
+            });
+        }
+    }
+
+    /// The workspace path of the row being dragged.
+    pub fn dragging(&self) -> Option<&str> {
+        self.drag
+            .as_ref()
+            .map(|drag| self.nodes[drag.node].relative_path.as_str())
+    }
+
+    /// The pointer is at `spot` at time `at` while a row is dragged. Over a
+    /// folder the drop goes into it, over a file into the file's folder,
+    /// and over the blank part of the tree to the top of the workspace.
+    /// Resting on a closed folder for [`SPRING_OPEN_DELAY`] opens it.
+    pub fn drag_over(&mut self, spot: DropSpot, at: Instant) {
+        let Some(drag) = &self.drag else {
+            return;
+        };
+        let dragged = drag.node;
+        let over = match spot {
+            DropSpot::Row(row) => self.row_nodes.get(row).copied(),
+            DropSpot::Blank | DropSpot::Away => None,
+        };
+        let folder = match (spot, over) {
+            (DropSpot::Away, _) | (DropSpot::Row(_), None) => None,
+            (DropSpot::Blank, _) => Some(String::new()),
+            (DropSpot::Row(_), Some(node)) => Some(match self.nodes[node].kind {
+                EntryKind::Folder => self.nodes[node].relative_path.clone(),
+                EntryKind::File => parent_of(&self.nodes[node].relative_path)
+                    .unwrap_or("")
+                    .to_owned(),
+            }),
+        };
+        let target =
+            folder.filter(|folder| can_move_into(&self.nodes[dragged].relative_path, folder));
+        let closed_folder = over.filter(|node| {
+            self.nodes[*node].kind == EntryKind::Folder && !self.expanded.contains(node)
+        });
+        let Some(drag) = &mut self.drag else {
+            return;
+        };
+        drag.target = target;
+        drag.resting = match (closed_folder, drag.resting) {
+            (Some(node), Some((resting, since))) if node == resting => Some((node, since)),
+            (Some(node), _) => Some((node, at)),
+            (None, _) => None,
+        };
+        if let Some((node, since)) = drag.resting
+            && at.saturating_duration_since(since) >= SPRING_OPEN_DELAY
+        {
+            drag.resting = None;
+            drag.opened.push(node);
+            self.expanded.insert(node);
+            self.refresh_rows();
+        }
+    }
+
+    /// The folder a drop would move the dragged row into, if any.
+    pub fn drop_target(&self) -> Option<&str> {
+        self.drag.as_ref().and_then(|drag| drag.target.as_deref())
+    }
+
+    /// When the closed folder under the pointer opens, if the pointer
+    /// stays.
+    pub fn spring_open_at(&self) -> Option<Instant> {
+        self.drag
+            .as_ref()
+            .and_then(|drag| drag.resting)
+            .map(|(_, since)| since + SPRING_OPEN_DELAY)
+    }
+
+    /// Drop the dragged row. Folders the drag opened close again unless
+    /// they hold the drop. Returns the move to make, if the drop landed
+    /// somewhere the row can go.
+    pub fn finish_drag(&mut self) -> Option<TreeAction> {
+        let drag = self.drag.take()?;
+        let target = drag.target.clone();
+        self.close_opened(&drag, target.as_deref());
+        target.map(|folder| TreeAction::Move {
+            relative_path: self.nodes[drag.node].relative_path.clone(),
+            folder,
+        })
+    }
+
+    /// Stop dragging without moving anything, and close the folders the
+    /// drag opened.
+    pub fn cancel_drag(&mut self) {
+        if let Some(drag) = self.drag.take() {
+            self.close_opened(&drag, None);
+        }
+    }
+
+    fn close_opened(&mut self, drag: &Drag, kept: Option<&str>) {
+        if drag.opened.is_empty() {
+            return;
+        }
+        for folder in &drag.opened {
+            let path = &self.nodes[*folder].relative_path;
+            let holds_drop = kept.is_some_and(|kept| remap(kept, path, path).is_some());
+            if !holds_drop {
+                self.expanded.remove(folder);
+            }
+        }
+        self.refresh_rows();
+    }
+
+    /// Whether the item at `relative_path` is a folder in the tree.
+    pub fn is_folder(&self, relative_path: &str) -> bool {
+        self.by_path
+            .get(relative_path)
+            .is_some_and(|node| self.nodes[*node].kind == EntryKind::Folder)
+    }
+
+    /// Take over `old`'s open folders and current row. When an item moved
+    /// from `moved.0` to `moved.1`, its open folders and the current row
+    /// follow it.
+    pub(crate) fn carry_over(&mut self, old: &FileTree, moved: Option<(&str, &str)>) {
+        let follow = |path: &str| match moved {
+            Some((from, to)) => remap(path, from, to).unwrap_or_else(|| path.to_owned()),
+            None => path.to_owned(),
+        };
+        for node in &old.expanded {
+            let path = follow(&old.nodes[*node].relative_path);
+            if let Some(&index) = self.by_path.get(&path) {
+                self.expanded.insert(index);
+            }
+        }
+        self.refresh_rows();
+        if let Some(row) = old.focused {
+            let path = follow(&old.rows[row].relative_path);
+            if let Some(&node) = self.by_path.get(&path) {
+                self.focused = self.row_of(node);
+            }
         }
     }
 
@@ -392,7 +631,22 @@ impl FileTree {
                     self.focused = self.row_of(parent);
                 }
             }
-            TreeKey::Activate => return self.activate(current),
+            TreeKey::Activate | TreeKey::Enter => return self.activate(current),
+            TreeKey::Rename => {
+                return Some(TreeAction::Rename {
+                    relative_path: row.relative_path.clone(),
+                });
+            }
+            TreeKey::Trash => {
+                return Some(TreeAction::Trash {
+                    relative_path: row.relative_path.clone(),
+                });
+            }
+            TreeKey::Menu => {
+                return Some(TreeAction::Menu {
+                    relative_path: row.relative_path.clone(),
+                });
+            }
         }
         None
     }
@@ -521,8 +775,26 @@ fn is_dataless(_metadata: &std::fs::Metadata) -> bool {
     false
 }
 
-fn parent_of(path: &str) -> Option<&str> {
+pub(crate) fn parent_of(path: &str) -> Option<&str> {
     path.rsplit_once('/').map(|(parent, _)| parent)
+}
+
+/// Whether the item at `path` can move into `folder`: not its own folder,
+/// where it already is, and never a folder into itself or a folder inside
+/// it.
+pub(crate) fn can_move_into(path: &str, folder: &str) -> bool {
+    parent_of(path).unwrap_or("") != folder && remap(folder, path, path).is_none()
+}
+
+/// `path` after the item at `from` moved to `to`, or `None` when the move
+/// didn't touch it.
+pub(crate) fn remap(path: &str, from: &str, to: &str) -> Option<String> {
+    if path == from {
+        return Some(to.to_owned());
+    }
+    path.strip_prefix(from)
+        .filter(|rest| rest.starts_with('/'))
+        .map(|rest| format!("{to}{rest}"))
 }
 
 /// Markdown files show without `.md`; everything else shows whole.

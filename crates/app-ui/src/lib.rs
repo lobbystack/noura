@@ -5,6 +5,7 @@
 
 mod chooser;
 mod common;
+mod ignored_files;
 mod rail;
 mod tab_bar;
 pub mod theme;
@@ -29,6 +30,7 @@ pub struct NouraUi {
     /// The New workspace form, while it is open.
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
+    ignored: ignored_files::IgnoredFilesView,
     tab_bar: tab_bar::TabBarView,
     /// The tab the document area showed last frame.
     shown_tab: Option<TabId>,
@@ -42,6 +44,7 @@ impl NouraUi {
             picker,
             new_workspace: None,
             tree: tree::TreeView::default(),
+            ignored: ignored_files::IgnoredFilesView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             shown_tab: None,
             started: false,

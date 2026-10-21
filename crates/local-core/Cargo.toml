@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Lets tests record which folders a mutation syncs. Test builds only.
+durability-probe = []
+
 [dependencies]
 yrs.workspace = true
 age.workspace = true

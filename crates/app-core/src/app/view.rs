@@ -1,8 +1,13 @@
-//! Tabs and the rail: what the window shows and how you move between it.
+//! Tabs, the rail, the sidebar's layout and the file tree's open folders:
+//! what the window shows and how you move between it. Every refresh of
+//! the tree runs through `App::replace_tree`, where the tabs follow their
+//! files and the open folders are saved.
+
+use std::time::Instant;
 
 use super::{App, Change};
 use crate::{
-    Layout, OpenAs, Page, Tab, TabId, TabPlace, TreeAction, TreeKey,
+    AppError, DropSpot, FileTree, Layout, OpenAs, Page, Tab, TabId, TabPlace, TreeAction,
     files::{remap, shown_name},
     layout::sidebar_width,
     rail::FILES_PAGE,
@@ -203,16 +208,6 @@ impl App {
         self.layouts.save(&self.layout);
     }
 
-    /// Handle a key while the file tree has focus. Enter or Space on a
-    /// file opens it in the preview tab.
-    pub fn press_tree_key(&mut self, key: TreeKey) {
-        if let Some(TreeAction::OpenFile { relative_path }) =
-            self.change_tree(|tree| tree.press(key))
-        {
-            self.open_file(&relative_path, OpenAs::Preview);
-        }
-    }
-
     /// A click on the tree's `row`: open a file as `how` says, or open or
     /// close a folder.
     pub fn activate_tree_row(&mut self, row: usize, how: OpenAs) {
@@ -223,10 +218,45 @@ impl App {
         }
     }
 
+    /// Start dragging the tree's row at `row`.
+    pub fn start_tree_drag(&mut self, row: usize) {
+        if let Some(tree) = &mut self.tree {
+            tree.start_drag(row);
+        }
+    }
+
+    /// The pointer is at `spot` at time `at` while a tree row is dragged.
+    /// See [`FileTree::drag_over`]: a closed folder the pointer rests on
+    /// opens, and the workspace remembers it open.
+    pub fn drag_tree_over(&mut self, spot: DropSpot, at: Instant) {
+        self.change_tree(|tree| {
+            tree.drag_over(spot, at);
+            Some(())
+        });
+    }
+
+    /// Drop the dragged tree row, and move it when the drop landed
+    /// somewhere it can go. Folders the drag opened close again unless
+    /// they hold the drop.
+    pub fn finish_tree_drag(&mut self) {
+        if let Some(action) = self.change_tree(FileTree::finish_drag) {
+            self.apply(action);
+        }
+    }
+
+    /// Stop dragging the tree row without moving it, and close the folders
+    /// the drag opened.
+    pub fn cancel_tree_drag(&mut self) {
+        self.change_tree(|tree| {
+            tree.cancel_drag();
+            Some(())
+        });
+    }
+
     /// Change the file tree, and save its open folders when they changed.
-    fn change_tree<R>(
+    pub(super) fn change_tree<R>(
         &mut self,
-        change: impl FnOnce(&mut crate::FileTree) -> Option<R>,
+        change: impl FnOnce(&mut FileTree) -> Option<R>,
     ) -> Option<R> {
         let tree = self.tree.as_mut()?;
         let before = tree.expanded_folders();
@@ -244,13 +274,53 @@ impl App {
     /// whose file is gone, or moved without an ID to follow, closes. The
     /// watcher (ticket 10) runs this after outside changes.
     pub fn rescan(&mut self) {
-        self.reread_tree(None);
+        let Some(workspace) = &self.workspace else {
+            return;
+        };
+        let tree = workspace.changed_file_tree();
+        self.replace_tree(tree, None);
     }
 
-    /// The item at `from`, a file or a folder, moved to `to` inside the
-    /// workspace: its tabs and open folders follow it. The tree's rename
-    /// and move call this once the move is on disk.
-    pub fn item_moved(&mut self, from: &str, to: &str) {
+    /// Show a tree read again: it keeps the old tree's open folders and
+    /// current row, which follow the item that moved from `moved.0` to
+    /// `moved.1`, and the tabs follow their files into it. Every refresh
+    /// of the tree comes through here, so the open folders it carries over
+    /// are saved.
+    pub(super) fn replace_tree(
+        &mut self,
+        tree: Result<FileTree, AppError>,
+        moved: Option<(&str, &str)>,
+    ) {
+        match tree {
+            Ok(mut tree) => {
+                if let Some(old) = &self.tree {
+                    tree.carry_over(old, moved);
+                }
+                self.tree = Some(tree);
+                self.listeners.emit(Change::Tree);
+                self.follow_files();
+                self.save_view();
+            }
+            Err(error) => self.show_notice("Couldn't read the files", error, None),
+        }
+    }
+
+    /// Close the tabs of the item at `relative_path`, a file or a folder,
+    /// and of everything inside it, as when it goes to the trash.
+    pub(super) fn close_tabs_inside(&mut self, relative_path: &str) {
+        let (changed, active_changed) = self.tabs.follow_files(|path, id| {
+            remap(path, relative_path, relative_path)
+                .is_none()
+                .then(|| (path.to_owned(), id.map(str::to_owned)))
+        });
+        if changed {
+            self.tabs_changed(active_changed);
+        }
+    }
+
+    /// The item at `from`, a file or a folder, moved to `to`: point its
+    /// tabs, and the tabs of everything inside it, at the new path.
+    pub(super) fn move_tabs(&mut self, from: &str, to: &str) {
         let (changed, active_changed) = self.tabs.follow_files(|path, id| {
             let path = remap(path, from, to).unwrap_or_else(|| path.to_owned());
             Some((path, id.map(str::to_owned)))
@@ -258,49 +328,6 @@ impl App {
         if changed {
             self.tabs_changed(active_changed);
         }
-        self.reread_tree(Some((from, to)));
-    }
-
-    /// Read the tree again, keeping open folders and the focused row.
-    /// `moved` names an item that moved, so they follow it.
-    fn reread_tree(&mut self, moved: Option<(&str, &str)>) {
-        let Some(workspace) = &self.workspace else {
-            return;
-        };
-        // An item the tree moved went through the index; anything else
-        // may have changed outside Noura.
-        let tree = match moved {
-            Some(_) => workspace.file_tree(),
-            None => workspace.changed_file_tree(),
-        };
-        let mut tree = match tree {
-            Ok(tree) => tree,
-            Err(error) => {
-                self.show_notice("Couldn't read the files", error, None);
-                return;
-            }
-        };
-        let follow = |path: &str| match moved {
-            Some((from, to)) => remap(path, from, to).unwrap_or_else(|| path.to_owned()),
-            None => path.to_owned(),
-        };
-        if let Some(old) = &self.tree {
-            let expanded: Vec<String> = old
-                .expanded_folders()
-                .iter()
-                .map(|path| follow(path))
-                .collect();
-            tree.expand_folders(expanded.iter().map(String::as_str));
-            if let Some(focused) = old.focused_path().map(follow)
-                && let Some(row) = tree.find_row(&focused)
-            {
-                tree.set_focus(row);
-            }
-        }
-        self.tree = Some(tree);
-        self.listeners.emit(Change::Tree);
-        self.follow_files();
-        self.save_view();
     }
 
     /// Point each file tab at its file in the tree: a managed object's
@@ -322,7 +349,7 @@ impl App {
 
     /// Announce a change to the tabs and save them. `document` says
     /// whether what the window shows changed too.
-    fn tabs_changed(&mut self, document: bool) {
+    pub(super) fn tabs_changed(&mut self, document: bool) {
         self.listeners.emit(Change::Tabs);
         if document {
             self.listeners.emit(Change::Document);
@@ -340,7 +367,7 @@ impl App {
         let expanded_folders = self
             .tree
             .as_ref()
-            .map(crate::FileTree::expanded_folders)
+            .map(FileTree::expanded_folders)
             .unwrap_or_default();
         let view = crate::view_state::StoredView {
             tabs,

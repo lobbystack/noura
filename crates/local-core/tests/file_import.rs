@@ -176,6 +176,36 @@ fn a_note_keeps_its_id_unless_the_workspace_already_uses_it() {
 }
 
 #[test]
+fn an_import_checks_every_source_before_it_copies_any() {
+    let (workspace, _app_data, engine) = new_engine();
+    let outside = tempdir().unwrap();
+    std::fs::write(outside.path().join("a.txt"), "a").unwrap();
+    std::fs::create_dir(workspace.path().join("Docs")).unwrap();
+
+    for sources in [
+        vec![
+            outside.path().join("a.txt"),
+            workspace.path().parent().unwrap().to_owned(),
+        ],
+        vec![outside.path().join("a.txt"), workspace.path().join("Docs")],
+        vec![outside.path().join("a.txt"), PathBuf::from("relative.txt")],
+    ] {
+        assert!(
+            engine.import_external(&sources, "Docs").is_err(),
+            "{sources:?}"
+        );
+    }
+
+    assert!(!workspace.path().join("Docs/a.txt").exists());
+    assert_eq!(
+        std::fs::read_dir(workspace.path().join("Docs"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn imports_refuse_unsafe_destinations_and_sources() {
     let (workspace, _app_data, engine) = new_engine();
     let outside = tempdir().unwrap();

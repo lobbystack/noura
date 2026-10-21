@@ -7,7 +7,7 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use support::{FakePicker, create_workspace, harness_with, settle};
+use support::{FakePicker, create_workspace, harness_registering, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -24,7 +24,7 @@ fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
     for name in ["One.md", "Two.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }
-    let mut harness = harness_with(app_data, FakePicker::default(), with_pages);
+    let mut harness = harness_registering(app_data, FakePicker::default(), with_pages);
     settle(&mut harness);
     harness
 }

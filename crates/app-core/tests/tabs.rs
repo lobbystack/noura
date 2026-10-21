@@ -169,15 +169,35 @@ fn the_first_edit_keeps_the_preview_tab() {
 }
 
 #[test]
-fn new_notes_and_duplicates_open_as_kept_tabs_beside_the_preview() {
-    let (_app_data, _folder, mut app) = opened(&["A.md", "Plan.md", "Plan 1.md"]);
+fn a_new_note_opens_as_a_kept_tab_beside_the_preview() {
+    let (_app_data, folder, mut app) = opened(&["A.md"]);
     app.open_file("A.md", OpenAs::Preview);
 
-    // New note and Duplicate (ticket 08) open their file this way.
-    app.open_file("Plan 1.md", OpenAs::Kept);
+    app.new_note(None);
 
-    assert_eq!(shown(&app), ["A (preview)", "Plan 1"]);
+    assert!(folder.path().join("Untitled.md").is_file());
+    assert_eq!(shown(&app), ["A (preview)", "Untitled"]);
+    assert_eq!(active(&app).as_deref(), Some("Untitled"));
+
+    // The next preview still replaces the first one, not the new note.
+    app.open_file("A.md", OpenAs::Preview);
+    app.new_note(None);
+    assert_eq!(shown(&app), ["A (preview)", "Untitled", "Untitled 1"]);
+}
+
+#[test]
+fn a_duplicate_opens_as_a_kept_tab_beside_the_preview() {
+    let (_app_data, folder, mut app) = opened(&["A.md", "Plan.md"]);
+    app.open_file("Plan.md", OpenAs::Preview);
+
+    app.duplicate("Plan.md");
+
+    assert!(folder.path().join("Plan 1.md").is_file());
+    assert_eq!(shown(&app), ["Plan (preview)", "Plan 1"]);
     assert_eq!(active(&app).as_deref(), Some("Plan 1"));
+
+    app.open_file("A.md", OpenAs::Preview);
+    assert_eq!(shown(&app), ["A (preview)", "Plan 1"]);
 }
 
 /// Until the Inbox (ticket 16) and plugins (ticket 24) add pages, tests
@@ -476,29 +496,74 @@ fn rename(folder: &Path, from: &str, to: &str) {
     std::fs::rename(folder.join(from), to).unwrap();
 }
 
+/// Rename the item at `relative_path` in the tree, as typing a name in
+/// its row does.
+fn rename_in_tree(app: &mut App, relative_path: &str, name: &str) {
+    app.start_rename(relative_path);
+    assert!(
+        app.commit_rename(name),
+        "the rename of {relative_path} failed"
+    );
+}
+
 #[test]
 fn tabs_follow_files_the_tree_renames_and_moves() {
-    let (_app_data, folder, mut app) = opened(&["Docs/Guide.md", "Docs/Deep/Notes.md", "B.md"]);
-    app.open_file("Docs/Guide.md", OpenAs::Kept);
-    app.open_file("Docs/Deep/Notes.md", OpenAs::Kept);
-    app.open_file("B.md", OpenAs::Kept);
+    let (_app_data, folder, mut app) = opened(&[
+        "Docs/Guide.md",
+        "Docs/Deep/Notes.md",
+        "B.md",
+        "Archive/Old.md",
+    ]);
+    write(
+        folder.path(),
+        "Docs/Plan.md",
+        &managed_note("note_01k00000000000000000000040"),
+    );
+    app.rescan();
+    for file in [
+        "Docs/Guide.md",
+        "Docs/Deep/Notes.md",
+        "Docs/Plan.md",
+        "B.md",
+    ] {
+        app.open_file(file, OpenAs::Kept);
+    }
+    app.activate_tab(tab_id(&app, "Plan"));
 
-    // The tree's rename and move (ticket 08) report each move this way.
-    rename(folder.path(), "Docs", "Archive/Docs");
-    app.item_moved("Docs", "Archive/Docs");
-    rename(folder.path(), "B.md", "Archive/Brief.md");
-    app.item_moved("B.md", "Archive/Brief.md");
+    rename_in_tree(&mut app, "Docs", "Guides");
+    app.move_into("Guides", "Archive");
+    rename_in_tree(&mut app, "B.md", "Brief");
+    app.move_into("Brief.md", "Archive");
 
     assert_eq!(
         paths(&app),
         [
-            "Archive/Docs/Guide.md",
-            "Archive/Docs/Deep/Notes.md",
-            "Archive/Brief.md"
+            "Archive/Guides/Guide.md",
+            "Archive/Guides/Deep/Notes.md",
+            "Archive/Guides/Plan.md",
+            "Archive/Brief.md",
         ]
     );
-    assert_eq!(titles(&app), ["Guide", "Notes", "Brief"]);
-    assert_eq!(app.document().unwrap().relative_path, "Archive/Brief.md");
+    assert_eq!(titles(&app), ["Guide", "Notes", "Plan", "Brief"]);
+    assert_eq!(active(&app).as_deref(), Some("Plan"));
+    assert_eq!(
+        app.document().unwrap().relative_path,
+        "Archive/Guides/Plan.md"
+    );
+
+    // The tabs come back where their files went.
+    let app_data = _app_data.path().to_owned();
+    let app = relaunch(app, &app_data);
+    assert_eq!(
+        paths(&app),
+        [
+            "Archive/Guides/Guide.md",
+            "Archive/Guides/Deep/Notes.md",
+            "Archive/Guides/Plan.md",
+            "Archive/Brief.md",
+        ]
+    );
+    assert_eq!(active(&app).as_deref(), Some("Plan"));
 }
 
 #[test]
@@ -650,7 +715,69 @@ fn a_file_without_an_id_that_another_app_moves_closes_its_tab() {
 }
 
 #[test]
-fn moving_a_folder_to_the_trash_closes_its_tabs() {
+fn moving_a_folder_to_the_trash_from_the_tree_closes_its_tabs() {
+    let (_app_data, folder, mut app) = opened(&[
+        "A.md",
+        "Docs/One.md",
+        "Docs/Deep/Two.md",
+        "Docs copy/Three.md",
+    ]);
+    write(
+        folder.path(),
+        "Docs/Plan.md",
+        &managed_note("note_01k00000000000000000000041"),
+    );
+    app.rescan();
+    for file in [
+        "Docs/One.md",
+        "A.md",
+        "Docs/Plan.md",
+        "Docs copy/Three.md",
+        "Docs/Deep/Two.md",
+    ] {
+        app.open_file(file, OpenAs::Kept);
+    }
+
+    app.request_trash("Docs");
+    assert!(app.pending_trash().is_some());
+    assert_eq!(paths(&app).len(), 5, "the folder waits for the answer");
+    app.confirm_trash();
+
+    assert!(!folder.path().join("Docs").exists());
+    assert_eq!(paths(&app), ["A.md", "Docs copy/Three.md"]);
+    assert_eq!(active(&app).as_deref(), Some("Three"));
+}
+
+#[test]
+fn moving_a_file_to_the_trash_from_the_tree_closes_its_tab() {
+    let (_app_data, folder, mut app) = opened(&["A.md", "B.md", "C.md"]);
+    for file in ["A.md", "B.md", "C.md"] {
+        app.open_file(file, OpenAs::Kept);
+    }
+    app.activate_tab(tab_id(&app, "B"));
+
+    app.request_trash("B.md");
+
+    assert!(!folder.path().join("B.md").exists());
+    assert_eq!(paths(&app), ["A.md", "C.md"]);
+    assert_eq!(active(&app).as_deref(), Some("C"));
+}
+
+#[test]
+fn a_file_that_ignored_files_hides_closes_its_tab() {
+    let (_app_data, _folder, mut app) = opened(&["A.md", "scratch.tmp"]);
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("scratch.tmp", OpenAs::Kept);
+
+    app.open_ignored_files();
+    assert!(app.add_ignored("*.tmp"));
+
+    assert_eq!(paths(&app), ["A.md"]);
+    assert_eq!(active(&app).as_deref(), Some("A"));
+}
+
+#[test]
+fn a_folder_another_app_moves_out_of_the_workspace_closes_its_tabs() {
     let (_app_data, folder, mut app) = opened(&["A.md", "Docs/One.md", "Docs/Two.md"]);
     write(
         folder.path(),

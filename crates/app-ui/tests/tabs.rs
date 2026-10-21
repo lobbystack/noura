@@ -7,7 +7,7 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use support::{FakePicker, create_workspace, harness_with, settle};
+use support::{FakePicker, create_workspace, harness_registering, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -17,7 +17,7 @@ fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
     for name in ["Alpha.md", "Beta.md", "Gamma.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }
-    let mut harness = harness_with(app_data, FakePicker::default(), |app| {
+    let mut harness = harness_registering(app_data, FakePicker::default(), |app| {
         app.register_page("test-inbox", "Test inbox");
     });
     settle(&mut harness);
@@ -233,4 +233,59 @@ fn the_keyboard_moves_between_tabs_activates_and_closes_them() {
     harness.run();
     assert_eq!(tabs(&harness), ["Alpha", "Gamma"]);
     assert_eq!(focused_tab(&harness).as_deref(), Some("Gamma"));
+}
+
+/// Open `name`'s row menu with a right-click and choose `item`.
+fn choose_from_row_menu(harness: &mut Ui, name: &str, item: &str) {
+    row(harness, name).click_secondary();
+    harness.run();
+    harness
+        .get_by_label(&format!("Actions for {name}"))
+        .get_by_role_and_label(Role::Button, item)
+        .click();
+    harness.run();
+}
+
+#[test]
+fn renaming_a_file_from_its_row_menu_renames_its_tab() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder);
+    choose_from_row_menu(&mut harness, "Alpha", "Open in new tab");
+    row(&harness, "Beta").click();
+    harness.run();
+    assert_eq!(tabs(&harness), ["Alpha", "Beta (preview)"]);
+
+    choose_from_row_menu(&mut harness, "Alpha", "Rename\u{2026}");
+    harness
+        .get_by_role_and_label(Role::TextInput, "New name for Alpha")
+        .type_text("Omega");
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+
+    assert!(folder.join("Omega.md").is_file());
+    assert_eq!(tabs(&harness), ["Omega", "Beta (preview)"]);
+    assert_eq!(selected(&harness).as_deref(), Some("Beta (preview)"));
+}
+
+#[test]
+fn moving_a_file_to_the_trash_from_its_row_menu_closes_its_tab() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder);
+    choose_from_row_menu(&mut harness, "Alpha", "Open in new tab");
+    choose_from_row_menu(&mut harness, "Beta", "Open in new tab");
+    choose_from_row_menu(&mut harness, "Gamma", "Open");
+    assert_eq!(tabs(&harness), ["Alpha", "Beta", "Gamma (preview)"]);
+    harness.get_by_role_and_label(Role::Tab, "Beta").click();
+    harness.run();
+
+    choose_from_row_menu(&mut harness, "Beta", "Move to Trash");
+
+    assert!(!folder.join("Beta.md").exists());
+    assert_eq!(tabs(&harness), ["Alpha", "Gamma (preview)"]);
+    assert_eq!(selected(&harness).as_deref(), Some("Gamma (preview)"));
 }

@@ -6,6 +6,8 @@
 mod ai;
 mod chat;
 mod consent;
+#[cfg(any(test, feature = "durability-probe"))]
+pub mod durability_probe;
 mod durable_settings;
 mod engine;
 mod error;

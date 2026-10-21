@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, OpenAs, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+use app_core::{App, DropSpot, OpenAs, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SPRING_OPEN_DELAY};
 use tempfile::TempDir;
 
 /// Poll until background work finishes.
@@ -191,26 +191,99 @@ fn the_keyboard_opens_folders_that_come_back_too() {
 
 #[test]
 fn open_folders_stay_open_through_renames_and_moves() {
-    let (app_data, folder, mut app) = opened(&["Docs/Deep/A.md", "Archive/Old.md"]);
+    let (app_data, _folder, mut app) = opened(&["Docs/Deep/A.md", "Archive/Old.md"]);
     click(&mut app, "Docs");
     click(&mut app, "Docs/Deep");
 
-    // The tree's rename and move (ticket 08) report each move this way.
-    std::fs::rename(folder.path().join("Docs"), folder.path().join("Guides")).unwrap();
-    app.item_moved("Docs", "Guides");
+    app.start_rename("Docs");
+    assert!(app.commit_rename("Guides"));
+    assert_eq!(expanded(&app, "Guides"), Some(true));
+    assert_eq!(expanded(&app, "Guides/Deep"), Some(true));
+    drop(app);
+    let mut app = launch(app_data.path());
     assert_eq!(expanded(&app, "Guides"), Some(true));
     assert_eq!(expanded(&app, "Guides/Deep"), Some(true));
 
-    std::fs::rename(
-        folder.path().join("Guides"),
-        folder.path().join("Archive/Guides"),
-    )
-    .unwrap();
-    app.item_moved("Guides", "Archive/Guides");
+    // A move opens the folder it moved into, and that lasts too.
+    app.move_into("Guides", "Archive");
     drop(app);
-    let mut app = launch(app_data.path());
-    click(&mut app, "Archive");
+    let app = launch(app_data.path());
 
+    assert_eq!(expanded(&app, "Archive"), Some(true));
     assert_eq!(expanded(&app, "Archive/Guides"), Some(true));
     assert_eq!(expanded(&app, "Archive/Guides/Deep"), Some(true));
+}
+
+#[test]
+fn collapse_all_lasts_after_a_relaunch() {
+    let (app_data, _folder, mut app) = opened(&["Docs/Deep/A.md", "Notes/B.md"]);
+    click(&mut app, "Docs");
+    click(&mut app, "Docs/Deep");
+    click(&mut app, "Notes");
+
+    app.collapse_all();
+    drop(app);
+    let app = launch(app_data.path());
+
+    assert_eq!(expanded(&app, "Docs"), Some(false));
+    assert_eq!(expanded(&app, "Notes"), Some(false));
+    assert_eq!(app.tree().unwrap().rows().len(), 2);
+}
+
+#[test]
+fn selecting_a_new_item_opens_its_folders_and_that_lasts() {
+    let (app_data, _folder, mut app) = opened(&["Docs/Deep/A.md"]);
+    click(&mut app, "Docs");
+    click(&mut app, "Docs/Deep");
+    let deep = row(&app, "Docs/Deep");
+    app.tree_mut().unwrap().set_focus(deep);
+
+    // New folder selects the folder it makes, inside the current folder.
+    app.new_folder(None);
+    app.cancel_rename();
+    click(&mut app, "Docs");
+    app.duplicate("Docs/Deep/A.md");
+    drop(app);
+    let app = launch(app_data.path());
+
+    assert_eq!(expanded(&app, "Docs"), Some(true));
+    assert_eq!(expanded(&app, "Docs/Deep"), Some(true));
+}
+
+/// Rest a drag of `dragged` on the closed folder `folder` until it opens.
+fn spring_open(app: &mut App, dragged: &str, folder: &str) {
+    app.start_tree_drag(row(app, dragged));
+    let start = Instant::now();
+    let over = DropSpot::Row(row(app, folder));
+    app.drag_tree_over(over, start);
+    app.drag_tree_over(over, start + SPRING_OPEN_DELAY);
+    assert_eq!(expanded(app, folder), Some(true));
+}
+
+#[test]
+fn a_folder_a_drop_lands_in_stays_open_after_a_relaunch() {
+    let (app_data, folder, mut app) = opened(&["Plan.md", "Archive/Old.md", "Notes/B.md"]);
+
+    spring_open(&mut app, "Plan.md", "Archive");
+    app.finish_tree_drag();
+    assert!(folder.path().join("Archive/Plan.md").is_file());
+    drop(app);
+    let app = launch(app_data.path());
+
+    assert_eq!(expanded(&app, "Archive"), Some(true));
+    assert_eq!(expanded(&app, "Notes"), Some(false));
+}
+
+#[test]
+fn folders_a_cancelled_drag_opened_stay_closed_after_a_relaunch() {
+    let (app_data, folder, mut app) = opened(&["Plan.md", "Archive/Old.md"]);
+
+    spring_open(&mut app, "Plan.md", "Archive");
+    app.cancel_tree_drag();
+    assert_eq!(expanded(&app, "Archive"), Some(false));
+    drop(app);
+    let app = launch(app_data.path());
+
+    assert!(folder.path().join("Plan.md").is_file());
+    assert_eq!(expanded(&app, "Archive"), Some(false));
 }

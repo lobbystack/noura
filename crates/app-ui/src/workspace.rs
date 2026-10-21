@@ -4,7 +4,7 @@
 use app_core::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
     Button, CentralPanel, Frame, Id, Key, Margin, Modal, Modifiers, Panel, RichText, ScrollArea,
-    Sense, Ui, UiBuilder, WidgetInfo, accesskit::Role, containers::menu::MenuButton, pos2, vec2,
+    Ui, UiBuilder, accesskit::Role, containers::menu::MenuButton, vec2,
 };
 
 use crate::{
@@ -12,12 +12,9 @@ use crate::{
     common::{self, NewWorkspace, muted},
     rail::{self, RAIL_WIDTH},
     tab_bar::{self, BAR_HEIGHT},
-    theme::{Palette, SUPPORTING_SIZE, TITLE_SIZE},
+    theme::{Palette, TITLE_SIZE},
     tree,
 };
-
-/// The sidebar section that holds the file tree.
-const FILES_SECTION: &str = "files";
 
 pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     // Cmd-\ on macOS and Ctrl-\ elsewhere shows or hides the sidebar.
@@ -62,6 +59,60 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
             content(state, ui);
         });
     new_workspace_dialog(state, ui);
+    trash_dialog(state, ui);
+    ignored_files_dialog(state, ui);
+}
+
+/// Ask before a folder goes to the trash, and say where it goes.
+fn trash_dialog(state: &mut NouraUi, ui: &mut Ui) {
+    let Some((_, question)) = state.app.pending_trash() else {
+        return;
+    };
+    let question = question.clone();
+    let palette = Palette::of(ui.ctx());
+    let mut confirm = false;
+    let mut cancel = false;
+    let modal = Modal::new(Id::unique("trash-folder")).show(ui.ctx(), |ui| {
+        ui.set_width(340.0);
+        ui.label(RichText::new(&question.title).size(TITLE_SIZE).strong());
+        muted(ui, &question.message);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            cancel = ui.button("Cancel").clicked();
+            confirm = ui
+                .add(
+                    Button::new(RichText::new("Move to Trash").color(palette.primary_foreground))
+                        .fill(palette.destructive),
+                )
+                .clicked();
+        });
+    });
+    if confirm {
+        state.app.confirm_trash();
+        state.tree.refocus();
+    } else if cancel || modal.should_close() {
+        state.app.cancel_trash();
+        state.tree.refocus();
+    }
+}
+
+/// The Ignored files page, in a dialog until Settings exists.
+fn ignored_files_dialog(state: &mut NouraUi, ui: &mut Ui) {
+    if state.app.ignored_files().is_none() {
+        return;
+    }
+    let mut done = false;
+    let modal = Modal::new(Id::unique("ignored-files")).show(ui.ctx(), |ui| {
+        ui.set_width(380.0);
+        ui.label(RichText::new("Ignored files").size(TITLE_SIZE).strong());
+        crate::ignored_files::page(ui, &mut state.app, &mut state.ignored);
+        ui.add_space(8.0);
+        done = common::primary_button(ui, "Done", true).clicked();
+    });
+    if done || modal.should_close() {
+        state.app.close_ignored_files();
+        state.ignored = Default::default();
+    }
 }
 
 /// The resizable sidebar: the workspace switcher and the Files section.
@@ -80,54 +131,13 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
         .show(ui, |ui| {
             switcher(state, ui);
             ui.separator();
-            let collapsed = section_header(ui, state, FILES_SECTION, "Files");
-            if !collapsed {
-                tree::show(ui, &mut state.app, &mut state.tree);
-            }
+            tree::show(ui, &mut state.app, &mut state.tree);
         });
     // Save the width once a resize ends.
     let shown = panel.response.rect.width().round();
     if shown != width && !ui.input(|input| input.pointer.any_down()) {
         state.app.set_sidebar_width(shown);
     }
-}
-
-/// A sidebar section's heading, which folds the section. Returns whether
-/// the section is folded.
-fn section_header(ui: &mut Ui, state: &mut NouraUi, key: &str, title: &str) -> bool {
-    let collapsed = state.app.is_section_collapsed(key);
-    let palette = Palette::of(ui.ctx());
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, title));
-    ui.ctx()
-        .accesskit_node_builder(response.id, |node| node.set_expanded(!collapsed));
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        if response.hovered() {
-            painter.rect_filled(rect, crate::theme::radius(0.6), palette.sidebar_accent);
-        }
-        if response.has_focus() {
-            painter.rect_stroke(
-                rect,
-                crate::theme::radius(0.6),
-                egui::Stroke::new(1.0, palette.ring),
-                egui::StrokeKind::Inside,
-            );
-        }
-        let center = pos2(rect.left() + 10.0, rect.center().y);
-        painter.add(tree::chevron(center, !collapsed, &palette));
-        painter.text(
-            pos2(rect.left() + 20.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            title,
-            egui::FontId::proportional(SUPPORTING_SIZE),
-            palette.muted_foreground,
-        );
-    }
-    if response.clicked() {
-        state.app.toggle_section(key);
-    }
-    collapsed
 }
 
 /// The workspace switcher: the current workspace's name, opening a menu of
@@ -144,6 +154,9 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     let mut remove = None;
     let mut pick = false;
     let mut create = false;
+    let mut reveal = false;
+    let mut ignored = false;
+    let reveal_label = state.app.platform().reveal_label();
     let button = Button::new(RichText::new(&name).strong()).frame(false);
     let (menu, _) = MenuButton::from_button(button).ui(ui, |ui| {
         muted(ui, "Workspaces");
@@ -173,6 +186,15 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
             create = true;
             ui.close();
         }
+        ui.separator();
+        if ui.button(reveal_label).clicked() {
+            reveal = true;
+            ui.close();
+        }
+        if ui.button("Ignored files\u{2026}").clicked() {
+            ignored = true;
+            ui.close();
+        }
         let others: Vec<_> = recents
             .iter()
             .filter(|recent| recent.workspace_id != current)
@@ -200,6 +222,12 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     }
     if create {
         state.new_workspace = Some(NewWorkspace::new());
+    }
+    if reveal {
+        state.app.reveal_workspace();
+    }
+    if ignored {
+        state.app.open_ignored_files();
     }
 }
 
