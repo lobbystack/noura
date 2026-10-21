@@ -950,7 +950,9 @@ impl Plugins {
             }
             None => {}
         }
-        if outcome.health.stopped && !running.failed {
+        // The plugin's health now, not as the job saw it: an answer from
+        // before you started it again doesn't stop it a second time.
+        if outcome.health.stopped && !running.failed && running.plugin.health().stopped {
             running.failed = true;
             running.registrations = Registrations::default();
             running.views.clear();

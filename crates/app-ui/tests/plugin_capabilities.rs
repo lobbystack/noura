@@ -143,6 +143,53 @@ fn the_first_run_screen_lists_each_shipped_plugin_and_one_key_press_approves_the
 }
 
 #[test]
+fn a_plugin_that_kept_failing_shows_as_failed_with_a_button_that_starts_it_again() {
+    let Some(misbehave) = plugins::built("misbehave_plugin") else {
+        return;
+    };
+    let (mut harness, _folders) = opened(|app_data, parent| {
+        let manifest = "id = \"misbehave\"\nname = \"Misbehave\"\nversion = \"0.1.0\"\n\
+                        interface-version = \"0.1.0\"\nentry = \"plugin.wasm\"\n\
+                        platforms = [\"desktop\"]\n\n[[capabilities]]\nname = \"views\"\n";
+        let folder = plugins::folder(parent, manifest, "plugin.wasm", &misbehave);
+        install_and_enable(app_data, &folder, "misbehave");
+    });
+    for _ in 0..3 {
+        harness
+            .state_mut()
+            .app_mut()
+            .press_plugin_button("plugin:misbehave:misbehave", "panic");
+        settle(&mut harness);
+    }
+    open_settings_section(&mut harness, "Plugins");
+
+    let row = dialog(&harness, "Settings").get_by_role_and_label(Role::Group, "Misbehave");
+    assert!(
+        row.query_by_role_and_label(
+            Role::Alert,
+            "It failed too often and stopped for this session."
+        )
+        .is_some()
+    );
+    row.get_by_role_and_label(Role::Button, "Start again")
+        .focus();
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    settle(&mut harness);
+
+    let rows = harness.state().app().plugins();
+    let misbehave = rows.iter().find(|row| row.id == "misbehave").unwrap();
+    assert!(misbehave.running && !misbehave.failed, "{misbehave:?}");
+    assert!(
+        dialog(&harness, "Settings")
+            .get_by_role_and_label(Role::Group, "Misbehave")
+            .query_by_role_and_label(Role::Button, "Start again")
+            .is_none()
+    );
+}
+
+#[test]
 fn the_plugins_page_lists_what_a_plugin_may_use_and_revokes_one_at_a_time() {
     let Some(hello) = plugins::built("hello_plugin") else {
         return;

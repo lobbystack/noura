@@ -342,7 +342,9 @@ fn capabilities(ui: &mut Ui, lines: &[CapabilityLine]) {
 /// A problem, read out by screen readers as it appears.
 fn alert(ui: &mut Ui, text: &str) {
     let palette = Palette::of(ui.ctx());
-    let builder = UiBuilder::new().accessibility_role(Role::Alert);
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Alert)
+        .accessibility_label(text);
     ui.scope_builder(builder, |ui| {
         ui.label(RichText::new(text).color(palette.destructive));
     });
