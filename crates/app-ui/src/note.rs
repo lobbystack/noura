@@ -244,7 +244,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
                 ui.ctx().clone(),
             )));
         note.editor
-            .set_link_resolver(Box::new(crate::note_links::WorkspaceLinks(links)));
+            .set_link_resolver(Box::new(crate::note_links::WorkspaceLinks {
+                links,
+                ctx: ui.ctx().clone(),
+            }));
     }
     // A save brought the file in line with the editor, or merged an edit
     // made outside Noura.

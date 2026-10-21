@@ -142,6 +142,21 @@ fn snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>, std::time::SystemTi
     files
 }
 
+/// What `target`'s embed shows once its read ends.
+fn embed(links: &app_core::NoteLinks, target: &str) -> Option<app_core::NoteEmbed> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match links.embed(target, || {}) {
+            Some(app_core::NoteEmbedState::Reading { .. }) => {
+                assert!(std::time::Instant::now() < deadline, "{target} never read");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Some(app_core::NoteEmbedState::Read(embed)) => return Some(embed),
+            None => return None,
+        }
+    }
+}
+
 #[test]
 fn an_embedded_note_shows_its_title_and_the_first_800_characters_of_its_text() {
     let long = "word ".repeat(400);
@@ -156,18 +171,18 @@ fn an_embedded_note_shows_its_title_and_the_first_800_characters_of_its_text() {
     let links = app.note_links(tab).unwrap();
     let before = snapshot(&fixture.root);
 
-    let old = links.embed("Old notes").expect("the note embeds");
+    let old = embed(&links, "Old notes").expect("the note embeds");
     assert_eq!(
         (old.title.as_str(), old.text.as_str()),
         ("Old notes", "Old\n")
     );
-    let long_embed = links.embed("Long").expect("the note embeds");
+    let long_embed = embed(&links, "Long").expect("the note embeds");
     assert_eq!(long_embed.title, "Long");
     assert_eq!(long_embed.text, long.chars().take(800).collect::<String>());
-    let managed_embed = links.embed("Managed").expect("the note embeds");
+    let managed_embed = embed(&links, "Managed").expect("the note embeds");
     assert_eq!(managed_embed.text, "Managed body.\n");
     for not_a_note in ["Nowhere", "diagram.png", "paper.pdf"] {
-        assert_eq!(links.embed(not_a_note), None, "{not_a_note:?}");
+        assert_eq!(embed(&links, not_a_note), None, "{not_a_note:?}");
     }
 
     assert_eq!(snapshot(&fixture.root), before, "embedding writes nothing");
@@ -186,4 +201,38 @@ fn links_follow_files_created_after_the_note_opened() {
     settle(&mut app);
 
     assert_eq!(links.resolve("Later").as_deref(), Some("Later.md"));
+}
+
+#[test]
+fn an_embed_reads_its_note_on_another_thread_and_says_when_the_read_ends() {
+    // Longer than an embed reads: the embed still shows the note's start.
+    let big = "start ".repeat(200_000);
+    let mut files = FILES.to_vec();
+    files.push(("Big.md", big.as_bytes()));
+    let fixture = Fixture::new(&files);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Inbox.md");
+    let links = app.note_links(tab).unwrap();
+    let before = links.embeds_seq();
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let first = links.embed("Big", move || sender.send(()).unwrap());
+
+    assert_eq!(
+        first,
+        Some(app_core::NoteEmbedState::Reading {
+            title: "Big".into()
+        })
+    );
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the read ends");
+    assert_ne!(links.embeds_seq(), before);
+    assert_eq!(
+        links.embed("Big", || {}),
+        Some(app_core::NoteEmbedState::Read(app_core::NoteEmbed {
+            title: "Big".into(),
+            text: big.chars().take(800).collect(),
+        }))
+    );
 }

@@ -7,6 +7,7 @@
 //! out of it.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use local_core::WorkspaceEngine;
@@ -16,6 +17,11 @@ use crate::remote_images::{RemoteImageState, RemoteImages};
 
 /// How much of an embedded note's text an embed shows, in characters.
 pub const EMBED_PREVIEW_CHARS: usize = 800;
+
+/// How much of an embedded note an embed reads, in bytes: enough for
+/// frontmatter as long as the editor's 256 KiB lookahead and the text
+/// after it.
+const EMBED_READ_BYTES: usize = 256 * 1024 + 4 * EMBED_PREVIEW_CHARS;
 
 /// The open workspace's files as its newest listing shows them. The
 /// session updates it with each listing, and every note's links read it.
@@ -51,9 +57,12 @@ pub(crate) struct LinkIndex {
     seq: u64,
     paths: HashSet<String>,
     by_name: HashMap<String, Vec<String>>,
-    /// What each note embedded since this listing shows. A change to any
-    /// file makes a new listing, which starts over.
-    embeds: Mutex<HashMap<String, Option<NoteEmbed>>>,
+    /// What each note embedded since this listing shows, or `None` while
+    /// its read runs. A change to any file makes a new listing, which
+    /// starts over.
+    embeds: Mutex<HashMap<String, Option<Option<NoteEmbed>>>>,
+    /// Counts the embed reads finished since this listing.
+    embeds_read: AtomicU64,
 }
 
 impl LinkIndex {
@@ -119,6 +128,25 @@ pub struct NoteEmbed {
     pub text: String,
 }
 
+/// Where an embedded note stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteEmbedState {
+    /// Its read runs on another thread. The title comes from the file name
+    /// and is already known.
+    Reading {
+        title: String,
+    },
+    Read(NoteEmbed),
+}
+
+/// The title an embed of the note at `path` shows: its file name.
+fn embed_title(path: &str) -> String {
+    crate::files::shown_name(
+        path.rsplit('/').next().unwrap_or(path),
+        crate::EntryKind::File,
+    )
+}
+
 /// What the links in one note lead to. A note's editor holds one and asks
 /// it about each link and embed it draws; it reads the workspace's newest
 /// listing, so links follow files as they appear, move and go.
@@ -172,6 +200,11 @@ impl NoteLinks {
         self.files.get().seq
     }
 
+    /// Changes whenever an embedded note's read finishes.
+    pub fn embeds_seq(&self) -> u64 {
+        self.files.get().embeds_read.load(Ordering::SeqCst)
+    }
+
     /// The workspace file `target` leads to, or `None` when it names no
     /// file in the workspace. A `#heading` part is ignored.
     pub fn resolve(&self, target: &str) -> Option<String> {
@@ -179,9 +212,16 @@ impl NoteLinks {
     }
 
     /// What an `![[target]]` embed shows when `target` names a Markdown
-    /// note, or `None` when it names anything else or nothing. It reads
-    /// the note and writes nothing.
-    pub fn embed(&self, target: &str) -> Option<NoteEmbed> {
+    /// note, or `None` when it names anything else or nothing, or the note
+    /// can't be read. The first ask after each listing starts a read of the
+    /// note's start on another thread and answers
+    /// [`Reading`](NoteEmbedState::Reading); `read` runs when that read
+    /// ends. Embedding writes nothing.
+    pub fn embed(
+        &self,
+        target: &str,
+        read: impl FnOnce() + Send + 'static,
+    ) -> Option<NoteEmbedState> {
         let index = self.files.get();
         let path = resolve_link_path(&self.source, target, &index)?;
         if !crate::notes::is_markdown(&path) {
@@ -191,10 +231,31 @@ impl NoteLinks {
             .embeds
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        embeds
-            .entry(path.clone())
-            .or_insert_with(|| self.read_embed(&path))
-            .clone()
+        match embeds.get(&path) {
+            Some(Some(embed)) => return embed.clone().map(NoteEmbedState::Read),
+            Some(None) => {
+                return Some(NoteEmbedState::Reading {
+                    title: embed_title(&path),
+                });
+            }
+            None => {}
+        }
+        embeds.insert(path.clone(), None);
+        drop(embeds);
+        let title = embed_title(&path);
+        let links = self.clone();
+        let index = Arc::clone(&index);
+        std::thread::spawn(move || {
+            let embed = links.read_embed(&path);
+            index
+                .embeds
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(path, Some(embed));
+            index.embeds_read.fetch_add(1, Ordering::SeqCst);
+            read();
+        });
+        Some(NoteEmbedState::Reading { title })
     }
 
     /// The workspace image `target` names, read through the workspace's
@@ -215,19 +276,19 @@ impl NoteLinks {
     }
 
     fn read_embed(&self, path: &str) -> Option<NoteEmbed> {
-        let read = self.engine.read_raw_markdown(path).ok()?;
-        let text = match local_core::parse_markdown(path, read.body.as_bytes()) {
+        let body = self
+            .engine
+            .read_raw_markdown_start(path, EMBED_READ_BYTES)
+            .ok()?;
+        let text = match local_core::parse_markdown(path, body.as_bytes()) {
             local_core::ParsedMarkdown::Managed(_) => {
-                let start = local_core::frontmatter_end(&read.body).unwrap_or(0);
-                &read.body[start..]
+                let start = local_core::frontmatter_end(&body).unwrap_or(0);
+                &body[start..]
             }
-            _ => read.body.as_str(),
+            _ => body.as_str(),
         };
         Some(NoteEmbed {
-            title: crate::files::shown_name(
-                path.rsplit('/').next().unwrap_or(path),
-                crate::EntryKind::File,
-            ),
+            title: embed_title(path),
             text: text.chars().take(EMBED_PREVIEW_CHARS).collect(),
         })
     }
