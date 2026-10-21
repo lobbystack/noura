@@ -7,7 +7,7 @@ mod support;
 
 use std::{path::PathBuf, time::Instant};
 
-use app_core::{App, DropSpot, Platform, SAVE_PAUSE, TabId};
+use app_core::{App, DropSpot, Platform, PropertyValue, SAVE_PAUSE, TabId};
 use support::{FakeSystem, Fixture, note, open_from_tree, settle_saves};
 
 const A: &str = "01jbcdefghjkmnpqrstvwxyz0a";
@@ -243,6 +243,34 @@ fn notes_that_share_an_id_each_save_to_their_own_file() {
 
     assert_eq!(fixture.read("One.md"), note(A, "one\ntyped one\n"));
     assert_eq!(fixture.read("Two.md"), note(A, "two\ntyped two\n"));
+}
+
+#[test]
+fn property_edits_on_notes_that_share_an_id_go_to_their_own_file() {
+    // Two.md shares One.md's ID, and the copy is One.md byte for byte, as
+    // after a copy in the file manager.
+    let fixture = Fixture::new(&[
+        ("One.md", &note(A, "one\n")),
+        ("Two.md", &note(A, "two\n")),
+        ("One copy.md", &note(A, "one\n")),
+    ]);
+    let mut app = fixture.app();
+
+    for (file, color) in [("Two.md", "blue"), ("One copy.md", "red")] {
+        let tab = open_from_tree(&mut app, file);
+        app.set_note_property(tab, "color", PropertyValue::Text(color.into()));
+        settle_saves(&mut app);
+        assert!(app.note(tab).unwrap().save_problem().is_none(), "{file}");
+        assert!(!app.note(tab).unwrap().is_unsaved(), "{file}");
+    }
+
+    assert_eq!(fixture.read("One.md"), note(A, "one\n"));
+    let two = String::from_utf8(fixture.read("Two.md")).unwrap();
+    assert!(two.contains("\ncolor: blue\n"), "{two:?}");
+    assert!(two.ends_with("---\n\ntwo\n"), "{two:?}");
+    let copy = String::from_utf8(fixture.read("One copy.md")).unwrap();
+    assert!(copy.contains("\ncolor: red\n"), "{copy:?}");
+    assert!(copy.ends_with("---\n\none\n"), "{copy:?}");
 }
 
 #[test]

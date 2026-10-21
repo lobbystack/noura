@@ -286,8 +286,8 @@ impl NoteSession {
     }
 
     /// The frontmatter of a managed note for the properties panel: ID,
-    /// type, the other properties in the file's order, then created and
-    /// updated. `None` for a file without an ID.
+    /// type, the other properties sorted by key, then created and updated.
+    /// `None` for a file without an ID.
     pub fn properties(&self) -> Option<Vec<Property>> {
         let managed = self.managed.as_ref()?;
         let fixed = |key: &str, value: Option<&str>| {
@@ -396,11 +396,15 @@ impl NoteSession {
         }
         let properties: BTreeMap<String, serde_json::Value> =
             self.property_edits.iter().cloned().collect();
+        let before = properties
+            .keys()
+            .map(|key| (key.clone(), managed.properties.get(key).cloned()))
+            .collect();
         self.writing = Some((self.version, self.text.clone()));
         self.forced = false;
         Some(Write::Properties {
-            id: managed.id.clone(),
             relative_path: self.relative_path.clone(),
+            before,
             patch: ObjectPatch {
                 title: None,
                 body: None,
@@ -449,8 +453,23 @@ impl NoteSession {
             Written::Properties(Ok((count, read))) => {
                 self.property_edits
                     .drain(..count.min(self.property_edits.len()));
+                let body = self.body().to_owned();
                 self.read(read.body, read.revision);
                 self.problem = None;
+                if self.body() != body {
+                    // The edits went into the file as another program left
+                    // it, with an edit of its text that the editor merges
+                    // in. A property write starts only while the editor's
+                    // text is on disk, so `sent` is the text it replaced.
+                    let merged = self.body().to_owned();
+                    self.text = if self.text == sent {
+                        merged.clone()
+                    } else {
+                        local_core::merge_text(&sent, &self.text, &merged)
+                            .unwrap_or_else(|| std::mem::take(&mut self.text))
+                    };
+                    self.saved(version, sent, Some(merged));
+                }
             }
             Written::Text(Err(error)) | Written::Properties(Err(error)) => {
                 tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't save");
@@ -522,11 +541,13 @@ pub(crate) enum Write {
     /// The file's whole new text, merged with outside edits made since
     /// `base_revision`.
     Text(RawSaveInput),
-    /// Property edits, which only a file still at the expected revision
-    /// takes. `count` edits are in the patch.
+    /// Property edits for the file at `relative_path`, which only a file
+    /// still at the expected revision takes, or one whose edited
+    /// properties still hold the values in `before`. `count` edits are in
+    /// the patch.
     Properties {
-        id: String,
         relative_path: String,
+        before: BTreeMap<String, Option<serde_json::Value>>,
         patch: ObjectPatch,
         count: usize,
     },
@@ -547,17 +568,53 @@ impl Write {
         match self {
             Self::Text(input) => Written::Text(engine.save_raw_markdown(input)),
             Self::Properties {
-                id,
                 relative_path,
+                before,
                 patch,
                 count,
-            } => Written::Properties(match engine.update_object(&id, patch) {
-                Ok(_) => engine
-                    .read_raw_markdown(&relative_path)
-                    .map(|read| (count, read)),
-                Err(error) => Err(error),
-            }),
+            } => {
+                let written = match engine.update_object_at(&relative_path, patch.clone()) {
+                    // Another program changed the file since Noura read it.
+                    // When it left the edited properties as they were, the
+                    // edits go into the file as it is now.
+                    Err(error) if error.code == "revision_conflict" => {
+                        match engine.read_raw_markdown(&relative_path) {
+                            Ok(current) if holds(&relative_path, &current.body, &before) => engine
+                                .update_object_at(
+                                    &relative_path,
+                                    ObjectPatch {
+                                        expected_revision: current.revision,
+                                        ..patch
+                                    },
+                                ),
+                            _ => Err(error),
+                        }
+                    }
+                    written => written,
+                };
+                Written::Properties(match written {
+                    Ok(_) => engine
+                        .read_raw_markdown(&relative_path)
+                        .map(|read| (count, read)),
+                    Err(error) => Err(error),
+                })
+            }
         }
+    }
+}
+
+/// Whether the managed note `text` gives each property in `values` that
+/// value, `None` standing for no such property.
+fn holds(
+    relative_path: &str,
+    text: &str,
+    values: &BTreeMap<String, Option<serde_json::Value>>,
+) -> bool {
+    match local_core::parse_markdown(relative_path, text.as_bytes()) {
+        ParsedMarkdown::Managed(object) => values
+            .iter()
+            .all(|(key, value)| object.properties.get(key) == value.as_ref()),
+        _ => false,
     }
 }
 

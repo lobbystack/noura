@@ -1042,6 +1042,106 @@ fn duplicate_ids_are_indexed_but_block_identity_reads() {
     assert_eq!(error.code, "identity_conflict");
 }
 
+/// The file at a path says which object it holds, so a copy that shares
+/// its original's ID takes its own edits, and the index never redirects
+/// them.
+#[test]
+fn an_update_at_a_path_writes_that_file_even_when_another_shares_its_id() {
+    let (workspace, _app_data, engine) = engine();
+    let note = engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: "Body\n".into(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+    std::fs::copy(
+        workspace.path().join("one.md"),
+        workspace.path().join("two.md"),
+    )
+    .unwrap();
+    engine.reconcile().unwrap();
+    let original = std::fs::read(workspace.path().join("one.md")).unwrap();
+
+    let updated = engine
+        .update_object_at(
+            "two.md",
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("color".into(), serde_json::json!("blue"))]),
+                remove_properties: Vec::new(),
+                expected_revision: note.revision.clone(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(updated.value.relative_path, "two.md");
+    assert_eq!(
+        std::fs::read(workspace.path().join("one.md")).unwrap(),
+        original
+    );
+    let two = std::fs::read_to_string(workspace.path().join("two.md")).unwrap();
+    assert!(two.contains("color: blue\n"), "{two:?}");
+    assert!(two.ends_with("Body\n"), "{two:?}");
+
+    // The file must still hold the revision the caller read.
+    let stale = engine
+        .update_object_at(
+            "two.md",
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("color".into(), serde_json::json!("red"))]),
+                remove_properties: Vec::new(),
+                expected_revision: note.revision.clone(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(stale.code, "revision_conflict");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("two.md")).unwrap(),
+        two
+    );
+}
+
+#[test]
+fn an_update_at_a_path_refuses_traversal_missing_files_and_titles() {
+    let (_workspace, _app_data, engine) = engine();
+    let note = engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: String::new(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+    let patch = |title: Option<&str>| ObjectPatch {
+        title: title.map(str::to_owned),
+        body: Some("changed".into()),
+        properties: BTreeMap::new(),
+        remove_properties: Vec::new(),
+        expected_revision: note.revision.clone(),
+    };
+
+    let codes: Vec<String> = [
+        engine.update_object_at("../one.md", patch(None)),
+        engine.update_object_at("gone.md", patch(None)),
+        engine.update_object_at("one.md", patch(Some("Two"))),
+    ]
+    .into_iter()
+    .map(|result| result.unwrap_err().code)
+    .collect();
+
+    assert_eq!(
+        codes,
+        ["unsafe_path", "object_not_found", "title_not_supported"]
+    );
+}
+
 #[test]
 fn reconciliation_repairs_an_external_save() {
     let (workspace, _app_data, engine) = engine();

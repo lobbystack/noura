@@ -242,24 +242,11 @@ impl WorkspaceEngine {
                 }),
             };
         }
-        if let Some(body) = patch.body {
-            object.body = body;
-        }
-        for key in patch.remove_properties {
-            if !matches!(key.as_str(), "id" | "type" | "created" | "updated") {
-                object.properties.remove(&key);
-            }
-        }
-        for (key, value) in patch.properties {
-            if !matches!(key.as_str(), "id" | "type" | "created" | "updated") {
-                object.properties.insert(key, value);
-            }
-        }
-        normalize_domain_properties(&object.object_type, &mut object.properties)?;
-        object.updated = Some(now_rfc3339());
+        let expected_revision = patch.expected_revision.clone();
+        apply_content(&mut object, patch)?;
         let committed = self.commit_object(
             object,
-            Some(&patch.expected_revision),
+            Some(&expected_revision),
             "object:updated",
             "object_update",
         )?;
@@ -267,6 +254,61 @@ impl WorkspaceEngine {
             Some(destination) => self.move_object(id, &destination, &committed.revision),
             None => Ok(committed),
         }
+    }
+
+    /// Change the body or properties of the managed object in the file at
+    /// `relative_path`, as a note's properties panel does. The file says
+    /// which object it holds, not the index, so two files that share an
+    /// ID, as after a copy in the file manager, each take their own edits.
+    /// The file must still hold `expected_revision`, each part nobody
+    /// changed keeps its bytes, and `updated` takes the time of the edit.
+    /// A new title is refused: renaming the file changes it.
+    pub fn update_object_at(
+        &self,
+        relative_path: &str,
+        patch: ObjectPatch,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        const OPERATION: &str = "object_update";
+        if patch.title.is_some() {
+            return Err(CoreError::validation(
+                "title_not_supported",
+                "Rename the file to change its title",
+                OPERATION,
+            ));
+        }
+        crate::path::validate_relative(relative_path, OPERATION)?;
+        let path = resolve_for_write(&self.root, relative_path, OPERATION)?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CoreError::validation(
+                    "object_not_found",
+                    "The object does not exist",
+                    OPERATION,
+                ));
+            }
+            Err(error) => return Err(CoreError::io(error, OPERATION, Some(relative_path))),
+        };
+        check_revision(&bytes, &patch.expected_revision, OPERATION)?;
+        let mut object = match markdown::parse_markdown(relative_path, &bytes) {
+            ParsedMarkdown::Managed(object) => object,
+            _ => {
+                return Err(CoreError::new(
+                    "object_parse_failed",
+                    ErrorCategory::Parse,
+                    "The file no longer holds a managed object",
+                    OPERATION,
+                ));
+            }
+        };
+        let expected_revision = patch.expected_revision.clone();
+        apply_content(&mut object, patch)?;
+        self.commit_object(
+            object,
+            Some(&expected_revision),
+            "object:updated",
+            OPERATION,
+        )
     }
 
     pub fn update_object_typed(
@@ -680,6 +722,27 @@ fn task_format_error(error: workspace_format::FormatError) -> CoreError {
             "object_validate",
         ),
     }
+}
+
+/// Put a patch's body and properties into `object`, leaving the properties
+/// Noura keeps for itself alone, and stamp `updated`.
+fn apply_content(object: &mut WorkspaceObject, patch: ObjectPatch) -> Result<()> {
+    if let Some(body) = patch.body {
+        object.body = body;
+    }
+    for key in patch.remove_properties {
+        if !matches!(key.as_str(), "id" | "type" | "created" | "updated") {
+            object.properties.remove(&key);
+        }
+    }
+    for (key, value) in patch.properties {
+        if !matches!(key.as_str(), "id" | "type" | "created" | "updated") {
+            object.properties.insert(key, value);
+        }
+    }
+    normalize_domain_properties(&object.object_type, &mut object.properties)?;
+    object.updated = Some(now_rfc3339());
+    Ok(())
 }
 
 #[cfg(test)]

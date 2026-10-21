@@ -164,6 +164,8 @@ impl App {
             return;
         }
         session.queue_property(key.to_owned(), json);
+        // Like typing, a property edit keeps a preview tab open.
+        self.keep_tab(tab);
         self.start_note_write(tab);
         self.listeners.emit(Change::Note);
         self.edited_while_leaving();

@@ -301,6 +301,26 @@ fn the_first_edit_keeps_a_preview_tab() {
 }
 
 #[test]
+fn a_property_edit_keeps_a_preview_tab_too() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n")), ("Other.md", b"x")]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    assert!(app.active_tab().unwrap().is_preview());
+
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+
+    assert!(!app.active_tab().unwrap().is_preview());
+    open_from_tree(&mut app, "Other.md");
+    assert_eq!(app.tabs().len(), 2, "the edited note keeps its tab");
+    settle_saves(&mut app);
+    assert!(
+        String::from_utf8(fixture.read("Plan.md"))
+            .unwrap()
+            .contains("color: blue\n")
+    );
+}
+
+#[test]
 fn switching_to_another_note_saves_the_one_you_leave() {
     let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n")), ("Other.md", b"x")]);
     let mut app = fixture.app();
@@ -376,11 +396,14 @@ fn another_types_properties_show_read_only_until_its_plugin_supplies_a_panel() {
 }
 
 #[test]
-fn a_property_edit_never_overwrites_a_file_that_changed_since_noura_read_it() {
+fn a_property_edit_never_overwrites_an_outside_edit_of_the_same_property() {
     let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
     let mut app = fixture.app();
     let tab = open_from_tree(&mut app, "Plan.md");
-    let outside = managed("\n", "Changed in another app\n");
+    let outside = String::from_utf8(managed("\n", "Changed in another app\n"))
+        .unwrap()
+        .replace("color: green", "color: red")
+        .into_bytes();
     support::write(&fixture.root, "Plan.md", &outside);
 
     app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
@@ -391,6 +414,55 @@ fn a_property_edit_never_overwrites_a_file_that_changed_since_noura_read_it() {
         app.note(tab).unwrap().save_problem().unwrap().reason,
         "The file changed outside Noura while it was saving."
     );
+    app.save_note_now(tab);
+    settle_saves(&mut app);
+    assert_eq!(
+        fixture.read("Plan.md"),
+        outside,
+        "Try again changes nothing"
+    );
+}
+
+#[test]
+fn a_property_edit_lands_on_an_outside_edit_of_the_rest_of_the_file() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let outside = String::from_utf8(managed("\n", "Body\nadded in another app\n"))
+        .unwrap()
+        .replace("color: green\n", "color: green\nmood: calm\n");
+    support::write(&fixture.root, "Plan.md", outside.as_bytes());
+
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+    settle_saves(&mut app);
+
+    let written = String::from_utf8(fixture.read("Plan.md")).unwrap();
+    assert!(written.contains("color: blue\nmood: calm\n"), "{written:?}");
+    assert!(
+        written.ends_with("---\nBody\nadded in another app\n"),
+        "{written:?}"
+    );
+    let note = app.note(tab).unwrap();
+    assert!(note.save_problem().is_none());
+    assert!(!note.is_unsaved());
+    assert_eq!(
+        note.text(),
+        "Body\nadded in another app\n",
+        "the editor takes the outside edit of the text"
+    );
+    let sync = app.take_note_sync(tab).expect("the editor catches up");
+    assert_eq!(sync.merged.as_deref(), Some("Body\nadded in another app\n"));
+
+    // Typing next saves on top of both edits.
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}typed\n"));
+    save_after_pause(&mut app, at);
+    let written = String::from_utf8(fixture.read("Plan.md")).unwrap();
+    assert!(
+        written.ends_with("---\nBody\nadded in another app\ntyped\n"),
+        "{written:?}"
+    );
+    assert!(written.contains("color: blue\n"), "{written:?}");
 }
 
 #[test]
