@@ -246,6 +246,13 @@ pub struct NoteSession {
     /// Whether the file is a plain-text or code file rather than Markdown:
     /// its text is never read as frontmatter. Decided when it opens.
     text_file: bool,
+    /// Why the properties of a Markdown file shown whole don't parse, as
+    /// the file holds them now.
+    broken: Option<&'static str>,
+    /// Whether the editor shows the file as source because its properties
+    /// didn't parse when it opened. Once a save leaves them readable, the
+    /// file shows as it would open then.
+    broken_layout: bool,
     managed: Option<Managed>,
     /// The editor's text and its buffer version, as the editor last
     /// reported them.
@@ -301,6 +308,8 @@ impl NoteSession {
             whole_file: true,
             source_only: false,
             text_file,
+            broken: None,
+            broken_layout: false,
             managed: None,
             text: String::new(),
             version: 0,
@@ -329,7 +338,9 @@ impl NoteSession {
             );
         session.take(read);
         session.text = session.body().to_owned();
-        session.source_only = text_file || misread_frontmatter(&session.text);
+        session.broken_layout = session.broken.is_some();
+        session.source_only =
+            text_file || session.broken_layout || misread_frontmatter(&session.text);
         Ok(session)
     }
 
@@ -342,16 +353,16 @@ impl NoteSession {
 
     /// Take `base`, the file's whole LF text, as what the file holds now.
     fn read(&mut self, base: String, revision: String) {
-        let parsed = if self.whole_file {
-            None
-        } else {
-            Some(local_core::parse_markdown(
-                &self.relative_path,
-                base.as_bytes(),
-            ))
+        let parsed = (!self.text_file)
+            .then(|| local_core::parse_markdown(&self.relative_path, base.as_bytes()));
+        self.broken = match &parsed {
+            Some(ParsedMarkdown::Malformed { error, .. }) if self.whole_file => {
+                Some(properties_problem(error))
+            }
+            _ => None,
         };
         self.managed = match parsed {
-            Some(ParsedMarkdown::Managed(object)) => Some(Managed {
+            Some(ParsedMarkdown::Managed(object)) if !self.whole_file => Some(Managed {
                 id: object.id,
                 object_type: object.object_type,
                 created: object.created,
@@ -418,6 +429,13 @@ impl NoteSession {
     /// detection behind this; until then such a file shows as source.
     pub fn shows_source(&self) -> bool {
         self.source_only
+    }
+
+    /// Why the properties at the top of a Markdown file shown whole don't
+    /// parse, in plain words: the editor shows them in its text, where you
+    /// can fix them. `None` once they parse, and for every other file.
+    pub fn broken_properties(&self) -> Option<&str> {
+        self.broken
     }
 
     /// The stable ID of a managed note.
@@ -733,6 +751,32 @@ impl NoteSession {
         if self.text != self.body() && self.first_unsaved.is_none() {
             self.first_unsaved = self.last_edit;
         }
+        self.reopen_if_fixed();
+    }
+
+    /// Show a note that opened with broken properties as it would open now,
+    /// once the file holds readable properties and nothing is unsaved: a
+    /// note with its properties panel, or a Markdown file shown whole in the
+    /// live preview. The editor starts again from the note's text, as
+    /// [`Self::take_reset`] tells it, which writes nothing. Edits typed
+    /// while the save ran wait for their own save first, so the text the
+    /// editor shows always maps to the file the same way.
+    fn reopen_if_fixed(&mut self) {
+        if !self.broken_layout || self.broken.is_some() || self.is_unsaved() {
+            return;
+        }
+        self.whole_file = !matches!(
+            local_core::parse_markdown(&self.relative_path, self.base.as_bytes()),
+            ParsedMarkdown::Managed(_)
+        );
+        let base = std::mem::take(&mut self.base);
+        let revision = std::mem::take(&mut self.revision);
+        self.read(base, revision);
+        self.text = self.body().to_owned();
+        self.broken_layout = false;
+        self.source_only = misread_frontmatter(&self.text);
+        self.sync = None;
+        self.reset = Some(self.text.clone());
     }
 
     /// Another program deleted the file, or moved a file Noura can't
@@ -1245,6 +1289,23 @@ pub(crate) fn save_reason(error: &CoreError) -> String {
             }
             _ => "Noura couldn't write the file to the disk.".to_owned(),
         },
+    }
+}
+
+/// Why frontmatter failed to parse with `error`, `workspace-format`'s
+/// message, in plain words. The conformance fixtures pin how each message
+/// starts.
+fn properties_problem(error: &str) -> &'static str {
+    if error.starts_with("Frontmatter has no closing delimiter") {
+        "The properties have no closing --- line."
+    } else if error.starts_with("Invalid YAML frontmatter") {
+        "The properties aren\u{2019}t valid YAML."
+    } else if error.starts_with("Managed frontmatter requires a string type") {
+        "The properties have an ID but no type."
+    } else if error.starts_with("The stable ID does not match the object type") {
+        "The ID doesn\u{2019}t match the type."
+    } else {
+        "Noura can\u{2019}t read the properties."
     }
 }
 
