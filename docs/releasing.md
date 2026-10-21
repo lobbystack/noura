@@ -76,7 +76,7 @@ cargo install cargo-about --version 0.9.2 --locked
 
 Then run `scripts/package-desktop.sh` from the repository root. It writes the license list, builds the app in release mode, and packages it for your operating system. The packages land in `target/release`. On macOS, `--universal` builds one app for Apple silicon and Intel instead, which needs the `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets.
 
-To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the window, prints a short report, and quits. On Linux, run it under `xvfb-run` when you have no display.
+To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the first window, prints a short report, and quits. On Linux, run it under `xvfb-run` when you have no display.
 
 Set `CARGO_PACKAGER_SIGN_PRIVATE_KEY` to a key file or key, and `CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD` to its password, to sign each package for the updater. cargo-packager then writes a `.sig` file beside each package.
 
@@ -104,9 +104,9 @@ Before installing, Noura saves changes it holds back, such as typing that waits 
 
 The install can take a while, for example while macOS asks for an administrator password, and you can keep working while it runs. After the install, Noura saves and waits again before it restarts. If that second round fails, Noura keeps running, and the new version starts the next time you open Noura.
 
-When you quit Noura, it waits up to 30 seconds after its window closes for writes still running. A restart for an update quits the same way.
+When you quit Noura, it waits up to 30 seconds after its windows close for writes still running. A restart for an update quits the same way, and every open window comes back in the new version.
 
-On macOS the update replaces the app bundle. On Windows the `.msi` installer ends the running app as soon as it starts, so Noura keeps the update until its window has closed and its writes have finished. Noura then starts the installer, which opens the new version when it's done.
+On macOS the update replaces the app bundle. On Windows the `.msi` installer ends the running app as soon as it starts, so Noura keeps the update until its windows have closed and its writes have finished. Noura then starts the installer, which opens the new version when it's done.
 
 On Linux, only the AppImage updates itself. The `.deb` package runs without the updater, so people who use it install each new version from the website. Development builds never update themselves.
 

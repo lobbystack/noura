@@ -105,7 +105,7 @@ pub struct FeedSource {
     endpoint: Url,
     public_key: String,
     current: Version,
-    /// Closes the window so Noura quits, once the relaunch is arranged.
+    /// Ends the app as Quit does, once the relaunch is arranged.
     quit: Box<dyn Fn() + Send + Sync>,
     /// The executable whose app an update replaces, when not this one.
     executable: Option<std::path::PathBuf>,
