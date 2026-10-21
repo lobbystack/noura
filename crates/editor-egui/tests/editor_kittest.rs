@@ -251,3 +251,91 @@ fn clicking_a_task_checkbox_checks_the_task() {
 
     assert_eq!(editor(&harness).text(), "intro\n\n- [x] write the plan\n");
 }
+
+/// Where the last frame drew the first grapheme of the first `needle`,
+/// if it drew it.
+fn drawn_at(editor: &Editor, needle: &str) -> Option<egui::Rect> {
+    let start = find(editor, needle).0;
+    editor
+        .painted_spans()
+        .into_iter()
+        .find(|span| span.glyphs && span.source_range.0 <= start && start < span.source_range.1)
+        .map(|span| span.rect)
+}
+
+/// Scroll the editor with the mouse wheel, `points` towards the start,
+/// and let the scroll settle.
+fn wheel_up(harness: &mut EditorHarness, points: f32) {
+    harness.hover_at(egui::pos2(400.0, 300.0));
+    harness.run_steps(1);
+    for _ in 0..10 {
+        harness.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, points / 10.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run_steps(60);
+}
+
+#[test]
+fn an_outside_edit_keeps_the_caret_and_the_scroll_position() {
+    let note: String = (1..=120)
+        .map(|n| format!("Paragraph {n} of the note.\n\n"))
+        .collect();
+    let mut harness = harness(Box::leak(note.clone().into_boxed_str()));
+    // Cmd+End (Ctrl+End elsewhere) puts the caret at the end of the note,
+    // then the wheel scrolls it out of view.
+    press(&mut harness, Modifiers::COMMAND, Key::End);
+    wheel_up(&mut harness, 1500.0);
+    let caret = editor(&harness).selection();
+    let top = (1..=120)
+        .find(|n| {
+            drawn_at(editor(&harness), &format!("Paragraph {n} "))
+                .is_some_and(|rect| rect.top() >= 0.0)
+        })
+        .expect("a paragraph shows");
+    assert!(top > 10, "the view shows the middle of the note");
+    assert!(
+        drawn_at(editor(&harness), "Paragraph 120 ").is_none_or(|rect| rect.top() > 600.0),
+        "the caret's paragraph is out of view"
+    );
+    let needle = format!("Paragraph {top} ");
+    let shown = drawn_at(editor(&harness), &needle);
+
+    // Another app edits a paragraph above the view and one inside it.
+    let inside = top + 2;
+    let outside = note
+        .replace("Paragraph 3 of", "Paragraph 3, edited, of")
+        .replace(
+            &format!("Paragraph {inside} of"),
+            &format!("Paragraph {inside}, edited, of"),
+        );
+    harness
+        .state_mut()
+        .as_mut()
+        .expect("the first frame created the editor")
+        .apply_disk_version(outside.clone());
+    harness.run_steps(2);
+
+    let editor = editor(&harness);
+    assert_eq!(editor.text(), outside);
+    let added = 2 * ", edited,".len();
+    assert_eq!(
+        editor.selection(),
+        (caret.0 + added, caret.1 + added),
+        "the caret stays at the end of the note"
+    );
+    assert_eq!(
+        drawn_at(editor, &needle),
+        shown,
+        "the view stays where it was"
+    );
+    assert!(drew_text(
+        editor,
+        find(editor, &format!("Paragraph {inside}, edited,"))
+    ));
+}
