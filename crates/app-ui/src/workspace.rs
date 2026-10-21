@@ -154,6 +154,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     let mut remove = None;
     let mut pick = false;
     let mut create = false;
+    let mut new_window = false;
     let mut reveal = false;
     let mut ignored = false;
     let reveal_label = state.app.platform().reveal_label();
@@ -184,6 +185,12 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
             .clicked()
         {
             create = true;
+            ui.close();
+        }
+        // Until the command registry (ticket 12) puts New Window in the
+        // palette and the File menu.
+        if ui.add_enabled(!busy, Button::new("New window")).clicked() {
+            new_window = true;
             ui.close();
         }
         ui.separator();
@@ -222,6 +229,9 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     }
     if create {
         state.new_workspace = Some(NewWorkspace::new());
+    }
+    if new_window {
+        state.new_window();
     }
     if reveal {
         state.app.reveal_workspace();

@@ -9,10 +9,16 @@ rust-version.workspace = true
 app-core = { version = "0.2.0", path = "../../crates/app-core" }
 app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
 eframe.workspace = true
+interprocess.workspace = true
 opener.workspace = true
 rfd.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# A second launch lets the running copy bring its window to the front. The
+# desktop trial's smoke run also sends keys through it.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
 
 # The S6 desktop trial (ticket 04) lives in examples/desktop_trial. Its native
 # menu and drag-out crates stay dev-dependencies until tickets 09 and 12 move
@@ -37,6 +43,3 @@ drag.workspace = true
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSResponder"] }
 objc2-foundation = { workspace = true, features = ["std", "NSGeometry", "NSString"] }
-
-[target.'cfg(target_os = "windows")'.dev-dependencies]
-windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
