@@ -7,9 +7,9 @@ use std::{collections::HashMap, time::Instant};
 use app_core::{App, Property, PropertyValue, TabId};
 use editor_egui::{Editor, MdConfig};
 use egui::{
-    Button, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke, TextEdit,
-    Ui, UiBuilder,
-    accesskit::Role,
+    Button, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
+    TextEdit, Ui, UiBuilder,
+    accesskit::{Action, NodeId, Role},
     text::{CCursor, CCursorRange},
     text_edit::TextEditState,
 };
@@ -92,21 +92,81 @@ impl NoteView {
             }
         }
     }
+
+    /// Hand the typing in a field to its note when this frame's pointer
+    /// press, or a click from assistive technology, lands anywhere else,
+    /// as leaving the field does. The window calls this before any view
+    /// handles the frame's input: egui reports the lost keyboard only when
+    /// the field draws again, and a click on the tab's close button or in
+    /// the file tree can close the note first.
+    pub(crate) fn commit_drafts_left(&mut self, ctx: &egui::Context, app: &mut App) {
+        let (pressed, clicked) = ctx.input(|input| {
+            let clicked: Vec<NodeId> = input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::AccessKitActionRequest(request) if request.action == Action::Click => {
+                        Some(request.target_node)
+                    }
+                    _ => None,
+                })
+                .collect();
+            (input.pointer.any_pressed(), clicked)
+        });
+        if !pressed && clicked.is_empty() {
+            return;
+        }
+        let left = |id: Id| {
+            let pressed_elsewhere = pressed
+                && !ctx
+                    .read_response(id)
+                    .is_some_and(|response| response.contains_pointer());
+            pressed_elsewhere || clicked.iter().any(|node| *node != id.accesskit_id())
+        };
+        for (tab, note) in &mut self.notes {
+            if note.name.is_some() && left(name_field_id(*tab)) {
+                commit_name(app, *tab, note);
+            }
+            let keys: Vec<String> = note
+                .drafts
+                .keys()
+                .filter(|key| left(property_field_id(*tab, key)))
+                .cloned()
+                .collect();
+            for key in keys {
+                commit_property(app, *tab, note, &key);
+            }
+        }
+    }
 }
 
 /// Hand the typing in the note's name and property fields to the note.
 fn commit(app: &mut App, tab: TabId, note: &mut OpenNote) {
+    commit_name(app, tab, note);
+    let keys: Vec<String> = note.drafts.keys().cloned().collect();
+    for key in keys {
+        commit_property(app, tab, note, &key);
+    }
+}
+
+/// Rename the note's file to what its name field holds.
+fn commit_name(app: &mut App, tab: TabId, note: &mut OpenNote) {
     if let Some(typed) = note.name.take() {
         app.rename_note(tab, &typed);
     }
-    for (key, typed) in std::mem::take(&mut note.drafts) {
-        let property = app
-            .note(tab)
-            .and_then(|session| session.properties())
-            .and_then(|properties| properties.into_iter().find(|property| property.key == key));
-        if let Some(value) = property.and_then(|property| typed_value(&property, &typed)) {
-            app.set_note_property(tab, &key, value);
-        }
+}
+
+/// Give the property `key` the value its field holds.
+fn commit_property(app: &mut App, tab: TabId, note: &mut OpenNote, key: &str) {
+    let Some(typed) = note.drafts.remove(key) else {
+        return;
+    };
+    let property = app
+        .note(tab)
+        .and_then(|session| session.properties())
+        .and_then(|properties| properties.into_iter().find(|property| property.key == key));
+    if let Some(value) = property.and_then(|property| typed_value(&property, &typed)) {
+        app.set_note_property(tab, key, value);
     }
 }
 

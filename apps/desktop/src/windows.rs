@@ -644,10 +644,12 @@ impl eframe::App for Windows {
     }
 
     /// eframe calls this as Noura ends: after Quit, which saved every
-    /// note first, or when the system quits Noura, as at logout, which
-    /// asks nothing first. winit gives Noura no way to stop or delay that
-    /// quit, so the notes save here, and a note that can't save loses the
-    /// edits that aren't on disk.
+    /// note first, or when the system quits Noura, as with Quit in the
+    /// Dock or at logout. winit ends Noura then without asking, and Noura
+    /// doesn't take the system's quit request itself yet, so the notes
+    /// save here, and a note that can't save loses the edits that aren't
+    /// on disk. On macOS that request is the quit Apple event, which
+    /// `NSAppleEventManager` could hand to Noura's own Quit, which asks.
     fn on_exit(&mut self) {
         // A later launch from now on finds no copy to bring forward. It
         // waits for the lock, which goes once every window has let go of

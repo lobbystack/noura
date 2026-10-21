@@ -22,9 +22,18 @@ const NOTE: &str = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\ncolor:
 
 /// A workspace whose `Docs` folder holds the note `Plan.md`, opened.
 fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
+    opened_with(app_data, folder, &[])
+}
+
+/// A workspace whose `Docs` folder holds the note `Plan.md` and `files`,
+/// each a name and its text, opened.
+fn opened_with(app_data: &std::path::Path, folder: &std::path::Path, files: &[(&str, &str)]) -> Ui {
     create_workspace(app_data, "Garden", folder);
     std::fs::create_dir_all(folder.join("Docs")).unwrap();
     std::fs::write(folder.join("Docs/Plan.md"), NOTE).unwrap();
+    for (name, text) in files {
+        std::fs::write(folder.join("Docs").join(name), text).unwrap();
+    }
     let mut harness = harness(app_data, FakePicker::default());
     settle(&mut harness);
     harness
@@ -322,6 +331,121 @@ fn a_property_typed_before_switching_tabs_goes_in() {
         .get_by_role_and_label(Role::Group, "Properties")
         .get_by_role_and_label(Role::TextInput, "color");
     assert_eq!(color.accesskit_node().value().as_deref(), Some("greenish"));
+}
+
+/// The two kinds of field next to a note's text.
+#[derive(Debug, Clone, Copy)]
+enum Field {
+    /// F2, then `Roadmap` over the name `Plan`.
+    Name,
+    /// `ish` at the end of `color: green`.
+    Property,
+}
+
+const FIELDS: [Field; 2] = [Field::Name, Field::Property];
+
+/// Type in `field` of the note the window shows, without leaving it.
+fn type_in(harness: &mut Ui, field: Field) {
+    match field {
+        Field::Name => {
+            harness.key_press(Key::F2);
+            harness.run_steps(4);
+            harness.event(Event::Text("Roadmap".into()));
+            harness.run_steps(4);
+        }
+        Field::Property => type_in_property(harness, "color", "ish"),
+    }
+}
+
+/// Whether what `type_in` typed in `field` reached the file.
+fn went_in(folder: &std::path::Path, field: Field) -> bool {
+    match field {
+        Field::Name => {
+            !folder.join("Docs/Plan.md").exists() && folder.join("Docs/Roadmap.md").exists()
+        }
+        Field::Property => std::fs::read_to_string(folder.join("Docs/Plan.md"))
+            .is_ok_and(|text| text.contains("\ncolor: greenish\n")),
+    }
+}
+
+/// Typing in a field of the note `Plan`, then `leave`, keeps the typing,
+/// for the name field and a property field.
+fn leaving_keeps_the_typing(leave: impl Fn(&mut Ui)) {
+    for field in FIELDS {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Garden");
+        let mut harness = opened_with(app_data.path(), &folder, &[("Other.md", "Other text\n")]);
+        open_plan(&mut harness);
+        type_in(&mut harness, field);
+        assert!(!went_in(&folder, field), "{field:?} waits for leaving");
+
+        leave(&mut harness);
+        harness.run_steps(4);
+
+        wait_until(&mut harness, |_| went_in(&folder, field));
+    }
+}
+
+/// The close button reacts to the click before the note draws its fields
+/// again, so what a field holds goes in as the click lands.
+#[test]
+fn the_tab_s_close_button_keeps_what_you_typed_in_a_field() {
+    leaving_keeps_the_typing(|harness| {
+        harness
+            .get_by_role_and_label(Role::Button, "Close Plan")
+            .click();
+    });
+}
+
+#[test]
+fn a_screen_reader_s_click_on_the_close_button_keeps_what_you_typed_in_a_field() {
+    leaving_keeps_the_typing(|harness| {
+        harness
+            .get_by_role_and_label(Role::Button, "Close Plan")
+            .click_accesskit();
+    });
+}
+
+#[test]
+fn a_middle_click_on_the_tab_keeps_what_you_typed_in_a_field() {
+    leaving_keeps_the_typing(|harness| {
+        harness
+            .get_by_role_and_label(Role::Tab, "Plan (preview)")
+            .click_button(egui::PointerButton::Middle);
+    });
+}
+
+/// A note opened from the tree is a preview, which the next file opened
+/// from the tree replaces.
+#[test]
+fn opening_another_file_in_the_preview_tab_keeps_what_you_typed_in_a_field() {
+    leaving_keeps_the_typing(|harness| {
+        harness
+            .get_by_role_and_label(Role::TreeItem, "Other")
+            .click();
+    });
+}
+
+/// A click inside the field you type in moves the caret and leaves the
+/// typing in the field, so Escape still cancels it.
+#[test]
+fn a_click_in_the_field_you_type_in_keeps_the_typing_there() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder);
+    open_plan(&mut harness);
+    type_in(&mut harness, Field::Name);
+
+    name_field(&harness).click();
+    harness.run_steps(4);
+    assert!(name_field(&harness).accesskit_node().is_focused());
+    harness.key_press(Key::Escape);
+    harness.run_steps(4);
+
+    assert!(folder.join("Docs/Plan.md").exists());
+    assert!(!folder.join("Docs/Roadmap.md").exists());
 }
 
 /// A file that isn't UTF-8 text says so, and Try again reads it again.

@@ -723,6 +723,31 @@ fn a_saved_note_deleted_outside_noura_closes_its_tab() {
     assert!(app.note(tab).is_none());
 }
 
+/// iCloud swapped the file for its placeholder after the note opened: the
+/// save reads nothing, writes nothing and says how to get the file back.
+#[test]
+fn a_save_of_a_file_that_went_online_only_says_so_and_keeps_the_text() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
+    support::write(&fixture.root, ".Plan.md.icloud", b"bplist00");
+    let at = Instant::now();
+
+    type_into(&mut app, tab, at, |text| format!("{text}typed\n"));
+    save_after_pause(&mut app, at);
+
+    let note = app.note(tab).unwrap();
+    assert_eq!(
+        note.save_problem().unwrap().reason,
+        "The file is online-only now. Download it, then try again."
+    );
+    assert!(note.is_unsaved());
+    assert_eq!(note.text(), "Body\ntyped\n");
+    assert!(!fixture.exists("Plan.md"), "a failed save writes nothing");
+    assert_eq!(fixture.read(".Plan.md.icloud"), b"bplist00");
+}
+
 #[test]
 fn a_property_edit_on_a_file_deleted_outside_noura_says_so() {
     let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
@@ -822,9 +847,53 @@ fn a_tab_with_unsaved_typing_stays_when_another_tab_comes_to_show_its_file() {
     save_after_pause(&mut app, at);
     assert_eq!(fixture.read("Plain.md"), managed("\n", "Body\ntyped\n"));
 
-    // Once the typing is on disk, the two tabs become one.
+    // Once the typing is on disk, the two tabs become one. It shows the
+    // file as it is now, and typing there saves without a conflict.
     app.rescan();
     assert_eq!(app.tabs().len(), 1);
+    let tab = app.tabs()[0].id();
+    assert_eq!(app.active_tab().map(app_core::Tab::id), Some(tab));
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.text(), "Body\ntyped\n");
+    assert_eq!(note.object_id(), Some(format!("note_{ID}").as_str()));
+    assert_eq!(app.take_note_reset(tab).as_deref(), Some("Body\ntyped\n"));
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}more\n"));
+    save_after_pause(&mut app, at);
+    assert!(app.note(tab).unwrap().save_problem().is_none());
+    assert_eq!(
+        fixture.read("Plain.md"),
+        managed("\n", "Body\ntyped\nmore\n")
+    );
+}
+
+/// Another program moves a note over the file another tab shows: the
+/// tabs become one, which shows the moved note.
+#[test]
+fn a_note_moved_over_another_open_file_shows_in_the_tab_that_stays() {
+    let fixture = Fixture::new(&[
+        ("Plain.md", b"Plain text\n"),
+        ("Plan.md", &managed("\n", "Body\n")),
+    ]);
+    let mut app = fixture.app();
+    let plain = open_from_tree(&mut app, "Plain.md");
+    app.keep_tab(plain);
+    let plan = open_from_tree(&mut app, "Plan.md");
+    app.keep_tab(plan);
+
+    std::fs::rename(fixture.root.join("Plan.md"), fixture.root.join("Plain.md")).unwrap();
+    app.rescan();
+
+    assert_eq!(app.tabs().len(), 1);
+    let tab = app.tabs()[0].id();
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.relative_path(), "Plain.md");
+    assert_eq!(note.text(), "Body\n");
+    assert!(
+        note.properties().is_some(),
+        "the panel shows its properties"
+    );
+    assert_eq!(app.take_note_reset(tab).as_deref(), Some("Body\n"));
 }
 
 #[test]

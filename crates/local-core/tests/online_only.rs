@@ -6,7 +6,7 @@ use std::path::Path;
 
 use local_core::{
     AppendChatUserMessageInput, CreateChatInput, CreateObjectInput, ObjectPatch, PdfRangeInput,
-    WorkspaceEngine,
+    RawSaveInput, WorkspaceEngine,
 };
 use tempfile::tempdir;
 
@@ -85,6 +85,17 @@ fn assert_never_read(
                 .err(),
         ),
         ("read", engine.read_raw_markdown(relative).err()),
+        (
+            "save",
+            engine
+                .save_raw_markdown(RawSaveInput {
+                    relative_path: relative.into(),
+                    base_revision: revision.into(),
+                    base_body: "The plan.\n".into(),
+                    local_body: "The plan, changed.\n".into(),
+                })
+                .err(),
+        ),
     ];
     for (operation, error) in errors {
         let error = error.unwrap_or_else(|| panic!("{operation} went ahead"));

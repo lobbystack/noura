@@ -262,6 +262,9 @@ impl NouraUi {
             // Close Window ran: the desktop stops showing this window.
             return;
         }
+        // A click on a tab's close button or in the tree can close a note
+        // before its fields draw again and report losing the keyboard.
+        self.notes.commit_drafts_left(ui.ctx(), &mut self.app);
         match screen {
             Screen::Loading => common::loading(ui),
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),

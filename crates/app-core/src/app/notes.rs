@@ -235,6 +235,24 @@ impl App {
         }
     }
 
+    /// Read the files of the notes in `tabs` again, when they changed
+    /// since Noura read them and the notes have nothing unsaved. Each
+    /// editor takes its file's text.
+    pub(super) fn reread_notes(&mut self, tabs: &[TabId]) {
+        let Some(workspace) = &self.workspace else {
+            return;
+        };
+        let mut changed = false;
+        for tab in tabs {
+            if let Some(session) = self.notes.sessions.get_mut(tab) {
+                changed |= session.reread(workspace.engine());
+            }
+        }
+        if changed {
+            self.listeners.emit(Change::Note);
+        }
+    }
+
     /// The tabs whose note has edits that aren't on disk yet.
     pub(super) fn unsaved_note_tabs(&self) -> Vec<TabId> {
         self.notes

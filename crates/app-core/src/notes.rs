@@ -620,6 +620,29 @@ impl NoteSession {
         self.name_problem = problem;
     }
 
+    /// Read the file again when it changed since Noura read it and the
+    /// note has nothing unsaved, as when another program moved a note over
+    /// it. The editor takes the file's text, as [`Self::take_reset`] tells
+    /// it. Returns whether the note changed.
+    pub(crate) fn reread(&mut self, engine: &WorkspaceEngine) -> bool {
+        if self.is_unsaved() {
+            return false;
+        }
+        let Ok(fresh) = Self::open(engine, &self.relative_path) else {
+            return false;
+        };
+        if fresh.revision == self.revision {
+            return false;
+        }
+        let text = fresh.text.clone();
+        *self = Self {
+            version: self.version,
+            reset: Some(text),
+            ..fresh
+        };
+        true
+    }
+
     pub(crate) fn moved_to(&mut self, relative_path: &str) {
         relative_path.clone_into(&mut self.relative_path);
     }

@@ -16,7 +16,7 @@ use crate::{
     layout::sidebar_width,
     notes::NoteSession,
     rail::FILES_PAGE,
-    tabs::{Restored, TabContent},
+    tabs::{Followed, Restored, TabContent},
     view_state::StoredWindow,
     watch::Snapshot,
 };
@@ -429,27 +429,23 @@ impl App {
     /// and of everything inside it, as when it goes to the trash.
     pub(super) fn close_tabs_inside(&mut self, relative_path: &str) {
         let unsaved = self.unsaved_note_tabs();
-        let (changed, active_changed) = self.tabs.follow_files(&unsaved, |path, id| {
+        let followed = self.tabs.follow_files(&unsaved, |path, id| {
             remap(path, relative_path, relative_path)
                 .is_none()
                 .then(|| (path.to_owned(), id.map(str::to_owned)))
         });
-        if changed {
-            self.tabs_changed(active_changed);
-        }
+        self.tabs_followed(followed);
     }
 
     /// The item at `from`, a file or a folder, moved to `to`: point its
     /// tabs, and the tabs of everything inside it, at the new path.
     pub(super) fn move_tabs(&mut self, from: &str, to: &str) {
         let unsaved = self.unsaved_note_tabs();
-        let (changed, active_changed) = self.tabs.follow_files(&unsaved, |path, id| {
+        let followed = self.tabs.follow_files(&unsaved, |path, id| {
             let path = remap(path, from, to).unwrap_or_else(|| path.to_owned());
             Some((path, id.map(str::to_owned)))
         });
-        if changed {
-            self.tabs_changed(active_changed);
-        }
+        self.tabs_followed(followed);
     }
 
     /// Point each file tab at its file in the tree: a managed object's
@@ -470,7 +466,7 @@ impl App {
             .filter(|session| session.is_unsaved())
             .map(NoteSession::relative_path)
             .collect();
-        let (changed, active_changed) = self.tabs.follow_files(&unsaved_tabs, |path, id| {
+        let followed = self.tabs.follow_files(&unsaved_tabs, |path, id| {
             let Some(path) = tree.follow(path, id) else {
                 return unsaved
                     .contains(&path)
@@ -479,9 +475,18 @@ impl App {
             let id = tree.object_id(&path).map(str::to_owned);
             Some((path, id))
         });
-        if changed {
-            self.tabs_changed(active_changed);
+        self.tabs_followed(followed);
+    }
+
+    /// Announce what [`Tabs::follow_files`] changed. A tab that took the
+    /// place of another tab showing its file reads the file again, since
+    /// it may hold another file's text now, as when another program moved
+    /// a note over it.
+    fn tabs_followed(&mut self, followed: Followed) {
+        if followed.changed {
+            self.tabs_changed(followed.active_changed);
         }
+        self.reread_notes(&followed.merged);
     }
 
     /// Announce a change to the tabs and save them. `document` says
