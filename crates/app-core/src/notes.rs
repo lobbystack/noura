@@ -451,11 +451,17 @@ impl NoteSession {
             Written::Text(Ok(RawSaveResult::Merged { current, .. })) => {
                 self.read(current.body, current.revision);
                 let merged = self.body().to_owned();
-                // The editor merges the outside edit in, and reports its
-                // text again if it held more edits.
-                if self.text == sent {
-                    merged.clone_into(&mut self.text);
-                }
+                // The editor merges the outside edit in when it shows the
+                // note. Until then the session's text carries it too, so a
+                // save of edits made meanwhile can't take it out again.
+                // Where they overlap, the edits typed meanwhile win, as in
+                // the editor.
+                self.text = if self.text == sent {
+                    merged.clone()
+                } else {
+                    local_core::merge_text(&sent, &self.text, &merged)
+                        .unwrap_or_else(|| std::mem::take(&mut self.text))
+                };
                 self.saved(version, sent, Some(merged));
             }
             Written::Text(Ok(RawSaveResult::Conflict { .. })) => {

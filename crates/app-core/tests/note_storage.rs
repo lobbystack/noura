@@ -102,6 +102,36 @@ fn an_outside_edit_to_other_lines_merges_into_the_save() {
 }
 
 #[test]
+fn typing_during_a_save_that_merges_an_outside_edit_keeps_both() {
+    let fixture = Fixture::new(&[("Plan.md", &note(A, "one\ntwo\nthree\nfour\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let at = type_into(&mut app, tab, |text| text.replace("one", "one, typed"));
+    support::write(
+        &fixture.root,
+        "Plan.md",
+        &note(A, "one\ntwo\nthree\nfour, outside\n"),
+    );
+    let lock = support::hold_writes(&fixture, &app);
+    app.save_due_notes(at + SAVE_PAUSE);
+    // More typing while the save waits for the disk.
+    let later = type_into(&mut app, tab, |text| {
+        text.replace("two", "two, typed later")
+    });
+    lock.unlock().unwrap();
+    settle_saves(&mut app);
+
+    // The note's next save keeps the outside edit, even before the editor
+    // shows the merge.
+    save(&mut app, later);
+
+    assert_eq!(
+        fixture.read("Plan.md"),
+        note(A, "one, typed\ntwo, typed later\nthree\nfour, outside\n")
+    );
+}
+
+#[test]
 fn a_deleted_index_doesnt_stop_saves_and_rebuilds_from_the_files() {
     let fixture = Fixture::new(&[("Plan.md", &note(A, "Body\n"))]);
     let mut app = fixture.app();
