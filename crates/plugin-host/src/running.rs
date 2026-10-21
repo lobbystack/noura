@@ -20,7 +20,7 @@ use wasmtime::component::Component;
 use crate::{
     Capability, Command, Event, InboxSection, Limits, Node, Page, PluginError, PluginManifest,
     Services, Tool, VirtualRow,
-    instance::{CallError, Grants, PluginInstance, Registration},
+    instance::{CallError, Grants, Owner, PluginInstance, Registration},
     object_types::next_instance,
     runtime::EpochTicker,
 };
@@ -321,8 +321,10 @@ impl RunningPlugin {
                 &self.epochs,
                 self.limits,
                 &self.component,
-                &self.manifest.id,
-                self.token,
+                Owner {
+                    plugin: &self.manifest.id,
+                    token: self.token,
+                },
                 self.grants.clone(),
                 self.services.clone(),
             ) {

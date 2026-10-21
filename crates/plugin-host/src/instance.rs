@@ -507,16 +507,22 @@ pub(crate) struct PluginInstance {
     _epochs: Arc<EpochTicker>,
 }
 
+/// The running plugin a store belongs to: its ID, and the token that
+/// holds the object types it registers.
+pub(crate) struct Owner<'a> {
+    pub(crate) plugin: &'a str,
+    pub(crate) token: u64,
+}
+
 impl PluginInstance {
-    /// Start `component` in a new store that may use what `grants` holds,
-    /// as the plugin `plugin`, whose types the token `instance` holds.
+    /// Start `component` in a new store for `owner` that may use what
+    /// `grants` holds.
     pub(crate) fn start(
         engine: &Engine,
         epochs: &Arc<EpochTicker>,
         limits: Limits,
         component: &Component,
-        plugin: &str,
-        instance: u64,
+        owner: Owner,
         grants: Grants,
         services: Services,
     ) -> Result<Self, PluginError> {
@@ -527,8 +533,8 @@ impl PluginInstance {
             services,
             chain: Vec::new(),
             clock: Clock::start(call_deadline),
-            plugin: plugin.to_owned(),
-            instance,
+            plugin: owner.plugin.to_owned(),
+            instance: owner.token,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limiter);
