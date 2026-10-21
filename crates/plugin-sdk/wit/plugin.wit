@@ -206,6 +206,38 @@ interface ui {
     enabled: bool,
   }
 
+  // The period a calendar grid shows.
+  enum calendar-mode {
+    // Six weeks from the Sunday on or before the first of the month.
+    month,
+    // Sunday to Saturday, with a row of all-day entries above the hours.
+    week,
+    // One day, with a row of all-day entries above the hours.
+    day,
+  }
+
+  record calendar {
+    // Names the grid for screen readers.
+    label: string,
+    mode: calendar-mode,
+    // A day of the period to show, as `YYYY-MM-DD`.
+    date: string,
+  }
+
+  // A dated entry in a calendar grid. Noura draws it on each day it
+  // covers, in this device's time zone.
+  record calendar-entry {
+    title: string,
+    // An all-day entry's first day as `YYYY-MM-DD`, or a timed entry's
+    // start in RFC 3339 with an offset.
+    start: string,
+    // The end, in the form of the start: the day after an all-day
+    // entry's last day, or a timed entry's end. Without an end, or with
+    // one not after the start, an all-day entry takes its first day and a
+    // timed entry 30 minutes.
+    end: option<string>,
+  }
+
   variant node-kind {
     // Lays out its children from top to bottom. The label names the panel
     // for screen readers.
@@ -260,6 +292,15 @@ interface ui {
     // only child may be a menu, which opens by right-click or from the
     // keyboard.
     card(item),
+    // A calendar grid of the period the record sets. Its children are its
+    // entries; it draws those in the period. Its mode and period change
+    // only when the plugin draws new ones, such as after a press of one
+    // of its own buttons.
+    calendar(calendar),
+    // An entry of a calendar grid. You select an entry by click or the
+    // keyboard and open it by double-click or Enter, which send `selected`
+    // and `activated` naming the calendar.
+    entry(calendar-entry),
   }
 
   record node {
@@ -268,17 +309,18 @@ interface ui {
     kind: node-kind,
     // Indices into the view's node list. Panels and forms hold the nodes
     // they lay out, lists their items, tables their rows, boards their
-    // columns, columns their cards, and menus their items; an item, a
-    // row, a card or a button may hold one menu.
+    // columns, columns their cards, calendars their entries, and menus
+    // their items; an item, a row, a card or a button may hold one menu.
     children: list<u32>,
   }
 
-  // An item of a list, a row of a table or a card of a board.
+  // An item of a list, a row of a table, a card of a board or an entry
+  // of a calendar grid.
   record target {
-    // The node ID of the list, virtual list, table or board.
+    // The node ID of the list, virtual list, table, board or calendar.
     node: string,
-    // The item's, the row's or the card's node ID, or a virtual list
-    // row's ID.
+    // The item's, the row's, the card's or the entry's node ID, or a
+    // virtual list row's ID.
     item: string,
   }
 
@@ -323,9 +365,11 @@ interface ui {
   variant event {
     // The button with this node ID was pressed.
     pressed(string),
-    // An item, a row or a card was selected, by click or arrow keys.
+    // An item, a row, a card or an entry was selected, by click or the
+    // keyboard.
     selected(target),
-    // An item, a row or a card was opened, by double-click or Enter.
+    // An item, a row, a card or an entry was opened, by double-click or
+    // Enter.
     activated(target),
     // A table's column header was pressed, so the plugin can sort.
     sorted(column-press),

@@ -56,8 +56,9 @@ pub use exports::noura::plugin::object_types::ObjectType;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Choice, Column, ColumnPress, Event, Field, Form, Input, Item, ItemList, MenuItem, Move, Node,
-    NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, ColumnPress, Event, Field, Form, Input,
+    Item, ItemList, MenuItem, Move, Node, NodeKind, SortOrder, Submission, Table, Target, Value,
+    VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -215,6 +216,26 @@ macro_rules! export {
 /// view.item(order, "beans", "Beans", None);
 /// view.item(order, "peas", "Peas", None);
 /// assert_eq!(view.into_nodes().len(), 11);
+/// ```
+///
+/// A calendar grid shows the entries it holds in a month, a week or a
+/// day. Your own buttons change its mode and period:
+///
+/// ```
+/// use plugin_sdk::{CalendarMode, View};
+///
+/// let mut view = View::panel("root", Some("Garden diary"));
+/// view.button(View::ROOT, "next-week", "Next week");
+/// let diary = view.calendar(View::ROOT, "diary", "Diary", CalendarMode::Week, "2026-10-21");
+/// view.entry(diary, "frost", "First frost", "2026-10-22", None);
+/// view.entry(
+///     diary,
+///     "market",
+///     "Seed market",
+///     "2026-10-24T09:00:00-04:00",
+///     Some("2026-10-24T12:00:00-04:00"),
+/// );
+/// assert_eq!(view.into_nodes().len(), 5);
 /// ```
 #[derive(Debug, Clone)]
 pub struct View {
@@ -402,6 +423,45 @@ impl View {
                 .collect(),
         };
         self.add(parent, id, NodeKind::Input(input))
+    }
+
+    /// Add a calendar grid in `mode` that shows the period around `date`,
+    /// a `YYYY-MM-DD` date. Add its entries with [`entry`](Self::entry).
+    pub fn calendar(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        mode: CalendarMode,
+        date: &str,
+    ) -> u32 {
+        let calendar = Calendar {
+            label: label.to_owned(),
+            mode,
+            date: date.to_owned(),
+        };
+        self.add(parent, id, NodeKind::Calendar(calendar))
+    }
+
+    /// Add an entry to the calendar grid at `calendar`. An all-day entry
+    /// starts on a `YYYY-MM-DD` date and ends before its `end` date; a
+    /// timed one starts and ends at RFC 3339 dates and times with an
+    /// offset. Selecting it sends [`Event::Selected`] and opening it
+    /// [`Event::Activated`], naming the calendar.
+    pub fn entry(
+        &mut self,
+        calendar: u32,
+        id: &str,
+        title: &str,
+        start: &str,
+        end: Option<&str>,
+    ) -> u32 {
+        let entry = CalendarEntry {
+            title: title.to_owned(),
+            start: start.to_owned(),
+            end: end.map(str::to_owned),
+        };
+        self.add(calendar, id, NodeKind::Entry(entry))
     }
 
     /// Add a menu to the item, row, card or button at `owner`.

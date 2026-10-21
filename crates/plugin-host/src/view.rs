@@ -6,13 +6,14 @@
 //! reached twice or from itself, a node where its kind can't go, a repeated
 //! node ID, an unlabeled control, a table row whose cells don't match the
 //! columns or hold no text, an empty menu, an input value of the wrong
-//! form, a virtual list too long to draw, a board without columns, or a
-//! view too large or deep to draw. [`check_rows`] does the same for the
+//! form, a virtual list too long to draw, a board without columns, a
+//! calendar date or an entry's start or end of the wrong form, or a view
+//! too large or deep to draw. [`check_rows`] does the same for the
 //! rows of a virtual list.
 
 use std::collections::HashSet;
 
-use crate::{Choice, Column, Node, NodeKind, Value, VirtualRow};
+use crate::{CalendarEntry, CalendarMode, Choice, Column, Node, NodeKind, Value, VirtualRow};
 
 /// The most nodes a view may hold.
 pub const MAX_NODES: usize = 10_000;
@@ -38,7 +39,8 @@ pub struct ViewNode {
     pub id: String,
     pub kind: ViewKind,
     /// The nodes a panel or a form lays out, a list's items, a table's
-    /// rows, a board's columns, a column's cards or a menu's items. An
+    /// rows, a board's columns, a column's cards, a calendar's entries or
+    /// a menu's items. An
     /// item, a row, a card or a button holds its menu here, if it has one.
     pub children: Vec<ViewNode>,
 }
@@ -118,6 +120,21 @@ pub enum ViewKind {
     Card {
         label: String,
         detail: Option<String>,
+    },
+    /// A calendar grid of the period around `date`, a `YYYY-MM-DD` date,
+    /// whose children are its entries.
+    Calendar {
+        label: String,
+        mode: CalendarMode,
+        date: String,
+    },
+    /// An entry of a calendar grid. Its start is a `YYYY-MM-DD` date or an
+    /// RFC 3339 date and time with an offset, and its end has the same
+    /// form.
+    Entry {
+        title: String,
+        start: String,
+        end: Option<String>,
     },
 }
 
@@ -268,11 +285,14 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Board(_) => "board",
         NodeKind::BoardColumn(_) => "board column",
         NodeKind::Card(_) => "card",
+        NodeKind::Calendar(_) => "calendar",
+        NodeKind::Entry(_) => "entry",
     }
 }
 
 /// The rules a node keeps on its own: labels, a row's text, a virtual
-/// list's length, a table's columns and an input's value and options.
+/// list's length, a table's columns, an input's value and options, a
+/// calendar's date, and an entry's title, start and end.
 fn check_node(node: &Node) -> Result<(), ViewError> {
     let unlabeled = || ViewError::Unlabeled {
         kind: kind_name(&node.kind),
@@ -350,6 +370,43 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
             }
             check_value(id, &input.value, &input.choices)
         }
+        NodeKind::Calendar(calendar) if blank(&calendar.label) => Err(unlabeled()),
+        NodeKind::Calendar(calendar) if !workspace_format::is_civil_date(&calendar.date) => {
+            invalid(format!(
+                "The calendar {id} shows {}, which isn't a date in the form YYYY-MM-DD.",
+                calendar.date
+            ))
+        }
+        NodeKind::Calendar(_) => Ok(()),
+        NodeKind::Entry(entry) => check_entry(id, entry),
+    }
+}
+
+/// An entry has a title, a start that is a date or a date and time, and an
+/// end of the same form.
+fn check_entry(id: &str, entry: &CalendarEntry) -> Result<(), ViewError> {
+    let invalid = |message: String| Err(ViewError::Invalid(message));
+    if blank(&entry.title) {
+        return invalid(format!("The entry {id} has no title."));
+    }
+    let all_day = workspace_format::is_civil_date(&entry.start);
+    if !all_day && !workspace_format::is_instant(&entry.start) {
+        return invalid(format!(
+            "The entry {id} starts at {}, which is neither a date in the form YYYY-MM-DD nor \
+             an RFC 3339 date and time with an offset.",
+            entry.start
+        ));
+    }
+    match &entry.end {
+        Some(end)
+            if !(all_day && workspace_format::is_civil_date(end)
+                || !all_day && workspace_format::is_instant(end)) =>
+        {
+            invalid(format!(
+                "The entry {id} ends at {end}, which doesn't have the form of its start."
+            ))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -418,6 +475,8 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
         }
         (NodeKind::Card(_), Some(NodeKind::BoardColumn(_))) => Ok(()),
         (NodeKind::Card(_), _) => misplaced(format!("The card {id} isn't in a board column.")),
+        (NodeKind::Entry(_), Some(NodeKind::Calendar(_))) => Ok(()),
+        (NodeKind::Entry(_), _) => misplaced(format!("The entry {id} isn't in a calendar.")),
         (
             NodeKind::Menu(_),
             Some(NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_)),
@@ -504,6 +563,17 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
+        NodeKind::Calendar(_) => {
+            for child in children {
+                if !matches!(child.kind, NodeKind::Entry(_)) {
+                    return misplaced(format!(
+                        "The calendar {id} holds {}, which isn't an entry.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
         NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_) => {
             if parent.children.len() > 1 {
                 return misplaced(format!("The {kind} {id} holds more than one menu."));
@@ -542,7 +612,8 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
         | NodeKind::VirtualList(_)
         | NodeKind::Input(_)
         | NodeKind::MenuItem(_)
-        | NodeKind::Separator => {
+        | NodeKind::Separator
+        | NodeKind::Entry(_) => {
             if parent.children.is_empty() {
                 Ok(())
             } else {
@@ -635,6 +706,16 @@ fn build(
         NodeKind::Card(card) => ViewKind::Card {
             label: card.label.clone(),
             detail: card.detail.clone().filter(|detail| !blank(detail)),
+        },
+        NodeKind::Calendar(calendar) => ViewKind::Calendar {
+            label: calendar.label.clone(),
+            mode: calendar.mode,
+            date: calendar.date.clone(),
+        },
+        NodeKind::Entry(entry) => ViewKind::Entry {
+            title: entry.title.clone(),
+            start: entry.start.clone(),
+            end: entry.end.clone(),
         },
     };
     let children = node

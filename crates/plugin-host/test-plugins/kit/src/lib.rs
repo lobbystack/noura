@@ -23,11 +23,20 @@
 //!   that moves the card to the end of that column. The plugin applies
 //!   every move except one into Done, which it refuses. Below the board,
 //!   the list Queue, whose items you can drag into a new order.
+//! - `calendar`, titled Calendar: the buttons Month, Week, Day, Previous,
+//!   Today and Next, which set the grid's mode and move its period, and
+//!   the calendar grid Schedule, which starts on the week of 2026-10-21.
+//!   Its entries: Retreat, all day from the 19th to the 21st; Standup at
+//!   9:00 and Review at 9:15, which overlap; Deploy from 23:00 to 1:00 the
+//!   next day; First frost, all day on the 24th; and Seed market on
+//!   2026-11-07. Times are in Toronto's offsets.
 
 use std::sync::Mutex;
 
+use jiff::{ToSpan, civil::Date};
 use plugin_sdk::{
-    Column, Event, Field, Item, Move, Node, Page, Plugin, SortOrder, Value, View, VirtualRow,
+    CalendarMode, Column, Event, Field, Item, Move, Node, Page, Plugin, SortOrder, Value, View,
+    VirtualRow,
 };
 
 /// The rows the Seeds list holds.
@@ -45,6 +54,39 @@ const INSERTED: u32 = 3;
 
 /// The board's columns: ID and label.
 const COLUMNS: [(&str, &str); 3] = [("todo", "To do"), ("doing", "Doing"), ("done", "Done")];
+
+/// The day the calendar page starts on, and Today goes back to.
+const TODAY: Date = jiff::civil::date(2026, 10, 21);
+
+/// The calendar page's entries: ID, title, start and end.
+const ENTRIES: [(&str, &str, &str, Option<&str>); 6] = [
+    ("retreat", "Retreat", "2026-10-19", Some("2026-10-22")),
+    (
+        "standup",
+        "Standup",
+        "2026-10-21T09:00:00-04:00",
+        Some("2026-10-21T09:30:00-04:00"),
+    ),
+    (
+        "review",
+        "Review",
+        "2026-10-21T09:15:00-04:00",
+        Some("2026-10-21T10:00:00-04:00"),
+    ),
+    (
+        "deploy",
+        "Deploy",
+        "2026-10-21T23:00:00-04:00",
+        Some("2026-10-22T01:00:00-04:00"),
+    ),
+    ("frost", "First frost", "2026-10-24", None),
+    (
+        "market",
+        "Seed market",
+        "2026-11-07T10:00:00-05:00",
+        Some("2026-11-07T12:00:00-05:00"),
+    ),
+];
 
 /// A card on the board.
 #[derive(Clone)]
@@ -82,6 +124,9 @@ struct State {
     columns: Vec<Vec<Card>>,
     /// The Queue list's items: ID and label.
     queue: Vec<(&'static str, &'static str)>,
+    /// The calendar grid's mode and a day of its period.
+    mode: CalendarMode,
+    day: Date,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -147,6 +192,8 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
             ("second", "Turn compost"),
             ("third", "Sow beans"),
         ],
+        mode: CalendarMode::Week,
+        day: TODAY,
     });
     f(state)
 }
@@ -162,6 +209,7 @@ impl Plugin for Kit {
             ("seeds", "Seeds"),
             ("broken-rows", "Broken rows"),
             ("board", "Board"),
+            ("calendar", "Calendar"),
         ]
         .into_iter()
         .map(|(id, title)| Page {
@@ -179,6 +227,7 @@ impl Plugin for Kit {
                 "form" => "Form",
                 "broken-rows" => "Broken rows",
                 "board" => "Board",
+                "calendar" => "Calendar",
                 _ => "Seeds",
             };
             let mut view = View::panel("root", Some(title));
@@ -188,6 +237,7 @@ impl Plugin for Kit {
                 "table" => table(&mut view, state),
                 "form" => form(&mut view, state),
                 "board" => board(&mut view, state),
+                "calendar" => calendar(&mut view, state),
                 "broken-rows" => {
                     let asked = if state.broken_asks.is_empty() {
                         "none".to_owned()
@@ -260,6 +310,7 @@ impl Plugin for Kit {
                     state.beds.remove(0);
                 }
                 Event::Pressed(node) if node == "insert" => state.new_seeds = INSERTED,
+                Event::Pressed(node) => press_calendar(state, &node),
                 Event::Sorted(press) => {
                     let order =
                         if state.sort.0 == press.column && state.sort.1 == SortOrder::Ascending {
@@ -360,6 +411,43 @@ fn board(view: &mut View, state: &State) {
     let queue = view.reorderable_list(View::ROOT, "queue", "Queue");
     for (id, label) in &state.queue {
         view.item(queue, id, label, None);
+    }
+}
+
+fn calendar(view: &mut View, state: &State) {
+    for (id, label) in [
+        ("month", "Month"),
+        ("week", "Week"),
+        ("day", "Day"),
+        ("previous", "Previous"),
+        ("today", "Today"),
+        ("next", "Next"),
+    ] {
+        view.button(View::ROOT, id, label);
+    }
+    let day = state.day.to_string();
+    let calendar = view.calendar(View::ROOT, "schedule", "Schedule", state.mode, &day);
+    for (id, title, start, end) in ENTRIES {
+        view.entry(calendar, id, title, start, end);
+    }
+}
+
+/// Set the calendar's mode, or move its period by a month, a week or a
+/// day, as the mode shows.
+fn press_calendar(state: &mut State, node: &str) {
+    let step = match state.mode {
+        CalendarMode::Month => 1.month(),
+        CalendarMode::Week => 1.week(),
+        CalendarMode::Day => 1.day(),
+    };
+    match node {
+        "month" => state.mode = CalendarMode::Month,
+        "week" => state.mode = CalendarMode::Week,
+        "day" => state.mode = CalendarMode::Day,
+        "today" => state.day = TODAY,
+        "previous" => state.day = state.day.checked_sub(step).unwrap_or(state.day),
+        "next" => state.day = state.day.checked_add(step).unwrap_or(state.day),
+        _ => {}
     }
 }
 

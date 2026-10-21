@@ -23,8 +23,8 @@
 use std::sync::Mutex;
 
 use plugin_sdk::{
-    Choice, Column, Error, Event, Input, Item, ItemList, MenuItem, Node, NodeKind, Page, Plugin,
-    Table, Value, View, VirtualList, VirtualRow, workspace,
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, Error, Event, Input, Item, ItemList,
+    MenuItem, Node, NodeKind, Page, Plugin, Table, Value, View, VirtualList, VirtualRow, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -385,8 +385,61 @@ fn broken(case: &str) -> Vec<Node> {
             node("menu-b", NodeKind::Menu("B".into()), &[7]),
             node("finish", menu_item("Finish"), &[]),
         ],
+        "entry-outside-calendar" => vec![root(&[1]), node("standup", standup(), &[])],
+        "item-in-calendar" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("north", item("North bed"), &[]),
+        ],
+        "unlabeled-calendar" => vec![
+            root(&[1]),
+            node("schedule", calendar("", "2026-10-21"), &[]),
+        ],
+        "untitled-entry" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("standup", entry(" ", "2026-10-21", None), &[]),
+        ],
+        "bad-calendar-date" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-32"), &[]),
+        ],
+        "bad-entry-start" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("standup", entry("Standup", "2026-10-21 09:00", None), &[]),
+        ],
+        "mixed-entry-end" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node(
+                "standup",
+                entry("Standup", "2026-10-21T09:00:00-04:00", Some("2026-10-22")),
+                &[],
+            ),
+        ],
         _ => vec![root(&[])],
     }
+}
+
+fn calendar(label: &str, date: &str) -> NodeKind {
+    NodeKind::Calendar(Calendar {
+        label: label.into(),
+        mode: CalendarMode::Week,
+        date: date.into(),
+    })
+}
+
+fn entry(title: &str, start: &str, end: Option<&str>) -> NodeKind {
+    NodeKind::Entry(CalendarEntry {
+        title: title.into(),
+        start: start.into(),
+        end: end.map(Into::into),
+    })
+}
+
+fn standup() -> NodeKind {
+    entry("Standup", "2026-10-21T09:00:00-04:00", None)
 }
 
 fn item_list(label: &str) -> NodeKind {

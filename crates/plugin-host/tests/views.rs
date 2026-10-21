@@ -7,8 +7,8 @@
 mod support;
 
 use plugin_host::{
-    ColumnPress, Event, Field, Item, Move, PluginError, PluginHost, PluginInstance, Services,
-    Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
+    CalendarMode, ColumnPress, Event, Field, Item, Move, PluginError, PluginHost, PluginInstance,
+    Services, Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -291,6 +291,100 @@ fn a_table_holds_its_columns_and_one_cell_per_column_in_each_row() {
             "Tomato | North bed | 2026-03-15",
         ]
     );
+}
+
+#[test]
+fn malformed_calendar_grids_are_refused_with_a_reason() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+
+    for (case, reason) in [
+        (
+            "entry-outside-calendar",
+            "The entry standup isn't in a calendar.",
+        ),
+        (
+            "item-in-calendar",
+            "The calendar schedule holds north, which isn't an entry.",
+        ),
+        ("unlabeled-calendar", "The calendar schedule has no label."),
+        ("untitled-entry", "The entry standup has no title."),
+        (
+            "bad-calendar-date",
+            "The calendar schedule shows 2026-10-32, which isn't a date in the form \
+             YYYY-MM-DD.",
+        ),
+        (
+            "bad-entry-start",
+            "The entry standup starts at 2026-10-21 09:00, which is neither a date in the \
+             form YYYY-MM-DD nor an RFC 3339 date and time with an offset.",
+        ),
+        (
+            "mixed-entry-end",
+            "The entry standup ends at 2026-10-22, which doesn't have the form of its start.",
+        ),
+    ] {
+        let nodes = instance.render(&format!("nodes:{case}")).unwrap();
+        let error = View::from_nodes(nodes).expect_err(case);
+        assert_eq!(error.to_string(), reason, "{case}");
+    }
+}
+
+#[test]
+fn a_calendar_grid_holds_its_mode_its_date_and_its_entries() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+
+    let view = View::from_nodes(instance.render("calendar").unwrap()).expect("the view is valid");
+
+    let calendar = find(view.root(), "schedule").unwrap();
+    assert_eq!(
+        calendar.kind,
+        ViewKind::Calendar {
+            label: "Schedule".into(),
+            mode: CalendarMode::Week,
+            date: "2026-10-21".into(),
+        }
+    );
+    let entry = |title: &str, start: &str, end: Option<&str>| ViewKind::Entry {
+        title: title.into(),
+        start: start.into(),
+        end: end.map(Into::into),
+    };
+    assert_eq!(
+        kinds(&calendar.children)[..2],
+        [
+            (
+                "retreat",
+                &entry("Retreat", "2026-10-19", Some("2026-10-22"))
+            ),
+            (
+                "standup",
+                &entry(
+                    "Standup",
+                    "2026-10-21T09:00:00-04:00",
+                    Some("2026-10-21T09:30:00-04:00")
+                )
+            ),
+        ]
+    );
+
+    // The plugin's own buttons switch the mode and the period.
+    instance
+        .handle_event("calendar", &Event::Pressed("month".into()))
+        .unwrap();
+    instance
+        .handle_event("calendar", &Event::Pressed("next".into()))
+        .unwrap();
+    let view = View::from_nodes(instance.render("calendar").unwrap()).unwrap();
+    let ViewKind::Calendar { mode, date, .. } = &find(view.root(), "schedule").unwrap().kind else {
+        panic!("not a calendar");
+    };
+    assert_eq!((*mode, date.as_str()), (CalendarMode::Month, "2026-11-21"));
 }
 
 /// The node IDs of each column of the board `work` on the kit's board
@@ -738,6 +832,14 @@ const UNKNOWN_KIND: &str = r#"
     (export $input "input" (type $input'))
     (type $menu-item' (record (field "label" string) (field "enabled" bool)))
     (export $menu-item "menu-item" (type $menu-item'))
+    (type $calendar-mode' (enum "month" "week" "day"))
+    (export $calendar-mode "calendar-mode" (type $calendar-mode'))
+    (type $calendar' (record
+      (field "label" string) (field "mode" $calendar-mode) (field "date" string)))
+    (export $calendar "calendar" (type $calendar'))
+    (type $calendar-entry' (record
+      (field "title" string) (field "start" string) (field "end" (option string))))
+    (export $calendar-entry "calendar-entry" (type $calendar-entry'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
@@ -745,7 +847,7 @@ const UNKNOWN_KIND: &str = r#"
       (case "table" $table) (case "row" (list string)) (case "form" $form)
       (case "input" $input) (case "menu" string) (case "menu-item" $menu-item)
       (case "separator") (case "board" string) (case "board-column" string)
-      (case "card" $item)))
+      (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))

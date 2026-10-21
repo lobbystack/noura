@@ -11,6 +11,7 @@
 //! memory.
 
 mod board;
+mod calendar;
 mod drag;
 mod form;
 mod menu;
@@ -185,6 +186,9 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         ViewKind::Button { label } => menu::button(ui, node, label, kit),
         ViewKind::List { label, reorder } => rows::list(ui, node, label, *reorder, kit),
         ViewKind::Board { label } => board::board(ui, node, label, kit),
+        ViewKind::Calendar { label, mode, date } => {
+            calendar::calendar(ui, node, label, *mode, date, kit);
+        }
         ViewKind::VirtualList { label, rows } => {
             rows::virtual_list(ui, node, label, *rows, kit);
         }
@@ -196,6 +200,7 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         | ViewKind::Row { .. }
         | ViewKind::BoardColumn { .. }
         | ViewKind::Card { .. }
+        | ViewKind::Entry { .. }
         | ViewKind::Menu { .. }
         | ViewKind::MenuItem { .. }
         | ViewKind::Separator => {}

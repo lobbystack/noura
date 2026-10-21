@@ -7,6 +7,7 @@
 
 use std::{ops::Range, path::PathBuf};
 
+use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use plugin_host::{Event, VirtualRow};
 
 use super::{App, Change};
@@ -142,6 +143,24 @@ impl App {
     /// Whether the rail page `page_id` is a plugin's.
     pub fn is_plugin_page(&self, page_id: &str) -> bool {
         is_plugin_page(page_id)
+    }
+
+    /// This computer's time zone, where the days of a plugin's calendar
+    /// grid start and end.
+    pub fn time_zone(&self) -> TimeZone {
+        self.system.time_zone()
+    }
+
+    /// Today's date on this computer's clock, which a calendar grid marks.
+    pub fn today(&self) -> Date {
+        Timestamp::now().to_zoned(self.system.time_zone()).date()
+    }
+
+    /// The language and region, as a BCP 47 tag such as `fr-CA`, that a
+    /// calendar grid names months, weekdays and times in, when this
+    /// computer says.
+    pub fn locale(&self) -> Option<String> {
+        self.system.locale()
     }
 
     /// Press the button `node_id` in the plugin page `page_id`. The plugin
