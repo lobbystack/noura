@@ -263,8 +263,8 @@ impl MdEdit {
         });
         self.renderer.fragments.sort_by_key(|f| f.source_range);
 
-        self.handle_block_drag(ui);
-        self.post_render(ui, rect, id, pre);
+        self.handle_block_drag(ui, root);
+        self.post_render(ui, rect, id, pre, root);
         self.draw_dragged_overlay(ui, root);
         if overflow > 0.0 {
             self.show_overflow_scrollbar(ui, rect, id, height, overflow);
@@ -390,7 +390,7 @@ impl MdEdit {
 
     /// Consume the marker's [`BlockDragAction`] for the frame and, on
     /// release, commit the reorder via [`MdEdit::move_block`].
-    pub(crate) fn handle_block_drag(&mut self, ui: &mut Ui) {
+    pub(crate) fn handle_block_drag<'ast>(&mut self, ui: &mut Ui, root: &'ast AstNode<'ast>) {
         match self.renderer.block_drag_action.take() {
             Some(BlockDragAction::Started(drag)) => {
                 self.in_progress_block_drag = Some(drag);
@@ -430,7 +430,7 @@ impl MdEdit {
             None => {}
         }
         if self.in_progress_block_drag.is_some() {
-            self.auto_scroll_to_drag_pointer(ui);
+            self.auto_scroll_to_drag_pointer(ui, root);
             ui.ctx().request_repaint();
         }
     }
@@ -439,7 +439,7 @@ impl MdEdit {
     /// padded by `row_height` on each side. The pointer y is clamped to
     /// the viewport so dragging past the toolbar / window edge still
     /// scrolls at full rate.
-    fn auto_scroll_to_drag_pointer(&mut self, ui: &mut Ui) {
+    fn auto_scroll_to_drag_pointer<'ast>(&mut self, ui: &mut Ui, root: &'ast AstNode<'ast>) {
         let Some(pointer) = self.drag_pointer(ui) else {
             return;
         };
@@ -447,18 +447,6 @@ impl MdEdit {
         let viewport_y = (pointer.y - viewport.min.y).clamp(0.0, viewport.height());
         let pad = self.renderer.layout.row_height;
 
-        let ast = self.renderer.take_ast();
-        ast.with_root(|root| self.auto_scroll_parsed(root, viewport, viewport_y, pad));
-        self.renderer.put_ast(ast);
-    }
-
-    fn auto_scroll_parsed<'ast>(
-        &mut self,
-        root: &'ast AstNode<'ast>,
-        viewport: Rect,
-        viewport_y: f32,
-        pad: f32,
-    ) {
         use crate::scroll_content::DocScrollContent;
         use crate::widgets::affine_scroll::{Align, Reveal};
 
@@ -779,7 +767,14 @@ impl MdEdit {
     /// selection / IME, touch handles, scroll-to-cursor consumption,
     /// focus lock, glyphon text-callback submission, draining of
     /// internal events.
-    pub fn post_render(&mut self, ui: &mut Ui, rect: Rect, id: Id, pre: PreRenderState) {
+    pub fn post_render<'ast>(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        id: Id,
+        pre: PreRenderState,
+        root: &'ast AstNode<'ast>,
+    ) {
         let focused = pre.focused;
 
         // Clip subsequent overlay paints (selection, cursor) to the editor rect
@@ -851,7 +846,7 @@ impl MdEdit {
         // FindMatch is consumed by the caller (it owns find state).
         if matches!(self.pending_scroll, Some(ScrollTarget::Cursor)) {
             self.pending_scroll = None;
-            self.scroll_to_cursor(rect);
+            self.scroll_to_cursor(rect, root);
         }
 
         // lock focus filter so arrow keys / tab / shift+enter keep reaching us

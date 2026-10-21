@@ -1,5 +1,6 @@
 use std::mem;
 
+use comrak::nodes::AstNode;
 use editor_core::offset_types::{Grapheme, RangeExt as _};
 use egui::{Color32, Pos2, Rangef, Rect, Sense, Ui, Vec2};
 
@@ -195,7 +196,7 @@ impl MdEdit {
         }
     }
 
-    pub fn scroll_to_cursor(&mut self, canvas_rect: Rect) {
+    pub fn scroll_to_cursor<'ast>(&mut self, canvas_rect: Rect, root: &'ast AstNode<'ast>) {
         use crate::build_target_reveal;
         use crate::scroll_content::DocScrollContent;
         use crate::widgets::affine_scroll::Align;
@@ -217,23 +218,19 @@ impl MdEdit {
             self.renderer.layout.row_spacing / 2.0
         };
 
-        let ast = self.renderer.take_ast();
-        ast.with_root(|root| {
-            let content = DocScrollContent::for_frame(&self.renderer, root, canvas_rect.height());
-            let Some(target_rect) = build_target_reveal(
-                &self.renderer,
-                &content,
-                &self.scroll_area.state,
-                (cursor, cursor),
-                canvas_rect,
-                pad,
-            ) else {
-                return;
-            };
-            self.scroll_area
-                .reveal(&content, target_rect, Align::Nearest);
-        });
-        self.renderer.put_ast(ast);
+        let content = DocScrollContent::for_frame(&self.renderer, root, canvas_rect.height());
+        let Some(target_rect) = build_target_reveal(
+            &self.renderer,
+            &content,
+            &self.scroll_area.state,
+            (cursor, cursor),
+            canvas_rect,
+            pad,
+        ) else {
+            return;
+        };
+        self.scroll_area
+            .reveal(&content, target_rect, Align::Nearest);
     }
 
     pub fn cursor_line(&self, offset: Grapheme) -> Option<[Pos2; 2]> {

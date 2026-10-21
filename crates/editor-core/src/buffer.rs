@@ -174,9 +174,15 @@ impl Snapshot {
         self.rope.remove(start_char..end_char);
         self.rope.insert(start_char, &replace.text);
 
-        let before = std::mem::take(&mut self.segs);
-        self.flatten();
-        let added = before.measure_replace(&self.segs, replace.range);
+        // The flat view and the grapheme index change only around the
+        // replacement: clusters never cross a line ending.
+        let before = self.segs.last_cursor_position();
+        self.flat.replace_range(start.0..end.0, &replace.text);
+        self.segs
+            .replace_lines(&self.flat, start.0..end.0, replace.text.len());
+        let added = Graphemes(
+            (self.segs.last_cursor_position().0 + replace.range.len().0).saturating_sub(before.0),
+        );
 
         adjust_subsequent_range(replace.range, added, false, &mut self.selection);
         (

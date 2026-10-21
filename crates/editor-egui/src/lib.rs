@@ -1204,7 +1204,7 @@ impl Editor {
                         // action and commit on release (visuals are drawn
                         // after post_render so they composite on top).
                         self.edit.detect_touch_reorder(ui, false);
-                        self.edit.handle_block_drag(ui);
+                        self.edit.handle_block_drag(ui, root);
                         pre
                     })
                     .inner;
@@ -1215,7 +1215,7 @@ impl Editor {
                 // / `range_after` walk that assumes sorted ranges.
                 self.edit.renderer.bounds.wrap_lines.sort_by_key(|r| r.0);
 
-                self.edit.post_render(ui, canvas_rect, scroll_id, pre);
+                self.edit.post_render(ui, canvas_rect, scroll_id, pre, root);
                 self.edit.draw_dragged_overlay(ui, root);
                 ui.advance_cursor_after_rect(canvas_rect);
             });
@@ -1225,7 +1225,7 @@ impl Editor {
             if let (Some(canvas_rect), Some(range)) =
                 (captured_canvas_rect, self.edit.renderer.find_current_match)
             {
-                self.scroll_to_range(canvas_rect, range);
+                self.scroll_to_range_parsed(root, canvas_rect, range);
             }
         }
 
@@ -1234,7 +1234,7 @@ impl Editor {
             if let (Some(canvas_rect), Some(range)) =
                 (captured_canvas_rect, self.edit.renderer.preview_match)
             {
-                self.scroll_to_range(canvas_rect, range);
+                self.scroll_to_range_parsed(root, canvas_rect, range);
             }
         }
     }
@@ -1289,12 +1289,6 @@ impl Editor {
 
     /// Scrolls `range`, a find match or a search preview, to the middle of
     /// the view.
-    fn scroll_to_range(&mut self, canvas_rect: Rect, match_range: (Grapheme, Grapheme)) {
-        let ast = self.edit.renderer.take_ast();
-        ast.with_root(|root| self.scroll_to_range_parsed(root, canvas_rect, match_range));
-        self.edit.renderer.put_ast(ast);
-    }
-
     fn scroll_to_range_parsed<'a>(
         &mut self,
         root: &'a AstNode<'a>,

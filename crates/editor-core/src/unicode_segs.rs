@@ -87,6 +87,55 @@ impl UnicodeSegs {
         self.last_cursor_position()
     }
 
+    /// Updates the index of a text whose bytes `replaced` gave way to
+    /// `inserted` bytes, making it the index of `text`, the text after the
+    /// replacement. Only the lines around the replacement are segmented
+    /// again, since a cluster never crosses a line ending.
+    pub fn replace_lines(&mut self, text: &str, replaced: std::ops::Range<usize>, inserted: usize) {
+        let delta = inserted as isize - replaced.len() as isize;
+        let bytes = text.as_bytes();
+        // From the start of the line before the replacement's, so a `\r`
+        // before it and a `\n` it begins with stay one cluster, through the
+        // end of the line after the one the inserted text ends on.
+        let mut start = replaced.start.min(bytes.len());
+        for _ in 0..2 {
+            start = bytes[..start.saturating_sub(1)]
+                .iter()
+                .rposition(|byte| matches!(byte, b'\n' | b'\r'))
+                .map_or(0, |at| at + 1);
+        }
+        if start > 0 && bytes[start - 1] == b'\r' && bytes.get(start) == Some(&b'\n') {
+            // Not between the two bytes of a CRLF.
+            start -= 1;
+        }
+        let mut end = (replaced.start + inserted).min(bytes.len());
+        for _ in 0..2 {
+            end = bytes[end..]
+                .iter()
+                .position(|byte| matches!(byte, b'\n' | b'\r'))
+                .map_or(bytes.len(), |at| end + at + 1);
+        }
+        // The same stretch in the text before.
+        let old_end = (end as isize - delta) as usize;
+        let first = self.grapheme_indexes.partition_point(|at| at.0 < start);
+        let after = self.grapheme_indexes.partition_point(|at| at.0 < old_end);
+        let segmented = text[start..end]
+            .grapheme_indices(true)
+            .map(|(at, _)| Byte(start + at));
+        let tail = self.grapheme_indexes.len() - after;
+        self.grapheme_indexes.splice(first..after, segmented);
+        let len = self.grapheme_indexes.len();
+        for at in &mut self.grapheme_indexes[len - tail..] {
+            at.0 = (at.0 as isize + delta) as usize;
+        }
+        if end == bytes.len() {
+            // The text's end, which a replacement at the end moved.
+            if self.grapheme_indexes.last() != Some(&Byte(bytes.len())) {
+                self.grapheme_indexes.push(Byte(bytes.len()));
+            }
+        }
+    }
+
     /// Number of clusters a replacement added to the text, counting clusters
     /// that fused with their neighbors at the seams. `self` describes the text
     /// before the replacement and `after` the text after it.
