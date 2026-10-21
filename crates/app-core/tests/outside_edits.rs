@@ -114,9 +114,11 @@ fn an_outside_edit_of_other_text_merges_with_your_typing_and_says_so_once() {
         Some("\none, typed\ntwo\nthree\nfour, outside\n")
     );
     assert_eq!(notices(&changes), 1);
+    let notice = app.notice().unwrap();
+    assert_eq!(notice.title, "Merged changes from another app");
     assert_eq!(
-        app.notice().unwrap().title,
-        "Merged changes from another app"
+        notice.message,
+        "Noura kept your typing in \u{201c}Plan\u{201d} and the other app\u{2019}s edits."
     );
 
     // The typing from during the merge saves on top, without a notice.
@@ -370,6 +372,27 @@ fn a_note_another_app_renames_and_moves_stays_open_under_its_new_name() {
     assert_eq!(session.name(), "Again");
     assert_eq!(session.text(), "\none\ntwo\nthree\n");
     assert!(!session.is_unsaved());
+}
+
+#[test]
+fn try_again_saves_a_deleted_note_once_its_file_is_back() {
+    let fixture = Fixture::new(&[("Plan.md", &note(A, "one\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    type_into(&mut app, tab, |text| format!("{text}typed\n"));
+    std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
+    app.rescan();
+    settle_saves(&mut app);
+    assert!(app.note(tab).unwrap().is_deleted());
+
+    support::write(&fixture.root, "Plan.md", &note(A, "one\n"));
+    app.save_note_now(tab);
+    settle_saves(&mut app);
+
+    assert_eq!(fixture.read("Plan.md"), note(A, "one\ntyped\n"));
+    let session = app.note(tab).unwrap();
+    assert!(!session.is_deleted());
+    assert!(session.save_problem().is_none());
 }
 
 #[test]

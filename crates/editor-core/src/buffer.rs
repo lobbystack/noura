@@ -29,7 +29,9 @@
 //! outside edit into unsaved edits leaves the buffer with no version that
 //! held the file's text. The update then merges three texts instead: the
 //! last text loaded or saved, the buffer's and the file's. Either way, where
-//! an outside edit overlaps a local one, the local edit wins.
+//! an outside edit overlaps a local one, the local edit wins. A replacement
+//! keeps out text inserted at either end of its range, so a keystroke typed
+//! right after a word the file replaced stays after the new word.
 //!
 //! # Change events
 //!
@@ -46,6 +48,12 @@
 //! A frame that only moves the selection joins the unit before it, and
 //! single-keystroke frames typed within half a second of each other join
 //! into one unit.
+//!
+//! Undo takes back only your own edits. An outside edit is a unit of its
+//! own that undo never takes back. When one arrived after your last unit,
+//! undo first rewrites that stretch of the history so the outside edit
+//! comes before your unit, then takes your unit back: the outside edit
+//! stays, and redo brings your unit back on top of it.
 
 use std::ops::Index;
 use std::time::{Duration, Instant};

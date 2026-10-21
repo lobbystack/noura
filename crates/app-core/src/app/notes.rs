@@ -12,8 +12,8 @@ use crate::{
     AppError, TabId,
     files::remap,
     notes::{
-        ConflictChoice, FileCheck, Finished, NoteSession, NoteSync, PropertyValue, SaveProblem,
-        is_markdown,
+        ConflictChoice, FileCheck, Finished, NoteSession, NoteSync, PropertyValue, Restored,
+        SaveProblem, is_markdown,
     },
 };
 
@@ -383,11 +383,9 @@ impl App {
             return;
         }
         match session.restore(&engine) {
-            Ok(()) => self.refresh_tree(None),
-            Err(error) if matches!(error.code.as_str(), "raw_markdown_exists") => {
-                self.check_note_files(&[tab]);
-            }
-            Err(error) => session.restore_failed(&error),
+            Restored::Written => self.refresh_tree(None),
+            Restored::FileBack => self.check_note_files(&[tab]),
+            Restored::Failed => {}
         }
         self.listeners.emit(Change::Note);
         self.edited_while_leaving();
@@ -839,7 +837,9 @@ impl App {
             .unwrap_or_default();
         self.show_done(
             "Merged changes from another app",
-            format!("\u{201c}{name}\u{201d} keeps your typing and the other app\u{2019}s edits."),
+            format!(
+                "Noura kept your typing in \u{201c}{name}\u{201d} and the other app\u{2019}s edits."
+            ),
         );
     }
 

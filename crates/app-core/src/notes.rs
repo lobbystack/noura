@@ -684,6 +684,8 @@ impl NoteSession {
     /// The file holds `sent`, the editor's text at `version`.
     fn saved(&mut self, version: usize, sent: String, merged: Option<String>) {
         self.conflict = None;
+        self.deleted = false;
+        self.restore_problem = None;
         // Property edits still waiting keep the problem until they're
         // written, so a text save never hides a property edit that can't
         // go in.
@@ -712,16 +714,25 @@ impl NoteSession {
     }
 
     /// Write the note back where its file was, after another program
-    /// deleted it. Saves run again afterwards.
-    pub(crate) fn restore(&mut self, engine: &WorkspaceEngine) -> Result<(), CoreError> {
+    /// deleted it. Saves run again afterwards. When a file is there again,
+    /// nothing is written.
+    pub(crate) fn restore(&mut self, engine: &WorkspaceEngine) -> Restored {
         self.restore_problem = None;
         let body = format!("{}{}", &self.base[..self.body_start], self.text);
-        let restored = engine.restore_raw_markdown(RawRestoreInput {
+        let restored = match engine.restore_raw_markdown(RawRestoreInput {
             relative_path: self.relative_path.clone(),
             body,
             uses_crlf: self.uses_crlf,
             has_bom: self.has_bom,
-        })?;
+        }) {
+            Ok(restored) => restored,
+            Err(error) if error.code == "raw_markdown_exists" => return Restored::FileBack,
+            Err(error) => {
+                tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't restore");
+                self.restore_problem = Some(save_reason(&error));
+                return Restored::Failed;
+            }
+        };
         self.deleted = false;
         self.problem = None;
         self.waiting_for_edit = false;
@@ -733,13 +744,7 @@ impl NoteSession {
             saved: (self.version, self.text.clone()),
             merged: None,
         });
-        Ok(())
-    }
-
-    /// Restore failed: the note says why and keeps offering it.
-    pub(crate) fn restore_failed(&mut self, error: &CoreError) {
-        tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't restore");
-        self.restore_problem = Some(save_reason(error));
+        Restored::Written
     }
 
     /// Why Restore didn't write the file back, until the next try.
@@ -1002,6 +1007,17 @@ impl NoteSession {
     pub(crate) fn take_look_again(&mut self) -> bool {
         std::mem::take(&mut self.look_again)
     }
+}
+
+/// What [`NoteSession::restore`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Restored {
+    /// The note's text is in its file again.
+    Written,
+    /// A file is at the path again, and nothing was written.
+    FileBack,
+    /// The write failed; [`NoteSession::restore_problem`] says why.
+    Failed,
 }
 
 /// What [`NoteSession::file_changed`] found.
