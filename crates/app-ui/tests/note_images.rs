@@ -1,7 +1,9 @@
 //! Images in an open note through AccessKit: a workspace image draws in
-//! place, AVIF included, and keeps drawing while the note saves, an SVG
-//! draws nothing from the files it names, and a remote image waits behind
-//! its Load image button, which offers a retry when the load fails.
+//! place, AVIF included, keeps drawing while the note saves, and draws
+//! again when another app changes it, for every link and tab that shows
+//! it. An SVG draws nothing from the files it names, and a remote image
+//! waits behind its Load image button, which offers a retry when the load
+//! fails.
 
 mod support;
 
@@ -29,11 +31,7 @@ fn opened_note_with(
 ) -> Ui {
     create_workspace(app_data, "Garden", folder);
     std::fs::write(folder.join("Plan.md"), note).unwrap();
-    let mut png = std::io::Cursor::new(Vec::new());
-    image::RgbaImage::new(4, 3)
-        .write_to(&mut png, image::ImageFormat::Png)
-        .unwrap();
-    std::fs::write(folder.join("pic.png"), png.into_inner()).unwrap();
+    std::fs::write(folder.join("pic.png"), png(4, 3)).unwrap();
     for (name, bytes) in files {
         std::fs::write(folder.join(name), bytes).unwrap();
     }
@@ -44,6 +42,15 @@ fn opened_note_with(
         .click();
     harness.run_steps(4);
     harness
+}
+
+/// A PNG, `width` by `height` pixels.
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(width, height)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    png.into_inner()
 }
 
 /// Run frames, waiting in real time, until `done` holds.
@@ -201,4 +208,127 @@ fn saving_the_note_leaves_its_images_drawn() {
             listed = Some(Instant::now());
         }
     }
+}
+
+/// Whether the image `name` drew 20 points wide.
+fn drew_20_wide(harness: &Ui, name: &str) -> bool {
+    harness
+        .query_by_role_and_label(Role::Image, name)
+        .is_some_and(|image| (image.rect().width() - 20.0).abs() < 0.5)
+}
+
+/// Run frames for a fifth of a second, checking `still` after each.
+fn keeps(harness: &mut Ui, what: &str, still: impl Fn(&Ui) -> bool) {
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(20));
+        harness.step();
+        assert!(still(harness), "{what}");
+    }
+}
+
+#[test]
+fn two_links_to_one_image_both_draw_it_again_after_it_changes() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let note = "Intro\n\n![[pic.png]]\n\n![](./pic.png)\n";
+    let mut harness = opened_note(app_data.path(), &folder, note);
+    wait_until(&mut harness, "both links drew the image", |harness| {
+        drew_small(harness, "pic.png") && drew_small(harness, "./pic.png")
+    });
+
+    // Another app makes the image 20 by 15 pixels, then adds a note. The
+    // listing that follows shows the note, and the image's new size.
+    let listing = |harness: &Ui| {
+        let app = harness.state().app();
+        let tab = app.active_tab().expect("a tab is open").id();
+        app.note_links(tab).expect("the tab shows a note").seq()
+    };
+    let before = listing(&harness);
+    std::fs::write(folder.join("pic.png"), png(20, 15)).unwrap();
+    std::fs::write(folder.join("Later.md"), "Later\n").unwrap();
+    wait_until(&mut harness, "a new listing", |harness| {
+        listing(harness) != before
+    });
+    let both =
+        |harness: &Ui| drew_20_wide(harness, "pic.png") && drew_20_wide(harness, "./pic.png");
+    wait_until(&mut harness, "both links drew the new image", both);
+    keeps(&mut harness, "a link drew the old image again", both);
+}
+
+/// Open `name`'s row menu with a right-click and choose `item`.
+fn choose_from_row_menu(harness: &mut Ui, name: &str, item: &str) {
+    harness
+        .get_by_role_and_label(Role::TreeItem, name)
+        .click_secondary();
+    harness.run();
+    harness
+        .get_by_label(&format!("Actions for {name}"))
+        .get_by_role_and_label(Role::Button, item)
+        .click();
+    harness.run();
+}
+
+#[test]
+fn an_image_two_tabs_draw_stays_drawn_until_neither_draws_it() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    std::fs::write(folder.join("Plan.md"), "Intro\n\n![[pic.png]]\n").unwrap();
+    std::fs::create_dir(folder.join("Notes")).unwrap();
+    std::fs::write(folder.join("Notes/Other.md"), "Other\n\n![[pic.png]]\n").unwrap();
+    std::fs::write(folder.join("pic.png"), png(4, 3)).unwrap();
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+
+    // Both notes link to the image at the workspace's root.
+    choose_from_row_menu(&mut harness, "Plan", "Open in new tab");
+    wait_until(&mut harness, "Plan drew the image", |harness| {
+        drew_small(harness, "pic.png")
+    });
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Notes")
+        .click();
+    harness.run_steps(4);
+    choose_from_row_menu(&mut harness, "Other", "Open in new tab");
+    wait_until(&mut harness, "Other drew the image", |harness| {
+        drew_small(harness, "pic.png")
+    });
+
+    // An image of the same name lands beside Other, and Other's link leads
+    // to it now.
+    std::fs::write(folder.join("Notes/pic.png"), png(20, 15)).unwrap();
+    wait_until(&mut harness, "Other drew the image beside it", |harness| {
+        drew_20_wide(harness, "pic.png")
+    });
+
+    // Plan still draws the image at the root.
+    harness.get_by_role_and_label(Role::Tab, "Plan").click();
+    harness.run_steps(2);
+    keeps(&mut harness, "Plan lost its image", |harness| {
+        drew_small(harness, "pic.png")
+    });
+
+    // Closing Other leaves Plan's image drawn. Closing Plan too leaves no
+    // note drawing it, and egui lets its bytes go.
+    harness
+        .get_by_role_and_label(Role::Button, "Close Other")
+        .click();
+    harness.run_steps(2);
+    keeps(&mut harness, "closing Other took Plan's image", |harness| {
+        drew_small(harness, "pic.png")
+    });
+    let held = |harness: &Ui| {
+        harness
+            .ctx
+            .try_load_bytes("bytes://noura-image/pic.png")
+            .is_ok()
+    };
+    assert!(held(&harness));
+    harness
+        .get_by_role_and_label(Role::Button, "Close Plan")
+        .click();
+    harness.run_steps(2);
+    assert!(!held(&harness), "egui still holds the image");
 }

@@ -5,11 +5,13 @@
 //! a file or the network on its own, and an SVG's references to other
 //! files draw nothing. A newer listing of the workspace's files, as after
 //! each save of the note, reads again only the images whose file changed,
-//! and each keeps drawing until its new read ends.
+//! and each keeps drawing until its new read ends. Every note open in a
+//! window shares the bytes egui holds for a workspace image, which egui
+//! forgets once no open note draws from them.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use app_core::{ImageVersion, NoteLinks, RemoteImageState, is_remote_image};
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
@@ -35,21 +37,24 @@ enum Found {
     Image {
         address: String,
         bytes: Vec<u8>,
+        version: ImageVersion,
     },
-    Missing,
+    Missing {
+        version: Option<ImageVersion>,
+    },
 }
 
 /// One workspace image of the note.
 struct Image {
     state: Local,
-    /// The file the newest read or check found.
+    /// The file the newest read or check that the UI thread took in found.
     version: Option<ImageVersion>,
     /// The listing the newest read or check started under, or `None`
     /// before the first read.
     listing: Option<u64>,
     /// A read or check runs on another thread.
     busy: bool,
-    /// What a read found that egui doesn't hold yet.
+    /// What a read found that the UI thread hasn't taken in yet.
     found: Option<Found>,
 }
 
@@ -57,15 +62,61 @@ struct Image {
 /// with.
 type Images = HashMap<String, Image>;
 
+/// The bytes egui holds at one workspace image address.
+struct Held {
+    /// The version of the file they came from.
+    version: ImageVersion,
+    /// How many images of open notes draw from them.
+    users: usize,
+    /// Changes each time egui gets new bytes at the address.
+    generation: u64,
+}
+
+/// The workspace image bytes egui holds, shared by every note that a
+/// context draws.
+#[derive(Default)]
+struct HeldImages {
+    /// The generations handed out so far.
+    generations: u64,
+    addresses: HashMap<String, Held>,
+}
+
+type SharedHeld = Arc<Mutex<HeldImages>>;
+
+/// The workspace image bytes `ctx` holds.
+fn held_images(ctx: &egui::Context) -> SharedHeld {
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<SharedHeld>(egui::Id::unique("noura-workspace-images"))
+            .clone()
+    })
+}
+
+impl HeldImages {
+    /// One image stopped drawing from `address`. egui forgets the bytes
+    /// there once no image of an open note draws from them.
+    fn release(&mut self, ctx: &egui::Context, address: &str) {
+        let Some(held) = self.addresses.get_mut(address) else {
+            return;
+        };
+        held.users = held.users.saturating_sub(1);
+        if held.users == 0 {
+            self.addresses.remove(address);
+            ctx.forget_image(address);
+        }
+    }
+}
+
 /// Loads and paints the images of one note.
 pub(crate) struct WorkspaceImages {
     links: NoteLinks,
     ctx: egui::Context,
     local: Arc<Mutex<Images>>,
+    held: SharedHeld,
     /// Counts the changes to what this answers.
     seq: Arc<AtomicU64>,
-    /// Addresses whose texture finished decoding.
-    decoded: Mutex<Vec<String>>,
+    /// The addresses whose texture finished decoding, with the
+    /// generation of the workspace image bytes it decoded.
+    decoded: Mutex<HashMap<String, Option<u64>>>,
     /// Remote images whose bytes egui holds.
     included: Mutex<Vec<String>>,
 }
@@ -88,6 +139,7 @@ impl WorkspaceImages {
         crate::image_decoders::install(&ctx);
         Self {
             links,
+            held: held_images(&ctx),
             ctx,
             local: Arc::default(),
             seq: Arc::default(),
@@ -143,43 +195,58 @@ impl WorkspaceImages {
         }
     }
 
-    /// Hand egui what a read of the image at `url` found, in place of what
-    /// it held before. egui forgets an address once no image of the note
-    /// draws from it.
+    /// Take in what a read of the image at `url` found. egui gets the
+    /// bytes unless it holds that version of the file already, for this
+    /// note or another.
     fn hand_over(&self, images: &mut Images, url: &str) {
-        let Some(found) = images.get_mut(url).and_then(|image| image.found.take()) else {
-            return;
-        };
-        let state = match found {
-            Found::Image { address, bytes } => {
-                // Another image of the note may draw this version of the
-                // same file already.
-                let version = &images[url].version;
-                let held = images.iter().any(|(other, image)| {
-                    other != url
-                        && image.state == Local::Ready(address.clone())
-                        && image.version == *version
-                });
-                if !held {
-                    self.ctx.forget_image(&address);
-                    self.ctx.include_bytes(address.clone(), bytes);
-                    self.decoded.lock().unwrap().retain(|done| *done != address);
-                }
-                Local::Ready(address)
-            }
-            Found::Missing => Local::Missing,
-        };
         let Some(image) = images.get_mut(url) else {
             return;
         };
-        let before = std::mem::replace(&mut image.state, state);
-        if let Local::Ready(old) = before
-            && !images
-                .values()
-                .any(|image| image.state == Local::Ready(old.clone()))
-        {
-            self.ctx.forget_image(&old);
-            self.decoded.lock().unwrap().retain(|done| *done != old);
+        let Some(found) = image.found.take() else {
+            return;
+        };
+        let mut held = self.held.lock().unwrap();
+        let state = match found {
+            Found::Image {
+                address,
+                bytes,
+                version,
+            } => {
+                let same = held
+                    .addresses
+                    .get(&address)
+                    .is_some_and(|held| held.version == version);
+                if !same {
+                    // Notes that draw an older version of the file draw
+                    // this one now, and read it again after their next
+                    // listing.
+                    self.ctx.forget_image(&address);
+                    self.ctx.include_bytes(address.clone(), bytes);
+                    held.generations += 1;
+                    let generation = held.generations;
+                    let users = held.addresses.get(&address).map_or(0, |held| held.users);
+                    held.addresses.insert(
+                        address.clone(),
+                        Held {
+                            version: version.clone(),
+                            users,
+                            generation,
+                        },
+                    );
+                }
+                if let Some(held) = held.addresses.get_mut(&address) {
+                    held.users += 1;
+                }
+                image.version = Some(version);
+                Local::Ready(address)
+            }
+            Found::Missing { version } => {
+                image.version = version;
+                Local::Missing
+            }
+        };
+        if let Local::Ready(old) = std::mem::replace(&mut image.state, state) {
+            held.release(&self.ctx, &old);
         }
     }
 
@@ -200,7 +267,7 @@ impl WorkspaceImages {
             } else {
                 Some(version.as_ref().and_then(|_| links.image(&url)))
             };
-            let mut images = local.lock().unwrap();
+            let mut images = local.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(image) = images.get_mut(&url) else {
                 return;
             };
@@ -208,23 +275,31 @@ impl WorkspaceImages {
             let Some(read) = read else {
                 return;
             };
-            match read {
-                Some(read) => {
-                    image.version = Some(read.version);
-                    image.found = Some(Found::Image {
-                        address: format!("bytes://noura-image/{}", read.path),
-                        bytes: read.bytes,
-                    });
-                }
-                None => {
-                    image.version = version;
-                    image.found = Some(Found::Missing);
-                }
-            }
+            image.found = Some(match read {
+                Some(read) => Found::Image {
+                    address: format!("bytes://noura-image/{}", read.path),
+                    bytes: read.bytes,
+                    version: read.version,
+                },
+                None => Found::Missing { version },
+            });
             drop(images);
             seq.fetch_add(1, Ordering::SeqCst);
             ctx.request_repaint();
         });
+    }
+}
+
+impl Drop for WorkspaceImages {
+    /// A closed note stops drawing its images.
+    fn drop(&mut self) {
+        let images = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        for image in images.values() {
+            if let Local::Ready(address) = &image.state {
+                held.release(&self.ctx, address);
+            }
+        }
     }
 }
 
@@ -246,9 +321,17 @@ impl EmbedResolver for WorkspaceImages {
             .try_load_texture(&address, TextureOptions::LINEAR, SizeHint::default())
         {
             Ok(TexturePoll::Ready { texture }) => {
+                // Another note may have handed egui new bytes here.
+                let generation = self
+                    .held
+                    .lock()
+                    .unwrap()
+                    .addresses
+                    .get(&address)
+                    .map(|held| held.generation);
                 let mut decoded = self.decoded.lock().unwrap();
-                if !decoded.contains(&address) {
-                    decoded.push(address);
+                if decoded.get(&address) != Some(&generation) {
+                    decoded.insert(address, generation);
                     self.seq.fetch_add(1, Ordering::SeqCst);
                 }
                 EmbedState::Loaded(texture.size)
