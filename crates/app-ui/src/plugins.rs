@@ -217,9 +217,9 @@ pub(crate) fn shipped_dialog(ui: &mut Ui, app: &mut App, view: &mut ShippedView)
             );
             muted(
                 ui,
-                "These plugins come with Noura. They run only after you allow them on this \
-                 computer, and only with what each one lists. You can revoke any of it later \
-                 in Settings, under Plugins.",
+                "Noura ships these plugins. They run on this computer once you allow them, \
+                 each with only what it lists here. To take something back later, open \
+                 Settings, then Plugins.",
             );
             ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 for plugin in &plugins {

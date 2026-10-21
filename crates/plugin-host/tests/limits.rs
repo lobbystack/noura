@@ -68,6 +68,41 @@ fn a_plugin_that_loops_forever_stops_at_its_deadline_while_another_plugin_keeps_
     assert!(answers > 1, "the other plugin answered {answers} times");
 }
 
+/// A component whose start function loops forever, so any of its code
+/// that runs shows.
+const LOOPS_AT_START: &str = r#"
+(component
+  (core module $m
+    (func $spin (loop $again (br $again)))
+    (start $spin))
+  (core instance $i (instantiate $m)))
+"#;
+
+#[test]
+fn installing_and_starting_a_plugin_runs_none_of_its_code_until_its_first_call() {
+    let component = wat::parse_str(LOOPS_AT_START).unwrap();
+    let started = Instant::now();
+
+    let (plugin, _folders) = plugins::start(
+        "loops",
+        &component,
+        &["name = \"views\""],
+        Services::default(),
+        limits(),
+    );
+
+    assert!(
+        started.elapsed() < DEADLINE,
+        "installing took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(plugin.health().recent_failures, 0);
+    assert_eq!(
+        plugin.pages(),
+        Err(PluginError::Deadline { deadline: DEADLINE })
+    );
+}
+
 #[test]
 fn a_plugin_that_allocates_past_its_cap_fails_with_the_cap() {
     let Some((plugin, _folders)) = misbehave() else {

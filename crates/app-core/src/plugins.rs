@@ -294,6 +294,9 @@ pub(crate) struct Plugins {
     reloads: Receiver<Reload>,
     /// The folder holding the plugins that ship with Noura.
     shipped: Option<PathBuf>,
+    /// The manifest and folder of each plugin shipping with Noura that
+    /// this device hasn't shown you yet, read once rather than per frame.
+    shipped_pending: Vec<(PluginManifest, PathBuf)>,
     /// The listing whose file changes the running plugins drew last.
     listing_drawn: u64,
     /// Wakes every window, as a reload watcher does once it read a build.
@@ -333,6 +336,7 @@ impl Plugins {
             reload_sender,
             reloads,
             shipped: None,
+            shipped_pending: Vec::new(),
             listing_drawn: 0,
             wake: None,
             version: 0,
@@ -864,6 +868,7 @@ impl Plugins {
         };
         running.plugin.restart();
         running.failed = false;
+        self.router.insert(running.plugin.clone());
         self.problems.remove(id);
         self.send(id, Job::Refresh);
         self.changed();
@@ -1265,14 +1270,15 @@ impl Plugins {
     /// subfolder that holds a plugin.
     pub(crate) fn set_shipped(&mut self, folder: PathBuf) {
         self.shipped = Some(folder);
+        self.shipped_pending = self.shipped_folders();
         self.changed();
     }
 
     /// The plugins shipping with Noura that this device hasn't shown you
     /// yet, each read from its manifest. None of their code has run.
     pub(crate) fn shipped_review(&self) -> Vec<ShippedPlugin> {
-        self.shipped_folders()
-            .into_iter()
+        self.shipped_pending
+            .iter()
             .map(|(manifest, _)| ShippedPlugin {
                 id: manifest.id.clone(),
                 name: manifest.name.clone(),
@@ -1316,7 +1322,7 @@ impl Plugins {
     /// Plugins page and not offered again.
     pub(crate) fn approve_shipped(&mut self) -> Result<(), AppError> {
         let host = self.host()?;
-        for (manifest, folder) in self.shipped_folders() {
+        for (manifest, folder) in std::mem::take(&mut self.shipped_pending) {
             let id = manifest.id.clone();
             let installed = folder
                 .to_str()
@@ -1330,11 +1336,16 @@ impl Plugins {
             if let Err(error) = installed {
                 tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
                 self.problems.insert(id.clone(), error.message);
-                self.save_records(|records| {
+                let reviewed = self.save_records(|records| {
                     records.shipped_reviewed.insert(id);
-                })?;
+                });
+                if let Err(error) = reviewed {
+                    self.shipped_pending = self.shipped_folders();
+                    return Err(error);
+                }
             }
         }
+        self.shipped_pending = self.shipped_folders();
         self.changed();
         Ok(())
     }
