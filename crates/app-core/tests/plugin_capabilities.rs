@@ -145,7 +145,8 @@ fn a_plugin_section_draws_in_the_inbox_while_the_plugin_is_on_and_hears_presses(
 }
 
 #[test]
-fn a_section_that_runs_past_its_deadline_shows_an_error_in_its_own_place_while_the_rest_draws() {
+fn a_section_that_fails_or_runs_past_its_deadline_shows_an_error_in_its_own_place_while_the_rest_draws()
+ {
     let (Some(good), Some(slow)) = (
         probe(&["name = \"views\"", "name = \"inbox-sections\""]),
         misbehave(&["name = \"views\"", "name = \"inbox-sections\""]),
@@ -159,13 +160,20 @@ fn a_section_that_runs_past_its_deadline_shows_an_error_in_its_own_place_while_t
 
     let shown = sections(&app);
 
-    assert_eq!(shown.len(), 2, "{shown:?}");
-    let looping = shown
-        .iter()
-        .find(|(title, _)| title == "Looping section")
-        .expect("the looping section has its place");
-    let reason = looping.1.clone().expect_err("the section shows an error");
+    assert_eq!(shown.len(), 3, "{shown:?}");
+    let error_in = |title: &str| {
+        shown
+            .iter()
+            .find(|(shown_title, _)| shown_title == title)
+            .unwrap_or_else(|| panic!("{title} has its place"))
+            .1
+            .clone()
+            .expect_err("the section shows an error")
+    };
+    let reason = error_in("Looping section");
     assert!(reason.contains("1 second limit"), "{reason}");
+    let reason = error_in("Broken section");
+    assert!(reason.contains("lists child 7"), "{reason}");
     assert!(shown.contains(&(
         "Probe section".to_owned(),
         Ok(vec!["Section probe is running.".to_owned()])

@@ -2,9 +2,10 @@
 //! line of text and three buttons; pressing `loop` loops forever,
 //! `allocate` allocates until the memory cap stops it, and `panic`
 //! panics. Its command `loop` and its Inbox section `slow` loop forever
-//! too. The page `fine` always draws.
+//! too, and its Inbox section `broken` returns a view whose root lists a
+//! child that doesn't exist. The page `fine` always draws.
 
-use plugin_sdk::{Command, Event, InboxSection, Node, Page, Plugin, View};
+use plugin_sdk::{Command, Event, InboxSection, Node, NodeKind, Page, Plugin, View};
 
 struct Misbehave;
 
@@ -60,13 +61,26 @@ impl Plugin for Misbehave {
     }
 
     fn inbox_sections() -> Vec<InboxSection> {
-        vec![InboxSection {
-            id: "slow".into(),
-            title: "Looping section".into(),
-        }]
+        vec![
+            InboxSection {
+                id: "slow".into(),
+                title: "Looping section".into(),
+            },
+            InboxSection {
+                id: "broken".into(),
+                title: "Broken section".into(),
+            },
+        ]
     }
 
-    fn render_inbox_section(_section: String) -> Vec<Node> {
+    fn render_inbox_section(section: String) -> Vec<Node> {
+        if section == "broken" {
+            return vec![Node {
+                id: "root".into(),
+                kind: NodeKind::Panel(None),
+                children: vec![7],
+            }];
+        }
         spin()
     }
 }
