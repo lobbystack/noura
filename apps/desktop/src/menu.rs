@@ -1,9 +1,9 @@
 //! The native menu bar on macOS and Windows, built with muda from the
-//! menu model in `app-core`. Choosing a command item, Quit among them,
-//! runs the command through the same dispatch as its shortcut in the
-//! window that had focus last; the Edit items act on the focused text
-//! field, as the S6 trial (ticket 04) proved. macOS has one menu bar for
-//! the app, and on Windows every window carries its own.
+//! menu model in `app-core`. Choosing a command item, Quit and About
+//! among them, runs the command through the same dispatch as its
+//! shortcut in the window that had focus last; the Edit items act on the
+//! focused text field, as the S6 trial (ticket 04) proved. macOS has one
+//! menu bar for the app, and on Windows every window carries its own.
 
 use std::collections::HashMap;
 
@@ -241,7 +241,7 @@ pub(crate) fn own_item(item: &MenuItem) -> Option<(Choice, String, Option<Shortc
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) mod native {
     use app_core::{Menu, MenuItem, SystemItem};
-    use muda::{AboutMetadata, IsMenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+    use muda::{IsMenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 
     use super::{accelerator, item_id, own_item};
 
@@ -355,15 +355,6 @@ pub(crate) mod native {
 
     fn predefined(item: SystemItem) -> PredefinedMenuItem {
         match item {
-            SystemItem::About => PredefinedMenuItem::about(
-                Some("About Noura"),
-                Some(AboutMetadata {
-                    name: Some("Noura".to_owned()),
-                    version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                    license: Some("MIT".to_owned()),
-                    ..Default::default()
-                }),
-            ),
             SystemItem::Services => PredefinedMenuItem::services(None),
             SystemItem::Hide => PredefinedMenuItem::hide(None),
             SystemItem::HideOthers => PredefinedMenuItem::hide_others(None),
@@ -425,20 +416,24 @@ pub(crate) mod native {
         pub(crate) fn cover_windows(&mut self) -> muda::Result<usize> {
             use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
 
+            let before = self.others.len();
             // Windows destroyed the menu bar of a window that closed, with
             // the window.
             // SAFETY: IsWindow takes any handle and only reads it.
             self.others
                 .retain(|(hwnd, _)| unsafe { IsWindow(*hwnd as _) } != 0);
-            let before = self.others.len();
+            let mut changed = self.others.len() != before;
             for hwnd in windows_without_menu() {
+                // A new window may reuse the handle of one that closed.
+                self.others.retain(|(other, _)| *other != hwnd);
                 let menu = muda::Menu::new();
                 fill(&menu, &self.shown)?;
                 // SAFETY: the handle is one of this thread's live windows.
                 unsafe { menu.init_for_hwnd(hwnd)? };
                 self.others.push((hwnd, menu));
+                changed = true;
             }
-            if self.others.len() != before {
+            if changed {
                 self.publish_accelerators();
             }
             Ok(self.others.len())
@@ -571,8 +566,8 @@ mod tests {
             let id = muda::MenuId::new(item_id(&choice));
             assert_eq!(choice_for(&id), Some(choice));
         }
-        let about = muda::MenuId::new(item_id(&Choice::System(SystemItem::About)));
-        assert_eq!(choice_for(&about), None, "the system shows About");
+        let services = muda::MenuId::new(item_id(&Choice::System(SystemItem::Services)));
+        assert_eq!(choice_for(&services), None, "the system handles Services");
         assert_eq!(choice_for(&muda::MenuId::new("unknown")), None);
     }
 
@@ -611,7 +606,7 @@ mod tests {
             shortcut.as_ref().and_then(accelerator),
             Some(parse("CmdOrCtrl+Shift+P"))
         );
-        assert_eq!(own_item(&MenuItem::System(SystemItem::About)), None);
+        assert_eq!(own_item(&MenuItem::System(SystemItem::Services)), None);
     }
 
     /// Runs an Edit item and feeds the main window the input it asks

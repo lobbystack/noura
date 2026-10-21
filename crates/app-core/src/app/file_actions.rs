@@ -141,7 +141,11 @@ impl App {
             return;
         };
         if let Err(error) = workspace.reveal_root() {
-            self.show_notice("Couldn't show the workspace", error, None);
+            self.settings_notice(
+                "Couldn't show the workspace",
+                &error.message,
+                NoticeKind::Problem,
+            );
         }
     }
 

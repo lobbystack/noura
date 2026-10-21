@@ -8,11 +8,13 @@ rust-version.workspace = true
 [dependencies]
 app-core = { version = "0.2.0", path = "../../crates/app-core" }
 app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
+auto-launch.workspace = true
 eframe.workspace = true
 egui.workspace = true
 # One running copy per user: a second launch asks the running copy to come
 # forward through a local socket.
 interprocess.workspace = true
+logroller.workspace = true
 # The native menu bar on macOS and Windows. Linux builds muda's no-op
 # backend and shows no menu bar.
 muda.workspace = true

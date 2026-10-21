@@ -95,7 +95,7 @@ fn open_folder_opens_an_existing_workspace() {
     let workspace = service.open_folder(folder.path()).unwrap();
 
     assert_eq!(
-        (workspace.id(), workspace.name()),
+        (workspace.id(), workspace.name().as_str()),
         (id.as_str(), "Existing")
     );
     assert_eq!(manifest(folder.path()), before);
@@ -120,7 +120,10 @@ fn open_folder_opens_the_workspace_now_in_a_folder_recents_remember_differently(
 
     let workspace = service.open_folder(&folder).unwrap();
 
-    assert_eq!((workspace.id(), workspace.name()), (new_id.as_str(), "New"));
+    assert_eq!(
+        (workspace.id(), workspace.name().as_str()),
+        (new_id.as_str(), "New")
+    );
     assert_eq!(service.recents()[0].workspace_id, new_id);
 }
 

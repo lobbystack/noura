@@ -38,7 +38,6 @@ pub enum MenuItem {
 /// Edit items that act on the focused text field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SystemItem {
-    About,
     Services,
     Hide,
     HideOthers,
@@ -69,7 +68,6 @@ impl SystemItem {
     /// The item's label in the menu.
     pub fn label(self) -> &'static str {
         match self {
-            Self::About => "About Noura",
             Self::Services => "Services",
             Self::Hide => "Hide Noura",
             Self::HideOthers => "Hide Others",
@@ -115,6 +113,7 @@ enum Slot {
 
 /// The menu bar on `platform`: today's menus on macOS, and on Windows the
 /// same commands with Settings and Exit under File and About under Help.
+/// About opens Settings on its About section, on both.
 /// Linux shows no menu bar, and gets the Windows layout. Items whose
 /// command isn't registered, the separators around them and menus left
 /// empty drop out.
@@ -153,7 +152,7 @@ pub(crate) fn menu_bar(platform: Platform, commands: &[Command]) -> Vec<Menu> {
                 (
                     "Noura",
                     vec![
-                        vec![System(About)],
+                        vec![Item(ABOUT)],
                         vec![Item(SETTINGS)],
                         vec![System(Services)],
                         vec![System(Hide), System(HideOthers), System(ShowAll)],
@@ -176,7 +175,7 @@ pub(crate) fn menu_bar(platform: Platform, commands: &[Command]) -> Vec<Menu> {
                 ("Edit", edit),
                 ("View", view),
                 ("Window", window),
-                ("Help", vec![help, vec![System(About)]]),
+                ("Help", vec![help, vec![Item(ABOUT)]]),
             ]
         }
     };

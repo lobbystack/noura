@@ -78,6 +78,10 @@ impl FileDrag {
 
 /// The window a native drag starts from.
 #[derive(Clone, Copy)]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(dead_code, reason = "Linux drags nothing out of a window")
+)]
 pub enum DragSource<'a> {
     /// The first window, which eframe hands over.
     Main(&'a eframe::Frame),

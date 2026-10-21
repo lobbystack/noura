@@ -177,7 +177,7 @@ impl WorkspaceEngine {
                             changed.push((relative.clone(), bytes, modified_ns(&metadata), parsed));
                         }
                         Err(error) => {
-                            tracing::warn!(path = %relative, %error, "a Markdown file could not be read");
+                            tracing::warn!(path = ?relative, %error, "a Markdown file could not be read");
                         }
                     }
                 }
@@ -188,7 +188,7 @@ impl WorkspaceEngine {
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(path = %relative, %error, "a Markdown file could not be inspected");
+                    tracing::warn!(path = ?relative, %error, "a Markdown file could not be inspected");
                 }
             }
         }

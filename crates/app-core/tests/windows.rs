@@ -409,6 +409,51 @@ fn the_windows_share_the_rail_order_and_its_pages() {
     assert_eq!(rail(&second), ["Alpha", "Files"]);
 }
 
+/// Appearance, text size and zoom belong to the device, so every window
+/// draws with what one window chose last.
+#[test]
+fn the_windows_share_this_device_s_preferences() {
+    let (_app_data, _folder, mut first) = opened(&["A.md"]);
+    let mut second = first.new_window().unwrap();
+    let woken = changes(&second);
+    let before = first.preferences().zoom;
+
+    first.zoom_in();
+    assert!(woken.recv_timeout(Duration::from_secs(10)).is_ok());
+    second.poll();
+
+    assert_ne!(first.preferences().zoom, before);
+    assert_eq!(second.preferences(), first.preferences());
+
+    // Zooming from the second window starts from the first's level.
+    second.zoom_in();
+    first.poll();
+    assert_eq!(first.preferences(), second.preferences());
+    let third = first.new_window().unwrap();
+    assert_eq!(third.preferences(), first.preferences());
+}
+
+/// The workspace's name in one window's Settings shows in every window.
+#[test]
+fn a_workspace_renamed_in_one_window_shows_the_new_name_in_the_others() {
+    let (_app_data, _folder, mut first) = opened(&["A.md"]);
+    let mut second = first.new_window().unwrap();
+
+    first.open_settings_at(app_core::settings_section::WORKSPACE);
+    assert!(first.rename_workspace("Orchard"));
+    second.poll();
+
+    let names = |app: &App| -> Vec<String> {
+        app.recents()
+            .iter()
+            .map(|recent| recent.name.clone())
+            .collect()
+    };
+    assert_eq!(second.workspace().unwrap().name(), "Orchard");
+    assert_eq!(names(&second), names(&first));
+    assert!(names(&second).contains(&"Orchard".to_owned()));
+}
+
 /// Closing the last window quits, so it comes back at the next launch.
 #[test]
 fn the_last_window_closed_comes_back_at_the_next_launch() {

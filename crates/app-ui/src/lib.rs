@@ -9,6 +9,7 @@ mod ignored_files;
 mod keys;
 mod palette;
 mod rail;
+mod settings;
 mod shortcuts;
 mod tab_bar;
 pub mod theme;
@@ -20,8 +21,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Area, CommandSource, DragOut, Menu, Screen, TabId};
-use egui::Event;
+use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
+use egui::{Event, ThemePreference};
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -40,6 +41,7 @@ pub struct NouraUi {
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
     ignored: ignored_files::IgnoredFilesView,
+    settings: settings::SettingsView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// Keys typed in the same frame as the shortcut that opened the
@@ -59,6 +61,7 @@ impl NouraUi {
             new_workspace: None,
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
+            settings: settings::SettingsView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             type_ahead: Vec::new(),
@@ -153,6 +156,7 @@ impl NouraUi {
         if self.app.is_closed() {
             return;
         }
+        apply_preferences(ui.ctx(), &self.app);
         if self.app.is_busy() {
             // The change stream wakes the window when the work finishes;
             // this also keeps the loading spinner turning.
@@ -170,6 +174,7 @@ impl NouraUi {
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
+        settings::show(ui, &mut self.app, &mut self.settings);
         palette::show(ui, &mut self.app, &mut self.palette);
         self.close_requested_windows(ui.ctx());
     }
@@ -255,5 +260,22 @@ impl NouraUi {
         if let Some(folder) = self.picker.pick_folder("Open a folder") {
             self.app.open_folder(folder);
         }
+    }
+}
+
+/// Draw with this device's appearance and zoom. In Match system, egui
+/// follows the system's appearance as it changes.
+fn apply_preferences(ctx: &egui::Context, app: &App) {
+    let preferences = app.preferences();
+    let theme = match preferences.appearance {
+        Appearance::Light => ThemePreference::Light,
+        Appearance::Dark => ThemePreference::Dark,
+        Appearance::MatchSystem => ThemePreference::System,
+    };
+    if ctx.options(|options| options.theme_preference) != theme {
+        ctx.set_theme(theme);
+    }
+    if ctx.zoom_factor() != preferences.zoom_factor() {
+        ctx.set_zoom_factor(preferences.zoom_factor());
     }
 }

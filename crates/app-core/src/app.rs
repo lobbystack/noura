@@ -15,12 +15,15 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
-    RecentWorkspace, System, Tab, Workspace, WorkspaceService,
+    AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
+    PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
+    WorkspaceService,
     commands::Registry,
     layout::LayoutStore,
+    preferences::PreferencesStore,
     rail::Rail,
     session::{Session, WindowKey},
+    settings::kernel_sections,
     tabs::Tabs,
     view_state::StoredWindow,
 };
@@ -30,6 +33,8 @@ mod drops;
 mod file_actions;
 mod ignored_files;
 mod palette;
+mod preferences;
+mod settings;
 mod view;
 
 pub use drops::DragOut;
@@ -83,8 +88,10 @@ pub enum Change {
     Layout,
     Document,
     Notice,
-    /// The Ignored files page or the Keyboard shortcuts page changed.
+    /// Settings or the Ignored files page changed.
     Settings,
+    /// The appearance, text size or zoom changed.
+    Preferences,
     /// A command registered.
     Commands,
     /// The command palette opened, closed or changed.
@@ -151,11 +158,12 @@ pub struct App {
     /// Which workspace opening this window shows. Once another window
     /// opens a different workspace, this one has closed.
     opening: u64,
-    /// The versions of the shared listing, rail order and recent list this
-    /// window shows.
+    /// The versions of the shared listing, rail order, recent list and
+    /// preferences this window shows.
     listing_seen: u64,
     rail_seen: u64,
     recents_seen: u64,
+    preferences_seen: u64,
     closed: bool,
     /// Windows this one opened for its workspace's other saved windows,
     /// until the client takes them.
@@ -170,11 +178,22 @@ pub struct App {
     rail: Rail,
     layout: Layout,
     layouts: LayoutStore,
+    /// This device's appearance, text size and zoom.
+    preferences: Preferences,
+    preferences_store: PreferencesStore,
     notice: Option<Notice>,
     /// The tree row being renamed in place.
     renaming: Option<Rename>,
     /// The Ignored files page, while it is open.
     ignored_files: Option<IgnoredFiles>,
+    /// Settings, while it is open.
+    settings: Option<Settings>,
+    /// Settings' sections, in the order they registered.
+    settings_sections: Vec<SettingsSection>,
+    /// The system's apps that open at login.
+    login_item: Arc<dyn LoginItem>,
+    /// Where the local diagnostic log lives.
+    log_folder: PathBuf,
     /// A folder waiting to go to the trash until you confirm.
     pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
@@ -191,7 +210,6 @@ pub struct App {
     dragged_out: Option<String>,
     registry: Registry,
     palette: Option<CommandPalette>,
-    shortcuts_open: bool,
     /// Quit ran and the app hasn't closed yet.
     quit: bool,
 }
@@ -205,15 +223,16 @@ impl App {
     }
 
     /// Start the app with per-device state in `app_data`, using `system`
-    /// for the trash, the file manager, terminals and the clipboard. When a
-    /// workspace was open last time, it reopens in the background while
-    /// the screen shows [`Screen::Loading`].
+    /// for the trash, the file manager, terminals, the clipboard and the
+    /// browser. When a workspace was open last time, it reopens in the
+    /// background while the screen shows [`Screen::Loading`].
     pub fn launch_with(app_data: impl AsRef<Path>, system: Arc<dyn System>) -> Self {
         let session = Session::new(app_data.as_ref(), system);
         let mut app = Self::join(&session);
         app.recents = app.service.recents();
         app.register_kernel_commands();
         app.layout = app.layouts.load();
+        app.preferences = app.preferences_store.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;
@@ -233,6 +252,7 @@ impl App {
             listing_seen: 0,
             rail_seen: 0,
             recents_seen: 0,
+            preferences_seen: 0,
             closed: false,
             opened_windows: Vec::new(),
             service: session.service.clone(),
@@ -245,9 +265,15 @@ impl App {
             rail: Rail::default(),
             layout: Layout::default(),
             layouts: LayoutStore::new(&session.app_data),
+            preferences: Preferences::default(),
+            preferences_store: PreferencesStore::new(&session.app_data),
             notice: None,
             renaming: None,
             ignored_files: None,
+            settings: None,
+            settings_sections: kernel_sections(),
+            login_item: Arc::new(NoLoginItem),
+            log_folder: crate::log_folder(&session.app_data),
             pending_trash: None,
             failed_restore: None,
             pending: None,
@@ -257,7 +283,6 @@ impl App {
             dragged_out: None,
             registry: Registry::default(),
             palette: None,
-            shortcuts_open: false,
             quit: false,
         }
     }
@@ -304,10 +329,14 @@ impl App {
         window.tree = current.tree;
         window.rail = self.rail.clone();
         window.layout = self.layout.clone();
-        // The commands registered so far, and what saves pending changes,
-        // serve every window.
+        window.preferences = self.preferences;
+        window.preferences_seen = self.preferences_seen;
+        // The commands and Settings sections registered so far, what saves
+        // pending changes and the login item serve every window.
         window.registry = self.registry.copy();
+        window.settings_sections = self.settings_sections.clone();
         window.pending_saves = self.pending_saves.clone();
+        window.login_item = self.login_item.clone();
         window.restore_view(stored);
         window
     }
@@ -339,6 +368,7 @@ impl App {
         self.drag_out = None;
         self.dragged_out = None;
         self.palette = None;
+        self.settings = None;
         self.listeners.emit(Change::Screen);
     }
 
@@ -506,7 +536,8 @@ impl App {
         let listed = self.poll_listing();
         let rail = self.poll_rail();
         let recents = self.poll_recents();
-        opened || listed || rail || recents
+        let preferences = self.poll_preferences();
+        opened || listed || rail || recents || preferences
     }
 
     fn poll_job(&mut self) -> bool {
@@ -577,6 +608,21 @@ impl App {
         self.recents_seen = version;
         self.recents = self.service.recents();
         self.listeners.emit(Change::Recents);
+        true
+    }
+
+    /// Show the preferences another window changed.
+    fn poll_preferences(&mut self) -> bool {
+        let Some((version, preferences)) = self.session.preferences_since(self.preferences_seen)
+        else {
+            return false;
+        };
+        self.preferences_seen = version;
+        if self.preferences == preferences {
+            return false;
+        }
+        self.preferences = preferences;
+        self.listeners.emit(Change::Preferences);
         true
     }
 

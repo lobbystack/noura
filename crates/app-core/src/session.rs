@@ -1,6 +1,7 @@
 //! What every window of the app shares: the open workspace, with its one
 //! index and watcher, the newest listing of its files, the rail order,
-//! and each window's view state, which it saves together.
+//! this device's preferences, and each window's view state, which it
+//! saves together.
 //!
 //! Each [`App`](crate::App) is one window. A window that changes what
 //! the others show publishes it here and wakes them; each one applies it
@@ -13,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    FileTree, System, Workspace, WorkspaceService,
+    FileTree, Preferences, System, Workspace, WorkspaceService,
     app::{Change, Listeners},
     view_state::{StoredView, StoredWindow, ViewStore},
 };
@@ -52,6 +53,10 @@ struct State {
     rail: u64,
     /// Counts the changes to the recent list.
     recents: u64,
+    /// This device's preferences as a window changed them last, and how
+    /// many changes there were.
+    preferences: Option<Preferences>,
+    preferences_version: u64,
     /// The windows on the open workspace, in the order they opened.
     windows: Vec<Window>,
     views: ViewStore,
@@ -107,6 +112,8 @@ impl Session {
                 rail_order: Vec::new(),
                 rail: 0,
                 recents: 0,
+                preferences: None,
+                preferences_version: 0,
                 windows: Vec::new(),
                 views: ViewStore::new(app_data),
                 next_key: 0,
@@ -298,6 +305,27 @@ impl Session {
     pub(crate) fn recents_since(&self, seen: u64) -> Option<u64> {
         let state = self.lock();
         (state.recents > seen).then_some(state.recents)
+    }
+
+    /// The window `key` changed this device's preferences, which every
+    /// window draws with. Returns their version.
+    pub(crate) fn set_preferences(&self, key: WindowKey, preferences: Preferences) -> u64 {
+        let mut state = self.lock();
+        state.preferences = Some(preferences);
+        state.preferences_version += 1;
+        let version = state.preferences_version;
+        let others = state.others(key);
+        drop(state);
+        wake(others);
+        version
+    }
+
+    /// The preferences and their version, when a window changed them
+    /// since `seen`.
+    pub(crate) fn preferences_since(&self, seen: u64) -> Option<(u64, Preferences)> {
+        let state = self.lock();
+        let preferences = state.preferences?;
+        (state.preferences_version > seen).then_some((state.preferences_version, preferences))
     }
 
     /// Keep the window's view state with the others, and save them all
