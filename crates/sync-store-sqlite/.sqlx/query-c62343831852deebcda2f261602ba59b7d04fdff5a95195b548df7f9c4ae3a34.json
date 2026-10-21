@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO entries (workspace, domain, seq, record_type, record) VALUES (?1, ?2, ?3, ?4, ?5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "c62343831852deebcda2f261602ba59b7d04fdff5a95195b548df7f9c4ae3a34"
+}

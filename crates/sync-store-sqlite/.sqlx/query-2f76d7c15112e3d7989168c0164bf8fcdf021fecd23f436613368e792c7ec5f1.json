@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts (account, genesis) VALUES (?1, ?2)\n             ON CONFLICT (account) DO UPDATE SET genesis = excluded.genesis",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2f76d7c15112e3d7989168c0164bf8fcdf021fecd23f436613368e792c7ec5f1"
+}

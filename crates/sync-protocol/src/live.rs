@@ -147,49 +147,31 @@ impl LiveSet {
     /// empty and its `rid` already holds an operation, else a state
     /// operation.
     pub fn class_of(&self, op: &LiveOp) -> OpClass {
-        if op.covers.is_empty() && self.rids.contains_key(&op.rid) {
-            OpClass::Patch
-        } else {
-            OpClass::State
-        }
+        class_of(op, self.rids.contains_key(&op.rid))
     }
 
     /// The server's checks of §13 that the live set decides.
     pub fn check(&self, op: &LiveOp) -> Result<OpClass, LiveError> {
-        let class = self.class_of(op);
         let state = self.rids.get(&op.rid);
-        for cover in &op.covers {
-            let exists = state.is_some_and(|s| {
+        let names_op = |device: &Id, counter: u64| {
+            state.is_some_and(|s| {
                 s.ops
                     .iter()
-                    .any(|(o, _)| o.device == cover.device && o.counter == cover.counter)
-            });
-            if !exists {
-                return Err(LiveError::SupersedesUnknown);
-            }
-        }
-        let mut after = state.cloned().unwrap_or_default();
-        after.ops.push((op.clone(), class));
-        let live = after.live_at(u64::MAX);
-        if class == OpClass::State {
-            let own_states = live
+                    .any(|(o, _)| o.device == *device && o.counter == counter)
+            })
+        };
+        let unknown_cover = op.covers.iter().any(|c| !names_op(&c.device, c.counter));
+        let live: Vec<(LiveOp, OpClass)> = self
+            .live(&op.rid)
+            .into_iter()
+            .map(|(o, c)| (o.clone(), c))
+            .collect();
+        let covered = state.is_some_and(|s| {
+            s.ops
                 .iter()
-                .filter(|(o, c)| *c == OpClass::State && o.device == op.device)
-                .count();
-            if own_states > 1 {
-                return Err(LiveError::SupersedesIncomplete);
-            }
-        }
-        let patches: Vec<_> = live.iter().filter(|(_, c)| *c == OpClass::Patch).collect();
-        if patches.len() > MAX_LIVE_PATCHES
-            || patches.iter().map(|(o, _)| o.weight).sum::<u64>() > MAX_LIVE_PATCH_BYTES
-        {
-            return Err(LiveError::SnapshotRequired);
-        }
-        if live.iter().filter(|(_, c)| *c == OpClass::State).count() > MAX_LIVE_STATES {
-            return Err(LiveError::ConflictLimit);
-        }
-        Ok(class)
+                .any(|(other, _)| other.covers.iter().any(|c| op.covered_by(c)))
+        });
+        judge(op, state.is_some(), unknown_cover, covered, &live)
     }
 
     /// Takes an accepted operation, classing it as the server does.
@@ -263,6 +245,63 @@ impl LiveSet {
         }
         dropped
     }
+}
+
+/// The class the server gives `op` (§13): a patch when its `supersedes` is
+/// empty and its `rid` already exists, else a state operation.
+pub fn class_of(op: &LiveOp, rid_exists: bool) -> OpClass {
+    if op.covers.is_empty() && rid_exists {
+        OpClass::Patch
+    } else {
+        OpClass::State
+    }
+}
+
+/// The server's checks of §13 that the live set decides, from what a store
+/// reads about the operation's `rid`: whether it holds any operation,
+/// whether a cover names no operation on it with exactly that device and
+/// counter, whether an operation already on it covers the new one, and the
+/// operations live on it with their classes. Only the live operations'
+/// device, counter, class and weight count, so a store may leave their
+/// covers out. Returns the class the server gives the operation.
+pub fn judge(
+    op: &LiveOp,
+    rid_exists: bool,
+    unknown_cover: bool,
+    covered: bool,
+    live: &[(LiveOp, OpClass)],
+) -> Result<OpClass, LiveError> {
+    let class = class_of(op, rid_exists);
+    if unknown_cover {
+        return Err(LiveError::SupersedesUnknown);
+    }
+    let mut after: Vec<(&LiveOp, OpClass)> = live
+        .iter()
+        .filter(|(o, _)| !op.covers.iter().any(|c| o.covered_by(c)))
+        .map(|(o, c)| (o, *c))
+        .collect();
+    if !covered {
+        after.push((op, class));
+    }
+    if class == OpClass::State {
+        let own_states = after
+            .iter()
+            .filter(|(o, c)| *c == OpClass::State && o.device == op.device)
+            .count();
+        if own_states > 1 {
+            return Err(LiveError::SupersedesIncomplete);
+        }
+    }
+    let patches: Vec<_> = after.iter().filter(|(_, c)| *c == OpClass::Patch).collect();
+    if patches.len() > MAX_LIVE_PATCHES
+        || patches.iter().map(|(o, _)| o.weight).sum::<u64>() > MAX_LIVE_PATCH_BYTES
+    {
+        return Err(LiveError::SnapshotRequired);
+    }
+    if after.iter().filter(|(_, c)| *c == OpClass::State).count() > MAX_LIVE_STATES {
+        return Err(LiveError::ConflictLimit);
+    }
+    Ok(class)
 }
 
 /// The covers of a state operation that covers `chosen`, the live

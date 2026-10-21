@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE workspaces SET policy_revision = ?2, policy_head = ?3 WHERE workspace = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b8d85896cb43c6ac26d8ddda81ba1904caba87142525f3c78fcc37dba13cd341"
+}

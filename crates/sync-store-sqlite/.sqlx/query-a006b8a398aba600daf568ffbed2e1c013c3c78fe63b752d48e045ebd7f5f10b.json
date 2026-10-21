@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE operations SET dropped = 1\n             WHERE workspace = ?1 AND rid = ?2 AND device = ?3 AND counter = ?4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "a006b8a398aba600daf568ffbed2e1c013c3c78fe63b752d48e045ebd7f5f10b"
+}

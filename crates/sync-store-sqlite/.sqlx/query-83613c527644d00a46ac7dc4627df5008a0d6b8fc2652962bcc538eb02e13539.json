@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO domains (workspace, domain, head_seq, epoch, epoch_digest, epoch_policy_revision)\n             VALUES (?1, ?2, 0, 0, ?3, 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "83613c527644d00a46ac7dc4627df5008a0d6b8fc2652962bcc538eb02e13539"
+}

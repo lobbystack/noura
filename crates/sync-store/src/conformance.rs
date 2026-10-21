@@ -1,0 +1,1660 @@
+//! The store conformance suite (§15, §32). Each store's tests run it with
+//! [`conformance_tests!`](crate::conformance_tests), passing a function
+//! that opens a fresh, migrated, empty store; every case drives the store
+//! only through [`Store`] and the transaction traits, so SQLite and
+//! PostgreSQL must pass the same cases.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use sync_key_envelope::v2::{DeviceKeys, EnvelopeHeader, genesis_link, next_link, wrap};
+use sync_protocol::codec::{Bytes, Decode, Encode, List, Nested, Sorted, Text};
+use sync_protocol::crypto::random_nonce;
+use sync_protocol::keys::{EpochParams, build_epoch};
+use sync_protocol::live::{LiveOp, covers_for};
+use sync_protocol::messages::{
+    ChainConflictDetail, EntryRecord, KeyRecord, MAX_BODY, PageStatus, PullCursor, PullRequest,
+    PushFailureDetail, PushRequest, PushResponse, RecordRef, server_error_status,
+};
+use sync_protocol::records::{
+    Access, AccountHead, AccountLink, Card, Cover, EpochBundle, Level, LinkKind,
+    MAX_OPERATION_CIPHERTEXT, OpClass, Operation, PolicyChange, PolicyKind, Profile,
+    ProfilePayload, Signed,
+};
+use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
+
+use crate::{Backend, Error, Refusal, Session, Store, WriteTxn};
+
+/// Declares one `#[tokio::test]` per conformance case. `$open` is an async
+/// function returning a fresh store and a guard that keeps its database
+/// alive for the test.
+#[macro_export]
+macro_rules! conformance_tests {
+    ($open:path) => {
+        $crate::conformance_tests!(@cases $open;
+            live_sets_match_the_fixture,
+            creation_starts_the_domain_log,
+            creation_retries_and_conflicts,
+            creation_checks_heads_signatures_and_recipients,
+            push_returns_receipts_in_request_order,
+            push_commits_all_or_none,
+            retry_returns_the_original_receipt,
+            operation_checks_answer_their_codes,
+            empty_supersedes_on_an_existing_rid_is_a_patch,
+            snapshot_required_past_the_patch_bytes,
+            conflict_limit_past_64_live_states,
+            removed_device_and_pending_rotation,
+            policy_regression_and_stale_revisions,
+            rid_belongs_to_one_domain,
+            concurrent_pushes_commit_in_one_order,
+            failed_pushes_leave_the_others_committed,
+            pull_pages_each_domain,
+            pull_stays_within_one_mebibyte,
+            pull_wakes_when_another_device_pushes,
+            chain_positions_and_heads,
+            keys_and_epochs_serve_records_without_recipients,
+        );
+    };
+    (@cases $open:path; $($case:ident,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                let (store, _guard) = $open().await;
+                $crate::conformance::$case(store).await;
+            }
+        )*
+    };
+}
+
+/// One device of the test account.
+pub struct Device {
+    /// Its keys.
+    pub keys: DeviceKeys,
+    /// Its session.
+    pub session: Session,
+    /// Its session token, as a sign-in returns it.
+    pub token: [u8; 32],
+}
+
+impl Device {
+    /// The device ID.
+    pub fn id(&self) -> Id {
+        self.keys.device()
+    }
+
+    /// The bearer token's text form.
+    pub fn bearer(&self) -> String {
+        sync_protocol::types::to_base64url(&self.token)
+    }
+}
+
+/// A store with an account of several devices, each signed in, and a
+/// workspace that the first device created.
+pub struct World<B: Backend> {
+    /// The store.
+    pub store: Arc<Store<B>>,
+    /// The account.
+    pub account: Id,
+    /// The account chain's links.
+    pub links: Vec<Signed<AccountLink>>,
+    /// The devices; the first created the workspace.
+    pub devices: Vec<Device>,
+    /// The workspace.
+    pub workspace: Id,
+    /// The workspace domain.
+    pub domain: Id,
+    /// The genesis.
+    pub genesis: Signed<PolicyChange>,
+    /// The policy head's revision and digest.
+    pub head: (u64, Digest),
+    /// Epoch 1's key.
+    pub epoch_key: SecretKey,
+}
+
+fn head_of(links: &[Signed<AccountLink>]) -> AccountHead {
+    let last = links.last().expect("a chain has links");
+    AccountHead {
+        account: last.body.account,
+        genesis: links[0].digest(),
+        seqno: last.body.seqno,
+        head: last.digest(),
+    }
+}
+
+/// An account chain of `count` devices: the first signs the genesis and
+/// adds the others.
+pub fn account(count: usize) -> (Id, Vec<DeviceKeys>, Vec<Signed<AccountLink>>) {
+    let account = Id::random().expect("random");
+    let keys: Vec<DeviceKeys> = (0..count)
+        .map(|_| DeviceKeys::generate().expect("random"))
+        .collect();
+    let mut links = vec![genesis_link(&keys[0], account)];
+    for other in &keys[1..] {
+        let link = next_link(
+            &keys[0],
+            &head_of(&links),
+            LinkKind::AddDevice {
+                card: Nested(other.card(account)),
+                offer: Digest::ZERO,
+            },
+        );
+        links.push(link);
+    }
+    (account, keys, links)
+}
+
+/// The creation request of a workspace whose genesis records the head of
+/// `links`, signed by `creator`, with envelopes for `cards`.
+pub fn creation(
+    creator: &DeviceKeys,
+    links: &[Signed<AccountLink>],
+    cards: &[Card],
+) -> (Vec<u8>, Signed<PolicyChange>, SecretKey) {
+    let workspace = Id::random().expect("random");
+    let domain = Id::random().expect("random");
+    let genesis = Signed::sign(
+        PolicyChange {
+            workspace,
+            revision: 1,
+            previous: Digest::ZERO,
+            signer: creator.device(),
+            heads: Sorted::new(vec![head_of(links)]).expect("one head"),
+            kind: PolicyKind::Genesis {
+                workspace_domain: domain,
+            },
+        },
+        creator.signing(),
+    );
+    let readers: BTreeSet<Id> = cards.iter().map(|c| c.device).collect();
+    let key = SecretKey::random().expect("random");
+    let epoch = Signed::sign(
+        build_epoch(
+            &EpochParams {
+                workspace,
+                domain,
+                epoch: 1,
+                previous: Digest::ZERO,
+                policy_revision: 1,
+                policy_head: genesis.digest(),
+                rotating_device: creator.device(),
+                recipients: readers.clone(),
+            },
+            &key,
+            None,
+            Nonce::ZERO,
+        ),
+        creator.signing(),
+    );
+    let mut records = vec![
+        RecordRef::Policy(genesis.clone()),
+        RecordRef::EpochBundle(EpochBundle {
+            epoch: Nested(epoch.clone()),
+            recipients: Sorted::new(readers.into_iter().collect()).expect("sorted"),
+        }),
+    ];
+    for card in cards {
+        let envelope = wrap(
+            &EnvelopeHeader {
+                workspace,
+                domain,
+                epoch: 1,
+                wrapping_device: creator.device(),
+            },
+            &key,
+            card,
+            creator,
+        )
+        .expect("wraps");
+        records.push(RecordRef::Envelope(envelope));
+    }
+    let mut profile = Profile {
+        workspace,
+        profile_revision: 1,
+        epoch: 1,
+        policy_revision: 1,
+        policy_head: genesis.digest(),
+        signer: creator.device(),
+        nonce: Nonce::ZERO,
+        ciphertext: Bytes(Vec::new()),
+    };
+    profile.seal_payload(
+        &ProfilePayload {
+            name: Text("Conformance".into()),
+        },
+        &key,
+        &epoch.digest(),
+        random_nonce().expect("random"),
+    );
+    records.push(RecordRef::Profile(Signed::sign(profile, creator.signing())));
+    let body = PushRequest {
+        records: List(records),
+    }
+    .to_bytes();
+    (body, genesis, key)
+}
+
+impl<B: Backend> World<B> {
+    /// An account of `devices` devices, each with a session, and a
+    /// workspace the first one created.
+    pub async fn new(store: Store<B>, devices: usize) -> Self {
+        let store = Arc::new(store);
+        let (account, keys, links) = account(devices);
+        store
+            .append_account_links(links.clone())
+            .await
+            .expect("chain stored");
+        let mut sessions = Vec::new();
+        for key in keys {
+            let session = Session {
+                account,
+                device: key.device(),
+            };
+            let token = random_token();
+            store
+                .create_session(token, session)
+                .await
+                .expect("session stored");
+            sessions.push(Device {
+                keys: key,
+                session,
+                token,
+            });
+        }
+        let cards: Vec<Card> = sessions.iter().map(|d| d.keys.card(account)).collect();
+        let (body, genesis, epoch_key) = creation(&sessions[0].keys, &links, &cards);
+        store
+            .create_workspace(sessions[0].session, body)
+            .await
+            .expect("workspace created");
+        let PolicyKind::Genesis { workspace_domain } = genesis.body.kind else {
+            unreachable!("a genesis");
+        };
+        Self {
+            store,
+            account,
+            links,
+            devices: sessions,
+            workspace: genesis.body.workspace,
+            domain: workspace_domain,
+            head: (1, genesis.digest()),
+            genesis,
+            epoch_key,
+        }
+    }
+
+    /// An operation of `device` in the workspace domain at counter 1 on a
+    /// new object, with a 272-byte ciphertext, after `edit` changes it.
+    pub fn op(&self, device: usize, edit: impl FnOnce(&mut Operation)) -> Signed<Operation> {
+        let mut body = Operation {
+            workspace: self.workspace,
+            domain: self.domain,
+            device: self.devices[device].id(),
+            counter: 1,
+            previous: Digest::ZERO,
+            epoch: 1,
+            policy_revision: self.head.0,
+            policy_head: self.head.1,
+            previous_attempt: Digest::ZERO,
+            generation: self.store.restore_generation(),
+            checkpoint_seq: 0,
+            checkpoint: Digest::ZERO,
+            rid: Id::random().expect("random"),
+            delete: false,
+            supersedes: Sorted::default(),
+            blobs: Sorted::default(),
+            nonce: Nonce::ZERO,
+            ciphertext: Bytes(vec![0; 272]),
+        };
+        edit(&mut body);
+        Signed::sign(body, self.devices[device].keys.signing())
+    }
+
+    /// Pushes `ops` from `device`.
+    pub async fn push(
+        &self,
+        device: usize,
+        ops: &[Signed<Operation>],
+    ) -> crate::Result<PushResponse> {
+        let body = PushRequest {
+            records: List(ops.iter().cloned().map(RecordRef::Operation).collect()),
+        }
+        .to_bytes();
+        self.store
+            .push(self.devices[device].session, self.workspace, body)
+            .await
+    }
+
+    /// Pulls the workspace domain from `after`, without waiting.
+    pub async fn pull(&self, device: usize, after: u64) -> sync_protocol::messages::Page {
+        let response = self
+            .store
+            .pull(
+                self.devices[device].session,
+                self.workspace,
+                PullRequest {
+                    cursors: List(vec![PullCursor {
+                        domain: self.domain,
+                        after,
+                    }]),
+                    wait_seconds: 0,
+                },
+            )
+            .await
+            .expect("pull");
+        response.pages.0.into_iter().next().expect("one page")
+    }
+
+    /// Commits a policy change straight into the store, with a policy entry
+    /// in each listed domain, as a push of that change will once tickets 47
+    /// and 50 add them. `new_domain` also creates a domain with its epoch 1.
+    pub async fn inject_policy(
+        &mut self,
+        change: Signed<PolicyChange>,
+        domains: Vec<Id>,
+        new_domain: Option<(Id, Signed<sync_protocol::records::Epoch>)>,
+    ) {
+        let workspace = self.workspace;
+        let revision = change.body.revision;
+        let digest = change.digest();
+        self.store
+            .backend()
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    txn.insert_policy_change(workspace, revision, digest, &change.to_bytes())
+                        .await?;
+                    txn.set_policy_head(workspace, revision, digest).await?;
+                    let mut domains = domains;
+                    if let Some((domain, _)) = &new_domain {
+                        txn.insert_domain(workspace, *domain).await?;
+                        domains.push(*domain);
+                    }
+                    domains.sort();
+                    let entry = sync_protocol::messages::PolicyEntry {
+                        revision,
+                        head: digest,
+                    };
+                    for domain in domains {
+                        txn.append_entry(workspace, domain, 9, &entry.to_bytes())
+                            .await?;
+                    }
+                    if let Some((domain, epoch)) = new_domain {
+                        let bytes = epoch.to_bytes();
+                        txn.append_entry(workspace, domain, 8, &bytes).await?;
+                        txn.insert_epoch(
+                            workspace,
+                            domain,
+                            &crate::EpochRow {
+                                epoch: 1,
+                                digest: epoch.digest(),
+                                previous: Digest::ZERO,
+                                record: bytes.clone(),
+                            },
+                            revision,
+                            &bytes,
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                })
+            }))
+            .await
+            .expect("policy change injected");
+        self.head = (revision, digest);
+    }
+
+    /// Appends a link that `signer` signs to the account chain.
+    pub async fn append_link(&mut self, signer: usize, kind: LinkKind) -> AccountHead {
+        let link = next_link(&self.devices[signer].keys, &head_of(&self.links), kind);
+        self.store
+            .append_account_links(vec![link.clone()])
+            .await
+            .expect("link appended");
+        self.links.push(link);
+        head_of(&self.links)
+    }
+
+    /// A policy change after the head, signed by `signer`.
+    pub fn change(
+        &self,
+        signer: usize,
+        heads: Vec<AccountHead>,
+        kind: PolicyKind,
+    ) -> Signed<PolicyChange> {
+        Signed::sign(
+            PolicyChange {
+                workspace: self.workspace,
+                revision: self.head.0 + 1,
+                previous: self.head.1,
+                signer: self.devices[signer].id(),
+                heads: Sorted::new(heads).expect("sorted heads"),
+                kind,
+            },
+            self.devices[signer].keys.signing(),
+        )
+    }
+}
+
+fn random_token() -> [u8; 32] {
+    sync_protocol::crypto::random_array().expect("random")
+}
+
+/// The refusal inside a store error.
+#[track_caller]
+pub fn refusal(result: crate::Result<impl std::fmt::Debug>) -> Refusal {
+    match result {
+        Err(Error::Refused(refusal)) => refusal,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// A push refusal's code and failing record index.
+#[track_caller]
+pub fn push_failure(result: crate::Result<impl std::fmt::Debug>) -> (&'static str, u32) {
+    let refusal = refusal(result);
+    let detail = PushFailureDetail::from_bytes(refusal.detail.as_deref().expect("a push detail"))
+        .expect("a push failure detail");
+    assert_eq!(detail.code.as_str(), refusal.code);
+    assert!(
+        server_error_status(refusal.code).is_some(),
+        "{} is a §26 code",
+        refusal.code
+    );
+    (refusal.code, detail.record_index)
+}
+
+fn fixture(name: &str) -> Value {
+    let path = format!(
+        "{}/../../docs/workspace-format/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("JSON")
+}
+
+fn id_of(value: &Value) -> Id {
+    Id::from_hex(value.as_str().expect("hex")).expect("an ID")
+}
+
+fn u64_of(value: &Value) -> u64 {
+    value.as_u64().expect("a number")
+}
+
+fn live_op(value: &Value) -> LiveOp {
+    LiveOp {
+        rid: id_of(&value["rid"]),
+        device: id_of(&value["device"]),
+        counter: u64_of(&value["counter"]),
+        seq: u64_of(&value["seq"]),
+        digest: Digest::from_hex(value["digest"].as_str().expect("hex")).expect("a digest"),
+        delete: value["delete"].as_bool().expect("a flag"),
+        covers: serde_json::from_value(value["covers"].clone()).expect("covers"),
+        weight: u64_of(&value["weight"]),
+    }
+}
+
+fn name<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .expect("serializes")
+        .as_str()
+        .expect("a name")
+        .to_owned()
+}
+
+/// `sync-v2-live.json`: the store classes operations and computes live sets
+/// as clients do, floors and covers included.
+pub async fn live_sets_match_the_fixture<B: Backend>(store: Store<B>) {
+    let doc = fixture("sync-v2-live.json");
+    for case in doc["cases"].as_array().expect("cases") {
+        let workspace = Id::random().expect("random");
+        let domain = Id::random().expect("random");
+        let label = case["name"].as_str().expect("a name");
+        let ops: Vec<LiveOp> = case["ops"]
+            .as_array()
+            .expect("ops")
+            .iter()
+            .map(live_op)
+            .collect();
+        match case["kind"].as_str().expect("a kind") {
+            "live_set" => {
+                let floors = case["floors"].as_array().expect("floors");
+                let mut classes = Vec::new();
+                for at in 0..=ops.len() {
+                    for floor in floors {
+                        let after = floor
+                            .get("after_op")
+                            .map_or(ops.len(), |a| u64_of(a) as usize);
+                        if after != at {
+                            continue;
+                        }
+                        let dropped = store
+                            .apply_floor(
+                                workspace,
+                                domain,
+                                u64_of(&floor["previous_floor"]),
+                                u64_of(&floor["floor"]),
+                                u64_of(&floor["covered_seq"]),
+                            )
+                            .await
+                            .expect("floor");
+                        let ours: Vec<Value> = dropped
+                            .iter()
+                            .map(|d| json!({"rid": d.rid.to_hex(), "device": d.op.device.to_hex(), "counter": d.op.counter}))
+                            .collect();
+                        assert_eq!(json!(ours), floor["dropped"], "{label}: dropped deletes");
+                    }
+                    if let Some(op) = ops.get(at) {
+                        let class = store
+                            .record_live(workspace, domain, op.clone())
+                            .await
+                            .expect("recorded");
+                        classes.push(name(&class));
+                    }
+                }
+                assert_eq!(json!(classes), case["classes"], "{label}: classes");
+                for (rid, want) in case["expect"].as_object().expect("live sets") {
+                    let live = store
+                        .live_at(workspace, Id::from_hex(rid).expect("rid"), u64::MAX)
+                        .await
+                        .expect("live set");
+                    let mut ours: Vec<(Id, u64)> =
+                        live.iter().map(|(o, _)| (o.device, o.counter)).collect();
+                    ours.sort();
+                    let ours: Vec<Value> = ours
+                        .iter()
+                        .map(|(d, c)| json!({"device": d.to_hex(), "counter": c}))
+                        .collect();
+                    assert_eq!(&json!(ours), want, "{label}: live set");
+                }
+            }
+            "live_check" => {
+                for op in &ops {
+                    store
+                        .record_live(workspace, domain, op.clone())
+                        .await
+                        .expect("recorded");
+                }
+                let ours = match store
+                    .check_live(workspace, live_op(&case["next"]))
+                    .await
+                    .expect("checked")
+                {
+                    Ok(class) => name(&class),
+                    Err(error) => error.server_code().to_owned(),
+                };
+                assert_eq!(
+                    ours,
+                    case["expect"].as_str().expect("an outcome"),
+                    "{label}"
+                );
+            }
+            "covers_for" => {
+                for op in &ops {
+                    store
+                        .record_live(workspace, domain, op.clone())
+                        .await
+                        .expect("recorded");
+                }
+                let live = store
+                    .live_at(workspace, ops[0].rid, u64::MAX)
+                    .await
+                    .expect("live");
+                let refs: Vec<&LiveOp> = live.iter().map(|(o, _)| o).collect();
+                let chosen: BTreeSet<(Id, u64)> = case["chosen"]
+                    .as_array()
+                    .expect("chosen")
+                    .iter()
+                    .map(|c| (id_of(&c["device"]), u64_of(&c["counter"])))
+                    .collect();
+                let covers = covers_for(&refs, &chosen, id_of(&case["own_device"]));
+                assert_eq!(
+                    serde_json::to_value(covers).expect("JSON"),
+                    case["expect"],
+                    "{label}"
+                );
+            }
+            other => panic!("{label}: unknown case kind {other}"),
+        }
+    }
+}
+
+/// Creation starts the workspace domain's log with the genesis policy entry
+/// and the epoch entry, and the workspace lists with its profile.
+pub async fn creation_starts_the_domain_log<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 2).await;
+    let page = world.pull(1, 0).await;
+    assert_eq!(page.status, PageStatus::Ok);
+    assert_eq!(page.head, 2);
+    assert_eq!(page.complete_through, 2);
+    assert_eq!(page.restore_generation, world.store.restore_generation());
+    assert_eq!(page.policy_revision, 1);
+    page.check_shape().expect("a well-formed page");
+    match &page.entries[0].record {
+        EntryRecord::Policy(entry) => {
+            assert_eq!(page.entries[0].seq, 1);
+            assert_eq!((entry.revision, entry.head), (1, world.genesis.digest()));
+        }
+        other => panic!("the log starts with the genesis entry, not {other:?}"),
+    }
+    match &page.entries[1].record {
+        EntryRecord::Epoch(epoch) => {
+            assert_eq!(page.entries[1].seq, 2);
+            assert_eq!(epoch.body.epoch, 1);
+        }
+        other => panic!("the epoch entry follows, not {other:?}"),
+    }
+    let listed = world
+        .store
+        .workspaces(world.devices[1].session)
+        .await
+        .expect("listed");
+    assert_eq!(listed.workspaces.len(), 1);
+    let info = &listed.workspaces[0];
+    assert_eq!(info.workspace, world.workspace);
+    assert_eq!(info.role, sync_protocol::records::Role::Owner);
+    let profile = info.profile.as_ref().expect("a profile");
+    assert_eq!(profile.body.profile_revision, 1);
+    let policy = world
+        .store
+        .policy(world.devices[1].session, world.workspace, 0)
+        .await
+        .expect("policy");
+    assert_eq!(policy.head_revision, 1);
+    assert_eq!(policy.changes.len(), 1);
+    assert_eq!(policy.changes[0].0, world.genesis);
+    assert_eq!(policy.account_heads.to_vec(), vec![head_of(&world.links)]);
+}
+
+/// A retry with identical bytes gets the original result; other bytes
+/// under the same workspace ID get `id_conflict`.
+pub async fn creation_retries_and_conflicts<B: Backend>(store: Store<B>) {
+    let (account, keys, links) = account(1);
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
+    let session = Session {
+        account,
+        device: keys[0].device(),
+    };
+    let cards = vec![keys[0].card(account)];
+    let (body, genesis, _) = creation(&keys[0], &links, &cards);
+    let first = store
+        .create_workspace(session, body.clone())
+        .await
+        .expect("created");
+    let again = store
+        .create_workspace(session, body.clone())
+        .await
+        .expect("retried");
+    assert_eq!(first, again);
+    assert_eq!(first.policy_revision, 1);
+    assert_eq!(first.receipts.len(), 2);
+    assert_eq!(first.receipts[0].record_digest, genesis.digest());
+    assert_eq!(
+        (first.receipts[0].seq, first.receipts[1].seq),
+        (1, 2),
+        "the genesis entry, then the epoch entry"
+    );
+    // Same workspace ID, different bytes.
+    let mut records = PushRequest::from_bytes(&body).expect("decodes").records.0;
+    let RecordRef::Profile(profile) = records.last().cloned().expect("a profile") else {
+        panic!("the profile is last");
+    };
+    let mut other = profile.body.clone();
+    other.nonce = random_nonce().expect("random");
+    *records.last_mut().expect("last") = RecordRef::Profile(Signed::sign(other, keys[0].signing()));
+    let changed = PushRequest {
+        records: List(records),
+    }
+    .to_bytes();
+    assert_eq!(
+        refusal(store.create_workspace(session, changed).await).code,
+        "id_conflict"
+    );
+}
+
+/// Creation checks the genesis heads against the owner's chain, every
+/// signature under the signer's card, and one envelope per active card.
+pub async fn creation_checks_heads_signatures_and_recipients<B: Backend>(store: Store<B>) {
+    let (account, keys, links) = account(2);
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
+    let session = Session {
+        account,
+        device: keys[0].device(),
+    };
+    let cards: Vec<Card> = keys.iter().map(|k| k.card(account)).collect();
+
+    // A head off the account's chain.
+    let mut forked = links[..1].to_vec();
+    let stray = DeviceKeys::generate().expect("random");
+    forked.push(next_link(
+        &keys[0],
+        &head_of(&links[..1]),
+        LinkKind::AddDevice {
+            card: Nested(stray.card(account)),
+            offer: Digest::ZERO,
+        },
+    ));
+    let (body, _, _) = creation(&keys[0], &forked, &[cards[0].clone()]);
+    assert_eq!(
+        push_failure(store.create_workspace(session, body).await),
+        ("account_conflict", 0)
+    );
+
+    // A missing envelope for the second card.
+    let (body, _, _) = creation(&keys[0], &links, &cards[..1]);
+    assert_eq!(
+        push_failure(store.create_workspace(session, body).await).0,
+        "recipients_invalid"
+    );
+
+    // A broken signature on the genesis.
+    let (body, _, _) = creation(&keys[0], &links, &cards);
+    let mut records = PushRequest::from_bytes(&body).expect("decodes").records.0;
+    if let RecordRef::Policy(genesis) = &mut records[0] {
+        genesis.sig.0[63] ^= 1;
+    }
+    let broken = PushRequest {
+        records: List(records),
+    }
+    .to_bytes();
+    assert_eq!(
+        push_failure(store.create_workspace(session, broken).await),
+        ("signature_invalid", 0)
+    );
+
+    // Another device's session can't sign the genesis.
+    let (body, _, _) = creation(&keys[0], &links, &cards);
+    let other = Session {
+        account,
+        device: keys[1].device(),
+    };
+    assert_eq!(
+        push_failure(store.create_workspace(other, body).await),
+        ("forbidden", 0)
+    );
+}
+
+/// A push returns one receipt per entry, in request order.
+pub async fn push_returns_receipts_in_request_order<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let first = world.op(0, |_| {});
+    let second = world.op(0, |op| {
+        op.counter = 2;
+        op.previous = first.digest();
+    });
+    let response = world
+        .push(0, &[first.clone(), second.clone()])
+        .await
+        .expect("pushed");
+    assert_eq!(response.policy_revision, 1);
+    let receipts: Vec<(Digest, Id, u64)> = response
+        .receipts
+        .iter()
+        .map(|r| (r.record_digest, r.domain, r.seq))
+        .collect();
+    assert_eq!(
+        receipts,
+        vec![
+            (first.digest(), world.domain, 3),
+            (second.digest(), world.domain, 4)
+        ]
+    );
+    let page = world.pull(0, 2).await;
+    let pulled: Vec<Signed<Operation>> = page
+        .entries
+        .iter()
+        .map(|e| match &e.record {
+            EntryRecord::Operation(op) => op.clone(),
+            other => panic!("an operation, not {other:?}"),
+        })
+        .collect();
+    assert_eq!(pulled, vec![first, second]);
+}
+
+/// A push whose second record fails commits nothing and names that record.
+pub async fn push_commits_all_or_none<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let first = world.op(0, |_| {});
+    let bad = world.op(0, |op| {
+        op.counter = 2;
+        op.previous = Digest([7; 32]);
+    });
+    let result = world.push(0, &[first.clone(), bad]).await;
+    let refusal = refusal(result);
+    assert_eq!(refusal.code, "chain_conflict");
+    let detail =
+        PushFailureDetail::from_bytes(refusal.detail.as_deref().expect("detail")).expect("decodes");
+    assert_eq!(detail.record_index, 1);
+    let head = ChainConflictDetail::from_bytes(&detail.record_detail.expect("the head").0)
+        .expect("a chain_conflict detail");
+    // The head the second record met: the first record, before the
+    // failure rolled both back.
+    assert_eq!(
+        (head.domain, head.counter, head.record_digest),
+        (world.domain, 1, first.digest())
+    );
+    let page = world.pull(0, 0).await;
+    assert_eq!(page.head, 2, "nothing committed");
+    world
+        .push(0, &[first])
+        .await
+        .expect("the first record alone commits");
+}
+
+/// A retried operation gets its original receipt; another record at the
+/// same position gets `chain_conflict` with the server's head.
+pub async fn retry_returns_the_original_receipt<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let op = world.op(0, |_| {});
+    let first = world
+        .push(0, std::slice::from_ref(&op))
+        .await
+        .expect("pushed");
+    let again = world
+        .push(0, std::slice::from_ref(&op))
+        .await
+        .expect("retried");
+    assert_eq!(first, again);
+    assert_eq!(world.pull(0, 0).await.head, 3, "one copy");
+    let other = world.op(0, |o| {
+        o.rid = op.body.rid;
+        o.ciphertext = Bytes(vec![1; 272]);
+    });
+    let refusal = refusal(world.push(0, &[other]).await);
+    assert_eq!(refusal.code, "chain_conflict");
+    let detail =
+        PushFailureDetail::from_bytes(refusal.detail.as_deref().expect("detail")).expect("decodes");
+    let head =
+        ChainConflictDetail::from_bytes(&detail.record_detail.expect("head").0).expect("decodes");
+    assert_eq!((head.counter, head.record_digest), (1, op.digest()));
+}
+
+/// Each §13 check answers its own code.
+pub async fn operation_checks_answer_their_codes<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 2).await;
+    let base = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&base))
+        .await
+        .expect("base");
+    let patch = world.op(1, |op| op.rid = base.body.rid);
+    world
+        .push(1, &[patch])
+        .await
+        .expect("another device's patch");
+    let other = world.devices[1].id();
+    let next = |edit: &dyn Fn(&mut Operation)| {
+        world.op(0, |op| {
+            op.counter = 2;
+            op.previous = base.digest();
+            edit(op);
+        })
+    };
+    let generation = world.store.restore_generation();
+    let cases: Vec<(&str, Signed<Operation>)> = vec![
+        ("policy_stale", next(&|op| op.policy_revision = 2)),
+        ("policy_stale", next(&|op| op.policy_revision = 0)),
+        (
+            "policy_conflict",
+            next(&|op| op.policy_head = Digest([9; 32])),
+        ),
+        ("epoch_stale", next(&|op| op.epoch = 2)),
+        (
+            "policy_regressed",
+            next(&|op| op.generation = generation + 1),
+        ),
+        (
+            "policy_regressed",
+            next(&|op| op.generation = generation - 1),
+        ),
+        (
+            "checkpoint_unknown",
+            next(&|op| {
+                op.checkpoint_seq = 2;
+                op.checkpoint = Digest([5; 32]);
+            }),
+        ),
+        (
+            "checkpoint_unknown",
+            next(&|op| op.checkpoint = Digest([5; 32])),
+        ),
+        ("chain_conflict", next(&|op| op.previous = Digest([1; 32]))),
+        ("chain_conflict", next(&|op| op.counter = 1)),
+        (
+            "supersedes_unknown",
+            next(&|op| {
+                op.supersedes = Sorted::new(vec![Cover {
+                    device: op.device,
+                    counter: 9,
+                }])
+                .expect("sorted");
+            }),
+        ),
+        // A state operation that covers the other device's patch but
+        // leaves this device's own state operation live.
+        (
+            "supersedes_incomplete",
+            next(&|op| {
+                op.rid = base.body.rid;
+                op.supersedes = Sorted::new(vec![Cover {
+                    device: other,
+                    counter: 1,
+                }])
+                .expect("sorted");
+            }),
+        ),
+        (
+            "blob_incomplete",
+            next(&|op| {
+                op.blobs = Sorted::new(vec![Id([3; 16])]).expect("sorted");
+            }),
+        ),
+        (
+            "padding_invalid",
+            next(&|op| op.ciphertext = Bytes(vec![0; 300])),
+        ),
+        ("not_found", next(&|op| op.domain = Id([4; 16]))),
+    ];
+    for (code, op) in cases {
+        let result = world.push(0, &[op]).await;
+        assert!(result.is_err(), "{code}: {result:?}");
+        assert_eq!(push_failure(result), (code, 0), "{code}");
+    }
+    // A ciphertext above 270,352 bytes doesn't decode as an operation.
+    let big = next(&|op| op.ciphertext = Bytes(vec![0; MAX_OPERATION_CIPHERTEXT + 1]));
+    assert_eq!(push_failure(world.push(0, &[big]).await), ("too_large", 0));
+    // A signature that fails under the signer's card.
+    let mut forged = next(&|_| {});
+    forged.sig.0[0] ^= 1;
+    assert_eq!(
+        push_failure(world.push(0, &[forged]).await),
+        ("signature_invalid", 0)
+    );
+    // Another account's device, signed in but not in the workspace.
+    let (stranger, keys, links) = account(1);
+    world
+        .store
+        .append_account_links(links)
+        .await
+        .expect("chain");
+    let session = Session {
+        account: stranger,
+        device: keys[0].device(),
+    };
+    let op = Signed::sign(
+        Operation {
+            device: keys[0].device(),
+            ..next(&|_| {}).body
+        },
+        keys[0].signing(),
+    );
+    let body = PushRequest {
+        records: List(vec![RecordRef::Operation(op)]),
+    }
+    .to_bytes();
+    assert_eq!(
+        refusal(world.store.push(session, world.workspace, body).await).code,
+        "forbidden"
+    );
+    // Nothing above committed: the head is still the patch.
+    assert_eq!(world.pull(0, 0).await.head, 4);
+}
+
+/// An operation whose `supersedes` is empty on an existing `rid` counts as
+/// a patch, and a cover makes a state operation.
+pub async fn empty_supersedes_on_an_existing_rid_is_a_patch<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 2).await;
+    let base = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&base))
+        .await
+        .expect("base");
+    let patch = world.op(1, |op| op.rid = base.body.rid);
+    world
+        .push(1, std::slice::from_ref(&patch))
+        .await
+        .expect("patch");
+    let state = world.op(1, |op| {
+        op.rid = base.body.rid;
+        op.counter = 2;
+        op.previous = patch.digest();
+        op.supersedes = Sorted::new(vec![
+            Cover {
+                device: world.devices[0].id(),
+                counter: 1,
+            },
+            Cover {
+                device: world.devices[1].id(),
+                counter: 1,
+            },
+        ])
+        .expect("sorted");
+    });
+    world
+        .push(1, std::slice::from_ref(&state))
+        .await
+        .expect("state");
+    let classes: Vec<(OpClass, u64)> = world
+        .store
+        .live_at(world.workspace, base.body.rid, 4)
+        .await
+        .expect("live")
+        .into_iter()
+        .map(|(op, class)| (class, op.seq))
+        .collect();
+    assert_eq!(classes, vec![(OpClass::State, 3), (OpClass::Patch, 4)]);
+    let live: Vec<u64> = world
+        .store
+        .live_at(world.workspace, base.body.rid, u64::MAX)
+        .await
+        .expect("live")
+        .into_iter()
+        .map(|(op, _)| op.seq)
+        .collect();
+    assert_eq!(live, vec![5], "the state operation covers both");
+}
+
+/// Live patches past 8 MiB of ciphertext answer `snapshot_required`.
+pub async fn snapshot_required_past_the_patch_bytes<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 2).await;
+    let base = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&base))
+        .await
+        .expect("base");
+    let mut previous = Digest::ZERO;
+    let mut counter = 0;
+    let mut pushed = 0;
+    loop {
+        let mut batch = Vec::new();
+        for _ in 0..3 {
+            counter += 1;
+            let op = world.op(1, |op| {
+                op.rid = base.body.rid;
+                op.counter = counter;
+                op.previous = previous;
+                op.ciphertext = Bytes(vec![0; MAX_OPERATION_CIPHERTEXT]);
+            });
+            previous = op.digest();
+            batch.push(op);
+        }
+        match world.push(1, &batch).await {
+            Ok(_) => pushed += 3,
+            Err(error) => {
+                let (code, index) = push_failure(Err::<(), _>(error));
+                assert_eq!(code, "snapshot_required");
+                assert_eq!(pushed + index as u64, 31, "the 32nd patch passes 8 MiB");
+                return;
+            }
+        }
+        assert!(pushed < 60, "snapshot_required never came");
+    }
+}
+
+/// A 65th live state operation on one `rid` answers `conflict_limit`.
+pub async fn conflict_limit_past_64_live_states<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 65).await;
+    let base = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&base))
+        .await
+        .expect("base");
+    let covers = |device: Id| Sorted::new(vec![Cover { device, counter: 1 }]).expect("sorted");
+    // Devices 1 to 63 each write a branch that covers nothing of theirs but
+    // names the base, which stays covered once: each is a state operation.
+    for device in 1..64 {
+        let op = world.op(device, |op| {
+            op.rid = base.body.rid;
+            op.supersedes = covers(world.devices[0].id());
+        });
+        world.push(device, &[op]).await.expect("a branch");
+    }
+    let live = world
+        .store
+        .live_at(world.workspace, base.body.rid, u64::MAX)
+        .await
+        .expect("live");
+    assert_eq!(live.len(), 63);
+    let op = world.op(64, |op| {
+        op.rid = base.body.rid;
+        op.supersedes = covers(world.devices[0].id());
+    });
+    world.push(64, &[op]).await.expect("the 64th branch");
+    let op = world.op(0, |op| {
+        op.rid = base.body.rid;
+        op.counter = 2;
+        op.previous = base.digest();
+        op.supersedes = covers(world.devices[0].id());
+    });
+    assert_eq!(
+        push_failure(world.push(0, &[op]).await),
+        ("conflict_limit", 0)
+    );
+}
+
+/// A recorded head that takes a card out removes the device from the
+/// workspace, makes the domain due for rotation, and every other device's
+/// operation waits for that rotation.
+pub async fn removed_device_and_pending_rotation<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 2).await;
+    let before = world.op(1, |_| {});
+    world
+        .push(1, std::slice::from_ref(&before))
+        .await
+        .expect("written before the removal");
+    let removed = world.devices[1].id();
+    let head = world
+        .append_link(
+            0,
+            LinkKind::Remove {
+                device: removed,
+                keep: Sorted::default(),
+            },
+        )
+        .await;
+    let change = world.change(0, vec![head], PolicyKind::AccountHeads);
+    let domain = world.domain;
+    world.inject_policy(change, vec![domain], None).await;
+
+    // The removed device writes nothing and reads every domain as status 4.
+    let after = world.op(1, |op| {
+        op.counter = 2;
+        op.previous = before.digest();
+        op.policy_revision = 1;
+        op.policy_head = world.genesis.digest();
+    });
+    assert_eq!(refusal(world.push(1, &[after]).await).code, "forbidden");
+    let page = world.pull(1, 0).await;
+    assert_eq!(page.status, PageStatus::Forbidden);
+    page.check_shape().expect("an empty page");
+
+    // The remaining device waits for the rotation the removal requires.
+    let op = world.op(0, |_| {});
+    assert_eq!(
+        push_failure(world.push(0, &[op]).await),
+        ("rotation_pending", 0)
+    );
+    let old = world.op(0, |op| {
+        op.policy_revision = 1;
+        op.policy_head = world.genesis.digest();
+    });
+    assert_eq!(
+        push_failure(world.push(0, &[old]).await),
+        ("rotation_pending", 0)
+    );
+    let page = world.pull(0, 3).await;
+    assert_eq!(page.entries.len(), 1, "only the removal's policy entry");
+    assert!(matches!(&page.entries[0].record, EntryRecord::Policy(e) if e.revision == 2));
+}
+
+/// Write access and policy revisions: a device added at revision 2 couldn't
+/// write at revision 1, and a chain's revision never decreases.
+pub async fn policy_regression_and_stale_revisions<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let keys = DeviceKeys::generate().expect("random");
+    let head = world
+        .append_link(
+            0,
+            LinkKind::AddDevice {
+                card: Nested(keys.card(world.account)),
+                offer: Digest::ZERO,
+            },
+        )
+        .await;
+    let session = Session {
+        account: world.account,
+        device: keys.device(),
+    };
+    let token = random_token();
+    world
+        .store
+        .create_session(token, session)
+        .await
+        .expect("session");
+    world.devices.push(Device {
+        keys,
+        session,
+        token,
+    });
+    let change = world.change(0, vec![head], PolicyKind::AccountHeads);
+    let domain = world.domain;
+    world.inject_policy(change, vec![domain], None).await;
+
+    let early = world.op(1, |op| {
+        op.policy_revision = 1;
+        op.policy_head = world.genesis.digest();
+    });
+    assert_eq!(
+        push_failure(world.push(1, &[early]).await),
+        ("policy_stale", 0)
+    );
+    world
+        .push(1, &[world.op(1, |_| {})])
+        .await
+        .expect("at revision 2");
+
+    let first = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&first))
+        .await
+        .expect("at revision 2");
+    let regressed = world.op(0, |op| {
+        op.counter = 2;
+        op.previous = first.digest();
+        op.policy_revision = 1;
+        op.policy_head = world.genesis.digest();
+    });
+    assert_eq!(
+        push_failure(world.push(0, &[regressed]).await),
+        ("policy_regressed", 0)
+    );
+}
+
+/// A `rid` belongs to the domain that first took it; domains are keyed by
+/// workspace and ID.
+pub async fn rid_belongs_to_one_domain<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let op = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&op))
+        .await
+        .expect("pushed");
+    let restricted = Id::random().expect("random");
+    let change = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::CreateDomain {
+            domain: restricted,
+            marker_rid: Id::random().expect("random"),
+            access: manager(world.account),
+        },
+    );
+    let creator = &world.devices[0];
+    let epoch = Signed::sign(
+        build_epoch(
+            &EpochParams {
+                workspace: world.workspace,
+                domain: restricted,
+                epoch: 1,
+                previous: Digest::ZERO,
+                policy_revision: 2,
+                policy_head: change.digest(),
+                rotating_device: creator.id(),
+                recipients: BTreeSet::from([creator.id()]),
+            },
+            &SecretKey::random().expect("random"),
+            None,
+            Nonce::ZERO,
+        ),
+        creator.keys.signing(),
+    );
+    let domain = world.domain;
+    world
+        .inject_policy(change, vec![domain], Some((restricted, epoch)))
+        .await;
+    let moved = world.op(0, |o| {
+        o.domain = restricted;
+        o.rid = op.body.rid;
+    });
+    assert_eq!(
+        push_failure(world.push(0, &[moved]).await),
+        ("rid_domain_mismatch", 0)
+    );
+    let fresh = world.op(0, |o| o.domain = restricted);
+    let response = world.push(0, &[fresh]).await.expect("a new object there");
+    assert_eq!(
+        (response.receipts[0].domain, response.receipts[0].seq),
+        (restricted, 3),
+        "after the domain's policy and epoch entries"
+    );
+}
+
+/// Pushes from several devices at once all commit, in one order, with no
+/// busy error: each domain's sequences are dense and each device's chain
+/// rises with them.
+pub async fn concurrent_pushes_commit_in_one_order<B: Backend>(store: Store<B>) {
+    let world = Arc::new(World::new(store, 6).await);
+    let mut tasks = Vec::new();
+    for device in 0..6 {
+        let world = world.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut previous = Digest::ZERO;
+            for counter in 1..=20u64 {
+                let op = world.op(device, |op| {
+                    op.counter = counter;
+                    op.previous = previous;
+                });
+                previous = op.digest();
+                world.push(device, &[op]).await.expect("no push fails");
+            }
+        }));
+    }
+    for task in tasks {
+        task.await.expect("the task finishes");
+    }
+    let mut after = 0;
+    let mut seqs = Vec::new();
+    let mut counters: BTreeMap<Id, u64> = BTreeMap::new();
+    loop {
+        let page = world.pull(0, after).await;
+        for entry in page.entries.iter() {
+            seqs.push(entry.seq);
+            if let EntryRecord::Operation(op) = &entry.record {
+                let last = counters.entry(op.body.device).or_default();
+                assert_eq!(op.body.counter, *last + 1, "each chain rises with the log");
+                *last = op.body.counter;
+            }
+        }
+        after = page.complete_through;
+        if after == page.head {
+            break;
+        }
+    }
+    assert_eq!(seqs, (1..=122).collect::<Vec<u64>>());
+}
+
+/// Concurrent pushes where some fail: the failures commit nothing and every
+/// other push commits.
+pub async fn failed_pushes_leave_the_others_committed<B: Backend>(store: Store<B>) {
+    let world = Arc::new(World::new(store, 4).await);
+    let mut tasks = Vec::new();
+    for device in 0..4 {
+        let world = world.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut previous = Digest::ZERO;
+            let mut counter = 0;
+            let mut committed = Vec::new();
+            for round in 0..15u64 {
+                let good = world.op(device, |op| {
+                    op.counter = counter + 1;
+                    op.previous = previous;
+                });
+                let ops = if round % 3 == 0 {
+                    let bad = world.op(device, |op| {
+                        op.counter = counter + 2;
+                        op.previous = good.digest();
+                        op.epoch = 7;
+                    });
+                    vec![good.clone(), bad]
+                } else {
+                    vec![good.clone()]
+                };
+                match world.push(device, &ops).await {
+                    Ok(_) => {
+                        counter += 1;
+                        previous = good.digest();
+                        committed.push(good.digest());
+                    }
+                    Err(error) => assert_eq!(push_failure(Err::<(), _>(error)), ("epoch_stale", 1)),
+                }
+            }
+            committed
+        }));
+    }
+    let mut expected = BTreeSet::new();
+    for task in tasks {
+        expected.extend(task.await.expect("the task finishes"));
+    }
+    let mut found = BTreeSet::new();
+    let mut after = 0;
+    loop {
+        let page = world.pull(0, after).await;
+        for entry in page.entries.iter() {
+            if let EntryRecord::Operation(op) = &entry.record {
+                found.insert(op.digest());
+            }
+        }
+        after = page.complete_through;
+        if after == page.head {
+            break;
+        }
+    }
+    assert_eq!(found, expected);
+    assert_eq!(found.len(), 40, "10 of each device's 15 pushes commit");
+}
+
+/// One pull pages every listed domain; a domain the workspace doesn't hold
+/// gets status 5 while the others still return.
+pub async fn pull_pages_each_domain<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let response = world
+        .store
+        .pull(
+            world.devices[0].session,
+            world.workspace,
+            PullRequest {
+                cursors: List(vec![
+                    PullCursor {
+                        domain: Id([8; 16]),
+                        after: 0,
+                    },
+                    PullCursor {
+                        domain: world.domain,
+                        after: 1,
+                    },
+                ]),
+                wait_seconds: 0,
+            },
+        )
+        .await
+        .expect("pull");
+    let pages = response.pages.0;
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].status, PageStatus::NotFound);
+    assert!(pages[0].entries.is_empty());
+    pages[0].check_shape().expect("an empty page");
+    assert_eq!(pages[1].status, PageStatus::Ok);
+    assert_eq!(
+        pages[1].entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        vec![2]
+    );
+    pages[1].check_shape().expect("a page");
+}
+
+/// A pull returns at most 1 MiB and its `complete_through` says where to
+/// continue.
+pub async fn pull_stays_within_one_mebibyte<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let mut previous = Digest::ZERO;
+    let mut counter = 0;
+    for _ in 0..4 {
+        let mut batch = Vec::new();
+        for _ in 0..3 {
+            counter += 1;
+            let op = world.op(0, |op| {
+                op.counter = counter;
+                op.previous = previous;
+                op.ciphertext = Bytes(vec![0; MAX_OPERATION_CIPHERTEXT]);
+            });
+            previous = op.digest();
+            batch.push(op);
+        }
+        world.push(0, &batch).await.expect("pushed");
+    }
+    let mut after = 0;
+    let mut pages = 0;
+    let mut ops = 0;
+    loop {
+        let page = world.pull(0, after).await;
+        let response = sync_protocol::messages::PullResponse {
+            pages: List(vec![page.clone()]),
+        };
+        assert!(
+            response.to_bytes().len() <= MAX_BODY,
+            "a pull stays within 1 MiB"
+        );
+        page.check_shape().expect("a page");
+        ops += page
+            .entries
+            .iter()
+            .filter(|e| matches!(e.record, EntryRecord::Operation(_)))
+            .count();
+        pages += 1;
+        after = page.complete_through;
+        if after == page.head {
+            break;
+        }
+    }
+    assert_eq!(ops, 12);
+    assert!(pages >= 4, "12 operations of 270 KB take at least 4 pulls");
+}
+
+/// A pull that waits wakes when another device's push commits.
+pub async fn pull_wakes_when_another_device_pushes<B: Backend>(store: Store<B>) {
+    let world = Arc::new(World::new(store, 2).await);
+    let waiting = {
+        let world = world.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let response = world
+                .store
+                .pull(
+                    world.devices[1].session,
+                    world.workspace,
+                    PullRequest {
+                        cursors: List(vec![PullCursor {
+                            domain: world.domain,
+                            after: 2,
+                        }]),
+                        wait_seconds: 20,
+                    },
+                )
+                .await
+                .expect("pull");
+            (started.elapsed(), response)
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let op = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&op))
+        .await
+        .expect("pushed");
+    let (elapsed, response) = waiting.await.expect("the pull returns");
+    assert!(elapsed < Duration::from_secs(10), "woke after {elapsed:?}");
+    let page = &response.pages[0];
+    assert_eq!(page.entries.len(), 1);
+    assert!(matches!(&page.entries[0].record, EntryRecord::Operation(o) if *o == op));
+}
+
+/// `chain/{device}/{counter}` returns the record at that counter or the
+/// next above it, and `heads/{device}` answers `not_found` for a device
+/// with no record.
+pub async fn chain_positions_and_heads<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 2).await;
+    let first = world.op(0, |_| {});
+    // The device skipped counters 2 to 1,024 after a restart.
+    let next = world.op(0, |op| {
+        op.counter = 1_025;
+        op.previous = first.digest();
+    });
+    world
+        .push(0, &[first.clone(), next.clone()])
+        .await
+        .expect("pushed");
+    let session = world.devices[1].session;
+    let device = world.devices[0].id();
+    let record = |entry: sync_protocol::messages::Entry| match entry.record {
+        EntryRecord::Operation(op) => (entry.seq, op),
+        other => panic!("an operation, not {other:?}"),
+    };
+    let at = world
+        .store
+        .chain_record(session, world.workspace, world.domain, device, 1)
+        .await;
+    assert_eq!(record(at.expect("found")), (3, first));
+    let skipped = world
+        .store
+        .chain_record(session, world.workspace, world.domain, device, 2)
+        .await;
+    assert_eq!(record(skipped.expect("found")), (4, next.clone()));
+    let past = world
+        .store
+        .chain_record(session, world.workspace, world.domain, device, 1_026)
+        .await;
+    assert_eq!(refusal(past).code, "not_found");
+    let head = world
+        .store
+        .chain_head(session, world.workspace, world.domain, device)
+        .await
+        .expect("a head");
+    assert_eq!(
+        (head.counter, head.record_digest, head.seq),
+        (1_025, next.digest(), 4)
+    );
+    let none = world
+        .store
+        .chain_head(
+            session,
+            world.workspace,
+            world.domain,
+            world.devices[1].id(),
+        )
+        .await;
+    assert_eq!(refusal(none).code, "not_found");
+}
+
+/// `keys` serves epoch records without recipients and the caller's own
+/// envelopes; `epochs/{epoch}` walks `previous` links.
+pub async fn keys_and_epochs_serve_records_without_recipients<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 3).await;
+    let device = &world.devices[2];
+    let keys = world
+        .store
+        .keys(device.session, world.workspace, 0, device.id())
+        .await
+        .expect("keys");
+    assert_eq!(keys.head_key_seq, 4, "the epoch record and three envelopes");
+    let records: Vec<&KeyRecord> = keys.entries.iter().map(|e| &e.record).collect();
+    assert_eq!(
+        records.len(),
+        2,
+        "the epoch record and this device's envelope"
+    );
+    let KeyRecord::Epoch(epoch) = records[0] else {
+        panic!("the epoch record first");
+    };
+    let KeyRecord::Envelope(envelope) = records[1] else {
+        panic!("then the envelope");
+    };
+    assert_eq!(envelope.body.recipient, device.id());
+    let key = sync_key_envelope::v2::unwrap(
+        &envelope.body,
+        &device.keys,
+        &device.keys.card(world.account),
+    )
+    .expect("unwraps");
+    assert_eq!(key, world.epoch_key);
+    assert!(sync_protocol::keys::key_matches(&epoch.body, &key));
+    let other = world
+        .store
+        .keys(device.session, world.workspace, 0, world.devices[0].id())
+        .await;
+    assert_eq!(refusal(other).code, "forbidden");
+    let epochs = world
+        .store
+        .epochs(device.session, world.workspace, world.domain, 1)
+        .await
+        .expect("epochs");
+    assert_eq!(epochs.epochs.len(), 1);
+    assert_eq!(&epochs.epochs[0].0, epoch);
+    let missing = world
+        .store
+        .epochs(device.session, world.workspace, world.domain, 2)
+        .await;
+    assert_eq!(refusal(missing).code, "not_found");
+}
+
+/// The access list naming `account` as a manager.
+pub fn manager(account: Id) -> sync_protocol::records::AccessList {
+    Sorted::new(vec![Access {
+        account,
+        level: Level::Manage,
+    }])
+    .expect("one entry")
+}

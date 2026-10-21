@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE domains SET epoch = ?3, epoch_digest = ?4, epoch_policy_revision = ?5\n             WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "a7c2fdcf6c29e114424bebe9850b664f4036641c7e1f03f4c208966fa852b780"
+}

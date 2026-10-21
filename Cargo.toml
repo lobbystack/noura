@@ -19,6 +19,7 @@ members = [
     "crates/sync-key-envelope",
     "crates/sync-protocol",
     "crates/sync-server",
+    "crates/sync-store",
     "crates/sync-store-postgres",
     "crates/sync-store-sqlite",
     "crates/workspace-format",
@@ -38,6 +39,8 @@ rust-version = "1.99"
 
 [workspace.dependencies]
 aho-corasick = "1"
+# The sync server's HTTP layer, on hyper's HTTP/1 server. MIT.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "matched-path", "tokio"] }
 # Adds Noura to the apps that open at login: a launch agent on macOS, the
 # Run key on Windows and an XDG autostart entry on Linux.
 auto-launch = "0.6.0"

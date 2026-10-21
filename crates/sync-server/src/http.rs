@@ -1,0 +1,301 @@
+//! The HTTP API of §26: the core routes, error bodies with their statuses,
+//! and the `Noura-Restore-Generation` header on every response. The server
+//! serves no `/v1` route.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::{FromRequestParts, MatchedPath, Path, RawQuery, Request, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::request::Parts;
+use axum::http::{HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use sync_protocol::codec::{Bytes, Decode, Encode, Text};
+use sync_protocol::messages::{
+    ErrorBody, MAX_BODY, MEDIA_TYPE, PullRequest, RESTORE_GENERATION_HEADER,
+};
+use sync_protocol::types::{Id, from_decimal};
+use sync_store::{Backend, Error, Refusal, Session, Store};
+
+/// A failed request: a refusal the protocol names, or a store failure.
+pub struct ApiError(pub Error);
+
+impl From<Error> for ApiError {
+    fn from(error: Error) -> Self {
+        Self(error)
+    }
+}
+
+fn refused(code: &'static str, message: &str) -> ApiError {
+    ApiError(Error::Refused(Refusal::new(code, message)))
+}
+
+/// The cause of a store failure, carried from the handler to the request
+/// log and never sent.
+#[derive(Clone)]
+struct InternalCause(String);
+
+fn encoded(status: StatusCode, body: Vec<u8>) -> Response {
+    let mut response = (status, body).into_response();
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(MEDIA_TYPE));
+    response
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        match self.0 {
+            Error::Refused(refusal) => {
+                let status = StatusCode::from_u16(refusal.status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                encoded(status, refusal.body().to_bytes())
+            }
+            Error::Internal(cause) => {
+                let body = ErrorBody {
+                    code: Text("internal".into()),
+                    message: Text("the server failed to finish the request".into()),
+                    retry_after_seconds: None,
+                    detail: None::<Bytes>,
+                };
+                let mut response = encoded(StatusCode::INTERNAL_SERVER_ERROR, body.to_bytes());
+                response.extensions_mut().insert(InternalCause(cause));
+                response
+            }
+        }
+    }
+}
+
+fn ok(value: &impl Encode) -> Response {
+    encoded(StatusCode::OK, value.to_bytes())
+}
+
+/// The signed-in device a bearer token names.
+pub struct Auth(pub Session);
+
+impl<B: Backend> FromRequestParts<Arc<Store<B>>> for Auth {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        store: &Arc<Store<B>>,
+    ) -> Result<Self, Self::Rejection> {
+        let token = parts
+            .headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .ok_or_else(|| refused("unauthorized", "no valid session"))?;
+        Ok(Auth(store.session(token).await?))
+    }
+}
+
+async fn body(body: Body) -> Result<Vec<u8>, ApiError> {
+    axum::body::to_bytes(body, MAX_BODY)
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|_| refused("too_large", "the body exceeds 1 MiB"))
+}
+
+fn decode<T: Decode>(bytes: &[u8]) -> Result<T, ApiError> {
+    T::from_bytes(bytes).map_err(|e| {
+        refused(
+            e.kind.server_code(),
+            &format!("the body doesn't decode: {e}"),
+        )
+    })
+}
+
+fn id(text: &str) -> Result<Id, ApiError> {
+    Id::from_base64url(text)
+        .ok()
+        .filter(|id| !id.is_zero())
+        .ok_or_else(|| refused("bad_request", "an ID isn't 22 characters of base64url"))
+}
+
+fn number(text: &str) -> Result<u64, ApiError> {
+    from_decimal(text).map_err(|_| refused("bad_request", "a number isn't unsigned decimal"))
+}
+
+/// A query's parameters. A repeated name is a bad request.
+fn query(raw: Option<&str>) -> Result<HashMap<&str, &str>, ApiError> {
+    let mut parameters = HashMap::new();
+    for pair in raw.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if parameters.insert(name, value).is_some() {
+            return Err(refused("bad_request", "a query names a parameter twice"));
+        }
+    }
+    Ok(parameters)
+}
+
+async fn limits<B: Backend>(State(store): State<Arc<Store<B>>>) -> Response {
+    ok(&store.limits())
+}
+
+async fn list_workspaces<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.workspaces(session).await?))
+}
+
+async fn create_workspace<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let bytes = body(request).await?;
+    Ok(ok(&store.create_workspace(session, bytes).await?))
+}
+
+async fn policy<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Path(workspace): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    let parameters = query(raw.as_deref())?;
+    let after = parameters.get("after").map_or(Ok(0), |a| number(a))?;
+    Ok(ok(&store.policy(session, id(&workspace)?, after).await?))
+}
+
+async fn keys<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Path(workspace): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    let parameters = query(raw.as_deref())?;
+    let after = parameters.get("after").map_or(Ok(0), |a| number(a))?;
+    let recipient = parameters
+        .get("recipient")
+        .map_or(Ok(session.device), |r| id(r))?;
+    Ok(ok(&store
+        .keys(session, id(&workspace)?, after, recipient)
+        .await?))
+}
+
+async fn epochs<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Path((workspace, domain, epoch)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store
+        .epochs(session, id(&workspace)?, id(&domain)?, number(&epoch)?)
+        .await?))
+}
+
+async fn push<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Path(workspace): Path<String>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let workspace = id(&workspace)?;
+    let bytes = body(request).await?;
+    Ok(ok(&store.push(session, workspace, bytes).await?))
+}
+
+async fn pull<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Path(workspace): Path<String>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let workspace = id(&workspace)?;
+    let request: PullRequest = decode(&body(request).await?)?;
+    Ok(ok(&store.pull(session, workspace, request).await?))
+}
+
+async fn chain<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Path((workspace, domain, device, counter)): Path<(String, String, String, String)>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store
+        .chain_record(
+            session,
+            id(&workspace)?,
+            id(&domain)?,
+            id(&device)?,
+            number(&counter)?,
+        )
+        .await?))
+}
+
+async fn heads<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Path((workspace, domain, device)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store
+        .chain_head(session, id(&workspace)?, id(&domain)?, id(&device)?)
+        .await?))
+}
+
+async fn not_found() -> ApiError {
+    refused("not_found", "no such route")
+}
+
+fn request_id() -> String {
+    let bytes: [u8; 8] = sync_protocol::crypto::random_array().unwrap_or_default();
+    sync_protocol::types::to_hex(&bytes)
+}
+
+/// Stamps the restore generation on every response and logs each request
+/// by its route template, request ID and status, plus the cause of a store
+/// failure.
+async fn stamp_and_log(generation: u64, request: Request, next: Next) -> Response {
+    let id = request_id();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| "unmatched".to_owned(), |p| p.as_str().to_owned());
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(RESTORE_GENERATION_HEADER, HeaderValue::from(generation));
+    if let Some(InternalCause(cause)) = response.extensions_mut().remove::<InternalCause>() {
+        tracing::error!(request = %id, route = %route, cause = %cause, "store failure");
+    }
+    tracing::info!(request = %id, route = %route, status = response.status().as_u16(), "request");
+    response
+}
+
+/// The routes of §26 that the server serves so far.
+pub fn router<B: Backend>(store: Arc<Store<B>>) -> Router {
+    let generation = store.restore_generation();
+    Router::new()
+        .route("/v2/limits", get(limits::<B>))
+        .route(
+            "/v2/workspaces",
+            get(list_workspaces::<B>).post(create_workspace::<B>),
+        )
+        .route("/v2/workspaces/{w}/policy", get(policy::<B>))
+        .route("/v2/workspaces/{w}/keys", get(keys::<B>))
+        .route("/v2/workspaces/{w}/ops", post(push::<B>))
+        .route("/v2/workspaces/{w}/pull", post(pull::<B>))
+        .route(
+            "/v2/workspaces/{w}/domains/{d}/epochs/{epoch}",
+            get(epochs::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/domains/{d}/chain/{device}/{counter}",
+            get(chain::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/domains/{d}/heads/{device}",
+            get(heads::<B>),
+        )
+        .fallback(not_found)
+        .method_not_allowed_fallback(not_found)
+        .with_state(store)
+        .layer(middleware::from_fn(move |request: Request, next: Next| {
+            stamp_and_log(generation, request, next)
+        }))
+}

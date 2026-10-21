@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT restore_generation, secret_check FROM server WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "restore_generation",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "server",
+            "name": "restore_generation"
+          }
+        }
+      },
+      {
+        "name": "secret_check",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "server",
+            "name": "secret_check"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6c9ea1aba0f6f725d69eba483d97076e6cd43ecc453f9b0ee88551a398066a24"
+}

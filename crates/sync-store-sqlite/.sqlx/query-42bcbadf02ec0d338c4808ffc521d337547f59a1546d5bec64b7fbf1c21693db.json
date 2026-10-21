@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO covers (workspace, rid, device, counter, by_seq, domain)\n                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "42bcbadf02ec0d338c4808ffc521d337547f59a1546d5bec64b7fbf1c21693db"
+}
