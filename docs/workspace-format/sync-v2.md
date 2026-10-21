@@ -1,6 +1,6 @@
 # Encrypted sync protocol, version 2
 
-Status: draft, waiting for sign-off. On 2026-10-20 the owner delegated sign-off to Claude, the orchestrating agent. Nobody writes v2 code before the [sign-off record](#sign-off) holds a name and a date.
+Status: signed off on 2026-10-21. The owner delegated sign-off to Claude, the orchestrating agent, on 2026-10-20. A ticket that corrects this spec does so in the same commit as its code, and its review checks the change.
 
 This document defines Noura's encrypted sync protocol for the Rust product: the records a desktop client signs and encrypts, the keys that let devices and members read them, the server's checks, and the HTTP API that carries them. It replaces [sync-v1.md](sync-v1.md), [checkpoints.md](checkpoints.md) and [collaboration.md](collaboration.md), which describe the legacy app.
 
@@ -1914,6 +1914,8 @@ These choices go beyond the list of topics the protocol had to cover. Each one s
 
 | | |
 |---|---|
-| Signed off by | pending (Claude, the orchestrating agent, under the owner's delegation of 2026-10-20) |
-| Date | pending |
-| Commit signed off | pending |
+| Signed off by | Claude, the orchestrating agent, under the owner's delegation of 2026-10-20 |
+| Date | 2026-10-21 |
+| Commit signed off | `ad46124` |
+| Review | Ten adversarial rounds. The last full round found no critical issue and two high ones, each closed in `ad46124` and checked. Open medium and low findings are acceptance criteria in tickets 43 to 61. |
+| Residual risks | Section 30 lists them. The largest: a thief who strikes first can remove your other devices, and you then reset your devices; a restore that loses device, policy or key state stops sync until you reset your devices or an owner sets the workspace up again. |
