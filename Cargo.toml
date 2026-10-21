@@ -15,6 +15,7 @@ members = [
     "crates/plugin-host/test-plugins/uses-files",
     "crates/plugin-sdk",
     "crates/plugins/hello",
+    "crates/spell-check",
     "crates/sync-key-envelope",
     "crates/sync-protocol",
     "crates/sync-server",
@@ -140,6 +141,9 @@ url = "2"
 # Generates plugin-sdk's Rust bindings for `noura:plugin`.
 wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
 libc = "0.2"
+# ISpellChecker, the Windows spell checking API, which windows-sys leaves out
+# because it is COM.
+windows = "0.62.2"
 windows-sys = "0.61.2"
 # The winit release eframe 0.37 runs on, for its macOS and Windows event loop
 # options.

@@ -1,5 +1,5 @@
-//! Seam 1: appearance, text size, line width and zoom, kept for this
-//! device in the app data folder.
+//! Seam 1: appearance, text size, line width, zoom and spell check, kept
+//! for this device in the app data folder.
 
 mod support;
 
@@ -34,6 +34,7 @@ fn a_new_device_matches_the_system_theme_at_default_text_size_and_full_zoom() {
             text_size: TextSize::Default,
             line_width: LineWidth::Default,
             zoom: 100,
+            spell_check: true,
         }
     );
     assert_eq!(app.preferences().zoom_factor(), 1.0);
@@ -182,6 +183,41 @@ fn one_unreadable_choice_falls_back_alone() {
             text_size: TextSize::Default,
             line_width: LineWidth::Narrow,
             zoom: 150,
+            spell_check: true,
         }
     );
+}
+
+#[test]
+fn turning_spell_check_off_survives_a_relaunch_and_leaves_the_workspace_alone() {
+    let fixture = Fixture::new(&[("Plan.md", b"plan")]);
+    let mut app = fixture.app();
+    let before = workspace_bytes(&fixture);
+    assert!(
+        app.preferences().spell_check,
+        "a new device checks spelling"
+    );
+
+    app.set_spell_check(false);
+    let mut app = relaunch(app, &fixture);
+    assert!(!app.preferences().spell_check);
+
+    app.set_spell_check(true);
+    let app = relaunch(app, &fixture);
+    assert!(app.preferences().spell_check);
+    assert_eq!(workspace_bytes(&fixture), before);
+}
+
+#[test]
+fn an_unreadable_spell_check_choice_falls_back_to_checking() {
+    let fixture = Fixture::new(&[]);
+    drop(fixture.app());
+    let file = fixture.app_data.path().join("preferences.json");
+    std::fs::write(&file, b"{\"zoom\": 125, \"spellCheck\": \"no\"}").unwrap();
+
+    let mut app = App::launch(fixture.app_data.path());
+    settle(&mut app);
+
+    assert!(app.preferences().spell_check);
+    assert_eq!(app.preferences().zoom, 125);
 }

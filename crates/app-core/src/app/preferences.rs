@@ -1,11 +1,12 @@
-//! Appearance, text size, line width and zoom. Each change applies at
-//! once and is saved for this device.
+//! Appearance, text size, line width, zoom and spell check. Each change
+//! applies at once and is saved for this device.
 
 use super::{App, Change};
 use crate::{Appearance, LineWidth, Preferences, TextSize, preferences::ACTUAL_SIZE};
 
 impl App {
-    /// This device's appearance, text size, line width and zoom.
+    /// This device's appearance, text size, line width, zoom and spell
+    /// check.
     pub fn preferences(&self) -> &Preferences {
         &self.preferences
     }
@@ -22,6 +23,11 @@ impl App {
     /// Use `width` for every open note from now on.
     pub fn set_line_width(&mut self, line_width: LineWidth) {
         self.change_preferences(|preferences| preferences.line_width = line_width);
+    }
+
+    /// Mark misspelled words in every open note, or stop.
+    pub fn set_spell_check(&mut self, on: bool) {
+        self.change_preferences(|preferences| preferences.spell_check = on);
     }
 
     /// Zoom in one level, up to 200%.

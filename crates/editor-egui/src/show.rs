@@ -598,7 +598,7 @@ impl MdEdit {
             ));
         }
         for d in floating_deco {
-            ui.painter().hline(d.x, d.y, Stroke::new(1.0_f32, d.color));
+            d.paint(ui.painter());
         }
     }
 
@@ -865,8 +865,7 @@ impl MdEdit {
 
         // strikethroughs and underlines painted on top of text
         for deco in std::mem::take(&mut self.renderer.deco_lines) {
-            ui.painter()
-                .hline(deco.x, deco.y, Stroke::new(1.0_f32, deco.color));
+            deco.paint(ui.painter());
         }
 
         // A reorder selects the dragged section; its handles would clutter

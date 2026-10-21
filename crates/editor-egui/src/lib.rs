@@ -30,6 +30,7 @@ pub mod resolvers;
 mod scroll_content;
 pub mod seq;
 pub mod show;
+mod spelling;
 pub mod style;
 mod theme;
 pub(crate) mod widget;
@@ -39,6 +40,7 @@ pub mod widgets;
 mod tests;
 
 pub use input::Event;
+pub use spelling::SpellChecker;
 pub use widgets::glyphon_render::{
     GlyphonRenderCallbackResources, GlyphonRendererCallback, TextBufferArea, install_font_system,
     register_font_system, register_render_callback_resources,
@@ -75,6 +77,8 @@ pub struct PaintedSpan {
     /// Whether a line runs under the text, as under underlined text or an
     /// input method's marked text.
     pub underlined: bool,
+    /// Whether the spell checker flagged the text.
+    pub misspelled: bool,
 }
 
 /// A region painted this frame that a platform deciding touches itself
@@ -150,6 +154,9 @@ pub struct MdRender {
 
     // capabilities
     pub embeds: Box<dyn EmbedResolver>,
+    /// Marks misspelled words, when the app hands the editor a spell
+    /// checker.
+    pub(crate) spelling: spelling::Spelling,
 
     // caches
     pub layout_cache: LayoutCache,
@@ -412,6 +419,7 @@ impl MdRender {
             single_line: false,
             search_range: None,
             embeds: Box::new(()),
+            spelling: Default::default(),
             layout_cache: Default::default(),
             width: Default::default(),
             width_seq: 0,
@@ -539,6 +547,13 @@ impl Editor {
         self.edit.renderer.doc.link_resolver = resolver;
     }
 
+    /// Checks spelling with `checker`, or stops checking it with `None`.
+    pub fn set_spell_checker(&mut self, checker: Option<std::sync::Arc<dyn SpellChecker>>) {
+        let renderer = &mut self.edit.renderer;
+        renderer.spelling.set_checker(checker);
+        renderer.layout_cache.clear();
+    }
+
     /// Replaces the embed resolver, which loads and paints images.
     pub fn set_embed_resolver(&mut self, resolver: Box<dyn EmbedResolver>) {
         self.edit.renderer.embeds = resolver;
@@ -590,6 +605,7 @@ impl Editor {
                     .style_stack
                     .last()
                     .is_some_and(|style| style.format.underline),
+                misspelled: fragment.style_stack.iter().any(|style| style.misspelled),
             })
             .collect()
     }

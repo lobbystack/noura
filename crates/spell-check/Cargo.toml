@@ -1,0 +1,16 @@
+[package]
+name = "spell-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The system spell checkers: NSSpellChecker on macOS and ISpellChecker on
+# Windows. Linux has none, and the crate builds empty there.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["std", "NSSpellChecker"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSRange", "NSString"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, features = ["Win32_Globalization", "Win32_System_Com"] }

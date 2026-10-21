@@ -214,6 +214,8 @@ pub struct StyleInfo {
     /// Paint the background as a compact capsule hugging the text
     /// middle (the fold `···` chip) instead of filling the row.
     pub chip: bool,
+    /// The spell checker flagged this text: a wavy line runs under it.
+    pub misspelled: bool,
 }
 
 impl StyleInfo {
@@ -222,6 +224,7 @@ impl StyleInfo {
             format,
             source_range,
             chip: false,
+            misspelled: false,
         }
     }
 }
@@ -232,6 +235,33 @@ pub struct DecoLine {
     pub x: std::ops::RangeInclusive<f32>,
     pub y: f32,
     pub color: egui::Color32,
+    /// A wavy line, as under a misspelled word, instead of a straight one.
+    pub wavy: bool,
+}
+
+impl DecoLine {
+    pub fn paint(&self, painter: &egui::Painter) {
+        let stroke = egui::Stroke::new(1.0, self.color);
+        if !self.wavy {
+            painter.hline(self.x.clone(), self.y, stroke);
+            return;
+        }
+        // A zigzag one point high, a wave every three points.
+        const STEP: f32 = 1.5;
+        let (start, end) = (*self.x.start(), *self.x.end());
+        let mut points = Vec::new();
+        let mut x = start;
+        let mut up = true;
+        while x <= end {
+            let y = if up { self.y - 0.75 } else { self.y + 0.75 };
+            points.push(egui::pos2(x, y));
+            x += STEP;
+            up = !up;
+        }
+        if points.len() >= 2 {
+            painter.add(egui::Shape::line(points, stroke));
+        }
+    }
 }
 
 /// One visual row of a wrap unit, emitted by `build_rows`.
@@ -2269,13 +2299,24 @@ impl MdRender {
                             x: x.clone(),
                             y: baseline_top + row_height * 0.55,
                             color: fmt.color,
+                            wavy: false,
                         });
                     }
                     if fmt.underline {
                         self.deco_lines.push(DecoLine {
-                            x,
+                            x: x.clone(),
                             y: baseline_top + row_height * 0.95,
                             color: fmt.color,
+                            wavy: false,
+                        });
+                    }
+                    if frag.style_stack.iter().any(|style| style.misspelled) {
+                        use crate::palette::ThemeExt as _;
+                        self.deco_lines.push(DecoLine {
+                            x,
+                            y: baseline_top + row_height * 1.05,
+                            color: self.ctx.get_lb_theme().fg().red,
+                            wavy: true,
                         });
                     }
                 }

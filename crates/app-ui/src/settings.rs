@@ -39,6 +39,7 @@ pub(crate) fn show(
     app: &mut App,
     view: &mut SettingsView,
     picker: &mut dyn FolderPicker,
+    spelling: bool,
 ) {
     let Some(settings) = app.settings().cloned() else {
         if view.open {
@@ -79,7 +80,7 @@ pub(crate) fn show(
                     .id_salt(("settings-content", &settings.section))
                     .auto_shrink(false)
                     .show(ui, |ui| {
-                        ui.vertical(|ui| content(ui, app, &settings, view, picker))
+                        ui.vertical(|ui| content(ui, app, &settings, view, picker, spelling))
                     });
             });
         });
@@ -131,6 +132,7 @@ fn content(
     settings: &Settings,
     view: &mut SettingsView,
     picker: &mut dyn FolderPicker,
+    spelling: bool,
 ) {
     let title = app
         .settings_sections()
@@ -144,7 +146,7 @@ fn content(
     notice(ui, settings);
     match settings.section.as_str() {
         settings_section::GENERAL => general(ui, app, settings),
-        settings_section::EDITOR => editor(ui, app),
+        settings_section::EDITOR => editor(ui, app, spelling),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
         settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
@@ -269,7 +271,9 @@ enum Zoom {
     Reset,
 }
 
-fn editor(ui: &mut Ui, app: &mut App) {
+/// The Editor section. `spelling` says whether the system has a spell
+/// checker to turn on.
+fn editor(ui: &mut Ui, app: &mut App, spelling: bool) {
     let current = *app.preferences();
     let mut text_size = current.text_size;
     field(ui, "Text size", Role::RadioGroup, |ui| {
@@ -298,6 +302,17 @@ fn editor(ui: &mut Ui, app: &mut App) {
     });
     if line_width != current.line_width {
         app.set_line_width(line_width);
+    }
+
+    if spelling {
+        let mut spell_check = current.spell_check;
+        field(ui, "Spelling", Role::Group, |ui| {
+            muted(ui, "Marks misspelled words in notes on this computer.");
+            ui.checkbox(&mut spell_check, "Check spelling");
+        });
+        if spell_check != current.spell_check {
+            app.set_spell_check(spell_check);
+        }
     }
 }
 

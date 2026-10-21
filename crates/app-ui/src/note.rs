@@ -2,10 +2,10 @@
 //! live-preview editor, and the properties panel beside it for Noura's own
 //! notes.
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use app_core::{App, Property, PropertyValue, TabId};
-use editor_egui::{Editor, MdConfig};
+use editor_egui::{Editor, MdConfig, SpellChecker};
 use egui::{
     Button, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
     TextEdit, Ui, UiBuilder,
@@ -28,6 +28,9 @@ pub(crate) struct NoteView {
     notes: HashMap<TabId, OpenNote>,
     /// The note this frame drew.
     drawn: Option<TabId>,
+    /// The system's spell checker, which notes use while the Check
+    /// spelling setting is on.
+    pub(crate) spell_checker: Option<Arc<dyn SpellChecker>>,
 }
 
 /// One note's editor and the fields around it.
@@ -45,6 +48,8 @@ struct OpenNote {
     /// tree, leaves the keyboard where it was. A click puts the caret in
     /// the text.
     give_focus_back: Option<Id>,
+    /// Whether the editor checks spelling.
+    checks_spelling: bool,
 }
 
 impl NoteView {
@@ -238,8 +243,19 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             } else {
                 ui.memory(|memory| memory.focused())
             },
+            checks_spelling: false,
         }
     });
+    // The Check spelling setting reaches every open note.
+    let spelling = app
+        .preferences()
+        .spell_check
+        .then(|| view.spell_checker.clone())
+        .flatten();
+    if spelling.is_some() != note.checks_spelling {
+        note.checks_spelling = spelling.is_some();
+        note.editor.set_spell_checker(spelling);
+    }
     // A save brought the file in line with the editor, or merged an edit
     // made outside Noura.
     if let Some(sync) = app.take_note_sync(tab) {
