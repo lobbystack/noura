@@ -2,7 +2,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, PoisonError, RwLock},
 };
 
 use local_core::{ManifestUpdateInput, WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
@@ -13,13 +13,13 @@ use crate::{
     recents::{RecentStore, RecentWorkspace},
 };
 
-/// An open workspace.
+/// An open workspace. Every window of the app shares it.
 pub struct Workspace {
-    engine: WorkspaceEngine,
+    engine: Arc<WorkspaceEngine>,
     system: Arc<dyn System>,
     id: String,
-    /// The display name, which a rename changes while background searches
-    /// share the workspace.
+    /// The display name, which any window can change while the other
+    /// windows and background searches share the workspace.
     name: RwLock<String>,
     root: String,
 }
@@ -39,7 +39,7 @@ impl Workspace {
             engine.set_system_trash(Some(Arc::new(move |path: &Path| trash.trash(path))));
         }
         Ok(Self {
-            engine,
+            engine: Arc::new(engine),
             system,
             id: manifest.id,
             name: RwLock::new(manifest.name),
@@ -55,7 +55,7 @@ impl Workspace {
     pub fn name(&self) -> String {
         self.name
             .read()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
@@ -66,6 +66,11 @@ impl Workspace {
 
     pub(crate) fn engine(&self) -> &WorkspaceEngine {
         &self.engine
+    }
+
+    /// The engine, for background work that outlives a borrow.
+    pub(crate) fn shared_engine(&self) -> Arc<WorkspaceEngine> {
+        self.engine.clone()
     }
 
     /// The revision of the manifest on disk, and the name in it.
@@ -97,7 +102,7 @@ impl Workspace {
 
     /// Show the name in the manifest on disk, as after an outside edit.
     pub(crate) fn set_name(&self, name: String) {
-        *self.name.write().unwrap_or_else(|error| error.into_inner()) = name;
+        *self.name.write().unwrap_or_else(PoisonError::into_inner) = name;
     }
 
     pub(crate) fn system(&self) -> &dyn System {
@@ -110,6 +115,28 @@ impl Workspace {
             name: self.name(),
             path: self.root.clone(),
         }
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Workspace {
+    /// Test hook: make the native watcher fail from now on.
+    pub fn force_watch_fault(&self, fault: crate::WatchFault) {
+        self.engine.force_watch_fault(fault);
+    }
+
+    /// Test hook: deliver one native watcher event that names these
+    /// workspace-relative paths, as the platform would.
+    pub fn inject_watch_event(&self, relative_paths: &[impl AsRef<Path>]) {
+        let root = self.engine.root();
+        self.engine
+            .inject_watch_event(relative_paths.iter().map(|path| root.join(path)).collect());
+    }
+
+    /// Test hook: deliver one native watcher event that asks for a full
+    /// rescan, as the platform would.
+    pub fn inject_watch_rescan_request(&self) {
+        self.engine.inject_watch_rescan_request();
     }
 }
 
@@ -341,10 +368,15 @@ fn check_identity(engine: &WorkspaceEngine, saved_id: &str, path: &str) -> Resul
     if engine.manifest().id == saved_id {
         return Ok(());
     }
-    Err(AppError::new(
+    Err(identity_changed(path))
+}
+
+/// A saved folder at `path` holds a workspace other than the saved one.
+pub(crate) fn identity_changed(path: &str) -> AppError {
+    AppError::new(
         "workspace_identity_changed",
         format!("A different workspace is now at {path}."),
-    ))
+    )
 }
 
 fn folder_name(folder: &Path) -> String {

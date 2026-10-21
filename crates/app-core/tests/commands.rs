@@ -137,11 +137,7 @@ fn registering_a_command_with_a_taken_shortcut_fails() {
 fn no_two_commands_share_an_id_or_a_shortcut() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app();
-    for (id, title) in [
-        (app_core::INBOX_PAGE, "Inbox"),
-        ("tasks", "Tasks"),
-        ("calendar", "Calendar"),
-    ] {
+    for (id, title) in [("tasks", "Tasks"), ("calendar", "Calendar")] {
         app.register_page(id, title);
     }
 
@@ -230,10 +226,10 @@ fn mod_1_shows_the_inbox_mod_2_files_and_mod_3_to_9_the_other_pages_in_rail_orde
     let plugins = [
         "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
     ];
+    // The Inbox is the kernel's page, so it has Mod-1 without registering.
     for title in plugins {
         app.register_page(&title.to_lowercase(), title);
     }
-    app.register_page(INBOX_PAGE, "Inbox");
 
     let shown_by =
         |app: &App, digit: usize| command_for(app, KeyPress::new(Key::DIGITS[digit]).with_cmd());

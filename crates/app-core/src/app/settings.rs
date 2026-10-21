@@ -154,7 +154,7 @@ impl App {
             Some(revision) => Ok(revision),
             None => workspace.manifest_revision().map(|(revision, _)| revision),
         };
-        let Some(workspace) = &self.workspace else {
+        let Some(workspace) = self.workspace.clone() else {
             return false;
         };
         match revision.and_then(|revision| workspace.save_name(name, &revision)) {
@@ -163,13 +163,15 @@ impl App {
                     settings.manifest_revision = Some(revision);
                     settings.notice = None;
                 }
-                match self.service.remember(workspace) {
+                match self.service.remember(&workspace) {
                     Ok(recents) => self.recents = recents,
                     Err(error) => {
                         tracing::warn!(code = %error.code, "the renamed workspace's recent entry wasn't saved");
                     }
                 }
                 self.listeners.emit(Change::Recents);
+                // The other windows show the new name too.
+                self.recents_seen = self.session.recents_changed(self.key);
                 self.listeners.emit(Change::Settings);
                 true
             }
@@ -193,12 +195,13 @@ impl App {
     /// Read the open workspace's manifest again: show the name in it, and
     /// return its revision.
     fn read_manifest(&mut self) -> Option<String> {
-        let workspace = self.workspace.as_deref()?;
+        let workspace = self.workspace.clone()?;
         match workspace.manifest_revision() {
             Ok((revision, name)) => {
                 if name != workspace.name() {
                     workspace.set_name(name);
                     self.listeners.emit(Change::Recents);
+                    self.recents_seen = self.session.recents_changed(self.key);
                 }
                 Some(revision)
             }

@@ -12,8 +12,8 @@ use std::{
 };
 
 use app_core::{
-    App, AppError, FIRST_UPDATE_CHECK, PendingSaves, PendingUpdate, PendingWrite, Screen, System,
-    UpdateError, UpdateErrorKind, UpdateSource, UpdateStatus,
+    App, AppError, Change, FIRST_UPDATE_CHECK, PendingSaves, PendingUpdate, PendingWrite, Screen,
+    System, UpdateError, UpdateErrorKind, UpdateSource, UpdateStatus,
 };
 
 const HOURS: u64 = 60 * 60;
@@ -297,7 +297,7 @@ fn noura_checks_five_seconds_after_launch_and_then_every_six_hours() {
     let first = launched + Duration::from_secs(5);
     settle(&mut app, first);
     assert_eq!(source.checks(), 1);
-    assert_eq!(app.updates().status(), &UpdateStatus::UpToDate);
+    assert_eq!(app.updates().status(), UpdateStatus::UpToDate);
 
     settle(&mut app, first + Duration::from_secs(6 * HOURS - 1));
     assert_eq!(source.checks(), 1, "no second check before 6 hours");
@@ -325,7 +325,7 @@ fn a_newer_release_downloads_in_the_background_and_installs_nothing_until_restar
     }
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Downloading {
+        UpdateStatus::Downloading {
             version: "0.3.0".into()
         }
     );
@@ -335,7 +335,7 @@ fn a_newer_release_downloads_in_the_background_and_installs_nothing_until_restar
     settle(&mut app, first);
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Ready {
+        UpdateStatus::Ready {
             version: "0.3.0".into(),
             notes: None,
             problem: None,
@@ -360,16 +360,16 @@ fn an_unreachable_feed_fails_and_check_for_updates_tries_again() {
     settle(&mut app, first);
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Failed {
+        UpdateStatus::Failed {
             message: "Couldn't reach the update server. Check your connection.".into()
         }
     );
 
     *source.check_error.lock().unwrap() = None;
     app.check_for_updates();
-    assert_eq!(app.updates().status(), &UpdateStatus::Checking);
+    assert_eq!(app.updates().status(), UpdateStatus::Checking);
     settle(&mut app, first);
-    assert_eq!(app.updates().status(), &UpdateStatus::UpToDate);
+    assert_eq!(app.updates().status(), UpdateStatus::UpToDate);
     assert_eq!(source.checks(), 2);
 }
 
@@ -420,7 +420,7 @@ fn restart_waits_for_a_held_write_to_reach_disk_before_installing() {
     app.restart_to_update();
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Installing {
+        UpdateStatus::Installing {
             version: "0.3.0".into()
         }
     );
@@ -444,7 +444,7 @@ fn restart_waits_for_a_held_write_to_reach_disk_before_installing() {
     );
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Restarting {
+        UpdateStatus::Restarting {
             version: "0.3.0".into()
         }
     );
@@ -465,7 +465,7 @@ fn a_failed_write_keeps_this_version_running_and_says_why() {
 
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Ready {
+        UpdateStatus::Ready {
             version: "0.3.0".into(),
             notes: None,
             problem: Some(
@@ -541,7 +541,7 @@ fn a_failed_save_keeps_this_version_running_and_says_why() {
 
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Ready {
+        UpdateStatus::Ready {
             version: "0.3.0".into(),
             notes: None,
             problem: Some(
@@ -629,7 +629,7 @@ fn restart_waits_for_a_write_that_starts_while_the_update_installs() {
     );
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Restarting {
+        UpdateStatus::Restarting {
             version: "0.3.0".into()
         }
     );
@@ -650,7 +650,7 @@ fn a_write_that_fails_while_the_update_installs_keeps_this_version_running_and_s
 
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Ready {
+        UpdateStatus::Ready {
             version: "0.3.0".into(),
             notes: None,
             problem: Some(
@@ -761,6 +761,82 @@ fn a_failed_write_follows_its_file_when_you_rename_its_folder() {
     assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
 }
 
+/// Every window shows the one update service, and Restart in one window
+/// waits for a write another window started.
+#[test]
+fn every_window_shows_the_update_and_restart_waits_for_writes_from_any_window() {
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    open_workspace(&mut app, folder.path(), now);
+    let mut second = app.new_window().expect("a workspace is open");
+    assert_eq!(second.updates().status(), app.updates().status());
+    assert!(second.updates().offers_restart());
+    assert_eq!(second.updates().current_version(), "0.2.0");
+    let plan = folder.path().join("Notes/Plan.md");
+    let write = second.pending_writes().begin("Notes/Plan.md");
+    let release = held_write(write, &plan, b"new");
+
+    app.restart_to_update();
+    std::thread::sleep(Duration::from_millis(200));
+    second.poll_at(now);
+    assert!(matches!(
+        second.updates().status(),
+        UpdateStatus::Installing { .. }
+    ));
+    assert_eq!(
+        source.calls(),
+        ["check", "download"],
+        "nothing installs yet"
+    );
+
+    release.send(()).unwrap();
+    settle(&mut second, now);
+    assert_eq!(
+        source.calls(),
+        ["check", "download", "install saw new", "restart"]
+    );
+    assert!(matches!(
+        app.updates().status(),
+        UpdateStatus::Restarting { .. }
+    ));
+}
+
+#[test]
+fn the_windows_check_for_updates_once_between_them() {
+    let source = FakeSource::default();
+    let (mut app, launched, _app_data) = launch_with(&source);
+    let folder = tempfile::tempdir().unwrap();
+    open_workspace(&mut app, folder.path(), launched);
+    let mut second = app.new_window().expect("a workspace is open");
+    let first = launched + FIRST_UPDATE_CHECK;
+
+    second.poll_at(first);
+    app.poll_at(first);
+    settle(&mut app, first);
+    settle(&mut second, first);
+
+    assert_eq!(source.checks(), 1);
+    assert_eq!(second.updates().status(), UpdateStatus::UpToDate);
+}
+
+#[test]
+fn later_in_one_window_hides_the_offer_in_every_window() {
+    let (mut app, _source, now, _app_data, folder) = ready_to_restart();
+    open_workspace(&mut app, folder.path(), now);
+    let second = app.new_window().expect("a workspace is open");
+    let (sender, changes) = channel();
+    second.subscribe(move |change| {
+        let _ = sender.send(change);
+    });
+
+    app.hide_update_offer();
+
+    assert!(!second.updates().offers_restart());
+    assert!(
+        changes.try_iter().any(|change| change == Change::Update),
+        "the other window wakes to hide the offer"
+    );
+}
+
 #[test]
 fn noura_waits_for_running_writes_before_it_quits() {
     let app_data = tempfile::tempdir().unwrap();
@@ -795,7 +871,7 @@ fn a_build_without_updates_says_why_and_never_checks() {
 
     assert_eq!(
         app.updates().status(),
-        &UpdateStatus::Unavailable {
+        UpdateStatus::Unavailable {
             reason: reason.into()
         }
     );

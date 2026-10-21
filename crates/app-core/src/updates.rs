@@ -4,22 +4,19 @@
 //!
 //! The desktop app supplies an [`UpdateSource`] that talks to the feed;
 //! tests supply a fake. Checks and downloads run on background threads, and
-//! [`crate::App::poll_at`] applies their results.
+//! [`crate::App::poll_at`] applies their results. Every window shares one
+//! update service, and each one hears when its status changes.
 
 use std::{
     fmt,
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         mpsc::{Receiver, Sender, TryRecvError, channel},
     },
     time::{Duration, Instant},
 };
 
-use crate::{
-    AppError, PendingSaves, PendingWrites,
-    app::{Change, Listeners},
-    writes::WriteFailure,
-};
+use crate::{AppError, PendingSaves, PendingWrites, app::Change, writes::WriteFailure};
 
 /// How long after launch the first check runs.
 pub const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(5);
@@ -140,9 +137,21 @@ enum Event {
     Restarting,
 }
 
-/// The update service's state. [`crate::App`] owns it and exposes its
-/// actions.
-pub struct Updates {
+/// Wakes every window with a change.
+pub(crate) type Notify = Arc<dyn Fn(Change) + Send + Sync>;
+
+/// The update service. Every window of the app shares it, so clones share
+/// one state. [`crate::App`] exposes its actions.
+#[derive(Clone)]
+pub struct Updates(Arc<Shared>);
+
+struct Shared {
+    state: Mutex<State>,
+    writes: PendingWrites,
+    notify: Notify,
+}
+
+struct State {
     current_version: String,
     status: UpdateStatus,
     source: Option<Arc<dyn UpdateSource>>,
@@ -155,97 +164,129 @@ pub struct Updates {
     /// Results from the background thread, while one runs.
     events: Option<Receiver<Event>>,
     offer_hidden: bool,
-    writes: PendingWrites,
-    listeners: Listeners,
+    /// The status or the offer changed, and the windows haven't heard yet.
+    changed: bool,
 }
 
 impl Updates {
-    pub(crate) fn new(writes: PendingWrites, listeners: Listeners) -> Self {
-        Self {
-            current_version: env!("CARGO_PKG_VERSION").to_owned(),
-            status: UpdateStatus::Unavailable {
-                reason: "This build doesn't update itself.".to_owned(),
-            },
-            source: None,
-            next_check: None,
-            ready: None,
-            installed: false,
-            events: None,
-            offer_hidden: false,
+    /// The update service for the windows `notify` wakes, waiting for
+    /// `writes` before a restart.
+    pub(crate) fn new(writes: PendingWrites, notify: Notify) -> Self {
+        Self(Arc::new(Shared {
+            state: Mutex::new(State {
+                current_version: env!("CARGO_PKG_VERSION").to_owned(),
+                status: UpdateStatus::Unavailable {
+                    reason: "This build doesn't update itself.".to_owned(),
+                },
+                source: None,
+                next_check: None,
+                ready: None,
+                installed: false,
+                events: None,
+                offer_hidden: false,
+                changed: false,
+            }),
             writes,
-            listeners,
-        }
+            notify,
+        }))
     }
 
-    pub fn status(&self) -> &UpdateStatus {
-        &self.status
+    /// Run `change` on the state, then wake every window if the status or
+    /// the offer changed. The windows hear it after the lock is free.
+    fn change<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
+        let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let result = change(&mut state);
+        let changed = std::mem::take(&mut state.changed);
+        drop(state);
+        if changed {
+            (self.0.notify)(Change::Update);
+        }
+        result
+    }
+
+    fn read<R>(&self, read: impl FnOnce(&State) -> R) -> R {
+        read(&self.0.state.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    pub fn status(&self) -> UpdateStatus {
+        self.read(|state| state.status.clone())
     }
 
     /// The running app's version.
-    pub fn current_version(&self) -> &str {
-        &self.current_version
+    pub fn current_version(&self) -> String {
+        self.read(|state| state.current_version.clone())
     }
 
     /// When the next scheduled check runs, if updates are on.
     pub fn next_check(&self) -> Option<Instant> {
-        self.next_check
+        self.read(|state| state.next_check)
     }
 
     /// Whether a check, download or install is running.
     pub fn is_busy(&self) -> bool {
-        self.events.is_some()
+        self.read(|state| state.events.is_some())
     }
 
     /// Whether to offer Restart outside Settings: an update is ready and
     /// the person hasn't put the offer off.
     pub fn offers_restart(&self) -> bool {
-        matches!(self.status, UpdateStatus::Ready { .. }) && !self.offer_hidden
+        self.read(|state| matches!(state.status, UpdateStatus::Ready { .. }) && !state.offer_hidden)
     }
 
     pub(crate) fn enable(
-        &mut self,
+        &self,
         current_version: &str,
         source: Arc<dyn UpdateSource>,
         launched: Instant,
     ) {
-        self.current_version = current_version.to_owned();
-        self.source = Some(source);
-        self.next_check = Some(launched + FIRST_UPDATE_CHECK);
-        self.set(UpdateStatus::Idle);
-    }
-
-    pub(crate) fn disable(&mut self, current_version: &str, reason: &str) {
-        self.current_version = current_version.to_owned();
-        self.source = None;
-        self.next_check = None;
-        self.ready = None;
-        self.installed = false;
-        self.set(UpdateStatus::Unavailable {
-            reason: reason.to_owned(),
+        self.change(|state| {
+            state.current_version = current_version.to_owned();
+            state.source = Some(source);
+            state.next_check = Some(launched + FIRST_UPDATE_CHECK);
+            state.set(UpdateStatus::Idle);
         });
     }
 
-    pub(crate) fn hide_offer(&mut self) {
-        if !self.offer_hidden {
-            self.offer_hidden = true;
-            self.listeners.emit(Change::Update);
-        }
+    pub(crate) fn disable(&self, current_version: &str, reason: &str) {
+        self.change(|state| {
+            state.current_version = current_version.to_owned();
+            state.source = None;
+            state.next_check = None;
+            state.ready = None;
+            state.installed = false;
+            state.set(UpdateStatus::Unavailable {
+                reason: reason.to_owned(),
+            });
+        });
+    }
+
+    pub(crate) fn hide_offer(&self) {
+        self.change(|state| {
+            if !state.offer_hidden {
+                state.offer_hidden = true;
+                state.changed = true;
+            }
+        });
     }
 
     /// Start a check now. Does nothing while one runs or an update waits
     /// for a restart.
-    pub(crate) fn check(&mut self) {
+    pub(crate) fn check(&self) {
+        self.change(|state| self.start_check(state));
+    }
+
+    fn start_check(&self, state: &mut State) {
         let checkable = matches!(
-            self.status,
+            state.status,
             UpdateStatus::Idle | UpdateStatus::UpToDate | UpdateStatus::Failed { .. }
         );
-        let Some(source) = self.source.clone() else {
+        let Some(source) = state.source.clone() else {
             return;
         };
-        if !checkable || self.events.is_some() {
+        if !checkable || state.events.is_some() {
             return;
         }
-        let started = self.spawn("update-check", move |send| match source.check() {
+        let started = self.spawn(state, "update-check", move |send| match source.check() {
             Ok(None) => send(Event::UpToDate),
             Ok(Some(mut update)) => {
                 send(Event::Downloading(update.version().to_owned()));
@@ -257,7 +298,7 @@ impl Updates {
             Err(error) => send(Event::Failed(error)),
         });
         if started {
-            self.set(UpdateStatus::Checking);
+            state.set(UpdateStatus::Checking);
         }
     }
 
@@ -265,24 +306,28 @@ impl Updates {
     /// install the downloaded update, save and wait again for changes made
     /// meanwhile, and restart. A save, a write or an install that fails
     /// keeps this version running and says why.
-    pub(crate) fn restart(&mut self, saves: Arc<dyn PendingSaves>) {
-        let UpdateStatus::Ready { version, .. } = &self.status else {
+    pub(crate) fn restart(&self, saves: Arc<dyn PendingSaves>) {
+        self.change(|state| self.start_restart(state, saves));
+    }
+
+    fn start_restart(&self, state: &mut State, saves: Arc<dyn PendingSaves>) {
+        let UpdateStatus::Ready { version, .. } = &state.status else {
             return;
         };
         let version = version.clone();
-        let Some(source) = self.source.clone() else {
+        let Some(source) = state.source.clone() else {
             return;
         };
-        if self.events.is_some() {
+        if state.events.is_some() {
             return;
         }
-        let Some(mut update) = self.ready.take() else {
+        let Some(mut update) = state.ready.take() else {
             return;
         };
-        let writes = self.writes.clone();
+        let writes = self.0.writes.clone();
         let installing = version.clone();
-        let mut installed = self.installed;
-        let started = self.spawn("update-install", move |send| {
+        let mut installed = state.installed;
+        let started = self.spawn(state, "update-install", move |send| {
             if !installed {
                 if let Err(problem) = settle(saves.as_ref(), &writes) {
                     send(Event::NotRestarted {
@@ -325,9 +370,9 @@ impl Updates {
             }
         });
         if started {
-            self.set(UpdateStatus::Installing { version });
+            state.set(UpdateStatus::Installing { version });
         } else {
-            self.set(UpdateStatus::Failed {
+            state.set(UpdateStatus::Failed {
                 message: "Noura couldn't start installing. Quit Noura and open it again."
                     .to_owned(),
             });
@@ -335,20 +380,59 @@ impl Updates {
     }
 
     /// Start a check that is due at `now`, and apply finished background
-    /// work. Returns whether anything changed.
-    pub(crate) fn poll(&mut self, now: Instant) -> bool {
-        let mut changed = false;
-        if let Some(next) = self.next_check
-            && now >= next
-        {
-            self.next_check = Some(now + UPDATE_CHECK_INTERVAL);
-            let before = self.status.clone();
-            self.check();
-            changed |= self.status != before;
-        }
-        changed | self.apply_events()
+    /// work. Returns whether anything changed. Every window polls; the
+    /// first to see a result applies it, and every window hears of it.
+    pub(crate) fn poll(&self, now: Instant) -> bool {
+        self.change(|state| {
+            let mut changed = false;
+            if let Some(next) = state.next_check
+                && now >= next
+            {
+                state.next_check = Some(now + UPDATE_CHECK_INTERVAL);
+                let before = state.status.clone();
+                self.start_check(state);
+                changed |= state.status != before;
+            }
+            changed | state.apply_events()
+        })
     }
 
+    /// Run `work` on a background thread that reports through `send`.
+    /// Returns whether the thread started.
+    fn spawn(
+        &self,
+        state: &mut State,
+        name: &str,
+        work: impl FnOnce(&dyn Fn(Event)) + Send + 'static,
+    ) -> bool {
+        let (sender, receiver): (Sender<Event>, Receiver<Event>) = channel();
+        let notify = self.0.notify.clone();
+        let spawned = std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                let send = |event| {
+                    // The app may have closed meanwhile; nothing is waiting then.
+                    let _ = sender.send(event);
+                    notify(Change::WorkFinished);
+                };
+                work(&send);
+                drop(sender);
+                notify(Change::WorkFinished);
+            });
+        match spawned {
+            Ok(_) => {
+                state.events = Some(receiver);
+                true
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not start the update thread");
+                false
+            }
+        }
+    }
+}
+
+impl State {
     fn apply_events(&mut self) -> bool {
         let Some(receiver) = &self.events else {
             return false;
@@ -380,6 +464,10 @@ impl Updates {
             self.set(UpdateStatus::Failed {
                 message: "Noura couldn't finish updating. Try again later.".to_owned(),
             });
+        }
+        if changed {
+            // Busy or not, the windows show it.
+            self.changed = true;
         }
         changed
     }
@@ -442,36 +530,7 @@ impl Updates {
 
     fn set(&mut self, status: UpdateStatus) {
         self.status = status;
-        self.listeners.emit(Change::Update);
-    }
-
-    /// Run `work` on a background thread that reports through `send`.
-    /// Returns whether the thread started.
-    fn spawn(&mut self, name: &str, work: impl FnOnce(&dyn Fn(Event)) + Send + 'static) -> bool {
-        let (sender, receiver): (Sender<Event>, Receiver<Event>) = channel();
-        let listeners = self.listeners.clone();
-        let spawned = std::thread::Builder::new()
-            .name(name.to_owned())
-            .spawn(move || {
-                let send = |event| {
-                    // The app may have closed meanwhile; nothing is waiting then.
-                    let _ = sender.send(event);
-                    listeners.emit(Change::WorkFinished);
-                };
-                work(&send);
-                drop(sender);
-                listeners.emit(Change::WorkFinished);
-            });
-        match spawned {
-            Ok(_) => {
-                self.events = Some(receiver);
-                true
-            }
-            Err(error) => {
-                tracing::error!(%error, "could not start the update thread");
-                false
-            }
-        }
+        self.changed = true;
     }
 }
 

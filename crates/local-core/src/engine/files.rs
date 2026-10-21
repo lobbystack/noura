@@ -29,6 +29,7 @@ impl WorkspaceEngine {
             ));
         }
         let path = resolve_for_write(&self.root, &relative_path, "raw_asset_read")?;
+        ensure_downloaded(&path, &relative_path, "raw_asset_read")?;
         let metadata = std::fs::metadata(&path)
             .map_err(|error| CoreError::io(error, "raw_asset_read", Some(&relative_path)))?;
         if metadata.len() as i64 > max_bytes {
@@ -46,8 +47,16 @@ impl WorkspaceEngine {
     /// Create a folder and the folders above it. Every new folder's entry is
     /// durable before this returns.
     pub fn create_folder(&self, relative_path: &str) -> Result<()> {
-        let path = resolve_for_write(&self.root, relative_path, "folder_create")?;
-        create_folders(&path, "folder_create")
+        let operation = "folder_create";
+        let path = resolve_for_write(&self.root, relative_path, operation)?;
+        let relative = normalized_relative_path(&self.root, &path, operation)?;
+        // Held until the change is announced, so no walk lists the folder
+        // before then and takes it for another app's.
+        let _guard = self.write_lock(operation)?;
+        self.expect_own_folder(&relative);
+        create_folders(&path, operation).inspect_err(|_| self.forget_own_write(&relative))?;
+        self.announce_own_change(&[&relative]);
+        Ok(())
     }
 
     pub fn list_folders(&self) -> Result<Vec<crate::FolderEntry>> {
@@ -70,6 +79,9 @@ impl WorkspaceEngine {
     /// files are canonical, so when the index can't be updated the listing
     /// still shows them, with what the index last knew about each.
     pub fn list_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
+        // The walk and the index read below see each write of ours either
+        // before it starts or after its index update, never in between.
+        let _changes = self.hold_changes();
         let scan = if self.needs_reconcile() {
             match self.reconcile_walk(&HashSet::new(), EventSource::Reconciliation, true) {
                 Ok(scan) => scan,
@@ -89,7 +101,7 @@ impl WorkspaceEngine {
             .lock()
             .map_err(|_| lock_error("files_list"))?
             .workspace_entry_metadata()?;
-        let unindexed = scan
+        let mut unindexed = scan
             .entries
             .iter()
             .filter(|entry| {
@@ -100,9 +112,13 @@ impl WorkspaceEngine {
             })
             .map(|entry| entry.relative_path.clone())
             .collect::<Vec<_>>();
+        // A file left before its watcher event arrived, or the watcher
+        // missed it. When it moved, its ID would otherwise show at both
+        // paths until the next full walk.
+        unindexed.extend(scan.removed(metadata.keys()));
         if !unindexed.is_empty() {
-            // A file appeared before its watcher event arrived. Index just
-            // those files instead of failing the listing.
+            // A file appeared or left before its watcher event arrived.
+            // Index just those files instead of failing the listing.
             match self.reconcile_paths(&unindexed, EventSource::Reconciliation) {
                 Ok(()) => {
                     metadata = self
@@ -170,6 +186,8 @@ impl WorkspaceEngine {
     pub fn move_folder(&self, from: &str, to: &str) -> Result<()> {
         let source = resolve_for_write(&self.root, from, "folder_move")?;
         let destination = resolve_for_write(&self.root, to, "folder_move")?;
+        // Held until the walk below has indexed the move.
+        let _changes = self.hold_changes();
         let guard = self.write_lock("folder_move")?;
         self.collaboration_guard_tree_mutation(from)?;
         self.collaboration_guard_tree_mutation(to)?;
@@ -189,14 +207,10 @@ impl WorkspaceEngine {
                 "folder_move",
             ));
         }
-        if let Some(parent) = destination.parent() {
-            create_folders(parent, "folder_move")?;
-        }
-        std::fs::rename(&source, &destination)
-            .map_err(|error| CoreError::io(error, "folder_move", Some(to)))?;
-        sync_rename_parents(&source, &destination, "folder_move")?;
+        self.move_item(&source, &destination, "folder_move")?;
         drop(guard);
         self.reconcile_after_change("folder_move");
+        self.announce_own_change(&[from, to]);
         Ok(())
     }
 
@@ -208,6 +222,8 @@ impl WorkspaceEngine {
         let operation = "file_move";
         let source = resolve_for_write(&self.root, from, operation)?;
         let destination = resolve_for_write(&self.root, to, operation)?;
+        // Held until the walk below has indexed the move.
+        let _changes = self.hold_changes();
         let guard = self.write_lock(operation)?;
         self.collaboration_guard_file_mutation(from)?;
         self.collaboration_guard_file_mutation(to)?;
@@ -228,15 +244,32 @@ impl WorkspaceEngine {
                 operation,
             ));
         }
-        if let Some(parent) = destination.parent() {
-            create_folders(parent, operation)?;
-        }
-        std::fs::rename(&source, &destination)
-            .map_err(|error| CoreError::io(error, operation, Some(to)))?;
-        sync_rename_parents(&source, &destination, operation)?;
+        self.move_item(&source, &destination, operation)?;
         drop(guard);
         self.reconcile_after_change(operation);
+        self.announce_own_change(&[from, to]);
         Ok(())
+    }
+
+    /// Move the file or folder at `source` to `destination`, creating the
+    /// folders it lands in, once the watcher's reports of the move are
+    /// expected as this engine's own. The caller holds the write lock.
+    fn move_item(&self, source: &Path, destination: &Path, operation: &str) -> Result<()> {
+        let from = normalized_relative_path(&self.root, source, operation)?;
+        let to = normalized_relative_path(&self.root, destination, operation)?;
+        let noted = self.expect_own_move(&from, Some(&to));
+        let moved = destination
+            .parent()
+            .map_or(Ok(()), |parent| create_folders(parent, operation))
+            .and_then(|()| {
+                std::fs::rename(source, destination)
+                    .map_err(|error| CoreError::io(error, operation, Some(&to)))
+            });
+        if let Err(error) = moved {
+            self.forget_own_writes(&noted);
+            return Err(error);
+        }
+        sync_rename_parents(source, destination, operation)
     }
 
     /// Move a file or folder to the trash. Returns the `.noura/trash` path
@@ -252,13 +285,26 @@ impl WorkspaceEngine {
                 operation,
             ));
         }
+        // Held until the walk below has indexed the removal.
+        let _changes = self.hold_changes();
         let guard = self.write_lock(operation)?;
         self.collaboration_guard_tree_mutation(relative_path)?;
         std::fs::symlink_metadata(&source)
             .map_err(|error| CoreError::io(error, operation, Some(relative_path)))?;
-        let trashed = self.discard(&source, relative_path, operation)?;
+        let relative = normalized_relative_path(&self.root, &source, operation)?;
+        let noted = self.expect_own_move(&relative, None);
+        let trashed = self
+            .discard(&source, relative_path, operation)
+            .inspect_err(|_| {
+                // A failed move that still took the item away keeps the
+                // entries: the item is gone as expected.
+                if std::fs::symlink_metadata(&source).is_ok() {
+                    self.forget_own_writes(&noted);
+                }
+            })?;
         drop(guard);
         self.reconcile_after_change(operation);
+        self.announce_own_change(&[&relative]);
         Ok(trashed)
     }
 

@@ -6,7 +6,10 @@ use std::{
     collections::VecDeque,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -78,7 +81,7 @@ pub fn harness_on(
     let mut app = App::launch_with(app_data, system);
     register(&mut app);
     let ui = NouraUi::new(app, Box::new(picker));
-    let mut builder = Harness::builder().with_size([1000.0, 700.0]);
+    let mut builder = builder();
     if mac {
         builder = builder.allow_missing_glyphs();
     }
@@ -97,18 +100,28 @@ pub fn harness_for(
     let mut app = App::launch_with(app_data, FakeSystem::new(platform));
     register(&mut app);
     let ui = NouraUi::new(app, Box::new(FakePicker::default()));
-    Harness::builder()
-        .with_size([1000.0, 700.0])
+    builder()
         .allow_missing_glyphs()
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
 }
 
+/// A harness of the window's size. The watch thread announces each change
+/// to the files, Noura's own included, a moment after it lands, and the
+/// window draws once more to show it, so a run may take a few more frames
+/// than kittest's default allows.
+pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
+    Harness::builder()
+        .with_size([1000.0, 700.0])
+        .with_max_steps(12)
+}
+
 /// A system that records what Noura asks of it. Its trash refuses, so
 /// trashed items land in the workspace's trash folder, where tests can
-/// find them.
+/// find them. Its clock says 9 am until a test sets another hour.
 pub struct FakeSystem {
     platform: Platform,
     pub calls: Mutex<Vec<String>>,
+    hour: AtomicU8,
 }
 
 impl FakeSystem {
@@ -116,11 +129,17 @@ impl FakeSystem {
         Arc::new(Self {
             platform,
             calls: Mutex::new(Vec::new()),
+            hour: AtomicU8::new(9),
         })
     }
 
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// Set the system's clock to `hour` o'clock.
+    pub fn set_hour(&self, hour: u8) {
+        self.hour.store(hour, Ordering::SeqCst);
     }
 
     fn record(&self, call: String) {
@@ -169,6 +188,10 @@ impl System for FakeSystem {
     fn open_file(&self, path: &Path) -> io::Result<()> {
         self.record(format!("open file {}", path.display()));
         Ok(())
+    }
+
+    fn local_hour(&self) -> u8 {
+        self.hour.load(Ordering::SeqCst)
     }
 }
 

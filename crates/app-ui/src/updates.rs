@@ -17,8 +17,8 @@ use crate::{
 /// updating stands, or Restart to update once a new version is ready.
 pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
     let updates = app.updates();
-    let version = updates.current_version().to_owned();
-    let status = updates.status().clone();
+    let version = updates.current_version();
+    let status = updates.status();
     let busy = updates.is_busy();
     let palette = Palette::of(ui.ctx());
 
@@ -107,7 +107,7 @@ pub(crate) fn restart_offer(ui: &mut Ui, app: &mut App) {
     }
     let UpdateStatus::Ready {
         version, problem, ..
-    } = app.updates().status().clone()
+    } = app.updates().status()
     else {
         return;
     };

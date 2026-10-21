@@ -315,6 +315,25 @@ fn the_third_party_licenses_link_opens_the_list_this_package_ships() {
     assert_eq!(app.settings().unwrap().notice, None);
 }
 
+/// Every window's About links to the list, including windows opened
+/// after the desktop app found it.
+#[test]
+fn a_new_window_opens_the_same_license_list() {
+    let fixture = Fixture::new(&[]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    let package = tempfile::tempdir().unwrap();
+    let list = package.path().join("THIRD_PARTY_LICENSES.html");
+    std::fs::write(&list, "<!doctype html>").unwrap();
+    app.set_third_party_licenses(list.clone());
+
+    let mut window = app.new_window().expect("a workspace is open");
+    window.open_settings_at(settings_section::ABOUT);
+    window.open_about_link(&THIRD_PARTY_LICENSES);
+
+    assert_eq!(system.calls(), [Call::OpenFile(list)]);
+}
+
 #[test]
 fn a_license_list_that_won_t_open_says_why() {
     let fixture = Fixture::new(&[]);

@@ -1,14 +1,15 @@
 //! The Noura desktop app.
 //!
-//! `--smoke` opens the window, prints what this copy found about itself
-//! once the first frame is on screen, and quits. CI runs it from each
-//! installed package.
+//! `--smoke` opens the first window, prints what this copy found about
+//! itself once that window's first frame is on screen, and quits. CI runs
+//! it from each installed package.
 
 // A release build on Windows opens no console window. Output still reaches
 // a pipe, so the smoke run's report does too.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod file_drag;
+mod instance;
 mod licenses;
 mod login;
 #[cfg_attr(
@@ -18,20 +19,22 @@ mod login;
 mod menu;
 mod system;
 mod updates;
+mod windows;
 
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, OnceLock,
-        mpsc::{Receiver, channel},
-    },
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
 use app_core::{App, PendingWrites};
-use app_ui::{FolderPicker, NouraUi};
+use app_ui::FolderPicker;
 use eframe::egui;
-use menu::{Choice, EditInput};
+
+use crate::{
+    instance::{Claim, Instance},
+    windows::{QuitRequest, Windows},
+};
 
 /// The system folder dialog.
 struct SystemFolderPicker;
@@ -42,99 +45,12 @@ impl FolderPicker for SystemFolderPicker {
     }
 }
 
-struct Desktop {
-    ui: NouraUi,
-    file_drag: file_drag::FileDrag,
-    /// Menu choices, sent from muda's event handler.
-    choices: Receiver<Choice>,
-    edit: EditInput,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    native_menu: Option<menu::native::NativeMenu>,
-    /// The smoke run's report and how many frames it has drawn.
-    smoke: Option<(String, u32)>,
-}
-
-impl Desktop {
-    fn new(cc: &eframe::CreationContext<'_>, ui: NouraUi, smoke: Option<String>) -> Self {
-        let (sender, choices) = channel();
-        let ctx = cc.egui_ctx.clone();
-        muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
-            if let Some(choice) = menu::choice_for(event.id())
-                && sender.send(choice).is_ok()
-            {
-                ctx.request_repaint_of(egui::ViewportId::ROOT);
-            }
-        }));
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let native_menu = match menu::native::install(cc, &ui.menu_bar()) {
-            Ok(native_menu) => Some(native_menu),
-            Err(error) => {
-                tracing::error!(%error, "the native menu bar failed to install");
-                None
-            }
-        };
-        Self {
-            ui,
-            file_drag: file_drag::FileDrag::default(),
-            choices,
-            edit: EditInput::default(),
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            native_menu,
-            smoke: smoke.map(|report| (report, 0)),
-        }
-    }
-}
-
-impl eframe::App for Desktop {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        while let Ok(choice) = self.choices.try_recv() {
-            match choice {
-                Choice::Command(id) => {
-                    self.ui.run_menu_command(&id, Instant::now());
-                }
-                Choice::System(item) => self.edit.run(ctx, item),
-            }
-        }
-        // Quit from the menu works while the window is hidden too.
-        self.ui.close_requested_windows(ctx);
-        // A command that registered, or a page that moved, changes the
-        // menus.
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(native_menu) = &mut self.native_menu
-            && let Err(error) = native_menu.update(&self.ui.menu_bar())
-        {
-            tracing::error!(%error, "the native menu bar failed to update");
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.ui.ui(ui);
-        let ctx = ui.ctx().clone();
-        self.file_drag.after_frame(&mut self.ui, &ctx, frame);
-        if let Some((report, frames)) = &mut self.smoke {
-            *frames += 1;
-            // The first frame is on screen once the second one starts.
-            if *frames == 2 {
-                println!("{report}");
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                ctx.request_repaint();
-            }
-        }
-    }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        self.file_drag.complete_input(ctx, raw_input);
-        self.edit.inject(raw_input);
-    }
-}
-
 /// What the log keeps unless `RUST_LOG` says otherwise: messages from info
 /// up, and only warnings from the window and graphics crates.
 const LOG_FILTER: &str =
     "info,eframe=warn,egui_wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn,winit=warn";
 
-/// How long Noura waits, once its window has closed, for writes still
+/// How long Noura waits, once its windows have closed, for writes still
 /// running to reach disk before it quits anyway.
 const QUIT_WAIT: Duration = Duration::from_secs(30);
 
@@ -211,12 +127,19 @@ fn main() -> eframe::Result {
     if !has_app_data {
         tracing::warn!("the system has no app data folder; using the temporary folder");
     }
+    // A launch while Noura runs brings the running copy forward and stops
+    // here, before it opens a workspace or an index.
+    let instance: Option<Instance> = match instance::claim(&app_data) {
+        Ok(Claim::First(instance)) => Some(instance),
+        Ok(Claim::Running) => return Ok(()),
+        Err(error) => {
+            tracing::warn!(%error, "couldn't check for a running copy of Noura");
+            None
+        }
+    };
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Noura")
-            .with_inner_size([1100.0, 720.0])
-            .with_min_inner_size([640.0, 420.0]),
+        viewport: windows::builder(None),
         event_loop_builder: Some(Box::new(configure_event_loop)),
         ..Default::default()
     };
@@ -238,15 +161,29 @@ fn main() -> eframe::Result {
                 if let Some(list) = licenses::bundled_licenses() {
                     app.set_third_party_licenses(list);
                 }
-                let updates =
-                    set_up_updates(&mut app, &creation.egui_ctx, launched, install_at_exit);
-                let smoke = smoke.then(|| smoke_report(&updates));
-                let ui = NouraUi::new(app, Box::new(SystemFolderPicker));
-                Ok(Box::new(Desktop::new(creation, ui, smoke)))
+                let quit = QuitRequest::default();
+                let updates = set_up_updates(
+                    &mut app,
+                    &creation.egui_ctx,
+                    launched,
+                    install_at_exit,
+                    quit.clone(),
+                );
+                if let Some(instance) = &instance {
+                    let ctx = creation.egui_ctx.clone();
+                    instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
+                }
+                let mut windows =
+                    Windows::new(app, instance, || Box::new(SystemFolderPicker)).quitting_on(quit);
+                if smoke {
+                    windows = windows.smoke_test(smoke_report(&updates));
+                }
+                windows.install_menu_bar(creation);
+                Ok(Box::new(windows))
             }
         }),
     );
-    // The window is gone, so nothing starts a new write. Writes still
+    // The windows are gone, so nothing starts a new write. Writes still
     // running finish before the process ends, whichever way Noura quit.
     if let Some(writes) = writes.get()
         && !writes.wait_for_running(QUIT_WAIT)
@@ -265,6 +202,7 @@ fn set_up_updates(
     ctx: &egui::Context,
     launched: Instant,
     install_at_exit: updates::InstallAtExit,
+    quit: QuitRequest,
 ) -> Result<(), String> {
     let version = env!("CARGO_PKG_VERSION");
     let executable = std::env::current_exe().unwrap_or_default();
@@ -279,8 +217,10 @@ fn set_up_updates(
         app.disable_updates(version, reason);
         return Err(reason.to_owned());
     }
+    // Once the relaunch is arranged, Noura quits as Quit does, and every
+    // window comes back in the new version.
     let ctx = ctx.clone();
-    let quit = move || ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    let quit = move || quit.ask(&ctx);
     let source = updates::FeedSource::new(
         updates::RELEASE_FEED,
         updates::RELEASE_PUBLIC_KEY,

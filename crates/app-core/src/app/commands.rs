@@ -5,7 +5,8 @@ use std::{sync::Arc, time::Instant};
 
 use super::{App, Change};
 use crate::{
-    Area, Command, CommandSource, KeyPress, Menu, Platform, ShortcutEntry, ShortcutGroup, Tab,
+    Area, Command, CommandSource, KeyPress, Menu, MenuName, Platform, ShortcutEntry, ShortcutGroup,
+    Tab,
     commands::{Run, area_keys, command_id},
     layout::FILES_SECTION,
     menus,
@@ -32,7 +33,7 @@ impl App {
             Platform::Windows => "Exit",
             Platform::Linux => "Quit",
         };
-        let kernel: [(&str, &str, Run); 18] = [
+        let kernel: [(&str, &str, Run); 19] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -52,14 +53,8 @@ impl App {
             ),
             (RENAME_FILE, "Rename File", Arc::new(App::rename_open_file)),
             (CLOSE_TAB, "Close Tab", Arc::new(App::close_active_tab)),
-            (
-                CLOSE_WINDOW,
-                "Close Window",
-                Arc::new(|app| {
-                    app.close_window = true;
-                    app.listeners.emit(Change::Window);
-                }),
-            ),
+            (NEW_WINDOW, "New Window", Arc::new(App::open_new_window)),
+            (CLOSE_WINDOW, "Close Window", Arc::new(App::close_window)),
             (NEXT_TAB, "Next Tab", Arc::new(|app| app.cycle_tab(1))),
             (
                 PREVIOUS_TAB,
@@ -95,7 +90,10 @@ impl App {
             ),
         ];
         for (id, label, run) in kernel {
-            let command = Command::new(id, label, Area::Anywhere);
+            let mut command = Command::new(id, label, Area::Anywhere);
+            if id == NEW_WINDOW {
+                command = command.in_menu(MenuName::File);
+            }
             if let Err(error) = self.registry.register(command, run) {
                 tracing::error!(id, %error.code, "a kernel command didn't register");
             }
@@ -196,14 +194,8 @@ impl App {
             .collect()
     }
 
-    /// Whether Close Window ran since the last call. The window that ran
-    /// it closes.
-    pub fn take_close_window(&mut self) -> bool {
-        std::mem::take(&mut self.close_window)
-    }
-
-    /// Whether Quit ran since the last call. The app closes its main
-    /// window, which ends it.
+    /// Whether Quit ran since the last call, in this window. The app
+    /// closes every window, and they all come back at the next launch.
     pub fn take_quit(&mut self) -> bool {
         std::mem::take(&mut self.quit)
     }
@@ -223,6 +215,15 @@ impl App {
         };
         let id = tabs[next].id();
         self.activate_tab(id);
+    }
+
+    /// New Window: open another window on the open workspace, which
+    /// [`App::take_opened_windows`] hands the client.
+    fn open_new_window(&mut self) {
+        if let Some(window) = self.new_window() {
+            self.opened_windows.push(window);
+            self.listeners.emit(Change::Window);
+        }
     }
 
     fn close_active_tab(&mut self) {

@@ -1,14 +1,16 @@
 //! Product behavior and view state shared by every Noura client.
 //!
 //! This crate depends on no UI crate, so a mobile client can reuse it later.
-//! Clients draw [`App`]'s view state and send it what people do. The
-//! workspace service opens workspaces and keeps the recent list, the
-//! files service builds the file tree, and the update service keeps the
-//! app current. The app keeps each workspace's tabs, open folders and rail
-//! order, the sidebar's layout, and the appearance, text size and zoom, in
-//! this device's app data. One command registry feeds the key handling,
-//! the command palette, the native menus and the shortcuts list. Settings
-//! lists its sections from one list that later areas extend.
+//! Clients draw [`App`]'s view state and send it what people do. Each `App`
+//! is one window, and the windows of one launch share the open workspace
+//! and the update service. The workspace service opens workspaces and
+//! keeps the recent list, the files service builds the file tree, and the
+//! update service keeps the app current. The app keeps each workspace's
+//! windows with their tabs and open folders, its rail order, the sidebar's
+//! layout, and the appearance, text size and zoom, in this device's app
+//! data. One command registry feeds the key handling, the command palette,
+//! the native menus and the shortcuts list. Settings lists its sections
+//! from one list that later areas extend.
 
 mod app;
 mod commands;
@@ -16,29 +18,34 @@ mod diagnostics;
 mod error;
 mod files;
 mod ignored;
+mod inbox;
 mod keys;
 mod layout;
 mod login;
 mod menus;
+mod objects;
 mod operations;
 mod preferences;
+mod problems;
 mod quick_open;
 mod rail;
 mod recents;
 mod saves;
 mod search;
+mod session;
 mod settings;
 mod store;
 mod system;
 mod tabs;
 mod updates;
 mod view_state;
+mod watch;
 mod workspace;
 mod writes;
 
 pub use app::{
-    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Palette, PaletteMode,
-    Question, QuickOpen, Rename, Screen, Search,
+    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
+    PaletteMode, Question, QuickOpen, Rename, Screen, Search,
 };
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
@@ -49,12 +56,20 @@ pub use files::{
     DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
     TreeKey, TreeRow,
 };
+pub use inbox::{
+    Attention, FileLink, Inbox, InboxSection, InboxSectionProvider, LinkAction, RECENT_NOTES,
+    RecentNote,
+};
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+#[cfg(feature = "test-hooks")]
+pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
+pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use preferences::{ACTUAL_SIZE, Appearance, Preferences, TextSize, ZOOM_LEVELS};
+pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
@@ -70,6 +85,7 @@ pub use updates::{
     FIRST_UPDATE_CHECK, PendingUpdate, UPDATE_CHECK_INTERVAL, UpdateError, UpdateErrorKind,
     UpdateSource, UpdateStatus, Updates,
 };
+pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
 pub use writes::{PendingWork, PendingWrite, PendingWrites, WriteFailure};
 

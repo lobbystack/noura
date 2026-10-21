@@ -16,7 +16,7 @@ pub struct Page {
 
 /// The pages registered so far, in the order they arrived, and the order
 /// you gave the open workspace's rail.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Rail {
     pages: Vec<Page>,
     /// Page IDs in the order you left them, including pages that aren't
@@ -26,12 +26,20 @@ pub(crate) struct Rail {
 }
 
 impl Default for Rail {
+    /// The kernel's pages, which every window has whatever plugins are on:
+    /// the Inbox and Files.
     fn default() -> Self {
         Self {
-            pages: vec![Page {
-                id: FILES_PAGE.to_owned(),
-                title: "Files".to_owned(),
-            }],
+            pages: vec![
+                Page {
+                    id: INBOX_PAGE.to_owned(),
+                    title: "Inbox".to_owned(),
+                },
+                Page {
+                    id: FILES_PAGE.to_owned(),
+                    title: "Files".to_owned(),
+                },
+            ],
             saved: Vec::new(),
         }
     }
