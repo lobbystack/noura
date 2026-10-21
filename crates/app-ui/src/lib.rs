@@ -5,6 +5,7 @@
 
 mod chooser;
 mod common;
+mod finder;
 mod ignored_files;
 mod keys;
 mod palette;
@@ -22,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
+use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Palette, Screen, TabId};
 use egui::{Event, ThemePreference};
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
@@ -178,8 +179,8 @@ impl NouraUi {
 
     /// Run the commands this frame's key presses stand for, before any
     /// view sees them. Keys the focused view or text field handles stay
-    /// for it. Keys typed after the shortcut that opens the palette wait
-    /// for the palette's field.
+    /// for it. Keys typed after a shortcut that opens the palette, or
+    /// switches it to another mode, wait for the palette's field.
     fn dispatch_keys(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let typed_ahead = std::mem::take(&mut self.type_ahead);
@@ -212,9 +213,10 @@ impl NouraUi {
                 } => keys::press(*key, *physical_key, *modifiers, platform),
                 _ => None,
             };
-            let was_open = self.app.palette().is_some();
+            let before = self.app.palette().map(Palette::mode);
             if press.is_some_and(|press| self.app.press_key(&press, focus, now)) {
-                palette_opened = !was_open && self.app.palette().is_some();
+                let after = self.app.palette().map(Palette::mode);
+                palette_opened = after.is_some() && after != before;
             } else {
                 kept.push(event);
             }

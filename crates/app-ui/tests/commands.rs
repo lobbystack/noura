@@ -227,7 +227,7 @@ fn keys_typed_right_after_mod_k_land_in_the_palette_and_escape_returns_focus() {
             .state()
             .app()
             .palette()
-            .map(|palette| palette.query.clone()),
+            .map(|palette| palette.query().to_owned()),
         Some("plan".to_owned())
     );
     let current = harness.state().app().tree().unwrap().focused();

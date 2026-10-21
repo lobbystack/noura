@@ -292,6 +292,7 @@ dependencies = [
  "directories",
  "local-core",
  "nucleo-matcher",
+ "proptest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -308,6 +309,7 @@ dependencies = [
  "app-core",
  "egui",
  "egui_kittest",
+ "rusqlite",
  "tempfile",
 ]
 

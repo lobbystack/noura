@@ -154,7 +154,7 @@ impl App {
             Some(revision) => Ok(revision),
             None => workspace.manifest_revision().map(|(revision, _)| revision),
         };
-        let Some(workspace) = &mut self.workspace else {
+        let Some(workspace) = &self.workspace else {
             return false;
         };
         match revision.and_then(|revision| workspace.save_name(name, &revision)) {
@@ -193,7 +193,7 @@ impl App {
     /// Read the open workspace's manifest again: show the name in it, and
     /// return its revision.
     fn read_manifest(&mut self) -> Option<String> {
-        let workspace = self.workspace.as_mut()?;
+        let workspace = self.workspace.as_deref()?;
         match workspace.manifest_revision() {
             Ok((revision, name)) => {
                 if name != workspace.name() {
@@ -220,7 +220,7 @@ impl App {
             names.extend(path_parts(&recent.path));
         }
         let health = self.workspace.as_ref().map(|workspace| {
-            names.push(workspace.name().to_owned());
+            names.push(workspace.name());
             names.extend(path_parts(workspace.root()));
             let state = workspace.engine().state();
             let mut problems = BTreeMap::new();
