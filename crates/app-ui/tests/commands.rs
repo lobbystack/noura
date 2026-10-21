@@ -336,9 +336,12 @@ fn on_linux_every_shortcut_runs_from_the_window() {
     press(&mut harness, ctrl, Key::Backslash);
     assert!(harness.state().app().layout().sidebar_shown);
 
+    // The open note's text has the keyboard, so F2 moves to its name.
     press(&mut harness, Modifiers::NONE, Key::F2);
     assert!(
-        harness.state().app().renaming().is_some(),
+        harness
+            .get_by_role_and_label(Role::TextInput, "File name")
+            .is_focused(),
         "F2 renames the open file"
     );
     press(&mut harness, Modifiers::NONE, Key::Escape);

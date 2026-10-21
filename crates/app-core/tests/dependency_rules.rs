@@ -3,15 +3,16 @@
 //!
 //! - `app-core` depends on no UI crate, directly or through another crate,
 //!   so a mobile client can reuse it.
-//! - `app-ui` reaches workspace behavior only through `app-core`: it names
-//!   no other workspace crate as a dependency.
+//! - `app-ui` reaches workspace behavior only through `app-core`: the only
+//!   other workspace crate it names is `editor-egui`, which draws the note
+//!   editor and holds no workspace behavior.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::Value;
 
 /// Workspace crates `app-ui` may depend on.
-const APP_UI_MAY_USE: &[&str] = &["app-core"];
+const APP_UI_MAY_USE: &[&str] = &["app-core", "editor-egui"];
 
 fn is_ui_crate(name: &str) -> bool {
     name.starts_with("egui")

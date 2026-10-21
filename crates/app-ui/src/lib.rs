@@ -7,6 +7,7 @@ mod chooser;
 mod common;
 mod ignored_files;
 mod keys;
+mod note;
 mod palette;
 mod rail;
 mod shortcuts;
@@ -40,6 +41,8 @@ pub struct NouraUi {
     ignored: ignored_files::IgnoredFilesView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
+    /// The editors of the notes open in tabs.
+    notes: note::NoteView,
     /// Keys typed in the same frame as the shortcut that opened the
     /// palette, for the palette's field on the next frame.
     type_ahead: Vec<Event>,
@@ -58,6 +61,7 @@ impl NouraUi {
             ignored: ignored_files::IgnoredFilesView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
+            notes: note::NoteView::default(),
             type_ahead: Vec::new(),
             shown_tab: None,
             started: false,
@@ -113,10 +117,24 @@ impl NouraUi {
         if !self.started {
             self.started = true;
             theme::install(ui.ctx());
+            // The desktop app registers a font system with the system's
+            // fonts first; without one, the editor uses egui's own.
+            editor_egui::register_font_system(
+                ui.ctx(),
+                editor_egui::fonts::default_font_database(),
+            );
             let ctx = ui.ctx().clone();
             self.app.subscribe(move |_| ctx.request_repaint());
         }
         self.app.poll();
+        let now = Instant::now();
+        self.app.save_due_notes(now);
+        if let Some(due) = self.app.next_note_save() {
+            ui.ctx()
+                .request_repaint_after(due.saturating_duration_since(now));
+        }
+        self.guard_window_close(ui.ctx());
+        self.notes.retain(&self.app);
         if self.app.is_busy() {
             // The change stream wakes the window when the work finishes;
             // this also keeps the loading spinner turning.
@@ -131,7 +149,18 @@ impl NouraUi {
             Screen::Workspace => workspace::show(self, ui),
         }
         palette::show(ui, &mut self.app, &mut self.palette);
+        note::unsaved_prompt(ui, &mut self.app);
         self.close_requested_windows(ui.ctx());
+    }
+
+    /// The window's close button closes the app once every note is saved:
+    /// the window stays while saves run, and asks when one fails.
+    fn guard_window_close(&mut self, ctx: &egui::Context) {
+        let requested = ctx.input(|input| input.viewport().close_requested());
+        if requested && (self.app.has_unsaved_notes() || self.app.unsaved_prompt().is_some()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.app.request_quit();
+        }
     }
 
     /// Close what Quit or Close Window asked to close: Quit closes the
@@ -151,7 +180,8 @@ impl NouraUi {
     /// The part of the window that has the keyboard, as the command
     /// registry names areas.
     fn focus_area(&self, ctx: &egui::Context) -> Option<Area> {
-        if ctx.text_edit_focused() {
+        let active = self.app.active_tab().map(app_core::Tab::id);
+        if ctx.text_edit_focused() || self.notes.editor_focused(ctx, active) {
             Some(Area::Writing)
         } else if self.tree.has_focus(ctx) {
             Some(Area::FileTree)

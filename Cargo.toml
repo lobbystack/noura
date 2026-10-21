@@ -56,6 +56,8 @@ eframe = { version = "0.37", default-features = false, features = ["accesskit", 
 egui = "0.37"
 egui-wgpu = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
+# The properties panel's date picker. MIT OR Apache-2.0.
+egui_extras = { version = "0.37", default-features = false, features = ["datepicker"] }
 # Shapes the editor's text and paints it through eframe's wgpu renderer.
 # 0.12 targets wgpu 30, the version eframe 0.37 uses.
 glyphon = "0.12"

@@ -527,6 +527,12 @@ impl Editor {
         self.edit.renderer.buffer.current.text()
     }
 
+    /// The buffer version of [`Self::text`], which [`Self::record_disk_save`]
+    /// takes once that text is on disk.
+    pub fn version(&self) -> usize {
+        self.edit.renderer.buffer.current.seq
+    }
+
     /// The selection as `(anchor, caret)`.
     pub fn selection(&self) -> (Grapheme, Grapheme) {
         self.edit.renderer.buffer.current.selection

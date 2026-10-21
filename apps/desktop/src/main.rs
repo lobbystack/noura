@@ -122,6 +122,29 @@ fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<eframe
     let _ = builder;
 }
 
+/// Give the note editor its fonts, egui's own then the system's so text in
+/// other scripts finds glyphs, and the renderer resources it paints with.
+fn register_editor(
+    creation: &eframe::CreationContext<'_>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let render_state = creation
+        .wgpu_render_state
+        .as_ref()
+        .ok_or("Noura needs the wgpu renderer to draw notes")?;
+    let mut fonts = editor_egui::fonts::default_font_database();
+    fonts.load_system_fonts();
+    let font_system = editor_egui::register_font_system(&creation.egui_ctx, fonts);
+    editor_egui::register_render_callback_resources(
+        &render_state.device,
+        &render_state.queue,
+        render_state.target_format,
+        &mut render_state.renderer.write(),
+        font_system,
+        1,
+    );
+    Ok(())
+}
+
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -145,6 +168,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |creation| {
             app_ui::theme::install(&creation.egui_ctx);
+            register_editor(creation)?;
             // The last workspace starts reopening now, off the UI thread.
             let system = system::DesktopSystem::new(creation.egui_ctx.clone());
             let app = App::launch_with(&app_data, Arc::new(system));

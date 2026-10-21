@@ -88,6 +88,20 @@ pub enum PropertyValue {
 }
 
 impl PropertyValue {
+    /// The number typed in `text`, or `None` when it isn't one.
+    pub fn number(text: &str) -> Option<Self> {
+        let text = text.trim();
+        text.parse::<i64>()
+            .map(serde_json::Number::from)
+            .ok()
+            .or_else(|| {
+                text.parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+            })
+            .map(Self::Number)
+    }
+
     fn of(value: &serde_json::Value) -> Self {
         match value {
             serde_json::Value::String(text) if is_civil_date(text) => Self::Date(text.clone()),
@@ -706,6 +720,22 @@ mod tests {
         for (error, reason) in cases {
             assert_eq!(save_reason(&error), reason, "{}", error.code);
         }
+    }
+
+    #[test]
+    fn typed_numbers_read_as_json_numbers() {
+        assert_eq!(
+            PropertyValue::number(" 42 "),
+            Some(PropertyValue::Number(42.into()))
+        );
+        assert_eq!(
+            PropertyValue::number("4.5"),
+            Some(PropertyValue::Number(
+                serde_json::Number::from_f64(4.5).unwrap()
+            ))
+        );
+        assert_eq!(PropertyValue::number("four"), None);
+        assert_eq!(PropertyValue::number("NaN"), None);
     }
 
     #[test]
