@@ -15,6 +15,10 @@ pub struct ManifestUpdateInput {
     /// Reject the update unless the on-disk manifest still has this
     /// `updated` value, preventing silent overwrite of external edits.
     pub expected_updated: Option<String>,
+    /// Reject the update unless the on-disk manifest's bytes still have
+    /// this revision, from [`WorkspaceEngine::read_manifest_revision`]. It
+    /// catches outside edits that leave `updated` alone.
+    pub expected_revision: Option<String>,
 }
 
 impl WorkspaceEngine {
@@ -50,6 +54,14 @@ impl WorkspaceEngine {
     /// the manifest on every write.
     pub fn read_manifest(&self) -> Result<WorkspaceManifest> {
         parse_workspace_manifest(&self.read_manifest_bytes()?, "manifest_read")
+    }
+
+    /// The manifest freshly read from disk, with the revision of its bytes
+    /// for [`ManifestUpdateInput::expected_revision`].
+    pub fn read_manifest_revision(&self) -> Result<(WorkspaceManifest, String)> {
+        let bytes = self.read_manifest_bytes()?;
+        let manifest = parse_workspace_manifest(&bytes, "manifest_read")?;
+        Ok((manifest, markdown::revision(&bytes)))
     }
 
     pub fn manifest_update(&self, input: ManifestUpdateInput) -> Result<WorkspaceManifest> {
@@ -103,8 +115,15 @@ impl WorkspaceEngine {
         let _guard = self.write_lock("manifest_update")?;
         let current_bytes = self.read_manifest_bytes()?;
         let mut manifest = parse_workspace_manifest(&current_bytes, "manifest_update")?;
-        if let Some(expected) = &input.expected_updated
-            && manifest.updated != *expected
+        let edited = input
+            .expected_revision
+            .as_ref()
+            .is_some_and(|expected| markdown::revision(&current_bytes) != *expected);
+        if edited
+            || input
+                .expected_updated
+                .as_ref()
+                .is_some_and(|expected| manifest.updated != *expected)
         {
             return Err(CoreError::new(
                 "manifest_conflict",

@@ -39,8 +39,9 @@ impl WorkspaceEngine {
     }
 
     /// Move `source` out of the workspace. Returns the `.noura/trash` path
-    /// when the file went there instead of the system trash. The removal is
-    /// durable before this returns.
+    /// when the file went there instead of the system trash. The removal,
+    /// and in `.noura/trash` every folder created for the item and the item
+    /// itself, are durable before this returns.
     pub(super) fn discard(
         &self,
         source: &Path,
@@ -80,8 +81,7 @@ impl WorkspaceEngine {
             ));
         }
         if let Some(parent) = trash.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| CoreError::io(error, operation, parent.to_str()))?;
+            create_folders(parent, operation)?;
         }
         std::fs::rename(source, &trash)
             .map_err(|error| CoreError::io(error, operation, Some(relative_path)))?;

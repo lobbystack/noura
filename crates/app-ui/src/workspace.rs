@@ -40,6 +40,60 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
             document(state, ui);
         });
     new_workspace_dialog(state, ui);
+    trash_dialog(state, ui);
+    ignored_files_dialog(state, ui);
+}
+
+/// Ask before a folder goes to the trash, and say where it goes.
+fn trash_dialog(state: &mut NouraUi, ui: &mut Ui) {
+    let Some((_, question)) = state.app.pending_trash() else {
+        return;
+    };
+    let question = question.clone();
+    let palette = Palette::of(ui.ctx());
+    let mut confirm = false;
+    let mut cancel = false;
+    let modal = Modal::new(Id::unique("trash-folder")).show(ui.ctx(), |ui| {
+        ui.set_width(340.0);
+        ui.label(RichText::new(&question.title).size(TITLE_SIZE).strong());
+        muted(ui, &question.message);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            cancel = ui.button("Cancel").clicked();
+            confirm = ui
+                .add(
+                    Button::new(RichText::new("Move to Trash").color(palette.primary_foreground))
+                        .fill(palette.destructive),
+                )
+                .clicked();
+        });
+    });
+    if confirm {
+        state.app.confirm_trash();
+        state.tree.refocus();
+    } else if cancel || modal.should_close() {
+        state.app.cancel_trash();
+        state.tree.refocus();
+    }
+}
+
+/// The Ignored files page, in a dialog until Settings exists.
+fn ignored_files_dialog(state: &mut NouraUi, ui: &mut Ui) {
+    if state.app.ignored_files().is_none() {
+        return;
+    }
+    let mut done = false;
+    let modal = Modal::new(Id::unique("ignored-files")).show(ui.ctx(), |ui| {
+        ui.set_width(380.0);
+        ui.label(RichText::new("Ignored files").size(TITLE_SIZE).strong());
+        crate::ignored_files::page(ui, &mut state.app, &mut state.ignored);
+        ui.add_space(8.0);
+        done = common::primary_button(ui, "Done", true).clicked();
+    });
+    if done || modal.should_close() {
+        state.app.close_ignored_files();
+        state.ignored = Default::default();
+    }
 }
 
 /// The workspace switcher: the current workspace's name, opening a menu of
@@ -56,6 +110,9 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     let mut remove = None;
     let mut pick = false;
     let mut create = false;
+    let mut reveal = false;
+    let mut ignored = false;
+    let reveal_label = state.app.platform().reveal_label();
     let button = Button::new(RichText::new(&name).strong()).frame(false);
     let (menu, _) = MenuButton::from_button(button).ui(ui, |ui| {
         muted(ui, "Workspaces");
@@ -85,6 +142,15 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
             create = true;
             ui.close();
         }
+        ui.separator();
+        if ui.button(reveal_label).clicked() {
+            reveal = true;
+            ui.close();
+        }
+        if ui.button("Ignored files\u{2026}").clicked() {
+            ignored = true;
+            ui.close();
+        }
         let others: Vec<_> = recents
             .iter()
             .filter(|recent| recent.workspace_id != current)
@@ -112,6 +178,12 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     }
     if create {
         state.new_workspace = Some(NewWorkspace::new());
+    }
+    if reveal {
+        state.app.reveal_workspace();
+    }
+    if ignored {
+        state.app.open_ignored_files();
     }
 }
 

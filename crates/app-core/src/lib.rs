@@ -8,15 +8,21 @@
 mod app;
 mod error;
 mod files;
+mod ignored;
+mod operations;
 mod recents;
+mod system;
 mod workspace;
 
-pub use app::{App, Change, Notice, Screen};
+pub use app::{App, Change, IgnoredFiles, Notice, NoticeKind, Question, Rename, Screen};
 pub use error::AppError;
 pub use files::{
-    EntryKind, FileTree, OpenedFile, TYPE_AHEAD_TIMEOUT, TreeAction, TreeKey, TreeRow,
+    DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
+    TreeKey, TreeRow,
 };
+pub use operations::Imported;
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use workspace::{Workspace, WorkspaceService};
 
 /// Where Noura keeps per-device state, such as indexes and the recent

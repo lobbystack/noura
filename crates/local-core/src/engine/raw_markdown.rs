@@ -595,9 +595,6 @@ fn write_snapshot(
     if destination.exists() {
         return Ok(());
     }
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
-    }
+    // atomic_write creates the missing folders durably.
     atomic_write(root, &relative_path, bytes, operation)
 }

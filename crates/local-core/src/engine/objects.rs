@@ -244,8 +244,7 @@ impl WorkspaceEngine {
             ));
         }
         if let Some(parent) = destination_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| CoreError::io(error, "object_move", Some(destination)))?;
+            create_folders(parent, "object_move")?;
         }
         let old = object.relative_path.clone();
         std::fs::rename(&source, &destination_path)
