@@ -89,7 +89,8 @@ Ticket 18 changed the fork so notes from Obsidian-style workspaces read as they 
 - comrak reads setext headings, and reads `__text__` as strong. Its alerts, spoilers, emoji shortcodes, superscript, subscript, code math and front matter extension are off, so their text shows as written. comrak reads `~x~` as strikethrough and has no option to stop, so the editor draws single-tilde strikethrough as written.
 - HTML the editor doesn't draw shows as written. Lockbook hid it away from the caret.
 - A soft line break keeps its own row, as Lockbook drew it. Tab handling stays for ticket 19.
-- `lookahead.rs` reads frontmatter and `$$` math within a 256 KiB lookahead. comrak parses a copy of the note in which the frontmatter's delimiter lines read as code fences, byte for byte, so source positions after frontmatter that holds a lone carriage return line up again.
+- `lookahead.rs` reads frontmatter and `$$` math within a 256 KiB lookahead. comrak parses a copy of the note in which the frontmatter's delimiter lines read as code fences, byte for byte, so source positions after frontmatter that holds a lone carriage return line up again. In that copy, a line inside a `$$` block that looks like block syntax starts with a stand-in byte, so the block stays one piece of math.
+- Mod-U wraps the selection in `<u>` and `</u>`, or takes them off, as today's editor does. Lockbook's keys for spoilers, subscript and superscript are gone.
 - New code reads callouts of any type (`callouts.rs`), and comments, tags, block IDs, `<u>`, embeds and image embeds (`spans.rs`). The alert widget no longer draws anything, because comrak's alerts are off.
 - A table shows its raw rows while the caret is anywhere in it, and each grid cell is a cell in the accessibility tree.
 - Display math hides its `$$` instead of one `$`, and math draws in a format of its own.
