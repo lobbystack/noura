@@ -120,10 +120,11 @@ struct Opened {
     tree: FileTree,
 }
 
-/// The job running in the background and where its result arrives.
+/// The job running in the background and where its result arrives:
+/// `None` when the folder holds the workspace that is open already.
 struct Pending {
     job: Job,
-    result: Receiver<Result<Opened, AppError>>,
+    result: Receiver<Result<Option<Opened>, AppError>>,
 }
 
 /// One window's state, which a client draws: which screen shows, the
@@ -371,8 +372,8 @@ impl App {
 
     /// Open the workspace in `folder`, or make one of a plain folder.
     pub fn open_folder(&mut self, folder: PathBuf) {
-        // It's open already, in every window. A path spelled another way
-        // still opens, and `adopt` keeps the workspace the windows share.
+        // It's open already, in every window. The background job also
+        // catches the folder spelled another way, before it opens anything.
         if self
             .workspace
             .as_ref()
@@ -483,7 +484,8 @@ impl App {
         self.recents = self.service.recents();
         self.listeners.emit(Change::Recents);
         match (result, job) {
-            (Ok(opened), _) => self.adopt(opened),
+            (Ok(Some(opened)), _) => self.adopt(opened),
+            (Ok(None), _) => {}
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
@@ -614,10 +616,14 @@ impl App {
         let service = self.service.clone();
         let listeners = self.listeners.clone();
         let work = job.clone();
+        let open_root = self
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.root().to_owned());
         let spawned = std::thread::Builder::new()
             .name("workspace-open".into())
             .spawn(move || {
-                let result = run(&service, &work);
+                let result = run(&service, &work, open_root.as_deref());
                 // The app may have closed meanwhile; nothing is waiting then.
                 let _ = sender.send(result);
                 listeners.emit(Change::WorkFinished);
@@ -638,16 +644,34 @@ impl App {
     }
 }
 
-fn run(service: &WorkspaceService, job: &Job) -> Result<Opened, AppError> {
+/// Open what `job` asks for. `open_root` is the folder of the workspace the
+/// windows show, if any.
+fn run(
+    service: &WorkspaceService,
+    job: &Job,
+    open_root: Option<&str>,
+) -> Result<Option<Opened>, AppError> {
     let workspace = match job {
         Job::Restore { workspace_id } | Job::OpenRecent { workspace_id, .. } => {
             service.open_recent(workspace_id)?
         }
+        // The open workspace's folder spelled another way: through a link,
+        // with `.` or `..`, or in other letter case. Opening it would start
+        // a second engine, with its own watcher, on the same index.
+        Job::OpenFolder(folder) if is_folder(folder, open_root) => return Ok(None),
         Job::OpenFolder(folder) => service.open_folder(folder)?,
         Job::Create { name, folder } => service.create(name, folder)?,
     };
     let tree = workspace.file_tree()?;
-    Ok(Opened { workspace, tree })
+    Ok(Some(Opened { workspace, tree }))
+}
+
+/// Whether `folder` is the folder at `root`, which the workspace engine
+/// keeps in canonical form.
+fn is_folder(folder: &Path, root: Option<&str>) -> bool {
+    root.is_some_and(|root| {
+        std::fs::canonicalize(folder).is_ok_and(|folder| folder.as_os_str() == root)
+    })
 }
 
 impl Drop for App {

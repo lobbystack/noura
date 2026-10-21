@@ -29,7 +29,9 @@ test = true
 
 [dev-dependencies]
 egui.workspace = true
-egui_kittest.workspace = true
+# The eframe feature runs `App::logic` before `App::ui` in each step, as
+# eframe does.
+egui_kittest = { workspace = true, features = ["eframe"] }
 muda.workspace = true
 tempfile.workspace = true
 winit.workspace = true

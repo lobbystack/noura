@@ -68,7 +68,7 @@ ignore = "0.4"
 # Local sockets for single-instance handling: Unix domain sockets on macOS
 # and Linux, named pipes on Windows.
 interprocess = "2.4.6"
-jiff ={ version = "0.2", features = ["serde"] }
+jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
 # Without default features muda has no GTK backend: on Linux, menus need a GTK
 # window, which winit doesn't create.

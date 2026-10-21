@@ -7,6 +7,10 @@
 //! a workspace or an index. The operating system drops the lock when a
 //! copy exits, even when it crashes, so a stale socket never blocks the
 //! next launch.
+//!
+//! A copy that is quitting stops answering first and lets go of the lock
+//! last, once its windows have let go of the workspace. A launch meanwhile
+//! waits for the lock and then runs.
 
 use std::{
     fs::{File, OpenOptions, TryLockError},
@@ -30,10 +34,12 @@ use interprocess::local_socket::{
 const ACTIVATE: &[u8] = b"activate\n";
 const DONE: &[u8] = b"ok\n";
 
-/// How long a later launch tries to reach a running copy that is still
-/// starting up, and how long it waits for the answer.
-const CONNECT_PATIENCE: Duration = Duration::from_secs(5);
+/// How long a later launch waits for a running copy that is starting up
+/// or quitting, how long it waits for an answer, and how often it looks
+/// again.
+const CONNECT_PATIENCE: Duration = Duration::from_secs(10);
 const ANSWER_PATIENCE: Duration = Duration::from_secs(2);
+const RETRY: Duration = Duration::from_millis(50);
 
 /// Unix socket paths are limited to about 104 bytes. A longer app data
 /// path uses a name derived from it instead.
@@ -97,18 +103,25 @@ impl Instance {
     pub fn take_activation(&self) -> bool {
         self.shared.asked.swap(false, Ordering::SeqCst)
     }
-}
 
-impl Drop for Instance {
-    fn drop(&mut self) {
+    /// Stop answering later launches, as this copy quits, but keep the
+    /// lock: a launch from now on waits for it, and runs once this copy
+    /// drops the instance.
+    pub fn stop_listening(&mut self) {
         self.shared.stopping.store(true, Ordering::SeqCst);
         // Wake the listening thread, which then lets go of the socket.
-        if Stream::connect(self.name.clone()).is_ok()
-            && let Some(listening) = self.listening.take()
+        if let Some(listening) = self.listening.take()
+            && Stream::connect(self.name.clone()).is_ok()
             && listening.join().is_err()
         {
             tracing::debug!("the single-instance thread stopped early");
         }
+    }
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        self.stop_listening();
         // Then let the next launch take the lock.
         drop(self.lock.take());
     }
@@ -116,6 +129,12 @@ impl Drop for Instance {
 
 /// Become the running copy for `app_data`, or ask the copy that runs to
 /// come forward.
+///
+/// The lock can be taken while no copy answers: the copy is starting up
+/// and doesn't listen yet, it is quitting, or it just exited and a process
+/// it was starting still shares the lock for a moment. So until a copy
+/// answers, this launch tries the lock again too, and runs once it gets
+/// it.
 pub fn claim(app_data: &Path) -> io::Result<Claim> {
     std::fs::create_dir_all(app_data)?;
     let lock = OpenOptions::new()
@@ -123,19 +142,36 @@ pub fn claim(app_data: &Path) -> io::Result<Claim> {
         .truncate(false)
         .write(true)
         .open(app_data.join("instance.lock"))?;
-    match lock.try_lock() {
-        Ok(()) => listen(lock, app_data).map(Claim::First),
-        Err(TryLockError::WouldBlock) => {
-            ask_to_activate(app_data);
-            Ok(Claim::Running)
+    let name = socket_name(app_data)?;
+    let deadline = Instant::now() + CONNECT_PATIENCE;
+    let mut allowed = false;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return listen(lock, name).map(Claim::First),
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(error)) => return Err(error),
         }
-        Err(TryLockError::Error(error)) => Err(error),
+        if !allowed {
+            allow_foreground_change();
+            allowed = true;
+        }
+        match ask_to_activate(&name) {
+            Asked::CameForward => return Ok(Claim::Running),
+            Asked::Silent => {
+                tracing::warn!("the running copy of Noura didn't confirm it came forward");
+                return Ok(Claim::Running);
+            }
+            Asked::Unreachable(error) if Instant::now() >= deadline => {
+                tracing::warn!(%error, "Noura is already running but didn't answer");
+                return Ok(Claim::Running);
+            }
+            Asked::Unreachable(_) => std::thread::sleep(RETRY),
+        }
     }
 }
 
 /// Listen for later launches on a background thread.
-fn listen(lock: File, app_data: &Path) -> io::Result<Instance> {
-    let name = socket_name(app_data)?;
+fn listen(lock: File, name: Name<'static>) -> io::Result<Instance> {
     // A socket file left behind by a copy that crashed is stale: this copy
     // holds the lock. Other users can't write to the socket, which the
     // process's file mode mask leaves writable by its owner alone.
@@ -176,7 +212,9 @@ fn answer(stream: Stream, shared: Arc<Shared>) {
             let read = BufReader::new(&stream)
                 .take(ACTIVATE.len() as u64)
                 .read_until(b'\n', &mut request);
-            if read.is_ok() && request == ACTIVATE {
+            // A copy that is quitting hangs up instead, and the later
+            // launch waits for the lock.
+            if read.is_ok() && request == ACTIVATE && !shared.stopping.load(Ordering::SeqCst) {
                 shared.ask();
                 let _ = (&stream).write_all(DONE);
             }
@@ -186,35 +224,46 @@ fn answer(stream: Stream, shared: Arc<Shared>) {
     }
 }
 
-/// Ask the running copy to come forward. A copy that is still starting
-/// may not listen yet, so keep trying for a while. This launch exits
-/// either way.
-fn ask_to_activate(app_data: &Path) {
-    allow_foreground_change();
-    let deadline = Instant::now() + CONNECT_PATIENCE;
-    let stream = loop {
-        match socket_name(app_data).and_then(Stream::connect) {
-            Ok(stream) => break stream,
-            Err(error) if Instant::now() >= deadline => {
-                tracing::warn!(%error, "Noura is already running but didn't answer");
-                return;
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(50)),
-        }
+/// What a running copy did when asked to come forward.
+enum Asked {
+    CameForward,
+    /// It took the request but never answered: it may be stuck.
+    Silent,
+    /// Nothing answered: no copy listens, or it hung up as it quits.
+    Unreachable(io::Error),
+}
+
+/// Ask the copy listening at `name` to come forward.
+fn ask_to_activate(name: &Name<'static>) -> Asked {
+    let stream = match Stream::connect(name.clone()) {
+        Ok(stream) => stream,
+        Err(error) => return Asked::Unreachable(error),
     };
     if let Err(error) = (&stream).write_all(ACTIVATE) {
-        tracing::warn!(%error, "couldn't ask the running copy of Noura to come forward");
-        return;
+        return Asked::Unreachable(error);
     }
     // Wait for the answer, so the request is read before this launch
     // exits. Named pipes have no read timeout, so a thread waits.
     let (answered, wait) = mpsc::channel();
     let waited = std::thread::Builder::new().spawn(move || {
         let mut answer = [0; DONE.len()];
-        let _ = answered.send((&stream).read_exact(&mut answer).is_ok() && answer == DONE);
+        let read = match (&stream).read_exact(&mut answer) {
+            Ok(()) if answer == DONE => Ok(()),
+            Ok(()) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "an unexpected answer",
+            )),
+            Err(error) => Err(error),
+        };
+        let _ = answered.send(read);
     });
-    if waited.is_ok() && wait.recv_timeout(ANSWER_PATIENCE) != Ok(true) {
-        tracing::warn!("the running copy of Noura didn't confirm it came forward");
+    if let Err(error) = waited {
+        return Asked::Unreachable(error);
+    }
+    match wait.recv_timeout(ANSWER_PATIENCE) {
+        Ok(Ok(())) => Asked::CameForward,
+        Ok(Err(error)) => Asked::Unreachable(error),
+        Err(_) => Asked::Silent,
     }
 }
 
@@ -303,6 +352,60 @@ mod tests {
 
         assert!(matches!(claim(app_data.path()).unwrap(), Claim::Running));
         wait_for_activation(&next);
+    }
+
+    /// A copy that quits stops answering but holds the lock until its
+    /// windows let go of the workspace. A launch meanwhile waits, then
+    /// runs.
+    #[test]
+    fn a_launch_while_the_running_copy_quits_runs_once_it_is_gone() {
+        let app_data = tempfile::tempdir().unwrap();
+        let Claim::First(mut quitting) = claim(app_data.path()).unwrap() else {
+            panic!("nothing else runs on this app data folder");
+        };
+        quitting.stop_listening();
+
+        let path = app_data.path().to_owned();
+        let later = std::thread::spawn(move || claim(&path));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!later.is_finished(), "the later launch waits for the lock");
+        assert!(
+            !quitting.take_activation(),
+            "a quitting copy comes forward for no one"
+        );
+        drop(quitting);
+
+        let Claim::First(next) = later.join().unwrap().unwrap() else {
+            panic!("the quitting copy is gone");
+        };
+        assert!(matches!(claim(app_data.path()).unwrap(), Claim::Running));
+        wait_for_activation(&next);
+    }
+
+    /// A process that starts as a copy exits can share its lock for a
+    /// moment, with no copy listening.
+    #[test]
+    fn a_lock_held_for_a_moment_with_no_copy_listening_gives_way() {
+        let app_data = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(app_data.path()).unwrap();
+        let held = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(app_data.path().join("instance.lock"))
+            .unwrap();
+        held.try_lock().unwrap();
+
+        let path = app_data.path().to_owned();
+        let later = std::thread::spawn(move || claim(&path));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !later.is_finished(),
+            "the launch waits while the lock is held"
+        );
+        drop(held);
+
+        assert!(matches!(later.join().unwrap().unwrap(), Claim::First(_)));
     }
 
     /// A copy that crashed leaves its socket file behind.

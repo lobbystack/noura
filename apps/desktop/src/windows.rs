@@ -6,7 +6,10 @@
 //! window while others stay open hides the root viewport instead, and it
 //! keeps hosting the others. Closing the last window quits.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use app_core::App;
 use app_ui::{FolderPicker, NouraUi};
@@ -18,6 +21,12 @@ use crate::instance::Instance;
 
 /// How far each new window sits from the window that opened it.
 const CASCADE: f32 = 28.0;
+
+/// How long Noura keeps bringing a window forward after a later launch
+/// asks, and how often it tries again. A minimized window animates back
+/// before it can take focus, and the system may refuse focus at first.
+const FORWARD_PATIENCE: Duration = Duration::from_secs(3);
+const FORWARD_RETRY: Duration = Duration::from_millis(200);
 
 /// A window's frame: its title, size and, for a new window, its place.
 pub fn builder(position: Option<Pos2>) -> ViewportBuilder {
@@ -40,8 +49,17 @@ pub struct Windows {
     /// forward.
     recent: Arc<Mutex<ViewportId>>,
     instance: Option<Instance>,
+    /// A later launch asked for a window to come forward, and it hasn't
+    /// come yet.
+    forward: Option<Forward>,
     picker: Box<dyn Fn() -> Box<dyn FolderPicker>>,
     next_id: u64,
+}
+
+/// When a later launch asked, and when Noura last tried.
+struct Forward {
+    asked: Instant,
+    tried: Option<Instant>,
 }
 
 /// A window in a deferred viewport.
@@ -74,6 +92,7 @@ impl Windows {
             others: Vec::new(),
             recent: Arc::new(Mutex::new(ViewportId::ROOT)),
             instance,
+            forward: None,
             picker: Box::new(picker),
             next_id: 0,
         }
@@ -128,13 +147,6 @@ impl Windows {
         for window in &self.others {
             window.show(&ctx, &self.recent);
         }
-        if self
-            .instance
-            .as_ref()
-            .is_some_and(Instance::take_activation)
-        {
-            self.bring_forward(&ctx);
-        }
     }
 
     fn add(&mut self, app: App, position: Option<Pos2>) {
@@ -151,25 +163,71 @@ impl Windows {
         });
     }
 
-    /// Bring the window that had focus last to the front, as a later
-    /// launch asks.
-    fn bring_forward(&self, ctx: &Context) {
+    /// Bring the window that had focus last to the front when a later
+    /// launch asks, and keep at it until that window has focus.
+    ///
+    /// This runs in every pass, including the passes where every window is
+    /// minimized or covered and eframe skips the ui. The system focuses
+    /// only a window that is no longer minimized, so a minimized window is
+    /// restored first and focused once it is back.
+    fn come_forward(&mut self, ctx: &Context) {
+        let now = Instant::now();
+        if self
+            .instance
+            .as_ref()
+            .is_some_and(Instance::take_activation)
+        {
+            self.forward = Some(Forward {
+                asked: now,
+                tried: None,
+            });
+        }
+        if self.forward.is_none() {
+            return;
+        }
+        let Some(id) = self.forward_target() else {
+            self.forward = None;
+            return;
+        };
+        let info = ctx.input(|input| input.raw.viewports.get(&id).cloned());
+        let Some(forward) = &mut self.forward else {
+            return;
+        };
+        if info.is_some_and(|info| info.focused == Some(true) && info.minimized != Some(true)) {
+            self.forward = None;
+            return;
+        }
+        if now.duration_since(forward.asked) > FORWARD_PATIENCE {
+            tracing::debug!("the window a later launch asked for never took focus");
+            self.forward = None;
+            return;
+        }
+        if forward
+            .tried
+            .is_none_or(|tried| now.duration_since(tried) >= FORWARD_RETRY)
+        {
+            forward.tried = Some(now);
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+        }
+        ctx.request_repaint_after_for(FORWARD_RETRY, ViewportId::ROOT);
+    }
+
+    /// The window that had focus last, or another open window when that
+    /// one closed.
+    fn forward_target(&self) -> Option<ViewportId> {
         let recent = *self.recent.lock();
         let open = |id: ViewportId| {
             (id == ViewportId::ROOT && self.first.is_some())
                 || self.others.iter().any(|window| window.id == id)
         };
-        let id = if open(recent) {
-            recent
+        if open(recent) {
+            Some(recent)
         } else if self.first.is_some() {
-            ViewportId::ROOT
-        } else if let Some(last) = self.others.last() {
-            last.id
+            Some(ViewportId::ROOT)
         } else {
-            return;
-        };
-        ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+            self.others.last().map(|window| window.id)
+        }
     }
 
     /// Let every window go, as Noura quits: each one's tabs stay saved,
@@ -227,12 +285,25 @@ fn note_focus(ctx: &Context, id: ViewportId, recent: &Mutex<ViewportId>) {
 }
 
 impl eframe::App for Windows {
+    /// eframe calls this before every `ui`, and also alone while every
+    /// window is minimized or covered.
+    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.come_forward(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
 
     fn on_exit(&mut self) {
+        // A later launch from now on finds no copy to bring forward. It
+        // waits for the lock, which goes once every window has let go of
+        // the workspace, and then runs.
+        if let Some(instance) = &mut self.instance {
+            instance.stop_listening();
+        }
         self.quit();
+        self.instance = None;
     }
 }
 
@@ -243,7 +314,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use egui::{Key, Modifiers, accesskit::Role};
+    use egui::{Key, Modifiers, ViewportIdMap, ViewportInfo, accesskit::Role};
     use egui_kittest::{Harness, kittest::Queryable};
 
     use super::*;
@@ -261,7 +332,8 @@ mod tests {
 
     /// kittest has one native window and draws only the first. The other
     /// windows stay separate viewports, as on the desktop, and the tests
-    /// read what the desktop would show from their output.
+    /// read what the desktop would show from their output. Each step runs
+    /// `App::logic` and then `App::ui`, as eframe does.
     fn harness(app_data: &std::path::Path) -> Harness<'static, Windows> {
         harness_with(app_data, None)
     }
@@ -273,7 +345,7 @@ mod tests {
         let windows = Windows::new(App::launch(app_data), instance, || Box::new(NoFolder));
         let mut harness = Harness::builder()
             .with_size([1400.0, 900.0])
-            .build_ui_state(|ui, windows: &mut Windows| windows.show(ui), windows);
+            .build_eframe(|_creation| windows);
         harness.ctx.set_embed_viewports(false);
         let deadline = Instant::now() + Duration::from_secs(20);
         while harness.query_by_label(SWITCHER).is_none() {
@@ -380,6 +452,96 @@ mod tests {
 
         assert!(commands.contains(&ViewportCommand::Close));
         assert!(!commands.contains(&ViewportCommand::Visible(false)));
+    }
+
+    /// Run a pass as eframe does while every window is minimized or
+    /// covered: `App::logic` alone, which no ui follows. Returns the
+    /// commands each window was sent.
+    fn logic_pass(
+        harness: &mut Harness<'static, Windows>,
+        viewports: &[(ViewportId, ViewportInfo)],
+    ) -> ViewportIdMap<Vec<ViewportCommand>> {
+        let input = egui::RawInput {
+            viewports: viewports.iter().cloned().collect(),
+            ..Default::default()
+        };
+        let ctx = harness.ctx.clone();
+        let mut frame = eframe::Frame::_new_kittest();
+        let output = ctx.run_logic(&input, |ctx| {
+            eframe::App::logic(harness.state_mut(), ctx, &mut frame);
+        });
+        output.viewport_commands.into_iter().collect()
+    }
+
+    fn window(minimized: bool, focused: bool) -> ViewportInfo {
+        ViewportInfo {
+            minimized: Some(minimized),
+            occluded: Some(minimized),
+            focused: Some(focused),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_later_launch_brings_a_minimized_window_back_with_no_ui_running() {
+        let app_data = workspace();
+        let Ok(Claim::First(instance)) = crate::instance::claim(app_data.path()) else {
+            panic!("nothing else runs on this app data folder");
+        };
+        let mut harness = harness_with(app_data.path(), Some(instance));
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        *harness.state().recent.lock() = second;
+
+        assert!(matches!(
+            crate::instance::claim(app_data.path()),
+            Ok(Claim::Running)
+        ));
+
+        // Both windows are minimized: the window comes back first.
+        let root = (ViewportId::ROOT, window(true, false));
+        let commands = logic_pass(&mut harness, &[root.clone(), (second, window(true, false))]);
+        let sent = commands.get(&second).cloned().unwrap_or_default();
+        assert!(sent.contains(&ViewportCommand::Minimized(false)));
+        assert!(sent.contains(&ViewportCommand::Focus));
+        assert!(!commands.contains_key(&ViewportId::ROOT));
+
+        // It is back but the system didn't focus it yet: Noura asks again.
+        std::thread::sleep(FORWARD_RETRY);
+        let commands = logic_pass(
+            &mut harness,
+            &[root.clone(), (second, window(false, false))],
+        );
+        let sent = commands.get(&second).cloned().unwrap_or_default();
+        assert!(sent.contains(&ViewportCommand::Focus));
+
+        // Once it has focus, Noura stops asking.
+        logic_pass(&mut harness, &[root.clone(), (second, window(false, true))]);
+        assert!(harness.state().forward.is_none());
+        std::thread::sleep(FORWARD_RETRY);
+        let commands = logic_pass(&mut harness, &[root, (second, window(false, true))]);
+        assert!(!commands.contains_key(&second));
+    }
+
+    /// Quitting lets go of the lock once every window has let go of the
+    /// workspace, so the next launch runs.
+    #[test]
+    fn quitting_lets_the_next_launch_run() {
+        let app_data = workspace();
+        let Ok(Claim::First(instance)) = crate::instance::claim(app_data.path()) else {
+            panic!("nothing else runs on this app data folder");
+        };
+        let mut harness = harness_with(app_data.path(), Some(instance));
+        open_new_window(&mut harness);
+
+        eframe::App::on_exit(harness.state_mut());
+
+        assert!(harness.state().first.is_none());
+        assert!(harness.state().others.is_empty());
+        assert!(matches!(
+            crate::instance::claim(app_data.path()),
+            Ok(Claim::First(_))
+        ));
     }
 
     #[test]

@@ -335,8 +335,7 @@ fn opening_the_open_workspace_again_keeps_every_window_on_it() {
     let mut second = first.new_window().unwrap();
 
     second.open_folder(folder.path().to_owned());
-    // The same folder spelled another way opens it in the background
-    // before Noura can tell it's the open workspace.
+    settle(&mut second);
     second.open_folder(folder.path().join("."));
     settle(&mut second);
     first.poll();
@@ -349,6 +348,42 @@ fn opening_the_open_workspace_again_keeps_every_window_on_it() {
         first.workspace().unwrap(),
         second.workspace().unwrap()
     ));
+}
+
+/// The open workspace's folder spelled another way opens no second engine,
+/// which would watch and reconcile the same index. Opening a workspace
+/// records it in the recent list, so a list that stays gone shows nothing
+/// opened.
+#[test]
+fn the_open_workspace_spelled_another_way_opens_nothing_more() {
+    let (app_data, folder, mut first) = opened(&["A.md"]);
+    let mut second = first.new_window().unwrap();
+    let recents = app_data.path().join("recent-workspaces.json");
+    assert!(recents.exists());
+    let name = folder.path().file_name().unwrap();
+    let mut spellings = vec![folder.path().join("."), folder.path().join("..").join(name)];
+    #[cfg(unix)]
+    {
+        let link = app_data.path().join("link");
+        std::os::unix::fs::symlink(folder.path(), &link).unwrap();
+        spellings.push(link);
+    }
+
+    for spelling in spellings {
+        std::fs::remove_file(&recents).unwrap();
+        second.open_folder(spelling.clone());
+        settle(&mut second);
+        first.poll();
+
+        assert!(!recents.exists(), "{} opened again", spelling.display());
+        assert!(second.notice().is_none());
+        assert!(!first.is_closed());
+        assert!(std::ptr::eq(
+            first.workspace().unwrap(),
+            second.workspace().unwrap()
+        ));
+        write(app_data.path(), "recent-workspaces.json", b"[]");
+    }
 }
 
 /// The rail's page titles, top to bottom.
