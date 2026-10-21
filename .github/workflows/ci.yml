@@ -116,6 +116,20 @@ jobs:
           fi
           "$binary"
 
+  editor-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      # editor-core has no UI dependency; neither editor crate reaches
+      # Lockbook's crates, a git source, a mobile host library or an HTTP
+      # client; the build holds one wgpu version.
+      - run: scripts/check-editor-deps.sh
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
