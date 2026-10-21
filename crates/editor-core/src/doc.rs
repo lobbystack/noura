@@ -29,6 +29,8 @@ pub struct MdDoc {
     pub ws_seq: Arc<AtomicU64>,
     /// Caches of values derived from the text and reveal state.
     pub cache: TextCache,
+    /// Code highlights worked out for the current text.
+    pub highlight_cache: RefCell<crate::highlight::HighlightCache>,
 
     // reveal inputs
     /// The selection that reveals syntax, or `None` while the editor isn't
@@ -118,6 +120,7 @@ impl MdDoc {
             bounds_seq: 0,
             ws_seq,
             cache: Default::default(),
+            highlight_cache: Default::default(),
             reveal_selection: None,
             entered_atom: None,
             find_current_match: None,

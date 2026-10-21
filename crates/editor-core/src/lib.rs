@@ -16,6 +16,7 @@ pub mod constructs;
 pub mod diff;
 pub mod doc;
 pub mod fold;
+pub mod highlight;
 pub mod images;
 pub mod input;
 pub mod links;

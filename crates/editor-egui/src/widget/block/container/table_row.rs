@@ -19,7 +19,11 @@ impl<'ast> MdRender {
     ) {
         let range = self.node_range(cell);
         let label = self.buffer[range].trim().to_string();
-        let response = ui.interact(rect, ui.id().with(("md_table_cell", range)), Sense::hover());
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with(("md_table_cell", range)),
+            Sense::hover(),
+        );
         ui.ctx().accesskit_node_builder(response.id, |node| {
             node.set_role(if is_header_row {
                 Role::ColumnHeader
