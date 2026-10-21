@@ -359,6 +359,23 @@ fn noura_keeps_its_own_properties_read_only() {
 }
 
 #[test]
+fn another_types_properties_show_read_only_until_its_plugin_supplies_a_panel() {
+    let bytes =
+        format!("---\nid: task_{ID}\ntype: task\nstatus: todo\npriority: high\n---\nSteps\n");
+    let fixture = Fixture::new(&[("Task.md", bytes.as_bytes())]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Task.md");
+
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.text(), "Steps\n");
+    let properties = note.properties().unwrap();
+    assert!(properties.iter().all(|property| property.read_only));
+    app.set_note_property(tab, "status", PropertyValue::Text("done".into()));
+    settle_saves(&mut app);
+    assert_eq!(fixture.read("Task.md"), bytes.as_bytes());
+}
+
+#[test]
 fn a_property_edit_never_overwrites_a_file_that_changed_since_noura_read_it() {
     let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
     let mut app = fixture.app();

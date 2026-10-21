@@ -168,6 +168,15 @@ struct Managed {
     properties: BTreeMap<String, serde_json::Value>,
 }
 
+impl Managed {
+    /// Whether the kernel's panel edits this object's properties. Notes
+    /// only: another type's plugin supplies its own panel (ticket 25), and
+    /// until then its properties show read-only.
+    fn edits_in_place(&self) -> bool {
+        self.object_type == "note"
+    }
+}
+
 /// A Markdown file open in a tab.
 #[derive(Debug, Clone)]
 pub struct NoteSession {
@@ -340,7 +349,7 @@ impl NoteSession {
             let value = PropertyValue::of(shown);
             properties.push(Property {
                 key: key.clone(),
-                read_only: value.to_json().is_none(),
+                read_only: !managed.edits_in_place() || value.to_json().is_none(),
                 value,
             });
         }
@@ -525,10 +534,11 @@ impl NoteSession {
         self.waiting_for_edit = false;
     }
 
+    /// Whether the panel edits the property `key` in place.
     pub(crate) fn has_property(&self, key: &str) -> bool {
         self.managed
             .as_ref()
-            .is_some_and(|managed| managed.properties.contains_key(key))
+            .is_some_and(|managed| managed.edits_in_place() && managed.properties.contains_key(key))
             && !NOURA_PROPERTIES.contains(&key)
     }
 
