@@ -160,6 +160,8 @@ pub struct MdRender {
 
     // caches
     pub layout_cache: LayoutCache,
+    /// Each top-level block's estimated row height.
+    pub(crate) row_approx: std::cell::RefCell<widget::block::RowApprox>,
 
     // viewport
     pub width: f32,
@@ -425,6 +427,7 @@ impl MdRender {
             embeds: Box::new(()),
             spelling: Default::default(),
             layout_cache: Default::default(),
+            row_approx: Default::default(),
             width: Default::default(),
             width_seq: 0,
             viewport_height: Default::default(),

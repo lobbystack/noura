@@ -50,6 +50,8 @@ pub struct Reparsed {
     /// The top-level blocks that replaced the run, as indices among the
     /// root's children.
     pub blocks: Range<usize>,
+    /// How many top-level blocks the run held before.
+    pub replaced: usize,
 }
 
 impl Ast {
@@ -226,6 +228,7 @@ impl Ast {
             old_lines: start_line..old_end_line,
             new_lines: start_line..new_end_line,
             blocks: first_block..first_block + new_blocks.len(),
+            replaced: after_block - first_block,
         }
     }
 }

@@ -1174,21 +1174,55 @@ impl<'ast> MdDoc {
     pub fn selected_fold_item(&self, node: &'ast AstNode<'ast>) -> bool {
         // any items selected -> those items selected for fold
         let root = node.ancestors().last().unwrap();
-        for descendent in root.descendants() {
-            if self.selected_block(descendent)
-                && matches!(
-                    descendent.data().value,
-                    NodeValue::Item(_) | NodeValue::TaskItem(_)
-                )
-            {
-                return self.selected_block(node);
-            }
+        if self.any_item_selected(root) {
+            return self.selected_block(node);
         }
 
         // else -> parent item of any selected items selected for fold
         node.first_child()
             .map(|c| self.selected_block(c))
             .unwrap_or_default()
+    }
+
+    /// Whether any list item under `root` is a selected block. Only blocks
+    /// on the selection's lines can be, so the walk skips the rest; the
+    /// answer holds until the text or the selection changes.
+    fn any_item_selected(&self, root: &'ast AstNode<'ast>) -> bool {
+        let selection = self.buffer.current.selection;
+        if let Some((at, answer)) = self.cache.any_item_selected.get()
+            && at == selection
+        {
+            return answer;
+        }
+        let first = self.offset_line_number(selection.start());
+        let last = self.offset_line_number(selection.end());
+        let mut answer = false;
+        let mut stack = vec![root];
+        'walk: while let Some(node) = stack.pop() {
+            for child in node.children() {
+                let pos = child.data.borrow().sourcepos;
+                if pos.start.line > last {
+                    break;
+                }
+                if pos.end.line != 0 && pos.end.line < first {
+                    continue;
+                }
+                if self.selected_block(child)
+                    && matches!(
+                        child.data().value,
+                        NodeValue::Item(_) | NodeValue::TaskItem(_)
+                    )
+                {
+                    answer = true;
+                    break 'walk;
+                }
+                if child.is_container_block() {
+                    stack.push(child);
+                }
+            }
+        }
+        self.cache.any_item_selected.set(Some((selection, answer)));
+        answer
     }
 }
 

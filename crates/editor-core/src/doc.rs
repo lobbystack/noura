@@ -19,6 +19,19 @@ use crate::bounds::Bounds;
 /// millisecond.
 pub const LARGE_NOTE_BYTES: usize = 64 * 1024;
 
+/// A run of top-level blocks an in-place reparse replaced, between two
+/// versions of the bounds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockEdit {
+    /// `bounds_seq` before the reparse, and after it.
+    pub from_bounds_seq: u64,
+    pub to_bounds_seq: u64,
+    /// The blocks replaced, as indices among the root's children before.
+    pub old_blocks: std::ops::Range<usize>,
+    /// The blocks that replaced them, as indices after.
+    pub new_blocks: std::ops::Range<usize>,
+}
+
 /// What parsing a note has cost.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ParseStats {
@@ -95,6 +108,8 @@ pub struct MdDoc {
     large_note_bytes: usize,
     /// What parsing has cost this thread so far.
     stats: ParseStats,
+    /// The top-level blocks the last in-place reparse replaced.
+    last_block_edit: Option<BlockEdit>,
     /// Marked text an input method is composing at the caret. It never
     /// reaches the buffer; see [`crate::ime`].
     pub(crate) composition: Option<crate::ime::Composition>,
@@ -124,6 +139,9 @@ pub struct TextCache {
     pub hidden_by_fold_deps: Cell<Option<u64>>,
     /// The `text_seq` this cache was last consistent with.
     pub text_seq: Cell<u64>,
+    /// Whether a list item is selected, and the selection that answer is
+    /// for.
+    pub any_item_selected: Cell<Option<((Grapheme, Grapheme), bool)>>,
 }
 
 impl TextCache {
@@ -132,6 +150,7 @@ impl TextCache {
         self.node_range.borrow_mut().clear();
         self.hidden_by_fold.borrow_mut().clear();
         self.hidden_by_fold_deps.set(None);
+        self.any_item_selected.set(None);
     }
 
     /// Wipe and re-stamp if `current` differs from the recorded text_seq.
@@ -177,6 +196,7 @@ impl MdDoc {
             wake: None,
             large_note_bytes: LARGE_NOTE_BYTES,
             stats: ParseStats::default(),
+            last_block_edit: None,
             composition: None,
             debug: false,
         }
@@ -296,7 +316,14 @@ impl MdDoc {
                     &Self::comrak_options(),
                     self.text_seq,
                 );
+                let from_bounds_seq = self.bounds_seq;
                 ast.with_root(|root| self.update_bounds(root, &reparsed));
+                self.last_block_edit = Some(BlockEdit {
+                    from_bounds_seq,
+                    to_bounds_seq: self.bounds_seq,
+                    old_blocks: reparsed.blocks.start..reparsed.blocks.start + reparsed.replaced,
+                    new_blocks: reparsed.blocks.clone(),
+                });
                 self.stats.in_place += 1;
                 let wake = self.wake.clone();
                 let background = self
@@ -395,6 +422,12 @@ impl MdDoc {
         self.background
             .as_mut()
             .is_some_and(|background| background.wait(timeout))
+    }
+
+    /// The top-level blocks the last in-place reparse replaced, for caches
+    /// of per-block values that can keep the rest across it.
+    pub fn last_block_edit(&self) -> Option<&BlockEdit> {
+        self.last_block_edit.as_ref()
     }
 
     /// What parsing has cost so far.

@@ -543,7 +543,66 @@ impl MdRender {
     }
 }
 
+/// The estimated height of each top-level block's row, with its spacing:
+/// what the scroll area sums every frame. An in-place reparse replaces the
+/// rows of the blocks it reparsed and keeps the rest.
+#[derive(Default)]
+pub struct RowApprox {
+    /// `bounds_seq` and the estimates' own dependencies the rows hold for.
+    deps: Option<(u64, HeightDeps)>,
+    rows: Vec<Option<f32>>,
+}
+
 impl<'ast> MdRender {
+    /// The estimated height of the row of top-level block `index`, `node`,
+    /// one of `count` blocks.
+    pub fn row_approx(&self, index: usize, node: &'ast AstNode<'ast>, count: usize) -> f32 {
+        let deps = (self.doc.bounds_seq, self.approx_deps());
+        {
+            let mut cache = self.row_approx.borrow_mut();
+            if cache.deps != Some(deps) {
+                let edit = self.doc.last_block_edit();
+                match (cache.deps, edit) {
+                    (Some((from, old_deps)), Some(edit))
+                        if from == edit.from_bounds_seq
+                            && deps.0 == edit.to_bounds_seq
+                            && old_deps == deps.1
+                            && edit.old_blocks.end <= cache.rows.len() =>
+                    {
+                        let new = edit.new_blocks.clone();
+                        cache.rows.splice(
+                            edit.old_blocks.clone(),
+                            std::iter::repeat_n(None, new.len()),
+                        );
+                        // The blocks on either side: one's spacing reaches
+                        // the run, the other can become the last block.
+                        if let Some(row) = cache.rows.get_mut(new.end) {
+                            *row = None;
+                        }
+                        if let Some(row) =
+                            new.start.checked_sub(1).and_then(|i| cache.rows.get_mut(i))
+                        {
+                            *row = None;
+                        }
+                    }
+                    _ => cache.rows.clear(),
+                }
+                cache.rows.resize(count, None);
+                cache.deps = Some(deps);
+            }
+            if let Some(Some(height)) = cache.rows.get(index) {
+                return *height;
+            }
+        }
+        let height = self.block_pre_spacing_height_approx(node)
+            + self.height_approx(node)
+            + self.block_post_spacing_height_approx(node);
+        if let Some(row) = self.row_approx.borrow_mut().rows.get_mut(index) {
+            *row = Some(height);
+        }
+        height
+    }
+
     fn height_deps(&self) -> HeightDeps {
         [self.width_seq, self.embeds.seq(), self.reveal_seq]
     }

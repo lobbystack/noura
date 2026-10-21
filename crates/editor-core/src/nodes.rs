@@ -719,7 +719,7 @@ impl<'ast> MdDoc {
     }
 
     /// The 1-based line `offset` is on, as comrak numbers lines.
-    fn offset_line_number(&self, offset: Grapheme) -> usize {
+    pub(crate) fn offset_line_number(&self, offset: Grapheme) -> usize {
         self.bounds
             .source_lines
             .find_containing(offset, true, true)
