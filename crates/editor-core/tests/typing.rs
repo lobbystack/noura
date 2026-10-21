@@ -211,3 +211,48 @@ fn typing_over_a_selection_made_leftward_replaces_it() {
     assert_eq!(doc.text(), "one 2 three");
     assert_eq!(doc.selection(), (g(5), g(5)));
 }
+
+fn insert(doc: &mut MdDoc, text: &str) {
+    doc.apply(
+        [Event::Replace {
+            region: Region::Selection,
+            text: text.into(),
+            advance_cursor: true,
+        }],
+        &NoLayout,
+    );
+}
+
+/// Records a save the way the app does once the file holds the text.
+fn save(doc: &mut MdDoc) {
+    let version = doc.buffer.current.seq;
+    let text = doc.text().to_owned();
+    doc.buffer.saved(version, text.clone());
+    // The app hands the editor the file it wrote; nothing merges.
+    doc.buffer.reload(text);
+    doc.buffer.update();
+}
+
+#[test]
+fn undo_and_redo_step_through_edits_across_saves() {
+    let mut doc = MdDoc::new("note\n");
+    caret_at(&mut doc, 4);
+
+    insert(&mut doc, " one");
+    save(&mut doc);
+    insert(&mut doc, " two");
+    save(&mut doc);
+
+    doc.apply([Event::Undo], &NoLayout);
+    assert_eq!(doc.text(), "note one\n");
+    doc.apply([Event::Undo], &NoLayout);
+    assert_eq!(doc.text(), "note\n");
+    save(&mut doc);
+
+    doc.apply([Event::Redo], &NoLayout);
+    assert_eq!(doc.text(), "note one\n");
+    save(&mut doc);
+    doc.apply([Event::Redo], &NoLayout);
+    assert_eq!(doc.text(), "note one two\n");
+    assert!(!doc.buffer.can_redo());
+}
