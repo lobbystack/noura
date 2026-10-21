@@ -168,6 +168,27 @@ fn a_committed_composition_inserts_only_its_text_inside_bold_a_heading_and_a_lis
     }
 }
 
+/// An autosave in the middle of a composition writes the note without the
+/// marked text, and the commit reaches the next save.
+#[test]
+fn a_save_while_composing_writes_no_marked_text() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "# Head");
+    compose(&mut harness, caret);
+
+    let editor = harness.state_mut().0.as_mut().unwrap();
+    let (version, saved) = editor.flush_for_save();
+    assert_eq!(saved, NOTE);
+    editor.record_disk_save(version, saved);
+
+    send(&mut harness, ImeEvent::Commit("日本".into()));
+    let (_, saved) = harness.state_mut().0.as_mut().unwrap().flush_for_save();
+    assert_eq!(
+        saved,
+        "# Head日本ing\n\nSome **bold** text.\n\n- item one\n- item two\n"
+    );
+}
+
 #[test]
 fn a_cancelled_composition_leaves_the_bytes_unchanged() {
     for before in ["**bo", "# Head", "- item"] {
