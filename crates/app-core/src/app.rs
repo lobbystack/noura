@@ -15,16 +15,18 @@ use std::{
 use crate::{
     AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
     RecentWorkspace, System, Tab, Workspace, WorkspaceService, layout::LayoutStore, rail::Rail,
-    tabs::Tabs, view_state::ViewStore,
+    search::Searcher, tabs::Tabs, view_state::ViewStore,
 };
 
 mod drops;
 mod file_actions;
+mod finder;
 mod ignored_files;
 mod view;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
+pub use finder::{Palette, QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
 
 /// What the window shows.
@@ -75,6 +77,8 @@ pub enum Change {
     Notice,
     /// The Ignored files page changed.
     Settings,
+    /// The palette opened, closed, or changed what it shows.
+    Palette,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -128,7 +132,8 @@ pub struct App {
     system: Arc<dyn System>,
     screen: Screen,
     recents: Vec<RecentWorkspace>,
-    workspace: Option<Workspace>,
+    /// The open workspace, which background searches share.
+    workspace: Option<Arc<Workspace>>,
     tree: Option<FileTree>,
     tabs: Tabs,
     rail: Rail,
@@ -155,6 +160,9 @@ pub struct App {
     /// The item the last native drag carried, so a drop of it back on the
     /// tree moves it instead of copying it.
     dragged_out: Option<String>,
+    /// Quick open or search, while the palette is open.
+    palette: Option<Palette>,
+    searcher: Searcher,
 }
 
 impl App {
@@ -175,6 +183,8 @@ impl App {
             system.clone(),
         ));
         let recents = service.recents();
+        let listeners = Listeners::default();
+        let answered = listeners.clone();
         let mut app = Self {
             service,
             system,
@@ -193,10 +203,12 @@ impl App {
             pending_trash: None,
             failed_restore: None,
             pending: None,
-            listeners: Listeners::default(),
+            listeners,
             pending_saves: Arc::new(NoPendingSaves),
             drag_out: None,
             dragged_out: None,
+            palette: None,
+            searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
         };
         app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
@@ -231,7 +243,7 @@ impl App {
     }
 
     pub fn workspace(&self) -> Option<&Workspace> {
-        self.workspace.as_ref()
+        self.workspace.as_deref()
     }
 
     pub fn tree(&self) -> Option<&FileTree> {
@@ -334,6 +346,12 @@ impl App {
 
     /// Apply finished background work. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
+        let searched = self.take_search_answer();
+        self.take_opened() || searched
+    }
+
+    /// Take the workspace a background job opened, or why it couldn't.
+    fn take_opened(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };
@@ -355,6 +373,7 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
+                self.close_palette();
                 self.restore_view();
                 self.renaming = None;
                 self.ignored_files = None;
@@ -382,7 +401,8 @@ impl App {
 
     fn adopt(&mut self, opened: Opened) {
         self.failed_restore = None;
-        self.workspace = Some(opened.workspace);
+        self.close_palette();
+        self.workspace = Some(Arc::new(opened.workspace));
         self.tree = Some(opened.tree);
         self.restore_view();
         self.notice = None;
