@@ -24,6 +24,8 @@ pollster = "1"
 proptest.workspace = true
 rand.workspace = true
 serde_json.workspace = true
+# The typing benchmark also replays with the system spell checker on.
+spell-check = { version = "0.2.0", path = "../spell-check" }
 tempfile.workspace = true
 # The byte-identity tests open and save notes the way Noura does.
 workspace-format = { version = "0.2.0", path = "../workspace-format" }
