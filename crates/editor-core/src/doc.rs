@@ -64,6 +64,9 @@ pub struct MdDoc {
     /// Events an edit queued to apply after the current batch, such as the
     /// fold-tag edit a fold command makes.
     pub deferred_events: Vec<crate::input::Event>,
+    /// Marked text an input method is composing at the caret. It never
+    /// reaches the buffer; see [`crate::ime`].
+    pub(crate) composition: Option<crate::ime::Composition>,
     pub debug: bool,
 }
 
@@ -132,6 +135,7 @@ impl MdDoc {
             opened_links: Vec::new(),
             copied: None,
             deferred_events: Vec::new(),
+            composition: None,
             debug: false,
         }
     }

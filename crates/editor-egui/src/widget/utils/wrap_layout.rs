@@ -463,6 +463,146 @@ impl Layout {
         }
     }
 
+    /// Shows an input method's marked `text` inline at source offset `at`,
+    /// standing for no source, so the text after `at` moves along.
+    /// `byte_of` gives a source offset's byte in the note, to place `at`
+    /// inside a span of source text; `format` styles the marked text from
+    /// the format of the text it lands in. Does nothing when this layout
+    /// doesn't reach `at`.
+    pub fn insert_marked(
+        &mut self,
+        at: Grapheme,
+        text: &str,
+        byte_of: impl Fn(Grapheme) -> usize,
+        format: impl FnOnce(Option<&Format>) -> Format,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        // Prefer source text the offset falls inside or starts, then
+        // source text it ends, then a zero-visible anchor at it.
+        let rank = |seg: &SourceSegment| {
+            let (start, end) = (seg.source.start(), seg.source.end());
+            if !(start <= at && at <= end) {
+                None
+            } else if seg.one_to_one && at < end {
+                Some(0)
+            } else if seg.one_to_one {
+                Some(1)
+            } else {
+                Some(2)
+            }
+        };
+        let found = self
+            .source_segments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, seg)| rank(seg).map(|rank| (rank, index)))
+            .min();
+        let (visible_at, split) = match found {
+            Some((rank, index)) => {
+                let seg = &self.source_segments[index];
+                if rank < 2 {
+                    let into = byte_of(at).saturating_sub(byte_of(seg.source.start()));
+                    let visible_at = (seg.visible.start + into).min(seg.visible.end);
+                    let inside = seg.visible.start < visible_at && visible_at < seg.visible.end;
+                    (visible_at, inside.then_some(index))
+                } else if at == seg.source.start() {
+                    (seg.visible.start, None)
+                } else {
+                    (seg.visible.end, None)
+                }
+            }
+            None if self.source_range.start() <= at && at <= self.source_range.end() => {
+                (self.visible.len(), None)
+            }
+            None => return,
+        };
+        // The text the marked text lands in, or the text before it.
+        let surrounding = self
+            .format_runs
+            .iter()
+            .find(|(start, end, _)| *start < visible_at && visible_at < *end)
+            .or_else(|| {
+                self.format_runs
+                    .iter()
+                    .rev()
+                    .find(|(_, end, _)| *end <= visible_at)
+            })
+            .or_else(|| self.format_runs.first())
+            .map(|(_, _, format)| format);
+        let format = format(surrounding);
+
+        let mut marked = String::new();
+        let mut tabs = Vec::new();
+        push_sanitised(&mut marked, &mut tabs, text);
+        let len = marked.len();
+        let shift = |position: &mut usize| {
+            if *position >= visible_at {
+                *position += len;
+            }
+        };
+
+        // Split the source span and the format run the marked text lands
+        // inside, then move everything after it along.
+        if let Some(index) = split {
+            let seg = self.source_segments[index].clone();
+            self.source_segments[index].visible.end = visible_at;
+            self.source_segments[index].source = (seg.source.start(), at);
+            self.source_segments.insert(
+                index + 1,
+                SourceSegment {
+                    visible: visible_at..seg.visible.end,
+                    source: (at, seg.source.end()),
+                    one_to_one: true,
+                },
+            );
+        }
+        let mut runs = Vec::with_capacity(self.format_runs.len() + 2);
+        for (start, end, run_format) in self.format_runs.drain(..) {
+            if start < visible_at && visible_at < end {
+                runs.push((start, visible_at, run_format.clone()));
+                runs.push((visible_at, end, run_format));
+            } else {
+                runs.push((start, end, run_format));
+            }
+        }
+        for (start, end, _) in &mut runs {
+            shift(start);
+            if *end > visible_at {
+                *end += len;
+            }
+        }
+        let run_at = runs
+            .iter()
+            .position(|(start, _, _)| *start >= visible_at + len)
+            .unwrap_or(runs.len());
+        runs.insert(run_at, (visible_at, visible_at + len, format));
+        self.format_runs = runs;
+        for seg in &mut self.source_segments {
+            let anchor_before = seg.visible.is_empty() && seg.source.end() <= at;
+            if seg.visible.start >= visible_at && !anchor_before {
+                seg.visible.start += len;
+                seg.visible.end += len;
+            }
+        }
+        self.source_segments.push(SourceSegment {
+            visible: visible_at..visible_at + len,
+            source: (at, at),
+            one_to_one: false,
+        });
+        for (position, _) in &mut self.events {
+            shift(position);
+        }
+        for position in &mut self.tab_positions {
+            shift(position);
+        }
+        self.tab_positions
+            .extend(tabs.into_iter().map(|tab| tab + visible_at));
+        self.tab_positions.sort_unstable();
+        self.visible.insert_str(visible_at, &marked);
+    }
+
     /// Open an inline-box scope. Pairs LIFO with `style_close`. The
     /// row builder uses these to attribute styles per fragment.
     pub fn style_open(&mut self, style: StyleInfo) {
@@ -528,6 +668,29 @@ fn push_sanitised(out: &mut String, tabs: &mut Vec<usize>, text: &str) {
 }
 
 impl MdRender {
+    /// `layout` with an input method's marked text at the caret, when one
+    /// is composing there: underlined in the format of the text around
+    /// it.
+    fn with_marked_text(&self, mut layout: Layout) -> Layout {
+        let Some(composition) = self.doc.composition() else {
+            return layout;
+        };
+        let caret = self.buffer.current.selection.1;
+        let segs = &self.buffer.current.segs;
+        layout.insert_marked(
+            caret,
+            &composition.text,
+            |offset| segs.offset_to_byte(offset).0,
+            |surrounding| Format {
+                underline: true,
+                ..surrounding
+                    .cloned()
+                    .unwrap_or_else(|| self.text_format_document())
+            },
+        );
+        layout
+    }
+
     /// Run the post-walker pipeline (`shape → break → build_rows`)
     /// on a populated `Layout`. The public entry point until the
     /// AST-driven `compute_wrap_layout` is wired in (next migration
@@ -538,6 +701,7 @@ impl MdRender {
         width: f32,
         row_height: f32,
     ) -> WrapUnitLayout {
+        let layout = self.with_marked_text(layout);
         let row_spacing = self.layout.row_spacing;
         let inline_pad = self.layout.inline_padding;
         let source_range = layout.source_range();

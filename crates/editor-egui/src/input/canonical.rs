@@ -192,18 +192,24 @@ impl<'ast> MdEdit {
                     advance_cursor: true,
                 })
             }
-            // An input method's committed text types like a key. Its
-            // composition (preedit) stays out of the note until it commits.
-            egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                if self.renderer.readonly || text.is_empty() {
-                    return None;
-                }
-                Some(Event::Replace {
-                    region: Region::Selection,
-                    text,
-                    advance_cursor: true,
-                })
-            }
+            // An input method's composition shows as marked text at the
+            // caret and stays out of the note until it commits.
+            egui::Event::Ime(egui::ImeEvent::Preedit {
+                text,
+                active_range_chars,
+            }) => Some(Event::Compose {
+                text,
+                selected: active_range_chars,
+            }),
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) => Some(Event::Commit { text }),
+            #[expect(
+                deprecated,
+                reason = "egui no longer sends Disabled, but a platform may"
+            )]
+            egui::Event::Ime(egui::ImeEvent::Disabled) => Some(Event::Compose {
+                text: String::new(),
+                selected: None,
+            }),
             egui::Event::Key {
                 key,
                 pressed: true,

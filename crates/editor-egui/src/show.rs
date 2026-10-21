@@ -793,14 +793,28 @@ impl MdEdit {
                 self.cursor_last_interact = Some(now);
             }
             let blink = focused.then(|| now - self.cursor_last_interact.unwrap_or(now));
-            self.show_offset(
-                ui,
-                selection.1,
-                theme.bright.get_color(theme.prefs().primary),
-                blink,
-            );
-            if focused && let Some([top, bot]) = self.cursor_line(selection.1) {
-                let cursor_rect = Rect::from_min_max(top, bot);
+            let caret_color = theme.bright.get_color(theme.prefs().primary);
+            // While an input method composes, the caret sits in the marked
+            // text and its candidate window opens under it.
+            let marked = self.renderer.marked_geometry();
+            let ime_rect = match &marked {
+                Some(marked) => {
+                    let [top, bot] = marked.caret;
+                    crate::widgets::paint_caret(
+                        ui,
+                        top.x,
+                        egui::Rangef::new(top.y, bot.y),
+                        caret_color,
+                    );
+                    Some(marked.candidates)
+                }
+                None => {
+                    self.show_offset(ui, selection.1, caret_color, blink);
+                    self.cursor_line(selection.1)
+                        .map(|[top, bot]| Rect::from_min_max(top, bot))
+                }
+            };
+            if focused && let Some(cursor_rect) = ime_rect {
                 ui.output_mut(|o| {
                     o.ime = Some(egui::output::IMEOutput {
                         purpose: egui::IMEPurpose::Normal,

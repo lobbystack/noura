@@ -22,6 +22,7 @@ pub use editor_core::{bounds, commands, keymap};
 mod chrome;
 pub mod fold;
 pub mod fonts;
+mod ime;
 pub mod input;
 pub mod palette;
 pub mod resolvers;
@@ -652,7 +653,6 @@ impl Editor {
     /// show, the text below them, and the selection toolbar over the text.
     pub fn show(&mut self, ui: &mut Ui) -> Response {
         let ctx = ui.ctx().clone();
-        self.track_composition(&ctx);
         self.handle_find_key(&ctx);
         self.show_toolbar(ui);
         if self.find_open() {
