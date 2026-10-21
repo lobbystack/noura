@@ -7,8 +7,9 @@ use local_core::{
     FinishChatAssistantInput, FinishChatToolCallInput, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
     MarkdownLinkTarget, ObjectPatch, ParseStatus, ParsedMarkdown, RawConflictResolveInput,
-    RawSaveInput, RawSaveResult, RenameChatInput, SearchInput, WORKSPACE_MANIFEST_PATH,
-    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id, parse_markdown,
+    RawRestoreInput, RawSaveInput, RawSaveResult, RenameChatInput, SearchInput,
+    WORKSPACE_MANIFEST_PATH, WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id,
+    parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -1245,6 +1246,67 @@ fn path_traversal_is_rejected_before_a_write() {
         })
         .unwrap_err();
     assert_eq!(error.code, "unsafe_path");
+}
+
+#[test]
+fn restoring_a_deleted_markdown_file_writes_it_back_and_never_replaces_one() {
+    let (workspace, _app_data, engine) = engine();
+    let restore = |relative_path: &str| RawRestoreInput {
+        relative_path: relative_path.into(),
+        body: "one\ntwo\n".into(),
+        uses_crlf: true,
+        has_bom: false,
+    };
+    for (unsafe_path, code) in [
+        ("../outside.md", "unsafe_path"),
+        ("Docs/../../outside.md", "unsafe_path"),
+        ("/tmp/outside.md", "absolute_path"),
+    ] {
+        let error = engine
+            .restore_raw_markdown(restore(unsafe_path))
+            .unwrap_err();
+        assert_eq!(error.code, code, "{unsafe_path}");
+    }
+    assert!(
+        !workspace
+            .path()
+            .parent()
+            .unwrap()
+            .join("outside.md")
+            .exists()
+    );
+    #[cfg(unix)]
+    {
+        let outside = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("Linked")).unwrap();
+        let error = engine
+            .restore_raw_markdown(restore("Linked/Plan.md"))
+            .unwrap_err();
+        assert_eq!(error.code, "symlink_escape");
+        assert!(!outside.path().join("Plan.md").exists());
+    }
+
+    let restored = engine
+        .restore_raw_markdown(restore("Docs/Plan.md"))
+        .unwrap();
+    assert_eq!(
+        std::fs::read(workspace.path().join("Docs/Plan.md")).unwrap(),
+        b"one\r\ntwo\r\n"
+    );
+    assert_eq!(
+        restored.revision,
+        engine.read_raw_markdown("Docs/Plan.md").unwrap().revision
+    );
+
+    std::fs::write(workspace.path().join("Docs/Plan.md"), "Another app's\n").unwrap();
+    let error = engine
+        .restore_raw_markdown(restore("Docs/Plan.md"))
+        .unwrap_err();
+    assert_eq!(error.code, "raw_markdown_exists");
+    assert_eq!(
+        std::fs::read(workspace.path().join("Docs/Plan.md")).unwrap(),
+        b"Another app's\n"
+    );
 }
 
 #[test]
