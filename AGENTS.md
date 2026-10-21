@@ -38,7 +38,7 @@ Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, t
 - `crates/local-core` owns filesystem safety, atomic writes, indexing, watching, reconciliation, credentials, and domain operations.
 - `crates/app-core` holds product behavior and view state for every client. It has no UI dependency, so a mobile client can reuse it later.
 - `crates/app-ui` holds the egui screens and the widget kit that draws plugin UI. It calls only `app-core`.
-- `crates/editor-core` holds the Markdown editor's buffer, parsing, reveal rules, and yrs binding, with no UI dependency. `crates/editor-egui` draws and drives it.
+- `crates/editor-core` holds the Markdown editor's buffer, parsing and reveal rules, with no UI dependency. It sends a text-mode note's local edits into the collaboration sandbox, which owns that note's only yrs document, its client IDs and its undo, and it applies the text changes the sandbox returns (`docs/workspace-format/sync-v2.md` §22). `crates/editor-egui` draws and drives it.
 - `crates/plugin-host` runs plugins in Wasmtime and enforces their capabilities. `crates/plugin-sdk` holds the WIT interfaces and the Rust author library.
 - `crates/plugins/*` holds first-party plugins. They build to WebAssembly against `plugin-sdk`, exactly like third-party plugins.
 - `crates/mcp-server` adapts MCP tools to shared services and duplicates no business logic.
