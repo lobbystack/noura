@@ -6,6 +6,7 @@
 
 use editor_core::MdDoc;
 use editor_core::buffer::TextChange;
+use editor_core::commands::Format;
 use editor_core::input::{Advance, Bound, Event, Increment, Location, NoLayout, Region};
 use editor_core::offset_types::Grapheme;
 use proptest::prelude::*;
@@ -32,6 +33,9 @@ enum Step {
     Redo,
     Bold,
     Indent,
+    Outdent,
+    Format(Format),
+    ToggleTaskLine,
 }
 
 /// Text that exercises graphemes, line breaks and Markdown syntax.
@@ -61,6 +65,25 @@ fn step() -> impl Strategy<Value = Step> {
         1 => Just(Step::Redo),
         1 => Just(Step::Bold),
         1 => Just(Step::Indent),
+        1 => Just(Step::Outdent),
+        2 => prop::sample::select(
+            &[
+                Format::Bold,
+                Format::Italic,
+                Format::Underline,
+                Format::Strikethrough,
+                Format::Code,
+                Format::Link,
+                Format::BulletList,
+                Format::NumberedList,
+                Format::CheckList,
+                Format::BlockQuote,
+                Format::Heading(0),
+                Format::Heading(2),
+            ][..]
+        )
+        .prop_map(Step::Format),
+        1 => Just(Step::ToggleTaskLine),
     ]
 }
 
@@ -106,6 +129,9 @@ fn events(doc: &MdDoc, step: &Step) -> Vec<Event> {
             style: editor_core::comrak::nodes::NodeValue::Strong,
         }],
         Step::Indent => vec![Event::Indent { deindent: false }],
+        Step::Outdent => vec![Event::Indent { deindent: true }],
+        Step::Format(format) => vec![Event::Format(*format)],
+        Step::ToggleTaskLine => vec![Event::ToggleTaskLine],
     }
 }
 

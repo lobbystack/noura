@@ -2269,6 +2269,7 @@ version = "0.2.0"
 dependencies = [
  "comrak",
  "proptest",
+ "regex",
  "ropey",
  "similar",
  "tempfile",
