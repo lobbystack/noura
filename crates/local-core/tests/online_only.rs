@@ -4,7 +4,10 @@
 
 use std::path::Path;
 
-use local_core::{CreateObjectInput, ObjectPatch, WorkspaceEngine};
+use local_core::{
+    AppendChatUserMessageInput, CreateChatInput, CreateObjectInput, ObjectPatch, PdfRangeInput,
+    WorkspaceEngine,
+};
 use tempfile::tempdir;
 
 fn engine() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceEngine) {
@@ -119,6 +122,96 @@ fn copying_any_file_only_an_icloud_placeholder_stands_for_reads_nothing() {
     assert_eq!(listing(workspace.path()), [".Scan.pdf.icloud"]);
 }
 
+/// Swap the workspace file at `relative` for the placeholder iCloud keeps
+/// in its place: `.Name.icloud` in the same folder.
+fn evict(root: &Path, relative: &str) {
+    let path = root.join(relative);
+    let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(path.with_file_name(format!(".{name}.icloud")), b"bplist00").unwrap();
+}
+
+#[test]
+fn a_pdf_only_an_icloud_placeholder_stands_for_is_never_read() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::write(workspace.path().join(".Scan.pdf.icloud"), b"bplist00").unwrap();
+
+    let inspected = engine.inspect_pdf("Scan.pdf").unwrap_err();
+    let read = engine
+        .read_pdf_range(&PdfRangeInput {
+            relative_path: "Scan.pdf".into(),
+            workspace_id: engine.manifest().id,
+            version: "any".into(),
+            offset: 0,
+            length: 5,
+        })
+        .unwrap_err();
+
+    for error in [inspected, read] {
+        assert_eq!(error.code, "file_not_downloaded", "{error:?}");
+        assert_eq!(error.path.as_deref(), Some("Scan.pdf"));
+    }
+    assert_eq!(listing(workspace.path()), [".Scan.pdf.icloud"]);
+}
+
+#[test]
+fn chat_files_only_an_icloud_placeholder_stands_for_are_never_read() {
+    let (workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Release planning".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let message = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_release".into(),
+            content: "What changed?".into(),
+            expected_chat_revision: chat.revision.clone(),
+        })
+        .unwrap();
+    let revision = engine.read_chat(&chat.value.id).unwrap().chat.revision;
+
+    evict(workspace.path(), &message.value.relative_path);
+    engine.reconcile().unwrap();
+    let error = engine.read_chat(&chat.value.id).unwrap_err();
+    assert_eq!(error.code, "file_not_downloaded", "{error:?}");
+    assert_eq!(
+        error.path.as_deref(),
+        Some(message.value.relative_path.as_str())
+    );
+
+    evict(workspace.path(), &chat.value.relative_path);
+    engine.reconcile().unwrap();
+    let before = listing(workspace.path());
+    let errors = [
+        ("list", engine.list_chats().err()),
+        (
+            "append",
+            engine
+                .append_chat_user_message(AppendChatUserMessageInput {
+                    chat_id: chat.value.id.clone(),
+                    run_id: "run_release".into(),
+                    content: "And now?".into(),
+                    expected_chat_revision: revision,
+                })
+                .err(),
+        ),
+    ];
+    for (operation, error) in errors {
+        let error = error.unwrap_or_else(|| panic!("{operation} went ahead"));
+        assert_eq!(error.code, "file_not_downloaded", "{operation}: {error:?}");
+        assert_eq!(
+            error.path.as_deref(),
+            Some(chat.value.relative_path.as_str()),
+            "{operation}"
+        );
+    }
+    assert_eq!(listing(workspace.path()), before);
+}
+
 /// Set the attribute a cloud provider gives a file whose content lives
 /// only online. It is the one such mark a test can set without a cloud
 /// sync root, and Windows still lets the test read the file, so an
@@ -156,4 +249,6 @@ fn a_note_the_cloud_provider_marks_online_only_is_never_read() {
     let error = engine.copy_file("Scan.pdf", "Scan 1.pdf").unwrap_err();
     assert_eq!(error.code, "file_not_downloaded");
     assert!(!workspace.path().join("Scan 1.pdf").exists());
+    let error = engine.inspect_pdf("Scan.pdf").unwrap_err();
+    assert_eq!(error.code, "file_not_downloaded");
 }

@@ -29,12 +29,12 @@ pub(super) struct WorkspaceScan {
 
 impl WorkspaceScan {
     /// Indexed paths the walk proved absent.
-    pub(super) fn removed(&self, indexed: &HashMap<String, (i64, i64)>) -> Vec<String> {
+    pub(super) fn removed<'a>(&self, indexed: impl IntoIterator<Item = &'a String>) -> Vec<String> {
         if self.incomplete {
             return Vec::new();
         }
         indexed
-            .keys()
+            .into_iter()
             .filter(|path| {
                 !self.seen.contains(*path)
                     && !self
@@ -306,14 +306,14 @@ pub fn is_online_only(metadata: &std::fs::Metadata) -> bool {
 /// whose content lives only in the cloud, or that only an iCloud
 /// placeholder stands for, fails with `file_not_downloaded` and is never
 /// read, since reading it would start a download and block.
-pub(super) fn read_downloaded(path: &Path, relative: &str, operation: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_downloaded(path: &Path, relative: &str, operation: &str) -> Result<Vec<u8>> {
     ensure_downloaded(path, relative, operation)?;
     std::fs::read(path).map_err(|error| CoreError::io(error, operation, Some(relative)))
 }
 
 /// Fail with `file_not_downloaded` when the file at `path` exists only in
 /// the cloud, before anything reads it.
-pub(super) fn ensure_downloaded(path: &Path, relative: &str, operation: &str) -> Result<()> {
+pub(crate) fn ensure_downloaded(path: &Path, relative: &str, operation: &str) -> Result<()> {
     let online_only = match std::fs::symlink_metadata(path) {
         Ok(metadata) => is_dataless(&metadata),
         Err(error) => {
@@ -327,7 +327,7 @@ pub(super) fn ensure_downloaded(path: &Path, relative: &str, operation: &str) ->
 }
 
 /// The error for a file this device hasn't downloaded from the cloud yet.
-pub(super) fn not_downloaded(relative: &str, operation: &str) -> CoreError {
+pub(crate) fn not_downloaded(relative: &str, operation: &str) -> CoreError {
     let mut error = CoreError::new(
         "file_not_downloaded",
         ErrorCategory::Filesystem,

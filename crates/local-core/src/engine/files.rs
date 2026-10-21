@@ -101,7 +101,7 @@ impl WorkspaceEngine {
             .lock()
             .map_err(|_| lock_error("files_list"))?
             .workspace_entry_metadata()?;
-        let unindexed = scan
+        let mut unindexed = scan
             .entries
             .iter()
             .filter(|entry| {
@@ -112,9 +112,13 @@ impl WorkspaceEngine {
             })
             .map(|entry| entry.relative_path.clone())
             .collect::<Vec<_>>();
+        // A file left before its watcher event arrived, or the watcher
+        // missed it. When it moved, its ID would otherwise show at both
+        // paths until the next full walk.
+        unindexed.extend(scan.removed(metadata.keys()));
         if !unindexed.is_empty() {
-            // A file appeared before its watcher event arrived. Index just
-            // those files instead of failing the listing.
+            // A file appeared or left before its watcher event arrived.
+            // Index just those files instead of failing the listing.
             match self.reconcile_paths(&unindexed, EventSource::Reconciliation) {
                 Ok(()) => {
                     metadata = self

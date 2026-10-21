@@ -9,7 +9,10 @@ use std::{
 
 use local_core::CreateObjectInput;
 
-use crate::{AppError, Workspace, files::has_icloud_placeholder};
+use crate::{
+    AppError, Workspace,
+    files::{has_icloud_placeholder, icloud_placeholder},
+};
 
 /// The name new notes and folders start with.
 const UNTITLED: &str = "Untitled";
@@ -171,7 +174,7 @@ impl Workspace {
     /// selected on macOS and Windows, or by opening the folder that holds
     /// it on Linux.
     pub fn reveal(&self, relative_path: &str) -> Result<(), AppError> {
-        let path = self.existing(relative_path)?;
+        let path = self.on_disk(relative_path)?;
         self.reveal_path(&path)
     }
 
@@ -197,7 +200,7 @@ impl Workspace {
     /// Put the workspace path of the item at `relative_path` on the
     /// clipboard, with `/` between folders on every platform.
     pub fn copy_path(&self, relative_path: &str) -> Result<(), AppError> {
-        self.existing(relative_path)?;
+        self.on_disk(relative_path)?;
         self.system().copy_text(relative_path);
         Ok(())
     }
@@ -216,7 +219,7 @@ impl Workspace {
                 "Noura can't open a terminal on this system.",
             ));
         }
-        let path = self.existing(relative_path)?;
+        let path = self.on_disk(relative_path)?;
         let folder = if path.is_dir() {
             path.as_path()
         } else {
@@ -261,6 +264,23 @@ impl Workspace {
             Ok(_) => Ok(path),
             Err(_) if has_icloud_placeholder(&path) => Err(AppError::not_downloaded()),
             Err(_) => Err(gone(relative_path)),
+        }
+    }
+
+    /// The file or folder at `relative_path` on disk, as [`Self::existing`]
+    /// finds it, or the iCloud placeholder that stands for a file not
+    /// downloaded yet. Showing an item in the file manager, copying its
+    /// path and opening a terminal beside it read nothing, so they work on
+    /// such a file too.
+    fn on_disk(&self, relative_path: &str) -> Result<PathBuf, AppError> {
+        match self.existing(relative_path) {
+            Err(error) if error.code == "file_not_downloaded" => self
+                .engine()
+                .resolve_managed_path(relative_path, "file_change")
+                .ok()
+                .and_then(|path| icloud_placeholder(&path))
+                .ok_or(error),
+            found => found,
         }
     }
 

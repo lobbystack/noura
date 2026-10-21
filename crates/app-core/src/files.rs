@@ -790,11 +790,17 @@ impl Workspace {
 /// Whether iCloud keeps `.Name.icloud` in place of the missing `Name`, as
 /// `local-core`'s scan lists it.
 pub(crate) fn has_icloud_placeholder(path: &std::path::Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
+    icloud_placeholder(path).is_some()
+}
+
+/// The `.Name.icloud` file iCloud keeps in place of the missing `Name`, if
+/// there is one.
+pub(crate) fn icloud_placeholder(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = path.file_name()?.to_str()?;
     let placeholder = path.with_file_name(format!(".{name}.icloud"));
-    std::fs::symlink_metadata(placeholder).is_ok_and(|metadata| metadata.is_file())
+    std::fs::symlink_metadata(&placeholder)
+        .is_ok_and(|metadata| metadata.is_file())
+        .then_some(placeholder)
 }
 
 pub(crate) fn parent_of(path: &str) -> Option<&str> {

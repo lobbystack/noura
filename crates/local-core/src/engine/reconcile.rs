@@ -165,7 +165,7 @@ impl WorkspaceEngine {
             Some((&metadata, forced)),
             list_entries,
         )?;
-        let removed = scan.removed(&metadata);
+        let removed = scan.removed(metadata.keys());
         self.store_scan_state(&scan);
         let changed = std::mem::take(&mut scan.changed);
         scan.touched = changed

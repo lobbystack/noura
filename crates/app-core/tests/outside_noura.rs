@@ -151,3 +151,29 @@ fn nothing_outside_the_workspace_reaches_the_system() {
         ))
     );
 }
+
+#[test]
+fn a_file_that_is_not_downloaded_can_be_shown_and_its_path_copied() {
+    // iCloud keeps a placeholder in place of a file it hasn't downloaded.
+    let fixture = Fixture::new(&[
+        ("Docs/Plan.md", b"p"),
+        ("Docs/.Scan.pdf.icloud", b"bplist00"),
+    ]);
+    let system = FakeSystem::on(Platform::MacOs);
+    let mut app = fixture.app_with(system.clone());
+
+    app.reveal("Docs/Scan.pdf");
+    app.copy_path("Docs/Scan.pdf");
+    app.open_terminal("Docs/Scan.pdf");
+
+    assert_eq!(
+        system.calls(),
+        [
+            Call::Reveal(fixture.root.join("Docs").join(".Scan.pdf.icloud")),
+            Call::Copy("Docs/Scan.pdf".to_owned()),
+            Call::OpenTerminal(fixture.root.join("Docs")),
+        ]
+    );
+    assert!(app.notice().is_none(), "{:?}", notice(&app));
+    assert_eq!(fixture.read("Docs/.Scan.pdf.icloud"), b"bplist00");
+}

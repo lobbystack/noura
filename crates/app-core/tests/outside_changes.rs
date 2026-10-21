@@ -617,6 +617,60 @@ fn any_file_the_cloud_drive_has_not_downloaded_shows_marked() {
     assert!(!live.path("Scan 1.pdf").exists());
 }
 
+#[test]
+fn renaming_moving_or_trashing_a_file_that_is_not_downloaded_leaves_it_alone() {
+    let mut live = Live::open(&[("Notes.md", "# Notes\n"), ("Docs/A.md", "# A\n")]);
+    write(&live.folder, ".Scan.pdf.icloud", "bplist00");
+    live.wait_until("the placeholder shows as its file", |app| {
+        not_downloaded(app, "Scan.pdf") == Some(true)
+    });
+    let not_yet = "This file isn't downloaded yet. Try again once it is.";
+
+    live.app.start_rename("Scan.pdf");
+    live.app.finish_rename("Scanned");
+    assert_eq!(live.app.notice().unwrap().message, not_yet);
+    live.app.move_into("Scan.pdf", "Docs");
+    assert_eq!(live.app.notice().unwrap().message, not_yet);
+    live.app.request_trash("Scan.pdf");
+    assert_eq!(live.app.notice().unwrap().message, not_yet);
+
+    assert_eq!(
+        std::fs::read(live.path(".Scan.pdf.icloud")).unwrap(),
+        b"bplist00"
+    );
+    for gone in ["Scanned.pdf", ".Scanned.pdf.icloud", "Docs/Scan.pdf"] {
+        assert!(!live.path(gone).exists(), "{gone}");
+    }
+    assert!(!live.path("Docs/.Scan.pdf.icloud").exists());
+    let trashed = std::fs::read_dir(live.path(".noura/trash"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(trashed, 0);
+    assert_eq!(rows(&live.app), ["Docs", "Notes.md", "Scan.pdf"]);
+}
+
+#[test]
+fn a_listing_after_a_move_the_watcher_missed_keeps_one_object_at_the_new_path() {
+    let mut live = Live::open_with(&[("Plan.md", &note(PLAN_ID, "The plan."))], NO_RESCANS);
+    // Neither the watcher nor a rescan reports the move.
+    live.workspace().force_watch_fault(WatchFault::Silent);
+    std::fs::create_dir(live.path("Notes")).unwrap();
+    std::fs::rename(live.path("Plan.md"), live.path("Notes/Plan.md")).unwrap();
+
+    // Noura's own change lists the files again, and that listing finds
+    // the note at its new path.
+    live.app.new_folder(Some(""));
+    live.app.poll();
+
+    assert!(live.app.problems().is_empty(), "{:?}", live.app.problems());
+    let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
+    assert_eq!(found.relative_path, "Notes/Plan.md");
+    assert_eq!(
+        objects(&live.app),
+        [(PLAN_ID.to_owned(), "Notes/Plan.md".to_owned())]
+    );
+}
+
 /// Set or clear the attribute a cloud provider gives a file whose content
 /// lives only online.
 #[cfg(windows)]

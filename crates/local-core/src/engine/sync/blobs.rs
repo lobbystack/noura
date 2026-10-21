@@ -10,6 +10,9 @@ impl WorkspaceEngine {
         let relative = format!(".noura/sync/blobs/{}", blob.id);
         self.sync_prepare_parent(&relative)?;
         let path = self.sync_path(&relative)?;
+        if lives_in_the_cloud(&path) {
+            return Err(not_downloaded(&relative, "sync_blob"));
+        }
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(create).create(create);
         #[cfg(unix)]
@@ -30,7 +33,11 @@ impl WorkspaceEngine {
         &self,
         manifest: &crate::sync::CheckpointBlobManifest,
     ) -> Result<File> {
-        let path = self.sync_path(&format!(".noura/sync/blobs/{}", manifest.ciphertext_digest))?;
+        let relative = format!(".noura/sync/blobs/{}", manifest.ciphertext_digest);
+        let path = self.sync_path(&relative)?;
+        if lives_in_the_cloud(&path) {
+            return Err(not_downloaded(&relative, "sync_blob"));
+        }
         let mut file = File::open(path).map_err(|_| invalid("sync_blob_read_failed"))?;
         let mut hash = Sha256::new();
         let mut size = 0_u64;
@@ -318,6 +325,9 @@ impl WorkspaceEngine {
 }
 
 pub(super) fn file_revision(path: &Path) -> Result<Option<String>> {
+    if lives_in_the_cloud(path) {
+        return Err(not_downloaded(&path.to_string_lossy(), "sync"));
+    }
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -329,6 +339,7 @@ pub(super) fn file_revision(path: &Path) -> Result<Option<String>> {
     Ok(Some(hash.finalize().to_hex().to_string()))
 }
 fn managed_identity(path: &str, source: &Path) -> Result<Option<String>> {
+    ensure_downloaded(source, path, "sync")?;
     let mut file = match File::open(source) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
