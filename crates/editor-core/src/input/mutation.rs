@@ -132,6 +132,12 @@ impl<'ast> MdDoc {
 
                 // insert/extend/terminate container blocks
                 let mut handled = || {
+                    // A plain-text file has no Markdown blocks: Return only
+                    // breaks the line.
+                    if self.plaintext {
+                        return false;
+                    }
+
                     // selection must be empty
                     let Some(offset) = self.selection_offset() else {
                         return false;
@@ -232,6 +238,12 @@ impl<'ast> MdDoc {
 
                 // delete container block prefix
                 let mut handled = || {
+                    // A plain-text file has no Markdown blocks: Backspace
+                    // only deletes.
+                    if self.plaintext {
+                        return false;
+                    }
+
                     // must be mostly vanilla backspace
                     if !matches!(
                         region,
@@ -291,7 +303,9 @@ impl<'ast> MdDoc {
                 operations.push(Operation::Select(current_selection.start().to_range()));
             }
             Event::Indent { deindent } => {
-                if self.readonly {
+                // Tab nests Markdown lists, which a plain-text file has none
+                // of.
+                if self.readonly || self.plaintext {
                     return response;
                 }
                 response |= self.flush_operations(operations);

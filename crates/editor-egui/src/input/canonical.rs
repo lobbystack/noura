@@ -87,8 +87,8 @@ pub(crate) fn command_for_key(
 
 impl<'ast> MdEdit {
     /// The edit a shortcut makes, or `None` when it makes none here. Tab
-    /// and Shift-Tab outside a list, or in a read-only note, move the
-    /// keyboard to the next or previous control instead. Find belongs to
+    /// and Shift-Tab outside a list, in a plain-text file or in a read-only
+    /// note, move the keyboard to the next or previous control instead. Find belongs to
     /// the [`crate::Editor`].
     fn shortcut_event(&mut self, command: keymap::Command) -> Option<Event> {
         let tab = matches!(command, keymap::Command::Indent | keymap::Command::Outdent);

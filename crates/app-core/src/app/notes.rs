@@ -11,7 +11,10 @@ use super::{App, Change, Job};
 use crate::{
     AppError, TabId,
     files::remap,
-    notes::{Finished, NoteSession, NoteSync, PropertyValue, SaveProblem, is_markdown},
+    notes::{
+        ConflictChoice, FileCheck, Finished, NoteSession, NoteSync, PropertyValue, Restored,
+        SaveProblem, opens_in_editor,
+    },
 };
 
 /// How long the notes may take to save when the app ends without asking,
@@ -255,6 +258,158 @@ impl App {
         }
     }
 
+    /// Bring each open note in line with its file after the files changed:
+    /// a note with nothing unsaved shows what another app wrote, as an
+    /// outside edit that keeps the caret where it is. A note with unsaved
+    /// edits merges the other app's edit at its next save, or finds that
+    /// both changed the same text. A note whose file went away offers
+    /// Restore, and one whose file came back, or changed again during a
+    /// conflict, saves at once.
+    pub(super) fn check_notes_on_disk(&mut self) {
+        let tabs: Vec<TabId> = self.notes.sessions.keys().copied().collect();
+        self.check_note_files(&tabs);
+    }
+
+    fn check_note_files(&mut self, tabs: &[TabId]) {
+        let Some(engine) = self
+            .workspace
+            .as_deref()
+            .map(crate::Workspace::shared_engine)
+        else {
+            return;
+        };
+        let mut shown = false;
+        let mut changed = Vec::new();
+        for tab in tabs {
+            let Some(session) = self.notes.sessions.get_mut(tab) else {
+                continue;
+            };
+            match session.file_changed(&engine) {
+                FileCheck::Same => {}
+                FileCheck::Shown => shown = true,
+                FileCheck::Changed => {
+                    session.save_soon();
+                    changed.push(*tab);
+                }
+            }
+        }
+        for tab in &changed {
+            self.start_note_write(*tab);
+        }
+        if shown || !changed.is_empty() {
+            self.listeners.emit(Change::Note);
+        }
+    }
+
+    /// Open the conflict review of the note in `tab`, as the banner's
+    /// Compare does.
+    pub fn review_conflict(&mut self, tab: TabId) {
+        if let Some(session) = self.notes.sessions.get_mut(&tab)
+            && session.set_reviewing(true)
+        {
+            self.listeners.emit(Change::Note);
+        }
+    }
+
+    /// Close the conflict review of the note in `tab` and keep editing.
+    /// Saves still wait, and a banner opens the review again.
+    pub fn close_conflict_review(&mut self, tab: TabId) {
+        if let Some(session) = self.notes.sessions.get_mut(&tab)
+            && session.set_reviewing(false)
+        {
+            self.listeners.emit(Change::Note);
+        }
+    }
+
+    /// Choose which version the conflict of the note in `tab` keeps.
+    /// Nothing happens until you confirm with [`App::confirm_version`].
+    pub fn choose_version(&mut self, tab: TabId, choice: ConflictChoice) {
+        if let Some(session) = self.notes.sessions.get_mut(&tab)
+            && session.set_confirming(Some(choice))
+        {
+            self.listeners.emit(Change::Note);
+        }
+    }
+
+    /// Take back the version you chose, and keep reviewing.
+    pub fn cancel_version_choice(&mut self, tab: TabId) {
+        if let Some(session) = self.notes.sessions.get_mut(&tab)
+            && session.set_confirming(None)
+        {
+            self.listeners.emit(Change::Note);
+        }
+    }
+
+    /// Keep the version you chose for the conflict of the note in `tab`,
+    /// once a running save attempt is in. The version it replaces goes to
+    /// the workspace's history folder first.
+    pub fn confirm_version(&mut self, tab: TabId) {
+        if !self.wait_for_note_save(tab) {
+            return;
+        }
+        let Some(engine) = self
+            .workspace
+            .as_deref()
+            .map(crate::Workspace::shared_engine)
+        else {
+            return;
+        };
+        if let Some(session) = self.notes.sessions.get_mut(&tab) {
+            session.resolve(&engine);
+            self.listeners.emit(Change::Note);
+            self.edited_while_leaving();
+        }
+    }
+
+    /// Write the note in `tab` back where its file was, after another
+    /// program deleted the file while the note had unsaved edits. When a
+    /// file is there again, nothing is replaced: the note's typing meets
+    /// that file as another app's edit would.
+    pub fn restore_note(&mut self, tab: TabId) {
+        if !self.wait_for_note_save(tab) {
+            return;
+        }
+        let Some(engine) = self
+            .workspace
+            .as_deref()
+            .map(crate::Workspace::shared_engine)
+        else {
+            return;
+        };
+        let Some(session) = self.notes.sessions.get_mut(&tab) else {
+            return;
+        };
+        if !session.is_deleted() {
+            return;
+        }
+        match session.restore(&engine) {
+            Restored::Written => self.refresh_tree(None),
+            Restored::FileBack => self.check_note_files(&[tab]),
+            Restored::Failed => {}
+        }
+        self.listeners.emit(Change::Note);
+        self.edited_while_leaving();
+    }
+
+    /// Wait at most the flush timeout for a running save of the note in
+    /// `tab`. Returns whether none runs now.
+    fn wait_for_note_save(&mut self, tab: TabId) -> bool {
+        let deadline = Instant::now() + self.notes.flush_timeout;
+        while self
+            .notes
+            .sessions
+            .get(&tab)
+            .is_some_and(NoteSession::is_saving)
+        {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.notes.results.recv_timeout(left) {
+                Ok(result) => self.finish_note_write(result),
+                Err(_) => return false,
+            }
+        }
+        true
+    }
+
     /// The tabs whose note has edits that aren't on disk yet.
     pub(super) fn unsaved_note_tabs(&self) -> Vec<TabId> {
         self.notes
@@ -289,7 +444,8 @@ impl App {
     /// Rename the note in the tab `tab` from its name field to `typed`. The
     /// name loses what a file name can't hold; an empty or unchanged name
     /// keeps the old one, and so does a taken one, which the note's
-    /// [`NoteSession::name_problem`] then explains. The note keeps its ID.
+    /// [`NoteSession::name_problem`] then explains. The note keeps its ID,
+    /// and a plain-text or code file keeps its extension.
     pub fn rename_note(&mut self, tab: TabId, typed: &str) {
         let Some(session) = self.notes.sessions.get_mut(&tab) else {
             return;
@@ -301,6 +457,7 @@ impl App {
             self.listeners.emit(Change::Note);
             return;
         }
+        let name = session.renamed_file_name(&name);
         if let Err((_, problem)) = self.flush_notes_inside(&from) {
             self.set_name_problem(
                 tab,
@@ -662,9 +819,30 @@ impl App {
     }
 
     fn finish_note_write(&mut self, finished: Finished) {
-        if let Some(session) = self.notes.sessions.get_mut(&finished.tab) {
-            session.finish_write(finished.written, Instant::now());
+        let merged = self
+            .notes
+            .sessions
+            .get_mut(&finished.tab)
+            .is_some_and(|session| session.finish_write(finished.written, Instant::now()));
+        if merged {
+            self.merged_notice(finished.tab);
         }
+    }
+
+    /// Say that a save merged another app's edit with your typing.
+    fn merged_notice(&mut self, tab: TabId) {
+        let name = self
+            .notes
+            .sessions
+            .get(&tab)
+            .map(NoteSession::name)
+            .unwrap_or_default();
+        self.show_done(
+            "Merged changes from another app",
+            format!(
+                "Noura kept your typing in \u{201c}{name}\u{201d} and the other app\u{2019}s edits."
+            ),
+        );
     }
 
     /// Take the results of the saves that finished. Returns whether any
@@ -677,9 +855,20 @@ impl App {
         if finished.is_empty() {
             return false;
         }
+        let mut look_again = Vec::new();
         for result in finished {
+            let tab = result.tab;
             self.finish_note_write(result);
+            if self
+                .notes
+                .sessions
+                .get_mut(&tab)
+                .is_some_and(NoteSession::take_look_again)
+            {
+                look_again.push(tab);
+            }
         }
+        self.check_note_files(&look_again);
         self.listeners.emit(Change::Note);
         self.advance_leaving();
         true
@@ -711,32 +900,21 @@ impl App {
         };
         for tab in tabs {
             // A running save finishes first.
-            let deadline = Instant::now() + self.notes.flush_timeout;
-            while self
-                .notes
-                .sessions
-                .get(&tab)
-                .is_some_and(NoteSession::is_saving)
-            {
-                let left = deadline.saturating_duration_since(Instant::now());
-                match self.notes.results.recv_timeout(left) {
-                    Ok(result) => self.finish_note_write(result),
-                    Err(_) => {
-                        // It may still land later, so nothing moves meanwhile.
-                        let name = self
-                            .notes
-                            .sessions
-                            .get(&tab)
-                            .map(NoteSession::name)
-                            .unwrap_or_default();
-                        let problem = SaveProblem {
-                            reason: "It's still saving. Try again in a moment.".to_owned(),
-                        };
-                        return Err((name, problem));
-                    }
-                }
+            if !self.wait_for_note_save(tab) {
+                // It may still land later, so nothing moves meanwhile.
+                let name = self
+                    .notes
+                    .sessions
+                    .get(&tab)
+                    .map(NoteSession::name)
+                    .unwrap_or_default();
+                let problem = SaveProblem {
+                    reason: "It's still saving. Try again in a moment.".to_owned(),
+                };
+                return Err((name, problem));
             }
             // The text, then any property edits.
+            let mut merged = false;
             for _ in 0..2 {
                 let Some(session) = self.notes.sessions.get_mut(&tab) else {
                     break;
@@ -745,7 +923,10 @@ impl App {
                     break;
                 };
                 let written = write.run(&engine);
-                session.finish_write(written, Instant::now());
+                merged |= session.finish_write(written, Instant::now());
+            }
+            if merged {
+                self.merged_notice(tab);
             }
             if let Some(session) = self.notes.sessions.get(&tab)
                 && session.is_unsaved()
@@ -772,9 +953,9 @@ impl App {
         }
     }
 
-    /// Bring the note sessions in line with the tabs: open each Markdown
-    /// file a tab shows, follow tabs whose file moved, and drop the
-    /// sessions of closed tabs.
+    /// Bring the note sessions in line with the tabs: open each Markdown,
+    /// plain-text or code file a tab shows, follow tabs whose file moved,
+    /// and drop the sessions of closed tabs.
     pub(super) fn sync_notes(&mut self) {
         self.open_notes();
         self.session
@@ -792,7 +973,7 @@ impl App {
             .list()
             .iter()
             .filter_map(|tab| Some((tab.id(), tab.file()?.relative_path.clone())))
-            .filter(|(_, path)| is_markdown(path))
+            .filter(|(_, path)| opens_in_editor(path))
             .collect();
         let open = |tab: &TabId| files.iter().any(|(id, _)| id == tab);
         self.notes.sessions.retain(|tab, _| open(tab));

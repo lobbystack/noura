@@ -1,10 +1,12 @@
-//! The note screen: the note's name, a notice when a save failed, the
-//! live-preview editor, and the properties panel beside it for Noura's own
-//! notes.
+//! The note screen: the note's name, a notice when a save failed or the
+//! properties at the top don't parse, the editor, and the properties panel
+//! beside it for Noura's own notes. The editor shows notes in the live
+//! preview, and plain-text and code files and notes with broken properties
+//! as source.
 
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
-use app_core::{App, Property, PropertyValue, TabId};
+use app_core::{App, ConflictChoice, Property, PropertyValue, TabId};
 use editor_egui::{Editor, MdConfig, SpellChecker};
 use egui::{
     Button, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
@@ -36,6 +38,9 @@ pub(crate) struct NoteView {
 /// One note's editor and the fields around it.
 struct OpenNote {
     editor: Editor,
+    /// Whether `editor` shows the file's whole text rather than a managed
+    /// note's text after its frontmatter.
+    whole_file: bool,
     /// What the name field holds while you type in it; `None` shows the
     /// file's name.
     name: Option<String>,
@@ -219,22 +224,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     let Some(session) = app.note(tab) else {
         return false;
     };
+    let shows_source = session.shows_source();
+    let whole_file = session.shows_whole_file();
     let note = view.notes.entry(tab).or_insert_with(|| {
         let clicked = ui.input(|input| input.pointer.any_released());
-        let config = if session.shows_source() {
-            // Any extension but `md` shows the text as source.
-            MdConfig {
-                ext: "txt".into(),
-                ..MdConfig::default()
-            }
-        } else {
-            MdConfig {
-                toolbar: true,
-                ..MdConfig::default()
-            }
-        };
         OpenNote {
-            editor: Editor::new(ui.ctx(), session.text(), config),
+            editor: editor_for(ui.ctx(), session),
+            whole_file,
             name: None,
             focus_name: false,
             drafts: HashMap::new(),
@@ -246,6 +242,23 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             checks_spelling: false,
         }
     });
+    // The file shows another way now, as when a save left a note's
+    // properties readable or a rename made a text file Markdown: the editor
+    // starts again from the note's text, with an empty undo history, and
+    // keeps the keyboard.
+    if (note.editor.plaintext_mode() != shows_source || note.whole_file != whole_file)
+        && let Some(session) = app.note(tab)
+    {
+        let focused = note.editor.focused(ui.ctx());
+        note.editor = editor_for(ui.ctx(), session);
+        note.checks_spelling = false;
+        note.whole_file = whole_file;
+        if focused {
+            note.editor.focus(ui.ctx());
+        }
+        app.take_note_sync(tab);
+        app.take_note_reset(tab);
+    }
     // The Check spelling setting reaches every open note.
     let spelling = app
         .preferences()
@@ -273,7 +286,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     }
     view.drawn = Some(tab);
     header(ui, app, note, tab);
-    save_notice(ui, app, tab);
+    properties_notice(ui, app, tab);
+    file_notice(ui, app, tab);
     if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
         let palette = Palette::of(ui.ctx());
         Panel::right(("note-properties", tab))
@@ -288,7 +302,58 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             .show(ui, |ui| properties_panel(ui, app, note, tab, &properties));
     }
     body(ui, app, note, tab);
+    // The prompt before leaving the note asks first.
+    if app.unsaved_prompt().is_none() {
+        conflict_review(ui, app, tab);
+    }
     true
+}
+
+/// An editor for the note `session` shows: its text as source for a
+/// plain-text or code file and a note whose properties don't parse, or in
+/// the live preview with the formatting toolbar.
+fn editor_for(ctx: &egui::Context, session: &app_core::NoteSession) -> Editor {
+    let config = if session.shows_source() {
+        // Any extension but `md` shows the text as source.
+        MdConfig {
+            ext: "txt".into(),
+            ..MdConfig::default()
+        }
+    } else {
+        MdConfig {
+            toolbar: true,
+            ..MdConfig::default()
+        }
+    };
+    Editor::new(ctx, session.text(), config)
+}
+
+/// Why the properties at the top of a Markdown file don't parse, above
+/// its text, where you fix them.
+fn properties_notice(ui: &mut Ui, app: &App, tab: TabId) {
+    let Some(reason) = app
+        .note(tab)
+        .and_then(|session| session.broken_properties())
+    else {
+        return;
+    };
+    let title = "The properties at the top of this file have an error";
+    let palette = Palette::of(ui.ctx());
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Alert)
+        .accessibility_label(title);
+    ui.scope_builder(builder, |ui| {
+        Frame::new()
+            .stroke(Stroke::new(1.0, palette.border))
+            .corner_radius(radius(1.0))
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(title).strong());
+                ui.label(format!("{reason} Fix them in the text below."));
+            });
+    });
+    ui.add_space(8.0);
 }
 
 /// The note's name, which renames its file: Enter or leaving the field
@@ -350,6 +415,206 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
         });
     }
     ui.add_space(4.0);
+}
+
+/// What keeps the note's edits off the disk: another app's edit of the
+/// same text, a deleted file, or a failed save.
+fn file_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
+    let Some(session) = app.note(tab) else {
+        return;
+    };
+    if session.conflict().is_some() {
+        let compare = banner(
+            ui,
+            "This file changed in another app",
+            "Your text is still here. Compare both versions and choose one.",
+            None,
+            "Compare",
+        );
+        if compare {
+            app.review_conflict(tab);
+        }
+    } else if session.is_deleted() {
+        let problem = session.restore_problem().map(str::to_owned);
+        let restore = banner(
+            ui,
+            "This file was deleted",
+            "Your text is still here. You can put the file back.",
+            problem.as_deref(),
+            "Restore",
+        );
+        if restore {
+            app.restore_note(tab);
+        }
+    } else {
+        save_notice(ui, app, tab);
+    }
+}
+
+/// A notice in the note with one button. Returns whether it was clicked.
+fn banner(ui: &mut Ui, title: &str, text: &str, problem: Option<&str>, button: &str) -> bool {
+    let palette = Palette::of(ui.ctx());
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Alert)
+        .accessibility_label(title);
+    let clicked = ui
+        .scope_builder(builder, |ui| {
+            Frame::new()
+                .stroke(Stroke::new(1.0, palette.border))
+                .corner_radius(radius(1.0))
+                .inner_margin(Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(title).strong());
+                    ui.label(text);
+                    if let Some(problem) = problem {
+                        ui.label(RichText::new(problem).color(palette.destructive));
+                    }
+                    ui.button(button).clicked()
+                })
+                .inner
+        })
+        .inner;
+    ui.add_space(8.0);
+    clicked
+}
+
+/// The conflict review: your version and the file's side by side, with
+/// Keep editing, Use the file's version and Use my version. Each choice
+/// asks for confirmation first. Escape keeps editing.
+fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
+    let Some(conflict) = app
+        .note(tab)
+        .and_then(|session| session.conflict())
+        .filter(|conflict| conflict.is_reviewing())
+    else {
+        return;
+    };
+    let confirming = conflict.confirming();
+    let problem = conflict.problem().map(str::to_owned);
+    let theirs = conflict.file_text().to_owned();
+    let mine = app.note(tab).map(|session| session.text().to_owned());
+    let mine = mine.unwrap_or_default();
+    let palette = Palette::of(ui.ctx());
+    let mut chosen = None;
+    let mut keep = false;
+    let mut cancel = false;
+    let mut confirm = false;
+    let modal = egui::Modal::new(Id::unique(("conflict-review", tab))).show(ui.ctx(), |ui| {
+        if let Some(choice) = confirming {
+            let (title, text) = match choice {
+                ConflictChoice::Mine => (
+                    "Use your version?",
+                    "The file\u{2019}s version is kept as a backup first.",
+                ),
+                ConflictChoice::File => (
+                    "Use the file\u{2019}s version?",
+                    "Your version is kept as a backup first.",
+                ),
+            };
+            let builder = UiBuilder::new()
+                .accessibility_role(Role::AlertDialog)
+                .accessibility_label(title);
+            ui.scope_builder(builder, |ui| {
+                ui.set_width(360.0);
+                ui.label(RichText::new(title).size(TITLE_SIZE).strong());
+                ui.label(text);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let cancel_button = ui.button("Cancel");
+                    let continue_button = ui.add(
+                        Button::new(RichText::new("Continue").color(palette.primary_foreground))
+                            .fill(palette.primary),
+                    );
+                    let ids = [cancel_button.id, continue_button.id];
+                    if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
+                        continue_button.request_focus();
+                    }
+                    cancel = cancel_button.clicked();
+                    confirm = continue_button.clicked();
+                });
+            });
+            return;
+        }
+        let builder = UiBuilder::new()
+            .accessibility_role(Role::Dialog)
+            .accessibility_label("Choose a version");
+        ui.scope_builder(builder, |ui| {
+            let width = (ui.ctx().content_rect().width() - 96.0).clamp(360.0, 960.0);
+            ui.set_width(width);
+            ui.label(RichText::new("Choose a version").size(TITLE_SIZE).strong());
+            ui.label("Both versions are kept until you choose.");
+            if let Some(problem) = &problem {
+                ui.label(RichText::new(problem).color(palette.destructive));
+            }
+            ui.add_space(8.0);
+            let height = (ui.ctx().content_rect().height() * 0.5).max(160.0);
+            ui.columns(2, |columns| {
+                version(
+                    &mut columns[0],
+                    ("conflict-mine", tab),
+                    "Your version",
+                    &mine,
+                    height,
+                );
+                version(
+                    &mut columns[1],
+                    ("conflict-file", tab),
+                    "The file\u{2019}s version",
+                    &theirs,
+                    height,
+                );
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let keep_button = ui.button("Keep editing");
+                let file_button = ui.button("Use the file\u{2019}s version");
+                let mine_button = ui.add(
+                    Button::new(RichText::new("Use my version").color(palette.primary_foreground))
+                        .fill(palette.primary),
+                );
+                // The keyboard stays in the review, starting on Keep
+                // editing, so nothing typed reaches the note behind it.
+                let ids = [keep_button.id, file_button.id, mine_button.id];
+                if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
+                    keep_button.request_focus();
+                }
+                keep = keep_button.clicked();
+                if file_button.clicked() {
+                    chosen = Some(ConflictChoice::File);
+                }
+                if mine_button.clicked() {
+                    chosen = Some(ConflictChoice::Mine);
+                }
+            });
+        });
+    });
+    let escape = modal.should_close();
+    if confirm {
+        app.confirm_version(tab);
+    } else if cancel || (escape && confirming.is_some()) {
+        app.cancel_version_choice(tab);
+    } else if let Some(choice) = chosen {
+        app.choose_version(tab, choice);
+    } else if keep || escape {
+        app.close_conflict_review(tab);
+    }
+}
+
+/// One side of the conflict review: a heading and the text, read-only.
+fn version(ui: &mut Ui, id: (&str, TabId), heading: &str, text: &str, height: f32) {
+    ui.label(RichText::new(heading).strong());
+    ScrollArea::vertical()
+        .id_salt(id)
+        .max_height(height)
+        .show(ui, |ui| {
+            ui.add(
+                TextEdit::multiline(&mut &*text)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            )
+            .accessible_name(heading);
+        });
 }
 
 /// Why the last save failed, with Try again. The next edit tries again too.

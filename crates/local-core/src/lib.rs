@@ -16,7 +16,9 @@ mod markdown;
 mod model;
 mod path;
 mod pdf;
+mod text_files;
 pub use pdf::{PdfInfo, PdfRangeInput};
+pub use text_files::is_plain_text_path;
 pub mod sync;
 mod watcher;
 mod web_access;
@@ -32,8 +34,8 @@ pub use engine::{
     ImportResult, ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput,
     ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch,
     RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead, RawReconcileInput,
-    RawReconcileResult, RawSaveInput, RawSaveResult, ResolveConflictInput, SYNC_PLUGIN_ID,
-    SystemTrash, WatchPoll, WorkspaceEngine, is_online_only, os_trash,
+    RawReconcileResult, RawRestoreInput, RawSaveInput, RawSaveResult, ResolveConflictInput,
+    SYNC_PLUGIN_ID, SystemTrash, WatchPoll, WorkspaceEngine, is_online_only, os_trash,
 };
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{

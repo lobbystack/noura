@@ -37,6 +37,12 @@ impl<'ast> MdDoc {
     /// only.
     pub fn calc_fold_bounds(&mut self, root: &'ast AstNode<'ast>) {
         let mut folds = Vec::new();
+        // A plain-text file folds nothing: it shows every line of its
+        // source.
+        if self.plaintext {
+            self.bounds.folds = folds;
+            return;
+        }
         for node in root.descendants() {
             if let Some(fold) = self.fold(node)
                 && let Some(contents) = self.fold_contents(node)

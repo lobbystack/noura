@@ -74,6 +74,7 @@ To the workspace crate's editor:
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
 - `alert_type_title_ranges` gives a callout whose first line names no known type an empty type and uses the whole line as its title. Lockbook panicked there. You can reach that case by typing `---` above a line that holds a lone carriage return, which makes frontmatter that comrak counts one line short.
 - `own_prefix_len_task_item` keeps a task item's prefix inside its line. A parent item's padding counts columns, so after a tab it can claim part of the task's marker, as in `-\t- [ ] `. Lockbook then read past the end of the line and panicked.
+- Ticket 23 made the plain-text mode leave Markdown out of editing too. Return only breaks the line, Backspace only deletes, Tab nests nothing, and the mode reports no constructs, folds or images. Lockbook's plain-text mode drew the source as it is but still continued lists and quotes on Return and removed their markers on Backspace.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
 - Ticket 22 shows an input method's marked text inline at the caret, underlined, and keeps it out of the buffer: `editor-core` holds the composition, and the commit replaces the selection as one edit. Lockbook's desktop path ignored egui's input method events.
@@ -88,6 +89,8 @@ To the `lb-rs` text model:
 - The buffer keeps its text in a ropey rope instead of a `String`. Edits, undo, redo and merged outside edits write the rope, and the save text comes from it. A contiguous copy, rebuilt from the rope after each change, feeds comrak and `&str` slices.
 - Rewrote the operation history as two lists, received and applied, in place of `Ops`, and dropped the base snapshot, `Buffer::merge` and the `open_camera` response flag. `queue_at` takes the time of an edit, so tests set keystroke times instead of sleeping.
 - `lb-rs` merged a reload by diffing the file against the last text loaded or saved, then applying the diff at the version that held that text. Undo past that version, followed by any edit or reload, drops the version from the history. A merge into unsaved edits leaves no version holding the file's text. In both cases `lb-rs` applied the diff to the wrong text and mangled the note. Noura's buffer merges on its next update instead. While a version still holds the last text loaded or saved, it transforms the diff through the edits made since. Otherwise it merges three texts: that one, the buffer's and the file's. Offsets that still run past the text clamp to it instead of panicking.
+- Undo takes back your own edits only. `lb-rs` undid a merged outside edit as it undid typing. When an outside edit arrived after your last unit, Noura's undo first rewrites that stretch of the history so the outside edit comes before your unit. It then takes your unit back. Where the outside edit changed text your unit wrote, the outside edit stays.
+- `lb-rs` moved both ends of a replacement past text an earlier edit inserted there. Merging another app's edit of a word then deleted a keystroke you typed right after it. Noura keeps a replacement's end before such an insertion, and `buffer_merge_insert_replace` now expects your keystroke to stay.
 - Restructured the word diff around a `Side` helper with the same algorithm, and took only `measure_replace` and `last_grapheme` from `units.rs`.
 - Uses `std::time` in place of `web_time`, and renamed identifiers throughout.
 - Ticket 22 updates the contiguous copy and the grapheme index around each replacement instead of rebuilding them from the rope. A cluster never crosses a line ending, so the buffer segments only the lines next to the edit again.
@@ -175,4 +178,4 @@ BSD-3-Clause requires binary distributions to reproduce the copyright notice, th
 ## Review
 
 - Reviewer: Claude (author review). Owner review pending.
-- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals, and for ticket 22's input method, parsing and performance changes.
+- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals, ticket 23's plain-text mode, and ticket 22's input method, parsing and performance changes.
