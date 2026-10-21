@@ -44,6 +44,10 @@ zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 atomic-write-file = "0.3.1"
 blake3 = "1.8"
+# The desktop app's updater. It checks the signatures cargo-packager writes
+# with minisign, which the desktop tests use to sign a local feed.
+cargo-packager-updater = "0.2.3"
+minisign = "0.7"
 # The editor's Markdown parser. Pinned to the release Lockbook's editor was
 # built and tested against; see docs/provenance/lockbook-editor.md.
 comrak = { version = "=0.50.0", default-features = false, features = ["shortcodes"] }

@@ -1,0 +1,277 @@
+name: Release
+
+# Push a tag such as v0.3.0 to build signed packages for macOS, Windows and
+# Linux with cargo-packager. The tag must point to a commit on main that
+# passed CI. The release stays a draft until every platform uploads, so
+# installed apps never see a partial latest.json.
+#
+# The build job reads the updater key and the Apple credentials from the
+# `release` environment. docs/releasing.md explains the one-time setup.
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check that the tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to $GITHUB_SHA, which is not on main."
+            exit 1
+          fi
+      - name: Check that the tag matches the app version
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          cargo_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ "$tag" != "v$cargo_version" ]; then
+            echo "::error::Tag $tag must equal v<version>, where Cargo.toml's [workspace.package] version is $cargo_version."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Wait for CI to pass on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # CI runs on every push to main. Wait up to 60 minutes for that run.
+          for attempt in $(seq 1 60); do
+            run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+              --event push --commit "$GITHUB_SHA" --limit 1 \
+              --json status,conclusion,url --jq '.[0] // empty')"
+            if [ -n "$run" ]; then
+              status="$(jq -r .status <<<"$run")"
+              conclusion="$(jq -r .conclusion <<<"$run")"
+              url="$(jq -r .url <<<"$run")"
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then
+                  echo "CI passed: $url"
+                  exit 0
+                fi
+                echo "::error::CI finished with '$conclusion' for $GITHUB_SHA: $url"
+                exit 1
+              fi
+              echo "CI is $status ($url). Checking again in 60 seconds."
+            else
+              echo "No CI run for $GITHUB_SHA on main yet. Checking again in 60 seconds."
+            fi
+            sleep 60
+          done
+          echo "::error::CI did not finish on $GITHUB_SHA within 60 minutes."
+          exit 1
+
+  create-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ needs.verify.outputs.tag }}
+    steps:
+      - name: Create a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "noura ${TAG#v}" --generate-notes
+          fi
+
+  build:
+    needs: create-release
+    # The `release` environment holds the updater key and the Apple
+    # credentials. A required reviewer on that environment approves each
+    # release before it signs.
+    environment: release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+            package-args: --universal
+            rust-targets: aarch64-apple-darwin x86_64-apple-darwin
+          - os: windows-latest
+            platform: windows
+            package-args: ''
+            rust-targets: ''
+          # The oldest supported Ubuntu keeps the AppImage compatible with
+          # older glibc.
+          - os: ubuntu-22.04
+            platform: linux
+            package-args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # rustup reads the version and components from rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        env:
+          RUST_TARGETS: ${{ matrix.rust-targets }}
+        run: |
+          rustup toolchain install
+          for target in $RUST_TARGETS; do rustup target add "$target"; done
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: release }
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: 'cargo-packager@0.11.8,cargo-about@0.9.2' }
+      - name: Install the Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse2
+      # Apple signing is optional. Without a Developer ID certificate the app
+      # is signed ad hoc, and macOS asks people to approve it on first launch.
+      - name: Load the Apple signing credentials when configured
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          names=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          missing=()
+          for name in "${names[@]}"; do
+            value="${!name}"
+            if [ -n "$value" ]; then
+              echo "::add-mask::$value"
+              echo "$name=$value" >> "$GITHUB_ENV"
+            else
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ] && [ "${#missing[@]}" -ne "${#names[@]}" ]; then
+            echo "::error::Set all six Apple secrets or none. Missing: ${missing[*]}"
+            exit 1
+          fi
+          # cargo-packager reads the signing identity from its config. "-"
+          # signs ad hoc. Escape it as a TOML string.
+          identity="${APPLE_SIGNING_IDENTITY:--}"
+          identity="${identity//\\/\\\\}"
+          identity="${identity//\"/\\\"}"
+          printf '\n[package.metadata.packager.macos]\nsigning-identity = "%s"\n' "$identity" \
+            >> apps/desktop/Cargo.toml
+      # cargo-packager signs and notarizes the app, then signs every package
+      # for the updater and writes a .sig beside each one.
+      - name: Build and sign the packages
+        shell: bash
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.NOURA_UPDATER_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.NOURA_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]; then
+            echo "::error::The release environment has no NOURA_UPDATER_PRIVATE_KEY."
+            exit 1
+          fi
+          scripts/package-desktop.sh ${{ matrix.package-args }}
+      # Apple recommends notarizing the outermost container, so Gatekeeper
+      # accepts the downloaded disk image itself.
+      - name: Notarize the disk image
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: |
+          dmg="$(ls target/universal-apple-darwin/release/*.dmg)"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$dmg"
+      - name: Upload the packages to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir upload
+          shopt -s nullglob
+          for file in target/release/* target/*/release/*; do
+            case "$file" in
+              # The app archive has no version in its name; add one.
+              *.app.tar.gz) cp "$file" "upload/Noura_${version}_universal.app.tar.gz" ;;
+              *.app.tar.gz.sig) cp "$file" "upload/Noura_${version}_universal.app.tar.gz.sig" ;;
+              *.dmg | *.msi | *.msi.sig | *.deb | *.AppImage | *.AppImage.sig) cp "$file" upload/ ;;
+            esac
+          done
+          cp apps/desktop/packaging/THIRD_PARTY_LICENSES.html \
+            "upload/third-party-licenses-${{ matrix.platform }}.html"
+          ls -l upload
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber upload/*
+
+  publish:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Download the draft release, add stable names and write the update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist
+          # A rerun finds the stable copies and the feed from the last
+          # attempt. Drop them so each pattern below matches one file.
+          rm -f dist/Noura-* dist/latest.json
+
+          # The website links to releases/latest/download/<stable name>.
+          stable() {
+            local matches=(dist/$1)
+            if [ "${#matches[@]}" -ne 1 ] || [ ! -f "${matches[0]}" ]; then
+              echo "::error::Expected exactly one asset matching $1"
+              exit 1
+            fi
+            cp "${matches[0]}" "stable/$2"
+          }
+          mkdir stable
+          stable '*_universal.dmg' Noura-macOS.dmg
+          stable '*.msi' Noura-Windows.msi
+          stable '*.AppImage' Noura-Linux.AppImage
+          stable '*_amd64.deb' Noura-Linux.deb
+
+          # Installed apps read latest.json from the latest release.
+          scripts/write-update-feed.sh "${TAG#v}" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" dist > stable/latest.json
+      # Anyone can then check a download with
+      # `gh attestation verify <file> -R lobbystack/noura`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*
+            stable/*
+      - name: Upload stable names and the feed, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber stable/*
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest
