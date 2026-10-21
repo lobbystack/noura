@@ -177,11 +177,19 @@ fn opening_showing_and_closing_an_unchanged_text_file_writes_nothing() {
     }
 }
 
+/// A file, its bytes, the text replaced and its replacement, and the bytes
+/// expected after the save.
+type Edit = (
+    &'static str,
+    &'static [u8],
+    &'static str,
+    &'static str,
+    &'static [u8],
+);
+
 #[test]
 fn an_edit_changes_only_the_bytes_it_touched_in_a_text_file() {
-    // Each file, its bytes, the text replaced and its replacement, and the
-    // bytes expected after the save.
-    let cases: [(&str, &[u8], &str, &str, &[u8]); 4] = [
+    let cases: [Edit; 4] = [
         (
             "crlf.txt",
             b"one\r\ntwo\r\nthree\r\n",
