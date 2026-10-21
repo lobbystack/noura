@@ -9,12 +9,14 @@
 //! - `read-object:<id>`: read an object by its stable ID.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
+//! - `markdown:deep`: Markdown nodes with emphasis, quotes and lists
+//!   nested a hundred thousand deep.
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
 //! - `events`: the events the plugin received, oldest first.
 //! - anything else: a panel with a line of text and a button.
 //!
-//! Its pages are `hello`, titled Probe, `workspace`, `markdown` and
-//! `nodes:cycle`, titled Broken. The first shares the hello plugin's page
+//! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
+//! `markdown:deep`, titled Deep, and `nodes:cycle`, titled Broken. The first shares the hello plugin's page
 //! ID, so a test can swap one build for the other under an open page.
 
 use std::sync::Mutex;
@@ -43,6 +45,10 @@ impl Plugin for Probe {
                 title: "Markdown".into(),
             },
             Page {
+                id: "markdown:deep".into(),
+                title: "Deep".into(),
+            },
+            Page {
                 id: "nodes:cycle".into(),
                 title: "Broken".into(),
             },
@@ -57,6 +63,9 @@ impl Plugin for Probe {
             let mut view = View::panel("root", Some("Markdown"));
             view.markdown(View::ROOT, "notes", MARKDOWN);
             return view.into_nodes();
+        }
+        if page == "markdown:deep" {
+            return deep();
         }
         let lines = if page == "list" {
             list()
@@ -88,6 +97,31 @@ impl Plugin for Probe {
             .unwrap()
             .push(format!("{page} pressed {node}"));
     }
+}
+
+/// Markdown nested far deeper than anyone writes by hand, one node per
+/// kind of nesting.
+fn deep() -> Vec<Node> {
+    const DEEP: usize = 100_000;
+    let mut view = View::panel("root", Some("Deep"));
+    let stars = "*".repeat(DEEP);
+    view.markdown(
+        View::ROOT,
+        "emphasis",
+        &format!("{stars}deep emphasis{stars}"),
+    );
+    view.markdown(
+        View::ROOT,
+        "quotes",
+        &format!("{} deep quote\n", ">".repeat(DEEP)),
+    );
+    view.markdown(
+        View::ROOT,
+        "lists",
+        &format!("{}deep list\n", "- ".repeat(DEEP)),
+    );
+    view.text(View::ROOT, "after", "Still drawing.");
+    view.into_nodes()
 }
 
 fn read_file(path: &str) -> String {

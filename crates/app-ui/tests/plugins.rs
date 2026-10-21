@@ -258,6 +258,37 @@ fn markdown_shows_images_as_their_description_and_loads_none() {
 }
 
 #[test]
+fn markdown_nested_a_hundred_thousand_deep_draws_and_noura_keeps_running() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let mut opened = opened(|app_data, parent| {
+        let folder = plugins::folder(parent, &plugins::probe_manifest(), "plugin.wasm", &probe);
+        install_and_enable(app_data, &folder, "probe");
+    });
+    let harness = &mut opened.harness;
+
+    page_link(harness, "Deep").click();
+    harness.run();
+
+    let panel = harness.get_by_role_and_label(Role::Group, "Deep");
+    let shown = labels(&panel).join(" ");
+    for expected in ["deep emphasis", "deep quote", "deep list", "Still drawing."] {
+        assert!(
+            shown.contains(expected),
+            "{expected} is missing from {shown:?}"
+        );
+    }
+    page_link(harness, "Probe").click();
+    harness.run();
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Probe")
+            .is_some()
+    );
+}
+
+#[test]
 fn a_view_that_breaks_the_rules_draws_an_error_in_its_place() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
