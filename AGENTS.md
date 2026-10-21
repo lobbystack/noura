@@ -43,7 +43,7 @@ Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, t
 - `crates/plugins/*` holds first-party plugins. They build to WebAssembly against `plugin-sdk`, exactly like third-party plugins.
 - `crates/mcp-server` adapts MCP tools to shared services and duplicates no business logic.
 - `crates/sync-protocol` holds the wire types, signing, and verification shared by clients and the server. `crates/sync-key-envelope` owns the key envelope and device formats.
-- `crates/sync-server` is the sync service. `crates/sync-store-sqlite` and `crates/sync-store-postgres` implement its store and pass one conformance suite. Local features never depend on the server.
+- `crates/sync-server` is the sync service: HTTP, commands and logs. `crates/sync-store` holds the store's transaction traits, the protocol checks and commits every store shares, and the conformance suite. `crates/sync-store-sqlite` and `crates/sync-store-postgres` implement those traits and pass that suite. Local features never depend on the server.
 - `crates/account-web` is the WebAssembly module for passkey ceremonies and the encrypted share viewer.
 - `apps/desktop` is the desktop binary: windows, menus, drag and drop, and updates.
 - `sdk/typescript` holds the generated types, project template, and CLI for TypeScript plugin authors.

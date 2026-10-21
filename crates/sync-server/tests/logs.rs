@@ -46,7 +46,10 @@ async fn logs_keep_routes_request_ids_and_statuses_for_14_days() {
         .await
         .decode();
     let refused = client
-        .post(&format!("/v2/workspaces/{w}/ops"), push_body(std::slice::from_ref(&op)))
+        .post(
+            &format!("/v2/workspaces/{w}/ops"),
+            push_body(std::slice::from_ref(&op)),
+        )
         .await;
     assert!(refused.status.is_success(), "a retry gets its receipt");
     let conflicting = created.op(&account.keys[0], 1, Digest::ZERO, |o| {

@@ -37,6 +37,7 @@ macro_rules! conformance_tests {
             live_sets_match_the_fixture,
             creation_starts_the_domain_log,
             creation_retries_and_conflicts,
+            domain_ids_belong_to_their_workspace,
             creation_checks_heads_signatures_and_recipients,
             push_returns_receipts_in_request_order,
             push_commits_all_or_none,
@@ -152,8 +153,17 @@ pub fn creation(
     links: &[Signed<AccountLink>],
     cards: &[Card],
 ) -> (Vec<u8>, Signed<PolicyChange>, SecretKey) {
+    creation_with_domain(creator, links, cards, Id::random().expect("random"))
+}
+
+/// [`creation`] with a chosen workspace domain ID.
+pub fn creation_with_domain(
+    creator: &DeviceKeys,
+    links: &[Signed<AccountLink>],
+    cards: &[Card],
+    domain: Id,
+) -> (Vec<u8>, Signed<PolicyChange>, SecretKey) {
     let workspace = Id::random().expect("random");
-    let domain = Id::random().expect("random");
     let genesis = Signed::sign(
         PolicyChange {
             workspace,
@@ -712,6 +722,39 @@ pub async fn creation_retries_and_conflicts<B: Backend>(store: Store<B>) {
         refusal(store.create_workspace(session, changed).await).code,
         "id_conflict"
     );
+}
+
+/// The store keys domains by workspace and ID: two workspaces may name one
+/// domain ID, and each keeps its own log.
+pub async fn domain_ids_belong_to_their_workspace<B: Backend>(store: Store<B>) {
+    let (account, keys, links) = account(1);
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
+    let session = Session {
+        account,
+        device: keys[0].device(),
+    };
+    let cards = vec![keys[0].card(account)];
+    let shared = Id::random().expect("random");
+    let mut workspaces = Vec::new();
+    for _ in 0..2 {
+        let (body, genesis, _) = creation_with_domain(&keys[0], &links, &cards, shared);
+        let response = store
+            .create_workspace(session, body)
+            .await
+            .expect("both workspaces take the domain ID");
+        assert_eq!(
+            (response.receipts[0].domain, response.receipts[0].seq),
+            (shared, 1),
+            "each log starts on its own"
+        );
+        workspaces.push(genesis.body.workspace);
+    }
+    let listed = store.workspaces(session).await.expect("listed");
+    assert_eq!(listed.workspaces.len(), 2);
+    assert_ne!(workspaces[0], workspaces[1]);
 }
 
 /// Creation checks the genesis heads against the owner's chain, every
