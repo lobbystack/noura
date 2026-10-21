@@ -99,7 +99,11 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
         [
             (
                 "This computer".to_owned(),
-                vec!["General".to_owned(), "Editor".to_owned()]
+                vec![
+                    "General".to_owned(),
+                    "Editor".to_owned(),
+                    "Keyboard shortcuts".to_owned()
+                ]
             ),
             ("Workspace".to_owned(), vec!["Name and location".to_owned()]),
             ("App".to_owned(), vec!["About Noura".to_owned()]),

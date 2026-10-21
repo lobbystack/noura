@@ -26,8 +26,13 @@ impl App {
     }
 
     /// Open Settings on the section `id`, or on its first section when
-    /// nothing registered `id`.
+    /// nothing registered `id`. When Settings is open already, it shows
+    /// the section `id`.
     pub fn open_settings_at(&mut self, id: &str) {
+        if self.settings.is_some() {
+            self.select_settings_section(id);
+            return;
+        }
         let section = if self.settings_section(id).is_some() {
             id.to_owned()
         } else {

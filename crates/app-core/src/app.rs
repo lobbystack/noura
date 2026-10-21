@@ -183,7 +183,6 @@ pub struct App {
     dragged_out: Option<String>,
     registry: Registry,
     palette: Option<CommandPalette>,
-    shortcuts_open: bool,
     /// Close Window ran and the window hasn't closed yet.
     close_window: bool,
     /// Quit ran and the app hasn't closed yet.
@@ -238,7 +237,6 @@ impl App {
             dragged_out: None,
             registry: Registry::default(),
             palette: None,
-            shortcuts_open: false,
             close_window: false,
             quit: false,
         };

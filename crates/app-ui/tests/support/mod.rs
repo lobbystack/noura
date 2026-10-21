@@ -65,18 +65,24 @@ pub fn harness_registering(
     )
 }
 
+/// A harness whose app uses `system`, after `register` runs. On macOS,
+/// as for [`harness_for`], shortcut symbols such as ⌘ draw without the
+/// system's fonts.
 pub fn harness_on(
     app_data: &Path,
     picker: FakePicker,
     system: Arc<FakeSystem>,
     register: impl FnOnce(&mut App),
 ) -> Harness<'static, NouraUi> {
+    let mac = system.platform == Platform::MacOs;
     let mut app = App::launch_with(app_data, system);
     register(&mut app);
     let ui = NouraUi::new(app, Box::new(picker));
-    Harness::builder()
-        .with_size([1000.0, 700.0])
-        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+    let mut builder = Harness::builder().with_size([1000.0, 700.0]);
+    if mac {
+        builder = builder.allow_missing_glyphs();
+    }
+    builder.build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
 }
 
 /// A harness whose app believes it runs on `platform`, after `register`

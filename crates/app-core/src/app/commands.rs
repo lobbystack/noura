@@ -9,11 +9,19 @@ use crate::{
     commands::{Run, area_keys, command_id},
     layout::FILES_SECTION,
     menus,
+    settings::settings_section,
 };
 
 /// The commands whose keys work while no workspace is open, as on the
-/// chooser.
-const WITHOUT_WORKSPACE: [&str; 2] = [command_id::QUIT, command_id::CLOSE_WINDOW];
+/// chooser: the ones that don't need a workspace.
+const WITHOUT_WORKSPACE: [&str; 6] = [
+    command_id::QUIT,
+    command_id::CLOSE_WINDOW,
+    command_id::ZOOM_IN,
+    command_id::ZOOM_OUT,
+    command_id::ZOOM_RESET,
+    command_id::SETTINGS,
+];
 
 impl App {
     /// Register the kernel's commands, with the default keymap's keys.
@@ -24,7 +32,7 @@ impl App {
             Platform::Windows => "Exit",
             Platform::Linux => "Quit",
         };
-        let kernel: [(&str, &str, Run); 11] = [
+        let kernel: [(&str, &str, Run); 16] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -61,10 +69,19 @@ impl App {
                 "Toggle Sidebar",
                 Arc::new(App::toggle_sidebar),
             ),
+            (ZOOM_IN, "Zoom In", Arc::new(App::zoom_in)),
+            (ZOOM_OUT, "Zoom Out", Arc::new(App::zoom_out)),
+            (ZOOM_RESET, "Actual Size", Arc::new(App::actual_size)),
+            (SETTINGS, "Settings…", Arc::new(App::open_settings)),
+            (
+                ABOUT,
+                "About Noura",
+                Arc::new(|app| app.open_settings_at(settings_section::ABOUT)),
+            ),
             (
                 KEYBOARD_SHORTCUTS,
                 "Keyboard Shortcuts",
-                Arc::new(App::open_shortcuts),
+                Arc::new(|app| app.open_settings_at(settings_section::SHORTCUTS)),
             ),
             (
                 QUIT,
@@ -175,26 +192,6 @@ impl App {
             })
             .filter(|group| !group.entries.is_empty())
             .collect()
-    }
-
-    /// Whether the Keyboard shortcuts page is open.
-    pub fn shortcuts_open(&self) -> bool {
-        self.shortcuts_open
-    }
-
-    /// Open the Keyboard shortcuts page.
-    pub fn open_shortcuts(&mut self) {
-        if !self.shortcuts_open {
-            self.shortcuts_open = true;
-            self.listeners.emit(Change::Settings);
-        }
-    }
-
-    pub fn close_shortcuts(&mut self) {
-        if self.shortcuts_open {
-            self.shortcuts_open = false;
-            self.listeners.emit(Change::Settings);
-        }
     }
 
     /// Whether Close Window ran since the last call. The window that ran

@@ -6,19 +6,20 @@ mod support;
 use std::{
     io,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
-use app_core::{ABOUT_LINKS, LoginItem, Platform};
+use app_core::{ABOUT_LINKS, LoginItem, Platform, VERSION, command_id};
 use app_ui::theme::Palette;
 use egui::{
-    Key, Theme,
+    Key, Modifiers, Theme,
     accesskit::{Role, Toggled},
 };
 use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use support::{FakePicker, FakeSystem, create_workspace, harness_on, settle};
+use support::{FakePicker, FakeSystem, create_workspace, harness_for, harness_on, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -126,7 +127,11 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
         [
             (
                 "This computer".to_owned(),
-                vec!["General".to_owned(), "Editor".to_owned()]
+                vec![
+                    "General".to_owned(),
+                    "Editor".to_owned(),
+                    "Keyboard shortcuts".to_owned()
+                ]
             ),
             ("Workspace".to_owned(), vec!["Name and location".to_owned()]),
             ("App".to_owned(), vec!["About Noura".to_owned()]),
@@ -177,7 +182,13 @@ fn every_section_and_control_carries_a_label() {
     } = opened();
     open_settings(&mut harness);
 
-    for title in ["General", "Editor", "Name and location", "About Noura"] {
+    for title in [
+        "General",
+        "Editor",
+        "Keyboard shortcuts",
+        "Name and location",
+        "About Noura",
+    ] {
         choose_section(&mut harness, title);
         let controls = controls(&harness);
         assert!(controls.len() > 4, "{title} shows too little: {controls:?}");
@@ -400,4 +411,110 @@ fn name_and_location_renames_the_workspace_and_shows_its_folder() {
         .click();
     harness.run();
     assert_eq!(system.calls(), [format!("reveal {root}")]);
+}
+
+/// A workspace named Garden opened on `platform`. The harness draws
+/// without the system's fonts, which hold macOS's shortcut symbols.
+fn opened_on(platform: Platform) -> (Ui, (tempfile::TempDir, tempfile::TempDir)) {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    let mut harness = harness_for(app_data.path(), platform, |_| {});
+    settle(&mut harness);
+    (harness, (app_data, parent))
+}
+
+#[test]
+fn mod_plus_equals_minus_and_0_zoom_and_mod_comma_opens_settings() {
+    for platform in [Platform::MacOs, Platform::Windows] {
+        let (mut harness, _folders) = opened_on(platform);
+        for (key, zoom) in [
+            (Key::Plus, 1.1),
+            (Key::Equals, 1.25),
+            (Key::Minus, 1.1),
+            (Key::Num0, 1.0),
+        ] {
+            harness.key_press_modifiers(Modifiers::COMMAND, key);
+            harness.run();
+            assert_eq!(harness.ctx.zoom_factor(), zoom, "{platform:?} {key:?}");
+            assert_eq!(
+                harness.state().app().preferences().zoom_factor(),
+                zoom,
+                "{platform:?} {key:?}"
+            );
+        }
+
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Dialog, "Settings")
+                .is_none()
+        );
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+        harness.run();
+        assert!(section(&harness, "General").is_focused(), "{platform:?}");
+        harness.key_press(Key::Escape);
+        harness.run();
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Dialog, "Settings")
+                .is_none(),
+            "{platform:?}"
+        );
+    }
+}
+
+#[test]
+fn about_from_the_menu_opens_settings_on_its_about_section() {
+    let (mut harness, _folders) = opened_on(Platform::Windows);
+    let menus = harness.state().menu_bar();
+    let help = menus.iter().find(|menu| menu.title == "Help").unwrap();
+    assert!(help.items.iter().any(|item| matches!(
+        item,
+        app_core::MenuItem::Command { id, label, .. }
+            if id == command_id::ABOUT && label == "About Noura"
+    )));
+
+    assert!(
+        harness
+            .state_mut()
+            .run_menu_command(command_id::ABOUT, Instant::now())
+    );
+    harness.run();
+    assert_eq!(
+        section(&harness, "About Noura").accesskit_node().toggled(),
+        Some(Toggled::True)
+    );
+    harness.get_by_label(VERSION);
+}
+
+#[test]
+fn settings_lists_every_shortcut_by_area() {
+    let (mut harness, _folders) = opened_on(Platform::Windows);
+    harness
+        .state_mut()
+        .run_menu_command(command_id::KEYBOARD_SHORTCUTS, Instant::now());
+    harness.run();
+    assert_eq!(
+        section(&harness, "Keyboard shortcuts")
+            .accesskit_node()
+            .toggled(),
+        Some(Toggled::True)
+    );
+
+    let anywhere = dialog(&harness).get_by_role_and_label(Role::List, "Anywhere");
+    for (label, keys) in [
+        ("Zoom In", "Ctrl++ or Ctrl+="),
+        ("Zoom Out", "Ctrl+-"),
+        ("Actual Size", "Ctrl+0"),
+        ("Settings…", "Ctrl+,"),
+    ] {
+        let entry = anywhere.get_by_role_and_label(Role::ListItem, label);
+        assert_eq!(
+            entry.accesskit_node().description().as_deref(),
+            Some(keys),
+            "{label}"
+        );
+    }
+    dialog(&harness).get_by_role_and_label(Role::List, "File tree");
+    dialog(&harness).get_by_role_and_label(Role::List, "Writing");
 }

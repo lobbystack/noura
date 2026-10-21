@@ -36,6 +36,8 @@ pub mod settings_section {
     pub const GENERAL: &str = "general";
     /// Text size.
     pub const EDITOR: &str = "editor";
+    /// Every shortcut by area.
+    pub const SHORTCUTS: &str = "shortcuts";
     /// The workspace's name and folder.
     pub const WORKSPACE: &str = "workspace";
     /// The version, license, links and Copy diagnostics.
@@ -61,6 +63,11 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         (
             settings_section::EDITOR,
             "Editor",
+            SettingsGroup::ThisComputer,
+        ),
+        (
+            settings_section::SHORTCUTS,
+            "Keyboard shortcuts",
             SettingsGroup::ThisComputer,
         ),
         (

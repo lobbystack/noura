@@ -134,11 +134,7 @@ impl NouraUi {
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
-        if settings::show(ui, &mut self.app, &mut self.settings) {
-            // Back where Settings opened from.
-            ui.ctx()
-                .memory_mut(|memory| memory.request_focus(rail::settings_button_id()));
-        }
+        settings::show(ui, &mut self.app, &mut self.settings);
         palette::show(ui, &mut self.app, &mut self.palette);
         self.close_requested_windows(ui.ctx());
     }

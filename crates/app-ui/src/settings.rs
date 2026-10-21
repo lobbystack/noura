@@ -25,19 +25,31 @@ const NAV_WIDTH: f32 = 180.0;
 pub(crate) struct SettingsView {
     /// Settings was open last frame.
     open: bool,
+    /// The widget that had the keyboard before Settings opened.
+    return_focus: Option<Id>,
     /// The name being typed in Name and location, once you start typing.
     name: Option<String>,
 }
 
-/// Draw Settings while it is open. Returns whether it closed this frame.
-pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut SettingsView) -> bool {
+/// Draw Settings while it is open. Once it closes, the keyboard goes back
+/// where it was, or to the rail's Settings button when nothing had it.
+pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
     let Some(settings) = app.settings().cloned() else {
-        let closed = view.open;
+        if view.open {
+            let focus = view
+                .return_focus
+                .take()
+                .unwrap_or_else(crate::rail::settings_button_id);
+            ui.ctx().memory_mut(|memory| memory.request_focus(focus));
+        }
         *view = SettingsView::default();
-        return closed;
+        return;
     };
     let opened = !view.open;
-    view.open = true;
+    if opened {
+        view.open = true;
+        view.return_focus = ui.ctx().memory(|memory| memory.focused());
+    }
     let mut close = false;
     let screen = ui.ctx().content_rect().size();
     let modal = Modal::new(Id::unique("settings")).show(ui.ctx(), |ui| {
@@ -67,7 +79,6 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut SettingsView) -> bool 
     if close || modal.should_close() {
         app.close_settings();
     }
-    false
 }
 
 /// The section list: each group's title, then its sections.
@@ -120,6 +131,7 @@ fn content(ui: &mut Ui, app: &mut App, settings: &Settings, view: &mut SettingsV
     match settings.section.as_str() {
         settings_section::GENERAL => general(ui, app, settings),
         settings_section::EDITOR => editor(ui, app),
+        settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
         settings_section::ABOUT => about(ui, app),
         // Sections that later areas register draw themselves later.
