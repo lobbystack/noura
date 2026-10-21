@@ -124,11 +124,24 @@ pub struct OpenedFile {
     pub relative_path: String,
 }
 
+impl OpenedFile {
+    /// The file at `relative_path`, named after its file name.
+    pub(crate) fn at(relative_path: &str) -> Self {
+        let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
+        Self {
+            name: shown_name(file_name, EntryKind::File),
+            relative_path: relative_path.to_owned(),
+        }
+    }
+}
+
 /// One file or folder from the workspace listing.
 pub(crate) struct TreeEntry {
     pub(crate) relative_path: String,
     pub(crate) kind: EntryKind,
     pub(crate) not_downloaded: bool,
+    /// A managed object's stable ID.
+    pub(crate) object_id: Option<String>,
 }
 
 struct Node {
@@ -139,6 +152,7 @@ struct Node {
     relative_path: String,
     kind: EntryKind,
     not_downloaded: bool,
+    object_id: Option<String>,
     children: Vec<usize>,
 }
 
@@ -185,6 +199,7 @@ impl FileTree {
                 parent_of(&entry.relative_path).map(|path| tree.folder(path, &mut folders));
             let index = tree.add(entry.relative_path, EntryKind::File, parent);
             tree.nodes[index].not_downloaded = entry.not_downloaded;
+            tree.nodes[index].object_id = entry.object_id;
         }
         let order: Vec<usize> = (0..tree.nodes.len()).collect();
         for index in order {
@@ -222,6 +237,7 @@ impl FileTree {
             relative_path,
             kind,
             not_downloaded: false,
+            object_id: None,
             children: Vec::new(),
         });
         self.parents.push(parent);
@@ -279,6 +295,69 @@ impl FileTree {
     /// The visible rows, top to bottom.
     pub fn rows(&self) -> &[TreeRow] {
         &self.rows
+    }
+
+    fn file(&self, relative_path: &str) -> Option<&Node> {
+        self.by_path
+            .get(relative_path)
+            .map(|node| &self.nodes[*node])
+            .filter(|node| node.kind == EntryKind::File)
+    }
+
+    /// The stable ID of the managed object at `relative_path`.
+    pub(crate) fn object_id(&self, relative_path: &str) -> Option<&str> {
+        self.file(relative_path)?.object_id.as_deref()
+    }
+
+    /// Where the file a tab showed at `relative_path` is now, given the
+    /// stable ID `object_id` it held then, or `None` when it's gone.
+    ///
+    /// A managed object follows its ID, never its old path: it stays put
+    /// while the file at `relative_path` still holds the ID, and otherwise
+    /// moves to the one file that holds it. When two files hold the ID,
+    /// Noura can't tell which one the tab showed, so it's gone. Only a file
+    /// with no ID, or one whose ID no file holds any more, stays at its
+    /// path.
+    pub(crate) fn follow(&self, relative_path: &str, object_id: Option<&str>) -> Option<String> {
+        let at_path = self.file(relative_path);
+        let Some(object_id) = object_id else {
+            return at_path.map(|_| relative_path.to_owned());
+        };
+        if at_path.is_some_and(|node| node.object_id.as_deref() == Some(object_id)) {
+            return Some(relative_path.to_owned());
+        }
+        let mut holders = self.nodes.iter().filter(|node| {
+            node.kind == EntryKind::File && node.object_id.as_deref() == Some(object_id)
+        });
+        match (holders.next(), holders.next()) {
+            (Some(only), None) => Some(only.relative_path.clone()),
+            (Some(_), Some(_)) => None,
+            (None, _) => at_path.map(|_| relative_path.to_owned()),
+        }
+    }
+
+    /// The open folders' paths, sorted.
+    pub(crate) fn expanded_folders(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .expanded
+            .iter()
+            .map(|node| self.nodes[*node].relative_path.clone())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// Open the folders at `paths`; paths that aren't folders are left
+    /// out.
+    pub(crate) fn expand_folders<'a>(&mut self, paths: impl IntoIterator<Item = &'a str>) {
+        for path in paths {
+            if let Some(&node) = self.by_path.get(path)
+                && self.nodes[node].kind == EntryKind::Folder
+            {
+                self.expanded.insert(node);
+            }
+        }
+        self.refresh_rows();
     }
 
     /// The row with keyboard focus.
@@ -664,6 +743,18 @@ impl FileTree {
 }
 
 impl Workspace {
+    /// The file tree after reading every file again, for when files may
+    /// have changed outside Noura. Until the index's watcher reports a
+    /// change, the plain listing trusts the index for paths it already
+    /// knows, so a file that another app replaced would keep the old
+    /// file's stable ID.
+    pub(crate) fn changed_file_tree(&self) -> Result<FileTree, AppError> {
+        self.engine()
+            .reconcile()
+            .map_err(|error| AppError::from_core(error, self.root(), Access::ReadWorkspace))?;
+        self.file_tree()
+    }
+
     /// The workspace's file tree with every folder closed.
     pub fn file_tree(&self) -> Result<FileTree, AppError> {
         let entries = self
@@ -677,6 +768,7 @@ impl Workspace {
             },
             relative_path: entry.relative_path,
             not_downloaded: entry.not_downloaded,
+            object_id: entry.object_id,
         })))
     }
 
@@ -699,11 +791,7 @@ impl Workspace {
                 ));
             }
         }
-        let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
-        Ok(OpenedFile {
-            name: shown_name(file_name, EntryKind::File),
-            relative_path: relative_path.to_owned(),
-        })
+        Ok(OpenedFile::at(relative_path))
     }
 }
 

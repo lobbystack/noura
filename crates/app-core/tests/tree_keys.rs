@@ -2,7 +2,7 @@
 
 mod support;
 
-use app_core::{TreeAction, TreeKey};
+use app_core::{OpenAs, TreeAction, TreeKey};
 use support::{Fixture, current, document};
 
 fn rename_target(app: &app_core::App) -> Option<String> {
@@ -34,7 +34,7 @@ fn space_never_renames() {
     let fixture = Fixture::new(&[("A.md", b"a")]);
     let mut app = fixture.app();
     support::select(&mut app, "A.md");
-    app.open_file("A.md");
+    app.open_file("A.md", OpenAs::Preview);
 
     app.press_tree_key(TreeKey::Activate);
 

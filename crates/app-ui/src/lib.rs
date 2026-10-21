@@ -6,13 +6,15 @@
 mod chooser;
 mod common;
 mod ignored_files;
+mod rail;
+mod tab_bar;
 pub mod theme;
 mod tree;
 mod workspace;
 
 use std::{path::PathBuf, time::Duration};
 
-use app_core::{App, DragOut, Screen};
+use app_core::{App, DragOut, Screen, TabId};
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -29,6 +31,9 @@ pub struct NouraUi {
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
     ignored: ignored_files::IgnoredFilesView,
+    tab_bar: tab_bar::TabBarView,
+    /// The tab the document area showed last frame.
+    shown_tab: Option<TabId>,
     started: bool,
 }
 
@@ -40,6 +45,8 @@ impl NouraUi {
             new_workspace: None,
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
+            tab_bar: tab_bar::TabBarView::default(),
+            shown_tab: None,
             started: false,
         }
     }
