@@ -237,8 +237,10 @@ pub struct NoteSession {
     /// managed note, or 0.
     body_start: usize,
     /// Whether the editor shows the whole file, as for a Markdown file
-    /// without an ID. Decided when the note opens, so a file that gains or
-    /// loses an ID while open keeps how its text maps to the editor.
+    /// without an ID. Decided when the note opens, so a file that loses an
+    /// ID while open keeps how its text maps to the editor. A Markdown file
+    /// shown whole that a save or a conflict choice leaves with an ID and a
+    /// type opens as a note, as [`Self::reopen_if_fixed`] says.
     whole_file: bool,
     /// Whether the editor shows the text as source, without the live
     /// preview. Decided when the note opens.
@@ -419,6 +421,13 @@ impl NoteSession {
     /// The text the editor shows.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Whether the editor shows the file's whole text, frontmatter
+    /// included, rather than a managed note's text after its frontmatter.
+    /// An editor drawn for one layout starts again when the other shows.
+    pub fn shows_whole_file(&self) -> bool {
+        self.whole_file
     }
 
     /// Whether the editor shows the text as source, without the live
@@ -754,21 +763,28 @@ impl NoteSession {
         self.reopen_if_fixed();
     }
 
-    /// Show a note that opened with broken properties as it would open now,
-    /// once the file holds readable properties and nothing is unsaved: a
-    /// note with its properties panel, or a Markdown file shown whole in the
-    /// live preview. The editor starts again from the note's text, as
-    /// [`Self::take_reset`] tells it, which writes nothing. Edits typed
-    /// while the save ran wait for their own save first, so the text the
-    /// editor shows always maps to the file the same way.
+    /// Show a Markdown file shown whole as it would open now, once the
+    /// file holds readable properties and nothing is unsaved: a note with
+    /// its properties panel when they hold an ID and a type, whether they
+    /// broke while you typed or the file opened with them broken. A file
+    /// that opened with broken properties and now has readable ones
+    /// without an ID shows in the live preview. The editor starts again
+    /// from the note's text, as [`Self::take_reset`] tells it, which writes
+    /// nothing. Edits typed while the save ran wait for their own save
+    /// first, so the text the editor shows always maps to the file the same
+    /// way.
     fn reopen_if_fixed(&mut self) {
-        if !self.broken_layout || self.broken.is_some() || self.is_unsaved() {
+        if self.text_file || !self.whole_file || self.broken.is_some() || self.is_unsaved() {
             return;
         }
-        self.whole_file = !matches!(
+        let managed = matches!(
             local_core::parse_markdown(&self.relative_path, self.base.as_bytes()),
             ParsedMarkdown::Managed(_)
         );
+        if !managed && !self.broken_layout {
+            return;
+        }
+        self.whole_file = !managed;
         let base = std::mem::take(&mut self.base);
         let revision = std::mem::take(&mut self.revision);
         self.read(base, revision);
@@ -821,6 +837,7 @@ impl NoteSession {
             saved: (self.version, self.text.clone()),
             merged: None,
         });
+        self.reopen_if_fixed();
         Restored::Written
     }
 
@@ -919,17 +936,33 @@ impl NoteSession {
         if fresh.revision == self.revision {
             return false;
         }
+        self.replace_with(fresh);
+        true
+    }
+
+    /// Take `fresh`, the file opened again, in place of this session. The
+    /// editor takes its text, as [`Self::take_reset`] tells it.
+    fn replace_with(&mut self, fresh: Self) {
         let text = fresh.text.clone();
         *self = Self {
             version: self.version,
             reset: Some(text),
             ..fresh
         };
-        true
     }
 
-    pub(crate) fn moved_to(&mut self, relative_path: &str) {
+    /// Follow the file to `relative_path`. A move that turns a plain-text
+    /// or code file into a Markdown file, or the other way, as when the
+    /// name field renames `LICENSE` to `LICENSE.md`, opens the file as its
+    /// new kind once nothing is unsaved. Until then it shows as before.
+    pub(crate) fn moved_to(&mut self, engine: &WorkspaceEngine, relative_path: &str) {
         relative_path.clone_into(&mut self.relative_path);
+        if self.text_file != is_markdown(relative_path) || self.is_unsaved() {
+            return;
+        }
+        if let Ok(fresh) = Self::open(engine, relative_path) {
+            self.replace_with(fresh);
+        }
     }
 
     /// Look at the file after the files changed on disk. A note with
@@ -1036,6 +1069,7 @@ impl NoteSession {
                         self.last_edit = None;
                     }
                 }
+                self.reopen_if_fixed();
             }
             Err(error) if error.code == "revision_conflict" => {
                 tracing::info!("the file changed again during conflict review");

@@ -1,7 +1,7 @@
 //! Text files and notes with broken properties through AccessKit: a text
 //! file opens as source with no formatting toolbar, a broken note shows a
-//! notice above its text, and fixing its properties opens it as a note with
-//! its properties panel.
+//! notice above its text, and fixing its properties, or giving a Markdown
+//! file an ID and a type, opens it as a note with its properties panel.
 
 mod support;
 
@@ -171,4 +171,46 @@ fn fixing_the_properties_opens_the_note_with_its_properties_panel() {
     let text = note_text(&harness);
     assert_eq!(text.len(), "xBody\n".len(), "{text:?}");
     assert!(text.contains('x') && text.contains("Body"), "{text:?}");
+}
+
+#[test]
+fn a_note_that_gains_an_id_and_a_type_while_open_shows_its_properties_panel() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(
+        app_data.path(),
+        &folder,
+        &[("Plan.md", "---\ntags: [a]\n---\n# Plan\n")],
+        "Plan",
+    );
+    harness.get_by_role_and_label(Role::Toolbar, "Formatting");
+    let fixed = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\ntags: [a]\n---\n# Plan\n";
+
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(2);
+    harness.event(egui::Event::Paste(fixed.to_owned()));
+    harness.run_steps(2);
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Group, "Properties")
+            .is_some()
+    });
+
+    assert_eq!(note_text(&harness), "# Plan\n");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("Plan.md")).unwrap(),
+        fixed
+    );
+    // The editor started again from the note's text, so undo has nothing
+    // to take back that held the file's whole text.
+    assert!(
+        harness
+            .get_by_label("Undo (Ctrl+Z)")
+            .accesskit_node()
+            .is_disabled()
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
+    harness.run_steps(3);
+    assert_eq!(note_text(&harness), "# Plan\n");
 }

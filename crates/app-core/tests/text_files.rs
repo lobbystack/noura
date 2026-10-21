@@ -467,3 +467,39 @@ fn a_name_never_moves_a_text_file_out_of_its_folder() {
     assert_eq!(app.note(tab).unwrap().relative_path(), "Docs/escape.txt");
     assert!(!fixture.root.parent().unwrap().join("escape.txt").exists());
 }
+
+#[test]
+fn a_rename_that_makes_a_text_file_markdown_opens_it_as_markdown() {
+    let held = support::note("01jbcdefghjkmnpqrstvwxyz0a", "Body\n");
+    let fixture = Fixture::new(&[("LICENSE", b"MIT License\n"), ("notes.txt", &held)]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "LICENSE");
+
+    // The name field keeps no extension for a file that had none.
+    app.rename_note(tab, "LICENSE.md");
+
+    assert_eq!(fixture.read("LICENSE.md"), b"MIT License\n");
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.relative_path(), "LICENSE.md");
+    assert!(!note.shows_source());
+    assert!(note.shows_whole_file());
+    assert_eq!(note.name(), "LICENSE");
+    assert_eq!(note.text(), "MIT License\n");
+    assert!(!note.is_unsaved());
+    app.keep_tab(tab);
+
+    // A text file holding a note's properties opens as that note.
+    let tab = open_from_tree(&mut app, "notes.txt");
+    app.start_rename("notes.txt");
+    assert!(app.commit_rename("Plan.md"));
+
+    assert_eq!(fixture.read("Plan.md"), held);
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.relative_path(), "Plan.md");
+    assert_eq!(note.object_id(), Some("note_01jbcdefghjkmnpqrstvwxyz0a"));
+    assert!(!note.shows_whole_file());
+    assert_eq!(note.text(), "\nBody\n");
+    assert!(note.properties().is_some());
+    assert!(!note.is_unsaved());
+    assert_eq!(app.take_note_reset(tab).as_deref(), Some("\nBody\n"));
+}

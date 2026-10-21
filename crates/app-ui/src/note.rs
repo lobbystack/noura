@@ -35,6 +35,9 @@ pub(crate) struct NoteView {
 /// One note's editor and the fields around it.
 struct OpenNote {
     editor: Editor,
+    /// Whether `editor` shows the file's whole text rather than a managed
+    /// note's text after its frontmatter.
+    whole_file: bool,
     /// What the name field holds while you type in it; `None` shows the
     /// file's name.
     name: Option<String>,
@@ -217,10 +220,12 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
         return false;
     };
     let shows_source = session.shows_source();
+    let whole_file = session.shows_whole_file();
     let note = view.notes.entry(tab).or_insert_with(|| {
         let clicked = ui.input(|input| input.pointer.any_released());
         OpenNote {
             editor: editor_for(ui.ctx(), session),
+            whole_file,
             name: None,
             focus_name: false,
             drafts: HashMap::new(),
@@ -231,14 +236,16 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             },
         }
     });
-    // A save left a broken note's properties readable, so it opens as it
-    // would now: the editor starts again from the note's text, in the live
-    // preview, and keeps the keyboard.
-    if note.editor.plaintext_mode() != shows_source
+    // The file shows another way now, as when a save left a note's
+    // properties readable or a rename made a text file Markdown: the editor
+    // starts again from the note's text, with an empty undo history, and
+    // keeps the keyboard.
+    if (note.editor.plaintext_mode() != shows_source || note.whole_file != whole_file)
         && let Some(session) = app.note(tab)
     {
         let focused = note.editor.focused(ui.ctx());
         note.editor = editor_for(ui.ctx(), session);
+        note.whole_file = whole_file;
         if focused {
             note.editor.focus(ui.ctx());
         }

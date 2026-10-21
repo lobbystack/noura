@@ -981,7 +981,7 @@ impl App {
         for (tab, path) in &files {
             if let Some(session) = self.notes.sessions.get_mut(tab) {
                 if session.relative_path() != path {
-                    session.moved_to(path);
+                    session.moved_to(workspace.engine(), path);
                 }
                 continue;
             }
