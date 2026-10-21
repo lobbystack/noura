@@ -259,7 +259,15 @@ impl WorkspaceEngine {
         Ok(())
     }
 
+    /// Wait up to `wait` for the native watcher and reconcile what it
+    /// reports. Returns the workspace paths another app changed.
     pub fn poll_external_changes(&self, wait: std::time::Duration) -> Result<Vec<String>> {
+        self.poll_watcher(wait).map(|poll| poll.changed)
+    }
+
+    /// [`Self::poll_external_changes`], also saying whether the watcher
+    /// lost events and a full rescan ran instead.
+    pub fn poll_watcher(&self, wait: std::time::Duration) -> Result<WatchPoll> {
         let paths = self.watcher.drain_coalesced(wait)?;
         // Our writes finish before these reports are checked against the
         // journal, so a write caught between its journal entry and its
@@ -269,17 +277,26 @@ impl WorkspaceEngine {
             // Events were lost, so the paths are incomplete: walk everything.
             self.sync_external_manifest(&[self.root.join(WORKSPACE_MANIFEST_PATH)])?;
             let scan = self.reconcile_walk(&HashSet::new(), EventSource::External, false)?;
-            if let Ok(mut journal) = self.self_writes.lock() {
-                journal.clear();
+            // A burst of our own writes is the usual reason events are lost.
+            // A walk that finds nothing new then announces nothing, or those
+            // writes would read as another app's. The journal stays, for
+            // the reports of them that arrive after the walk.
+            if !scan.touched.is_empty() {
+                self.emit(
+                    "file:changed",
+                    EventSource::External,
+                    serde_json::json!({ "paths": scan.touched, "rescanned": true }),
+                );
             }
-            self.emit(
-                "file:changed",
-                EventSource::External,
-                serde_json::json!({ "paths": scan.touched, "rescanned": true }),
-            );
-            return Ok(scan.touched);
+            return Ok(WatchPoll {
+                changed: scan.touched,
+                rescanned: true,
+            });
         }
-        self.process_external_changes(paths)
+        Ok(WatchPoll {
+            changed: self.process_external_changes(paths)?,
+            rescanned: false,
+        })
     }
 
     pub(super) fn process_external_changes(&self, paths: Vec<PathBuf>) -> Result<Vec<String>> {
@@ -543,6 +560,252 @@ mod tests {
                 vec!["file:changed".to_owned()]
             )
         );
+    }
+
+    /// A workspace with a note, a PDF, and a folder holding a note and a
+    /// folder with a picture, all indexed.
+    fn tree_fixture() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceEngine) {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        for (path, bytes) in [
+            ("Plan.md", "# Plan\n"),
+            ("scan.pdf", "%PDF-1.7\n"),
+            ("Docs/Spec.md", "# Spec\n"),
+            ("Docs/Photos/cat.jpg", "jpg"),
+        ] {
+            let path = engine.root().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        engine.reconcile().unwrap();
+        (workspace, app_data, engine)
+    }
+
+    /// Hand the engine one watcher batch naming `paths`, and return the
+    /// ones it took for another app's changes.
+    fn report(engine: &WorkspaceEngine, paths: &[&str]) -> Vec<String> {
+        let root = engine.root().to_owned();
+        engine
+            .process_external_changes(paths.iter().map(|path| root.join(path)).collect())
+            .unwrap()
+    }
+
+    /// The tree operations note what they change before they touch the
+    /// disk, so the watcher's reports of every path they create, move or
+    /// remove, inside the item and above it, read as Noura's own.
+    #[test]
+    fn reports_of_the_paths_noura_s_tree_operations_change_never_read_as_outside_changes() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("notes.txt"), "notes").unwrap();
+        std::fs::create_dir(outside.path().join("Album")).unwrap();
+        std::fs::write(outside.path().join("Album/dog.jpg"), "dog").unwrap();
+        std::fs::write(outside.path().join("Album/Idea.md"), "# Idea\n").unwrap();
+
+        engine.create_folder("New/Deep").unwrap();
+        let created = report(&engine, &["New", "New/Deep"]);
+        engine.move_file("Plan.md", "Later/Plan.md").unwrap();
+        let moved_note = report(&engine, &["Plan.md", "Later", "Later/Plan.md"]);
+        engine.move_file("scan.pdf", "New/scan.pdf").unwrap();
+        let moved_pdf = report(&engine, &["scan.pdf", "New", "New/scan.pdf"]);
+        engine.move_folder("Docs", "Archive/Docs").unwrap();
+        let moved_folder = report(
+            &engine,
+            &[
+                "Docs",
+                "Docs/Spec.md",
+                "Docs/Photos",
+                "Docs/Photos/cat.jpg",
+                "Archive",
+                "Archive/Docs",
+                "Archive/Docs/Spec.md",
+                "Archive/Docs/Photos",
+                "Archive/Docs/Photos/cat.jpg",
+            ],
+        );
+        engine.copy_file("New/scan.pdf", "New/scan 1.pdf").unwrap();
+        let copied = report(&engine, &["New", "New/scan 1.pdf"]);
+        engine.trash_path("Archive").unwrap();
+        let trashed = report(
+            &engine,
+            &[
+                "Archive",
+                "Archive/Docs",
+                "Archive/Docs/Spec.md",
+                "Archive/Docs/Photos",
+                "Archive/Docs/Photos/cat.jpg",
+            ],
+        );
+        engine
+            .import_external(
+                &[
+                    outside.path().join("notes.txt"),
+                    outside.path().join("Album"),
+                ],
+                "New",
+            )
+            .unwrap();
+        let imported = report(
+            &engine,
+            &[
+                "New",
+                "New/notes.txt",
+                "New/Album",
+                "New/Album/dog.jpg",
+                "New/Album/Idea.md",
+            ],
+        );
+
+        assert_eq!(
+            [
+                created,
+                moved_note,
+                moved_pdf,
+                moved_folder,
+                copied,
+                trashed,
+                imported
+            ],
+            <[Vec<String>; 7]>::default()
+        );
+    }
+
+    /// On a case-insensitive volume both names show the renamed item, and
+    /// on a case-sensitive one the old name is gone. Either way the
+    /// reports read as Noura's own.
+    #[test]
+    fn reports_of_a_case_only_rename_never_read_as_outside_changes() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+
+        engine.move_file("Plan.md", "plan.md").unwrap();
+        let file = report(&engine, &["Plan.md", "plan.md"]);
+        engine.move_folder("Docs", "docs").unwrap();
+        let folder = report(
+            &engine,
+            &[
+                "Docs",
+                "docs",
+                "Docs/Spec.md",
+                "docs/Spec.md",
+                "docs/Photos/cat.jpg",
+            ],
+        );
+
+        assert_eq!((file, folder), (Vec::new(), Vec::new()));
+    }
+
+    /// Another app's change to a path a tree operation just moved, copied
+    /// or emptied still reads as outside.
+    #[test]
+    fn another_app_s_change_right_after_a_tree_operation_still_reads_as_outside() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let root = engine.root().to_owned();
+        engine.move_file("Plan.md", "Later/Plan.md").unwrap();
+        engine.move_file("scan.pdf", "Later/scan.pdf").unwrap();
+        engine
+            .copy_file("Later/scan.pdf", "Later/scan 1.pdf")
+            .unwrap();
+        engine.create_folder("New").unwrap();
+
+        std::fs::write(root.join("Later/Plan.md"), "# Theirs\n").unwrap();
+        std::fs::write(root.join("Later/scan.pdf"), "%PDF-1.7 theirs\n").unwrap();
+        std::fs::write(root.join("Later/scan 1.pdf"), "%PDF-1.7 theirs\n").unwrap();
+        std::fs::write(root.join("Plan.md"), "# Back\n").unwrap();
+        std::fs::remove_dir(root.join("New")).unwrap();
+
+        assert_eq!(
+            report(
+                &engine,
+                &[
+                    "Later/Plan.md",
+                    "Later/scan.pdf",
+                    "Later/scan 1.pdf",
+                    "Plan.md",
+                    "New"
+                ]
+            ),
+            [
+                "Later/Plan.md",
+                "Later/scan 1.pdf",
+                "Later/scan.pdf",
+                "New",
+                "Plan.md"
+            ]
+        );
+    }
+
+    /// The tree operations announce their changes as Noura's own, even
+    /// the ones that change no index entry: a new folder, or a moved,
+    /// copied, trashed or imported picture.
+    #[test]
+    fn noura_s_tree_operations_announce_their_changes_as_its_own() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("dog.jpg"), "dog").unwrap();
+        let operations: [(&str, &dyn Fn()); 6] = [
+            ("new folder", &|| engine.create_folder("New").unwrap()),
+            ("move", &|| {
+                engine.move_file("scan.pdf", "New/scan.pdf").unwrap()
+            }),
+            ("folder move", &|| {
+                engine.move_folder("Docs/Photos", "New/Photos").unwrap()
+            }),
+            ("copy", &|| {
+                engine.copy_file("New/scan.pdf", "New/scan 1.pdf").unwrap()
+            }),
+            ("trash", &|| {
+                engine.trash_path("New/Photos").unwrap();
+            }),
+            ("import", &|| {
+                engine
+                    .import_external(&[outside.path().join("dog.jpg")], "New")
+                    .unwrap();
+            }),
+        ];
+
+        let silent = operations
+            .iter()
+            .filter_map(|(name, operation)| {
+                let before = engine.change_counts();
+                operation();
+                let after = engine.change_counts();
+                (after.own == before.own || after.outside != before.outside).then_some(*name)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(silent, Vec::<&str>::new());
+    }
+
+    /// A burst of Noura's own writes is the usual reason the watcher loses
+    /// events. The full rescan that follows then finds nothing new and
+    /// announces no outside change, but still tells the caller it ran, so
+    /// a view lists the workspace again.
+    #[test]
+    fn a_rescan_after_lost_events_announces_only_the_outside_changes_it_finds() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let quiet = || std::time::Duration::from_millis(1);
+        let before = engine.change_counts();
+
+        engine.watcher.simulate_overflow();
+        let nothing_new = engine.poll_watcher(quiet()).unwrap();
+        let after_nothing = engine.change_counts();
+        std::fs::write(engine.root().join("Theirs.md"), "# Theirs\n").unwrap();
+        engine.watcher.simulate_overflow();
+        let theirs = engine.poll_watcher(quiet()).unwrap();
+
+        assert_eq!(
+            (nothing_new.rescanned, nothing_new.changed),
+            (true, Vec::new())
+        );
+        assert_eq!(after_nothing.outside, before.outside);
+        assert_eq!(
+            (theirs.rescanned, theirs.changed),
+            (true, vec!["Theirs.md".to_owned()])
+        );
+        assert!(engine.change_counts().outside > after_nothing.outside);
     }
 
     #[test]

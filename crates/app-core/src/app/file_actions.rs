@@ -3,9 +3,10 @@
 
 use super::{App, Change, Notice, NoticeKind};
 use crate::{
-    AppError, EntryKind, OpenedFile, Platform, TreeAction, TreeKey,
+    AppError, EntryKind, FileTree, OpenedFile, Platform, TreeAction, TreeKey,
     files::{remap, shown_name},
     operations::{join, renamed_path},
+    watch::Snapshot,
 };
 
 fn file_name(relative_path: &str) -> &str {
@@ -529,13 +530,23 @@ impl App {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        match workspace.file_tree() {
-            Ok(mut tree) => {
+        // Read before listing, so a watch update listed earlier is known
+        // to be older.
+        let counts = workspace.engine().change_counts();
+        match Snapshot::of(workspace.engine(), workspace.root()) {
+            Ok(snapshot) => {
+                let mut tree = FileTree::from_entries(&snapshot.entries);
                 if let Some(old) = &self.tree {
                     tree.carry_over(old, moved);
                 }
                 self.tree = Some(tree);
+                self.listed = counts;
+                let previous = self.snapshot.replace(snapshot);
                 self.listeners.emit(Change::Tree);
+                let before = previous.as_ref().map(|old| old.problems.as_slice());
+                if before != Some(self.problems()) {
+                    self.listeners.emit(Change::Problems);
+                }
             }
             Err(error) => self.show_notice("Couldn't read the files", error, None),
         }

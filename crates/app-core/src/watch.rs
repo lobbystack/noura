@@ -88,6 +88,18 @@ pub(crate) struct Update {
     pub(crate) snapshot: Snapshot,
     pub(crate) tree: FileTree,
     pub(crate) origins: Vec<Origin>,
+    /// The engine's change counts, read just after the listing. A change
+    /// they don't count landed after the listing.
+    pub(crate) counts: ChangeCounts,
+}
+
+/// Whether an update's listing is older than one the app made itself: a
+/// change landed after the update's counts were read and before `listed`,
+/// the counts read just before the app's own listing. Listings take turns
+/// with changes, so the app's listing shows that change and the update's
+/// misses it.
+pub(crate) fn is_older(update: &Update, listed: ChangeCounts) -> bool {
+    update.counts.own < listed.own || update.counts.outside < listed.outside
 }
 
 /// The background thread that watches one open workspace. Dropping it
@@ -225,6 +237,7 @@ impl Worker {
                 snapshot,
                 tree,
                 origins: origins.clone(),
+                counts: self.heard,
             };
             if self.sender.send(update).is_err() {
                 return;
@@ -236,12 +249,20 @@ impl Worker {
     }
 
     /// Wait for the native watcher and reconcile what it reports, or sleep
-    /// while it can't run. Returns whether a full rescan ran.
+    /// while it can't run. Returns whether a full rescan ran, including the
+    /// one that follows events the watcher lost.
     fn wait_and_rescan(&self, last_rescan: &mut Instant) -> bool {
         let watching = self.engine.is_watching();
         let interval = if watching {
-            if let Err(error) = self.engine.poll_external_changes(POLL_WAIT) {
-                tracing::warn!(code = %error.code, "could not apply outside changes");
+            match self.engine.poll_watcher(POLL_WAIT) {
+                Ok(poll) if poll.rescanned => {
+                    *last_rescan = Instant::now();
+                    return true;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(code = %error.code, "could not apply outside changes");
+                }
             }
             self.rescans.periodic
         } else {

@@ -60,9 +60,13 @@ impl WorkspaceEngine {
                 operation,
             )
         })?;
-        atomic_write(&self.root, relative, &bytes, operation)?;
+        let copy = normalized_relative_path(&self.root, &destination, operation)?;
+        self.expect_own_write(&copy, Some(&markdown::revision(&bytes)));
+        atomic_write(&self.root, relative, &bytes, operation)
+            .inspect_err(|_| self.forget_own_write(&copy))?;
         drop(guard);
         self.reconcile_after_change(operation);
+        self.announce_own_change(&[&copy]);
         Ok(())
     }
 }

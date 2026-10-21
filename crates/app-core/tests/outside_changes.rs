@@ -254,6 +254,23 @@ fn after_the_watcher_overflows_a_full_rescan_finds_the_lost_changes() {
     assert!(live.seen.contains(&Change::Files(Origin::Outside)));
 }
 
+/// A folder or a picture has no index entry, so the rescan after lost
+/// events changes nothing in the index, and the view lists the files again
+/// all the same.
+#[test]
+fn after_the_watcher_overflows_a_new_folder_and_picture_show_up() {
+    let mut live = Live::open_with(&[("A.md", "# A\n")], NO_RESCANS);
+    live.workspace().force_watch_fault(WatchFault::Overflow);
+
+    std::fs::create_dir(live.path("Photos")).unwrap();
+    write(&live.folder, "Photos/cat.jpg", "jpg");
+
+    live.wait_until("a rescan finds the changes", |app| {
+        rows(app) == ["Photos", "A.md"]
+    });
+    assert!(live.seen.contains(&Change::Files(Origin::Outside)));
+}
+
 #[test]
 fn when_the_platform_asks_for_a_rescan_a_full_rescan_finds_the_changes() {
     let mut live = Live::open_with(&[("A.md", "# A\n")], NO_RESCANS);

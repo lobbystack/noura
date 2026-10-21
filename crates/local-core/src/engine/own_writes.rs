@@ -3,8 +3,9 @@
 
 use std::{
     collections::HashMap,
+    fs::Metadata,
     path::Path,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::markdown;
@@ -27,6 +28,27 @@ pub(super) enum Expected {
     Deleted,
     /// A folder: one the write creates, or one whose listing it changes.
     Folder,
+    /// A file that kept its size, modification time and download state,
+    /// as one does when it moves. Checking it never reads the file.
+    Unchanged(Stat),
+}
+
+/// What a file's metadata says about its content without reading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Stat {
+    len: u64,
+    modified: Option<SystemTime>,
+    dataless: bool,
+}
+
+impl Stat {
+    pub(super) fn of(metadata: &Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            dataless: is_dataless(metadata),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +73,13 @@ impl OwnWrites {
         for folder in changed_folders(root, relative) {
             self.insert(folder, Expected::Folder, now);
         }
+        self.insert(relative.to_owned(), expected, now);
+    }
+
+    /// Note that the engine is about to make `relative` show `expected`,
+    /// without the folders above it: for a path inside an item that moves
+    /// or goes, whose folders the item's own entry covers.
+    pub(super) fn expect_only(&mut self, relative: &str, expected: Expected, now: Instant) {
         self.insert(relative.to_owned(), expected, now);
     }
 
@@ -94,11 +123,6 @@ impl OwnWrites {
         false
     }
 
-    /// Forget every entry, as after a rescan that read every file anyway.
-    pub(super) fn clear(&mut self) {
-        self.entries.clear();
-    }
-
     /// Drop the entries older than the window, so the journal holds only
     /// recent writes however long the workspace stays open.
     fn prune(&mut self, now: Instant) {
@@ -128,8 +152,44 @@ fn shows(path: &Path, expected: &Expected) -> bool {
                 && !is_dataless(&metadata)
                 && std::fs::read(path).is_ok_and(|bytes| markdown::revision(&bytes) == *revision)
         }
+        (Expected::Unchanged(stat), Ok(metadata)) => {
+            !metadata.is_dir() && Stat::of(&metadata) == *stat
+        }
         _ => false,
     }
+}
+
+/// The item at `source` and everything in it, by path inside the item
+/// (`""` for the item itself), with what each path shows once the item
+/// moves unchanged. Dot folders are left out, as the watcher's reports of
+/// them are skipped, and so are names with no UTF-8 form, which no report
+/// can name.
+pub(super) fn moved_items(source: &Path) -> Vec<(String, Expected)> {
+    let mut items = Vec::new();
+    let mut pending = vec![(source.to_path_buf(), String::new())];
+    while let Some((path, inner)) = pending.pop() {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_dir() {
+            items.push((inner, Expected::Unchanged(Stat::of(&metadata))));
+            continue;
+        }
+        for child in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+            let name = child.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.starts_with('.') && child.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let child_inner = match inner.as_str() {
+                "" => name.to_owned(),
+                inner => format!("{inner}/{name}"),
+            };
+            pending.push((child.path(), child_inner));
+        }
+        items.push((inner, Expected::Folder));
+    }
+    items
 }
 
 /// The folders a write to `relative` can make the platform report: its
@@ -262,6 +322,36 @@ mod tests {
         assert!(writes.reported("Inbox", &folder, now));
         std::fs::remove_dir(&folder).unwrap();
         assert!(!writes.reported("Inbox", &folder, now));
+    }
+
+    #[test]
+    fn a_moved_file_counts_as_ours_until_its_content_changes() {
+        let root = tempdir().unwrap();
+        let from = root.path().join("Scan.pdf");
+        let to = root.path().join("Moved.pdf");
+        std::fs::write(&from, "%PDF-1.7\n").unwrap();
+        let stat = Stat::of(&std::fs::symlink_metadata(&from).unwrap());
+        let mut writes = OwnWrites::default();
+        let now = Instant::now();
+        writes.expect(root.path(), "Scan.pdf", Expected::Deleted, now);
+        writes.expect_only("Moved.pdf", Expected::Unchanged(stat), now);
+        std::fs::rename(&from, &to).unwrap();
+
+        assert!(writes.reported("Scan.pdf", &from, now));
+        assert!(writes.reported("Moved.pdf", &to, now));
+        std::fs::write(&to, "%PDF-1.7 edited\n").unwrap();
+        assert!(!writes.reported("Moved.pdf", &to, now));
+    }
+
+    #[test]
+    fn a_path_inside_a_moved_item_notes_no_folder() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("Docs/Photos")).unwrap();
+        let mut writes = OwnWrites::default();
+
+        writes.expect_only("Docs/Photos/cat.jpg", Expected::Deleted, Instant::now());
+
+        assert_eq!(writes.len(), 1);
     }
 
     /// The offline attribute is the one online-only mark a test can set

@@ -440,6 +440,98 @@ impl WorkspaceEngine {
         }
     }
 
+    /// Note that this engine is about to create the folder `relative`,
+    /// along with the folders above it that don't exist yet.
+    fn expect_own_folder(&self, relative: &str) {
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.expect(
+                &self.root,
+                relative,
+                own_writes::Expected::Folder,
+                std::time::Instant::now(),
+            );
+        }
+    }
+
+    /// Note the file at `relative` as this engine just left it, for a write
+    /// whose content isn't known before it lands. Call it while the change
+    /// gate is still held: the watcher thread checks no report against the
+    /// journal until the gate is free, so the entry is there in time.
+    fn expect_own_file(&self, relative: &str) {
+        let Ok(metadata) = std::fs::symlink_metadata(self.root.join(relative)) else {
+            return;
+        };
+        let expected = own_writes::Expected::Unchanged(own_writes::Stat::of(&metadata));
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.expect(&self.root, relative, expected, std::time::Instant::now());
+        }
+    }
+
+    /// Note that this engine is about to move the file or folder at `from`
+    /// to `to`, or out of the workspace when `to` is `None`. `from` and
+    /// everything in it then read as gone and `to` and everything in it as
+    /// the item, unchanged, along with the folders the move creates or
+    /// changes. After a case-only rename both names show the item. Call it
+    /// before touching the disk. Returns every path it noted, for
+    /// [`Self::forget_own_writes`].
+    fn expect_own_move(&self, from: &str, to: Option<&str>) -> Vec<String> {
+        use own_writes::Expected;
+
+        let source = self.root.join(from);
+        let case_only = to.is_some_and(|to| same_file(&source, &self.root.join(to)));
+        let items = own_writes::moved_items(&source);
+        let now = std::time::Instant::now();
+        let mut noted = Vec::new();
+        let Ok(mut journal) = self.self_writes.lock() else {
+            return noted;
+        };
+        for (inner, moved) in items {
+            let inside = |item: &str| match inner.as_str() {
+                "" => item.to_owned(),
+                inner => format!("{item}/{inner}"),
+            };
+            let left = if case_only {
+                moved.clone()
+            } else {
+                Expected::Deleted
+            };
+            let mut paths = vec![(inside(from), left)];
+            if let Some(to) = to {
+                paths.push((inside(to), moved));
+            }
+            for (path, expected) in paths {
+                // The item's own entries also note the folders above it.
+                if inner.is_empty() {
+                    journal.expect(&self.root, &path, expected, now);
+                } else {
+                    journal.expect_only(&path, expected, now);
+                }
+                noted.push(path);
+            }
+        }
+        noted
+    }
+
+    /// Forget expected changes that never happened.
+    fn forget_own_writes(&self, relative_paths: &[String]) {
+        if let Ok(mut journal) = self.self_writes.lock() {
+            for relative in relative_paths {
+                journal.forget(&self.root, relative);
+            }
+        }
+    }
+
+    /// Announce a change this engine made to the files or folders at
+    /// `relative_paths`. A view then lists the workspace again, even when
+    /// no index entry changed, as for a new folder or a moved picture.
+    fn announce_own_change(&self, relative_paths: &[&str]) {
+        self.emit(
+            "file:changed",
+            EventSource::Application,
+            serde_json::json!({ "paths": relative_paths }),
+        );
+    }
+
     fn index_outcome(&self, result: Result<()>) -> (IndexStatus, Vec<CoreWarning>) {
         match result {
             Ok(()) => (IndexStatus::Updated, Vec::new()),
@@ -508,6 +600,17 @@ pub(super) fn remove_index_files(path: &Path, operation: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// What one poll of the native watcher found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatchPoll {
+    /// The workspace paths another app changed.
+    pub changed: Vec<String>,
+    /// Whether the watcher lost events, so a full rescan ran instead. The
+    /// rescan can find changes no index entry holds, such as a new folder,
+    /// so a caller that shows the files lists them again.
+    pub rescanned: bool,
 }
 
 /// File changes an engine has announced, by who made them. Both counts

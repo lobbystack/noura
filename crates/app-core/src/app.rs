@@ -12,10 +12,12 @@ use std::{
     },
 };
 
+use local_core::ChangeCounts;
+
 use crate::{
     AppError, FileTree, NoSystem, OpenedFile, RecentWorkspace, System, Workspace, WorkspaceService,
     files::shown_name,
-    watch::{Rescans, Snapshot, Watch},
+    watch::{self, Rescans, Snapshot, Watch},
 };
 
 mod file_actions;
@@ -153,6 +155,10 @@ pub struct App {
     watch: Option<Watch>,
     /// The listing the views show, which tells which object each file is.
     snapshot: Option<Snapshot>,
+    /// The engine's change counts just before the app last listed the files
+    /// itself, after one of its tree operations. A watch update listed
+    /// before then would undo that operation in the views.
+    listed: ChangeCounts,
 }
 
 impl App {
@@ -201,6 +207,7 @@ impl App {
             rescans,
             watch: None,
             snapshot: None,
+            listed: ChangeCounts::default(),
         };
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
@@ -411,6 +418,11 @@ impl App {
         let Some(update) = self.watch.as_ref().and_then(Watch::take) else {
             return false;
         };
+        // The views show a newer listing already. The watch thread lists
+        // again after the change that made it newer.
+        if watch::is_older(&update, self.listed) {
+            return false;
+        }
         let mut tree = update.tree;
         if let Some(old) = &self.tree {
             tree.keep_state_from(old);
@@ -461,6 +473,7 @@ impl App {
         // Stop watching the previous workspace before watching this one.
         self.watch = None;
         self.snapshot = Some(opened.snapshot.clone());
+        self.listed = ChangeCounts::default();
         self.watch = Watch::start(
             opened.workspace.shared_engine(),
             opened.workspace.root().to_owned(),
@@ -587,8 +600,8 @@ mod tests {
     const SETTLE: Duration = Duration::from_secs(2);
 
     /// An app with an empty workspace open and every change it announces.
-    /// App-core has no file operations of its own yet (ticket 08 adds
-    /// them), so the tests write through the engine the way they will.
+    /// The tests write through the engine, as the app's file operations
+    /// do.
     struct Live {
         app: App,
         changes: Receiver<Change>,
@@ -711,6 +724,29 @@ mod tests {
         live.settle();
         assert!(live.seen.contains(&Change::Files(Origin::Noura)));
         assert!(!live.seen.contains(&Change::Files(Origin::Outside)));
+    }
+
+    /// A burst of Noura's own writes is the usual reason the watcher loses
+    /// events. The full rescan that follows finds nothing Noura didn't
+    /// announce, so the writes stay Noura's own.
+    #[test]
+    fn noura_s_writes_stay_its_own_when_the_watcher_loses_their_events() {
+        let mut live = Live::open();
+        live.app
+            .workspace()
+            .unwrap()
+            .force_watch_fault(crate::WatchFault::Overflow);
+
+        live.create_note("Mine.md");
+
+        live.wait_until("the note shows in the tree", |app| rows(app) == ["Mine.md"]);
+        live.settle();
+        assert!(live.seen.contains(&Change::Files(Origin::Noura)));
+        assert!(
+            !live.seen.contains(&Change::Files(Origin::Outside)),
+            "{:?}",
+            live.seen
+        );
     }
 
     /// The folders a write creates, and the folders whose listing it

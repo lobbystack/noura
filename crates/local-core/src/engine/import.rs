@@ -92,8 +92,10 @@ impl WorkspaceEngine {
             }
             Ok(())
         });
-        // Whatever landed before a failure is on disk; index it either way.
+        // Whatever landed before a failure is on disk; index it and
+        // announce it either way.
         self.reconcile_after_change(operation);
+        self.announce_own_change(&imported.iter().map(String::as_str).collect::<Vec<_>>());
         copied?;
         Ok(ImportResult {
             imported,
@@ -185,8 +187,10 @@ impl Import<'_> {
 
     fn create_folder(&self, relative: &str) -> Result<()> {
         let path = resolve_for_write(&self.engine.root, relative, self.operation)?;
+        self.engine.expect_own_folder(relative);
         std::fs::create_dir(&path)
-            .map_err(|error| CoreError::io(error, self.operation, Some(relative)))?;
+            .map_err(|error| CoreError::io(error, self.operation, Some(relative)))
+            .inspect_err(|_| self.engine.forget_own_write(relative))?;
         sync_parent(&path, self.operation)
     }
 
@@ -247,6 +251,9 @@ impl Import<'_> {
         }
         file.commit()
             .map_err(|error| CoreError::io(error, operation, Some(relative)))?;
+        // The import holds the change gate, so the entry is in place before
+        // the watcher thread checks any report of the file.
+        self.engine.expect_own_file(relative);
         sync_parent(&destination, operation)
     }
 }

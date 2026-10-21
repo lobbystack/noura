@@ -17,9 +17,7 @@ mod system;
 mod watch;
 mod workspace;
 
-pub use app::{
-    App, Change, IgnoredFiles, Notice, NoticeKind, Origin, Question, Rename, Screen,
-};
+pub use app::{App, Change, IgnoredFiles, Notice, NoticeKind, Origin, Question, Rename, Screen};
 pub use error::AppError;
 pub use files::{
     DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
