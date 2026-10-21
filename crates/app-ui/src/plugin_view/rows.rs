@@ -355,14 +355,17 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
             .find(|(id, _)| input.has_accesskit_action_request(*id, Action::Focus))
             .map(|(_, index)| *index)
     });
-    let focused = asked.or_else(|| {
-        let focused = ui.memory(|memory| memory.focused())?;
-        state
-            .drawn
-            .iter()
-            .find(|(id, _)| *id == focused)
-            .map(|(_, index)| *index)
-    });
+    // A redraw with fewer rows leaves the keyboard on the last one.
+    let focused = asked
+        .or_else(|| {
+            let focused = ui.memory(|memory| memory.focused())?;
+            state
+                .drawn
+                .iter()
+                .find(|(id, _)| *id == focused)
+                .map(|(_, index)| *index)
+        })
+        .and_then(|index| count.checked_sub(1).map(|last| index.min(last)));
     let mut keyboard = focused;
     let mut moved = asked.is_some();
     let mut activate = None;
@@ -557,9 +560,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
             }));
         }
     }
-    let menu_at = open_menu
-        .map(|index| (index, None))
-        .or(right_clicked.map(|(index, at)| (index, at)));
+    let menu_at = open_menu.map(|index| (index, None)).or(right_clicked);
     if let Some((index, at)) = menu_at
         && let Some((_, row)) = rows_by_index.iter().find(|(i, _)| *i == index)
         && row.menu.is_some()

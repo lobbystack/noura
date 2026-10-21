@@ -88,6 +88,11 @@ jobs:
       - name: Report the file tree's frame times
         if: matrix.os == 'macos-latest'
         run: cargo test -p app-ui --release --locked --test tree_scale -- --ignored --nocapture
+      - name: Report a plugin's 10,000-row list's frame times
+        if: matrix.os == 'macos-latest'
+        run: cargo test -p app-ui --release --locked --test plugin_kit -- --ignored --nocapture
+        env:
+          NOURA_REQUIRE_PLUGINS: '1'
 
   static-server:
     runs-on: ubuntu-latest

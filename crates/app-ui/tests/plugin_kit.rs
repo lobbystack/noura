@@ -4,10 +4,13 @@
 
 mod support;
 
+use std::time::{Duration, Instant};
+
 use app_core::PluginEvent;
 use egui::{
-    Key, Modifiers,
+    Event, Key, Modifiers, MouseWheelSource, MouseWheelUnit, TouchPhase,
     accesskit::{Role, SortDirection, Toggled},
+    vec2,
 };
 use egui_kittest::{
     Harness,
@@ -138,6 +141,31 @@ fn list_items_are_selected_by_click_and_arrow_keys_and_opened_with_enter() {
     assert_eq!(focused(harness).as_deref(), Some("More"));
     press_with(harness, Modifiers::SHIFT, Key::Tab);
     assert!(option(harness, "North bed").is_focused());
+
+    let pos = option(harness, "Herb spiral").rect().center();
+    double_click_at(harness, pos);
+    assert_eq!(last_event(harness), "activated herbs in beds");
+    assert!(is_selected(&option(harness, "Herb spiral")));
+}
+
+/// Double-click at `pos`. Both clicks land in one frame: the harness
+/// steps a quarter second per event, slower than a double-click.
+fn double_click_at(harness: &mut Ui, pos: egui::Pos2) {
+    let button = |pressed| Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.input_mut().events.extend([
+        Event::PointerMoved(pos),
+        button(true),
+        button(false),
+        button(true),
+        button(false),
+    ]);
+    harness.step();
+    harness.run();
 }
 
 #[test]
@@ -549,4 +577,55 @@ fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
     let name = form_field(harness, Role::TextInput, "Name");
     assert!(name.is_focused());
     assert_eq!(name.value(), Some("Ch".into()));
+}
+
+/// Report the time each frame takes while the Seeds list of 10,000 rows
+/// scrolls, its rows coming from the plugin as they appear. It measures
+/// egui's layout and tessellation and the plugin's calls on the CPU, not
+/// the GPU. CI runs it in release on the macOS arm64 runner:
+/// `cargo test -p app-ui --release --test plugin_kit -- --ignored --nocapture`.
+#[test]
+#[ignore = "a timing report; CI runs it in release on macOS arm64"]
+fn virtual_list_scroll_frame_times() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut opened = opened(&kit);
+    let harness = &mut opened.harness;
+    open_page(harness, "Seeds");
+    let row = option(harness, "Seed 1").rect().center();
+    harness.hover_at(row);
+    harness.run();
+
+    let mut frames = Vec::new();
+    for _ in 0..600 {
+        harness.event(Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: vec2(0.0, -240.0),
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        let start = Instant::now();
+        harness.step();
+        frames.push(start.elapsed());
+    }
+
+    frames.sort();
+    let at = |fraction: f64| frames[((frames.len() - 1) as f64 * fraction) as usize];
+    let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
+    println!(
+        "plugin virtual list, 10,000 rows, {} scroll frames: p50 {:.3} ms, p95 {:.3} ms, \
+         max {:.3} ms",
+        frames.len(),
+        ms(at(0.5)),
+        ms(at(0.95)),
+        ms(at(1.0)),
+    );
+    // The first row stays in the AccessKit tree as the list's tab stop, so
+    // look for the second.
+    assert!(
+        harness.query_by_label("Seed 2").is_none(),
+        "the list scrolled"
+    );
 }
