@@ -1,11 +1,9 @@
 //! The operating system services the files service uses: the system
 //! trash, the file manager, a terminal and the clipboard.
 
-use std::{
-    io,
-    path::Path,
-    process::{Child, Command},
-};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::process::{Child, Command};
+use std::{io, path::Path};
 
 use app_core::System;
 use eframe::egui;
@@ -31,19 +29,14 @@ impl System for DesktopSystem {
         app_core::move_to_system_trash(path)
     }
 
+    /// Finder and Explorer select the item. On Linux, `app-core` opens
+    /// the folder that holds it through [`Self::open_folder`] instead.
     fn reveal(&self, path: &Path) -> io::Result<()> {
-        reveal(path)
+        opener::reveal(path).map_err(io::Error::other)
     }
 
     fn open_folder(&self, folder: &Path) -> io::Result<()> {
-        #[cfg(target_os = "macos")]
-        let command = Command::new("/usr/bin/open").arg(folder).spawn();
-        #[cfg(target_os = "windows")]
-        let command = Command::new("explorer.exe").arg(folder).spawn();
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let command = Command::new("xdg-open").arg(folder).spawn();
-        reap(command?);
-        Ok(())
+        opener::open(folder).map_err(io::Error::other)
     }
 
     fn open_terminal(&self, folder: &Path) -> io::Result<()> {
@@ -53,37 +46,6 @@ impl System for DesktopSystem {
     fn copy_text(&self, text: &str) {
         self.ctx.copy_text(text.to_owned());
     }
-}
-
-/// Show `path` selected in Finder.
-#[cfg(target_os = "macos")]
-fn reveal(path: &Path) -> io::Result<()> {
-    reap(Command::new("/usr/bin/open").arg("-R").arg(path).spawn()?);
-    Ok(())
-}
-
-/// Show `path` selected in Explorer. Explorer needs `/select,` and the
-/// quoted path as one argument, or it opens the default folder instead.
-#[cfg(target_os = "windows")]
-fn reveal(path: &Path) -> io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    let mut select = std::ffi::OsString::from("/select,\"");
-    select.push(path.as_os_str());
-    select.push("\"");
-    reap(Command::new("explorer.exe").raw_arg(select).spawn()?);
-    Ok(())
-}
-
-/// Linux file managers have no common way to select an item, so `app-core`
-/// opens the folder that holds it instead.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn reveal(path: &Path) -> io::Result<()> {
-    reap(
-        Command::new("xdg-open")
-            .arg(path.parent().unwrap_or(path))
-            .spawn()?,
-    );
-    Ok(())
 }
 
 /// Open Terminal in `folder`.
@@ -141,6 +103,7 @@ fn open_terminal(_folder: &Path) -> io::Result<()> {
 
 /// Wait for a launcher process off the UI thread, so it doesn't linger as
 /// a zombie once it exits.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn reap(mut child: Child) {
     let waited = std::thread::Builder::new()
         .name("reap-launcher".into())
@@ -149,5 +112,22 @@ fn reap(mut child: Child) {
         });
     if let Err(error) = waited {
         tracing::debug!(%error, "could not wait for a launcher process");
+    }
+}
+
+// Only macOS runs these: `open` fails on a missing path without showing a
+// window, while Explorer and xdg-open might.
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_item_reports_an_error_instead_of_success() {
+        let folder = tempfile::tempdir().unwrap();
+        let missing = folder.path().join("Plan.md");
+        let system = DesktopSystem::new(egui::Context::default());
+
+        assert!(system.reveal(&missing).is_err());
+        assert!(system.open_folder(&missing).is_err());
     }
 }
