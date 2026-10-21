@@ -67,6 +67,9 @@ impl WorkspaceEngine {
     /// Every visible file and folder with its index status, from one walk.
     /// The walk also reconciles when the watcher reported changes.
     pub fn list_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
+        // The walk and the index read below see each write of ours either
+        // before it starts or after its index update, never in between.
+        let _changes = self.hold_changes();
         let scan = if self.needs_reconcile() {
             self.reconcile_walk(&HashSet::new(), EventSource::Reconciliation, true)?
         } else {
@@ -149,6 +152,8 @@ impl WorkspaceEngine {
     pub fn move_folder(&self, from: &str, to: &str) -> Result<()> {
         let source = resolve_for_write(&self.root, from, "folder_move")?;
         let destination = resolve_for_write(&self.root, to, "folder_move")?;
+        // Held until the walk below has indexed the move.
+        let _changes = self.hold_changes();
         let guard = self.write_lock("folder_move")?;
         self.collaboration_guard_tree_mutation(from)?;
         self.collaboration_guard_tree_mutation(to)?;
@@ -186,6 +191,8 @@ impl WorkspaceEngine {
         let operation = "file_move";
         let source = resolve_for_write(&self.root, from, operation)?;
         let destination = resolve_for_write(&self.root, to, operation)?;
+        // Held until the walk below has indexed the move.
+        let _changes = self.hold_changes();
         let guard = self.write_lock(operation)?;
         self.collaboration_guard_file_mutation(from)?;
         self.collaboration_guard_file_mutation(to)?;
@@ -229,6 +236,8 @@ impl WorkspaceEngine {
                 operation,
             ));
         }
+        // Held until the walk below has indexed the removal.
+        let _changes = self.hold_changes();
         let guard = self.write_lock(operation)?;
         self.collaboration_guard_tree_mutation(relative_path)?;
         std::fs::symlink_metadata(&source)

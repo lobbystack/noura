@@ -26,12 +26,12 @@ pub use consent::{
     AiConsentRevokeInput, AiConsentRevokeOutcome,
 };
 pub use engine::{
-    ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ImportResult,
-    ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
-    ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch, RawConflictResolveInput,
-    RawConflictResolveResult, RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput,
-    RawSaveResult, ResolveConflictInput, SYNC_PLUGIN_ID, SystemTrash, WorkspaceEngine,
-    is_online_only, os_trash,
+    ChangeCounts, ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult,
+    ImportResult, ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput,
+    ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch,
+    RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead, RawReconcileInput,
+    RawReconcileResult, RawSaveInput, RawSaveResult, ResolveConflictInput, SYNC_PLUGIN_ID,
+    SystemTrash, WorkspaceEngine, is_online_only, os_trash,
 };
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{

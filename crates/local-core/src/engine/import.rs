@@ -49,6 +49,9 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, None))?;
         let destination = std::fs::canonicalize(&target)
             .map_err(|error| CoreError::io(error, operation, None))?;
+        // Held until the walk below has indexed every copy, so no walk in
+        // between finds one unindexed and takes it for another app's.
+        let _changes = self.hold_changes();
         let mut import = Import {
             engine: self,
             operation,

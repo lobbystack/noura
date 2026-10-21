@@ -517,7 +517,10 @@ impl Drop for App {
 mod tests {
     use std::{
         collections::BTreeMap,
-        sync::mpsc::{Receiver, channel},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc::{Receiver, channel},
+        },
         time::{Duration, Instant},
     };
 
@@ -546,9 +549,13 @@ mod tests {
 
     impl Live {
         fn open() -> Self {
+            Self::open_with(Rescans::default())
+        }
+
+        fn open_with(rescans: Rescans) -> Self {
             let app_data = tempfile::tempdir().unwrap();
             let folder = tempfile::tempdir().unwrap();
-            let mut app = App::launch(app_data.path());
+            let mut app = App::launch_with(app_data.path(), rescans);
             let (sender, changes) = channel();
             app.subscribe(move |change| {
                 let _ = sender.send(change);
@@ -686,6 +693,75 @@ mod tests {
             "{:?}",
             live.seen
         );
+    }
+
+    /// Noura writes back to back while the watch thread lists and walks
+    /// the whole workspace in every round. No walk catches a write between
+    /// its disk change and its index update, so none reads as another
+    /// app's, and a moved note never shows as two files with one ID.
+    #[test]
+    fn a_quick_run_of_noura_writes_never_reads_as_from_outside_or_as_a_shared_id() {
+        const NOTES: usize = 60;
+        let mut live = Live::open_with(Rescans {
+            periodic: Duration::ZERO,
+            without_watcher: Duration::ZERO,
+        });
+        let engine = live.app.workspace().unwrap().shared_engine();
+        // Another thread reads the index's shared IDs the whole time.
+        let stop = Arc::new(AtomicBool::new(false));
+        let prober = std::thread::spawn({
+            let engine = engine.clone();
+            let stop = stop.clone();
+            move || {
+                let mut shared = Vec::new();
+                while !stop.load(Ordering::SeqCst) {
+                    shared.extend(engine.identity_conflicts().unwrap());
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                shared
+            }
+        });
+
+        let mut shared_in_view = Vec::new();
+        for note in 0..NOTES {
+            let id = live.create_note(&format!("Inbox/{note}/Mine.md"));
+            let revision = engine.get_object(&id).unwrap().unwrap().revision;
+            engine
+                .move_object(&id, &format!("Archive/{note}/Mine.md"), &revision)
+                .unwrap();
+            live.app.poll();
+            shared_in_view.extend(
+                live.app
+                    .problems()
+                    .iter()
+                    .filter(|problem| problem.code == "identity_conflict")
+                    .cloned(),
+            );
+        }
+        live.wait_until("every moved note shows", |app| {
+            app.workspace().is_some_and(|workspace| {
+                workspace.objects().is_ok_and(|objects| {
+                    objects.len() == NOTES
+                        && objects
+                            .iter()
+                            .all(|object| object.relative_path.starts_with("Archive/"))
+                })
+            }) && rows(app) == ["Archive", "Inbox"]
+        });
+        live.settle();
+        stop.store(true, Ordering::SeqCst);
+        let shared_in_index = prober.join().unwrap();
+
+        assert!(live.seen.contains(&Change::Files(Origin::Noura)));
+        assert!(
+            !live.seen.contains(&Change::Files(Origin::Outside)),
+            "{:?}",
+            live.seen
+        );
+        assert!(!live.seen.contains(&Change::Problems), "{:?}", live.seen);
+        assert_eq!(shared_in_view, []);
+        assert_eq!(shared_in_index, []);
+        assert_eq!(live.app.problems(), []);
     }
 
     /// A file Noura wrote that the cloud provider then takes online-only

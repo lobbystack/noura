@@ -69,6 +69,7 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
 openssl = "0.10"
+parking_lot = "0.12.5"
 pbkdf2 = "=0.12.2"
 pulldown-cmark = "0.13"
 rfd = "0.16"

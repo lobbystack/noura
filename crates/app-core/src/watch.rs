@@ -15,8 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use local_core::{CoreEvent, EventSource, WorkspaceEngine, WorkspaceEntry, WorkspaceEntryKind};
-use tokio::sync::broadcast::{self, error::TryRecvError as EventError};
+use local_core::{ChangeCounts, WorkspaceEngine, WorkspaceEntry, WorkspaceEntryKind};
 
 use crate::{
     AppError, FileTree, Problem,
@@ -111,7 +110,7 @@ impl Watch {
     ) -> Option<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, updates) = channel();
-        let events = engine.subscribe();
+        let heard = engine.change_counts();
         let worker = Worker {
             engine,
             root,
@@ -120,7 +119,7 @@ impl Watch {
             stop: stop.clone(),
             sender,
             listeners,
-            events,
+            heard,
         };
         let spawned = std::thread::Builder::new()
             .name("workspace-watch".into())
@@ -183,7 +182,8 @@ struct Worker {
     stop: Arc<AtomicBool>,
     sender: Sender<Update>,
     listeners: Listeners,
-    events: broadcast::Receiver<CoreEvent>,
+    /// The file changes `local-core` had announced at the last look.
+    heard: ChangeCounts,
 }
 
 impl Worker {
@@ -194,7 +194,7 @@ impl Worker {
         while !self.stop.load(Ordering::SeqCst) {
             let rescanned = self.wait_and_rescan(&mut last_rescan);
             let mut origins = std::mem::take(&mut carried);
-            self.drain(&mut origins);
+            self.hear(&mut origins);
             if origins.is_empty() && !rescanned {
                 continue;
             }
@@ -207,7 +207,7 @@ impl Worker {
             };
             // Changes that landed while listing may or may not show in this
             // listing, so the next round lists again under their origin.
-            self.drain(&mut carried);
+            self.hear(&mut carried);
             for origin in &carried {
                 if !origins.contains(origin) {
                     origins.push(*origin);
@@ -264,36 +264,19 @@ impl Worker {
         true
     }
 
-    /// Collect the origins of the file changes `local-core` announced.
-    fn drain(&mut self, origins: &mut Vec<Origin>) {
-        loop {
-            let origin = match self.events.try_recv() {
-                Ok(event) if changes_files(&event.event_type) => match event.source {
-                    EventSource::Application => Origin::Noura,
-                    EventSource::External | EventSource::Reconciliation | EventSource::Sync => {
-                        Origin::Outside
-                    }
-                },
-                Ok(_) => continue,
-                // Missed events can't say who made them; another app is
-                // the safe guess.
-                Err(EventError::Lagged(_)) => Origin::Outside,
-                Err(EventError::Empty | EventError::Closed) => return,
-            };
-            if !origins.contains(&origin) {
+    /// Collect the origins of the file changes `local-core` announced
+    /// since the last look. The counts never miss a change, however many
+    /// Noura makes at once.
+    fn hear(&mut self, origins: &mut Vec<Origin>) {
+        let now = self.engine.change_counts();
+        let heard = std::mem::replace(&mut self.heard, now);
+        for (origin, changed) in [
+            (Origin::Noura, now.own != heard.own),
+            (Origin::Outside, now.outside != heard.outside),
+        ] {
+            if changed && !origins.contains(&origin) {
                 origins.push(origin);
             }
         }
     }
-}
-
-/// Whether a `local-core` event says files or their index entries changed.
-fn changes_files(event_type: &str) -> bool {
-    event_type.starts_with("file:")
-        || event_type.starts_with("object:")
-        || event_type.starts_with("objects:")
-        || matches!(
-            event_type,
-            "search:index-updated" | "workspace:manifest-updated"
-        )
 }

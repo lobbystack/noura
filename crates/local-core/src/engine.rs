@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::UNIX_EPOCH,
 };
@@ -94,6 +94,17 @@ pub struct WorkspaceEngine {
     dirty: Arc<AtomicBool>,
     /// What the last full walk found beyond the index itself.
     scan_state: Mutex<ScanState>,
+    /// Held while files and their index entries change: by every write
+    /// through [`Self::write_lock`], from its disk change to its index
+    /// update and event, and by every walk that lists the workspace or
+    /// changes the index. A walk then never finds one of our writes on
+    /// disk before the index has it, and never indexes it as another
+    /// app's. Reentrant, because some writes reconcile while they hold it.
+    change_gate: parking_lot::ReentrantMutex<()>,
+    /// File changes announced so far, by who made them. Unlike the event
+    /// channel these never drop a change, however many arrive at once.
+    own_changes: AtomicU64,
+    outside_changes: AtomicU64,
     chat_mutation_fault: Mutex<Option<ChatMutationFault>>,
     #[cfg(test)]
     collaboration_mutation_fault: Mutex<Option<u8>>,
@@ -285,6 +296,9 @@ impl WorkspaceEngine {
             self_writes,
             dirty,
             scan_state: Mutex::new(ScanState::default()),
+            change_gate: parking_lot::ReentrantMutex::new(()),
+            own_changes: AtomicU64::new(0),
+            outside_changes: AtomicU64::new(0),
             chat_mutation_fault: Mutex::new(None),
             #[cfg(test)]
             collaboration_mutation_fault: Mutex::new(None),
@@ -350,7 +364,24 @@ impl WorkspaceEngine {
             .identity_conflicts()
     }
 
-    fn write_lock(&self, operation: &str) -> Result<WorkspaceLock> {
+    /// How many file changes this engine has announced, by who made them.
+    pub fn change_counts(&self) -> ChangeCounts {
+        ChangeCounts {
+            own: self.own_changes.load(Ordering::SeqCst),
+            outside: self.outside_changes.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Hold off walks and other writes until the guard drops. A write that
+    /// reconciles after it releases [`Self::write_lock`] holds this across
+    /// both, so no walk runs in between.
+    fn hold_changes(&self) -> parking_lot::ReentrantMutexGuard<'_, ()> {
+        self.change_gate.lock()
+    }
+
+    fn write_lock(&self, operation: &str) -> Result<WorkspaceLock<'_>> {
+        // Always before the file lock, so the two are taken in one order.
+        let gate = self.hold_changes();
         if let Some(parent) = self.lock_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| CoreError::io(error, operation, parent.to_str()))?;
@@ -364,10 +395,19 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
         file.lock_exclusive()
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
-        Ok(WorkspaceLock(file))
+        Ok(WorkspaceLock { file, _gate: gate })
     }
 
     fn emit(&self, event_type: &str, source: EventSource, payload: serde_json::Value) {
+        if announces_file_change(event_type) {
+            let count = match source {
+                EventSource::Application => &self.own_changes,
+                EventSource::External | EventSource::Reconciliation | EventSource::Sync => {
+                    &self.outside_changes
+                }
+            };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
         let _ = self.event_sender.send(CoreEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: event_type.into(),
@@ -470,10 +510,37 @@ pub(super) fn remove_index_files(path: &Path, operation: &str) -> Result<()> {
     Ok(())
 }
 
-struct WorkspaceLock(File);
-impl Drop for WorkspaceLock {
+/// File changes an engine has announced, by who made them. Both counts
+/// only grow, so a caller compares two readings to learn what happened in
+/// between.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChangeCounts {
+    /// Changes this engine made.
+    pub own: u64,
+    /// Changes another app, a cloud drive or a sync made, which the
+    /// watcher or a walk found.
+    pub outside: u64,
+}
+
+/// Whether an event says files or their index entries changed.
+fn announces_file_change(event_type: &str) -> bool {
+    event_type.starts_with("file:")
+        || event_type.starts_with("object:")
+        || event_type.starts_with("objects:")
+        || matches!(
+            event_type,
+            "search:index-updated" | "workspace:manifest-updated"
+        )
+}
+
+/// The cross-process write lock, which also holds the change gate.
+struct WorkspaceLock<'a> {
+    file: File,
+    _gate: parking_lot::ReentrantMutexGuard<'a, ()>,
+}
+impl Drop for WorkspaceLock<'_> {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        let _ = self.file.unlock();
     }
 }
 

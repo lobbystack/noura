@@ -9,6 +9,9 @@ pub(super) const OBJECT_EVENT_BATCH_LIMIT: usize = 32;
 
 impl WorkspaceEngine {
     pub fn rebuild_index(&self) -> Result<()> {
+        // A write that lands mid-rebuild would update the index this
+        // replaces and be lost.
+        let _changes = self.hold_changes();
         self.emit(
             "workspace:rebuilding",
             EventSource::Application,
@@ -118,6 +121,9 @@ impl WorkspaceEngine {
         source: EventSource,
         list_entries: bool,
     ) -> Result<WorkspaceScan> {
+        // A write of ours never lands mid-walk, so the walk can't index it
+        // as another app's.
+        let _changes = self.hold_changes();
         self.recover_pending_chat_mutations()?;
         // Clear before walking: a change that lands mid-walk marks it again.
         self.dirty.store(false, Ordering::SeqCst);
@@ -157,6 +163,7 @@ impl WorkspaceEngine {
     /// Re-read specific Markdown files and update only their index rows.
     /// A missing file counts as removed unless iCloud still holds it.
     pub(super) fn reconcile_paths(&self, paths: &[String], source: EventSource) -> Result<()> {
+        let _changes = self.hold_changes();
         let mut changed = Vec::new();
         let mut removed = Vec::new();
         for relative in paths {
@@ -227,6 +234,10 @@ impl WorkspaceEngine {
 
     pub fn poll_external_changes(&self, wait: std::time::Duration) -> Result<Vec<String>> {
         let paths = self.watcher.drain_coalesced(wait)?;
+        // Our writes finish before these reports are checked against the
+        // journal, so a write caught between its journal entry and its
+        // disk change never reads as another app's.
+        let _changes = self.hold_changes();
         if self.watcher.take_overflow() {
             // Events were lost, so the paths are incomplete: walk everything.
             self.sync_external_manifest(&[self.root.join(WORKSPACE_MANIFEST_PATH)])?;
@@ -505,6 +516,44 @@ mod tests {
                 vec!["file:changed".to_owned()]
             )
         );
+    }
+
+    #[test]
+    fn change_counts_keep_every_change_and_its_origin_when_listeners_fall_behind() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        // A listener that never reads falls behind once the channel fills.
+        let mut events = engine.subscribe();
+        let before = engine.change_counts();
+        for note in 0..300 {
+            engine
+                .create_object(CreateObjectInput {
+                    object_type: "note".into(),
+                    title: "Ours".into(),
+                    body: String::new(),
+                    relative_path: Some(format!("{note}.md")),
+                    properties: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        let ours = engine.change_counts();
+        std::fs::write(engine.root().join("theirs.md"), "# Theirs\n").unwrap();
+        engine.reconcile().unwrap();
+        let theirs = engine.change_counts();
+
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+        ));
+        assert_eq!(
+            (ours.own - before.own, ours.outside - before.outside),
+            (300, 0)
+        );
+        assert_eq!(theirs.own, ours.own);
+        assert!(theirs.outside > ours.outside);
     }
 
     #[test]

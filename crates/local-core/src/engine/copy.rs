@@ -43,6 +43,8 @@ impl WorkspaceEngine {
             })?;
             return Ok(());
         }
+        // Held until the walk below has indexed the copy.
+        let _changes = self.hold_changes();
         let guard = self.write_lock(operation)?;
         self.collaboration_guard_file_mutation(to)?;
         // Checked again under the lock so a concurrent writer can't be
