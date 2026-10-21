@@ -488,9 +488,6 @@ impl Tabs {
         }
     }
 
-    /// Close a tab. Closing the active tab activates the tab that takes
-    /// its place, or the one before it at the end; closing the last tab
-    /// leaves nothing active. Returns whether the tab was open.
     /// Show the page `page_id` under its new title in the tab that shows
     /// it. Returns whether a tab changed.
     pub(crate) fn rename_page(&mut self, page_id: &str, title: &str) -> bool {
@@ -519,6 +516,9 @@ impl Tabs {
             .collect()
     }
 
+    /// Close a tab. Closing the active tab activates the tab that takes
+    /// its place, or the one before it at the end; closing the last tab
+    /// leaves nothing active. Returns whether the tab was open.
     pub(crate) fn close(&mut self, id: TabId) -> bool {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return false;
