@@ -19,6 +19,13 @@ pub enum EmbedState {
     /// failed. The editor draws a broken-image marker in its place and
     /// never asks `show` to paint it.
     NotFound,
+    /// A remote image nobody asked for yet. The editor draws a Load image
+    /// button in its place, and asks [`EmbedResolver::load`] when it's
+    /// pressed. Nothing loads before that.
+    NotLoaded,
+    /// A remote image whose load failed. The editor draws a button that
+    /// tries again through [`EmbedResolver::load`].
+    Failed,
 }
 
 /// Loads and paints embedded content such as images. The editor asks by the
@@ -34,8 +41,11 @@ pub trait EmbedResolver: Send {
     fn show(&self, ui: &mut Ui, url: &str, rect: Rect, rounding: CornerRadius);
 
     /// Called each frame while content may be shown soon, so loading can
-    /// start before it is time to show it.
+    /// start before it is time to show it. Remote images never load here.
     fn prefetch(&self, url: &str);
+
+    /// Load the remote image at `url`, as its Load image button asks.
+    fn load(&self, _url: &str) {}
 
     /// Changes whenever any return value could change.
     fn seq(&self) -> u64;

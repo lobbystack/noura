@@ -8,15 +8,22 @@ use egui::{self, Vec2};
 use crate::TouchTarget;
 use crate::input::{Event, Location, Region};
 use crate::palette::Theme;
+use crate::palette::ThemeExt as _;
 use crate::resolvers::EmbedState;
 use crate::widget::utils::NodeValueExt as _;
-use crate::widget::utils::wrap_layout::{EmbedKind, EmbedSpec, Layout};
+use crate::widget::utils::wrap_layout::{EmbedKind, EmbedSpec, Format, Layout};
 use crate::{MdEdit, MdRender};
 use editor_core::images::ImageDims;
+use editor_core::links::node_link_url;
 
 /// Side, in points, of the broken-image marker drawn for an image the
 /// embedding app can't find.
 const MISSING_IMAGE_SIZE: f32 = 48.0;
+
+/// The button a remote image draws until you load it.
+pub const LOAD_IMAGE: &str = "Load image";
+/// The button a remote image draws after its load failed.
+pub const RETRY_IMAGE: &str = "Couldn\u{2019}t load image. Try again";
 
 /// Paints the marker for an image the embedding app can't find: a framed
 /// picture crossed out.
@@ -70,7 +77,7 @@ impl<'ast> MdRender {
     pub fn embed_texture_size(&self, url: &str) -> (Vec2, EmbedKind) {
         match self.embeds.state(url) {
             EmbedState::Loading(size) | EmbedState::Loaded(size) => (size, EmbedKind::Image),
-            EmbedState::NotFound => (
+            EmbedState::NotFound | EmbedState::NotLoaded | EmbedState::Failed => (
                 Vec2::splat(MISSING_IMAGE_SIZE) * self.ctx.pixels_per_point(),
                 EmbedKind::Missing,
             ),
@@ -149,6 +156,77 @@ impl<'ast> MdRender {
         (size.x > 0.0 && size.y > 0.0).then_some(size)
     }
 
+    /// What a remote image's button says while it waits for you to load
+    /// it, or after its load failed, or `None` for any other image.
+    pub fn remote_image_button(&self, url: &str) -> Option<&'static str> {
+        match self.embeds.state(url) {
+            EmbedState::NotLoaded => Some(LOAD_IMAGE),
+            EmbedState::Failed => Some(RETRY_IMAGE),
+            _ => None,
+        }
+    }
+
+    /// Draws a remote image's button in place of its source.
+    pub fn layout_image_button(
+        &self,
+        layout: &mut Layout,
+        source_range: (Grapheme, Grapheme),
+        label: &str,
+    ) {
+        let theme = self.ctx.get_lb_theme();
+        let format = Format {
+            color: theme.accent(),
+            background: theme.neutral_bg_secondary(),
+            border: theme.neutral_bg_tertiary(),
+            ..self.text_format_document()
+        };
+        layout.interaction_open(Self::image_load_id_salt(source_range), egui::Sense::click());
+        layout.push_override(source_range, label, format);
+        layout.interaction_close();
+    }
+
+    /// Interaction-response salt for a remote image's button.
+    pub fn image_load_id_salt(source_range: (Grapheme, Grapheme)) -> egui::Id {
+        egui::Id::unique(("md_image_load", source_range))
+    }
+
+    /// Load the remote images whose buttons were pressed this frame, and
+    /// show each button to screen readers.
+    pub fn handle_image_load_buttons(&self, root: &'ast AstNode<'ast>, ui: &egui::Ui) {
+        let mut images: Vec<((Grapheme, Grapheme), String)> = root
+            .descendants()
+            .filter_map(|node| match &node.data.borrow().value {
+                NodeValue::Image(link) => Some((self.node_range(node), link.url.clone())),
+                _ => None,
+            })
+            .collect();
+        images.extend(
+            self.bounds
+                .spans
+                .iter()
+                .filter_map(|span| match &span.kind {
+                    editor_core::spans::SpanKind::ImageEmbed { target, .. } => {
+                        Some((span.range, target.clone()))
+                    }
+                    _ => None,
+                }),
+        );
+        for (range, url) in images {
+            let Some(label) = self.remote_image_button(&url) else {
+                continue;
+            };
+            let id = ui.scope_id().with(Self::image_load_id_salt(range));
+            let Some(response) = self.interaction_responses.get(&id) else {
+                continue;
+            };
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+            if response.clicked() {
+                self.embeds.load(&url);
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
     /// Collapsed → emit one `InlineItem::Embed` covering the syntax.
     /// Revealed / `disable_images` / multi-line / unsizable → fall
     /// through to `layout_link` so the source bytes render for editing.
@@ -161,6 +239,13 @@ impl<'ast> MdRender {
         let node_range = self.node_range(node);
         let single_line = range.contains_range(&node_range, true, true);
         let revealed = self.range_revealed_interior(node_range);
+        if !revealed && single_line && !self.disable_images {
+            let url = node_link_url(node);
+            if let Some(label) = self.remote_image_button(&url) {
+                self.layout_image_button(layout, node_range, label);
+                return;
+            }
+        }
         let collapsed_size = (!self.disable_images && !revealed && single_line)
             .then(|| self.image_logical_size(node))
             .flatten();

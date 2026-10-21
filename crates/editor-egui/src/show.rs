@@ -647,6 +647,7 @@ impl MdEdit {
         self.renderer.interact_fragments(ui);
         self.renderer.handle_link_interactions(root, ui);
         self.renderer.handle_spoiler_interactions(root, ui);
+        self.renderer.handle_image_load_buttons(root, ui);
         self.renderer.handle_fold_interactions(ui);
 
         let mut ops = Vec::new();

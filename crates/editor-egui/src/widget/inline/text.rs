@@ -75,7 +75,11 @@ impl<'ast> MdRender {
                         // An image embed draws as the image, or as a link
                         // named by its target until its size is known.
                         SpanKind::ImageEmbed { target, width } => {
+                            let button = self.remote_image_button(target);
                             match self.image_embed_size(node, target, *width) {
+                                _ if hidden == syntax && button.is_some() => {
+                                    self.layout_image_button(layout, syntax, button.unwrap());
+                                }
                                 Some(size) if hidden == syntax => {
                                     let (_, kind) = self.embed_texture_size(target);
                                     layout.push_embed(EmbedSpec {

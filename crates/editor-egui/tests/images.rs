@@ -3,8 +3,12 @@
 
 mod support;
 
+use std::sync::{Arc, Mutex};
+
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
+use egui::accesskit::Role;
 use egui::{CornerRadius, Rect, Ui, Vec2};
+use egui_kittest::kittest::Queryable as _;
 use support::{editor, find, harness_with};
 
 /// Has every image at 600 by 400 pixels, except `missing.png`.
@@ -37,6 +41,72 @@ fn drawn_image(editor: &editor_egui::Editor, source: &str) -> Rect {
         .find(|span| !span.glyphs && span.source_range == range)
         .unwrap_or_else(|| panic!("{source:?} wasn't drawn as an image"))
         .rect
+}
+
+/// Remote images that load only when the editor asks, recording each ask.
+#[derive(Clone, Default)]
+struct Remote {
+    loads: Arc<Mutex<Vec<String>>>,
+}
+
+impl EmbedResolver for Remote {
+    fn state(&self, url: &str) -> EmbedState {
+        if url.ends_with("bad.png") {
+            EmbedState::Failed
+        } else if self.loads.lock().unwrap().iter().any(|load| load == url) {
+            EmbedState::Loaded(Vec2::new(600.0, 400.0))
+        } else {
+            EmbedState::NotLoaded
+        }
+    }
+
+    fn show(&self, _ui: &mut Ui, _url: &str, _rect: Rect, _rounding: CornerRadius) {}
+
+    fn prefetch(&self, _url: &str) {}
+
+    fn load(&self, url: &str) {
+        self.loads.lock().unwrap().push(url.to_string());
+    }
+
+    fn seq(&self) -> u64 {
+        self.loads.lock().unwrap().len() as u64
+    }
+}
+
+#[test]
+fn a_remote_image_waits_for_load_image_and_a_failed_one_offers_a_retry() {
+    let note = "intro\n\n![remote](https://example.com/pic.png) and ![other](https://example.com/bad.png)\n";
+    let remote = Remote::default();
+    let resolver = remote.clone();
+    let mut harness = harness_with(note, move |editor| {
+        editor.set_embed_resolver(Box::new(resolver.clone()));
+    });
+
+    assert_eq!(
+        support::drawn_in_place(editor(&harness)),
+        vec!["Load image", "Couldn\u{2019}t load image. Try again"]
+    );
+    assert!(
+        remote.loads.lock().unwrap().is_empty(),
+        "nothing loads by itself"
+    );
+
+    harness
+        .get_by_role_and_label(Role::Button, "Load image")
+        .click();
+    harness.run_steps(3);
+    assert_eq!(
+        *remote.loads.lock().unwrap(),
+        vec!["https://example.com/pic.png".to_string()]
+    );
+    drawn_image(editor(&harness), "![remote](https://example.com/pic.png)");
+
+    harness
+        .get_by_role_and_label(Role::Button, "Couldn\u{2019}t load image. Try again")
+        .click();
+    harness.run_steps(3);
+    assert_eq!(remote.loads.lock().unwrap().len(), 2);
+    assert_eq!(editor(&harness).text(), note);
 }
 
 #[test]
