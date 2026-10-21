@@ -27,6 +27,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 cargo deny check
+scripts/check-editor-deps.sh
 ```
 
 If you change the website, also run `bun run check:website` and `bun run build:website`.

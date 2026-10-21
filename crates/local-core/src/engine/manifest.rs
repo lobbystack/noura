@@ -15,6 +15,10 @@ pub struct ManifestUpdateInput {
     /// Reject the update unless the on-disk manifest still has this
     /// `updated` value, preventing silent overwrite of external edits.
     pub expected_updated: Option<String>,
+    /// Reject the update unless the on-disk manifest's bytes still have
+    /// this revision, from [`WorkspaceEngine::read_manifest_revision`]. It
+    /// catches outside edits that leave `updated` alone.
+    pub expected_revision: Option<String>,
 }
 
 impl WorkspaceEngine {
@@ -50,6 +54,14 @@ impl WorkspaceEngine {
     /// the manifest on every write.
     pub fn read_manifest(&self) -> Result<WorkspaceManifest> {
         parse_workspace_manifest(&self.read_manifest_bytes()?, "manifest_read")
+    }
+
+    /// The manifest freshly read from disk, with the revision of its bytes
+    /// for [`ManifestUpdateInput::expected_revision`].
+    pub fn read_manifest_revision(&self) -> Result<(WorkspaceManifest, String)> {
+        let bytes = self.read_manifest_bytes()?;
+        let manifest = parse_workspace_manifest(&bytes, "manifest_read")?;
+        Ok((manifest, markdown::revision(&bytes)))
     }
 
     pub fn manifest_update(&self, input: ManifestUpdateInput) -> Result<WorkspaceManifest> {
@@ -100,11 +112,20 @@ impl WorkspaceEngine {
             }
             None => Vec::new(),
         };
-        let _guard = self.write_lock("manifest_update")?;
+        // Held until the walk below has indexed a new ignore list.
+        let _changes = self.hold_changes();
+        let guard = self.write_lock("manifest_update")?;
         let current_bytes = self.read_manifest_bytes()?;
         let mut manifest = parse_workspace_manifest(&current_bytes, "manifest_update")?;
-        if let Some(expected) = &input.expected_updated
-            && manifest.updated != *expected
+        let edited = input
+            .expected_revision
+            .as_ref()
+            .is_some_and(|expected| markdown::revision(&current_bytes) != *expected);
+        if edited
+            || input
+                .expected_updated
+                .as_ref()
+                .is_some_and(|expected| manifest.updated != *expected)
         {
             return Err(CoreError::new(
                 "manifest_conflict",
@@ -119,26 +140,29 @@ impl WorkspaceEngine {
         if update_enabled {
             manifest.enabled_plugins = std::mem::take(&mut enabled_plugins);
         }
+        let ignore_changed = update_ignore && manifest.ignore != ignore;
         if update_ignore {
             manifest.ignore = ignore;
         }
         manifest.updated = now_rfc3339();
         validate_manifest(&manifest, "manifest_update")?;
         let bytes = serialize_workspace_manifest(&manifest, "manifest_update")?;
-        atomic_write_checked(
+        // Journal like every other write site, before the write, so the
+        // watcher poll does not resurface this engine's own atomic manifest
+        // write as external.
+        self.expect_own_write(
+            WORKSPACE_MANIFEST_PATH,
+            Some(&markdown::revision(bytes.as_bytes())),
+        );
+        if let Err(error) = atomic_write_checked(
             &self.root,
             Path::new(WORKSPACE_MANIFEST_PATH),
             bytes.as_bytes(),
             Some(&markdown::revision(&current_bytes)),
             "manifest_update",
-        )?;
-        // Journal like every other write site so the watcher poll does not
-        // resurface this engine's own atomic manifest write as external.
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(
-                WORKSPACE_MANIFEST_PATH.to_owned(),
-                markdown::revision(bytes.as_bytes()),
-            );
+        ) {
+            self.forget_own_write(WORKSPACE_MANIFEST_PATH);
+            return Err(error);
         }
         *self
             .manifest
@@ -152,12 +176,47 @@ impl WorkspaceEngine {
                 "name": manifest.name,
             }),
         );
+        drop(guard);
+        if ignore_changed {
+            // The ignore list decides what the index holds, so the index
+            // follows it now, as this engine's own change. The change gate
+            // is still held, so no walk can index the new list first and
+            // take the change for another app's.
+            self.reconcile_after_change("manifest_update");
+        }
         Ok(manifest)
     }
 
     fn read_manifest_bytes(&self) -> Result<Vec<u8>> {
         std::fs::read(self.root.join(WORKSPACE_MANIFEST_PATH))
             .map_err(|error| CoreError::io(error, "manifest_read", Some(WORKSPACE_MANIFEST_PATH)))
+    }
+
+    /// The manifest of the workspace in `root`, read without opening the
+    /// workspace or its index, or `None` when the folder holds no
+    /// manifest. A caller can tell which workspace a folder holds before
+    /// it opens one, as when a copy of a folder keeps the workspace ID
+    /// and so the index of the workspace it was copied from.
+    pub fn read_manifest_at(root: impl AsRef<Path>) -> Result<Option<WorkspaceManifest>> {
+        let bytes = match std::fs::read(root.as_ref().join(WORKSPACE_MANIFEST_PATH)) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(CoreError::io(
+                    error,
+                    "manifest_read",
+                    Some(WORKSPACE_MANIFEST_PATH),
+                ));
+            }
+        };
+        parse_workspace_manifest(&bytes, "manifest_read").map(Some)
     }
 
     /// Read one plugin-local cache value. The state lives in the disposable
@@ -215,18 +274,17 @@ impl WorkspaceEngine {
         if !touched {
             return Ok(());
         }
-        let journaled = self
+        let ours = self
             .self_writes
             .lock()
             .map_err(|_| lock_error("watcher_poll"))?
-            .remove(WORKSPACE_MANIFEST_PATH);
-        if let Some(expected) = journaled {
-            let unchanged = std::fs::read(self.root.join(WORKSPACE_MANIFEST_PATH))
-                .ok()
-                .is_some_and(|bytes| markdown::revision(&bytes) == expected);
-            if unchanged {
-                return Ok(());
-            }
+            .reported(
+                WORKSPACE_MANIFEST_PATH,
+                &self.root.join(WORKSPACE_MANIFEST_PATH),
+                std::time::Instant::now(),
+            );
+        if ours {
+            return Ok(());
         }
         self.apply_external_manifest()
     }
@@ -460,6 +518,61 @@ mod tests {
         }
     }
 
+    /// A folder's manifest reads without opening its index, and a copy of
+    /// the folder reads with the same workspace ID.
+    #[test]
+    fn a_folder_s_manifest_reads_without_opening_the_workspace() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let id = engine.manifest().id;
+        drop(engine);
+        let copy = tempdir().unwrap();
+        std::fs::create_dir(copy.path().join(".noura")).unwrap();
+        std::fs::copy(
+            workspace.path().join(WORKSPACE_MANIFEST_PATH),
+            copy.path().join(WORKSPACE_MANIFEST_PATH),
+        )
+        .unwrap();
+        let index = app_data.path().join("workspaces").join(&id);
+        std::fs::remove_dir_all(&index).unwrap();
+
+        let read = WorkspaceEngine::read_manifest_at(workspace.path()).unwrap();
+        let copied = WorkspaceEngine::read_manifest_at(copy.path()).unwrap();
+
+        assert_eq!(read.map(|manifest| manifest.id), Some(id.clone()));
+        assert_eq!(copied.map(|manifest| manifest.id), Some(id));
+        assert!(!index.exists(), "reading opened the index");
+    }
+
+    #[test]
+    fn a_folder_without_a_manifest_reads_as_none_and_a_malformed_one_fails() {
+        let plain = tempdir().unwrap();
+        assert!(
+            WorkspaceEngine::read_manifest_at(plain.path())
+                .unwrap()
+                .is_none()
+        );
+        // `.noura` is a file, not a folder.
+        std::fs::write(plain.path().join(".noura"), b"x").unwrap();
+        assert!(
+            WorkspaceEngine::read_manifest_at(plain.path())
+                .unwrap()
+                .is_none()
+        );
+
+        let malformed = tempdir().unwrap();
+        std::fs::create_dir(malformed.path().join(".noura")).unwrap();
+        std::fs::write(malformed.path().join(WORKSPACE_MANIFEST_PATH), b"id: [").unwrap();
+        assert!(WorkspaceEngine::read_manifest_at(malformed.path()).is_err());
+        assert_eq!(
+            std::fs::read(malformed.path().join(WORKSPACE_MANIFEST_PATH)).unwrap(),
+            b"id: ["
+        );
+    }
+
     #[test]
     fn external_manifest_change_adopts_the_file_and_emits_manifest_updated() {
         let workspace = tempdir().unwrap();
@@ -601,6 +714,65 @@ mod tests {
                 .iter()
                 .any(|result| result.relative_path == "scope/note.md")
         );
+    }
+
+    #[test]
+    fn a_new_ignore_list_reindexes_the_workspace_as_this_engine_s_own_change() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Draft".into(),
+                body: "needle-draft".into(),
+                relative_path: Some("drafts/Idea.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let found = || {
+            engine
+                .search(&SearchInput {
+                    query: "needle-draft".into(),
+                    ..Default::default()
+                })
+                .unwrap()
+                .len()
+        };
+        assert_eq!(found(), 1);
+
+        for (patterns, hits) in [(vec!["drafts/".to_owned()], 0), (Vec::new(), 1)] {
+            let before = engine.change_counts();
+            let mut events = engine.subscribe();
+            engine
+                .manifest_update(ManifestUpdateInput {
+                    ignore: Some(patterns.clone()),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            assert_eq!(found(), hits, "after saving {patterns:?}");
+            let after = engine.change_counts();
+            assert_eq!(after.outside, before.outside, "after saving {patterns:?}");
+            assert!(after.own > before.own, "after saving {patterns:?}");
+            let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+            assert!(
+                received
+                    .iter()
+                    .any(|event| event.event_type == "search:index-updated")
+            );
+            assert!(
+                received
+                    .iter()
+                    .all(|event| event.source == EventSource::Application),
+                "{received:?}"
+            );
+            // A walk after the save finds nothing left to index.
+            engine.reconcile().unwrap();
+            assert_eq!(engine.change_counts(), after);
+        }
     }
 
     #[test]

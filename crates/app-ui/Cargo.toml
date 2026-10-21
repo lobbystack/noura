@@ -7,4 +7,16 @@ rust-version.workspace = true
 
 [dependencies]
 app-core = { version = "0.2.0", path = "../app-core" }
-egui.workspace = true
+# Parses the Markdown that plugins hand Noura, as the editor does.
+comrak.workspace = true
+egui = { workspace = true, features = ["default_fonts"] }
+egui_extras.workspace = true
+# Draws and edits the open note.
+editor-egui = { version = "0.2.0", path = "../editor-egui" }
+jiff.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+# A test breaks the index to see search say it isn't available.
+rusqlite.workspace = true
+tempfile.workspace = true

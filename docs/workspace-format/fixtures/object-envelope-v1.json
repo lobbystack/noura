@@ -1,0 +1,834 @@
+{
+  "schemas": {
+    "task": {
+      "properties": [
+        { "name": "status", "kind": { "enum": ["todo", "in-progress", "done", "cancelled"] }, "default": "todo" },
+        { "name": "priority", "kind": { "enum": ["low", "medium", "high", "urgent"] }, "default": "medium" },
+        { "name": "project", "kind": { "reference": "project" }, "nullable": true },
+        { "name": "due", "kind": "date", "nullable": true },
+        { "name": "kanban_order", "kind": "string" }
+      ]
+    },
+    "project": {
+      "properties": [
+        {
+          "name": "status",
+          "kind": { "enum": ["planned", "active", "on-hold", "completed", "cancelled"] },
+          "default": "planned"
+        }
+      ]
+    },
+    "recipe": {
+      "properties": [
+        { "name": "course", "kind": { "enum": ["starter", "main", "dessert"] }, "default": "main" },
+        { "name": "servings", "kind": "number", "default": 2 },
+        { "name": "vegetarian", "kind": "boolean", "default": false },
+        { "name": "cooked", "kind": "date", "nullable": true },
+        { "name": "book", "kind": { "reference": "book" }, "nullable": true },
+        { "name": "source", "kind": "string" }
+      ]
+    }
+  },
+  "existing_serialization": [
+    {
+      "name": "note with an unknown property",
+      "markdown": "---\nid: note_01j00000000000000000000000\ntype: note\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Meeting notes\n\nDiscussed the release.\n"
+    },
+    {
+      "name": "dated note writes its calendar fields before unknown properties",
+      "markdown": "---\nid: note_01j00000000000000000000001\ntype: note\ndate: 2026-09-04\nstart: 2026-09-04T09:00:00+02:00\nend: 2026-09-04T10:00:00+02:00\nlocation: Office\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Standup\n"
+    },
+    {
+      "name": "task with every task field",
+      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+    },
+    {
+      "name": "task with a null project and no due date",
+      "markdown": "---\nid: task_01j00000000000000000000001\ntype: task\nstatus: todo\npriority: medium\nproject: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Triage inbox\n"
+    },
+    {
+      "name": "project folder note",
+      "markdown": "---\nid: project_01j00000000000000000000000\ntype: project\nstatus: active\nowner: Raphael\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Release 0.3\n\nShip the Rust app.\n"
+    }
+  ],
+  "envelope": [
+    {
+      "name": "an object of any type keeps its ID, type, properties and body, and a heading is body text",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncuisine: Italian\nservings: 4\nvegetarian: true\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Risotto\n\nStir often.\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\n# Risotto\n\nStir often.\n",
+        "created": "2026-08-27T18:00:00Z",
+        "updated": "2026-08-28T09:15:00Z",
+        "properties": { "cuisine": "Italian", "servings": 4, "vegetarian": true }
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncuisine: Italian\nservings: 4\nvegetarian: true\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Risotto\n\nStir often.\n"
+    },
+    {
+      "name": "a hyphenated type prefixes its ID",
+      "markdown": "---\nid: reading-list_01j00000000000000000000000\ntype: reading-list\n---\n\n# Books\n",
+      "object": {
+        "id": "reading-list_01j00000000000000000000000",
+        "type": "reading-list",
+        "title": "example",
+        "body": "\n# Books\n",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: reading-list_01j00000000000000000000000\ntype: reading-list\n---\n\n# Books\n"
+    },
+    {
+      "name": "properties sort by key, and created and updated go last",
+      "markdown": "---\nupdated: 2026-08-28T09:15:00Z\nzone: north\ntype: recipe\ncreated: 2026-08-27T18:00:00Z\nid: recipe_01j00000000000000000000000\nauthor: Ada\n---\n# Soup\nHot.\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "# Soup\nHot.\n",
+        "created": "2026-08-27T18:00:00Z",
+        "updated": "2026-08-28T09:15:00Z",
+        "properties": { "author": "Ada", "zone": "north" }
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nauthor: Ada\nzone: north\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n# Soup\nHot.\n"
+    },
+    {
+      "name": "CRLF line breaks read as LF, and trailing blank lines stay",
+      "markdown": "---\r\nid: recipe_01j00000000000000000000000\r\ntype: recipe\r\n---\r\n\r\n# Bread\r\n\r\nKnead.\r\n\r\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\n# Bread\n\nKnead.\n\n",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Bread\n\nKnead.\n\n"
+    },
+    {
+      "name": "the title is the file name with or without a heading, and the text is the body",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\nJust text.\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\nJust text.\n",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\nJust text.\n"
+    },
+    {
+      "name": "created and updated that aren't strings are dropped, as today",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncreated: 5\nupdated: null\n---\n\n# Pie\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\n# Pie\n",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Pie\n"
+    },
+    {
+      "name": "a multi-line value at the end of the frontmatter keeps its final line break",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |\n  Boil.\n  Serve.\n---\n\n# Pasta\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\n# Pasta\n",
+        "created": null,
+        "updated": null,
+        "properties": { "steps": "Boil.\nServe.\n" }
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |\n  Boil.\n  Serve.\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a value ending in blank lines at the end of the frontmatter keeps them",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |+\n  Boil.\n\n---\n\n# Pasta\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\n# Pasta\n",
+        "created": null,
+        "updated": null,
+        "properties": { "steps": "Boil.\n\n" }
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |+\n  Boil.\n\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a run of carriage returns before a line feed in the body reads as one line break",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Stew\n\nSimmer.\r\r\r\nServe.\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\n# Stew\n\nSimmer.\nServe.\n",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\n# Stew\n\nSimmer.\nServe.\n"
+    },
+    {
+      "name": "carriage returns and a line feed before the text read as one line break",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\r\r\nHello\n",
+      "object": {
+        "id": "recipe_01j00000000000000000000000",
+        "type": "recipe",
+        "title": "example",
+        "body": "\nHello\n",
+        "created": null,
+        "updated": null,
+        "properties": {}
+      },
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n---\n\nHello\n"
+    },
+    {
+      "name": "carriage returns before line feeds in a CRLF file",
+      "markdown": "---\r\nid: task_01j00000000000000000000000\r\ntype: task\r\nstatus: todo\r\n---\r\n\r\r\nStep one.\r\r\nStep two.\r\n",
+      "object": {
+        "id": "task_01j00000000000000000000000",
+        "type": "task",
+        "title": "example",
+        "body": "\nStep one.\nStep two.\n",
+        "created": null,
+        "updated": null,
+        "properties": { "status": "todo" }
+      },
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\n---\n\nStep one.\nStep two.\n"
+    }
+  ],
+  "schema_declaration": [
+    {
+      "name": "every property kind",
+      "valid": true,
+      "schema": {
+        "properties": [
+          { "name": "note", "kind": "string" },
+          { "name": "servings", "kind": "number", "default": 2 },
+          { "name": "vegetarian", "kind": "boolean", "default": false },
+          { "name": "cooked", "kind": "date", "nullable": true },
+          { "name": "course", "kind": { "enum": ["starter", "main", "dessert"] }, "default": "main" },
+          { "name": "project", "kind": { "reference": "project" }, "nullable": true, "default": null }
+        ]
+      }
+    },
+    {
+      "name": "an empty schema",
+      "valid": true,
+      "schema": { "properties": [] }
+    },
+    {
+      "name": "an unknown declaration key",
+      "valid": false,
+      "schema": { "properties": [{ "name": "servings", "kind": "number", "minimum": 1 }] }
+    },
+    {
+      "name": "an unknown property kind",
+      "valid": false,
+      "schema": { "properties": [{ "name": "servings", "kind": "integer" }] }
+    },
+    {
+      "name": "a declaration without a kind",
+      "valid": false,
+      "schema": { "properties": [{ "name": "servings" }] }
+    },
+    {
+      "name": "enum values that aren't strings",
+      "valid": false,
+      "schema": { "properties": [{ "name": "size", "kind": { "enum": [1, 2] } }] }
+    },
+    {
+      "name": "an unknown schema key",
+      "valid": false,
+      "schema": { "properties": [], "required": [] }
+    }
+  ],
+  "registration": [
+    {
+      "name": "a type with a property schema registers",
+      "register": [
+        {
+          "type": "recipe",
+          "schema": { "properties": [{ "name": "servings", "kind": "number", "default": 2 }] }
+        }
+      ],
+      "error": null
+    },
+    {
+      "name": "two types register side by side",
+      "register": [
+        { "type": "recipe", "schema": { "properties": [] } },
+        { "type": "reading-list", "schema": { "properties": [] } }
+      ],
+      "error": null
+    },
+    {
+      "name": "a null default on a nullable property",
+      "register": [
+        {
+          "type": "recipe",
+          "schema": { "properties": [{ "name": "cooked", "kind": "date", "nullable": true, "default": null }] }
+        }
+      ],
+      "error": null
+    },
+    {
+      "name": "a type name with an uppercase letter",
+      "register": [{ "type": "Recipe", "schema": { "properties": [] } }],
+      "error": { "code": "invalid_type_name", "object_type": "Recipe" }
+    },
+    {
+      "name": "a type name with a digit",
+      "register": [{ "type": "recipe2", "schema": { "properties": [] } }],
+      "error": { "code": "invalid_type_name", "object_type": "recipe2" }
+    },
+    {
+      "name": "a type name with an underscore",
+      "register": [{ "type": "reading_list", "schema": { "properties": [] } }],
+      "error": { "code": "invalid_type_name", "object_type": "reading_list" }
+    },
+    {
+      "name": "an empty type name",
+      "register": [{ "type": "", "schema": { "properties": [] } }],
+      "error": { "code": "invalid_type_name", "object_type": "" }
+    },
+    {
+      "name": "a schema that redeclares id",
+      "register": [{ "type": "recipe", "schema": { "properties": [{ "name": "id", "kind": "string" }] } }],
+      "error": { "code": "reserved_property", "property": "id" }
+    },
+    {
+      "name": "a schema that redeclares type",
+      "register": [{ "type": "recipe", "schema": { "properties": [{ "name": "type", "kind": "string" }] } }],
+      "error": { "code": "reserved_property", "property": "type" }
+    },
+    {
+      "name": "a schema that redeclares created",
+      "register": [{ "type": "recipe", "schema": { "properties": [{ "name": "created", "kind": "date" }] } }],
+      "error": { "code": "reserved_property", "property": "created" }
+    },
+    {
+      "name": "a schema that redeclares updated",
+      "register": [{ "type": "recipe", "schema": { "properties": [{ "name": "updated", "kind": "date" }] } }],
+      "error": { "code": "reserved_property", "property": "updated" }
+    },
+    {
+      "name": "a property declared twice",
+      "register": [
+        {
+          "type": "recipe",
+          "schema": {
+            "properties": [
+              { "name": "servings", "kind": "number" },
+              { "name": "servings", "kind": "string" }
+            ]
+          }
+        }
+      ],
+      "error": { "code": "duplicate_property", "property": "servings" }
+    },
+    {
+      "name": "a type that is already registered",
+      "register": [
+        { "type": "recipe", "schema": { "properties": [] } },
+        { "type": "recipe", "schema": { "properties": [{ "name": "servings", "kind": "number" }] } }
+      ],
+      "error": { "code": "type_already_registered", "object_type": "recipe" }
+    },
+    {
+      "name": "a property without a name",
+      "register": [{ "type": "recipe", "schema": { "properties": [{ "name": "", "kind": "string" }] } }],
+      "error": { "code": "invalid_declaration", "property": "" }
+    },
+    {
+      "name": "an enum without values",
+      "register": [{ "type": "recipe", "schema": { "properties": [{ "name": "course", "kind": { "enum": [] } }] } }],
+      "error": { "code": "invalid_declaration", "property": "course" }
+    },
+    {
+      "name": "a reference to an invalid type name",
+      "register": [
+        { "type": "recipe", "schema": { "properties": [{ "name": "book", "kind": { "reference": "Book" } }] } }
+      ],
+      "error": { "code": "invalid_declaration", "property": "book" }
+    },
+    {
+      "name": "a default that breaks its declaration",
+      "register": [
+        { "type": "recipe", "schema": { "properties": [{ "name": "servings", "kind": "number", "default": "two" }] } }
+      ],
+      "error": { "code": "invalid_default", "property": "servings" }
+    },
+    {
+      "name": "an enum default outside its values",
+      "register": [
+        {
+          "type": "recipe",
+          "schema": { "properties": [{ "name": "course", "kind": { "enum": ["starter", "main"] }, "default": "dessert" }] }
+        }
+      ],
+      "error": { "code": "invalid_default", "property": "course" }
+    },
+    {
+      "name": "a null default on a property that isn't nullable",
+      "register": [
+        { "type": "recipe", "schema": { "properties": [{ "name": "servings", "kind": "number", "default": null }] } }
+      ],
+      "error": { "code": "invalid_default", "property": "servings" }
+    }
+  ],
+  "validation": [
+    {
+      "name": "missing properties get their defaults",
+      "type": "recipe",
+      "properties": {},
+      "expected": { "course": "main", "servings": 2, "vegetarian": false }
+    },
+    {
+      "name": "valid values and unknown properties stay as written",
+      "type": "recipe",
+      "properties": {
+        "course": "dessert",
+        "servings": 4.5,
+        "vegetarian": true,
+        "cooked": "2026-09-04",
+        "book": "book_01j00000000000000000000000",
+        "source": "Family recipe",
+        "rating": "five stars",
+        "tags": ["quick", null, { "nested": 1 }]
+      },
+      "expected": {
+        "course": "dessert",
+        "servings": 4.5,
+        "vegetarian": true,
+        "cooked": "2026-09-04",
+        "book": "book_01j00000000000000000000000",
+        "source": "Family recipe",
+        "rating": "five stars",
+        "tags": ["quick", null, { "nested": 1 }]
+      }
+    },
+    {
+      "name": "null stays on a nullable property and gets no default",
+      "type": "recipe",
+      "properties": { "cooked": null, "book": null },
+      "expected": { "course": "main", "servings": 2, "vegetarian": false, "cooked": null, "book": null }
+    },
+    {
+      "name": "a date accepts an instant with an explicit offset",
+      "type": "recipe",
+      "properties": { "cooked": "2026-09-04T18:30:00+02:00" },
+      "expected": { "course": "main", "servings": 2, "vegetarian": false, "cooked": "2026-09-04T18:30:00+02:00" }
+    },
+    {
+      "name": "a date accepts a UTC instant",
+      "type": "recipe",
+      "properties": { "cooked": "2026-09-04T16:30:00Z" },
+      "expected": { "course": "main", "servings": 2, "vegetarian": false, "cooked": "2026-09-04T16:30:00Z" }
+    },
+    {
+      "name": "a string where a number belongs",
+      "type": "recipe",
+      "properties": { "servings": "four" },
+      "error": { "code": "wrong_type", "property": "servings" }
+    },
+    {
+      "name": "null on a property that isn't nullable",
+      "type": "recipe",
+      "properties": { "servings": null },
+      "error": { "code": "wrong_type", "property": "servings" }
+    },
+    {
+      "name": "a string where a boolean belongs",
+      "type": "recipe",
+      "properties": { "vegetarian": "yes" },
+      "error": { "code": "wrong_type", "property": "vegetarian" }
+    },
+    {
+      "name": "a number where a string belongs",
+      "type": "recipe",
+      "properties": { "source": 5 },
+      "error": { "code": "wrong_type", "property": "source" }
+    },
+    {
+      "name": "an enum value outside the list",
+      "type": "recipe",
+      "properties": { "course": "brunch" },
+      "error": { "code": "not_allowed", "property": "course" }
+    },
+    {
+      "name": "an enum value that isn't a string",
+      "type": "recipe",
+      "properties": { "course": 1 },
+      "error": { "code": "wrong_type", "property": "course" }
+    },
+    {
+      "name": "a date in words",
+      "type": "recipe",
+      "properties": { "cooked": "tomorrow" },
+      "error": { "code": "invalid_date", "property": "cooked" }
+    },
+    {
+      "name": "a date that doesn't exist",
+      "type": "recipe",
+      "properties": { "cooked": "2026-02-30" },
+      "error": { "code": "invalid_date", "property": "cooked" }
+    },
+    {
+      "name": "an instant without an offset",
+      "type": "recipe",
+      "properties": { "cooked": "2026-09-04T18:30:00" },
+      "error": { "code": "invalid_date", "property": "cooked" }
+    },
+    {
+      "name": "a date that isn't a string",
+      "type": "recipe",
+      "properties": { "cooked": 20260904 },
+      "error": { "code": "wrong_type", "property": "cooked" }
+    },
+    {
+      "name": "a reference that isn't a stable ID",
+      "type": "recipe",
+      "properties": { "book": "book_not-an-id" },
+      "error": { "code": "invalid_reference", "property": "book" }
+    },
+    {
+      "name": "a reference to an object of another type",
+      "type": "recipe",
+      "properties": { "book": "recipe_01j00000000000000000000000" },
+      "error": { "code": "invalid_reference", "property": "book" }
+    },
+    {
+      "name": "the first failing property in declared order is named",
+      "type": "recipe",
+      "properties": { "source": false, "course": "brunch" },
+      "error": { "code": "not_allowed", "property": "course" }
+    }
+  ],
+  "unregistered": [
+    {
+      "name": "a type with no schema keeps every property as written, in the built-in order",
+      "registry": "schemas",
+      "markdown": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\nstatus: later\ndue: tomorrow\namount: '12.50'\nlines:\n- item: Paper\n  count: 2\npaid: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n",
+      "properties": {
+        "status": "later",
+        "due": "tomorrow",
+        "amount": "12.50",
+        "lines": [{ "item": "Paper", "count": 2 }],
+        "paid": null
+      },
+      "canonical": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\nstatus: later\ndue: tomorrow\namount: '12.50'\nlines:\n- count: 2\n  item: Paper\npaid: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n"
+    },
+    {
+      "name": "a task file stays a managed object in today's order when no task schema is registered",
+      "registry": "empty",
+      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: later\npriority: 1\ndue: tomorrow\nproject: project_not-an-id\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n",
+      "properties": {
+        "status": "later",
+        "priority": 1,
+        "due": "tomorrow",
+        "project": "project_not-an-id"
+      },
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: later\npriority: 1\nproject: project_not-an-id\ndue: tomorrow\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n"
+    }
+  ],
+  "malformed": [
+    {
+      "name": "bytes that aren't UTF-8, registered type",
+      "bytes": [45, 45, 45, 10, 105, 100, 58, 32, 114, 101, 99, 105, 112, 101, 95, 48, 49, 106, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 10, 116, 121, 112, 101, 58, 32, 114, 101, 99, 105, 112, 101, 10, 45, 45, 45, 10, 10, 35, 32, 255, 10],
+      "error_starts_with": "The file is not UTF-8"
+    },
+    {
+      "name": "bytes that aren't UTF-8, unregistered type",
+      "bytes": [45, 45, 45, 10, 105, 100, 58, 32, 105, 110, 118, 111, 105, 99, 101, 95, 48, 49, 106, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 10, 116, 121, 112, 101, 58, 32, 105, 110, 118, 111, 105, 99, 101, 10, 45, 45, 45, 10, 10, 35, 32, 255, 10],
+      "error_starts_with": "The file is not UTF-8"
+    },
+    {
+      "name": "invalid YAML, registered type",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ntags: [\n---\n\n# Broken\n",
+      "error_starts_with": "Invalid YAML frontmatter: "
+    },
+    {
+      "name": "invalid YAML, unregistered type",
+      "markdown": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\ntags: [\n---\n\n# Broken\n",
+      "error_starts_with": "Invalid YAML frontmatter: "
+    },
+    {
+      "name": "an unclosed frontmatter block, registered type",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\n# Never closed\n",
+      "error_starts_with": "Frontmatter has no closing delimiter"
+    },
+    {
+      "name": "an unclosed frontmatter block, unregistered type",
+      "markdown": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\n\n# Never closed\n",
+      "error_starts_with": "Frontmatter has no closing delimiter"
+    },
+    {
+      "name": "a missing type, registered type's ID",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\nservings: 2\n---\n\n# No type\n",
+      "error_starts_with": "Managed frontmatter requires a string type"
+    },
+    {
+      "name": "a missing type, unregistered type's ID",
+      "markdown": "---\nid: invoice_01j00000000000000000000000\n---\n\n# No type\n",
+      "error_starts_with": "Managed frontmatter requires a string type"
+    },
+    {
+      "name": "a type that isn't a string",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: 5\n---\n\n# Odd type\n",
+      "error_starts_with": "Managed frontmatter requires a string type"
+    },
+    {
+      "name": "an ID that doesn't match its type, registered type",
+      "markdown": "---\nid: invoice_01j00000000000000000000000\ntype: recipe\n---\n\n# Mismatch\n",
+      "error_starts_with": "The stable ID does not match the object type"
+    },
+    {
+      "name": "an ID that doesn't match its type, unregistered type",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: invoice\n---\n\n# Mismatch\n",
+      "error_starts_with": "The stable ID does not match the object type"
+    },
+    {
+      "name": "an ID with an uppercase ULID",
+      "markdown": "---\nid: recipe_01J00000000000000000000000\ntype: recipe\n---\n\n# Shouting\n",
+      "error_starts_with": "The stable ID does not match the object type"
+    }
+  ],
+  "registered_serialization": [
+    {
+      "name": "declared properties in declared order, then unknown properties by key",
+      "markdown": "---\nzeta: last\nsource: Grandma\nupdated: 2026-08-28T09:15:00Z\nservings: 4\nid: recipe_01j00000000000000000000000\naardvark: first\ncourse: dessert\ntype: recipe\ncreated: 2026-08-27T18:00:00Z\ncooked: 2026-09-04\n---\n# Tiramisu\n\nLayer and chill.\n",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncourse: dessert\nservings: 4\ncooked: 2026-09-04\nsource: Grandma\naardvark: first\nzeta: last\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n# Tiramisu\n\nLayer and chill.\n"
+    },
+    {
+      "name": "serialization writes null and adds no defaults",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nbook: null\ncooked: null\n---\n\n# Toast\n",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\ncooked: null\nbook: null\n---\n\n# Toast\n"
+    },
+    {
+      "name": "a declared value that breaks the schema is still written as it is",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nservings: many\n---\n\n# Feast\n",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nservings: many\n---\n\n# Feast\n"
+    },
+    {
+      "name": "a task schema declared in today's field order writes today's task order",
+      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: 2026-09-04\ncustom: kept\nproject: project_01j00000000000000000000000\npriority: high\nstatus: in-progress\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+    },
+    {
+      "name": "a declared kanban_order comes before an unknown key that sorts ahead of it, as today",
+      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nestimate: 3\nkanban_order: a0\npriority: low\nstatus: todo\n---\n\n# Sort the board\n",
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\nkanban_order: a0\nestimate: 3\n---\n\n# Sort the board\n"
+    },
+    {
+      "name": "a built-in key that the task schema doesn't declare sorts with the unknown keys, unlike today",
+      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ndate: 2026-09-04\ncustom: kept\n---\n\n# Plan the day\n",
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ncustom: kept\ndate: 2026-09-04\n---\n\n# Plan the day\n"
+    }
+  ],
+  "line_separators": [
+    {
+      "name": "a multi-line value ending in U+2028 and written last is double-quoted, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\u2028\"\n---\n\n# Pasta\n",
+      "properties": { "steps": "Boil.\nServe.\u2028" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a multi-line value ending in U+2028 and written last is double-quoted, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\u2028\"\n---\n\n# Pasta\n",
+      "properties": { "source": "Boil.\nServe.\u2028" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a multi-line value ending in U+2028 keeps libyaml's literal block when a value follows it, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"Boil.\\nServe.\\u2028\"\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n",
+      "properties": { "steps": "Boil.\nServe.\u2028" },
+      "updated": "2026-08-27T18:00:00Z",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: |\n  Boil.\n  Serve.\u2028updated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a multi-line value ending in U+2028 keeps libyaml's literal block when a value follows it, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"Boil.\\nServe.\\u2028\"\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n",
+      "properties": { "source": "Boil.\nServe.\u2028" },
+      "updated": "2026-08-27T18:00:00Z",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: |\n  Boil.\n  Serve.\u2028updated: 2026-08-27T18:00:00Z\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "an updated value ending in U+2028 is written last and double-quoted, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\u2028\"\n---\n\n# Pasta\n",
+      "properties": {},
+      "updated": "\na\u2028",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "an updated value ending in U+2028 is written last and double-quoted, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\u2028\"\n---\n\n# Pasta\n",
+      "properties": {},
+      "updated": "\na\u2028",
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nupdated: \"\\na\\L\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a last value ending in a line break and U+2029 is double-quoted, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"a\\n\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "steps": "a\n\u2029" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps: \"a\\n\\P\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a last value ending in a line break and U+2029 is double-quoted, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"a\\n\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "source": "a\n\u2029" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsource: \"a\\n\\P\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a one-line value holding U+2028 keeps libyaml's single-quoted form with the raw character",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: 'a\u2028  b'\nzeta: end\n---\n\n# Pasta\n",
+      "properties": { "note": "a\u2028b", "zeta": "end" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: 'a\u2028  b'\nzeta: end\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a nested one-line value holding U+2029 keeps libyaml's single-quoted form, even when written last",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "steps": [{ "first": "Boil.\u2029" }] },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: 'Boil.\u2029    '\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a nested multi-line value ending in U+2029 and written last is double-quoted",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\nServe.\\u2029\"\n---\n\n# Pasta\n",
+      "properties": { "steps": [{ "first": "Boil.\nServe.\u2029" }] },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- first: \"Boil.\\nServe.\\P\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "U+0085 keeps the double quotes libyaml already writes",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\u0085b\"\n---\n\n# Pasta\n",
+      "properties": { "note": "a\u0085b" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nnote: \"a\\Nb\"\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key holding U+2028 is written as libyaml writes it and reads back the same, type without a schema",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\u2028b\": v\nzeta: end\n---\n\n# Pasta\n",
+      "properties": { "a\u2028b": "v", "zeta": "end" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? 'a\u2028  b'\n: v\nzeta: end\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key ending in a line break and U+2028 is written as libyaml writes it and reads back the same, registered type",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\n\\u2028\": null\n---\n\n# Pasta\n",
+      "properties": { "a\n\u2028": null },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? |+\n  a\n\u2028: null\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a nested key ending in a line break and U+2029 is written as libyaml writes it and reads back the same",
+      "registry": "schemas",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  \"x\\n\\u2029\": v\n---\n\n# Pasta\n",
+      "properties": { "steps": { "x\n\u2029": "v" } },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n  ? |+\n    x\n\u2029  : v\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key and a one-line value holding line separators in a list item are written as libyaml writes them",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- \"a\\u2028\": \"b\\u2029\"\n  c: d\n---\n\n# Pasta\n",
+      "properties": { "steps": [{ "a\u2028": "b\u2029", "c": "d" }] },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nsteps:\n- ? 'a\u2028    '\n  : 'b\u2029    '\n  c: d\n---\n\n# Pasta\n"
+    },
+    {
+      "name": "a key holding U+0085 keeps the explicit double-quoted form libyaml already writes",
+      "registry": "empty",
+      "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n\"a\\u0085b\": v\n---\n\n# Pasta\n",
+      "properties": { "a\u0085b": "v" },
+      "updated": null,
+      "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? \"a\\Nb\"\n: v\n---\n\n# Pasta\n"
+    }
+  ],
+  "task_schema_differences": [
+    {
+      "name": "a due date that isn't a string",
+      "properties": { "due": 5 },
+      "schema_error": { "code": "wrong_type", "property": "due" }
+    },
+    {
+      "name": "a due value that is a boolean",
+      "properties": { "due": true },
+      "schema_error": { "code": "wrong_type", "property": "due" }
+    },
+    {
+      "name": "a project reference that isn't a string",
+      "properties": { "project": 5 },
+      "schema_error": { "code": "wrong_type", "property": "project" }
+    },
+    {
+      "name": "a project reference that is a list",
+      "properties": { "project": ["project_01j00000000000000000000000"] },
+      "schema_error": { "code": "wrong_type", "property": "project" }
+    },
+    {
+      "name": "a kanban_order that isn't a string",
+      "properties": { "kanban_order": 5 },
+      "schema_error": { "code": "wrong_type", "property": "kanban_order" }
+    }
+  ],
+  "caller_bodies": [
+    {
+      "name": "CRLF line breaks in a caller's body are written as they are and read back as LF",
+      "body": "line one\r\nline two",
+      "file_ends_with": "---\nline one\r\nline two",
+      "expected_body": "line one\nline two",
+      "rewritten_ends_with": "---\nline one\nline two"
+    },
+    {
+      "name": "a run of carriage returns before a line feed in a caller's body is written as it is",
+      "body": "a\r\r\nb",
+      "file_ends_with": "---\na\r\r\nb",
+      "expected_body": "a\nb",
+      "rewritten_ends_with": "---\na\nb"
+    },
+    {
+      "name": "a caller's body that starts with a line break keeps it",
+      "body": "\nHello",
+      "file_ends_with": "---\n\nHello",
+      "expected_body": "\nHello",
+      "rewritten_ends_with": "---\n\nHello"
+    },
+    {
+      "name": "a caller's body that a read keeps is written the same both times",
+      "body": "Hello\nWorld",
+      "file_ends_with": "---\nHello\nWorld",
+      "expected_body": "Hello\nWorld",
+      "rewritten_ends_with": "---\nHello\nWorld"
+    }
+  ]
+}

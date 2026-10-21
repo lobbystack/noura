@@ -48,6 +48,25 @@ impl WorkspaceEngine {
             .search(input)
     }
 
+    /// The object types the index holds, sorted, for a search's type
+    /// filter.
+    pub fn object_types(&self) -> Result<Vec<String>> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("object_types"))?
+            .object_types()
+    }
+
+    /// The paths of the `limit` notes whose files changed last, newest
+    /// first. Notes are Markdown files other than managed objects of
+    /// another type, such as tasks.
+    pub fn recent_notes(&self, limit: usize) -> Result<Vec<String>> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("recent_notes"))?
+            .recent_notes(limit)
+    }
+
     pub fn calendar(&self, start: &str, end: &str) -> Result<Vec<CalendarEntry>> {
         self.index
             .lock()

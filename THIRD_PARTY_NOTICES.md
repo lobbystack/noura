@@ -80,12 +80,72 @@ The desktop app draws text with the fonts egui bundles in `epaint_default_fonts`
 
 The crate's `fonts` folder holds each font's full license text. Noura uses the crate as a dependency and copies no font file into this repository.
 
+## comrak 0.50.0 (Markdown parser)
+
+The editor parses Markdown with `comrak`, a dependency pinned in Cargo.lock. Noura copies no comrak source. Its distributed `COPYING` file carries the notices below for the code the editor ships: comrak under the BSD 2-Clause License, the cmark-gfm code it derives from under the same license, and the houdini, buffer and utf8proc code it adapts under the MIT License. The CommonMark spec and test files that `COPYING` also covers stay out of the build.
+
+Copyright (c) 2017–2025, Comrak contributors
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+cmark-gfm, derived from https://github.com/github/cmark: Copyright (c) 2014, John MacFarlane. All rights reserved. Licensed under the BSD 2-Clause License above.
+
+houdini (`houdini.h`, `houdini_href_e.c`, `houdini_html_e.c`, `houdini_html_u.c`), from https://github.com/vmg/houdini: Copyright (C) 2012 Vicent Martí. `buffer.h`, `buffer.c` and `chunk.h`: Copyright 2012 GitHub, Inc. `utf8.c`, from utf8proc (http://www.public-software-group.org/utf8proc): Copyright 2009 Public Software Group e. V., Berlin, Germany. Each is licensed as follows:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Lockbook Markdown editor
+
+The editor in `crates/editor-core` and `crates/editor-egui` adapts Lockbook's Markdown editor, which its authors dedicated to the public domain under the Unlicense. The Unlicense asks for no notice. [The Lockbook editor provenance record](docs/provenance/lockbook-editor.md) lists the files taken and the changes made.
+
+`editor-core`'s text buffer, offsets, grapheme index and word diff adapt the text model in Lockbook's `lb-rs` crate (`libs/lb/lb-rs/src/model/text/` at commit `1cd633a`), which its manifest licenses under the BSD 3-Clause License. `lb-rs` names no copyright holder, so this notice credits the Lockbook authors:
+
+Copyright (c) 2023–2026, the Lockbook authors (https://github.com/lockbook/lockbook)
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## BSL-1.0 crates (Windows clipboard)
+
+eframe reaches the Windows clipboard through arboard, which uses `clipboard-win` 5.4.1 and `error-code` 3.4.0 by Douman (https://github.com/DoumanAsh). Noura uses both unmodified, pinned in Cargo.lock. Both use the Boost Software License 1.0:
+
+Boost Software License - Version 1.0 - August 17th, 2003
+
+Permission is hereby granted, free of charge, to any person or organization obtaining a copy of the software and accompanying documentation covered by this license (the "Software") to use, reproduce, display, distribute, execute, and transmit the Software, and to prepare derivative works of the Software, and to permit third-parties to whom the Software is furnished to do so, all subject to the following:
+
+The copyright notices in the Software and this entire statement, including the above license grant, this restriction and the following disclaimer, must be included in all copies of the Software, in whole or in part, and all derivative works of the Software, unless such copies or derivative works are solely in the form of machine-executable object code generated by a source language processor.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## 0BSD crates (single-instance handling)
+
+A second launch of the desktop app finds the running copy through `interprocess` 2.4.6, used under the 0BSD option of its `0BSD OR Apache-2.0` license. interprocess depends on `doctest-file` 1.1.1 and, on Windows, `recvmsg` 1.0.0, both under the BSD Zero Clause License. Noura uses all three unmodified, pinned in Cargo.lock, and copies none of their source. The BSD Zero Clause License asks for no notice.
+
 ## MPL-2.0 crates
 
 These Rust dependencies use the Mozilla Public License 2.0. Noura uses them unmodified, and crates.io serves their source at the versions pinned in Cargo.lock:
 
 - `webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5, which give `sync-server` its passkey support
 - `option-ext` 0.2.0, which `local-core` gets through `directories` and `dirs-sys`
+- `nucleo-matcher` 0.3.1, which ranks the desktop app's command palette and quick open in `app-core`
 
 ## Marketing website source record
 

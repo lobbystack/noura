@@ -1,0 +1,42 @@
+# Keystrokes that trial S1 replays on large-note.md.
+#
+# One step per line. Blank lines and lines starting with # don't count.
+#
+#   goto start | goto end      caret at the start or the end of the note
+#   goto before <text>         caret before the first <text>
+#   goto after <text>          caret after the first <text>
+#   type <text>                one key press per character, to the end of the line
+#   key <key> [shift] [xN]     a key press, N times; keys use egui's names
+#   paste <text>               one paste; \n stands for a line break
+#
+# A goto places the caret without a keystroke, and the replay doesn't time
+# it. The replay times every key press and paste from its arrival to the end
+# of the frame that shows it.
+
+# At the start of the body: a new first paragraph.
+goto before This notebook collects the team's working notes.
+type Updated weekly, newest entries last.
+key Enter
+key Enter
+key Backspace
+
+# In the middle: finish the review's opening line, paste a list, then
+# select two rows upward and delete them.
+goto after Halfway through the year, the team reviewed every open plan.
+type  Most plans shipped on time, and two moved to the next quarter.
+key Enter
+key Enter
+paste - Follow up with design\n- Book the review room\n  - Ask for the large one\n
+type Next steps are in the plan.
+key ArrowUp shift x2
+key Backspace
+
+# At the end: a new section.
+goto end
+key Enter
+type ## Wrap-up
+key Enter
+key Enter
+type The year closed with every open task reviewed.
+key Backspace x9
+type checked.

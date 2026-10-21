@@ -11,7 +11,10 @@ members = [
     "crates/mcp-server",
     "crates/plugin-host",
     "crates/plugin-host/trial/rust-hello",
+    "crates/plugin-host/test-plugins/probe",
+    "crates/plugin-host/test-plugins/uses-files",
     "crates/plugin-sdk",
+    "crates/plugins/hello",
     "crates/sync-key-envelope",
     "crates/sync-protocol",
     "crates/sync-server",
@@ -33,6 +36,10 @@ license = "MIT"
 rust-version = "1.99"
 
 [workspace.dependencies]
+aho-corasick = "1"
+# Adds Noura to the apps that open at login: a launch agent on macOS, the
+# Run key on Windows and an XDG autostart entry on Linux.
+auto-launch = "0.6.0"
 yrs = { version = "=0.26.0", features = ["small-client", "sync"] }
 age = { version = "=0.12.1", default-features = false }
 aes-gcm = "=0.10.3"
@@ -44,36 +51,71 @@ zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 atomic-write-file = "0.3.1"
 blake3 = "1.8"
+# The desktop app's updater. It checks the signatures cargo-packager writes
+# with minisign, which the desktop tests use to sign a local feed.
+cargo-packager-updater = "0.2.3"
+minisign = "0.7"
+# The editor's Markdown parser. Pinned to the release Lockbook's editor was
+# built and tested against; see docs/provenance/lockbook-editor.md.
+comrak = { version = "=0.50.0", default-features = false, features = ["shortcodes"] }
 directories = "6"
 diffy = "=0.5.1"
 drag = "2.1.1"
-# eframe's defaults minus `clipboard`: arboard's Windows clipboard crates are
-# BSL-1.0, which waits for the owner's approval.
-eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
+# eframe's native defaults. `clipboard` connects copy and paste to the
+# system clipboard through arboard, whose Windows crates are BSL-1.0.
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
 egui = "0.37"
+egui-wgpu = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
+# The properties panel's date picker. MIT OR Apache-2.0.
+egui_extras = { version = "0.37", default-features = false, features = ["datepicker"] }
+# Shapes the editor's text and paints it through eframe's wgpu renderer.
+# 0.12 targets wgpu 30, the version eframe 0.37 uses.
+glyphon = "0.12"
 fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
 hkdf = "=0.12.4"
 hmac = "=0.12.1"
 ignore = "0.4"
+# Local sockets for single-instance handling: Unix domain sockets on macOS
+# and Linux, named pipes on Windows.
+interprocess = "2.4.6"
 jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
+# Rotates the local diagnostic log at 1 MB and keeps three old files.
+logroller = "0.1.12"
 # Without default features muda has no GTK backend: on Linux, menus need a GTK
 # window, which winit doesn't create.
 muda = { version = "0.21.2", default-features = false }
 trash = "5"
 notify = "8"
+# Ranks the command palette's and quick open's matches. MPL-2.0, used
+# unmodified.
+nucleo-matcher = "0.3.1"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
+# `reveal` shows an item selected in Finder, Explorer or a Linux file manager.
+opener = { version = "0.9.0", features = ["reveal"] }
 openssl = "0.10"
+parking_lot = "0.12.5"
 pbkdf2 = "=0.12.2"
+# Without default features proptest leaves out its process-forking runner.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 pulldown-cmark = "0.13"
+rand = "0.8"
+regex = "1.13.1"
+rfd = "0.16"
+ropey = "1.6.1"
+similar = { version = "2.7", features = ["unicode"] }
+unicode-linebreak = "0.1.5"
+unicode-segmentation = "1.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
 rmcp = { version = "3.1", features = ["server", "transport-io"] }
 schemars = "1"
+# Plugin versions and interface versions in plugin manifests.
+semver = "1.0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
@@ -83,15 +125,20 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"]
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+# Reads plugin manifests, with the line and column of each error.
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 ts-rs = { version = "11", features = ["serde-compat"] }
 ulid = { version = "1", default-features = false }
+unicode-normalization = "0.1.25"
 uuid = { version = "1", features = ["v4", "serde"] }
 # Stays on the 48.x LTS line. cargo deny fails the build on an unpatched advisory.
 wasmtime = { version = "48.0.7", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 url = "2"
+# Generates plugin-sdk's Rust bindings for `noura:plugin`.
+wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
 libc = "0.2"
 windows-sys = "0.61.2"
 # The winit release eframe 0.37 runs on, for its macOS and Windows event loop
@@ -109,3 +156,7 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# Dependencies build without debug info to keep each worktree's build output small.
+[profile.dev.package."*"]
+debug = false

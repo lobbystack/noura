@@ -29,12 +29,12 @@ pub(super) struct WorkspaceScan {
 
 impl WorkspaceScan {
     /// Indexed paths the walk proved absent.
-    pub(super) fn removed(&self, indexed: &HashMap<String, (i64, i64)>) -> Vec<String> {
+    pub(super) fn removed<'a>(&self, indexed: impl IntoIterator<Item = &'a String>) -> Vec<String> {
         if self.incomplete {
             return Vec::new();
         }
         indexed
-            .keys()
+            .into_iter()
             .filter(|path| {
                 !self.seen.contains(*path)
                     && !self
@@ -107,13 +107,7 @@ pub(super) fn scan_workspace(
             continue;
         };
         let Ok(relative) = normalized_relative_path(root, entry.path(), "workspace_scan") else {
-            tracing::warn!("skipped a workspace path that is not UTF-8");
-            scan.diagnostics.push(crate::Diagnostic {
-                code: "unsupported_path".into(),
-                message: "A file or folder name can't be shown. Rename it to use it here.".into(),
-                relative_path: None,
-                object_id: None,
-            });
+            unrepresentable_name(root, entry.path(), &mut scan);
             continue;
         };
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -164,7 +158,14 @@ pub(super) fn scan_workspace(
         } else {
             None
         };
-        let dataless = metadata.as_ref().is_some_and(is_dataless);
+        let dataless = match &metadata {
+            Some(metadata) => is_dataless(metadata),
+            // The listing marks every file that isn't downloaded yet.
+            None if list_entries && !markdown => entry
+                .metadata()
+                .is_ok_and(|metadata| is_dataless(&metadata)),
+            None => false,
+        };
         if list_entries {
             scan.entries.push(ScannedEntry {
                 relative_path: relative.clone(),
@@ -199,8 +200,26 @@ pub(super) fn scan_workspace(
     Ok(scan)
 }
 
+/// Leave a file or folder whose name has no UTF-8 form exactly as it is,
+/// and report the folder that holds it, which Noura can name.
+fn unrepresentable_name(root: &Path, path: &Path, scan: &mut WorkspaceScan) {
+    tracing::warn!("skipped a workspace name that has no UTF-8 form");
+    let folder = path
+        .parent()
+        .and_then(|parent| normalized_relative_path(root, parent, "workspace_scan").ok())
+        .filter(|folder| !folder.is_empty());
+    scan.diagnostics.push(crate::Diagnostic {
+        code: "unsupported_path".into(),
+        message: "A file or folder name here has characters Noura can't represent, so Noura \
+                  leaves it as it is. Rename it in another app to use it in Noura."
+            .into(),
+        relative_path: folder,
+        object_id: None,
+    });
+}
+
 fn unreadable_file(relative: &str, reason: &str, scan: &mut WorkspaceScan) {
-    tracing::warn!(path = %relative, reason, "a workspace file could not be read");
+    tracing::warn!(path = ?relative, reason, "a workspace file could not be read");
     scan.diagnostics.push(crate::Diagnostic {
         code: "unreadable_file".into(),
         message: "This file can't be read. Check that you have permission to open it.".into(),
@@ -275,8 +294,51 @@ pub(super) fn icloud_placeholder(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.icloud"))
 }
 
-/// Whether macOS reports the file as dataless: its content lives only in
-/// the cloud and reading it would block on a download.
+/// Whether the file's content lives only in the cloud, so reading it would
+/// start a download and block: a dataless file on macOS, or a file the
+/// cloud provider marks offline or recall-on-access on Windows. Getting the
+/// metadata reads no content.
+pub fn is_online_only(metadata: &std::fs::Metadata) -> bool {
+    is_dataless(metadata)
+}
+
+/// Read the whole workspace file at `path`, which `relative` names. A file
+/// whose content lives only in the cloud, or that only an iCloud
+/// placeholder stands for, fails with `file_not_downloaded` and is never
+/// read, since reading it would start a download and block.
+pub(crate) fn read_downloaded(path: &Path, relative: &str, operation: &str) -> Result<Vec<u8>> {
+    ensure_downloaded(path, relative, operation)?;
+    std::fs::read(path).map_err(|error| CoreError::io(error, operation, Some(relative)))
+}
+
+/// Fail with `file_not_downloaded` when the file at `path` exists only in
+/// the cloud, before anything reads it.
+pub(crate) fn ensure_downloaded(path: &Path, relative: &str, operation: &str) -> Result<()> {
+    let online_only = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => is_dataless(&metadata),
+        Err(error) => {
+            error.kind() == std::io::ErrorKind::NotFound && icloud_placeholder(path).exists()
+        }
+    };
+    if online_only {
+        return Err(not_downloaded(relative, operation));
+    }
+    Ok(())
+}
+
+/// The error for a file this device hasn't downloaded from the cloud yet.
+pub(crate) fn not_downloaded(relative: &str, operation: &str) -> CoreError {
+    let mut error = CoreError::new(
+        "file_not_downloaded",
+        ErrorCategory::Filesystem,
+        "This file isn't downloaded yet. Try again once it is.",
+        operation,
+    );
+    error.retryable = true;
+    error.path = Some(relative.to_owned());
+    error
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn is_dataless(metadata: &std::fs::Metadata) -> bool {
     use std::os::macos::fs::MetadataExt;
@@ -284,7 +346,20 @@ pub(super) fn is_dataless(metadata: &std::fs::Metadata) -> bool {
     metadata.st_flags() & SF_DATALESS != 0
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub(super) fn is_dataless(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_OFFLINE: u32 = 0x0000_1000;
+    const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    metadata.file_attributes()
+        & (FILE_ATTRIBUTE_OFFLINE
+            | FILE_ATTRIBUTE_RECALL_ON_OPEN
+            | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+        != 0
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(super) fn is_dataless(_metadata: &std::fs::Metadata) -> bool {
     false
 }
@@ -343,6 +418,14 @@ fn index_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk>
             if relative.as_os_str().is_empty() {
                 return true;
             }
+            // A folder whose name has no UTF-8 form is reported once, and
+            // nothing inside it can be named either.
+            if relative
+                .parent()
+                .is_some_and(|parent| parent.to_str().is_none())
+            {
+                return false;
+            }
             let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
             let name = entry.file_name().to_string_lossy();
             if name.starts_with('.') && (is_directory || placeholder_target(&name).is_none()) {
@@ -358,7 +441,7 @@ fn index_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk>
 /// them against the journal and reconciles if they turn out to be external.
 pub(super) fn dirty_marker(
     root: PathBuf,
-    journal: Arc<Mutex<HashMap<String, String>>>,
+    journal: Arc<Mutex<super::OwnWrites>>,
     dirty: Arc<AtomicBool>,
 ) -> impl Fn(&notify::Event) + Send + 'static {
     move |event| {
@@ -382,7 +465,7 @@ pub(super) fn dirty_marker(
             let key = relative.to_string_lossy().replace('\\', "/");
             if journal
                 .lock()
-                .map(|journal| journal.contains_key(&key))
+                .map(|journal| journal.covers(&key, std::time::Instant::now()))
                 .unwrap_or(false)
             {
                 continue;
@@ -731,7 +814,7 @@ mod tests {
                     base_body: current.body.clone(),
                     base_properties: current.properties.clone(),
                     local_title: current.title.clone(),
-                    // A trailing newline is not canonical; the file trims it.
+                    // The file keeps the trailing newline as it is.
                     local_body: format!("{}\nline {step}\n", current.body),
                     local_properties: current.properties.clone(),
                 })
@@ -741,7 +824,7 @@ mod tests {
                 other => panic!("step {step} must save cleanly, got {other:?}"),
             };
         }
-        assert!(current.body.ends_with("line 2"));
+        assert!(current.body.ends_with("line 2\n"));
     }
 
     #[test]

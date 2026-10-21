@@ -7,8 +7,9 @@ use local_core::{
     FinishChatAssistantInput, FinishChatToolCallInput, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
     MarkdownLinkTarget, ObjectPatch, ParseStatus, ParsedMarkdown, RawConflictResolveInput,
-    RawSaveInput, RawSaveResult, RenameChatInput, SearchInput, WORKSPACE_MANIFEST_PATH,
-    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id, parse_markdown,
+    RawRestoreInput, RawSaveInput, RawSaveResult, RenameChatInput, SearchInput,
+    WORKSPACE_MANIFEST_PATH, WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id,
+    parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -885,7 +886,8 @@ fn managed_draft_save_updates_an_unchanged_canonical_file() {
         panic!("expected clean-base save, got {result:?}");
     };
 
-    assert_eq!(current.title, "Renamed");
+    // The title is the file name, which a draft doesn't rename.
+    assert_eq!(current.title, "Original");
     assert_eq!(current.body, "edited body");
     assert_eq!(current.properties["status"], "in-progress");
     assert_eq!(current.properties["priority"], "high");
@@ -962,7 +964,8 @@ fn idless_markdown_requires_explicit_adoption() {
         parse_markdown("draft.md", &std::fs::read(path).unwrap()),
         ParsedMarkdown::Managed(_)
     ));
-    assert_eq!(adopted.value.title, "Draft");
+    assert_eq!(adopted.value.title, "draft");
+    assert_eq!(adopted.value.body, "# Draft\n\nText\n");
 }
 
 #[test]
@@ -1040,6 +1043,150 @@ fn duplicate_ids_are_indexed_but_block_identity_reads() {
     assert_eq!(error.code, "identity_conflict");
 }
 
+/// The file at a path says which object it holds, so a copy that shares
+/// its original's ID takes its own edits, and the index never redirects
+/// them.
+#[test]
+fn an_update_at_a_path_writes_that_file_even_when_another_shares_its_id() {
+    let (workspace, _app_data, engine) = engine();
+    let note = engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: "Body\n".into(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+    std::fs::copy(
+        workspace.path().join("one.md"),
+        workspace.path().join("two.md"),
+    )
+    .unwrap();
+    engine.reconcile().unwrap();
+    let original = std::fs::read(workspace.path().join("one.md")).unwrap();
+
+    let updated = engine
+        .update_object_at(
+            "two.md",
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("color".into(), serde_json::json!("blue"))]),
+                remove_properties: Vec::new(),
+                expected_revision: note.revision.clone(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(updated.value.relative_path, "two.md");
+    assert_eq!(
+        std::fs::read(workspace.path().join("one.md")).unwrap(),
+        original
+    );
+    let two = std::fs::read_to_string(workspace.path().join("two.md")).unwrap();
+    assert!(two.contains("color: blue\n"), "{two:?}");
+    assert!(two.ends_with("Body\n"), "{two:?}");
+
+    // The file must still hold the revision the caller read.
+    let stale = engine
+        .update_object_at(
+            "two.md",
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("color".into(), serde_json::json!("red"))]),
+                remove_properties: Vec::new(),
+                expected_revision: note.revision.clone(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(stale.code, "revision_conflict");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("two.md")).unwrap(),
+        two
+    );
+}
+
+#[test]
+fn an_update_at_a_path_refuses_traversal_missing_files_and_titles() {
+    let (_workspace, _app_data, engine) = engine();
+    let note = engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: String::new(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+    let patch = |title: Option<&str>| ObjectPatch {
+        title: title.map(str::to_owned),
+        body: Some("changed".into()),
+        properties: BTreeMap::new(),
+        remove_properties: Vec::new(),
+        expected_revision: note.revision.clone(),
+    };
+
+    let codes: Vec<String> = [
+        engine.update_object_at("../one.md", patch(None)),
+        engine.update_object_at("gone.md", patch(None)),
+        engine.update_object_at("one.md", patch(Some("Two"))),
+    ]
+    .into_iter()
+    .map(|result| result.unwrap_err().code)
+    .collect();
+
+    assert_eq!(
+        codes,
+        ["unsafe_path", "object_not_found", "title_not_supported"]
+    );
+}
+
+/// A file that another program turned into something other than a managed
+/// object refuses property edits and keeps its bytes.
+#[test]
+fn an_update_at_a_path_refuses_a_file_that_holds_no_managed_object_anymore() {
+    let (workspace, _app_data, engine) = engine();
+    engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: "Body\n".into(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+
+    for broken in [
+        "---\nid: [unclosed\n---\nBody\n",
+        "---\ntitle: no id\n---\nBody\n",
+        "Body without frontmatter\n",
+    ] {
+        std::fs::write(workspace.path().join("one.md"), broken).unwrap();
+        let read = engine.read_raw_markdown("one.md").unwrap();
+
+        let error = engine
+            .update_object_at(
+                "one.md",
+                ObjectPatch {
+                    title: None,
+                    body: None,
+                    properties: BTreeMap::from([("color".into(), serde_json::json!("blue"))]),
+                    remove_properties: Vec::new(),
+                    expected_revision: read.revision,
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, "object_parse_failed", "{broken:?}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("one.md")).unwrap(),
+            broken
+        );
+    }
+}
+
 #[test]
 fn reconciliation_repairs_an_external_save() {
     let (workspace, _app_data, engine) = engine();
@@ -1099,6 +1246,67 @@ fn path_traversal_is_rejected_before_a_write() {
         })
         .unwrap_err();
     assert_eq!(error.code, "unsafe_path");
+}
+
+#[test]
+fn restoring_a_deleted_markdown_file_writes_it_back_and_never_replaces_one() {
+    let (workspace, _app_data, engine) = engine();
+    let restore = |relative_path: &str| RawRestoreInput {
+        relative_path: relative_path.into(),
+        body: "one\ntwo\n".into(),
+        uses_crlf: true,
+        has_bom: false,
+    };
+    for (unsafe_path, code) in [
+        ("../outside.md", "unsafe_path"),
+        ("Docs/../../outside.md", "unsafe_path"),
+        ("/tmp/outside.md", "absolute_path"),
+    ] {
+        let error = engine
+            .restore_raw_markdown(restore(unsafe_path))
+            .unwrap_err();
+        assert_eq!(error.code, code, "{unsafe_path}");
+    }
+    assert!(
+        !workspace
+            .path()
+            .parent()
+            .unwrap()
+            .join("outside.md")
+            .exists()
+    );
+    #[cfg(unix)]
+    {
+        let outside = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("Linked")).unwrap();
+        let error = engine
+            .restore_raw_markdown(restore("Linked/Plan.md"))
+            .unwrap_err();
+        assert_eq!(error.code, "symlink_escape");
+        assert!(!outside.path().join("Plan.md").exists());
+    }
+
+    let restored = engine
+        .restore_raw_markdown(restore("Docs/Plan.md"))
+        .unwrap();
+    assert_eq!(
+        std::fs::read(workspace.path().join("Docs/Plan.md")).unwrap(),
+        b"one\r\ntwo\r\n"
+    );
+    assert_eq!(
+        restored.revision,
+        engine.read_raw_markdown("Docs/Plan.md").unwrap().revision
+    );
+
+    std::fs::write(workspace.path().join("Docs/Plan.md"), "Another app's\n").unwrap();
+    let error = engine
+        .restore_raw_markdown(restore("Docs/Plan.md"))
+        .unwrap_err();
+    assert_eq!(error.code, "raw_markdown_exists");
+    assert_eq!(
+        std::fs::read(workspace.path().join("Docs/Plan.md")).unwrap(),
+        b"Another app's\n"
+    );
 }
 
 #[test]
@@ -1321,6 +1529,66 @@ fn workspace_entries_skip_symlinks() {
 }
 
 #[test]
+fn reading_a_file_returns_its_bytes_and_revision_and_stays_inside_the_workspace() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir(workspace.path().join("Notes")).unwrap();
+    std::fs::write(workspace.path().join("Notes/Plan.md"), "plan").unwrap();
+
+    let (bytes, revision) = engine.read_file("Notes/Plan.md", 1024).unwrap();
+    assert_eq!(bytes, b"plan");
+    let listed = engine.list_workspace_entries().unwrap();
+    let plan = listed
+        .iter()
+        .find(|entry| entry.relative_path == "Notes/Plan.md")
+        .unwrap();
+    assert_eq!(plan.revision.as_deref(), Some(revision.as_str()));
+
+    for (path, code) in [
+        ("../outside.md", "unsafe_path"),
+        ("/etc/hosts", "absolute_path"),
+        (".noura/workspace.yaml", "reserved_path"),
+        ("Notes", "file_not_found"),
+        ("Missing.md", "file_not_found"),
+    ] {
+        let error = engine.read_file(path, 1024).unwrap_err();
+        assert_eq!(error.code, code, "{path}");
+    }
+    assert_eq!(
+        engine.read_file("Notes/Plan.md", 3).unwrap_err().code,
+        "file_too_large"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reading_a_file_refuses_links_out_of_the_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let (workspace, _app_data, engine) = engine();
+    let outside = tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.md"), "secret").unwrap();
+    symlink(
+        outside.path().join("secret.md"),
+        workspace.path().join("Link.md"),
+    )
+    .unwrap();
+    symlink(outside.path(), workspace.path().join("Shortcut")).unwrap();
+    std::fs::create_dir(workspace.path().join("Notes")).unwrap();
+    std::fs::write(workspace.path().join("Notes/Plan.md"), "plan").unwrap();
+    // A link that stays inside the workspace is refused too.
+    symlink(
+        workspace.path().join("Notes"),
+        workspace.path().join("Inside"),
+    )
+    .unwrap();
+
+    for path in ["Link.md", "Shortcut/secret.md", "Inside/Plan.md"] {
+        let error = engine.read_file(path, 1024).unwrap_err();
+        assert_eq!(error.code, "symlink_escape", "{path}");
+    }
+}
+
+#[test]
 fn overlapping_managed_property_edits_conflict_without_writing() {
     let (_workspace, app_data, engine) = engine();
     let created = engine
@@ -1462,6 +1730,13 @@ fn raw_markdown_rejects_traversal_and_non_markdown_paths() {
     assert!(engine.read_raw_markdown("../outside.md").is_err());
     assert!(engine.read_raw_markdown("notes/file.txt").is_err());
     assert!(engine.read_raw_markdown(".noura/history/notes.md").is_err());
+}
+
+#[test]
+fn reading_a_missing_raw_markdown_file_says_it_is_gone() {
+    let (_workspace, _app_data, engine) = engine();
+    let error = engine.read_raw_markdown("gone.md").unwrap_err();
+    assert_eq!(error.code, "raw_markdown_missing");
 }
 
 #[test]
@@ -1842,6 +2117,45 @@ fn manifest_update_rewrites_enabled_plugins_durably_and_in_memory() {
         })
         .unwrap_err();
     assert_eq!(error.code, "manifest_conflict");
+}
+
+#[test]
+fn manifest_update_refuses_a_manifest_edited_on_disk_since_its_revision_was_read() {
+    let (workspace, _app_data, engine) = engine();
+    let manifest_path = workspace.path().join(WORKSPACE_MANIFEST_PATH);
+    let (read, revision) = engine.read_manifest_revision().unwrap();
+    assert_eq!(read, engine.read_manifest().unwrap());
+    // An outside edit that keeps `updated` as it was.
+    let edited = std::fs::read_to_string(&manifest_path)
+        .unwrap()
+        .replace("ignore: []", "ignore:\n- drafts/");
+    std::fs::write(&manifest_path, &edited).unwrap();
+
+    let error = engine
+        .manifest_update(ManifestUpdateInput {
+            ignore: Some(vec!["build/".into()]),
+            expected_revision: Some(revision),
+            ..Default::default()
+        })
+        .unwrap_err();
+
+    assert_eq!(error.code, "manifest_conflict");
+    assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), edited);
+    let (read, revision) = engine.read_manifest_revision().unwrap();
+    assert_eq!(read.ignore, ["drafts/"]);
+    let saved = engine
+        .manifest_update(ManifestUpdateInput {
+            ignore: Some(vec!["drafts/".into(), "build/".into()]),
+            expected_revision: Some(revision),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(saved.ignore, ["drafts/", "build/"]);
+    assert!(
+        std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .contains("- build/")
+    );
 }
 
 #[test]

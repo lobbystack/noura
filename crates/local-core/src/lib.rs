@@ -6,6 +6,8 @@
 mod ai;
 mod chat;
 mod consent;
+#[cfg(any(test, feature = "durability-probe"))]
+pub mod durability_probe;
 mod durable_settings;
 mod engine;
 mod error;
@@ -26,21 +28,26 @@ pub use consent::{
     AiConsentRevokeInput, AiConsentRevokeOutcome,
 };
 pub use engine::{
-    ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult, ImportResult,
-    ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult,
-    ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch, RawConflictResolveInput,
-    RawConflictResolveResult, RawMarkdownRead, RawReconcileInput, RawReconcileResult, RawSaveInput,
-    RawSaveResult, ResolveConflictInput, SYNC_PLUGIN_ID, SystemTrash, WorkspaceEngine, os_trash,
+    ChangeCounts, ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult,
+    ImportResult, ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput,
+    ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch,
+    RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead, RawReconcileInput,
+    RawReconcileResult, RawRestoreInput, RawSaveInput, RawSaveResult, ResolveConflictInput,
+    SYNC_PLUGIN_ID, SystemTrash, WatchPoll, WorkspaceEngine, is_online_only, os_trash,
 };
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{
-    CalendarEntry, IndexStore, ObjectFilter, ObjectSummary, ObjectSummaryOrder, ObjectSummaryQuery,
-    SearchInput, SearchResult,
+    CalendarEntry, IdentityConflict, IndexStore, ObjectFilter, ObjectSummary, ObjectSummaryOrder,
+    ObjectSummaryQuery, SearchInput, SearchResult,
 };
-pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object};
+pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object, serialize_object_over};
 pub use model::*;
 pub use watcher::WatchCoordinator;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use watcher::WatchFault;
 pub use web_access::*;
+pub use workspace_format::merge::merge_text;
 pub use workspace_format::{
-    WORKSPACE_MANIFEST_PATH, WorkspaceManifest, WorkspaceObject, valid_object_id, valid_object_type,
+    MAX_FILE_NAME_CHARS, WORKSPACE_MANIFEST_PATH, WorkspaceManifest, WorkspaceObject,
+    frontmatter_end, normalize_file_name, title_from_path, valid_object_id, valid_object_type,
 };

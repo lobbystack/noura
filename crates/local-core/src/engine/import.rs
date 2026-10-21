@@ -49,14 +49,18 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, None))?;
         let destination = std::fs::canonicalize(&target)
             .map_err(|error| CoreError::io(error, operation, None))?;
+        // Held until the walk below has indexed every copy, so no walk in
+        // between finds one unindexed and takes it for another app's.
+        let _changes = self.hold_changes();
         let mut import = Import {
             engine: self,
             operation,
             ids: HashSet::new(),
             skipped: 0,
         };
-        let mut imported = Vec::new();
-        let copied = sources.iter().try_for_each(|source| {
+        // Every source passes the checks before anything is copied, so a
+        // refused import copies nothing.
+        for source in sources {
             if !source.is_absolute() {
                 return Err(CoreError::validation(
                     "absolute_path_required",
@@ -80,15 +84,19 @@ impl WorkspaceEngine {
                     operation,
                 ));
             }
+        }
+        let mut imported = Vec::new();
+        let copied = sources.iter().try_for_each(|source| {
             if let Some(path) = import.entry(source, folder)? {
                 imported.push(path);
             }
             Ok(())
         });
-        // Whatever landed before a failure is on disk; index it either way.
-        let indexed = self.reconcile_as_application();
+        // Whatever landed before a failure is on disk; index it and
+        // announce it either way.
+        self.reconcile_after_change(operation);
+        self.announce_own_change(&imported.iter().map(String::as_str).collect::<Vec<_>>());
         copied?;
-        indexed?;
         Ok(ImportResult {
             imported,
             skipped: import.skipped,
@@ -179,8 +187,10 @@ impl Import<'_> {
 
     fn create_folder(&self, relative: &str) -> Result<()> {
         let path = resolve_for_write(&self.engine.root, relative, self.operation)?;
+        self.engine.expect_own_folder(relative);
         std::fs::create_dir(&path)
-            .map_err(|error| CoreError::io(error, self.operation, Some(relative)))?;
+            .map_err(|error| CoreError::io(error, self.operation, Some(relative)))
+            .inspect_err(|_| self.engine.forget_own_write(relative))?;
         sync_parent(&path, self.operation)
     }
 
@@ -241,6 +251,9 @@ impl Import<'_> {
         }
         file.commit()
             .map_err(|error| CoreError::io(error, operation, Some(relative)))?;
+        // The import holds the change gate, so the entry is in place before
+        // the watcher thread checks any report of the file.
+        self.engine.expect_own_file(relative);
         sync_parent(&destination, operation)
     }
 }

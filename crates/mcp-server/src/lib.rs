@@ -108,9 +108,8 @@ impl NouraMcp {
         let values = self.with_engine(|engine| {
             engine.search(&SearchInput {
                 query: input.query,
-                object_type: None,
-                path_prefix: None,
                 limit: input.limit,
+                ..SearchInput::default()
             })
         })?;
         serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
@@ -389,7 +388,7 @@ mod tests {
             .await
             .unwrap();
         let result: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(result["value"]["body"], "Edited through MCP");
+        assert_eq!(result["value"]["body"], "Edited through MCP\n");
         let on_disk = std::fs::read_to_string(workspace.path().join("note.md")).unwrap();
         assert!(on_disk.contains("Edited through MCP"));
     }
@@ -565,7 +564,7 @@ mod tests {
         let created = server
             .tasks_create(Parameters(TaskCreateParams {
                 title: "MCP follow-up".into(),
-                body: Some("Second canonical task".into()),
+                body: Some("Second canonical task from MCP".into()),
                 relative_path: Some("projects/alpha/tasks/follow-up.md".into()),
                 status: Some("todo".into()),
                 priority: Some("high".into()),
@@ -623,9 +622,7 @@ mod tests {
         let search = app_engine
             .search(&SearchInput {
                 query: "MCP".into(),
-                object_type: None,
-                path_prefix: None,
-                limit: None,
+                ..SearchInput::default()
             })
             .unwrap();
         assert_eq!(search.len(), 2);

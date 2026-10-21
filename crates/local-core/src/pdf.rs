@@ -208,15 +208,20 @@ fn open_pdf(root: &Path, relative: &str) -> Result<File> {
     {
         return Err(invalid("invalid_pdf", "Choose a PDF file"));
     }
-    crate::path::resolve_for_write(root, relative, OP)?;
+    let resolved = crate::path::resolve_for_write(root, relative, OP)?;
+    // Opening or reading a file that lives only in the cloud would start a
+    // download and block.
+    crate::engine::ensure_downloaded(&resolved, relative, OP)?;
     let file =
         open_scoped(root, &path).map_err(|error| CoreError::io(error, OP, Some(relative)))?;
-    if !file
+    let metadata = file
         .metadata()
-        .map_err(|error| CoreError::io(error, OP, Some(relative)))?
-        .is_file()
-    {
+        .map_err(|error| CoreError::io(error, OP, Some(relative)))?;
+    if !metadata.is_file() {
         return Err(invalid("invalid_pdf", "The PDF must be a regular file"));
+    }
+    if crate::is_online_only(&metadata) {
+        return Err(crate::engine::not_downloaded(relative, OP));
     }
     Ok(file)
 }

@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Lets tests force the native watcher to fail or deliver chosen events.
+# Never enabled in a shipped build.
+test-hooks = []
+# Lets tests record which folders a mutation syncs. Test builds only.
+durability-probe = []
+
 [dependencies]
 yrs.workspace = true
 age.workspace = true
@@ -26,6 +33,7 @@ hmac.workspace = true
 jiff.workspace = true
 keyring.workspace = true
 notify.workspace = true
+parking_lot.workspace = true
 pbkdf2.workspace = true
 pulldown-cmark.workspace = true
 rusqlite.workspace = true

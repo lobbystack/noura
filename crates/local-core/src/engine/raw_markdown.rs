@@ -79,6 +79,19 @@ pub struct RawConflictResolveInput {
     pub resolution: ConflictResolution,
 }
 
+/// A Markdown file another program deleted while it was open, to write
+/// back from the editor's text.
+#[derive(Debug, Clone)]
+pub struct RawRestoreInput {
+    pub relative_path: String,
+    /// The file's whole text, with LF line breaks.
+    pub body: String,
+    /// Whether lines end in CRLF, and whether a byte-order mark comes
+    /// first, as when the file was last read.
+    pub uses_crlf: bool,
+    pub has_bom: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -118,20 +131,17 @@ impl WorkspaceEngine {
     /// is returned as-is; the editor owns complete raw contents.
     pub fn read_raw_markdown(&self, relative_path: &str) -> Result<RawMarkdownRead> {
         let path = validate_raw_markdown_path(&self.root, relative_path)?;
-        let bytes = std::fs::read(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound && icloud_placeholder(&path).exists() {
-                let mut error = CoreError::new(
-                    "file_not_downloaded",
-                    ErrorCategory::Filesystem,
-                    "This file is still in iCloud. Download it in Finder, then open it again.",
-                    "raw_markdown_read",
-                );
-                error.retryable = true;
-                error.path = Some(relative_path.to_owned());
-                return error;
-            }
-            CoreError::io(error, "raw_markdown_read", Some(relative_path))
-        })?;
+        // A file only the cloud holds says so, and a missing file says it's
+        // gone, as a save of it does.
+        ensure_downloaded(&path, relative_path, "raw_markdown_read")?;
+        if !path.exists() {
+            return Err(CoreError::validation(
+                "raw_markdown_missing",
+                "The Markdown file no longer exists",
+                "raw_markdown_read",
+            ));
+        }
+        let bytes = read_downloaded(&path, relative_path, "raw_markdown_read")?;
         let (body, layout) = split_raw_bytes(&bytes)?;
         Ok(RawMarkdownRead {
             relative_path: relative_path.to_owned(),
@@ -165,8 +175,7 @@ impl WorkspaceEngine {
             return Ok(MarkdownLinkTarget::Unresolved);
         }
         if relative.to_ascii_lowercase().ends_with(".md") {
-            let bytes = std::fs::read(&path)
-                .map_err(|error| CoreError::io(error, "markdown_link_resolve", Some(&relative)))?;
+            let bytes = read_downloaded(&path, &relative, "markdown_link_resolve")?;
             if let ParsedMarkdown::Managed(object) = markdown::parse_markdown(&relative, &bytes) {
                 return Ok(MarkdownLinkTarget::Managed { object });
             }
@@ -221,9 +230,7 @@ impl WorkspaceEngine {
                 "raw_markdown_reconcile",
             ));
         }
-        let bytes = std::fs::read(&path).map_err(|error| {
-            CoreError::io(error, "raw_markdown_reconcile", Some(&input.relative_path))
-        })?;
+        let bytes = read_downloaded(&path, &input.relative_path, "raw_markdown_reconcile")?;
         let (external_body, layout) = split_raw_bytes(&bytes)?;
         let (uses_crlf, has_bom) = (layout.uses_crlf, layout.has_bom);
         let current = RawMarkdownRead {
@@ -268,6 +275,7 @@ impl WorkspaceEngine {
         let path = validate_raw_markdown_path(&self.root, &relative)?;
         let _guard = self.write_lock("raw_markdown_save")?;
         self.collaboration_guard_file_mutation(&relative)?;
+        ensure_downloaded(&path, &relative, "raw_markdown_save")?;
         if !path.exists() {
             return Err(CoreError::validation(
                 "raw_markdown_missing",
@@ -275,8 +283,7 @@ impl WorkspaceEngine {
                 "raw_markdown_save",
             ));
         }
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "raw_markdown_save", Some(&relative)))?;
+        let bytes = read_downloaded(&path, &relative, "raw_markdown_save")?;
         let (external_body, layout) = split_raw_bytes(&bytes)?;
         let (uses_crlf, has_bom) = (layout.uses_crlf, layout.has_bom);
         let current = RawMarkdownRead {
@@ -314,16 +321,15 @@ impl WorkspaceEngine {
         let external_merged = merged_body != input.local_body;
         let next_bytes = compose_raw_bytes(&merged_body, &layout);
         let next_relative = PathBuf::from(&relative);
+        self.expect_own_write(&relative, Some(&markdown::revision(&next_bytes)));
         atomic_write_checked(
             &self.root,
             &next_relative,
             &next_bytes,
             Some(&current.revision),
             "raw_markdown_save",
-        )?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(relative.clone(), markdown::revision(&next_bytes));
-        }
+        )
+        .inspect_err(|_| self.forget_own_write(&relative))?;
         self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_save")?;
         self.emit(
             "file:changed",
@@ -359,6 +365,67 @@ impl WorkspaceEngine {
         })
     }
 
+    /// Write a deleted Markdown file back at its path, with the folders
+    /// above it, and index it. Nothing is replaced: when a file, or the
+    /// placeholder of one only the cloud holds, is at the path again, this
+    /// fails with `raw_markdown_exists` or `file_not_downloaded` and writes
+    /// nothing. Returns once the bytes are durably on disk.
+    pub fn restore_raw_markdown(&self, input: RawRestoreInput) -> Result<RawMarkdownRead> {
+        let relative =
+            crate::path::validate_relative(&input.relative_path, "raw_markdown_restore")?
+                .to_str()
+                .ok_or_else(|| {
+                    CoreError::validation(
+                        "non_utf8_path",
+                        "The raw Markdown path is not UTF-8",
+                        "raw_markdown_restore",
+                    )
+                })?
+                .replace('\\', "/");
+        let path = validate_raw_markdown_path(&self.root, &relative)?;
+        let _guard = self.write_lock("raw_markdown_restore")?;
+        self.collaboration_guard_file_mutation(&relative)?;
+        ensure_downloaded(&path, &relative, "raw_markdown_restore")?;
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err(CoreError::new(
+                "raw_markdown_exists",
+                ErrorCategory::Conflict,
+                "A file is at this path again",
+                "raw_markdown_restore",
+            ));
+        }
+        let layout = RawLayout::uniform(&input.body, input.uses_crlf, input.has_bom);
+        let bytes = compose_raw_bytes(&input.body, &layout);
+        let revision = markdown::revision(&bytes);
+        self.expect_own_write(&relative, Some(&revision));
+        atomic_write_checked(
+            &self.root,
+            &PathBuf::from(&relative),
+            &bytes,
+            None,
+            "raw_markdown_restore",
+        )
+        .inspect_err(|_| self.forget_own_write(&relative))?;
+        self.reindex_raw_markdown(&relative, &bytes, "raw_markdown_restore")?;
+        self.emit(
+            "file:changed",
+            EventSource::Application,
+            serde_json::json!({ "paths": [relative] }),
+        );
+        self.emit(
+            "search:index-updated",
+            EventSource::Application,
+            serde_json::json!({}),
+        );
+        Ok(RawMarkdownRead {
+            relative_path: relative,
+            body: input.body,
+            revision,
+            uses_crlf: input.uses_crlf,
+            has_bom: input.has_bom,
+        })
+    }
+
     /// Adopt the external file version or replace it with the reviewed local
     /// draft. Both directions snapshot the version they displace first.
     pub fn resolve_raw_conflict(
@@ -386,8 +453,7 @@ impl WorkspaceEngine {
                 "raw_markdown_resolve",
             ));
         }
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "raw_markdown_resolve", Some(&relative)))?;
+        let bytes = read_downloaded(&path, &relative, "raw_markdown_resolve")?;
         if markdown::revision(&bytes) != input.current_revision {
             let mut error = CoreError::new(
                 "revision_conflict",
@@ -439,16 +505,15 @@ impl WorkspaceEngine {
                 )?;
                 let next_bytes = compose_raw_bytes(&input.local_body, &layout);
                 let next_relative = PathBuf::from(&relative);
+                self.expect_own_write(&relative, Some(&markdown::revision(&next_bytes)));
                 atomic_write_checked(
                     &self.root,
                     &next_relative,
                     &next_bytes,
                     Some(&input.current_revision),
                     "raw_markdown_resolve",
-                )?;
-                if let Ok(mut journal) = self.self_writes.lock() {
-                    journal.insert(relative.clone(), markdown::revision(&next_bytes));
-                }
+                )
+                .inspect_err(|_| self.forget_own_write(&relative))?;
                 self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_resolve")?;
                 self.emit(
                     "file:changed",
@@ -595,9 +660,6 @@ fn write_snapshot(
     if destination.exists() {
         return Ok(());
     }
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
-    }
+    // atomic_write creates the missing folders durably.
     atomic_write(root, &relative_path, bytes, operation)
 }

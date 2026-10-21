@@ -770,6 +770,29 @@ fn path_activity_matches_whether_open_returns_a_session() {
 }
 
 #[test]
+fn a_new_title_is_a_rename_that_live_editing_refuses() {
+    let f = managed_fixture();
+    let session = open(&f);
+    let error = f
+        .engine
+        .collaboration_update_object(
+            "note_01j00000000000000000000000",
+            ObjectPatch {
+                title: Some("Renamed".into()),
+                body: None,
+                properties: BTreeMap::new(),
+                remove_properties: Vec::new(),
+                expected_revision: session.revision,
+            },
+            &f.device,
+            &f.secrets,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "collaboration_transaction_required");
+    assert!(f.engine.root.join("note.md").exists());
+}
+
+#[test]
 fn managed_body_and_metadata_commit_as_one_generation_bound_operation() {
     let mut f = managed_fixture();
     let session = open(&f);
@@ -778,7 +801,7 @@ fn managed_body_and_metadata_commit_as_one_generation_bound_operation() {
         .collaboration_update_object(
             "note_01j00000000000000000000000",
             ObjectPatch {
-                title: Some("Renamed".into()),
+                title: Some("note".into()),
                 body: Some("Changed body 😀\n".into()),
                 properties: BTreeMap::from([(
                     "priority".into(),
@@ -791,7 +814,7 @@ fn managed_body_and_metadata_commit_as_one_generation_bound_operation() {
             &f.secrets,
         )
         .unwrap();
-    assert_eq!(result.value.title, "Renamed");
+    assert_eq!(result.value.title, "note");
     assert_eq!(result.value.body, "Changed body 😀\n");
     assert_eq!(result.value.properties["priority"], "high");
     assert!(!result.value.properties.contains_key("status"));
@@ -805,7 +828,8 @@ fn managed_body_and_metadata_commit_as_one_generation_bound_operation() {
         .unwrap();
     assert_eq!(pending.pending.len(), 1);
     assert!(!pending.pending[0].updates.is_empty());
-    assert_eq!(pending.pending[0].metadata.len(), 3);
+    // The priority and the status: the title is the file name and stays.
+    assert_eq!(pending.pending[0].metadata.len(), 2);
     f.engine.collaboration_acknowledge(&operation, "1").unwrap();
     let reopened = open(&f);
     assert_eq!(reopened.status, CollaborationStatus::Synced);
@@ -1478,7 +1502,6 @@ fn external_managed_saves_translate_to_recoverable_native_transactions() {
     else {
         panic!("managed object expected")
     };
-    external.title = "Changed outside".into();
     external.body = "External body 😀\n".into();
     external.properties.insert(
         "priority".into(),
@@ -1507,14 +1530,14 @@ fn external_managed_saves_translate_to_recoverable_native_transactions() {
     let reopened = open(&f);
     assert_eq!(
         TextDocument::restore(&reopened.update).unwrap().text(),
-        "External body 😀"
+        "External body 😀\n"
     );
     let materialized = std::fs::read(&path).unwrap();
     let ParsedMarkdown::Managed(materialized) = markdown::parse_markdown("note.md", &materialized)
     else {
         panic!("managed object expected")
     };
-    assert_eq!(materialized.title, "Changed outside");
+    assert_eq!(materialized.title, "note");
     assert_eq!(materialized.properties["priority"], "medium");
 }
 
@@ -1592,7 +1615,6 @@ fn external_translation_recovers_each_durable_boundary_after_restart() {
         else {
             panic!("managed object expected")
         };
-        external.title = format!("External boundary {boundary}");
         external.body = format!("Recovered {boundary}\n");
         std::fs::write(&path, markdown::serialize_object(&external).unwrap()).unwrap();
         f.engine.collaboration_set_mutation_fault(boundary);
@@ -1623,7 +1645,7 @@ fn external_translation_recovers_each_durable_boundary_after_restart() {
             .unwrap();
         assert_eq!(
             TextDocument::restore(&session.update).unwrap().text(),
-            format!("Recovered {boundary}")
+            format!("Recovered {boundary}\n")
         );
     }
 }
@@ -2149,7 +2171,7 @@ fn route_helpers_bypass_collaboration_when_disabled() {
     )
     .unwrap();
     // Mutations return the canonical parse of the written file.
-    assert_eq!(updated.value.body, "Routed");
+    assert_eq!(updated.value.body, "Routed\n");
     let moved = crate::sync::route_move_object(
         &f.engine,
         no_connection,
