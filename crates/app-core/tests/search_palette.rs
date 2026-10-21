@@ -31,6 +31,14 @@ fn state(app: &App) -> SearchState {
     }
 }
 
+/// The object types the type filter offers.
+fn types(app: &App) -> Vec<String> {
+    match app.palette() {
+        Some(Palette::Search(search)) => search.types.clone(),
+        other => panic!("search isn't open: {other:?}"),
+    }
+}
+
 /// The titles search shows, if it shows hits.
 fn shown(app: &App) -> Option<Vec<String>> {
     match state(app) {
@@ -95,6 +103,32 @@ fn search_runs_in_the_background_and_shows_its_hits() {
 }
 
 #[test]
+fn the_type_filter_gets_the_index_types_in_the_background() {
+    let fixture = Fixture::new(&[
+        (
+            "Launch.md",
+            b"---\nid: task_01jbcdefghjkmnpqrstvwxyz0a\ntype: task\n\
+              created: 2026-10-20T10:00:00Z\nupdated: 2026-10-20T10:00:00Z\n---\n\nLaunch day\n",
+        ),
+        ("Ideas.md", b"A loose idea\n"),
+    ]);
+    let mut app = fixture.app();
+
+    app.open_search();
+    // Opening search doesn't wait on the index for the types.
+    assert!(types(&app).is_empty());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while types(&app).is_empty() {
+        assert!(Instant::now() < deadline, "the types never arrived");
+        std::thread::sleep(Duration::from_millis(2));
+        app.poll();
+    }
+
+    assert_eq!(types(&app), ["task"]);
+    assert_eq!(state(&app), SearchState::Idle);
+}
+
+#[test]
 fn results_from_an_older_query_never_show_under_a_newer_one() {
     let fixture = fixture();
     let mut app = fixture.app();
@@ -102,8 +136,8 @@ fn results_from_an_older_query_never_show_under_a_newer_one() {
 
     app.open_search();
     app.set_palette_query("last");
-    // The answer for "last" arrives but waits to be taken.
-    wait_for(&answers, 1);
+    // The type list and the answer for "last" arrive but wait to be taken.
+    wait_for(&answers, 2);
     app.set_palette_query("black");
 
     assert_eq!(settle(&mut app, "Recipe"), ["Pepper"]);
@@ -133,7 +167,8 @@ fn clearing_the_query_clears_the_results() {
     app.set_palette_query("pepper");
     settle(&mut app, "");
     app.set_palette_query("saffron");
-    wait_for(&answers, 2);
+    // The type list, then the answers for "pepper" and "saffron".
+    wait_for(&answers, 3);
     app.set_palette_query("  ");
     assert_eq!(state(&app), SearchState::Idle);
     app.poll();

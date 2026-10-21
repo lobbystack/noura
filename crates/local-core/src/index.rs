@@ -619,8 +619,9 @@ impl IndexStore {
     }
 
     /// Files whose text holds every word of `input.query`, read as plain
-    /// text. A match in the file name or title ranks above a match
-    /// elsewhere, then the full-text rank decides.
+    /// text. A match in the file name, which is the note's title, ranks
+    /// above a match anywhere else, then the full-text rank decides. A
+    /// heading inside the file ranks as ordinary body text.
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
         let folder = match input.folder.as_deref() {
             None | Some("") => None,
@@ -634,8 +635,10 @@ impl IndexStore {
             .connection
             .prepare_cached(
                 "SELECT NULLIF(fts.stable_id,''),o.object_type,f.relative_path,fts.title,\
-                 snippet(object_fts,4,'','', ' … ',18),bm25(object_fts,0.0,2.0,4.0,8.0,1.0,3.0),\
-                 f.hash,fts.rowid IN (SELECT rowid FROM object_fts WHERE object_fts MATCH ?5) \
+                 snippet(object_fts,4,char(2),char(3),' … ',18),\
+                 bm25(object_fts,0.0,2.0,8.0,1.0,1.0,3.0),f.hash,\
+                 fts.rowid IN (SELECT rowid FROM object_fts WHERE object_fts MATCH ?5),\
+                 snippet(object_fts,3,char(2),char(3),' … ',18) \
                  FROM object_fts fts JOIN files f ON f.id=fts.rowid \
                  LEFT JOIN objects o ON o.file_id=f.id \
                  WHERE object_fts MATCH ?1 AND (?2 IS NULL OR o.object_type=?2) \
@@ -652,7 +655,7 @@ impl IndexStore {
                     input.object_type,
                     folder,
                     input.limit.unwrap_or(50),
-                    query.any_word_in_title,
+                    query.any_word_in_file_name,
                     tag
                 ],
                 |row| {
@@ -661,7 +664,7 @@ impl IndexStore {
                         object_type: row.get(1)?,
                         relative_path: row.get(2)?,
                         title: row.get(3)?,
-                        snippet: row.get(4)?,
+                        snippet: matching_text(row.get(4)?, row.get(8)?),
                         score: row.get(5)?,
                         revision: row.get(6)?,
                     })
@@ -860,6 +863,19 @@ fn tag_key(tag: &str) -> Option<String> {
     (!tag.is_empty()).then(|| tag.to_lowercase())
 }
 
+/// The text a hit shows: the body around the match, or the heading when
+/// only the heading matches, since a heading is ordinary text. The index
+/// marks matched words with STX and ETX, which this removes.
+fn matching_text(body: String, heading: String) -> String {
+    const MARKS: [char; 2] = ['\u{2}', '\u{3}'];
+    let text = if !body.contains(MARKS[0]) && heading.contains(MARKS[0]) {
+        heading
+    } else {
+        body
+    };
+    text.replace(MARKS, "")
+}
+
 /// A search typed by a person, turned into full-text expressions that
 /// treat every character as text. Each word becomes a quoted phrase that
 /// matches as a prefix, so quotes, asterisks, parentheses, colons, carets
@@ -867,8 +883,8 @@ fn tag_key(tag: &str) -> Option<String> {
 struct PlainTextQuery {
     /// Every word, anywhere in the file.
     all_words: String,
-    /// Any word, in the file name or the title.
-    any_word_in_title: String,
+    /// Any word, in the file name, which is the note's title.
+    any_word_in_file_name: String,
 }
 
 impl PlainTextQuery {
@@ -887,7 +903,7 @@ impl PlainTextQuery {
         }
         Some(Self {
             all_words: words.join(" AND "),
-            any_word_in_title: format!("{{filename title}} : ({})", words.join(" OR ")),
+            any_word_in_file_name: format!("filename : ({})", words.join(" OR ")),
         })
     }
 }

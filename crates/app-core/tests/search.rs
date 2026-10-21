@@ -96,6 +96,35 @@ fn a_match_in_the_title_ranks_above_a_match_in_the_body_alone() {
 }
 
 #[test]
+fn a_heading_ranks_as_body_text_below_the_title() {
+    let fixture = Fixture::new(&[
+        // The title is the file name; a heading inside the file is
+        // ordinary text.
+        (
+            "Paella.md",
+            b"# Saffron rice\n\nA rice dish from crocus country, cooked by hand in the \
+              autumn and served slowly.\n",
+        ),
+        (
+            "Saffron.md",
+            b"A spice from crocus flowers, picked by hand in the autumn and dried slowly.\n",
+        ),
+    ]);
+    let workspace = open(&fixture);
+
+    let hits = search(&workspace, "saffron");
+    let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+    assert_eq!(titles, ["Saffron", "Paella"]);
+    // The heading is the text that matches, so the hit shows it.
+    assert!(
+        hits[1].snippet.contains("Saffron rice"),
+        "{}",
+        hits[1].snippet
+    );
+    assert!(!hits[1].snippet.contains('\u{2}'), "{:?}", hits[1].snippet);
+}
+
+#[test]
 fn each_hit_shows_its_title_type_folder_and_the_matching_text() {
     let fixture = Fixture::new(&[
         (

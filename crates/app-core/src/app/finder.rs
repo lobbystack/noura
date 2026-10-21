@@ -98,21 +98,19 @@ impl App {
     }
 
     /// Open search with an empty field, as Mod-Shift-F does. Search
-    /// replaces what the palette showed.
+    /// replaces what the palette showed. The type filter's types arrive
+    /// from the search thread, so the UI never waits on the index.
     pub fn open_search(&mut self) {
         let Some(workspace) = &self.workspace else {
             return;
         };
         self.searcher.cancel();
-        let (types, state) = match workspace.search_types() {
-            Ok(types) => (types, SearchState::Idle),
-            Err(error) => (Vec::new(), SearchState::Failed(error)),
-        };
+        self.searcher.list_types(workspace.clone());
         self.palette = Some(Palette::Search(Search {
             query: SearchQuery::default(),
             selected: 0,
-            types,
-            state,
+            types: Vec::new(),
+            state: SearchState::Idle,
         }));
         self.listeners.emit(Change::Palette);
     }
@@ -198,7 +196,7 @@ impl App {
         };
         search.selected = 0;
         if search.query.text.trim().is_empty() {
-            self.searcher.cancel();
+            self.searcher.cancel_search();
             search.state = SearchState::Idle;
         } else {
             self.searcher.start(workspace.clone(), search.query.clone());
@@ -207,19 +205,30 @@ impl App {
         self.listeners.emit(Change::Palette);
     }
 
-    /// Show the newest search's answer, once it arrives. Returns whether
-    /// the palette changed.
+    /// Show the newest search's answer and the index's types, once they
+    /// arrive. Returns whether the palette changed.
     pub(super) fn take_search_answer(&mut self) -> bool {
-        let Some(result) = self.searcher.take() else {
-            return false;
-        };
+        let answers = self.searcher.take();
         let Some(Palette::Search(search)) = &mut self.palette else {
             return false;
         };
-        search.state = match result {
-            Ok(hits) => SearchState::Done(hits),
-            Err(error) => SearchState::Failed(error),
-        };
+        if answers.types.is_none() && answers.hits.is_none() {
+            return false;
+        }
+        match answers.types {
+            Some(Ok(types)) => search.types = types,
+            // Until a search runs and says why itself, the palette says
+            // the index failed.
+            Some(Err(error)) if search.state == SearchState::Idle => {
+                search.state = SearchState::Failed(error);
+            }
+            Some(Err(_)) | None => {}
+        }
+        match answers.hits {
+            Some(Ok(hits)) => search.state = SearchState::Done(hits),
+            Some(Err(error)) => search.state = SearchState::Failed(error),
+            None => {}
+        }
         self.listeners.emit(Change::Palette);
         true
     }

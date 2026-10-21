@@ -1,6 +1,6 @@
 //! The search service: full-text search over `local-core`'s index. What
 //! you type is plain text, never query syntax. [`Searcher`] runs searches
-//! off the UI thread.
+//! and lists the index's types off the UI thread.
 
 use std::sync::{
     Arc,
@@ -84,29 +84,94 @@ pub enum SearchState {
     Failed(AppError),
 }
 
-/// A search to run, numbered so its answer can be matched to it.
+/// What the search thread works on.
+enum Job {
+    /// List the object types the index holds, for the type filter.
+    Types,
+    /// Find the files that match a query.
+    Search(SearchQuery),
+}
+
+/// A job to run, numbered so its answer can be matched to it.
 struct Request {
     number: u64,
     workspace: Arc<Workspace>,
-    query: SearchQuery,
+    job: Job,
 }
 
-struct Answer {
-    number: u64,
-    result: Result<Vec<SearchHit>, AppError>,
+impl Request {
+    /// Run the job. The workspace is let go before the answer goes back,
+    /// so closing it never waits on the search thread.
+    fn run(self) -> Answer {
+        let Self {
+            number,
+            workspace,
+            job,
+        } = self;
+        match job {
+            Job::Types => Answer::Types {
+                number,
+                result: workspace.search_types(),
+            },
+            Job::Search(query) => Answer::Hits {
+                number,
+                result: workspace.search(&query),
+            },
+        }
+    }
+
+    /// The answer when the search thread couldn't start.
+    fn unavailable(&self) -> Answer {
+        let result = AppError::new("search_unavailable", "Search isn't available right now.");
+        match self.job {
+            Job::Types => Answer::Types {
+                number: self.number,
+                result: Err(result),
+            },
+            Job::Search(_) => Answer::Hits {
+                number: self.number,
+                result: Err(result),
+            },
+        }
+    }
 }
 
-/// Runs searches on a background thread. A search asked for while another
-/// runs replaces any search still waiting, so the thread works on the
-/// newest query, and only the newest search's answer is taken.
+enum Answer {
+    Types {
+        number: u64,
+        result: Result<Vec<String>, AppError>,
+    },
+    Hits {
+        number: u64,
+        result: Result<Vec<SearchHit>, AppError>,
+    },
+}
+
+/// The answers [`Searcher::take`] found for the newest jobs.
+#[derive(Default)]
+pub(crate) struct Answers {
+    /// The object types the index holds.
+    pub(crate) types: Option<Result<Vec<String>, AppError>>,
+    /// The newest search's hits.
+    pub(crate) hits: Option<Result<Vec<SearchHit>, AppError>>,
+}
+
+/// Runs searches, and lists the types the index holds, on a background
+/// thread, so the UI never waits on the index. A search asked for while
+/// another runs replaces any search still waiting, so the thread works on
+/// the newest query, and only the newest search's answer is taken.
 pub(crate) struct Searcher {
     requests: Option<Sender<Request>>,
     answers: Receiver<Answer>,
     answer_sender: Sender<Answer>,
     /// Called on the background thread once an answer arrives.
     answered: Arc<dyn Fn() + Send + Sync>,
-    /// The newest search's number.
-    latest: u64,
+    /// The number the next job gets. Numbers start at 1.
+    next: u64,
+    /// The number of the search whose answer is wanted, or 0 for none.
+    wanted_hits: u64,
+    /// The number of the type list that is wanted, or 0 for none.
+    wanted_types: u64,
 }
 
 impl Searcher {
@@ -118,27 +183,49 @@ impl Searcher {
             answers,
             answer_sender,
             answered: Arc::new(answered),
-            latest: 0,
+            next: 1,
+            wanted_hits: 0,
+            wanted_types: 0,
         }
     }
 
-    /// Forget the searches asked for so far: their answers are dropped.
+    /// Forget the searches and type lists asked for so far: their answers
+    /// are dropped.
     pub(crate) fn cancel(&mut self) {
-        self.latest += 1;
+        self.wanted_hits = 0;
+        self.wanted_types = 0;
+    }
+
+    /// Forget the searches asked for so far, but not the type list.
+    pub(crate) fn cancel_search(&mut self) {
+        self.wanted_hits = 0;
+    }
+
+    /// List the object types `workspace`'s index holds in the background.
+    /// [`Searcher::take`] returns them.
+    pub(crate) fn list_types(&mut self, workspace: Arc<Workspace>) {
+        self.wanted_types = self.send(workspace, Job::Types);
     }
 
     /// Search `workspace` for `query` in the background, in place of any
     /// search asked for before. [`Searcher::take`] returns the answer.
     pub(crate) fn start(&mut self, workspace: Arc<Workspace>, query: SearchQuery) {
-        self.latest += 1;
+        self.wanted_hits = self.send(workspace, Job::Search(query));
+    }
+
+    /// Hand `job` to the search thread, starting it if needed, and return
+    /// the job's number.
+    fn send(&mut self, workspace: Arc<Workspace>, job: Job) -> u64 {
+        let number = self.next;
+        self.next += 1;
         let mut request = Request {
-            number: self.latest,
+            number,
             workspace,
-            query,
+            job,
         };
         if let Some(requests) = &self.requests {
             match requests.send(request) {
-                Ok(()) => return,
+                Ok(()) => return number,
                 // The thread stopped; start another.
                 Err(returned) => request = returned.0,
             }
@@ -158,49 +245,50 @@ impl Searcher {
             }
             Err(error) => {
                 tracing::error!(%error, "could not start the search thread");
-                let _ = self.answer_sender.send(Answer {
-                    number: request.number,
-                    result: Err(AppError::new(
-                        "search_unavailable",
-                        "Search isn't available right now.",
-                    )),
-                });
+                let _ = self.answer_sender.send(request.unavailable());
             }
         }
+        number
     }
 
-    /// The newest search's answer, once it arrives. Answers to older
-    /// searches are dropped.
-    pub(crate) fn take(&mut self) -> Option<Result<Vec<SearchHit>, AppError>> {
-        let mut newest = None;
+    /// The answers to the newest search and type list, once they arrive.
+    /// Answers to older ones are dropped.
+    pub(crate) fn take(&mut self) -> Answers {
+        let mut newest = Answers::default();
         while let Ok(answer) = self.answers.try_recv() {
-            if answer.number == self.latest {
-                newest = Some(answer.result);
+            match answer {
+                Answer::Types { number, result } if number == self.wanted_types => {
+                    newest.types = Some(result);
+                }
+                Answer::Hits { number, result } if number == self.wanted_hits => {
+                    newest.hits = Some(result);
+                }
+                _ => {}
             }
         }
         newest
     }
 }
 
-/// The search thread: answer the newest waiting request, until the
-/// searcher goes away.
+/// The search thread: answer the newest waiting type list, then the
+/// newest waiting search, until the searcher goes away.
 fn serve(requests: &Receiver<Request>, answers: &Sender<Answer>, answered: &dyn Fn()) {
-    while let Ok(mut request) = requests.recv() {
-        while let Ok(newer) = requests.try_recv() {
-            request = newer;
+    while let Ok(first) = requests.recv() {
+        let mut types = None;
+        let mut search = None;
+        let waiting = std::iter::once(first).chain(std::iter::from_fn(|| requests.try_recv().ok()));
+        for request in waiting {
+            match request.job {
+                Job::Types => types = Some(request),
+                Job::Search(_) => search = Some(request),
+            }
         }
-        let result = request.workspace.search(&request.query);
-        // Let go of the workspace before answering, so closing it never
-        // waits on this thread.
-        drop(request.workspace);
-        let answer = Answer {
-            number: request.number,
-            result,
-        };
-        if answers.send(answer).is_err() {
-            return;
+        for request in types.into_iter().chain(search) {
+            if answers.send(request.run()).is_err() {
+                return;
+            }
+            answered();
         }
-        answered();
     }
 }
 
