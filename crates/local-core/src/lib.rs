@@ -17,6 +17,11 @@ mod model;
 mod path;
 mod pdf;
 pub use pdf::{PdfInfo, PdfRangeInput};
+mod remote_images;
+pub use remote_images::{
+    MAX_REMOTE_IMAGE_BYTES, MAX_REMOTE_IMAGE_REDIRECTS, REMOTE_IMAGE_TIMEOUT, RemoteImage,
+    RemoteImageFetcher,
+};
 pub mod sync;
 mod watcher;
 mod web_access;

@@ -77,7 +77,15 @@ impl App {
             note.relative_path(),
             self.session.link_files.clone(),
             workspace.shared_engine(),
+            self.session.remote_images.clone(),
         ))
+    }
+
+    /// Let remote images load from this computer, so tests can serve them
+    /// from a local server.
+    #[cfg(feature = "test-hooks")]
+    pub fn allow_loopback_images_for_testing(&self) {
+        self.session.remote_images.allow_loopback();
     }
 
     /// Why the Markdown file in the tab `tab` couldn't open in the editor.

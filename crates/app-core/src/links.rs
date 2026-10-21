@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use local_core::WorkspaceEngine;
 
 use crate::FileTree;
+use crate::remote_images::{RemoteImageState, RemoteImages};
 
 /// How much of an embedded note's text an embed shows, in characters.
 pub const EMBED_PREVIEW_CHARS: usize = 800;
@@ -67,6 +68,48 @@ impl LinkIndex {
     }
 }
 
+/// The largest workspace image a note draws, in bytes, as today's app.
+pub const MAX_IMAGE_BYTES: i64 = 20 * 1024 * 1024;
+
+/// The image formats a note draws inline, as today's app shows them.
+pub const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+
+/// Whether `path` names an image in a format a note draws.
+pub fn is_image(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && IMAGE_EXTENSIONS
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension))
+    })
+}
+
+/// A workspace image a note draws: its path and its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteImage {
+    pub path: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The path from the folder of the note at `source` to the workspace
+/// path `path`, for reads that resolve relative to the note.
+fn relative_target(source: &str, path: &str) -> String {
+    let from: Vec<&str> = folder_of(source)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let to: Vec<&str> = path.split('/').collect();
+    let mut shared = 0;
+    while shared < from.len() && shared + 1 < to.len() && from[shared] == to[shared] {
+        shared += 1;
+    }
+    std::iter::repeat_n("..", from.len() - shared)
+        .chain(to[shared..].iter().copied())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// What an embedded note shows: its title, which is its file name, and
 /// the first [`EMBED_PREVIEW_CHARS`] characters of its text. A note of
 /// Noura's own shows the text after its frontmatter.
@@ -84,15 +127,38 @@ pub struct NoteLinks {
     source: String,
     files: LinkFiles,
     engine: Arc<WorkspaceEngine>,
+    remote: Arc<RemoteImages>,
 }
 
 impl NoteLinks {
-    pub(crate) fn new(source: &str, files: LinkFiles, engine: Arc<WorkspaceEngine>) -> Self {
+    pub(crate) fn new(
+        source: &str,
+        files: LinkFiles,
+        engine: Arc<WorkspaceEngine>,
+        remote: Arc<RemoteImages>,
+    ) -> Self {
         Self {
             source: source.to_owned(),
             files,
             engine,
+            remote,
         }
+    }
+
+    /// Where the remote image at `url` stands. Asking sends no request.
+    pub fn remote_image(&self, url: &str) -> RemoteImageState {
+        self.remote.state(url)
+    }
+
+    /// Load the remote image at `url`, as Load image asks: once, unless it
+    /// failed, when this tries again. `done` runs when the load ends.
+    pub fn load_remote_image(&self, url: &str, done: impl FnOnce() + Send + 'static) {
+        self.remote.load(url, done);
+    }
+
+    /// Changes whenever a remote image's load ends.
+    pub fn remote_seq(&self) -> u64 {
+        self.remote.seq()
     }
 
     /// The workspace path of the note these links belong to.
@@ -129,6 +195,23 @@ impl NoteLinks {
             .entry(path.clone())
             .or_insert_with(|| self.read_embed(&path))
             .clone()
+    }
+
+    /// The workspace image `target` names, read through the workspace's
+    /// containment checks: `None` when it names no image in a format
+    /// Noura shows, sits behind a symlink, can't be read or is larger than
+    /// [`MAX_IMAGE_BYTES`].
+    pub fn image(&self, target: &str) -> Option<NoteImage> {
+        let path = self.resolve(target)?;
+        if !is_image(&path) {
+            return None;
+        }
+        let relative = relative_target(&self.source, &path);
+        let (read, bytes) = self
+            .engine
+            .read_local_asset(&self.source, &relative, MAX_IMAGE_BYTES)
+            .ok()?;
+        (read == path).then_some(NoteImage { path, bytes })
     }
 
     fn read_embed(&self, path: &str) -> Option<NoteEmbed> {

@@ -23,6 +23,7 @@ use crate::{
     app::{Change, Listeners},
     links::LinkFiles,
     plugins::Plugins,
+    remote_images::RemoteImages,
     view_state::{StoredView, StoredWindow, ViewStore},
     watch::{Rescans, Snapshot, Update, Watch},
 };
@@ -48,6 +49,8 @@ pub(crate) struct Session {
     /// The files of the open workspace's newest listing, which the links
     /// in its notes resolve against.
     pub(crate) link_files: LinkFiles,
+    /// The remote images notes asked for, which every window shares.
+    pub(crate) remote_images: Arc<RemoteImages>,
     state: Mutex<State>,
     /// Held apart from `state`, so a plugin call never blocks a window
     /// that only reads the session.
@@ -191,6 +194,7 @@ impl Session {
             updates,
             rescans,
             link_files: LinkFiles::default(),
+            remote_images: Arc::default(),
             state: Mutex::new(State {
                 workspace: None,
                 opening: 0,
