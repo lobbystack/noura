@@ -278,13 +278,15 @@ impl<'ast> MdRender {
     }
 
     /// Build a `Layout` for one code-block line in the code format, with
-    /// the pieces the block's language highlights in their colors.
+    /// the pieces the block's language highlights in their colors when
+    /// `colors` asks. Colors leave sizes alone, so heights skip them.
     fn layout_code_block_line(
         &self,
         node: &'ast AstNode<'ast>,
         node_code_block: &NodeCodeBlock,
         line: (Grapheme, Grapheme),
         synthetic: bool,
+        colors: bool,
     ) -> Layout {
         let node_line = self.node_line(node, line);
         let code_line = self.code_line_range(node, node_code_block, node_line, synthetic);
@@ -293,7 +295,7 @@ impl<'ast> MdRender {
             return layout;
         }
         let format = self.text_format(node);
-        let highlights = if synthetic {
+        let highlights = if synthetic || !colors {
             Vec::new()
         } else {
             self.code_block_highlights(node, node_code_block)
@@ -354,7 +356,7 @@ impl<'ast> MdRender {
         synthetic: bool,
     ) -> f32 {
         let width = self.width(node) - 2. * self.layout.block_padding;
-        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic);
+        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic, false);
         self.compute_layout_from(layout, width, self.layout.row_height)
             .height
     }
@@ -369,7 +371,7 @@ impl<'ast> MdRender {
         synthetic: bool,
     ) {
         let width = self.width(node) - 2. * self.layout.block_padding;
-        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic);
+        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic, true);
         let result = self.compute_layout_from(layout, width, self.layout.row_height);
         self.show_wrap_layout(ui, top_left, &result);
     }

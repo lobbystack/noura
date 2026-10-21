@@ -83,11 +83,17 @@ fn styles(language: &str, code: &str) -> Option<Vec<Option<CodeStyle>>> {
     Some(styles)
 }
 
-/// Highlights already worked out, by code block and text version.
+/// How many code blocks' styles the cache keeps across edits.
+const STYLES_KEPT: usize = 256;
+
+/// Highlights already worked out: each block's pieces for the current
+/// text, and the styles of code as written, which an edit elsewhere in
+/// the note leaves as they were.
 #[derive(Default)]
 pub struct HighlightCache {
     text_seq: u64,
     blocks: HashMap<(Grapheme, Grapheme), Vec<CodeHighlight>>,
+    styles: HashMap<(String, String), Option<Arc<Vec<Option<CodeStyle>>>>>,
 }
 
 impl<'ast> MdDoc {
@@ -99,16 +105,37 @@ impl<'ast> MdDoc {
         code_block: &NodeCodeBlock,
     ) -> Vec<CodeHighlight> {
         let range = self.node_range(node);
-        let mut cache = self.highlight_cache.borrow_mut();
-        if cache.text_seq != self.text_seq {
-            cache.blocks.clear();
-            cache.text_seq = self.text_seq;
+        {
+            let mut cache = self.highlight_cache.borrow_mut();
+            if cache.text_seq != self.text_seq {
+                cache.blocks.clear();
+                cache.text_seq = self.text_seq;
+            }
+            if let Some(highlights) = cache.blocks.get(&range) {
+                return highlights.clone();
+            }
         }
-        cache
+        let highlights = self.highlight_code_block(node, code_block);
+        self.highlight_cache
+            .borrow_mut()
             .blocks
-            .entry(range)
-            .or_insert_with(|| self.highlight_code_block(node, code_block))
-            .clone()
+            .insert(range, highlights.clone());
+        highlights
+    }
+
+    /// The style of each byte of `code`, kept across edits.
+    fn cached_styles(&self, language: &str, code: String) -> Option<Arc<Vec<Option<CodeStyle>>>> {
+        let key = (language.to_owned(), code);
+        if let Some(styles) = self.highlight_cache.borrow().styles.get(&key) {
+            return styles.clone();
+        }
+        let styles = styles(language, &key.1).map(Arc::new);
+        let mut cache = self.highlight_cache.borrow_mut();
+        if cache.styles.len() >= STYLES_KEPT {
+            cache.styles.clear();
+        }
+        cache.styles.insert(key, styles.clone());
+        styles
     }
 
     fn highlight_code_block(
@@ -146,7 +173,7 @@ impl<'ast> MdDoc {
             code.push_str(&self.buffer[*line]);
             code.push('\n');
         }
-        let Some(styles) = styles(language, &code) else {
+        let Some(styles) = self.cached_styles(language, code) else {
             return Vec::new();
         };
         // Runs of one style within each line, back in the note's offsets.
