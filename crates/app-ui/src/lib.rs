@@ -7,11 +7,17 @@ mod chooser;
 mod common;
 pub mod theme;
 mod tree;
+mod updates;
 mod workspace;
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use app_core::{App, Screen};
+
+pub use updates::update_settings;
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -60,11 +66,17 @@ impl NouraUi {
             // this also keeps the loading spinner turning.
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
+        if let Some(next) = self.app.updates().next_check() {
+            // Wake the window when the next update check is due.
+            ui.ctx()
+                .request_repaint_after(next.saturating_duration_since(Instant::now()));
+        }
         match self.app.screen().clone() {
             Screen::Loading => common::loading(ui),
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
+        updates::restart_offer(ui, &mut self.app);
     }
 
     fn pick_and_open(&mut self) {

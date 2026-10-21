@@ -285,8 +285,8 @@ impl Updates {
                 send(Event::NotInstalled {
                     update,
                     problem: format!(
-                        "Noura couldn't install version {installing}, so this version is \
-                         still running. Try again later."
+                        "Noura couldn't install version {installing} and kept this version \
+                         running. Try again later."
                     ),
                 });
                 return;
@@ -392,8 +392,8 @@ impl Updates {
                     (UpdateErrorKind::Unreachable, _) => {
                         "Couldn't reach the update server. Check your connection.".to_owned()
                     }
-                    (UpdateErrorKind::BadSignature, _) => "The download didn't carry Noura's \
-                         signature, so Noura deleted it and installed nothing."
+                    (UpdateErrorKind::BadSignature, _) => "The download's signature didn't \
+                         match Noura's key, so Noura deleted it."
                         .to_owned(),
                     (_, UpdateStatus::Restarting { version }) => format!(
                         "Noura installed version {version} but couldn't restart. Quit Noura \
