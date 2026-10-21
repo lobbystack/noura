@@ -6,7 +6,10 @@ use std::{
     collections::VecDeque,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -114,10 +117,11 @@ pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
 
 /// A system that records what Noura asks of it. Its trash refuses, so
 /// trashed items land in the workspace's trash folder, where tests can
-/// find them.
+/// find them. Its clock says 9 am until a test sets another hour.
 pub struct FakeSystem {
     platform: Platform,
     pub calls: Mutex<Vec<String>>,
+    hour: AtomicU8,
 }
 
 impl FakeSystem {
@@ -125,11 +129,17 @@ impl FakeSystem {
         Arc::new(Self {
             platform,
             calls: Mutex::new(Vec::new()),
+            hour: AtomicU8::new(9),
         })
     }
 
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// Set the system's clock to `hour` o'clock.
+    pub fn set_hour(&self, hour: u8) {
+        self.hour.store(hour, Ordering::SeqCst);
     }
 
     fn record(&self, call: String) {
@@ -173,6 +183,10 @@ impl System for FakeSystem {
     fn open_url(&self, url: &str) -> io::Result<()> {
         self.record(format!("browse {url}"));
         Ok(())
+    }
+
+    fn local_hour(&self) -> u8 {
+        self.hour.load(Ordering::SeqCst)
     }
 }
 

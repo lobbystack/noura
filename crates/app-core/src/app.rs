@@ -21,6 +21,7 @@ use crate::{
     PendingSaves, Preferences, Problem, RecentWorkspace, Settings, SettingsSection, System, Tab,
     Workspace, WorkspaceService,
     commands::Registry,
+    inbox::Sections,
     layout::LayoutStore,
     preferences::PreferencesStore,
     rail::Rail,
@@ -38,6 +39,7 @@ mod drops;
 mod file_actions;
 mod finder;
 mod ignored_files;
+mod inbox;
 mod palette;
 mod preferences;
 mod settings;
@@ -124,6 +126,8 @@ pub enum Change {
     Files(Origin),
     /// The open workspace's problems changed.
     Problems,
+    /// The Inbox's recent notes or plugin sections changed.
+    Inbox,
 }
 
 type Listener = Box<dyn Fn(Change) + Send + Sync>;
@@ -263,6 +267,10 @@ pub struct App {
     /// The open workspace's problems, such as files that share an ID, as
     /// this window shows them.
     problems: Vec<Problem>,
+    /// The paths of the notes changed last, newest first.
+    recent: Vec<String>,
+    /// The Inbox sections enabled plugins add.
+    inbox_sections: Sections,
 }
 
 impl App {
@@ -348,6 +356,8 @@ impl App {
             searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
             quit: false,
             problems: Vec::new(),
+            recent: Vec::new(),
+            inbox_sections: Sections::default(),
         }
     }
 
@@ -392,6 +402,7 @@ impl App {
         window.workspace = self.workspace.clone();
         window.tree = current.tree;
         window.problems = current.problems;
+        window.recent = current.recent;
         window.rail = self.rail.clone();
         window.layout = self.layout.clone();
         window.preferences = self.preferences;
@@ -400,6 +411,7 @@ impl App {
         // pending changes and the login item serve every window.
         window.registry = self.registry.copy();
         window.settings_sections = self.settings_sections.clone();
+        window.inbox_sections = self.inbox_sections.clone();
         window.pending_saves = self.pending_saves.clone();
         window.login_item = self.login_item.clone();
         window.restore_view(stored);
@@ -641,6 +653,7 @@ impl App {
                 self.workspace = None;
                 self.tree = None;
                 self.set_problems(Vec::new());
+                self.set_recent(Vec::new());
                 self.close_palette();
                 self.rail.set_saved_order(Vec::new());
                 self.restore_view(StoredWindow::default());
@@ -748,6 +761,7 @@ impl App {
         self.workspace = Some(workspace);
         self.tree = Some(opened.tree);
         self.problems = opened.snapshot.problems;
+        self.recent = opened.snapshot.recent;
         self.rail.set_saved_order(adopted.view.rail_order);
         self.listeners.emit(Change::Rail);
         let mut windows = adopted.view.windows.into_iter();
@@ -763,6 +777,8 @@ impl App {
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
         self.listeners.emit(Change::Problems);
+        self.inbox_sections.reload();
+        self.listeners.emit(Change::Inbox);
         self.set_screen(Screen::Workspace);
         // The workspace's other saved windows come back too.
         for stored in windows {

@@ -705,6 +705,26 @@ impl IndexStore {
             .map_err(|error| CoreError::index(error, "object_types"))
     }
 
+    /// The paths of the `limit` notes whose files changed last, newest
+    /// first: Markdown files without an ID or with properties Noura can't
+    /// read, and managed notes, but no other managed type, such as tasks.
+    pub fn recent_notes(&self, limit: usize) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT f.relative_path FROM files f LEFT JOIN objects o ON o.file_id=f.id \
+                 WHERE f.kind='markdown' AND (o.object_type IS NULL OR o.object_type='note') \
+                 ORDER BY f.mtime_ns DESC,f.relative_path LIMIT ?1",
+            )
+            .map_err(|error| CoreError::index(error, "recent_notes"))?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = statement
+            .query_map([limit], |row| row.get(0))
+            .map_err(|error| CoreError::index(error, "recent_notes"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "recent_notes"))
+    }
+
     pub fn calendar(&self, range_start: &str, range_end: &str) -> Result<Vec<CalendarEntry>> {
         validate_calendar_range(range_start, range_end).map_err(calendar_error)?;
         let mut statement = self.connection.prepare_cached("SELECT o.stable_id,o.object_type,o.title,p.property_name,p.value_text,e.value_text,f.hash FROM object_properties p JOIN objects o ON o.file_id=p.file_id JOIN files f ON f.id=p.file_id LEFT JOIN object_properties e ON e.file_id=p.file_id AND e.property_name='end' WHERE p.property_name IN ('due','date','start')").map_err(|error| CoreError::index(error,"calendar_query"))?;

@@ -1,6 +1,7 @@
 //! What Noura asks of the operating system: its trash, its file manager,
-//! a terminal, the clipboard and the web browser. The desktop app passes the real system;
-//! tests pass a fake that records each request.
+//! a terminal, the clipboard, the web browser and the clock. The desktop
+//! app passes the real system; tests pass a fake that records each
+//! request.
 
 use std::{io, path::Path};
 
@@ -85,6 +86,12 @@ pub trait System: Send + Sync {
     /// Open the web page at `url` in the default browser. Noura checks
     /// that `url` is an `http` or `https` link first.
     fn open_url(&self, url: &str) -> io::Result<()>;
+
+    /// The hour of the day on this computer's clock, in its time zone,
+    /// from 0 to 23.
+    fn local_hour(&self) -> u8 {
+        u8::try_from(jiff::Zoned::now().hour()).unwrap_or(12)
+    }
 }
 
 /// No operating system services: deleted items go to the workspace's trash
