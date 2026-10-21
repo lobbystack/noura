@@ -10,7 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Change, NoSystem, OpenAs, Origin, Rescans, Screen, WatchFault, Workspace};
+use app_core::{
+    App, Change, DropSpot, NoSystem, OpenAs, Origin, Rescans, SPRING_OPEN_DELAY, Screen,
+    WatchFault, Workspace,
+};
 
 /// How long a test waits for the change stream before it fails.
 const PATIENCE: Duration = Duration::from_secs(15);
@@ -209,6 +212,74 @@ fn a_plain_file_that_another_app_renames_closes_in_the_document_area() {
 
     live.wait_until("the document closes", |app| app.document().is_none());
     assert_eq!(rows(&live.app), ["Elsewhere.md"]);
+}
+
+/// Whether the folder at `relative_path` shows its contents.
+fn is_open(app: &App, relative_path: &str) -> bool {
+    let tree = app.tree().unwrap();
+    let row = tree.find_row(relative_path).unwrap();
+    tree.rows()[row].expanded == Some(true)
+}
+
+/// Rest a drag of `dragged` on the closed folder `folder` until it opens.
+fn drag_until_open(app: &mut App, dragged: &str, folder: &str) {
+    let row = |app: &App, path: &str| app.tree().unwrap().find_row(path).unwrap();
+    app.start_tree_drag(row(app, dragged));
+    let start = Instant::now();
+    let over = DropSpot::Row(row(app, folder));
+    app.drag_tree_over(over, start);
+    app.drag_tree_over(over, start + SPRING_OPEN_DELAY);
+    assert!(is_open(app, folder));
+}
+
+#[test]
+fn a_drag_goes_on_while_another_app_changes_files() {
+    let mut live = Live::open(&[
+        ("Plan.md", "# Plan\n"),
+        ("Docs/Spec.md", "# Spec\n"),
+        ("Archive/Old.md", "# Old\n"),
+    ]);
+    drag_until_open(&mut live.app, "Plan.md", "Docs");
+    let archive = live.app.tree().unwrap().find_row("Archive").unwrap();
+    let resting = Instant::now();
+    live.app.drag_tree_over(DropSpot::Row(archive), resting);
+
+    // A new folder at the top moves every row down one.
+    write(&live.folder, "About/Team.md", "# Team\n");
+    live.wait_until("the new folder shows", |app| {
+        rows(app).contains(&"About".to_owned())
+    });
+
+    let tree = live.app.tree().unwrap();
+    assert_eq!(tree.dragging(), Some("Plan.md"));
+    assert_eq!(tree.drop_target(), Some("Archive"));
+    assert_eq!(tree.spring_open_at(), Some(resting + SPRING_OPEN_DELAY));
+    assert!(is_open(&live.app, "Docs"));
+    let archive = tree.find_row("Archive").unwrap();
+    assert_eq!(archive, 1);
+    live.app
+        .drag_tree_over(DropSpot::Row(archive), Instant::now());
+    live.app.finish_tree_drag();
+    assert!(live.path("Archive/Plan.md").is_file());
+    assert!(!live.path("Plan.md").exists());
+    // The folder the drag opened closes again.
+    assert!(!is_open(&live.app, "Docs"));
+}
+
+#[test]
+fn a_drag_stops_when_another_app_deletes_the_dragged_file() {
+    let mut live = Live::open(&[("Plan.md", "# Plan\n"), ("Docs/Spec.md", "# Spec\n")]);
+    drag_until_open(&mut live.app, "Plan.md", "Docs");
+
+    std::fs::remove_file(live.path("Plan.md")).unwrap();
+    live.wait_until("the file leaves the tree", |app| {
+        !rows(app).contains(&"Plan.md".to_owned())
+    });
+
+    assert_eq!(live.app.tree().unwrap().dragging(), None);
+    assert!(!is_open(&live.app, "Docs"));
+    live.app.finish_tree_drag();
+    assert_eq!(rows(&live.app), ["Docs"]);
 }
 
 /// Intervals so long that no rescan runs during a test unless the test
@@ -763,4 +834,90 @@ fn names_noura_cannot_represent_stay_as_they_are_and_show_as_problems() {
         std::fs::read_to_string(folder.join("inside.md")).unwrap(),
         "# Inside\n"
     );
+}
+
+/// Noura's operations take names it can show, so none can name these
+/// directly. Those that reach them through the folder holding them carry
+/// them over byte for byte, and an import leaves them where they are.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn operations_that_reach_names_noura_cannot_represent_keep_them_as_they_are() {
+    let mut live = Live::open(&[("Notes/Kept.md", "# Kept\n"), ("Archive/Old.md", "# Old\n")]);
+    let file = unrepresentable("Caf");
+    let folder = unrepresentable("D");
+    // Another app adds a file and a folder whose names have no UTF-8 form.
+    let notes = live.path("Notes");
+    std::fs::write(notes.join(&file), "# Odd\n").unwrap();
+    std::fs::create_dir(notes.join(&folder)).unwrap();
+    std::fs::write(notes.join(&folder).join("inside.md"), "# Inside\n").unwrap();
+    live.wait_until("the problem shows", |app| {
+        unsupported_problems(app) == [vec!["Notes".to_owned()]]
+    });
+    let unchanged_in = |place: &Path| {
+        assert_eq!(
+            std::fs::read_to_string(place.join(&file)).unwrap(),
+            "# Odd\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(place.join(&folder).join("inside.md")).unwrap(),
+            "# Inside\n"
+        );
+    };
+
+    // Renaming and moving the folder that holds them.
+    live.app.start_rename("Notes");
+    assert!(live.app.commit_rename("Journal"));
+    unchanged_in(&live.path("Journal"));
+    live.wait_until("the problem follows the renamed folder", |app| {
+        unsupported_problems(app) == [vec!["Journal".to_owned()]]
+    });
+    live.app.move_into("Journal", "Archive");
+    unchanged_in(&live.path("Archive/Journal"));
+    live.wait_until("the problem follows the moved folder", |app| {
+        unsupported_problems(app) == [vec!["Archive/Journal".to_owned()]]
+    });
+    assert!(
+        live.app
+            .tree_mut()
+            .unwrap()
+            .select("Archive/Journal/Kept.md")
+    );
+
+    // Moving it to the trash, which is .noura/trash without a system trash.
+    live.app.request_trash("Archive/Journal");
+    live.app.confirm_trash();
+    let trashed: Vec<PathBuf> = std::fs::read_dir(live.path(".noura/trash"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("Archive/Journal"))
+        .collect();
+    assert_eq!(trashed.len(), 1);
+    unchanged_in(&trashed[0]);
+    live.wait_until("the problem leaves with the folder", |app| {
+        unsupported_problems(app).is_empty()
+    });
+
+    // Importing a folder that holds one copies the rest and leaves that
+    // name where it is.
+    let album = live.folder.parent().unwrap().join("Album");
+    std::fs::create_dir(&album).unwrap();
+    std::fs::write(album.join("Shown.md"), "# Shown\n").unwrap();
+    std::fs::write(album.join(&file), "# Odd\n").unwrap();
+    let imported = live
+        .workspace()
+        .import(std::slice::from_ref(&album), "")
+        .unwrap();
+    assert_eq!(imported.paths, ["Album"]);
+    assert_eq!(imported.skipped, 1);
+    let copied: Vec<_> = std::fs::read_dir(live.path("Album"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(copied, ["Shown.md"]);
+    assert_eq!(
+        std::fs::read_to_string(album.join(&file)).unwrap(),
+        "# Odd\n"
+    );
+    live.wait_until("the copy shows with no problem", |app| {
+        rows(app).contains(&"Album".to_owned()) && unsupported_problems(app).is_empty()
+    });
 }

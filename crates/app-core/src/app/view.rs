@@ -291,9 +291,9 @@ impl App {
         self.refresh_tree(None);
     }
 
-    /// Show a tree read again: it keeps the old tree's open folders and
-    /// current row, which follow the item that moved from `moved.0` to
-    /// `moved.1`, and the tabs follow their files into it. Every refresh
+    /// Show a tree read again: it keeps the old tree's open folders,
+    /// current row and drag, which follow the item that moved from
+    /// `moved.0` to `moved.1`, and the tabs follow their files into it. Every refresh
     /// of the tree comes through here, so the open folders it carries over
     /// are saved.
     pub(super) fn replace_tree(

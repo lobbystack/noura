@@ -225,33 +225,6 @@ impl FileTree {
         }))
     }
 
-    /// Carry the open folders, the keyboard focus and the type-ahead over
-    /// from the tree this one replaces. When the focused row went away,
-    /// focus stays at its place in the list.
-    pub(crate) fn keep_state_from(&mut self, old: &FileTree) {
-        let open: HashSet<&str> = old
-            .expanded
-            .iter()
-            .map(|node| old.nodes[*node].relative_path.as_str())
-            .collect();
-        self.expanded = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| {
-                node.kind == EntryKind::Folder && open.contains(node.relative_path.as_str())
-            })
-            .map(|(index, _)| index)
-            .collect();
-        self.refresh_rows();
-        self.focused = old.focused.and_then(|row| {
-            self.find_row(&old.rows[row].relative_path)
-                .or_else(|| self.rows.len().checked_sub(1).map(|last| row.min(last)))
-        });
-        self.typed.clone_from(&old.typed);
-        self.typed_at = old.typed_at;
-    }
-
     fn folder(&mut self, path: &str, folders: &mut HashMap<String, usize>) -> usize {
         if let Some(index) = folders.get(path) {
             return *index;
@@ -547,7 +520,7 @@ impl FileTree {
     pub fn finish_drag(&mut self) -> Option<TreeAction> {
         let drag = self.drag.take()?;
         let target = drag.target.clone();
-        self.close_opened(&drag, target.as_deref());
+        self.close_opened(&drag.opened, target.as_deref());
         target.map(|folder| TreeAction::Move {
             relative_path: self.nodes[drag.node].relative_path.clone(),
             folder,
@@ -558,15 +531,16 @@ impl FileTree {
     /// drag opened.
     pub fn cancel_drag(&mut self) {
         if let Some(drag) = self.drag.take() {
-            self.close_opened(&drag, None);
+            self.close_opened(&drag.opened, None);
         }
     }
 
-    fn close_opened(&mut self, drag: &Drag, kept: Option<&str>) {
-        if drag.opened.is_empty() {
+    /// Close the folders a drag `opened`, except those that hold `kept`.
+    fn close_opened(&mut self, opened: &[usize], kept: Option<&str>) {
+        if opened.is_empty() {
             return;
         }
-        for folder in &drag.opened {
+        for folder in opened {
             let path = &self.nodes[*folder].relative_path;
             let holds_drop = kept.is_some_and(|kept| remap(kept, path, path).is_some());
             if !holds_drop {
@@ -583,27 +557,76 @@ impl FileTree {
             .is_some_and(|node| self.nodes[*node].kind == EntryKind::Folder)
     }
 
-    /// Take over `old`'s open folders and current row. When an item moved
-    /// from `moved.0` to `moved.1`, its open folders and the current row
-    /// follow it.
+    /// Take over the state of `old`, the tree this one replaces: its open
+    /// folders, current row, type-ahead and drag. When an item moved from
+    /// `moved.0` to `moved.1`, its open folders, the current row and a drag
+    /// of it follow it. When the current row went away, the current row
+    /// stays at its place in the list. A drag whose row went away stops,
+    /// and the folders it opened close.
     pub(crate) fn carry_over(&mut self, old: &FileTree, moved: Option<(&str, &str)>) {
         let follow = |path: &str| match moved {
             Some((from, to)) => remap(path, from, to).unwrap_or_else(|| path.to_owned()),
             None => path.to_owned(),
         };
-        for node in &old.expanded {
-            let path = follow(&old.nodes[*node].relative_path);
-            if let Some(&index) = self.by_path.get(&path) {
-                self.expanded.insert(index);
-            }
-        }
+        let open: Vec<usize> = old
+            .expanded
+            .iter()
+            .filter_map(|node| self.folder_at(&follow(&old.nodes[*node].relative_path)))
+            .collect();
+        self.expanded.extend(open);
         self.refresh_rows();
-        if let Some(row) = old.focused {
-            let path = follow(&old.rows[row].relative_path);
-            if let Some(&node) = self.by_path.get(&path) {
-                self.focused = self.row_of(node);
-            }
+        self.focused = old.focused.and_then(|row| {
+            self.find_row(&follow(&old.rows[row].relative_path))
+                .or_else(|| self.rows.len().checked_sub(1).map(|last| row.min(last)))
+        });
+        self.typed.clone_from(&old.typed);
+        self.typed_at = old.typed_at;
+        if let Some(drag) = &old.drag {
+            self.carry_drag(old, drag, &follow);
         }
+    }
+
+    /// Take over `old`'s drag, `drag`, by path.
+    fn carry_drag(&mut self, old: &FileTree, drag: &Drag, follow: &impl Fn(&str) -> String) {
+        let opened: Vec<usize> = drag
+            .opened
+            .iter()
+            .filter_map(|node| self.folder_at(&follow(&old.nodes[*node].relative_path)))
+            .collect();
+        let dragged = &old.nodes[drag.node];
+        let node = self
+            .by_path
+            .get(&follow(&dragged.relative_path))
+            .copied()
+            .filter(|node| self.nodes[*node].kind == dragged.kind);
+        let Some(node) = node else {
+            // Nothing left to drop.
+            self.close_opened(&opened, None);
+            return;
+        };
+        let resting = drag.resting.and_then(|(folder, since)| {
+            self.folder_at(&follow(&old.nodes[folder].relative_path))
+                .filter(|folder| !self.expanded.contains(folder))
+                .map(|folder| (folder, since))
+        });
+        let target = drag.target.as_deref().map(follow).filter(|folder| {
+            (folder.is_empty() || self.folder_at(folder).is_some())
+                && can_move_into(&self.nodes[node].relative_path, folder)
+        });
+        self.drag = Some(Drag {
+            node,
+            resting,
+            target,
+            opened,
+        });
+    }
+
+    /// The folder at `relative_path`.
+    fn folder_at(&self, relative_path: &str) -> Option<usize> {
+        self.by_path
+            .get(relative_path)
+            .copied()
+            .filter(|node| self.nodes[*node].kind == EntryKind::Folder)
     }
 
     /// Open or close the folder at `row`. Focus inside a folder that closes

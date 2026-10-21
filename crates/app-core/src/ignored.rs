@@ -28,8 +28,9 @@ impl Workspace {
     }
 
     /// Save `patterns` to the manifest, unless the manifest changed on disk
-    /// since `revision` was read, then index the workspace again so ignored
-    /// items leave search. An invalid pattern saves nothing.
+    /// since `revision` was read. `local-core` then indexes the workspace
+    /// again as Noura's own change, so ignored items leave search. An
+    /// invalid pattern saves nothing.
     pub(crate) fn save_ignore_list(
         &self,
         patterns: Vec<String>,
@@ -42,11 +43,6 @@ impl Workspace {
                 ..ManifestUpdateInput::default()
             })
             .map_err(|error| AppError::from_change(error, ".noura/workspace.yaml"))?;
-        // The manifest is saved either way; a stale index catches up at the
-        // next reconciliation.
-        if let Err(error) = self.engine().reconcile() {
-            tracing::warn!(code = %error.code, "the index didn't catch up with the ignore list");
-        }
         Ok(())
     }
 }

@@ -244,6 +244,37 @@ fn importing_files_and_folders_is_noura_s_own_change() {
     });
 }
 
+/// The workspace paths that search finds for `query`.
+fn found(app: &App, query: &str) -> Vec<String> {
+    app.workspace()
+        .unwrap()
+        .search(query)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.relative_path)
+        .collect()
+}
+
+/// A new ignore pattern takes an indexed note out of the tree and search,
+/// and Noura indexes the workspace again for it.
+#[test]
+fn editing_the_ignored_files_list_is_noura_s_own_change() {
+    let mut live = Live::open(&[
+        ("Plan.md", &note(PLAN_ID, "Plan\n\nzucchini\n")),
+        ("drafts/Idea.md", &note(SPEC_ID, "Idea\n\nzucchini\n")),
+    ]);
+    live.app.open_ignored_files();
+
+    assert!(live.app.add_ignored("drafts/"));
+    live.expect_own_change("the new pattern", |app| {
+        rows(app) == ["Plan"] && found(app, "zucchini") == ["Plan.md"]
+    });
+    assert!(live.app.remove_ignored("drafts/"));
+    live.expect_own_change("the removed pattern", |app| {
+        shows(app, "drafts/Idea.md") && found(app, "zucchini").len() == 2
+    });
+}
+
 /// The watch thread lists the workspace after each change. A listing that
 /// arrives after a later change already shows must not undo it.
 #[test]

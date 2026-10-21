@@ -425,7 +425,8 @@ impl App {
         true
     }
 
-    /// Apply the newest view of the open workspace's files. The tabs
+    /// Apply the newest view of the open workspace's files. The tree keeps
+    /// its open folders, current row and a drag in progress, and the tabs
     /// follow their files into it.
     fn poll_watch(&mut self) -> bool {
         let Some(update) = self.watch.as_ref().and_then(Watch::take) else {
@@ -439,7 +440,7 @@ impl App {
         let mut tree = update.tree;
         let mut folders_changed = false;
         if let Some(old) = &self.tree {
-            tree.keep_state_from(old);
+            tree.carry_over(old, None);
             folders_changed = old.expanded_folders() != tree.expanded_folders();
         }
         let rows_changed = self
