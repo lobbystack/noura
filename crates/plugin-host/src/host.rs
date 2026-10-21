@@ -443,17 +443,27 @@ impl PluginHost {
 
     /// The compiled code at `path`, when it is there and this engine can
     /// run it.
+    ///
+    /// The code is read into memory rather than mapped from the file, so a
+    /// running plugin holds no file in the library open. Windows refuses to
+    /// rename a folder that holds an open file, which would stop
+    /// [`Self::update`] from replacing a running plugin's build.
     fn load_compiled(&self, path: &Path) -> Option<Component> {
-        if !path.is_file() {
-            return None;
-        }
+        let code = match std::fs::read(path) {
+            Ok(code) => code,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                tracing::warn!(%error, "cached plugin code wasn't read");
+                return None;
+            }
+        };
         // SAFETY: Wasmtime runs deserialized code without verifying it. The
         // path is in this host's library, in this device's app data, where
         // only Noura writes, and `cache` wrote it from a component this host
         // compiled. Code from a plugin's folder never gets here: `inspect`
         // refuses precompiled code, and a file name holds the hash of the
         // component it was compiled from.
-        match unsafe { Component::deserialize_file(&self.engine, path) } {
+        match unsafe { Component::deserialize(&self.engine, &code) } {
             Ok(component) => Some(component),
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "cached plugin code didn't load");

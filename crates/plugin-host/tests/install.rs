@@ -164,6 +164,74 @@ fn a_changed_component_compiles_again_and_runs_the_new_code() {
     assert_eq!(cached.len(), 1, "{cached:?}");
 }
 
+/// Windows refuses to rename a folder that holds an open file, so a running
+/// plugin holds none of the library's files open, and a new build can
+/// replace the one that runs. Linux lists every open and mapped file.
+#[test]
+fn a_new_build_replaces_a_running_plugin_that_holds_no_library_file_open() {
+    let (Some(hello), Some(probe)) = (
+        plugins::built("hello_plugin"),
+        plugins::built("probe_plugin"),
+    ) else {
+        return;
+    };
+    let setup = Setup::new();
+    plugins::write_folder(
+        setup.folder.path(),
+        HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &hello,
+    );
+    let host = setup.host();
+    host.install(&host.inspect(setup.folder.path()).unwrap())
+        .unwrap();
+    drop(host);
+    let host = setup.host();
+    let loaded = host.load("hello").unwrap();
+    assert_eq!(loaded.source(), CodeSource::Cache);
+    let mut running = host
+        .start(&loaded, &loaded.manifest().capabilities, None)
+        .unwrap();
+    #[cfg(target_os = "linux")]
+    assert_eq!(open_files_under(setup.library.path()), Vec::<String>::new());
+
+    std::fs::write(setup.folder.path().join("hello_plugin.wasm"), &probe).unwrap();
+    let update = host.inspect_update("hello", setup.folder.path()).unwrap();
+    host.update(&update)
+        .expect("the new build replaces the running one");
+
+    // The old build keeps running from memory until it stops.
+    assert_eq!(running.pages().unwrap()[0].title, "Hello");
+    let loaded = host.load("hello").unwrap();
+    let mut new = host
+        .start(&loaded, &loaded.manifest().capabilities, None)
+        .unwrap();
+    assert_eq!(new.pages().unwrap()[0].title, "Probe");
+}
+
+/// The files under `folder` that this process holds open or mapped.
+#[cfg(target_os = "linux")]
+fn open_files_under(folder: &std::path::Path) -> Vec<String> {
+    let folder = folder.canonicalize().unwrap();
+    let mut open = Vec::new();
+    for entry in std::fs::read_dir("/proc/self/fd").unwrap().flatten() {
+        if let Ok(target) = std::fs::read_link(entry.path())
+            && target.starts_with(&folder)
+        {
+            open.push(target.display().to_string());
+        }
+    }
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    for line in maps.lines() {
+        if let Some(start) = line.find('/')
+            && std::path::Path::new(&line[start..]).starts_with(&folder)
+        {
+            open.push(line[start..].to_owned());
+        }
+    }
+    open
+}
+
 #[test]
 fn a_plugin_installs_only_once() {
     let Some(hello) = plugins::built("hello_plugin") else {
@@ -306,4 +374,34 @@ fn uninstalling_removes_the_code_and_its_compiled_cache() {
         std::fs::read(setup.folder.path().join("hello_plugin.wasm")).unwrap(),
         hello
     );
+}
+
+#[test]
+fn starting_the_host_removes_what_an_interrupted_install_left() {
+    let Some(hello) = plugins::built("hello_plugin") else {
+        return;
+    };
+    let setup = Setup::new();
+    plugins::write_folder(
+        setup.folder.path(),
+        HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &hello,
+    );
+    let host = setup.host();
+    host.install(&host.inspect(setup.folder.path()).unwrap())
+        .unwrap();
+    drop(host);
+    // An install that stopped halfway leaves a work folder, which never
+    // counts as installed.
+    let work = setup.library.path().join(".work-4242-0");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::write(work.join("plugin.toml"), HELLO_MANIFEST).unwrap();
+    std::fs::write(work.join("component.wasm"), &hello).unwrap();
+
+    let host = setup.host();
+
+    assert!(!work.exists(), "the work folder stayed");
+    assert_eq!(host.installed_ids(), ["hello"]);
+    assert_eq!(host.load("hello").unwrap().source(), CodeSource::Cache);
 }
