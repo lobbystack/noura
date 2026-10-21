@@ -79,14 +79,26 @@ impl WorkspaceObjects for ObjectStore {
         self.record(self.locate(id)?)
     }
 
+    /// Every object of the type whose path a plugin can hold. One whose
+    /// file name a plugin path can't carry, such as a name with a control
+    /// character, is left out, so it can't fail the others.
     fn list(&self, object_type: &str) -> Result<Vec<ObjectRecord>, ServiceError> {
-        self.workspace
+        let objects = self
+            .workspace
             .engine()
             .list_objects(object_type)
-            .map_err(|error| service_error(&error, object_type))?
-            .into_iter()
-            .map(|object| self.record(object))
-            .collect()
+            .map_err(|error| service_error(&error, object_type))?;
+        let mut records = Vec::with_capacity(objects.len());
+        for object in objects {
+            match self.record(object) {
+                Ok(record) => records.push(record),
+                Err(_) => tracing::warn!(
+                    object_type,
+                    "a plugin's list left out an object whose path it can't hold"
+                ),
+            }
+        }
+        Ok(records)
     }
 
     fn update(

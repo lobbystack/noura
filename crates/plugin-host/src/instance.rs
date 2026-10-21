@@ -300,14 +300,16 @@ struct Exports {
     object_types: Option<types_export::Guest>,
 }
 
-/// Loads the exported interface whose indices `new` looks up: `None` when
-/// the component doesn't export it, an error when it exports it with the
-/// wrong types.
+/// Loads the exported interface `$name`, whose indices `$module` looks
+/// up: `None` when the component doesn't export it, and an error that
+/// stops the start when it exports it without one of its functions or
+/// with the wrong types.
 macro_rules! export {
-    ($module:ident, $pre:expr, $store:expr, $instance:expr) => {
-        match $module::GuestIndices::new($pre) {
-            Ok(indices) => Some(indices.load(&mut *$store, $instance)?),
-            Err(_) => None,
+    ($module:ident, $name:literal, $pre:expr, $store:expr, $instance:expr) => {
+        if $pre.component().get_export_index(None, $name).is_some() {
+            Some($module::GuestIndices::new($pre)?.load(&mut *$store, $instance)?)
+        } else {
+            None
         }
     };
 }
@@ -362,8 +364,20 @@ impl PluginInstance {
             let instance = pre.instantiate(&mut store)?;
             let store = &mut store;
             Ok(Exports {
-                view: export!(view_export, &pre, store, &instance),
-                object_types: export!(types_export, &pre, store, &instance),
+                view: export!(
+                    view_export,
+                    "noura:plugin/view@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                object_types: export!(
+                    types_export,
+                    "noura:plugin/object-types@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
             })
         })()
         .map_err(|error| failure(&store, &error, call_deadline, PluginError::Instantiate))?;

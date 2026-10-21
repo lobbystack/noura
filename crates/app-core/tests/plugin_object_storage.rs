@@ -7,26 +7,11 @@
 
 mod support;
 
-use std::path::PathBuf;
-
 use app_core::App;
 use support::{
-    Fixture,
+    Fixture, index_files,
     recipes::{A, B, call, listed, object, recipe_file, revision, with_recipes},
 };
-
-/// The workspace's index files in the app data folder.
-fn index_files(fixture: &Fixture, app: &App) -> Vec<PathBuf> {
-    let folder = fixture
-        .app_data
-        .path()
-        .join("workspaces")
-        .join(app.workspace().unwrap().id());
-    ["index.sqlite", "index.sqlite-wal", "index.sqlite-shm"]
-        .into_iter()
-        .map(|name| folder.join(name))
-        .collect()
-}
 
 /// Stop the index from changing its file list, through triggers a second
 /// connection adds. Dropping them lets writes through again.
@@ -76,6 +61,33 @@ fn malformed_recipe_files_stay_as_they_are_and_no_write_reaches_them() {
     );
     assert_eq!(fixture.read("recipes/Broken.md"), malformed.as_bytes());
     assert_eq!(fixture.read("recipes/Mismatched.md"), mismatched.as_bytes());
+}
+
+// A macOS or Linux file name may hold a control character, which a
+// plugin's path can't carry. Windows file names can't hold one.
+#[cfg(unix)]
+#[test]
+fn a_recipe_whose_file_name_a_plugin_path_cant_carry_is_left_out_of_the_list() {
+    let soup = recipe_file(A, "servings: 2\n", "Simmer.\n");
+    let belled = recipe_file(B, "servings: 4\n", "Ring.\n");
+    let fixture = Fixture::new(&[
+        ("recipes/Soup.md", &soup),
+        ("recipes/Bell\u{7}.md", &belled),
+    ]);
+    let mut app = fixture.app();
+    let Some(_folder) = with_recipes(&mut app) else {
+        return;
+    };
+
+    let listed = listed(&mut app);
+
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, format!("recipe_{A}"));
+    assert_eq!(
+        call(&mut app, &format!("get|recipe_{B}")),
+        ["error\tunsupported-path\t-"]
+    );
+    assert_eq!(fixture.read("recipes/Bell\u{7}.md"), belled);
 }
 
 #[test]

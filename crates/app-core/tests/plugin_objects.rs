@@ -9,9 +9,9 @@ mod support;
 
 use std::time::Instant;
 
-use app_core::{App, TabId, ViewKind, ViewNode};
+use app_core::{App, Change, SearchQuery, TabId, ViewKind, ViewNode};
 use support::{
-    FakeSystem, Fixture, note, open_from_tree,
+    FakeSystem, Fixture, index_files, note, open_from_tree,
     plugins::{self, PluginFolder},
     recipes::{A, Answer, B, REFUSED, call, object, parse, recipe_file, revision, with_recipes},
     settle_saves,
@@ -44,6 +44,23 @@ fn creating_writes_a_managed_file_whose_id_carries_the_types_prefix_and_passes_t
     assert!(text.starts_with(&start), "{text}");
     assert!(text.ends_with("---\nSimmer.\n"), "{text}");
     assert_eq!(created.problem, "-");
+}
+
+#[test]
+fn a_create_with_a_path_needs_no_title_and_one_without_a_path_does() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    let Some(_folder) = with_recipes(&mut app) else {
+        return;
+    };
+
+    let stew = object(&mut app, "create|recipe||Mains/Stew.md|{}|Braise.");
+    let refused = call(&mut app, "create|recipe||-|{}|Braise.");
+
+    assert_eq!(stew.path, "Mains/Stew.md");
+    assert_eq!(revision(&fixture.read("Mains/Stew.md")), stew.revision);
+    assert_eq!(refused, ["error\tfailed\tA title is required."]);
+    assert!(!fixture.exists("recipes"));
 }
 
 #[test]
@@ -225,28 +242,97 @@ fn delete_uses_the_workspaces_trash_folder_when_the_system_has_none() {
 #[test]
 fn a_write_whose_bytes_cant_become_durable_fails_and_nothing_reports_it() {
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex};
 
-    let fixture = Fixture::new(&[]);
+    let before = recipe_file(A, "servings: 2\n", "Simmer.\n");
+    let fixture = Fixture::new(&[("recipes/Soup.md", &before)]);
     let mut app = fixture.app();
     let Some(_folder) = with_recipes(&mut app) else {
         return;
     };
-    let soup = object(&mut app, "create|recipe|Soup|-|{}|Body");
-    let before = fixture.read("recipes/Soup.md");
+    let soup = object(&mut app, &format!("get|recipe_{A}"));
+    let tab = open_from_tree(&mut app, "recipes/Soup.md");
+    let shown = panel(&app, tab);
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::clone(&changes);
+    app.subscribe(move |change| heard.lock().unwrap().push(change));
+    // A read-only folder stops the temporary file each write starts with,
+    // so no write can reach the disk.
     let folder = fixture.root.join("recipes");
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-    let update = call(
-        &mut app,
-        &format!(r#"update|{}|{}|{{"servings":5}}"#, soup.id, soup.revision),
-    );
-    let create = call(&mut app, "create|recipe|Stew|-|{}|Body");
+    let answers = [
+        call(
+            &mut app,
+            &format!(
+                r#"update|{}|{}|{{"servings":5,"source":"saffron"}}"#,
+                soup.id, soup.revision
+            ),
+        ),
+        call(
+            &mut app,
+            &format!("body|{}|{}|Braise.", soup.id, soup.revision),
+        ),
+        call(&mut app, "create|recipe|Stew|-|{}|Braise."),
+    ];
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.poll();
 
-    assert!(update[0].starts_with("error\tfailed\t"), "{update:?}");
-    assert!(create[0].starts_with("error\tfailed\t"), "{create:?}");
+    for answer in &answers {
+        assert!(answer[0].starts_with("error\tfailed\t"), "{answer:?}");
+    }
     assert_eq!(fixture.read("recipes/Soup.md"), before);
     assert!(!fixture.exists("recipes/Stew.md"));
+
+    // The index keeps the revision and content the file holds, and has no
+    // row for Stew.
+    let index = rusqlite::Connection::open(&index_files(&fixture, &app)[0]).unwrap();
+    let (indexed_revision, body, properties): (String, String, String) = index
+        .query_row(
+            "SELECT f.hash,o.body,o.frontmatter_json FROM objects o \
+             JOIN files f ON f.id=o.file_id WHERE o.stable_id=?1",
+            [&soup.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(indexed_revision, soup.revision);
+    assert!(!body.contains("Braise"), "{body}");
+    assert!(!properties.contains("saffron"), "{properties}");
+    let stews: i64 = index
+        .query_row(
+            "SELECT count(*) FROM files WHERE relative_path LIKE '%Stew%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stews, 0);
+    // Search reads the index, and finds none of what the writes held.
+    let workspace = app.workspace().unwrap();
+    for word in ["saffron", "braise", "stew"] {
+        let query = SearchQuery {
+            text: word.to_owned(),
+            ..SearchQuery::default()
+        };
+        assert_eq!(workspace.search(&query).unwrap(), [], "{word}");
+    }
+
+    // The app reports no change: the open note keeps the revision it read
+    // and its text, the plugin's panel shows the same properties, and the
+    // tree has no Stew.
+    assert!(
+        !changes.lock().unwrap().contains(&Change::Note),
+        "{changes:?}"
+    );
+    let session = app.note(tab).unwrap();
+    assert_eq!(session.revision(), soup.revision);
+    assert_eq!(session.text(), "Simmer.\n");
+    assert!(!session.is_unsaved());
+    assert_eq!(panel(&app, tab), shown);
+    assert!(
+        !support::rows(&app).iter().any(|row| row.contains("Stew")),
+        "{:?}",
+        support::rows(&app)
+    );
     let listed = call(&mut app, "list|recipe");
     assert_eq!(listed.len(), 1);
     assert_eq!(parse(&listed[0]).unwrap().revision, soup.revision);

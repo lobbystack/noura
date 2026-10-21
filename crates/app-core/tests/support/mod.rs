@@ -277,6 +277,20 @@ pub fn race<T: Send>(
     })
 }
 
+/// The workspace's index files in the app data folder: the database
+/// first, then its write-ahead log and shared memory.
+pub fn index_files(fixture: &Fixture, app: &App) -> Vec<PathBuf> {
+    let folder = fixture
+        .app_data
+        .path()
+        .join("workspaces")
+        .join(app.workspace().unwrap().id());
+    ["index.sqlite", "index.sqlite-wal", "index.sqlite-shm"]
+        .into_iter()
+        .map(|name| folder.join(name))
+        .collect()
+}
+
 /// Poll until every note save finishes.
 pub fn settle_saves(app: &mut App) {
     let deadline = Instant::now() + Duration::from_secs(20);

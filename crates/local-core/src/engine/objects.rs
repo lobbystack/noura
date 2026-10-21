@@ -89,6 +89,8 @@ impl WorkspaceEngine {
     /// the type's canonical order. A property that fails the schema stops
     /// the create with `invalid_property`, naming the property, and nothing
     /// is written. Other types keep [`Self::create_object`]'s rules. The
+    /// title names the file only when `input` gives no path: with one, the
+    /// path's file name is the title, and `input.title` may be empty. The
     /// call returns once the file is durably on disk.
     pub fn create_object_checked(
         &self,
@@ -97,7 +99,7 @@ impl WorkspaceEngine {
     ) -> Result<MutationResult<WorkspaceObject>> {
         const OPERATION: &str = "object_create";
         validate_object_type(&input.object_type)?;
-        if input.title.trim().is_empty() {
+        if input.relative_path.is_none() && input.title.trim().is_empty() {
             return Err(CoreError::validation(
                 "title_required",
                 "A title is required",

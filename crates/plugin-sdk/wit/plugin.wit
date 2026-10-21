@@ -192,7 +192,8 @@ interface objects {
   record new-object {
     // One of the plugin's own types.
     object-type: string,
-    // The title, which names the file.
+    // The title, which names the file when `path` is none. With a path,
+    // the path's file name is the title and this one may be empty.
     title: string,
     // Where to write the file, relative to the workspace, ending in `.md`.
     // Without it the file goes in a folder named after the type, as

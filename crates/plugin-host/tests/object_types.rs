@@ -180,6 +180,8 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
             "invalid_default",
         ),
         ("chat", r#"{"properties":[]}"#, "kernel_type"),
+        ("task", r#"{"properties":[]}"#, "kernel_type"),
+        ("project", r#"{"properties":[]}"#, "kernel_type"),
     ];
     for (object_type, schema, code) in refused {
         let error = types

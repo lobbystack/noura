@@ -91,6 +91,32 @@ fn a_created_object_takes_its_types_prefix_defaults_and_declared_order() {
 }
 
 #[test]
+fn a_path_names_the_object_and_only_a_create_without_one_needs_a_title() {
+    let (workspace, _app_data, engine) = engine();
+    let at = |title: &str, path: &str| CreateObjectInput {
+        relative_path: Some(path.into()),
+        ..recipe(title, json!({}))
+    };
+
+    let untitled = engine
+        .create_object_checked(at("", "Mains/Stew.md"), &schemas())
+        .unwrap();
+    let titled = engine
+        .create_object_checked(at("Ignored", "Mains/Soup.md"), &schemas())
+        .unwrap();
+    let refused = engine
+        .create_object_checked(recipe(" ", json!({})), &schemas())
+        .unwrap_err();
+
+    assert_eq!(untitled.value.title, "Stew");
+    assert!(workspace.path().join("Mains/Stew.md").exists());
+    assert_eq!(titled.value.title, "Soup");
+    assert!(workspace.path().join("Mains/Soup.md").exists());
+    assert_eq!(refused.code, "title_required");
+    assert!(!workspace.path().join("recipes").exists());
+}
+
+#[test]
 fn properties_that_fail_the_schema_name_the_field_and_write_nothing() {
     let (workspace, _app_data, engine) = engine();
     let mut events = engine.subscribe();

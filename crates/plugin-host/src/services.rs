@@ -152,6 +152,8 @@ pub struct ObjectRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewObject {
     pub object_type: String,
+    /// Names the file when `path` is `None`. With a path, the path's file
+    /// name is the title and this one may be empty.
     pub title: String,
     pub path: Option<WorkspacePath>,
     pub body: String,
