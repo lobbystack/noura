@@ -8,10 +8,12 @@ rust-version.workspace = true
 [dependencies]
 app-core = { version = "0.2.0", path = "../../crates/app-core" }
 app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
+auto-launch.workspace = true
 eframe.workspace = true
 # The note editor paints its text through eframe's wgpu renderer.
 editor-egui = { version = "0.2.0", path = "../../crates/editor-egui" }
 egui.workspace = true
+logroller.workspace = true
 # The native menu bar on macOS and Windows. Linux builds muda's no-op
 # backend and shows no menu bar.
 muda.workspace = true

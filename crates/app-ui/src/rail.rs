@@ -1,7 +1,7 @@
 //! The rail: a narrow column of pages, such as Files and the Inbox, with
-//! the Search button at the bottom. A click shows a page, and you reorder
-//! pages by dragging them or with Alt-Up and Alt-Down. `app-core` owns
-//! the pages and their order.
+//! the Search and Settings buttons at the bottom. A click shows a page,
+//! and you reorder pages by dragging them or with Alt-Up and Alt-Down.
+//! `app-core` owns the pages and their order.
 
 use std::time::Instant;
 
@@ -22,6 +22,12 @@ use crate::{
 pub(crate) const RAIL_WIDTH: f32 = 56.0;
 const ITEM_SIZE: f32 = 36.0;
 const ITEM_GAP: f32 = 4.0;
+
+/// The Settings button's ID, so focus can return to it when Settings
+/// closes.
+pub(crate) fn settings_button_id() -> Id {
+    Id::unique("rail-settings")
+}
 
 /// The page you're dragging to a new place, as egui's drag-and-drop
 /// payload. egui drops the payload when you press Escape.
@@ -228,6 +234,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
 
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         ui.add_space(12.0);
+        if settings_button(ui, app).clicked() {
+            app.open_settings();
+        }
+        ui.add_space(ITEM_GAP);
         if search_button(ui, app).clicked() {
             app.run_command(
                 command_id::COMMAND_PALETTE,
@@ -252,17 +262,29 @@ enum Move {
     To(usize),
 }
 
-/// The Search button, which opens the command palette. Its tooltip
-/// shows the palette's shortcut.
-fn search_button(ui: &mut Ui, app: &App) -> egui::Response {
-    let shortcut = app
-        .commands()
+/// The shortcut of the command `id`, as the platform writes it.
+fn shortcut_text(app: &App, id: &str) -> Option<String> {
+    app.commands()
         .into_iter()
-        .find(|command| command.id == command_id::COMMAND_PALETTE)
+        .find(|command| command.id == id)
         .and_then(|command| command.shortcuts.first().copied())
-        .map(|shortcut| keys::shortcut_text(&shortcut, app.platform()));
-    let (rect, response) = ui.allocate_exact_size(vec2(ITEM_SIZE, ITEM_SIZE), Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Search"));
+        .map(|shortcut| keys::shortcut_text(&shortcut, app.platform()))
+}
+
+/// A button at the foot of the rail that opens a dialog. Its tooltip
+/// shows the shortcut of the command `command`.
+fn foot_button(
+    ui: &mut Ui,
+    app: &App,
+    id: Id,
+    label: &str,
+    command: &str,
+    paint: impl FnOnce(&egui::Painter, Rect, Stroke),
+) -> egui::Response {
+    let shortcut = shortcut_text(app, command);
+    let rect = ui.allocate_space(vec2(ITEM_SIZE, ITEM_SIZE)).1;
+    let response = ui.interact(rect, id, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_has_popup(HasPopup::Dialog);
         if let Some(shortcut) = &shortcut {
@@ -283,15 +305,50 @@ fn search_button(ui: &mut Ui, app: &App) -> egui::Response {
                 egui::StrokeKind::Inside,
             );
         }
-        // A magnifying glass.
-        let stroke = Stroke::new(1.5, palette.muted_foreground);
-        let center = rect.center() + vec2(-1.5, -1.5);
-        painter.circle_stroke(center, 5.5, stroke);
-        painter.line_segment([center + vec2(4.0, 4.0), center + vec2(8.0, 8.0)], stroke);
+        paint(painter, rect, Stroke::new(1.5, palette.muted_foreground));
     }
     let tooltip = match &shortcut {
-        Some(shortcut) => format!("Search ({shortcut})"),
-        None => "Search".to_owned(),
+        Some(shortcut) => format!("{label} ({shortcut})"),
+        None => label.to_owned(),
     };
     response.on_hover_text(tooltip)
+}
+
+/// The Search button, which opens the command palette.
+fn search_button(ui: &mut Ui, app: &App) -> egui::Response {
+    foot_button(
+        ui,
+        app,
+        Id::unique("rail-search"),
+        "Search",
+        command_id::COMMAND_PALETTE,
+        |painter, rect, stroke| {
+            // A magnifying glass.
+            let center = rect.center() + vec2(-1.5, -1.5);
+            painter.circle_stroke(center, 5.5, stroke);
+            painter.line_segment([center + vec2(4.0, 4.0), center + vec2(8.0, 8.0)], stroke);
+        },
+    )
+}
+
+/// The Settings button: a gear.
+fn settings_button(ui: &mut Ui, app: &App) -> egui::Response {
+    foot_button(
+        ui,
+        app,
+        settings_button_id(),
+        "Settings",
+        command_id::SETTINGS,
+        |painter, rect, stroke| {
+            // A ring with eight teeth.
+            let center = rect.center();
+            painter.circle_stroke(center, 3.0, stroke);
+            painter.circle_stroke(center, 6.5, stroke);
+            for tooth in 0..8 {
+                let angle = std::f32::consts::FRAC_PI_4 * tooth as f32;
+                let direction = vec2(angle.cos(), angle.sin());
+                painter.line_segment([center + direction * 6.5, center + direction * 9.0], stroke);
+            }
+        },
+    )
 }

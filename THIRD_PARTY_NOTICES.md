@@ -141,7 +141,7 @@ These Rust dependencies use the Mozilla Public License 2.0. Noura uses them unmo
 
 - `webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5, which give `sync-server` its passkey support
 - `option-ext` 0.2.0, which `local-core` gets through `directories` and `dirs-sys`
-- `nucleo-matcher` 0.3.1, which ranks the desktop app's command palette in `app-core`
+- `nucleo-matcher` 0.3.1, which ranks the desktop app's command palette and quick open in `app-core`
 
 ## Marketing website source record
 

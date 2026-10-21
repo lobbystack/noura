@@ -62,9 +62,7 @@ mod tests {
             .engine()
             .search(&SearchInput {
                 query: query.to_owned(),
-                object_type: None,
-                path_prefix: None,
-                limit: None,
+                ..SearchInput::default()
             })
             .unwrap()
             .into_iter()

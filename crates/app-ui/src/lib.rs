@@ -5,11 +5,13 @@
 
 mod chooser;
 mod common;
+mod finder;
 mod ignored_files;
 mod keys;
 mod note;
 mod palette;
 mod rail;
+mod settings;
 mod shortcuts;
 mod tab_bar;
 pub mod theme;
@@ -21,8 +23,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Area, CommandSource, DragOut, Menu, Screen, TabId};
-use egui::Event;
+use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Palette, Screen, TabId};
+use egui::{Event, ThemePreference};
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -39,6 +41,7 @@ pub struct NouraUi {
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
     ignored: ignored_files::IgnoredFilesView,
+    settings: settings::SettingsView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
@@ -59,6 +62,7 @@ impl NouraUi {
             new_workspace: None,
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
+            settings: settings::SettingsView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
@@ -127,6 +131,7 @@ impl NouraUi {
             self.app.subscribe(move |_| ctx.request_repaint());
         }
         self.app.poll();
+        apply_preferences(ui.ctx(), &self.app);
         let now = Instant::now();
         self.app.save_due_notes(now);
         if let Some(due) = self.app.next_note_save() {
@@ -148,6 +153,7 @@ impl NouraUi {
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
+        settings::show(ui, &mut self.app, &mut self.settings);
         palette::show(ui, &mut self.app, &mut self.palette);
         note::unsaved_prompt(ui, &mut self.app);
         self.close_requested_windows(ui.ctx());
@@ -196,8 +202,8 @@ impl NouraUi {
 
     /// Run the commands this frame's key presses stand for, before any
     /// view sees them. Keys the focused view or text field handles stay
-    /// for it. Keys typed after the shortcut that opens the palette wait
-    /// for the palette's field.
+    /// for it. Keys typed after a shortcut that opens the palette, or
+    /// switches it to another mode, wait for the palette's field.
     fn dispatch_keys(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let typed_ahead = std::mem::take(&mut self.type_ahead);
@@ -230,9 +236,10 @@ impl NouraUi {
                 } => keys::press(*key, *physical_key, *modifiers, platform),
                 _ => None,
             };
-            let was_open = self.app.palette().is_some();
+            let before = self.app.palette().map(Palette::mode);
             if press.is_some_and(|press| self.app.press_key(&press, focus, now)) {
-                palette_opened = !was_open && self.app.palette().is_some();
+                let after = self.app.palette().map(Palette::mode);
+                palette_opened = after.is_some() && after != before;
             } else {
                 kept.push(event);
             }
@@ -247,5 +254,22 @@ impl NouraUi {
         if let Some(folder) = self.picker.pick_folder("Open a folder") {
             self.app.open_folder(folder);
         }
+    }
+}
+
+/// Draw with this device's appearance and zoom. In Match system, egui
+/// follows the system's appearance as it changes.
+fn apply_preferences(ctx: &egui::Context, app: &App) {
+    let preferences = app.preferences();
+    let theme = match preferences.appearance {
+        Appearance::Light => ThemePreference::Light,
+        Appearance::Dark => ThemePreference::Dark,
+        Appearance::MatchSystem => ThemePreference::System,
+    };
+    if ctx.options(|options| options.theme_preference) != theme {
+        ctx.set_theme(theme);
+    }
+    if ctx.zoom_factor() != preferences.zoom_factor() {
+        ctx.set_zoom_factor(preferences.zoom_factor());
     }
 }

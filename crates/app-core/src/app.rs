@@ -13,24 +13,29 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
-    RecentWorkspace, System, Tab, Workspace, WorkspaceService, commands::Registry,
-    layout::LayoutStore, rail::Rail, tabs::Tabs, view_state::ViewStore,
+    AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
+    PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
+    WorkspaceService, commands::Registry, layout::LayoutStore, preferences::PreferencesStore,
+    rail::Rail, search::Searcher, settings::kernel_sections, tabs::Tabs, view_state::ViewStore,
 };
 
 mod commands;
 mod drops;
 mod file_actions;
+mod finder;
 mod ignored_files;
 mod notes;
 mod palette;
+mod preferences;
+mod settings;
 mod view;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
+pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
 pub use notes::UnsavedPrompt;
-pub use palette::CommandPalette;
+pub use palette::{CommandPalette, Palette, PaletteMode};
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,11 +83,13 @@ pub enum Change {
     Layout,
     Document,
     Notice,
-    /// The Ignored files page or the Keyboard shortcuts page changed.
+    /// Settings or the Ignored files page changed.
     Settings,
+    /// The appearance, text size or zoom changed.
+    Preferences,
     /// A command registered.
     Commands,
-    /// The command palette opened, closed or changed.
+    /// The palette opened, closed, or changed what it shows.
     Palette,
     /// Close Window or Quit ran; see [`App::take_close_window`] and
     /// [`App::take_quit`].
@@ -143,7 +150,8 @@ pub struct App {
     system: Arc<dyn System>,
     screen: Screen,
     recents: Vec<RecentWorkspace>,
-    workspace: Option<Workspace>,
+    /// The open workspace, which background searches share.
+    workspace: Option<Arc<Workspace>>,
     tree: Option<FileTree>,
     tabs: Tabs,
     rail: Rail,
@@ -151,11 +159,22 @@ pub struct App {
     views: ViewStore,
     layout: Layout,
     layouts: LayoutStore,
+    /// This device's appearance, text size and zoom.
+    preferences: Preferences,
+    preferences_store: PreferencesStore,
     notice: Option<Notice>,
     /// The tree row being renamed in place.
     renaming: Option<Rename>,
     /// The Ignored files page, while it is open.
     ignored_files: Option<IgnoredFiles>,
+    /// Settings, while it is open.
+    settings: Option<Settings>,
+    /// Settings' sections, in the order they registered.
+    settings_sections: Vec<SettingsSection>,
+    /// The system's apps that open at login.
+    login_item: Arc<dyn LoginItem>,
+    /// Where the local diagnostic log lives.
+    log_folder: PathBuf,
     /// A folder waiting to go to the trash until you confirm.
     pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
@@ -171,8 +190,9 @@ pub struct App {
     /// tree moves it instead of copying it.
     dragged_out: Option<String>,
     registry: Registry,
-    palette: Option<CommandPalette>,
-    shortcuts_open: bool,
+    /// Commands, quick open or search, while the palette is open.
+    palette: Option<Palette>,
+    searcher: Searcher,
     /// Close Window ran and the window hasn't closed yet.
     close_window: bool,
     /// Quit ran and the app hasn't closed yet.
@@ -192,15 +212,17 @@ impl App {
     }
 
     /// Start the app with per-device state in `app_data`, using `system`
-    /// for the trash, the file manager, terminals and the clipboard. When a
-    /// workspace was open last time, it reopens in the background while
-    /// the screen shows [`Screen::Loading`].
+    /// for the trash, the file manager, terminals, the clipboard and the
+    /// browser. When a workspace was open last time, it reopens in the
+    /// background while the screen shows [`Screen::Loading`].
     pub fn launch_with(app_data: impl AsRef<Path>, system: Arc<dyn System>) -> Self {
         let service = Arc::new(WorkspaceService::with_system(
             app_data.as_ref(),
             system.clone(),
         ));
         let recents = service.recents();
+        let listeners = Listeners::default();
+        let answered = listeners.clone();
         let mut app = Self {
             service,
             system,
@@ -213,19 +235,25 @@ impl App {
             views: ViewStore::new(app_data.as_ref()),
             layout: Layout::default(),
             layouts: LayoutStore::new(app_data.as_ref()),
+            preferences: Preferences::default(),
+            preferences_store: PreferencesStore::new(app_data.as_ref()),
             notice: None,
             renaming: None,
             ignored_files: None,
+            settings: None,
+            settings_sections: kernel_sections(),
+            login_item: Arc::new(NoLoginItem),
+            log_folder: crate::log_folder(app_data.as_ref()),
             pending_trash: None,
             failed_restore: None,
             pending: None,
-            listeners: Listeners::default(),
+            listeners,
             pending_saves: Arc::new(NoPendingSaves),
             drag_out: None,
             dragged_out: None,
             registry: Registry::default(),
             palette: None,
-            shortcuts_open: false,
+            searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
             close_window: false,
             quit: false,
             notes: crate::notes::Notes::default(),
@@ -233,6 +261,7 @@ impl App {
         };
         app.register_kernel_commands();
         app.layout = app.layouts.load();
+        app.preferences = app.preferences_store.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;
@@ -265,7 +294,7 @@ impl App {
     }
 
     pub fn workspace(&self) -> Option<&Workspace> {
-        self.workspace.as_ref()
+        self.workspace.as_deref()
     }
 
     pub fn tree(&self) -> Option<&FileTree> {
@@ -368,14 +397,16 @@ impl App {
         }
     }
 
-    /// Apply finished background work: note saves and a workspace that
-    /// opened. Returns whether anything changed.
+    /// Apply finished background work: note saves, search answers and a
+    /// workspace that opened. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
         let saved = self.collect_note_writes();
-        self.poll_workspace() || saved
+        let searched = self.take_search_answer();
+        self.take_opened() || saved || searched
     }
 
-    fn poll_workspace(&mut self) -> bool {
+    /// Take the workspace a background job opened, or why it couldn't.
+    fn take_opened(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };
@@ -397,6 +428,7 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
+                self.close_palette();
                 self.restore_view();
                 self.renaming = None;
                 self.ignored_files = None;
@@ -424,7 +456,8 @@ impl App {
 
     fn adopt(&mut self, opened: Opened) {
         self.failed_restore = None;
-        self.workspace = Some(opened.workspace);
+        self.close_palette();
+        self.workspace = Some(Arc::new(opened.workspace));
         self.tree = Some(opened.tree);
         self.restore_view();
         self.notice = None;

@@ -296,6 +296,13 @@ impl FileTree {
             .position(|candidate| *candidate == node)
     }
 
+    /// Every file and folder name in the tree, as on disk and as shown.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.nodes
+            .iter()
+            .flat_map(|node| [node.file_name.as_str(), node.shown.as_str()])
+    }
+
     /// The visible rows, top to bottom.
     pub fn rows(&self) -> &[TreeRow] {
         &self.rows
@@ -306,6 +313,14 @@ impl FileTree {
             .get(relative_path)
             .map(|node| &self.nodes[*node])
             .filter(|node| node.kind == EntryKind::File)
+    }
+
+    /// Every file's workspace path, in no particular order.
+    pub(crate) fn file_paths(&self) -> impl Iterator<Item = &str> {
+        self.nodes
+            .iter()
+            .filter(|node| node.kind == EntryKind::File)
+            .map(|node| node.relative_path.as_str())
     }
 
     /// The stable ID of the managed object at `relative_path`.
@@ -885,7 +900,7 @@ pub(crate) fn shown_name(file_name: &str, kind: EntryKind) -> String {
 
 /// A name folded for sorting: lowercase and without accents, so "Émile"
 /// sorts with "emile", as the legacy app's base-sensitivity collator does.
-fn sort_key(name: &str) -> String {
+pub(crate) fn sort_key(name: &str) -> String {
     name.nfd()
         .filter(|character| !is_combining_mark(*character))
         .flat_map(char::to_lowercase)

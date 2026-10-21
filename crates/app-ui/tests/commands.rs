@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use app_core::{App, Area, Command, Platform, Shortcut};
+use app_core::{App, Area, Command, Platform, Shortcut, settings_section};
 use app_ui::NouraUi;
 use egui::{Key, Modifiers, accesskit::Role};
 use egui_kittest::{
@@ -180,6 +180,9 @@ fn the_rail_s_search_button_opens_the_palette_and_a_click_runs_a_command() {
     harness.run();
     assert!(palette_open(&harness));
 
+    // The row sits below the list's first screen.
+    row(&harness, "Toggle Sidebar").scroll_to_me();
+    harness.run();
     row(&harness, "Toggle Sidebar").click();
     harness.run();
     assert!(!palette_open(&harness));
@@ -227,7 +230,7 @@ fn keys_typed_right_after_mod_k_land_in_the_palette_and_escape_returns_focus() {
             .state()
             .app()
             .palette()
-            .map(|palette| palette.query.clone()),
+            .map(|palette| palette.query().to_owned()),
         Some("plan".to_owned())
     );
     let current = harness.state().app().tree().unwrap().focused();
@@ -475,7 +478,11 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
         assert_eq!(description.as_deref(), Some(keys), "{label}");
     }
 
-    harness.get_by_label("Done").click();
+    // The page is a section of Settings.
+    harness
+        .get_by_role_and_label(Role::Dialog, "Settings")
+        .get_by_role_and_label(Role::Button, "Close")
+        .click();
     harness.run();
     assert!(
         harness
@@ -509,7 +516,10 @@ fn a_test_command_shows_in_the_palette_and_the_shortcuts_page() {
     );
     press(&mut harness, Modifiers::NONE, Key::Escape);
 
-    harness.state_mut().app_mut().open_shortcuts();
+    harness
+        .state_mut()
+        .app_mut()
+        .open_settings_at(settings_section::SHORTCUTS);
     harness.run();
     let entry = harness.get_by_role_and_label(Role::ListItem, "Ping");
     assert_eq!(

@@ -235,6 +235,11 @@ fn body(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
         .accessibility_role(Role::Document)
         .accessibility_label("Note text");
     let response = ui.scope_builder(builder, |ui| note.editor.show(ui)).inner;
+    // The widget that takes the keyboard reads as the note's text field.
+    ui.ctx().accesskit_node_builder(note.editor.id(), |node| {
+        node.set_role(Role::MultilineTextInput);
+        node.set_label("Note text");
+    });
     if let Some(id) = note.give_focus_back.take() {
         ui.memory_mut(|memory| memory.request_focus(id));
     }

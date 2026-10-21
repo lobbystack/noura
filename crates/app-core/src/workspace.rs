@@ -2,10 +2,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
-use local_core::{WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
+use local_core::{ManifestUpdateInput, WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
 
 use crate::{
     AppError, NoSystem, System,
@@ -19,7 +19,9 @@ pub struct Workspace {
     engine: Arc<WorkspaceEngine>,
     system: Arc<dyn System>,
     id: String,
-    name: String,
+    /// The display name, which a rename changes while background searches
+    /// share the workspace.
+    name: RwLock<String>,
     root: String,
 }
 
@@ -41,7 +43,7 @@ impl Workspace {
             engine: Arc::new(engine),
             system,
             id: manifest.id,
-            name: manifest.name,
+            name: RwLock::new(manifest.name),
             root,
         })
     }
@@ -51,8 +53,11 @@ impl Workspace {
         &self.id
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> String {
+        self.name
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     /// The workspace folder's absolute path.
@@ -69,6 +74,38 @@ impl Workspace {
         Arc::clone(&self.engine)
     }
 
+    /// The revision of the manifest on disk, and the name in it.
+    pub(crate) fn manifest_revision(&self) -> Result<(String, String), AppError> {
+        let (manifest, revision) = self
+            .engine
+            .read_manifest_revision()
+            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
+        Ok((revision, manifest.name))
+    }
+
+    /// Give the workspace the display name `name` in its manifest, unless
+    /// the manifest changed on disk since `revision` was read. The folder
+    /// keeps its name. Returns the manifest's new revision once the new
+    /// manifest is on disk.
+    pub(crate) fn save_name(&self, name: &str, revision: &str) -> Result<String, AppError> {
+        let manifest = self
+            .engine
+            .manifest_update(ManifestUpdateInput {
+                name: Some(name.to_owned()),
+                expected_revision: Some(revision.to_owned()),
+                ..ManifestUpdateInput::default()
+            })
+            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
+        self.set_name(manifest.name);
+        let (revision, _) = self.manifest_revision()?;
+        Ok(revision)
+    }
+
+    /// Show the name in the manifest on disk, as after an outside edit.
+    pub(crate) fn set_name(&self, name: String) {
+        *self.name.write().unwrap_or_else(|error| error.into_inner()) = name;
+    }
+
     pub(crate) fn system(&self) -> &dyn System {
         self.system.as_ref()
     }
@@ -76,7 +113,7 @@ impl Workspace {
     fn recent(&self) -> RecentWorkspace {
         RecentWorkspace {
             workspace_id: self.id.clone(),
-            name: self.name.clone(),
+            name: self.name(),
             path: self.root.clone(),
         }
     }
@@ -201,6 +238,11 @@ impl WorkspaceService {
             .map_err(|error| AppError::from_core(error, &recent.path, Access::ReadWorkspace))?;
         check_identity(&engine, &recent.workspace_id, &recent.path)?;
         self.opened(engine)
+    }
+
+    /// Put `workspace` first in the recent list, under its current name.
+    pub(crate) fn remember(&self, workspace: &Workspace) -> Result<Vec<RecentWorkspace>, AppError> {
+        self.recents.record(workspace.recent())
     }
 
     fn opened(&self, engine: WorkspaceEngine) -> Result<Workspace, AppError> {

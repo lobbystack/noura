@@ -57,29 +57,6 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     new_workspace_dialog(state, ui);
     trash_dialog(state, ui);
     ignored_files_dialog(state, ui);
-    shortcuts_dialog(state, ui);
-}
-
-/// The Keyboard shortcuts page, in a dialog until Settings exists.
-fn shortcuts_dialog(state: &mut NouraUi, ui: &mut Ui) {
-    if !state.app.shortcuts_open() {
-        return;
-    }
-    let mut done = false;
-    let modal = Modal::new(Id::unique("keyboard-shortcuts")).show(ui.ctx(), |ui| {
-        ui.set_width(420.0);
-        ui.label(
-            RichText::new("Keyboard shortcuts")
-                .size(TITLE_SIZE)
-                .strong(),
-        );
-        crate::shortcuts::page(ui, &state.app);
-        ui.add_space(8.0);
-        done = common::primary_button(ui, "Done", true).clicked();
-    });
-    if done || modal.should_close() {
-        state.app.close_shortcuts();
-    }
 }
 
 /// Ask before a folder goes to the trash, and say where it goes.
@@ -166,7 +143,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
         return;
     };
     let current = workspace.id().to_owned();
-    let name = workspace.name().to_owned();
+    let name = workspace.name();
     let recents = state.app.recents().to_vec();
     let busy = state.app.is_busy();
     let mut open = None;

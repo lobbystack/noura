@@ -445,7 +445,11 @@ impl App {
             })
             .map(|(tab, _)| *tab)
             .collect();
-        let Some(engine) = self.workspace.as_ref().map(crate::Workspace::shared_engine) else {
+        let Some(engine) = self
+            .workspace
+            .as_deref()
+            .map(crate::Workspace::shared_engine)
+        else {
             return Ok(());
         };
         for tab in tabs {

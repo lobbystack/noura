@@ -19,9 +19,9 @@ use crate::{
 pub mod command_id {
     pub const NEW_NOTE: &str = "new-note";
     pub const NEW_FOLDER: &str = "new-folder";
-    /// Open a file by name (ticket 14).
+    /// Open a file by name: quick open.
     pub const QUICK_OPEN: &str = "quick-open";
-    /// Search file contents (ticket 14).
+    /// Search file contents.
     pub const SEARCH: &str = "search";
     pub const COMMAND_PALETTE: &str = "command-palette";
     pub const RENAME_FILE: &str = "rename-file";
@@ -32,12 +32,13 @@ pub mod command_id {
     pub const NEXT_TAB: &str = "next-tab";
     pub const PREVIOUS_TAB: &str = "previous-tab";
     pub const TOGGLE_SIDEBAR: &str = "toggle-sidebar";
-    /// Zoom (ticket 15).
     pub const ZOOM_IN: &str = "zoom-in";
     pub const ZOOM_OUT: &str = "zoom-out";
     pub const ZOOM_RESET: &str = "zoom-reset";
-    /// Settings (ticket 15).
     pub const SETTINGS: &str = "settings";
+    /// Settings, on its About section.
+    pub const ABOUT: &str = "about";
+    /// Settings, on its Keyboard shortcuts section.
     pub const KEYBOARD_SHORTCUTS: &str = "keyboard-shortcuts";
     /// Quit on macOS and Linux, Exit on Windows.
     pub const QUIT: &str = "quit";

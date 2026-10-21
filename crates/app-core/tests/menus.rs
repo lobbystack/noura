@@ -38,21 +38,9 @@ fn items(menus: &[Menu], title: &str) -> Vec<String> {
         .1
 }
 
-/// The app with the commands and pages later tickets add: Quick Open and
-/// Search (14), zoom and Settings (15) and the Inbox (16).
-fn with_later_commands(fixture: &Fixture, platform: Platform) -> App {
+/// The app with the pages later tickets add: the Inbox (16).
+fn with_later_pages(fixture: &Fixture, platform: Platform) -> App {
     let mut app = fixture.app_with(FakeSystem::on(platform));
-    for (id, label) in [
-        (command_id::QUICK_OPEN, "Quick Open…"),
-        (command_id::SEARCH, "Search Files…"),
-        (command_id::ZOOM_IN, "Zoom In"),
-        (command_id::ZOOM_OUT, "Zoom Out"),
-        (command_id::ZOOM_RESET, "Actual Size"),
-        (command_id::SETTINGS, "Settings…"),
-    ] {
-        app.register_command(Command::new(id, label, Area::Anywhere), |_| {})
-            .unwrap();
-    }
     app.register_page(INBOX_PAGE, "Inbox");
     app.register_page("tasks", "Tasks");
     app
@@ -65,7 +53,7 @@ fn strings(items: &[&str]) -> Vec<String> {
 #[test]
 fn the_macos_menu_bar_keeps_today_s_menus() {
     let fixture = Fixture::new(&[]);
-    let app = with_later_commands(&fixture, Platform::MacOs);
+    let app = with_later_pages(&fixture, Platform::MacOs);
     let menus = app.menu_bar();
 
     let titles: Vec<_> = menus.iter().map(|menu| menu.title.as_str()).collect();
@@ -73,7 +61,7 @@ fn the_macos_menu_bar_keeps_today_s_menus() {
     assert_eq!(
         items(&menus, "Noura"),
         strings(&[
-            "About",
+            "About Noura",
             "-",
             "Settings…",
             "-",
@@ -128,7 +116,7 @@ fn the_macos_menu_bar_keeps_today_s_menus() {
 #[test]
 fn the_windows_menu_bar_puts_settings_and_exit_under_file_and_about_under_help() {
     let fixture = Fixture::new(&[]);
-    let app = with_later_commands(&fixture, Platform::Windows);
+    let app = with_later_pages(&fixture, Platform::Windows);
     let menus = app.menu_bar();
 
     let titles: Vec<_> = menus.iter().map(|menu| menu.title.as_str()).collect();
@@ -150,7 +138,7 @@ fn the_windows_menu_bar_puts_settings_and_exit_under_file_and_about_under_help()
             "Exit"
         ])
     );
-    assert_eq!(items(&menus, "Help"), strings(&["About"]));
+    assert_eq!(items(&menus, "Help"), strings(&["About Noura"]));
     assert!(!items(&menus, "View").contains(&"FullScreen".to_owned()));
 }
 
@@ -162,11 +150,30 @@ fn items_whose_command_hasn_t_registered_and_their_separators_drop_out() {
 
     assert_eq!(
         items(&menus, "File"),
-        strings(&["New Note", "New Folder", "-", "Close Tab", "Close Window"])
+        strings(&[
+            "New Note",
+            "New Folder",
+            "-",
+            "Quick Open…",
+            "Search Files…",
+            "-",
+            "Close Tab",
+            "Close Window"
+        ])
     );
     assert_eq!(
         items(&menus, "View"),
-        strings(&["Toggle Sidebar", "-", "Go to Files", "-", "FullScreen"])
+        strings(&[
+            "Toggle Sidebar",
+            "-",
+            "Zoom In",
+            "Zoom Out",
+            "Actual Size",
+            "-",
+            "Go to Files",
+            "-",
+            "FullScreen"
+        ])
     );
 }
 
@@ -223,6 +230,9 @@ fn a_command_added_to_the_registry_appears_in_the_menu_it_names() {
         strings(&[
             "New Note",
             "New Folder",
+            "-",
+            "Quick Open…",
+            "Search Files…",
             "-",
             "Close Tab",
             "Close Window",

@@ -48,10 +48,55 @@ CREATE TABLE IF NOT EXISTS object_links(
   relation TEXT NOT NULL, target_stable_id TEXT NOT NULL,
   PRIMARY KEY(source_file_id, relation, target_stable_id)
 );
+CREATE TABLE IF NOT EXISTS object_tags(
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  PRIMARY KEY(file_id, tag)
+);
+CREATE INDEX IF NOT EXISTS object_tags_tag ON object_tags(tag);
 CREATE TABLE IF NOT EXISTS plugin_state(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(plugin_id,key));
 CREATE TABLE IF NOT EXISTS reconciliation_runs(id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT, changed_files INTEGER NOT NULL DEFAULT 0, diagnostic TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS object_fts USING fts5(stable_id UNINDEXED, relative_path, filename, title, body, metadata, tokenize='unicode61 remove_diacritics 2');
 "#;
+
+/// Every row the index derives from workspace files.
+const CLEAR_FILES: &str = "DELETE FROM object_fts; DELETE FROM object_tags; \
+     DELETE FROM object_links; DELETE FROM object_properties; DELETE FROM objects; \
+     DELETE FROM files;";
+
+/// The version of what the index derives from each file. Version 2 adds
+/// tags, the frontmatter of notes without an ID, and paths without `.md`
+/// for search.
+const INDEX_VERSION: i64 = 2;
+
+/// An index from an older version lacks rows this version reads, and a
+/// walk reads again only the files that changed, so the index forgets
+/// every file and the next walk reads them all. One transaction forgets
+/// the files and records the version, so an interrupted upgrade runs again
+/// on the next open.
+fn forget_older_files(connection: &mut Connection) -> rusqlite::Result<()> {
+    let current = |connection: &Connection| {
+        connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
+            [INDEX_VERSION],
+            |row| row.get::<_, bool>(0),
+        )
+    };
+    if current(connection)? {
+        return Ok(());
+    }
+    // Another process, such as the MCP server, may open the index at the
+    // same time: the write lock lets only one of them start over.
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if !current(&tx)? {
+        tx.execute_batch(CLEAR_FILES)?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version) VALUES(?1)",
+            [INDEX_VERSION],
+        )?;
+    }
+    tx.commit()
+}
 
 #[derive(Debug)]
 pub struct IndexStore {
@@ -143,7 +188,13 @@ pub struct SearchInput {
     pub query: String,
     #[serde(rename = "type")]
     pub object_type: Option<String>,
-    pub path_prefix: Option<String>,
+    /// Only files in this workspace-relative folder and its subfolders,
+    /// matched as written. An absolute folder or one that climbs out with
+    /// `..` is refused.
+    pub folder: Option<String>,
+    /// Only files whose `tags` property holds this tag, as a list or a
+    /// single value. A leading `#` and the case don't matter.
+    pub tag: Option<String>,
     pub limit: Option<u32>,
 }
 
@@ -194,19 +245,22 @@ impl IndexStore {
         Self::prepare(connection)
     }
 
-    fn prepare(connection: Connection) -> Result<Self> {
+    fn prepare(mut connection: Connection) -> Result<Self> {
         connection
             .busy_timeout(BUSY_TIMEOUT)
             .map_err(|error| CoreError::index(error, "index_open"))?;
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| CoreError::index(error, "index_migrate"))?;
+        forget_older_files(&mut connection)
+            .map_err(|error| CoreError::index(error, "index_migrate"))?;
         connection.set_prepared_statement_cache_capacity(64);
         Ok(Self { connection })
     }
 
     pub fn clear(&mut self) -> Result<()> {
-        self.connection.execute_batch("DELETE FROM object_fts; DELETE FROM object_links; DELETE FROM object_properties; DELETE FROM objects; DELETE FROM files;")
+        self.connection
+            .execute_batch(CLEAR_FILES)
             .map_err(|error| CoreError::index(error, "index_clear"))
     }
 
@@ -564,25 +618,45 @@ impl IndexStore {
             .map_err(|error| CoreError::index(error, "files_list_non_managed"))
     }
 
+    /// Files whose text holds every word of `input.query`, read as plain
+    /// text. A match in the file name, which is the note's title, ranks
+    /// above a match anywhere else, then the full-text rank decides. A
+    /// heading inside the file ranks as ordinary body text.
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
-        let tokens = input
-            .query
-            .split_whitespace()
-            .filter(|value| !value.is_empty())
-            .map(|value| format!("\"{}\"*", value.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        if tokens.is_empty() {
+        let folder = match input.folder.as_deref() {
+            None | Some("") => None,
+            Some(folder) => Some(search_folder(folder)?),
+        };
+        let tag = input.tag.as_deref().and_then(tag_key);
+        let Some(query) = PlainTextQuery::new(&input.query) else {
             return Ok(Vec::new());
-        }
-        let mut statement = self.connection.prepare_cached("SELECT NULLIF(fts.stable_id,''),o.object_type,fts.relative_path,fts.title,snippet(object_fts,4,'','', ' … ',18),bm25(object_fts,0.0,2.0,4.0,8.0,1.0,3.0),f.hash FROM object_fts fts JOIN files f ON f.id=fts.rowid LEFT JOIN objects o ON o.file_id=f.id WHERE object_fts MATCH ?1 AND (?2 IS NULL OR o.object_type=?2) AND (?3 IS NULL OR fts.relative_path LIKE ?3 || '%') ORDER BY 6 LIMIT ?4").map_err(|error| CoreError::index(error,"search_query"))?;
+        };
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT NULLIF(fts.stable_id,''),o.object_type,f.relative_path,fts.title,\
+                 snippet(object_fts,4,char(2),char(3),' … ',18),\
+                 bm25(object_fts,0.0,2.0,8.0,1.0,1.0,3.0),f.hash,\
+                 fts.rowid IN (SELECT rowid FROM object_fts WHERE object_fts MATCH ?5),\
+                 snippet(object_fts,3,char(2),char(3),' … ',18) \
+                 FROM object_fts fts JOIN files f ON f.id=fts.rowid \
+                 LEFT JOIN objects o ON o.file_id=f.id \
+                 WHERE object_fts MATCH ?1 AND (?2 IS NULL OR o.object_type=?2) \
+                 AND (?3 IS NULL OR substr(f.relative_path,1,length(?3)+1)=?3||'/') \
+                 AND (?6 IS NULL OR EXISTS(SELECT 1 FROM object_tags t \
+                   WHERE t.file_id=f.id AND t.tag=?6)) \
+                 ORDER BY 8 DESC,6 LIMIT ?4",
+            )
+            .map_err(|error| CoreError::index(error, "search_query"))?;
         let rows = statement
             .query_map(
                 params![
-                    tokens,
+                    query.all_words,
                     input.object_type,
-                    input.path_prefix,
-                    input.limit.unwrap_or(50)
+                    folder,
+                    input.limit.unwrap_or(50),
+                    query.any_word_in_file_name,
+                    tag
                 ],
                 |row| {
                     Ok(SearchResult {
@@ -590,7 +664,7 @@ impl IndexStore {
                         object_type: row.get(1)?,
                         relative_path: row.get(2)?,
                         title: row.get(3)?,
-                        snippet: row.get(4)?,
+                        snippet: matching_text(row.get(4)?, row.get(8)?),
                         score: row.get(5)?,
                         revision: row.get(6)?,
                     })
@@ -599,6 +673,19 @@ impl IndexStore {
             .map_err(|error| CoreError::index(error, "search_query"))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| CoreError::index(error, "search_query"))
+    }
+
+    /// The object types the index holds, sorted.
+    pub fn object_types(&self) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare_cached("SELECT DISTINCT object_type FROM objects ORDER BY 1")
+            .map_err(|error| CoreError::index(error, "object_types"))?;
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| CoreError::index(error, "object_types"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "object_types"))
     }
 
     pub fn calendar(&self, range_start: &str, range_end: &str) -> Result<Vec<CalendarEntry>> {
@@ -742,6 +829,85 @@ impl IndexStore {
     }
 }
 
+/// A search's folder as the index writes paths: its parts joined by `/`,
+/// without a trailing slash. An absolute folder, or one with `.` or `..`
+/// parts, is refused.
+fn search_folder(folder: &str) -> Result<String> {
+    let path = crate::path::validate_relative(folder, "search_query")?;
+    Ok(path
+        .components()
+        .filter_map(|part| part.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+/// The tags a note's `tags` property holds: each string in a list, or a
+/// single string. Other values, such as numbers, nested lists and empty
+/// strings, hold no tag.
+fn tags(value: Option<&serde_json::Value>) -> std::collections::BTreeSet<String> {
+    let strings: Vec<&str> = match value {
+        Some(serde_json::Value::String(tag)) => vec![tag],
+        Some(serde_json::Value::Array(items)) => {
+            items.iter().filter_map(serde_json::Value::as_str).collect()
+        }
+        _ => Vec::new(),
+    };
+    strings.into_iter().filter_map(tag_key).collect()
+}
+
+/// A tag as the index compares it: trimmed, without a leading `#`, and in
+/// lowercase, as Obsidian reads tags. `None` for an empty tag.
+fn tag_key(tag: &str) -> Option<String> {
+    let tag = tag.trim();
+    let tag = tag.strip_prefix('#').unwrap_or(tag).trim();
+    (!tag.is_empty()).then(|| tag.to_lowercase())
+}
+
+/// The text a hit shows: the body around the match, or the heading when
+/// only the heading matches, since a heading is ordinary text. The index
+/// marks matched words with STX and ETX, which this removes.
+fn matching_text(body: String, heading: String) -> String {
+    const MARKS: [char; 2] = ['\u{2}', '\u{3}'];
+    let text = if !body.contains(MARKS[0]) && heading.contains(MARKS[0]) {
+        heading
+    } else {
+        body
+    };
+    text.replace(MARKS, "")
+}
+
+/// A search typed by a person, turned into full-text expressions that
+/// treat every character as text. Each word becomes a quoted phrase that
+/// matches as a prefix, so quotes, asterisks, parentheses, colons, carets
+/// and the words AND, OR, NOT and NEAR never act as query syntax.
+struct PlainTextQuery {
+    /// Every word, anywhere in the file.
+    all_words: String,
+    /// Any word, in the file name, which is the note's title.
+    any_word_in_file_name: String,
+}
+
+impl PlainTextQuery {
+    fn new(text: &str) -> Option<Self> {
+        let words: Vec<String> = text
+            // A NUL or another control character would end or break the
+            // expression, so it separates words like a space.
+            .split(|character: char| character.is_whitespace() || character.is_control())
+            // A word without a letter or digit holds no token, and an
+            // empty phrase would match nothing at all.
+            .filter(|word| word.chars().any(char::is_alphanumeric))
+            .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+            .collect();
+        if words.is_empty() {
+            return None;
+        }
+        Some(Self {
+            all_words: words.join(" AND "),
+            any_word_in_file_name: format!("filename : ({})", words.join(" OR ")),
+        })
+    }
+}
+
 fn upsert_markdown_tx(
     tx: &rusqlite::Transaction<'_>,
     relative_path: &str,
@@ -792,6 +958,21 @@ fn upsert_markdown_tx(
         params![file_id],
     )?;
     run("DELETE FROM objects WHERE file_id=?1", params![file_id])?;
+    run("DELETE FROM object_tags WHERE file_id=?1", params![file_id])?;
+    let tags = match parsed {
+        ParsedMarkdown::Managed(object) => tags(object.properties.get("tags")),
+        ParsedMarkdown::Unmanaged {
+            frontmatter: Some(properties),
+            ..
+        } => tags(properties.get("tags")),
+        ParsedMarkdown::Unmanaged { .. } | ParsedMarkdown::Malformed { .. } => Default::default(),
+    };
+    for tag in tags {
+        run(
+            "INSERT INTO object_tags(file_id,tag) VALUES(?1,?2)",
+            params![file_id, tag],
+        )?;
+    }
     match parsed {
         ParsedMarkdown::Managed(object) => {
             affected.insert(object.id.clone());
@@ -839,7 +1020,7 @@ fn upsert_markdown_tx(
                 params![
                     file_id,
                     object.id,
-                    relative_path,
+                    searchable_path(relative_path),
                     filename(relative_path),
                     object.title,
                     object.body,
@@ -847,11 +1028,41 @@ fn upsert_markdown_tx(
                 ],
             )?;
         }
-        ParsedMarkdown::Unmanaged { title, body, .. }
-        | ParsedMarkdown::Malformed { title, body, .. } => {
+        ParsedMarkdown::Unmanaged {
+            title,
+            body,
+            frontmatter,
+        } => {
+            // Frontmatter without an ID, as Obsidian writes it, is
+            // searchable like a managed object's properties.
+            let metadata = frontmatter
+                .iter()
+                .flat_map(|properties| properties.values())
+                .map(value_text)
+                .collect::<Vec<_>>()
+                .join(" ");
+            run(
+                "INSERT INTO object_fts(rowid,stable_id,relative_path,filename,title,body,metadata) VALUES(?1,'',?2,?3,?4,?5,?6)",
+                params![
+                    file_id,
+                    searchable_path(relative_path),
+                    filename(relative_path),
+                    title,
+                    body,
+                    metadata
+                ],
+            )?;
+        }
+        ParsedMarkdown::Malformed { title, body, .. } => {
             run(
                 "INSERT INTO object_fts(rowid,stable_id,relative_path,filename,title,body,metadata) VALUES(?1,'',?2,?3,?4,?5,'')",
-                params![file_id, relative_path, filename(relative_path), title, body],
+                params![
+                    file_id,
+                    searchable_path(relative_path),
+                    filename(relative_path),
+                    title,
+                    body
+                ],
             )?;
         }
     }
@@ -921,11 +1132,23 @@ fn calendar_error(error: CalendarError) -> CoreError {
     }
 }
 
+/// The file's name as search reads it: its title, without `.md`.
 fn filename(path: &str) -> &str {
-    Path::new(path)
+    let name = Path::new(path)
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or(path)
+        .unwrap_or(path);
+    searchable_path(name)
+}
+
+/// A path as search reads it: without the `.md` every note shares, so
+/// typing "md" doesn't find every note.
+fn searchable_path(path: &str) -> &str {
+    let cut = path.len().saturating_sub(3);
+    match path.get(cut..) {
+        Some(extension) if cut > 0 && extension.eq_ignore_ascii_case(".md") => &path[..cut],
+        _ => path,
+    }
 }
 
 fn stored_parse_status(value: &str) -> rusqlite::Result<ParseStatus> {

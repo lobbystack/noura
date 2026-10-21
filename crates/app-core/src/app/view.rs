@@ -313,6 +313,7 @@ impl App {
                 }
                 self.tree = Some(tree);
                 self.listeners.emit(Change::Tree);
+                self.rank_files();
                 self.follow_files();
                 self.save_view();
             }

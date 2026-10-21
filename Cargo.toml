@@ -33,6 +33,10 @@ license = "MIT"
 rust-version = "1.99"
 
 [workspace.dependencies]
+aho-corasick = "1"
+# Adds Noura to the apps that open at login: a launch agent on macOS, the
+# Run key on Windows and an XDG autostart entry on Linux.
+auto-launch = "0.6.0"
 yrs = { version = "=0.26.0", features = ["small-client", "sync"] }
 age = { version = "=0.12.1", default-features = false }
 aes-gcm = "=0.10.3"
@@ -69,12 +73,15 @@ hmac = "=0.12.1"
 ignore = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
+# Rotates the local diagnostic log at 1 MB and keeps three old files.
+logroller = "0.1.12"
 # Without default features muda has no GTK backend: on Linux, menus need a GTK
 # window, which winit doesn't create.
 muda = { version = "0.21.2", default-features = false }
 trash = "5"
 notify = "8"
-# Ranks the command palette's matches. MPL-2.0, used unmodified.
+# Ranks the command palette's and quick open's matches. MPL-2.0, used
+# unmodified.
 nucleo-matcher = "0.3.1"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
