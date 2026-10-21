@@ -21,11 +21,9 @@ fn settle(app: &mut App) {
     }
 }
 
-/// Until the Inbox (ticket 16) and plugins (ticket 24) add pages, tests
-/// register their own.
+/// Until plugins (ticket 24) add pages, tests register their own.
 fn with_pages(app: &mut App) {
     app.register_page("test-alpha", "Alpha");
-    app.register_page(INBOX_PAGE, "Inbox");
     app.register_page("test-beta", "Beta");
 }
 
@@ -59,6 +57,18 @@ fn launch(app_data: &Path, register: impl FnOnce(&mut App)) -> App {
 /// The rail's page titles, top to bottom.
 fn rail(app: &App) -> Vec<String> {
     app.rail().iter().map(|page| page.title.clone()).collect()
+}
+
+/// The Inbox is a kernel page: it's there whatever plugins add pages.
+#[test]
+fn the_inbox_and_files_are_in_the_rail_before_any_page_registers() {
+    let app_data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let mut app = App::launch(app_data.path());
+    app.open_folder(folder.path().to_owned());
+    settle(&mut app);
+
+    assert_eq!(rail(&app), ["Inbox", "Files"]);
 }
 
 #[test]
@@ -117,7 +127,6 @@ fn pages_that_appear_later_join_the_end_without_losing_the_saved_order() {
     // A plugin's page that isn't there at the next launch leaves the
     // others in their order, and comes back to its place later.
     let mut app = relaunch(app, app_data.path(), |app| {
-        app.register_page(INBOX_PAGE, "Inbox");
         app.register_page("test-alpha", "Alpha");
     });
     assert_eq!(rail(&app), ["Inbox", "Files", "Alpha"]);
@@ -127,18 +136,32 @@ fn pages_that_appear_later_join_the_end_without_losing_the_saved_order() {
     assert_eq!(rail(&app), ["Beta", "Inbox", "Files", "Alpha", "Gamma"]);
 }
 
+/// A rail order saved before the Inbox was a kernel page has no place
+/// for it, so the Inbox goes first.
 #[test]
-fn the_inbox_goes_first_when_it_arrives_after_you_ordered_the_rail() {
-    let (app_data, _folder, app) = opened();
-    let mut app = relaunch(app, app_data.path(), |app| {
-        app.register_page("test-alpha", "Alpha");
-    });
-    app.move_page("test-alpha", 0);
-    assert_eq!(rail(&app), ["Alpha", "Files"]);
+fn the_inbox_goes_first_when_the_saved_order_has_no_place_for_it() {
+    let (app_data, _folder, mut app) = opened();
+    app.move_page("test-beta", 0);
+    drop(app);
+    let mut rewritten = 0;
+    for entry in walk(app_data.path()) {
+        let Ok(text) = std::fs::read_to_string(&entry) else {
+            continue;
+        };
+        let Ok(mut saved) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if let Some(order) = saved.get_mut("railOrder") {
+            *order = serde_json::json!(["test-alpha", "files"]);
+            std::fs::write(&entry, saved.to_string()).unwrap();
+            rewritten += 1;
+        }
+    }
+    assert_eq!(rewritten, 1);
 
-    app.register_page(INBOX_PAGE, "Inbox");
+    let app = launch(app_data.path(), with_pages);
 
-    assert_eq!(rail(&app), ["Inbox", "Alpha", "Files"]);
+    assert_eq!(rail(&app), ["Inbox", "Alpha", "Files", "Beta"]);
 }
 
 #[test]

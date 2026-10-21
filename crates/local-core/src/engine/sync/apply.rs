@@ -178,8 +178,7 @@ impl WorkspaceEngine {
             if excluded.contains(&relative) {
                 continue;
             }
-            let bytes = std::fs::read(self.sync_file_path(relative)?)
-                .map_err(|error| CoreError::io(error, "sync", Some(relative)))?;
+            let bytes = read_downloaded(&self.sync_file_path(relative)?, relative, "sync")?;
             if let ParsedMarkdown::Managed(object) = markdown::parse_markdown(relative, &bytes)
                 && object.id == id
             {

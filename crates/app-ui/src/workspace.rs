@@ -1,7 +1,7 @@
 //! The workspace screen: the rail, the sidebar with the workspace switcher
 //! and the file tree, the tab bar, and the document area.
 
-use app_core::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
+use app_core::{INBOX_PAGE, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
     Button, CentralPanel, Frame, Id, Margin, Modal, Panel, RichText, ScrollArea, Ui, UiBuilder,
     accesskit::Role, containers::menu::MenuButton, vec2,
@@ -10,6 +10,7 @@ use egui::{
 use crate::{
     NouraUi,
     common::{self, NewWorkspace, muted},
+    inbox,
     rail::{self, RAIL_WIDTH},
     tab_bar::{self, BAR_HEIGHT},
     theme::{Palette, TITLE_SIZE},
@@ -228,9 +229,9 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
 }
 
 /// What the active tab shows: a file's name and workspace-relative path,
-/// which the editor and the file viewers replace later, or a page's
-/// title, which the page's own view replaces. Each tab keeps its scroll
-/// position.
+/// which the editor and the file viewers replace later, the Inbox, or
+/// another page's title, which the page's own view replaces. Each tab
+/// keeps its scroll position.
 fn content(state: &mut NouraUi, ui: &mut Ui) {
     let active = state
         .app
@@ -245,9 +246,17 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             ui.centered_and_justified(|ui| muted(ui, "Open a file from the sidebar."));
             return;
         };
-        let mut scroll = ScrollArea::both()
-            .id_salt(("document", id))
-            .auto_shrink(false);
+        let is_inbox = matches!(
+            &content,
+            TabContent::Page { page_id, .. } if page_id == INBOX_PAGE
+        );
+        // The Inbox's text wraps to the window, so it scrolls only down.
+        let scroll = if is_inbox {
+            ScrollArea::vertical()
+        } else {
+            ScrollArea::both()
+        };
+        let mut scroll = scroll.id_salt(("document", id)).auto_shrink(false);
         if state.shown_tab != Some(id) {
             state.shown_tab = Some(id);
             scroll = scroll.scroll_offset(vec2(place.scroll[0], place.scroll[1]));
@@ -257,6 +266,7 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
                 ui.label(RichText::new(&file.name).size(TITLE_SIZE).strong());
                 muted(ui, &file.relative_path);
             }
+            TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app),
             TabContent::Page { title, page_id } => {
                 ui.label(RichText::new(title).size(TITLE_SIZE).strong());
                 if state.app.is_plugin_page(page_id) {

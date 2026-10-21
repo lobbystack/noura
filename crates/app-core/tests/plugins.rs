@@ -114,7 +114,7 @@ fn the_install_dialog_lists_every_capability_before_any_code_runs() {
     assert_eq!(review.capabilities, hello_capabilities());
     // Nothing is installed or running yet.
     assert!(installed(&app).is_empty());
-    assert_eq!(rail_titles(&app), ["Files"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
     assert_eq!(
         plugins::files_under(&fixture.app_data.path().join("plugins")),
         Vec::<String>::new()
@@ -230,7 +230,7 @@ fn turning_a_plugin_on_writes_the_enabled_list_durably_and_adds_its_page() {
     assert_eq!(fixture.snapshot(), files);
     assert_eq!(manifest_apart_from_enabled(&fixture), manifest);
     assert_eq!(other_noura_files(&fixture), noura);
-    assert_eq!(rail_titles(&app), ["Files", "Hello"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
     assert_eq!(
         plugins::texts(&app, HELLO_PAGE),
         Ok(vec![
@@ -243,7 +243,7 @@ fn turning_a_plugin_on_writes_the_enabled_list_durably_and_adds_its_page() {
     // It runs again at the next launch.
     drop(app);
     let app = fixture.app();
-    assert_eq!(rail_titles(&app), ["Files", "Hello"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn turning_a_plugin_off_stops_it_and_removes_its_page_leaving_every_other_file_a
     assert_eq!(fixture.snapshot(), files);
     assert_eq!(manifest_apart_from_enabled(&fixture), manifest);
     assert_eq!(other_noura_files(&fixture), noura);
-    assert_eq!(rail_titles(&app), ["Files"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
     assert!(app.plugin_view(HELLO_PAGE).is_none());
     assert!(app.tabs().is_empty(), "{:?}", app.tabs());
     let rows = app.plugins();
@@ -343,7 +343,7 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
             update: Vec::new(),
         }
     );
-    assert_eq!(rail_titles(&app), ["Files"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
     assert!(app.plugin_view(HELLO_PAGE).is_none());
     assert_eq!(
         plugins::files_under(&fresh.path().join("plugins")),
@@ -382,7 +382,7 @@ fn uninstalling_removes_code_cache_and_approvals_and_leaves_the_workspace_byte_i
     assert!(!records.contains("hello"), "{records}");
     let rows = app.plugins();
     assert!(!row(&rows, "hello").installed && row(&rows, "hello").enabled);
-    assert_eq!(rail_titles(&app), ["Files"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
     // The folder it came from keeps its files.
     assert!(folder.path().join("hello_plugin.wasm").is_file());
 }
@@ -407,7 +407,15 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
     assert_eq!(app.current_page(), HELLO_PAGE);
     assert_eq!(
         rail_titles(&app),
-        ["Files", "Probe", "Workspace", "Markdown", "Deep", "Broken"]
+        [
+            "Inbox",
+            "Files",
+            "Probe",
+            "Workspace",
+            "Markdown",
+            "Deep",
+            "Broken"
+        ]
     );
     assert_eq!(app.active_tab().unwrap().title(), "Probe");
 }
@@ -523,14 +531,14 @@ fn an_unreadable_approvals_file_runs_no_plugin_and_the_plugin_installs_again() {
 
     let mut app = fixture.app();
 
-    assert_eq!(rail_titles(&app), ["Files"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
     assert!(app.plugin_view(HELLO_PAGE).is_none());
     let rows = app.plugins();
     assert!(!row(&rows, "hello").installed && row(&rows, "hello").enabled);
     // The folder it came from installs it again, in place of the copy
     // that lost its approvals.
     plugins::install(&mut app, folder.path());
-    assert_eq!(rail_titles(&app), ["Files", "Hello"]);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
     assert!(row(&app.plugins(), "hello").running);
 }
 

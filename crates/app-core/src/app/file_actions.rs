@@ -6,6 +6,7 @@ use crate::{
     AppError, EntryKind, OpenAs, Platform, TreeAction, TreeKey,
     files::{remap, shown_name},
     operations::{join, renamed_path},
+    watch::Snapshot,
 };
 
 fn file_name(relative_path: &str) -> &str {
@@ -522,8 +523,10 @@ impl App {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        let tree = workspace.file_tree();
-        self.replace_tree(tree, moved);
+        // The session keeps a newer listing the watch thread made, and the
+        // watch thread compares its next listings with this one.
+        let listing = Snapshot::of(workspace.engine(), workspace.root());
+        self.replace_tree(listing, moved);
     }
 
     /// Say where an action's result went.

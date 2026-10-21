@@ -29,6 +29,15 @@ impl AppError {
         )
     }
 
+    /// The error for a file cloud storage hasn't downloaded to this device
+    /// yet, which Noura doesn't read.
+    pub fn not_downloaded() -> Self {
+        Self::new(
+            "file_not_downloaded",
+            "This file isn't downloaded yet. Try again once it is.",
+        )
+    }
+
     /// Translate a `local-core` error into words, logging the details.
     /// `path` is the folder or file that `access` names.
     pub(crate) fn from_core(error: CoreError, path: &str, access: Access) -> Self {
@@ -54,6 +63,7 @@ impl AppError {
                 .to_owned(),
             "workspace_identity_changed" => format!("A different workspace is now at {path}."),
             "unsupported_path" | "non_utf8_path" => return Self::unsupported_path(),
+            "file_not_downloaded" => return Self::not_downloaded(),
             "symlink_escape" => match (access, error.operation.as_str()) {
                 (Access::ReadFile, _) => {
                     format!("{path} is a link or sits in a linked folder, so Noura won't use it.")
@@ -112,6 +122,7 @@ impl AppError {
             "file_not_found" | "folder_not_found" | "object_not_found" => {
                 format!("{path} isn't in the workspace anymore.")
             }
+            "file_not_downloaded" => return Self::not_downloaded(),
             "collaboration_transaction_required" => "Noura can't rename, move or delete a \
                  file while it's open for live editing."
                 .to_owned(),

@@ -15,7 +15,7 @@ use crate::{
 
 /// An open workspace. Every window of the app shares it.
 pub struct Workspace {
-    engine: WorkspaceEngine,
+    engine: Arc<WorkspaceEngine>,
     system: Arc<dyn System>,
     id: String,
     /// The display name, which any window can change while the other
@@ -39,7 +39,7 @@ impl Workspace {
             engine.set_system_trash(Some(Arc::new(move |path: &Path| trash.trash(path))));
         }
         Ok(Self {
-            engine,
+            engine: Arc::new(engine),
             system,
             id: manifest.id,
             name: RwLock::new(manifest.name),
@@ -66,6 +66,11 @@ impl Workspace {
 
     pub(crate) fn engine(&self) -> &WorkspaceEngine {
         &self.engine
+    }
+
+    /// The engine, for background work that outlives a borrow.
+    pub(crate) fn shared_engine(&self) -> Arc<WorkspaceEngine> {
+        self.engine.clone()
     }
 
     /// The revision of the manifest on disk, and the name in it.
@@ -135,6 +140,28 @@ impl Workspace {
             name: self.name(),
             path: self.root.clone(),
         }
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Workspace {
+    /// Test hook: make the native watcher fail from now on.
+    pub fn force_watch_fault(&self, fault: crate::WatchFault) {
+        self.engine.force_watch_fault(fault);
+    }
+
+    /// Test hook: deliver one native watcher event that names these
+    /// workspace-relative paths, as the platform would.
+    pub fn inject_watch_event(&self, relative_paths: &[impl AsRef<Path>]) {
+        let root = self.engine.root();
+        self.engine
+            .inject_watch_event(relative_paths.iter().map(|path| root.join(path)).collect());
+    }
+
+    /// Test hook: deliver one native watcher event that asks for a full
+    /// rescan, as the platform would.
+    pub fn inject_watch_rescan_request(&self) {
+        self.engine.inject_watch_rescan_request();
     }
 }
 

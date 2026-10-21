@@ -922,6 +922,7 @@ fn service_error(error: &CoreError, what: &str) -> ServiceError {
         "unsupported_path" | "non_utf8_path" => ServiceError::UnsupportedPath,
         "file_not_found" | "object_not_found" => ServiceError::NotFound(what.to_owned()),
         "file_too_large" => ServiceError::Failed("The file is larger than 16 MB.".to_owned()),
+        "file_not_downloaded" => ServiceError::Failed(error.message.clone()),
         code => {
             tracing::warn!(code, operation = %error.operation, "a plugin's workspace read failed");
             ServiceError::Failed("Noura couldn't read the workspace.".to_owned())

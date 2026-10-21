@@ -11,8 +11,7 @@ use support::{FakePicker, create_workspace, harness_registering, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
-/// Until the Inbox (ticket 16) and plugins (ticket 24) add pages, tests
-/// register their own.
+/// Until plugins (ticket 24) add pages, tests register their own.
 fn with_pages(app: &mut app_core::App) {
     app.register_page("test-alpha", "Alpha");
     app.register_page("test-beta", "Beta");
@@ -86,7 +85,7 @@ fn the_rail_labels_its_pages_and_marks_the_current_one() {
     let parent = tempfile::tempdir().unwrap();
     let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
 
-    assert_eq!(rail(&harness), ["Files", "Alpha", "Beta"]);
+    assert_eq!(rail(&harness), ["Inbox", "Files", "Alpha", "Beta"]);
     assert_eq!(current(&harness).as_deref(), Some("Files"));
 
     page(&harness, "Alpha").click();
@@ -173,15 +172,15 @@ fn alt_up_and_alt_down_reorder_the_rail_and_keep_focus_on_the_page() {
 
     harness.key_press_modifiers(Modifiers::ALT, Key::ArrowUp);
     harness.run();
-    assert_eq!(rail(&harness), ["Files", "Beta", "Alpha"]);
+    assert_eq!(rail(&harness), ["Inbox", "Files", "Beta", "Alpha"]);
     assert_eq!(focused_page(&harness).as_deref(), Some("Beta"));
 
     harness.key_press_modifiers(Modifiers::ALT, Key::ArrowUp);
     harness.run();
-    assert_eq!(rail(&harness), ["Beta", "Files", "Alpha"]);
+    assert_eq!(rail(&harness), ["Inbox", "Beta", "Files", "Alpha"]);
     harness.key_press_modifiers(Modifiers::ALT, Key::ArrowDown);
     harness.run();
-    assert_eq!(rail(&harness), ["Files", "Beta", "Alpha"]);
+    assert_eq!(rail(&harness), ["Inbox", "Files", "Beta", "Alpha"]);
     assert_eq!(focused_page(&harness).as_deref(), Some("Beta"));
 }
 
@@ -226,7 +225,7 @@ fn dragging_a_page_moves_it_and_escape_cancels_the_drag() {
 
     let above_files = page(&harness, "Files").rect().center_top() + egui::vec2(0.0, 2.0);
     drag_page(&mut harness, "Beta", above_files, |_| {});
-    assert_eq!(rail(&harness), ["Beta", "Files", "Alpha"]);
+    assert_eq!(rail(&harness), ["Inbox", "Beta", "Files", "Alpha"]);
 
     // Without Escape, this drop would put Beta after Alpha.
     let below_alpha = page(&harness, "Alpha").rect().center_bottom() - egui::vec2(0.0, 4.0);
@@ -234,6 +233,6 @@ fn dragging_a_page_moves_it_and_escape_cancels_the_drag() {
         harness.key_press(Key::Escape);
         harness.run();
     });
-    assert_eq!(rail(&harness), ["Beta", "Files", "Alpha"]);
+    assert_eq!(rail(&harness), ["Inbox", "Beta", "Files", "Alpha"]);
     assert!(tabs(&harness).is_empty(), "a drag must not open the page");
 }

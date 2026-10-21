@@ -4,7 +4,9 @@
 use super::*;
 
 impl WorkspaceEngine {
-    /// Copy the file at `from` to `to`, which must not exist yet.
+    /// Copy the file at `from` to `to`, which must not exist yet. A file
+    /// this device hasn't downloaded from the cloud fails with
+    /// `file_not_downloaded`, unread.
     ///
     /// A managed object's copy is a new object with a fresh ID, the same
     /// properties and body, and a title that follows the new file name. Any
@@ -15,6 +17,9 @@ impl WorkspaceEngine {
         let operation = "file_copy";
         let source = resolve_for_write(&self.root, from, operation)?;
         let destination = resolve_for_write(&self.root, to, operation)?;
+        // Reading a file that lives only in the cloud would start a
+        // download and block.
+        ensure_downloaded(&source, from, operation)?;
         let metadata = std::fs::symlink_metadata(&source)
             .map_err(|error| CoreError::io(error, operation, Some(from)))?;
         if !metadata.is_file() {
@@ -27,8 +32,7 @@ impl WorkspaceEngine {
         if std::fs::symlink_metadata(&destination).is_ok() {
             return Err(copy_destination_exists(operation));
         }
-        let bytes =
-            std::fs::read(&source).map_err(|error| CoreError::io(error, operation, Some(from)))?;
+        let bytes = read_downloaded(&source, from, operation)?;
         if let ParsedMarkdown::Managed(object) = markdown::parse_markdown(from, &bytes) {
             let title = file_stem(to);
             self.create_object(CreateObjectInput {
@@ -44,6 +48,8 @@ impl WorkspaceEngine {
             })?;
             return Ok(());
         }
+        // Held until the walk below has indexed the copy.
+        let _changes = self.hold_changes();
         let guard = self.write_lock(operation)?;
         self.collaboration_guard_file_mutation(to)?;
         // Checked again under the lock so a concurrent writer can't be
@@ -58,9 +64,13 @@ impl WorkspaceEngine {
                 operation,
             )
         })?;
-        atomic_write(&self.root, relative, &bytes, operation)?;
+        let copy = normalized_relative_path(&self.root, &destination, operation)?;
+        self.expect_own_write(&copy, Some(&markdown::revision(&bytes)));
+        atomic_write(&self.root, relative, &bytes, operation)
+            .inspect_err(|_| self.forget_own_write(&copy))?;
         drop(guard);
         self.reconcile_after_change(operation);
+        self.announce_own_change(&[&copy]);
         Ok(())
     }
 }

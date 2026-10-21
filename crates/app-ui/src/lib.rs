@@ -7,6 +7,7 @@ mod chooser;
 mod common;
 mod finder;
 mod ignored_files;
+mod inbox;
 mod keys;
 mod markdown;
 mod palette;
