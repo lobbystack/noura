@@ -3,7 +3,7 @@ use editor_core::offset_types::{Grapheme, RangeExt};
 
 use crate::MdRender;
 use crate::palette::ThemeExt as _;
-use crate::widget::utils::wrap_layout::{Format, Layout};
+use crate::widget::utils::wrap_layout::{Format, Layout, StyleInfo};
 
 impl<'ast> MdRender {
     pub fn layout_text(
@@ -40,6 +40,25 @@ impl<'ast> MdRender {
                 return;
             }
         }
-        layout.push_source(node_range, &self.buffer[node_range], text_format);
+        // Misspelled words get their own style scope, which paints the
+        // wavy line under them.
+        let mut at = node_range.0;
+        for word in self.misspelled_in(node, node_range) {
+            if at < word.0 {
+                let r = (at, word.0);
+                layout.push_source(r, &self.buffer[r], text_format.clone());
+            }
+            layout.style_open(StyleInfo {
+                misspelled: true,
+                ..StyleInfo::new(text_format.clone(), word)
+            });
+            layout.push_source(word, &self.buffer[word], text_format.clone());
+            layout.style_close();
+            at = word.1;
+        }
+        if at < node_range.1 {
+            let r = (at, node_range.1);
+            layout.push_source(r, &self.buffer[r], text_format);
+        }
     }
 }

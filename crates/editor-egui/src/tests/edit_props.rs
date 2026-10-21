@@ -801,12 +801,13 @@ fn layout_cache_consistent_check(buf: &[u8]) -> Result<(), &'static str> {
         r.doc.cache.line_prefix_len.borrow_mut().clear();
         r.populate_hidden_by_fold(root);
 
-        // populate writes one entry per descendant; if the cache ends up
-        // smaller, two different nodes mapped to the same key and one
-        // silently clobbered the other.
+        // populate writes one entry per descendant of a note with fold
+        // tags (without one nothing folds, and it writes none); if the cache
+        // ends up smaller, two different nodes mapped to the same key and
+        // one silently clobbered the other.
         let descendant_count = root.descendants().count();
         let cache_size = r.doc.cache.hidden_by_fold.borrow().len();
-        if cache_size < descendant_count {
+        if r.bounds.has_fold_tags && cache_size < descendant_count {
             violation = Some("hidden_by_fold cache key collision (cache shorter than node count)");
         }
 

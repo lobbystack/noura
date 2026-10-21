@@ -1,5 +1,7 @@
-//! Markdown files without a managed ID, edited as raw text. Saves keep the
-//! bytes the editor did not touch, including line endings and the BOM.
+//! Files edited as raw text: Markdown files, whether they hold a managed
+//! note or not, and the plain-text and code files the editor opens. Saves
+//! keep the bytes the editor did not touch, including line endings and the
+//! BOM.
 
 use super::*;
 pub(super) use workspace_format::raw_text::{RawLayout, compose_raw_bytes, raw_history_dir};
@@ -206,6 +208,10 @@ impl WorkspaceEngine {
         bytes: &[u8],
         operation: &str,
     ) -> Result<IndexStatus> {
+        // The index holds Markdown files only.
+        if !crate::text_files::is_markdown_text(relative) {
+            return Ok(IndexStatus::Updated);
+        }
         let destination = resolve_for_write(&self.root, relative, operation)?;
         let parsed = markdown::parse_markdown(relative, bytes);
         let result = self
@@ -555,11 +561,13 @@ pub(super) fn split_raw_bytes(bytes: &[u8]) -> Result<(String, RawLayout)> {
     })
 }
 
+/// The path of a file edited as raw text: a Markdown file, or a plain-text or
+/// code file from [`crate::is_plain_text_path`]'s list, inside the workspace.
 fn validate_raw_markdown_path(root: &Path, relative: &str) -> Result<PathBuf> {
-    if !relative.to_ascii_lowercase().ends_with(".md") {
+    if !crate::text_files::is_markdown_text(relative) && !crate::is_plain_text_path(relative) {
         return Err(CoreError::validation(
             "invalid_raw_markdown_path",
-            "Raw edits are limited to Markdown files",
+            "Raw edits are limited to Markdown, plain-text and code files",
             "raw_markdown",
         ));
     }
