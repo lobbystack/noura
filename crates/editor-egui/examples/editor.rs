@@ -70,6 +70,7 @@ fn main() -> eframe::Result {
                 MdConfig {
                     readonly: false,
                     ext,
+                    toolbar: true,
                 },
             );
             Ok(Box::new(ExampleApp {
@@ -374,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn cmd_shift_s_reaches_the_editor_and_only_cmd_s_saves() {
+    fn only_cmd_s_saves() {
         use egui::{Key, Modifiers};
 
         let dir = tempfile::tempdir().unwrap();
@@ -382,17 +383,18 @@ mod tests {
         std::fs::write(&path, "note\n").unwrap();
         let mut harness = app_harness(&path);
 
+        // The caret sits at the start, so bold writes an empty pair there.
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+        harness.run_steps(1);
         harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
         harness.run_steps(1);
-        // The caret sits at the start, so the editor writes an empty
-        // subscript there.
-        assert_eq!(app(&harness).editor.text(), "~~note\n");
+        assert_eq!(app(&harness).editor.text(), "****note\n");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "note\n");
         assert_eq!(app(&harness).status, "");
 
         harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
         harness.run_steps(1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "~~note\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "****note\n");
         assert!(app(&harness).status.starts_with("Saved"));
     }
 

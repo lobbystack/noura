@@ -223,7 +223,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
                 ..MdConfig::default()
             }
         } else {
-            MdConfig::default()
+            MdConfig {
+                toolbar: true,
+                ..MdConfig::default()
+            }
         };
         OpenNote {
             editor: Editor::new(ui.ctx(), session.text(), config),
