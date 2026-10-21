@@ -546,6 +546,30 @@ fn renaming_saves_the_notes_typing_first() {
 }
 
 #[test]
+fn a_rename_refuses_while_a_save_still_runs() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}typed\n"));
+    let lock = hold_writes(&fixture, &app);
+    app.save_due_notes(at + SAVE_PAUSE);
+    app.set_note_flush_timeout_for_testing(Duration::from_millis(200));
+
+    app.rename_note(tab, "Renamed");
+
+    assert_eq!(
+        app.note(tab).unwrap().name_problem(),
+        Some("Noura couldn't save the note first. It's still saving. Try again in a moment.")
+    );
+    assert!(fixture.exists("Plan.md"));
+    assert!(!fixture.exists("Renamed.md"));
+    lock.unlock().unwrap();
+    settle_saves(&mut app);
+    assert_eq!(fixture.read("Plan.md"), managed("\n", "Body\ntyped\n"));
+}
+
+#[test]
 fn a_save_of_a_file_deleted_outside_noura_says_so_and_keeps_the_text() {
     let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
     let mut app = fixture.app();

@@ -11,9 +11,6 @@ use crate::{
     notes::{Finished, NoteSession, NoteSync, PropertyValue, SaveProblem, is_markdown},
 };
 
-/// How long a save that must finish first, as before a rename, may take.
-const FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Something that waits for open notes to save before it happens.
 #[derive(Clone)]
 pub(super) enum Leave {
@@ -138,6 +135,13 @@ impl App {
     /// What the editor in the tab `tab` has to catch up on after a save.
     pub fn take_note_sync(&mut self, tab: TabId) -> Option<NoteSync> {
         self.notes.sessions.get_mut(&tab)?.take_sync()
+    }
+
+    /// Wait at most `timeout` for a running save before a rename, a move
+    /// or a drag out, instead of 30 seconds. Tests only.
+    #[doc(hidden)]
+    pub fn set_note_flush_timeout_for_testing(&mut self, timeout: Duration) {
+        self.notes.flush_timeout = timeout;
     }
 
     /// Whether a note save is running.
@@ -569,15 +573,29 @@ impl App {
         };
         for tab in tabs {
             // A running save finishes first.
+            let deadline = Instant::now() + self.notes.flush_timeout;
             while self
                 .notes
                 .sessions
                 .get(&tab)
                 .is_some_and(NoteSession::is_saving)
             {
-                match self.notes.results.recv_timeout(FLUSH_TIMEOUT) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match self.notes.results.recv_timeout(left) {
                     Ok(result) => self.finish_note_write(result),
-                    Err(_) => break,
+                    Err(_) => {
+                        // It may still land later, so nothing moves meanwhile.
+                        let name = self
+                            .notes
+                            .sessions
+                            .get(&tab)
+                            .map(NoteSession::name)
+                            .unwrap_or_default();
+                        let problem = SaveProblem {
+                            reason: "It's still saving. Try again in a moment.".to_owned(),
+                        };
+                        return Err((name, problem));
+                    }
                 }
             }
             // The text, then any property edits.

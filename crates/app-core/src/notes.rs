@@ -30,6 +30,9 @@ pub const SAVE_PAUSE: Duration = Duration::from_millis(300);
 /// The longest continuous typing goes before a save starts anyway.
 pub const SAVE_AT_LEAST_EVERY: Duration = Duration::from_secs(2);
 
+/// How long a save that must finish first, as before a rename, may take.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A frontmatter property as the properties panel shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Property {
@@ -93,6 +96,8 @@ impl PropertyValue {
     }
 }
 
+/// Whether `text` is a day on the calendar written `YYYY-MM-DD`, which the
+/// panel edits with a date picker.
 fn is_civil_date(text: &str) -> bool {
     text.len() == 10
         && text.as_bytes().get(4) == Some(&b'-')
@@ -101,6 +106,7 @@ fn is_civil_date(text: &str) -> bool {
             .bytes()
             .enumerate()
             .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+        && text.parse::<jiff::civil::Date>().is_ok()
 }
 
 /// The properties Noura keeps for itself, which the panel shows read-only.
@@ -631,6 +637,8 @@ pub(crate) struct Notes {
     pub(crate) unreadable: HashMap<TabId, AppError>,
     sender: Sender<Finished>,
     pub(crate) results: Receiver<Finished>,
+    /// How long a save that must finish first may take.
+    pub(crate) flush_timeout: Duration,
 }
 
 impl Default for Notes {
@@ -641,6 +649,7 @@ impl Default for Notes {
             unreadable: HashMap::new(),
             sender,
             results,
+            flush_timeout: FLUSH_TIMEOUT,
         }
     }
 }
@@ -779,8 +788,15 @@ mod tests {
     #[test]
     fn only_civil_dates_edit_as_dates() {
         assert!(is_civil_date("2026-10-21"));
+        assert!(is_civil_date("2028-02-29"));
         assert!(!is_civil_date("2026-10-21T10:00:00Z"));
         assert!(!is_civil_date("21-10-2026"));
+        assert!(!is_civil_date("2026-99-99"));
+        assert!(!is_civil_date("2026-02-30"));
+        assert_eq!(
+            PropertyValue::of(&serde_json::json!("2026-99-99")),
+            PropertyValue::Text("2026-99-99".into())
+        );
         assert_eq!(
             PropertyValue::of(&serde_json::json!("2026-10-21")),
             PropertyValue::Date("2026-10-21".into())

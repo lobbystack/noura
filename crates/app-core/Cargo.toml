@@ -10,6 +10,8 @@ rust-version.workspace = true
 aho-corasick.workspace = true
 atomic-write-file.workspace = true
 directories.workspace = true
+# Tells a calendar date property from text shaped like one.
+jiff.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
 nucleo-matcher.workspace = true
 serde.workspace = true
