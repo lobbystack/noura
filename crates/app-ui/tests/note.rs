@@ -120,6 +120,30 @@ fn a_markdown_file_without_an_id_opens_without_a_properties_panel() {
     );
 }
 
+/// The live preview misreads frontmatter with a lone carriage return, and
+/// a callout after it crashed the editor, so such a file shows as source
+/// until ticket 18.
+#[test]
+fn a_file_the_preview_misreads_opens_as_source_text() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    let bytes = "---\na\rb\n---\n> [!note] A\n";
+    std::fs::write(folder.join("Odd.md"), bytes).unwrap();
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+
+    harness.get_by_role_and_label(Role::TreeItem, "Odd").click();
+    harness.run_steps(4);
+
+    harness.get_by_role_and_label(Role::Document, "Note text");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("Odd.md")).unwrap(),
+        bytes
+    );
+}
+
 #[test]
 fn f2_moves_from_the_text_to_the_name_and_enter_renames_the_file() {
     let app_data = tempfile::tempdir().unwrap();

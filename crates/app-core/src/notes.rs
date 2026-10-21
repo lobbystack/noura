@@ -163,6 +163,9 @@ pub struct NoteSession {
     /// without an ID. Decided when the note opens, so a file that gains or
     /// loses an ID while open keeps how its text maps to the editor.
     whole_file: bool,
+    /// Whether the editor shows the text as source, without the live
+    /// preview. Decided when the note opens.
+    source_only: bool,
     managed: Option<Managed>,
     /// The editor's text and its buffer version, as the editor last
     /// reported them.
@@ -196,6 +199,7 @@ impl NoteSession {
             revision: String::new(),
             body_start: 0,
             whole_file: true,
+            source_only: false,
             managed: None,
             text: String::new(),
             version: 0,
@@ -215,6 +219,7 @@ impl NoteSession {
         );
         session.read(read.body, read.revision);
         session.text = session.body().to_owned();
+        session.source_only = misread_frontmatter(&session.text);
         Ok(session)
     }
 
@@ -263,6 +268,15 @@ impl NoteSession {
     /// The text the editor shows.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Whether the editor shows the text as source, without the live
+    /// preview. The preview misreads a file shown whole whose frontmatter
+    /// holds a lone carriage return: it reads the wrong lines after it,
+    /// and a callout there crashes it. Ticket 18 replaces the frontmatter
+    /// detection behind this; until then such a file shows as source.
+    pub fn shows_source(&self) -> bool {
+        self.source_only
     }
 
     /// The stable ID of a managed note.
@@ -721,6 +735,15 @@ pub(crate) fn save_reason(error: &CoreError) -> String {
     }
 }
 
+/// Whether the editor's live preview would misread `text`: it starts with
+/// frontmatter and holds a carriage return that ends no line break.
+fn misread_frontmatter(text: &str) -> bool {
+    text.starts_with("---")
+        && text
+            .match_indices('\r')
+            .any(|(index, _)| !text[index + 1..].starts_with('\n'))
+}
+
 /// Whether the file at `relative_path` opens in the note editor.
 pub(crate) fn is_markdown(relative_path: &str) -> bool {
     relative_path.len() > 3
@@ -767,6 +790,14 @@ mod tests {
         for (error, reason) in cases {
             assert_eq!(save_reason(&error), reason, "{}", error.code);
         }
+    }
+
+    #[test]
+    fn frontmatter_with_a_lone_carriage_return_shows_as_source() {
+        assert!(misread_frontmatter("---\na\rb\n---\n> [!note] A\n"));
+        assert!(!misread_frontmatter("---\na: b\r\n---\nText\r\n"));
+        assert!(!misread_frontmatter("Text\rmore\n"));
+        assert!(!misread_frontmatter("---\na: b\n---\nText\n"));
     }
 
     #[test]
