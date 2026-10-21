@@ -32,6 +32,9 @@ pub enum ConstructKind {
     Callout,
     /// A fenced code block.
     CodeBlock,
+    /// Frontmatter at the start of a note shown whole, drawn as literal
+    /// text.
+    Frontmatter,
     /// `==text==`, drawn highlighted.
     Highlight,
     /// `%%text%%`, hidden away from the caret.
@@ -46,6 +49,10 @@ pub enum ConstructKind {
     WikiLink,
     /// A GFM table, drawn as a grid while the caret is outside it.
     Table,
+    /// `$inline$` or `$$display$$` math, drawn as formatted source.
+    Math {
+        display: bool,
+    },
     /// `![[target]]`: a block with the note's title and text when it's
     /// alone on its line and names a note, and a link otherwise.
     Embed {
@@ -210,11 +217,29 @@ impl MdDoc {
                 }
                 None => (ConstructKind::BlockQuote, marker(), self.reveal(node)),
             },
+            NodeValue::Math(math) => (
+                ConstructKind::Math {
+                    display: math.display_math,
+                },
+                self.math_delimiters(node).into_iter().collect(),
+                self.node_revealed(node),
+            ),
             NodeValue::Table(_) => (
                 ConstructKind::Table,
                 self.table_syntax(node),
                 self.reveal_table(node),
             ),
+            // Frontmatter shown in the text parses as a fenced code block
+            // (see `crate::lookahead`); its syntax is its delimiters.
+            NodeValue::CodeBlock(code_block)
+                if code_block.fenced && self.frontmatter_range() == Some(range) =>
+            {
+                (
+                    ConstructKind::Frontmatter,
+                    vec![self.node_first_line(node), self.node_last_line(node)],
+                    self.reveal_fenced_code_block(node, &code_block),
+                )
+            }
             NodeValue::CodeBlock(code_block) if code_block.fenced => {
                 let first = self.node_first_line(node);
                 let last = self.node_last_line(node);

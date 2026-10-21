@@ -129,11 +129,11 @@ fn a_markdown_file_without_an_id_opens_without_a_properties_panel() {
     );
 }
 
-/// The live preview misreads frontmatter with a lone carriage return, and
-/// a callout after it crashed the editor, so such a file shows as source
-/// until ticket 18.
+/// Frontmatter with a lone carriage return once made the live preview read
+/// every line after it one line off, and a callout there crashed it. Such
+/// a file now opens in the live preview and keeps its bytes.
 #[test]
-fn a_file_the_preview_misreads_opens_as_source_text() {
+fn a_file_with_a_lone_carriage_return_in_its_frontmatter_opens_in_the_preview() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");

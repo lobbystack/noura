@@ -19,6 +19,7 @@ pub mod fold;
 pub mod images;
 pub mod input;
 pub mod links;
+pub mod lookahead;
 pub mod nodes;
 pub mod offset_types;
 pub mod operation_types;

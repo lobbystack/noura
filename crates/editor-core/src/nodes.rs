@@ -834,6 +834,21 @@ impl<'ast> MdDoc {
         Some((range.start(), first_child_range.start()))
     }
 
+    /// The dollar signs around math: `$` for inline math and `$$` for
+    /// display math, opening then closing.
+    pub fn math_delimiters(&self, node: &'ast AstNode<'ast>) -> [(Grapheme, Grapheme); 2] {
+        let range = self.node_range(node);
+        let width = match &node.data.borrow().value {
+            NodeValue::Math(math) if math.display_math => 2,
+            _ => 1,
+        };
+        let width = width.min(range.len().0 / 2);
+        [
+            (range.start(), range.start() + width),
+            (range.end() - width, range.end()),
+        ]
+    }
+
     /// Returns the range of the leading syntax characters that define this node
     pub fn head_range(&self, node: &'ast AstNode<'ast>) -> Option<(Grapheme, Grapheme)> {
         if matches!(node.data.borrow().value, NodeValue::Code(_)) {

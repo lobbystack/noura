@@ -726,9 +726,7 @@ impl Editor {
         let arena = Arena::new();
         let root = {
             let _parse = tracing::trace_span!("MarkdownEditor::parse").entered();
-            let options = MdDoc::comrak_options();
-            let text_with_newline = self.edit.renderer.buffer.current.text_with("\n");
-            comrak::parse_document(&arena, &text_with_newline, &options)
+            self.edit.renderer.parse(&arena)
         };
 
         if PRINT {

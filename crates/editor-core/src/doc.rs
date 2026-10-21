@@ -224,9 +224,7 @@ impl MdDoc {
     pub fn reparse<'a>(&mut self, arena: &'a Arena<'a>) -> &'a AstNode<'a> {
         self.cache.ensure_text_consistent(self.text_seq);
 
-        let options = Self::comrak_options();
-        let text_with_newline = self.buffer.current.text_with("\n");
-        let root = comrak::parse_document(arena, &text_with_newline, &options);
+        let root = self.parse(arena);
 
         // Bounds depend only on text. Skip rebuild + bump bounds_seq
         // when text hasn't changed.
@@ -270,7 +268,8 @@ impl MdDoc {
         options.extension.autolink = true;
         options.extension.description_lists = false;
         options.extension.footnotes = false;
-        options.extension.front_matter_delimiter = Some("---".to_string());
+        // The editor reads frontmatter itself; see `crate::lookahead`.
+        options.extension.front_matter_delimiter = None;
         options.extension.greentext = false;
         options.extension.header_ids = None; // intended for HTML renderers
         options.extension.highlight = true;

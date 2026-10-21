@@ -219,17 +219,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     };
     let note = view.notes.entry(tab).or_insert_with(|| {
         let clicked = ui.input(|input| input.pointer.any_released());
-        let config = if session.shows_source() {
-            // Any extension but `md` shows the text as source.
-            MdConfig {
-                ext: "txt".into(),
-                ..MdConfig::default()
-            }
-        } else {
-            MdConfig::default()
-        };
         OpenNote {
-            editor: Editor::new(ui.ctx(), session.text(), config),
+            editor: Editor::new(ui.ctx(), session.text(), MdConfig::default()),
             name: None,
             focus_name: false,
             drafts: HashMap::new(),
