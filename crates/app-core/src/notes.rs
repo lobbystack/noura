@@ -237,23 +237,25 @@ pub struct NoteSession {
     /// managed note, or 0.
     body_start: usize,
     /// Whether the editor shows the whole file, as for a Markdown file
-    /// without an ID. Decided when the note opens, so a file that loses an
-    /// ID while open keeps how its text maps to the editor. A Markdown file
-    /// shown whole that a save or a conflict choice leaves with an ID and a
-    /// type opens as a note, as [`Self::reopen_if_fixed`] says.
+    /// without an ID. A managed note's file that holds no managed note
+    /// anymore shows whole from then on, as [`Self::read`] says. A Markdown
+    /// file shown whole that a save or a conflict choice leaves with an ID
+    /// and a type opens as a note, as [`Self::reopen_if_fixed`] says.
     whole_file: bool,
     /// Whether the editor shows the text as source, without the live
     /// preview. Decided when the note opens.
     source_only: bool,
     /// Whether the file is a plain-text or code file rather than Markdown:
-    /// its text is never read as frontmatter. Decided when it opens.
+    /// its text is never read as frontmatter. Decided when it opens, and
+    /// again once nothing is unsaved after a move changed its extension.
     text_file: bool,
     /// Why the properties of a Markdown file shown whole don't parse, as
     /// the file holds them now.
     broken: Option<&'static str>,
     /// Whether the editor shows the file as source because its properties
-    /// didn't parse when it opened. Once a save leaves them readable, the
-    /// file shows as it would open then.
+    /// didn't parse when it opened, or when a managed note's file lost its
+    /// managed note. Once a save leaves them readable, the file shows as it
+    /// would open then.
     broken_layout: bool,
     managed: Option<Managed>,
     /// The editor's text and its buffer version, as the editor last
@@ -301,15 +303,14 @@ impl NoteSession {
         let read = engine
             .read_raw_markdown(relative_path)
             .map_err(|error| open_error(error, relative_path))?;
-        let text_file = !is_markdown(relative_path);
         let mut session = Self {
             relative_path: relative_path.to_owned(),
-            base: String::new(),
-            revision: String::new(),
+            base: read.body,
+            revision: read.revision,
             body_start: 0,
             whole_file: true,
             source_only: false,
-            text_file,
+            text_file: false,
             broken: None,
             broken_layout: false,
             managed: None,
@@ -330,33 +331,58 @@ impl NoteSession {
             conflict: None,
             deleted: false,
             restore_problem: None,
-            uses_crlf: false,
-            has_bom: false,
+            uses_crlf: read.uses_crlf,
+            has_bom: read.has_bom,
         };
-        session.whole_file = text_file
-            || !matches!(
-                local_core::parse_markdown(relative_path, read.body.as_bytes()),
-                ParsedMarkdown::Managed(_)
-            );
-        session.take(read);
-        session.text = session.body().to_owned();
-        session.broken_layout = session.broken.is_some();
-        session.source_only =
-            text_file || session.broken_layout || misread_frontmatter(&session.text);
+        session.lay_out();
         Ok(session)
     }
 
-    /// Take `read` as what the file holds now.
-    fn take(&mut self, read: local_core::RawMarkdownRead) {
+    /// Show the text Noura last read as the file at its path opens: a
+    /// plain-text or code file as source, a managed note after its
+    /// frontmatter, and any other Markdown file whole, as source when its
+    /// properties don't parse.
+    fn lay_out(&mut self) {
+        self.text_file = !is_markdown(&self.relative_path);
+        self.whole_file = self.text_file
+            || !matches!(
+                local_core::parse_markdown(&self.relative_path, self.base.as_bytes()),
+                ParsedMarkdown::Managed(_)
+            );
+        let base = std::mem::take(&mut self.base);
+        let revision = std::mem::take(&mut self.revision);
+        self.read(base, revision);
+        self.text = self.body().to_owned();
+        self.broken_layout = self.broken.is_some();
+        self.source_only = self.text_file || self.broken_layout || misread_frontmatter(&self.text);
+    }
+
+    /// Take `read` as what the file holds now, as [`Self::read`] says.
+    fn take(&mut self, read: local_core::RawMarkdownRead) -> Option<String> {
         self.uses_crlf = read.uses_crlf;
         self.has_bom = read.has_bom;
-        self.read(read.body, read.revision);
+        self.read(read.body, read.revision)
     }
 
     /// Take `base`, the file's whole LF text, as what the file holds now.
-    fn read(&mut self, base: String, revision: String) {
+    ///
+    /// A managed note's file that holds no managed note anymore, as when
+    /// another app broke its properties, shows whole from now on, as such
+    /// a file opens: as source under the notice when its properties don't
+    /// parse. The editor's text gains the frontmatter it followed, which
+    /// comes back as `Some` for the caller to put before any other text it
+    /// holds in the editor's old terms. The editor starts again from the
+    /// whole text, as a change of [`Self::shows_whole_file`] tells it.
+    /// Writes then send the whole text, so they never drop the frontmatter
+    /// or write it twice.
+    fn read(&mut self, base: String, revision: String) -> Option<String> {
         let parsed = (!self.text_file)
             .then(|| local_core::parse_markdown(&self.relative_path, base.as_bytes()));
+        let lost = (!self.whole_file && !matches!(parsed, Some(ParsedMarkdown::Managed(_))))
+            .then(|| self.base[..self.body_start].to_owned());
+        if lost.is_some() {
+            self.whole_file = true;
+        }
         self.broken = match &parsed {
             Some(ParsedMarkdown::Malformed { error, .. }) if self.whole_file => {
                 Some(properties_problem(error))
@@ -379,6 +405,15 @@ impl NoteSession {
         };
         self.base = base;
         self.revision = revision;
+        if let Some(frontmatter) = &lost {
+            self.text.insert_str(0, frontmatter);
+            self.broken_layout = self.broken.is_some();
+            self.source_only = self.broken_layout || misread_frontmatter(&self.base);
+            if let Some(conflict) = &mut self.conflict {
+                conflict.shown.clone_from(&conflict.file);
+            }
+        }
+        lost
     }
 
     /// The text the file holds for the editor: after the frontmatter of a
@@ -638,11 +673,11 @@ impl NoteSession {
         };
         match written {
             Written::Text(Ok(RawSaveResult::Saved { current, .. })) => {
-                self.take(current);
+                let sent = in_whole_file(self.take(current), sent);
                 self.saved(version, sent, None);
             }
             Written::Text(Ok(RawSaveResult::Merged { current, .. })) => {
-                self.take(current);
+                let sent = in_whole_file(self.take(current), sent);
                 let merged = self.body().to_owned();
                 // The editor merges the outside edit in when it shows the
                 // note. Until then the session's text carries it too, so a
@@ -666,7 +701,9 @@ impl NoteSession {
                 self.property_edits
                     .drain(..count.min(self.property_edits.len()));
                 let body = self.body().to_owned();
-                self.take(read);
+                let frontmatter = self.take(read);
+                let body = in_whole_file(frontmatter.clone(), body);
+                let sent = in_whole_file(frontmatter, sent);
                 self.problem = None;
                 if self.body() != body {
                     // The edits went into the file as another program left
@@ -763,34 +800,35 @@ impl NoteSession {
         self.reopen_if_fixed();
     }
 
-    /// Show a Markdown file shown whole as it would open now, once the
-    /// file holds readable properties and nothing is unsaved: a note with
-    /// its properties panel when they hold an ID and a type, whether they
-    /// broke while you typed or the file opened with them broken. A file
-    /// that opened with broken properties and now has readable ones
-    /// without an ID shows in the live preview. The editor starts again
-    /// from the note's text, as [`Self::take_reset`] tells it, which writes
-    /// nothing. Edits typed while the save ran wait for their own save
-    /// first, so the text the editor shows always maps to the file the same
-    /// way.
+    /// Show the file as it would open now, once nothing is unsaved. A
+    /// Markdown file shown whole whose properties hold an ID and a type
+    /// shows as a note with its properties panel: the file opened with
+    /// them broken, they broke while you typed, or another app broke them.
+    /// A file shown as source for its broken properties whose properties
+    /// now read without an ID shows in the live preview. A move that
+    /// changed the file's extension shows it as its new kind. The editor
+    /// starts again from the note's text, as [`Self::take_reset`] tells it,
+    /// which writes nothing. Edits typed while the save ran wait for their
+    /// own save first, so the text the editor shows always maps to the file
+    /// the same way.
     fn reopen_if_fixed(&mut self) {
-        if self.text_file || !self.whole_file || self.broken.is_some() || self.is_unsaved() {
+        if self.is_unsaved() {
             return;
         }
-        let managed = matches!(
-            local_core::parse_markdown(&self.relative_path, self.base.as_bytes()),
-            ParsedMarkdown::Managed(_)
-        );
-        if !managed && !self.broken_layout {
-            return;
+        let same_kind = self.text_file != is_markdown(&self.relative_path);
+        if same_kind {
+            if self.text_file || !self.whole_file || self.broken.is_some() {
+                return;
+            }
+            let managed = matches!(
+                local_core::parse_markdown(&self.relative_path, self.base.as_bytes()),
+                ParsedMarkdown::Managed(_)
+            );
+            if !managed && !self.broken_layout {
+                return;
+            }
         }
-        self.whole_file = !managed;
-        let base = std::mem::take(&mut self.base);
-        let revision = std::mem::take(&mut self.revision);
-        self.read(base, revision);
-        self.text = self.body().to_owned();
-        self.broken_layout = false;
-        self.source_only = misread_frontmatter(&self.text);
+        self.lay_out();
         self.sync = None;
         self.reset = Some(self.text.clone());
     }
@@ -953,16 +991,12 @@ impl NoteSession {
 
     /// Follow the file to `relative_path`. A move that turns a plain-text
     /// or code file into a Markdown file, or the other way, as when the
-    /// name field renames `LICENSE` to `LICENSE.md`, opens the file as its
-    /// new kind once nothing is unsaved. Until then it shows as before.
-    pub(crate) fn moved_to(&mut self, engine: &WorkspaceEngine, relative_path: &str) {
+    /// name field renames `LICENSE` to `LICENSE.md`, shows the file as its
+    /// new kind once nothing is unsaved, as [`Self::reopen_if_fixed`] says.
+    /// Noura's own renames and moves save first, so that's at once.
+    pub(crate) fn moved_to(&mut self, relative_path: &str) {
         relative_path.clone_into(&mut self.relative_path);
-        if self.text_file != is_markdown(relative_path) || self.is_unsaved() {
-            return;
-        }
-        if let Ok(fresh) = Self::open(engine, relative_path) {
-            self.replace_with(fresh);
-        }
+        self.reopen_if_fixed();
     }
 
     /// Look at the file after the files changed on disk. A note with
@@ -1053,10 +1087,15 @@ impl NoteSession {
                 self.problem = None;
                 self.waiting_for_edit = false;
                 self.forced = false;
-                self.take(resolved.current);
+                let lost = self.take(resolved.current).is_some();
                 match choice {
-                    // The file holds your text now.
+                    // The file holds your text now. When it holds no
+                    // managed note anymore, the editor shows all of it,
+                    // with the properties another app broke.
                     ConflictChoice::Mine => {
+                        if lost {
+                            self.text = self.body().to_owned();
+                        }
                         self.sync = Some(NoteSync {
                             saved: (self.version, self.text.clone()),
                             merged: None,
@@ -1350,6 +1389,18 @@ fn misread_frontmatter(text: &str) -> bool {
         && text
             .match_indices('\r')
             .any(|(index, _)| !text[index + 1..].starts_with('\n'))
+}
+
+/// `text`, which follows the frontmatter of a managed note, as the whole
+/// file's text once [`NoteSession::read`] returned that `frontmatter`.
+fn in_whole_file(frontmatter: Option<String>, text: String) -> String {
+    match frontmatter {
+        Some(mut whole) => {
+            whole.push_str(&text);
+            whole
+        }
+        None => text,
+    }
 }
 
 /// `file_name` split before its extension's dot: `config.json` into

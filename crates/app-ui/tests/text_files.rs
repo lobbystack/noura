@@ -1,7 +1,8 @@
 //! Text files and notes with broken properties through AccessKit: a text
 //! file opens as source with no formatting toolbar, a broken note shows a
-//! notice above its text, and fixing its properties, or giving a Markdown
-//! file an ID and a type, opens it as a note with its properties panel.
+//! notice above its text, also when another app breaks an open note's
+//! properties, and fixing its properties, or giving a Markdown file an ID
+//! and a type, opens it as a note with its properties panel.
 
 mod support;
 
@@ -213,4 +214,70 @@ fn a_note_that_gains_an_id_and_a_type_while_open_shows_its_properties_panel() {
     harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
     harness.run_steps(3);
     assert_eq!(note_text(&harness), "# Plan\n");
+}
+
+#[test]
+fn properties_another_app_breaks_while_you_type_show_the_notice_above_the_whole_file() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let note = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\ncolor: green\n---\n\
+                one\ntwo\nthree\n";
+    let mut harness = opened(app_data.path(), &folder, &[("Plan.md", note)], "Plan");
+    harness.get_by_role_and_label(Role::Group, "Properties");
+
+    // Your typing and another app's edit, which also breaks the
+    // properties, merge in the save.
+    harness.event(egui::Event::Text("Typed. ".into()));
+    harness.run_steps(2);
+    let theirs = note
+        .replace("color: green", "color: [unclosed")
+        .replace("three", "three, outside");
+    std::fs::write(folder.join("Plan.md"), &theirs).unwrap();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Alert, NOTICE)
+            .is_some()
+    });
+
+    let merged = std::fs::read_to_string(folder.join("Plan.md")).unwrap();
+    assert!(merged.contains("Typed. "), "{merged:?}");
+    assert_eq!(merged.replace("Typed. ", ""), theirs);
+    harness.get_by_role_and_label(Role::Alert, NOTICE);
+    harness.get_by_label("The properties aren\u{2019}t valid YAML. Fix them in the text below.");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Properties")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Toolbar, "Formatting")
+            .is_none()
+    );
+    assert_eq!(note_text(&harness), merged);
+    let written = std::fs::metadata(folder.join("Plan.md"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    // The editor that starts again from the whole file reports it, which
+    // is no edit.
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(20));
+        harness.step();
+    }
+    let app = harness.state().app();
+    assert!(!app.is_saving_notes());
+    assert!(!app.has_unsaved_notes());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("Plan.md")).unwrap(),
+        merged
+    );
+    assert_eq!(
+        std::fs::metadata(folder.join("Plan.md"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        written
+    );
 }
