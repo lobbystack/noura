@@ -5,10 +5,21 @@ package noura:plugin@0.1.0;
 
 // What a capability interface returns when it refuses or fails a call.
 interface types {
+  // A property whose value doesn't fit its object type's schema.
+  record property-error {
+    // The property's name.
+    property: string,
+    // What is wrong, as the workspace format's validation codes say:
+    // `wrong_type`, `not_allowed`, `invalid_date` or `invalid_reference`.
+    code: string,
+  }
+
   variant error {
     // The plugin's manifest doesn't declare the capability this call needs.
     // Holds the capability's name, such as `workspace-read`. The host ran
-    // nothing for the call.
+    // nothing for the call. A write to an object whose type the plugin
+    // didn't register, a note for one, returns this too, naming
+    // `object-types`: the capability covers the plugin's own types only.
     capability-not-declared(string),
     // A file or folder name that a WIT string can't hold, such as one that
     // isn't valid UTF-8. Noura never passes a changed copy of a name.
@@ -22,6 +33,18 @@ interface types {
     // The host couldn't finish the call. Holds a message for the plugin's
     // author.
     failed(string),
+    // The object's file changed since the plugin read it: it no longer
+    // holds the content revision the write carried. Nothing was written.
+    // Holds the object's ID.
+    revision-conflict(string),
+    // More than one file holds this stable ID, as after a copy in another
+    // app, so writes by ID stop until only one file does. Holds the ID.
+    identity-conflict(string),
+    // A property doesn't fit the object type's schema. Nothing was
+    // written.
+    invalid-property(property-error),
+    // Something already has the path the write asked for. Holds the path.
+    already-exists(string),
   }
 }
 
@@ -104,23 +127,24 @@ interface ui {
     // Indices into the view's node list. Only panels hold children.
     children: list<u32>,
   }
+
+  // Something you did in a view.
+  variant event {
+    // The button with this node ID was pressed.
+    pressed(string),
+  }
 }
 
 // Pages in Noura's rail, drawn from the plugin's nodes. Noura calls these
 // only when the manifest declares the `views` capability.
 interface view {
-  use ui.{node};
+  use ui.{node, event};
 
   record page {
     // Unique within the plugin.
     id: string,
     // The name the rail and the page's tab show.
     title: string,
-  }
-
-  variant event {
-    // The button with this node ID was pressed.
-    pressed(string),
   }
 
   // The pages the plugin adds to the rail.
@@ -134,7 +158,119 @@ interface view {
   handle-event: func(page: string, event: event);
 }
 
+// Objects of the types the plugin registered: Markdown files in the
+// workspace with a stable ID, properties its schema checks, and a body.
+// Needs the `object-types` capability. A call about any other type, a
+// note for one, returns `capability-not-declared("object-types")` and
+// reaches no file. Writes carry the content revision the plugin read,
+// and return once the file is durably on disk.
+interface objects {
+  use types.{error, property-error};
+
+  // An object as its file holds it now.
+  record object {
+    // The stable ID: the type, an underscore and a ULID. It stays the
+    // same when the file moves or is renamed.
+    id: string,
+    object-type: string,
+    // The object's title: its file name without the extension.
+    title: string,
+    // Where the object's file is now, relative to the workspace.
+    path: string,
+    // The Markdown after the frontmatter.
+    body: string,
+    // The frontmatter's other properties, as a JSON object.
+    properties: string,
+    // The revision of the file's content. Writes carry it.
+    revision: string,
+    // The first property, in the schema's order, that doesn't fit the
+    // type's schema. Noura leaves such a file as it is.
+    problem: option<property-error>,
+  }
+
+  // A new object.
+  record new-object {
+    // One of the plugin's own types.
+    object-type: string,
+    // The title, which names the file.
+    title: string,
+    // Where to write the file, relative to the workspace, ending in `.md`.
+    // Without it the file goes in a folder named after the type, as
+    // `recipes/<title>.md` for `recipe`, with a number added when the
+    // name is taken.
+    path: option<string>,
+    // The Markdown after the frontmatter.
+    body: string,
+    // The properties, as a JSON object. The schema adds the defaults of
+    // the ones left out.
+    properties: string,
+  }
+
+  // What an update changes. The rest of the file keeps its bytes.
+  record changes {
+    // The new body, or none to keep it.
+    body: option<string>,
+    // Properties to set, as a JSON object.
+    properties: string,
+    // Properties to remove.
+    remove: list<string>,
+  }
+
+  // Create an object. Fails with `already-exists` when a file has the
+  // path.
+  create: func(object: new-object) -> result<object, error>;
+
+  // The object with this stable ID, read from its file.
+  get: func(id: string) -> result<object, error>;
+
+  // Every object of one of the plugin's types, read from their files. An
+  // object whose properties don't fit the schema comes with its `problem`.
+  %list: func(object-type: string) -> result<list<object>, error>;
+
+  // Change an object's body or properties. Fails with `revision-conflict`
+  // when the file no longer holds `expected-revision`.
+  update: func(id: string, expected-revision: string, changes: changes) -> result<object, error>;
+
+  // Move an object's file to `path`, which renames it when only the file
+  // name changes. The object keeps its ID.
+  move-to: func(id: string, expected-revision: string, path: string) -> result<object, error>;
+
+  // Move an object's file to the system trash, or to the workspace's
+  // trash folder when the system has none.
+  delete: func(id: string, expected-revision: string) -> result<_, error>;
+}
+
+// The object types the plugin adds, and the properties panel Noura shows
+// beside the body of each of their objects in the note editor. Noura
+// calls these only when the manifest declares the `object-types`
+// capability.
+interface object-types {
+  use ui.{node, event};
+
+  record object-type {
+    // A lowercase letter followed by lowercase letters or hyphens. Noura
+    // keeps its own types, such as `note`, and a type another running
+    // plugin registered stays that plugin's.
+    name: string,
+    // The type's properties in the workspace format's schema
+    // declaration, as JSON.
+    schema: string,
+  }
+
+  // The types the plugin registers when it starts.
+  types: func() -> list<object-type>;
+
+  // The nodes of the properties panel for the object with this ID.
+  render-panel: func(object: string) -> list<node>;
+
+  // Something happened in an object's properties panel. Noura draws the
+  // panel again afterwards.
+  handle-panel-event: func(object: string, event: event);
+}
+
 world plugin {
   import workspace;
+  import objects;
   export view;
+  export object-types;
 }

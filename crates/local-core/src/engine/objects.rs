@@ -2,6 +2,7 @@
 //! Markdown files that carry a stable ID.
 
 use super::*;
+use workspace_format::ObjectTypeRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -80,6 +81,130 @@ impl WorkspaceEngine {
             ));
         }
         self.commit_object(object, None, "object:created", "object_create")
+    }
+
+    /// Create an object whose type `schemas` may hold a schema for, as a
+    /// plugin does for its own types. A registered type's properties pass
+    /// its schema, which adds the defaults they lack, and its file takes
+    /// the type's canonical order. A property that fails the schema stops
+    /// the create with `invalid_property`, naming the property, and nothing
+    /// is written. Other types keep [`Self::create_object`]'s rules. The
+    /// call returns once the file is durably on disk.
+    pub fn create_object_checked(
+        &self,
+        input: CreateObjectInput,
+        schemas: &ObjectTypeRegistry,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        const OPERATION: &str = "object_create";
+        validate_object_type(&input.object_type)?;
+        if input.title.trim().is_empty() {
+            return Err(CoreError::validation(
+                "title_required",
+                "A title is required",
+                OPERATION,
+            ));
+        }
+        let now = now_rfc3339();
+        let mut properties = input.properties;
+        for key in ["id", "type", "created", "updated"] {
+            properties.remove(key);
+        }
+        let relative_path = match input.relative_path {
+            Some(relative_path) => relative_path,
+            None => self.free_object_path(&input.object_type, &input.title),
+        };
+        let mut object = WorkspaceObject {
+            id: new_object_id(&input.object_type),
+            object_type: input.object_type,
+            title: workspace_format::title_from_path(&relative_path),
+            body: input.body,
+            relative_path,
+            revision: String::new(),
+            created: Some(now.clone()),
+            updated: Some(now),
+            properties,
+        };
+        check_schema(&mut object, schemas)?;
+        self.commit_object_with(object, None, "object:created", OPERATION, schemas)
+    }
+
+    /// Change the body or properties of the object with the stable ID
+    /// `id`, as a plugin does for its own types. The file says what the
+    /// object holds, whatever the index says, and it must still hold
+    /// `expected_revision`. A registered type's properties pass its schema
+    /// afterwards: a property that fails stops the update with
+    /// `invalid_property` and leaves the file as it is. Each part nobody
+    /// changed keeps its bytes, and a changed frontmatter takes the type's
+    /// canonical order. A new title is refused; moving the file renames
+    /// it.
+    pub fn update_object_checked(
+        &self,
+        id: &str,
+        patch: ObjectPatch,
+        schemas: &ObjectTypeRegistry,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        const OPERATION: &str = "object_update";
+        if patch.title.is_some() {
+            return Err(CoreError::validation(
+                "title_not_supported",
+                "Move the file to change its title",
+                OPERATION,
+            ));
+        }
+        let (mut object, bytes) = self.read_canonical_object(id, OPERATION)?;
+        check_revision(&bytes, &patch.expected_revision, OPERATION)?;
+        let expected_revision = patch.expected_revision.clone();
+        apply_patch(&mut object, patch);
+        check_schema(&mut object, schemas)?;
+        object.updated = Some(now_rfc3339());
+        self.commit_object_with(
+            object,
+            Some(&expected_revision),
+            "object:updated",
+            OPERATION,
+            schemas,
+        )
+    }
+
+    /// The object with the stable ID `id`, read from its file: an outside
+    /// edit or move the index hasn't caught up with yet still shows.
+    pub fn read_object(&self, id: &str) -> Result<WorkspaceObject> {
+        self.read_canonical_object(id, "object_get")
+            .map(|(object, _)| object)
+    }
+
+    /// Every object of `object_type`, each as its file holds it now. The
+    /// index finds the files, and a file that changed since the index read
+    /// it is read again; one that no longer holds an object of this type is
+    /// left out.
+    pub fn list_objects(&self, object_type: &str) -> Result<Vec<WorkspaceObject>> {
+        const OPERATION: &str = "object_list";
+        self.reconcile_if_needed()?;
+        let indexed = self
+            .index
+            .lock()
+            .map_err(|_| lock_error(OPERATION))?
+            .query_objects(Some(object_type))?;
+        let mut objects = Vec::with_capacity(indexed.len());
+        for object in indexed {
+            let Ok(path) = resolve_for_write(&self.root, &object.relative_path, OPERATION) else {
+                continue;
+            };
+            let Ok(bytes) = read_downloaded(&path, &object.relative_path, OPERATION) else {
+                continue;
+            };
+            if markdown::revision(&bytes) == object.revision {
+                objects.push(object);
+                continue;
+            }
+            if let ParsedMarkdown::Managed(current) =
+                markdown::parse_markdown(&object.relative_path, &bytes)
+                && current.object_type == object_type
+            {
+                objects.push(current);
+            }
+        }
+        Ok(objects)
     }
 
     pub fn adopt_markdown(
@@ -444,10 +569,29 @@ impl WorkspaceEngine {
 
     pub(super) fn commit_object(
         &self,
+        object: WorkspaceObject,
+        expected: Option<&str>,
+        event: &str,
+        operation: &str,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        self.commit_object_with(
+            object,
+            expected,
+            event,
+            operation,
+            &ObjectTypeRegistry::new(),
+        )
+    }
+
+    /// [`Self::commit_object`], with a registered type's frontmatter in the
+    /// canonical order its schema in `schemas` gives.
+    fn commit_object_with(
+        &self,
         mut object: WorkspaceObject,
         expected: Option<&str>,
         event: &str,
         operation: &str,
+        schemas: &ObjectTypeRegistry,
     ) -> Result<MutationResult<WorkspaceObject>> {
         let relative = crate::path::validate_relative(&object.relative_path, operation)?;
         let destination = resolve_for_write(&self.root, &object.relative_path, operation)?;
@@ -458,7 +602,9 @@ impl WorkspaceEngine {
             check_revision(&current, expected, operation)?;
             // Only what changed gets new bytes: the rest of the file, its
             // byte-order mark and line endings stay as they are.
-            markdown::serialize_object_over(&current, &object)?
+            schemas
+                .serialize_over(&current, &object)
+                .map_err(markdown::serialize_error)?
         } else if destination.exists() {
             return Err(CoreError::new(
                 "path_exists",
@@ -467,7 +613,9 @@ impl WorkspaceEngine {
                 operation,
             ));
         } else {
-            markdown::serialize_object(&object)?
+            schemas
+                .serialize(&object)
+                .map_err(markdown::serialize_error)?
         };
         let revision = markdown::revision(&bytes);
         self.expect_own_write(&object.relative_path, Some(&revision));
@@ -726,6 +874,15 @@ fn task_format_error(error: workspace_format::FormatError) -> CoreError {
 /// Put a patch's body and properties into `object`, leaving the properties
 /// Noura keeps for itself alone, and stamp `updated`.
 fn apply_content(object: &mut WorkspaceObject, patch: ObjectPatch) -> Result<()> {
+    apply_patch(object, patch);
+    normalize_domain_properties(&object.object_type, &mut object.properties)?;
+    object.updated = Some(now_rfc3339());
+    Ok(())
+}
+
+/// Put a patch's body and properties into `object`, leaving the properties
+/// Noura keeps for itself alone.
+fn apply_patch(object: &mut WorkspaceObject, patch: ObjectPatch) {
     if let Some(body) = patch.body {
         object.body = body;
     }
@@ -739,9 +896,31 @@ fn apply_content(object: &mut WorkspaceObject, patch: ObjectPatch) -> Result<()>
             object.properties.insert(key, value);
         }
     }
-    normalize_domain_properties(&object.object_type, &mut object.properties)?;
-    object.updated = Some(now_rfc3339());
-    Ok(())
+}
+
+/// Check `object`'s properties against its type's schema in `schemas`,
+/// adding the defaults it lacks, or against the built-in task and project
+/// rules when the type has none. A failing property comes back as
+/// `invalid_property`, naming it and the workspace format's code for what
+/// is wrong, and leaves `object` as it was.
+fn check_schema(object: &mut WorkspaceObject, schemas: &ObjectTypeRegistry) -> Result<()> {
+    if !schemas.contains(&object.object_type) {
+        return normalize_domain_properties(&object.object_type, &mut object.properties);
+    }
+    schemas.normalize(object).map_err(|error| {
+        let details = serde_json::to_value(&error).unwrap_or_default();
+        let property = details["property"].as_str().unwrap_or_default().to_owned();
+        let mut core = CoreError::validation(
+            "invalid_property",
+            format!("{property} doesn't fit the object type's schema: {error}"),
+            "object_validate",
+        );
+        core.details = Some(serde_json::json!({
+            "property": property,
+            "code": details["code"],
+        }));
+        core
+    })
 }
 
 #[cfg(test)]

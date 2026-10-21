@@ -25,7 +25,7 @@ use wasmtime::component::Component;
 
 use crate::{
     Capability, InstallError, InstallErrorCode, PluginError, PluginInstance, PluginManifest,
-    WorkspaceReads,
+    Services, WorkspaceReads,
     manifest::read_manifest_bytes,
     runtime::{self, Backend, EpochTicker, Limits},
 };
@@ -369,6 +369,23 @@ impl PluginHost {
         approved: &[Capability],
         workspace: Option<Arc<dyn WorkspaceReads>>,
     ) -> Result<PluginInstance, PluginError> {
+        self.start_with(
+            loaded,
+            approved,
+            Services {
+                workspace,
+                ..Services::default()
+            },
+        )
+    }
+
+    /// [`Self::start`], with every service the capability interfaces call.
+    pub fn start_with(
+        &self,
+        loaded: &LoadedPlugin,
+        approved: &[Capability],
+        services: Services,
+    ) -> Result<PluginInstance, PluginError> {
         let granted = loaded
             .manifest
             .capabilities
@@ -381,8 +398,9 @@ impl PluginHost {
             &self.epochs,
             self.limits,
             &loaded.component,
+            &loaded.manifest.id,
             granted,
-            workspace,
+            services,
         )
     }
 

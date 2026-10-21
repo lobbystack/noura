@@ -63,6 +63,9 @@ pub enum Capability {
     WorkspaceRead,
     /// Add pages to the rail and draw panels in them.
     Views,
+    /// Register object types with a properties panel, and create, change,
+    /// move and delete objects of those types.
+    ObjectTypes,
     /// Connect to these hosts.
     Network { hosts: Vec<String> },
     /// Run these commands of other plugins.
@@ -75,6 +78,7 @@ impl Capability {
         match self {
             Self::WorkspaceRead => "workspace-read",
             Self::Views => "views",
+            Self::ObjectTypes => "object-types",
             Self::Network { .. } => "network",
             Self::Commands { .. } => "commands",
         }
@@ -85,6 +89,9 @@ impl Capability {
         match self {
             Self::WorkspaceRead => "Read the files and folders in your workspace.".to_owned(),
             Self::Views => "Add pages to the rail and show panels in them.".to_owned(),
+            Self::ObjectTypes => "Add its own kinds of objects, show their properties beside \
+                                  them, and create, change, move and delete them."
+                .to_owned(),
             Self::Network { hosts } => format!("Connect to {}.", hosts.join(", ")),
             Self::Commands { targets } => {
                 format!("Run commands of other plugins: {}.", targets.join(", "))
@@ -297,6 +304,7 @@ impl RawCapability {
         match name {
             "workspace-read" => Ok(Capability::WorkspaceRead),
             "views" => Ok(Capability::Views),
+            "object-types" => Ok(Capability::ObjectTypes),
             "network" => Ok(Capability::Network {
                 hosts: values(self.hosts.as_ref(), &self.name, text, "hosts", valid_host)?,
             }),
