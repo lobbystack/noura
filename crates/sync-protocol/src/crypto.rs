@@ -78,10 +78,18 @@ pub fn derive_key(context: &str, material: &[u8]) -> SecretKey {
     SecretKey(blake3::derive_key(context, material))
 }
 
+/// The operating system's random source failed.
+pub use getrandom::Error as RandomError;
+
+/// Fills `dst` from the operating system's CSPRNG.
+pub fn fill_random(dst: &mut [u8]) -> Result<(), RandomError> {
+    getrandom::fill(dst)
+}
+
 /// Fills an array from the operating system's CSPRNG.
-pub fn random_array<const N: usize>() -> Result<[u8; N], getrandom::Error> {
+pub fn random_array<const N: usize>() -> Result<[u8; N], RandomError> {
     let mut out = [0u8; N];
-    getrandom::fill(&mut out)?;
+    fill_random(&mut out)?;
     Ok(out)
 }
 
