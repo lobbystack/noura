@@ -83,6 +83,9 @@ fn styles(language: &str, code: &str) -> Option<Vec<Option<CodeStyle>>> {
     Some(styles)
 }
 
+/// The style of each byte of a piece of code.
+type ByteStyles = Arc<Vec<Option<CodeStyle>>>;
+
 /// How many code blocks' styles the cache keeps across edits.
 const STYLES_KEPT: usize = 256;
 
@@ -93,7 +96,7 @@ const STYLES_KEPT: usize = 256;
 pub struct HighlightCache {
     text_seq: u64,
     blocks: HashMap<(Grapheme, Grapheme), Vec<CodeHighlight>>,
-    styles: HashMap<(String, String), Option<Arc<Vec<Option<CodeStyle>>>>>,
+    styles: HashMap<(String, String), Option<ByteStyles>>,
 }
 
 impl<'ast> MdDoc {
@@ -124,7 +127,7 @@ impl<'ast> MdDoc {
     }
 
     /// The style of each byte of `code`, kept across edits.
-    fn cached_styles(&self, language: &str, code: String) -> Option<Arc<Vec<Option<CodeStyle>>>> {
+    fn cached_styles(&self, language: &str, code: String) -> Option<ByteStyles> {
         let key = (language.to_owned(), code);
         if let Some(styles) = self.highlight_cache.borrow().styles.get(&key) {
             return styles.clone();
