@@ -4,8 +4,9 @@
 //! Clients draw [`App`]'s view state and send it what people do. The
 //! workspace service opens workspaces and keeps the recent list, and the
 //! files service builds the file tree. The app keeps each workspace's tabs,
-//! open folders and rail order, and the sidebar's layout, in this device's
-//! app data.
+//! open folders and rail order, the sidebar's layout, and the appearance,
+//! text size and zoom, in this device's app data. Settings lists its
+//! sections from one list that later areas extend.
 
 mod app;
 mod diagnostics;

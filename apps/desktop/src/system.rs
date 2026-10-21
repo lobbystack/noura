@@ -8,8 +8,8 @@ use std::{io, path::Path};
 use app_core::System;
 use eframe::egui;
 
-/// This computer's trash, file manager and terminal, and the clipboard of
-/// the window that `ctx` draws.
+/// This computer's trash, file manager, terminal and browser, and the
+/// clipboard of the window that `ctx` draws.
 pub struct DesktopSystem {
     ctx: egui::Context,
 }

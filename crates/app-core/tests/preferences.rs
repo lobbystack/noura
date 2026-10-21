@@ -14,8 +14,11 @@ fn relaunch(app: App, fixture: &Fixture) -> App {
     app
 }
 
-/// Every byte of the workspace folder, the manifest included.
-fn workspace_bytes(fixture: &Fixture) -> (Vec<(String, Option<Vec<u8>>)>, Vec<u8>) {
+/// Every file and folder in the workspace with each file's bytes, then
+/// the manifest's bytes.
+type WorkspaceBytes = (Vec<(String, Option<Vec<u8>>)>, Vec<u8>);
+
+fn workspace_bytes(fixture: &Fixture) -> WorkspaceBytes {
     (fixture.snapshot(), fixture.read(".noura/workspace.yaml"))
 }
 

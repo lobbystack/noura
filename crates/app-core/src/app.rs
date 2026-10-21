@@ -182,9 +182,9 @@ impl App {
     }
 
     /// Start the app with per-device state in `app_data`, using `system`
-    /// for the trash, the file manager, terminals and the clipboard. When a
-    /// workspace was open last time, it reopens in the background while
-    /// the screen shows [`Screen::Loading`].
+    /// for the trash, the file manager, terminals, the clipboard and the
+    /// browser. When a workspace was open last time, it reopens in the
+    /// background while the screen shows [`Screen::Loading`].
     pub fn launch_with(app_data: impl AsRef<Path>, system: Arc<dyn System>) -> Self {
         let service = Arc::new(WorkspaceService::with_system(
             app_data.as_ref(),

@@ -247,7 +247,7 @@ fn flush(word: &mut String, output: &mut String) {
 /// of letters and digits, such as `Plan.md`. Times and versions, which
 /// start with a digit, don't count.
 fn is_file_name(word: &str) -> bool {
-    let word = word.trim_end_matches(|c: char| matches!(c, ',' | ';' | ':' | ')' | ']' | '.'));
+    let word = word.trim_end_matches([',', ';', ':', ')', ']', '.']);
     let Some((stem, extension)) = word.rsplit_once('.') else {
         return false;
     };

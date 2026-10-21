@@ -283,18 +283,19 @@ fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
         });
         muted(
             ui,
-            "Shown in the workspace switcher. The folder keeps its name.",
+            "The workspace switcher shows this name. The folder keeps its own.",
         );
     });
     field(ui, "Location", Role::Group, |ui| {
         ui.add(egui::Label::new(&root).selectable(true).wrap());
         reveal = ui.button("Show folder").clicked();
     });
-    if rename && let Some(name) = view.name.clone() {
-        if app.rename_workspace(&name) || name.trim().is_empty() {
-            // Show the name the workspace has now.
-            view.name = None;
-        }
+    if rename
+        && let Some(name) = view.name.clone()
+        && (app.rename_workspace(&name) || name.trim().is_empty())
+    {
+        // Show the name the workspace has now.
+        view.name = None;
     }
     if reveal {
         app.reveal_workspace();
@@ -313,7 +314,8 @@ fn about(ui: &mut Ui, app: &mut App) {
     field(ui, "Diagnostics", Role::Group, |ui| {
         muted(
             ui,
-            "A report for bug reports. File names, paths and quoted text are left out.",
+            "Copy a report to attach to a bug report. Noura leaves out file names, paths and \
+             quoted text.",
         );
         copy = ui.button("Copy diagnostics").clicked();
     });

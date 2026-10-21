@@ -241,7 +241,7 @@ impl App {
         self.system.copy_text(&report);
         self.settings_notice(
             "Diagnostics copied",
-            "File names, paths and quoted text are left out.",
+            "Noura left out file names, paths and quoted text.",
             NoticeKind::Done,
         );
     }

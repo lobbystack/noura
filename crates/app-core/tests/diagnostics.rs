@@ -56,11 +56,9 @@ fn log(app_data: &Path, root: &Path) {
         .collect();
     let root = root.display();
     lines.extend([
-        format!(
-            "2026-10-20T10:01:00.000000Z  WARN local_core::engine::scan: a workspace file \
-             could not be read path=Okapi Plans/Tamarind.md reason=\"Permission denied (os \
-             error 13)\""
-        ),
+        "2026-10-20T10:01:00.000000Z  WARN local_core::engine::scan: a workspace file could \
+         not be read path=Okapi Plans/Tamarind.md reason=\"Permission denied (os error 13)\""
+            .to_owned(),
         "2026-10-20T10:01:01.000000Z  WARN app_core: opened Tamarind.md and Bramblewick.pdf"
             .to_owned(),
         "2026-10-20T10:01:02.000000Z  WARN app_core: rename failed name=Wombat".to_owned(),
