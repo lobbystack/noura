@@ -153,6 +153,37 @@ fn a_cancelled_composition_leaves_nothing_behind() {
     }
 }
 
+/// An input method that loses the keyboard mid-composition drops its marked
+/// text without an empty composition or a commit; the editor ends the
+/// composition itself and the note keeps its bytes.
+#[test]
+fn an_ended_composition_leaves_nothing_behind() {
+    let (mut doc, caret) = note_with_caret_after("# Head");
+    compose_steps(&mut doc, caret, &["n", "に", "にほ"]);
+
+    doc.end_composition();
+
+    assert_eq!(doc.text().as_bytes(), NOTE.as_bytes());
+    assert_eq!(doc.selection(), (caret, caret));
+    assert_eq!(doc.composition(), None);
+    assert_eq!(doc.take_changes(), []);
+
+    // Typing afterwards inserts only what you type.
+    doc.apply(
+        [Event::Replace {
+            region: Region::Selection,
+            text: "x".into(),
+            advance_cursor: true,
+        }],
+        &NoLayout,
+    );
+    assert_eq!(
+        doc.text(),
+        "# Headxing\n\nSome **bold** text.\n\n- item one\n"
+    );
+    assert_eq!(doc.composition(), None);
+}
+
 #[test]
 fn one_undo_takes_back_a_committed_composition() {
     let (mut doc, caret) = note_with_caret_after("**bo");

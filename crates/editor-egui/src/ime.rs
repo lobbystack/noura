@@ -16,23 +16,71 @@ pub(crate) struct MarkedGeometry {
     pub candidates: Rect,
 }
 
+/// A piece of marked text the last frame drew: where, and where each of
+/// its characters starts.
+struct MarkedPiece {
+    rect: Rect,
+    /// The x where each character starts, in order.
+    starts: Vec<f32>,
+}
+
 impl MdRender {
-    /// The pieces of marked text the last frame drew, in order, each with
-    /// how many characters it holds.
-    fn marked_pieces(&self) -> Vec<(Rect, usize)> {
+    /// The pieces of marked text the last frame drew, in order.
+    fn marked_pieces(&self) -> Vec<MarkedPiece> {
         let caret = self.buffer.current.selection.1;
+        let ppi = self.ctx.pixels_per_point();
         self.fragments
             .iter()
             .filter(|fragment| fragment.source_range == (caret, caret) && fragment.atomic)
             .filter_map(|fragment| match &fragment.content {
                 FragmentContent::Glyphs { buffer, .. } => {
                     let buffer = buffer.read().ok()?;
-                    let chars: usize = buffer
+                    // Each character's advance, from the glyphs the
+                    // shaper placed: a glyph covering several characters
+                    // counts toward its first.
+                    let lines: Vec<Vec<usize>> = buffer
                         .lines
                         .iter()
-                        .map(|line| line.text().chars().count())
-                        .sum();
-                    (chars > 0).then_some((fragment.rect, chars))
+                        .map(|line| line.text().char_indices().map(|(at, _)| at).collect())
+                        .collect();
+                    let firsts: Vec<usize> = lines
+                        .iter()
+                        .scan(0, |first, chars| {
+                            let at = *first;
+                            *first += chars.len();
+                            Some(at)
+                        })
+                        .collect();
+                    let mut advances = vec![0.0; lines.iter().map(Vec::len).sum()];
+                    for run in buffer.layout_runs() {
+                        let (Some(chars), Some(first)) =
+                            (lines.get(run.line_i), firsts.get(run.line_i))
+                        else {
+                            continue;
+                        };
+                        for glyph in run.glyphs {
+                            let index = chars.partition_point(|&at| at <= glyph.start);
+                            if let Some(index) = index.checked_sub(1) {
+                                advances[first + index] += glyph.w / ppi;
+                            }
+                        }
+                    }
+                    if advances.is_empty() {
+                        return None;
+                    }
+                    let mut x = fragment.rect.left() + fragment.content_inset.left;
+                    let starts = advances
+                        .iter()
+                        .map(|advance| {
+                            let start = x;
+                            x += advance;
+                            start
+                        })
+                        .collect();
+                    Some(MarkedPiece {
+                        rect: fragment.rect,
+                        starts,
+                    })
                 }
                 _ => None,
             })
@@ -44,22 +92,18 @@ impl MdRender {
     pub(crate) fn marked_geometry(&self) -> Option<MarkedGeometry> {
         let composition = self.doc.composition()?;
         let pieces = self.marked_pieces();
-        let total: usize = pieces.iter().map(|(_, chars)| chars).sum();
-        if pieces.is_empty() {
-            return None;
-        }
+        let total: usize = pieces.iter().map(|piece| piece.starts.len()).sum();
+        let last = pieces.last()?;
         // The x and row of the boundary before character `index`.
         let at = |index: usize| -> (f32, Rangef) {
             let mut seen = 0;
-            for (rect, chars) in &pieces {
-                if index < seen + chars {
-                    let into = (index - seen) as f32 / *chars as f32;
-                    return (rect.left() + into * rect.width(), rect.y_range());
+            for piece in &pieces {
+                if let Some(x) = piece.starts.get(index - seen) {
+                    return (*x, piece.rect.y_range());
                 }
-                seen += chars;
+                seen += piece.starts.len();
             }
-            let (last, _) = pieces.last().expect("pieces aren't empty");
-            (last.right(), last.y_range())
+            (last.rect.right(), last.rect.y_range())
         };
         let selected = composition.selected.clone().unwrap_or(total..total);
         let start = if selected.is_empty() {

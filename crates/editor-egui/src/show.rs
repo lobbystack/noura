@@ -43,6 +43,7 @@ impl MdEdit {
     pub fn handle_input(&mut self, ctx: &Context, id: Id) -> buffer::Response {
         let focused = ctx.memory(|m| m.has_focus(id));
         let prior_entered_atom = self.renderer.entered_atom;
+        self.end_dropped_composition(ctx, focused);
 
         // Deferred block reorder
         let move_resp = match self.pending_block_move.take() {
@@ -131,6 +132,33 @@ impl MdEdit {
         }
 
         buf_resp
+    }
+
+    /// Gives the editor the keyboard, ending any composition: egui
+    /// interrupts the input method's composition on every focus request,
+    /// and the platform drops its marked text.
+    pub fn request_focus(&mut self, ctx: &Context, id: Id) {
+        ctx.memory_mut(|m| m.request_focus(id));
+        self.renderer.doc.end_composition();
+    }
+
+    /// Ends a composition the input method dropped without saying so. egui
+    /// turns the input method off in a pass where no widget asks for it,
+    /// as when the editor loses the keyboard or isn't shown, and interrupts
+    /// the composition when a widget asks for the keyboard. The platform
+    /// then drops its marked text and sends no empty composition or commit:
+    /// winit sends only `Ime::Disabled`, which egui-winit ignores. So the
+    /// composition ends here, as a cancel would, once the editor lost the
+    /// keyboard or didn't hold the input method in the previous pass.
+    fn end_dropped_composition(&mut self, ctx: &Context, focused: bool) {
+        if self.renderer.doc.composition().is_none() {
+            return;
+        }
+        let pass = ctx.cumulative_pass_nr();
+        let held = self.ime_pass.is_some_and(|held| held + 1 >= pass);
+        if !focused || !held {
+            self.renderer.doc.end_composition();
+        }
     }
 
     /// Apply an edit from a platform text system (UIKit) now, outside the
@@ -640,7 +668,7 @@ impl MdEdit {
         // interact surrenders focus if anything was clicked, even a child —
         // restore if we thought we were focused at entry
         if prev_focused && !ui.memory(|m| m.has_focus(id)) {
-            ui.memory_mut(|m| m.request_focus(id));
+            self.request_focus(ui.ctx(), id);
         }
         let focused = ui.memory(|m| m.has_focus(id));
         if focused && !prev_focused {
@@ -735,7 +763,7 @@ impl MdEdit {
             if !cfg!(target_os = "ios")
                 && let Some(region) = region_opt
             {
-                ui.memory_mut(|m| m.request_focus(id));
+                self.request_focus(ui.ctx(), id);
                 self.calc_operations(ui.ctx(), root, Event::Select { region }, &mut ops);
             }
         }
@@ -840,6 +868,7 @@ impl MdEdit {
                         should_interrupt_composition: false,
                     });
                 });
+                self.ime_pass = Some(ui.ctx().cumulative_pass_nr());
             }
         }
 

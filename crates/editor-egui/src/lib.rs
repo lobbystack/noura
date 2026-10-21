@@ -242,6 +242,11 @@ pub struct MdEdit {
     pub scroll_area: AffineScrollArea<DocRowId>,
 
     cursor_last_interact: Option<f64>,
+
+    /// The last egui pass in which the editor held the input method: it had
+    /// the keyboard and told the platform where text goes. See
+    /// [`MdEdit::end_dropped_composition`].
+    ime_pass: Option<u64>,
 }
 
 impl MdEdit {
@@ -271,6 +276,7 @@ impl MdEdit {
             scroll_area_velocity: Default::default(),
             scroll_area: AffineScrollArea::new(id_salt),
             cursor_last_interact: None,
+            ime_pass: None,
         }
     }
 }
@@ -678,10 +684,11 @@ impl Editor {
         self.edit.renderer.buffer.saved(seq, content);
     }
 
-    pub fn focus(&self, ctx: &Context) {
-        ctx.memory_mut(|m| {
-            m.request_focus(self.id());
-        });
+    /// Gives the editor the keyboard. egui interrupts the input method's
+    /// composition on every focus request, so the editor ends its own.
+    pub fn focus(&mut self, ctx: &Context) {
+        let id = self.id();
+        self.edit.request_focus(ctx, id);
     }
 
     pub fn focus_lock(&mut self, ctx: &Context) {

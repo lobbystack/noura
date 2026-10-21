@@ -22,6 +22,14 @@ impl MdDoc {
         self.composition.as_ref()
     }
 
+    /// Ends the composition without inserting its marked text, as a
+    /// cancel does. For an input method that drops its composition without
+    /// saying so, as when the editor loses the keyboard. The text and its
+    /// change events stay as they are.
+    pub fn end_composition(&mut self) {
+        self.set_composition(String::new(), None);
+    }
+
     /// Shows `text` as marked text at the caret, or ends the composition
     /// when `text` is empty. The text and its change events stay as they
     /// are.

@@ -27,6 +27,27 @@ fn harness() -> EditorHarness {
 }
 
 fn harness_on(note: &'static str) -> EditorHarness {
+    build(note, false)
+}
+
+/// The id of the text field [`harness_with_field`] shows above the editor.
+fn field_id() -> egui::Id {
+    egui::Id::unique("another field")
+}
+
+/// Set in egui's memory to leave the editor out of the frame, as when
+/// another tab shows.
+fn hidden_id() -> egui::Id {
+    egui::Id::unique("editor hidden")
+}
+
+/// A harness with another text field above the editor, to move the
+/// keyboard to.
+fn harness_with_field(note: &'static str) -> EditorHarness {
+    build(note, true)
+}
+
+fn build(note: &'static str, field: bool) -> EditorHarness {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(800.0, 600.0))
         .with_context_setup(|ctx| {
@@ -34,6 +55,13 @@ fn harness_on(note: &'static str) -> EditorHarness {
         })
         .build_ui_state(
             move |ui, (editor, changes): &mut State| {
+                if field {
+                    ui.add(egui::TextEdit::singleline(&mut String::new()).id(field_id()))
+                        .accessible_name("Another field");
+                }
+                if ui.data(|data| data.get_temp::<bool>(hidden_id()).unwrap_or(false)) {
+                    return;
+                }
                 let response = editor
                     .get_or_insert_with(|| Editor::new(ui.ctx(), note, MdConfig::default()))
                     .show(ui);
@@ -355,4 +383,122 @@ fn marked_text_draws_on_a_blank_line_and_in_an_empty_note() {
         "in an empty note"
     );
     assert_eq!(doc(&harness).text(), "");
+}
+
+/// Moving the keyboard elsewhere interrupts the input method, which drops
+/// its marked text without an empty composition or a commit. The editor
+/// ends the composition too: nothing stays drawn, the note keeps its
+/// bytes, and typing back in the note inserts only what you type.
+#[test]
+fn moving_the_keyboard_elsewhere_ends_the_composition() {
+    let mut harness = harness_with_field(NOTE);
+    let caret = place_caret_after(&mut harness, "# Head");
+    send(&mut harness, preedit("nihao"));
+    assert!(!marked_spans(&harness, caret).is_empty());
+
+    harness
+        .ctx
+        .memory_mut(|memory| memory.request_focus(field_id()));
+    harness.run_steps(2);
+
+    assert!(!editor(&harness).focused(&harness.ctx));
+    assert_eq!(doc(&harness).composition(), None);
+    assert!(
+        marked_spans(&harness, caret).is_empty(),
+        "no marked text stays drawn"
+    );
+    assert_eq!(doc(&harness).text().as_bytes(), NOTE.as_bytes());
+    assert_eq!(changes(&mut harness), []);
+
+    let id = editor(&harness).id();
+    harness.ctx.memory_mut(|memory| memory.request_focus(id));
+    harness.run_steps(1);
+    harness.event(egui::Event::Text("x".into()));
+    harness.run_steps(1);
+
+    assert_eq!(
+        doc(&harness).text(),
+        "# Headxing\n\nSome **bold** text.\n\n- item one\n- item two\n"
+    );
+    assert!(
+        marked_spans(&harness, caret + 1).is_empty(),
+        "no marked text follows the caret"
+    );
+}
+
+/// A click in the note asks for the keyboard again, which interrupts the
+/// input method as well.
+#[test]
+fn a_click_in_the_note_ends_the_composition() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "- item");
+    send(&mut harness, preedit("nihao"));
+    assert!(!marked_spans(&harness, caret).is_empty());
+
+    let heading = drawn_at(&harness, Grapheme(2));
+    harness.hover_at(heading.center());
+    harness.run_steps(1);
+    harness.drag_at(heading.center());
+    harness.run_steps(1);
+    harness.drop_at(heading.center());
+    harness.run_steps(2);
+
+    assert_eq!(doc(&harness).composition(), None);
+    assert!(marked_spans(&harness, caret).is_empty());
+    assert_eq!(doc(&harness).text().as_bytes(), NOTE.as_bytes());
+}
+
+/// An editor that isn't shown for a frame doesn't hold the input method,
+/// which drops its composition then; the editor ends it when it shows
+/// again.
+#[test]
+fn a_composition_ends_when_the_editor_is_not_shown_for_a_frame() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "**bo");
+    send(&mut harness, preedit("nihao"));
+
+    // A frame without the editor, as when another tab shows.
+    harness
+        .ctx
+        .data_mut(|data| data.insert_temp(hidden_id(), true));
+    harness.run_steps(1);
+    harness
+        .ctx
+        .data_mut(|data| data.insert_temp(hidden_id(), false));
+    harness.run_steps(2);
+
+    assert_eq!(doc(&harness).composition(), None);
+    assert!(marked_spans(&harness, caret).is_empty());
+    assert_eq!(doc(&harness).text().as_bytes(), NOTE.as_bytes());
+}
+
+/// The candidate window opens under the start of the clause the input
+/// method converts, measured by the glyphs before it, which can be narrower
+/// or wider than the rest of the marked text: here narrow letters come
+/// before wide ones in one word.
+#[test]
+fn the_candidate_window_opens_at_the_converted_clause_in_mixed_width_marked_text() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "- item");
+    send(&mut harness, preedit("iii"));
+    let narrow = marked_spans(&harness, caret);
+    let narrow_right = narrow
+        .iter()
+        .map(|rect| rect.right())
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    send(
+        &mut harness,
+        ImeEvent::Preedit {
+            text: "iiiWWW".into(),
+            active_range_chars: Some(3..6),
+        },
+    );
+
+    let cursor = ime_cursor(&harness);
+    assert!(
+        (cursor.left() - narrow_right).abs() < 1.0,
+        "the clause starts after the narrow letters: {} against {narrow_right}",
+        cursor.left()
+    );
 }
