@@ -80,6 +80,25 @@ struct RidState {
     dropped: BTreeSet<(Id, u64)>,
 }
 
+impl RidState {
+    /// The operations live at sequence `at`: those at or below it that no
+    /// operation at or below it covers, less dropped lone deletes.
+    fn live_at(&self, at: u64) -> Vec<(&LiveOp, OpClass)> {
+        let visible: Vec<&(LiveOp, OpClass)> =
+            self.ops.iter().filter(|(o, _)| o.seq <= at).collect();
+        visible
+            .iter()
+            .filter(|(o, _)| !self.dropped.contains(&(o.device, o.counter)))
+            .filter(|(o, _)| {
+                !visible
+                    .iter()
+                    .any(|(other, _)| other.covers.iter().any(|c| o.covered_by(c)))
+            })
+            .map(|(o, c)| (o, *c))
+            .collect()
+    }
+}
+
 /// Why the server refuses an operation on its live set (§13).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -149,9 +168,9 @@ impl LiveSet {
                 return Err(LiveError::SupersedesUnknown);
             }
         }
-        let mut after = self.clone();
-        after.insert(op.clone(), class);
-        let live = after.live(&op.rid);
+        let mut after = state.cloned().unwrap_or_default();
+        after.ops.push((op.clone(), class));
+        let live = after.live_at(u64::MAX);
         if class == OpClass::State {
             let own_states = live
                 .iter()
@@ -192,21 +211,9 @@ impl LiveSet {
     /// The operations live on `rid` at sequence `at`: those at or below it
     /// that no operation at or below it covers, less dropped lone deletes.
     pub fn live_at(&self, rid: &Id, at: u64) -> Vec<(&LiveOp, OpClass)> {
-        let Some(state) = self.rids.get(rid) else {
-            return Vec::new();
-        };
-        let visible: Vec<&(LiveOp, OpClass)> =
-            state.ops.iter().filter(|(o, _)| o.seq <= at).collect();
-        visible
-            .iter()
-            .filter(|(o, _)| !state.dropped.contains(&(o.device, o.counter)))
-            .filter(|(o, _)| {
-                !visible
-                    .iter()
-                    .any(|(other, _)| other.covers.iter().any(|c| o.covered_by(c)))
-            })
-            .map(|(o, c)| (o, *c))
-            .collect()
+        self.rids
+            .get(rid)
+            .map_or_else(Vec::new, |state| state.live_at(at))
     }
 
     /// Every `rid` with at least one live operation at `at`, with its live
