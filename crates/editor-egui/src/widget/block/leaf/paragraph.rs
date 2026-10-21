@@ -1,0 +1,100 @@
+use comrak::nodes::AstNode;
+use editor_core::offset_types::{Grapheme, RangeExt, RangeIterExt as _};
+use egui::{Pos2, Ui};
+
+use crate::MdRender;
+use crate::widget::utils::wrap_layout::Layout;
+
+impl<'ast> MdRender {
+    pub fn height_paragraph(&self, node: &'ast AstNode<'ast>) -> f32 {
+        let mut result = 0.;
+        let last_line_idx = self.node_last_line_idx(node);
+        for line_idx in self.node_lines(node).iter() {
+            let line = self.bounds.source_lines[line_idx];
+            let node_line = self.node_line(node, line);
+
+            result += self.height_paragraph_line(node, node_line);
+
+            if line_idx != last_line_idx {
+                result += self.layout.block_spacing;
+            }
+        }
+
+        result
+    }
+
+    /// Build a `Layout` for one paragraph line. Shared by height +
+    /// show passes — both consume the resulting `WrapUnitLayout`.
+    /// Walks the paragraph's pre/infix/post slices (handles leading/
+    /// trailing whitespace per CommonMark "raw content" rule), and
+    /// recurses into inline children for the inline range.
+    fn layout_paragraph_line(
+        &self,
+        node: &'ast AstNode<'ast>,
+        node_line: (Grapheme, Grapheme),
+    ) -> Layout {
+        let mut layout = Layout::new(node_line);
+        if let Some((pre_node, pre_children, _, post_children, post_node)) =
+            self.split_range(node, node_line)
+        {
+            let fmt = self.text_format(node);
+            if !pre_node.is_empty() {
+                layout.push_source(pre_node, &self.buffer[pre_node], fmt.clone());
+            }
+            if !pre_children.is_empty() {
+                layout.push_source(pre_children, &self.buffer[pre_children], fmt.clone());
+            }
+            self.layout_inline_children(&mut layout, node, node_line);
+            if !post_children.is_empty() {
+                layout.push_source(post_children, &self.buffer[post_children], fmt.clone());
+            }
+            if !post_node.is_empty() {
+                layout.push_source(post_node, &self.buffer[post_node], fmt);
+            }
+        } else {
+            // Empty paragraph line such as in `- [ ] \n  x`.
+            let fmt = self.text_format(node);
+            layout.push_source(node_line, &self.buffer[node_line], fmt);
+        }
+        layout
+    }
+
+    pub fn height_paragraph_line(
+        &self,
+        node: &'ast AstNode<'ast>,
+        node_line: (Grapheme, Grapheme),
+    ) -> f32 {
+        let width = self.width(node);
+        let layout = self.layout_paragraph_line(node, node_line);
+        self.compute_layout_from(layout, width, self.layout.row_height)
+            .height
+    }
+
+    pub fn show_paragraph(&mut self, ui: &mut Ui, node: &'ast AstNode<'ast>, mut top_left: Pos2) {
+        for line in self.node_lines(node).iter() {
+            let line = self.bounds.source_lines[line];
+            let node_line = self.node_line(node, line);
+
+            let line_height = self.height_paragraph_line(node, node_line);
+
+            self.show_paragraph_line(ui, node, top_left, node_line);
+            self.show_block_line_prefixes(ui, node, line, top_left, self.layout.row_height);
+            top_left.y += line_height;
+
+            top_left.y += self.layout.block_spacing;
+        }
+    }
+
+    pub fn show_paragraph_line(
+        &mut self,
+        ui: &mut Ui,
+        node: &'ast AstNode<'ast>,
+        top_left: Pos2,
+        node_line: (Grapheme, Grapheme),
+    ) {
+        let width = self.width(node);
+        let layout = self.layout_paragraph_line(node, node_line);
+        let result = self.compute_layout_from(layout, width, self.layout.row_height);
+        self.show_wrap_layout(ui, top_left, &result);
+    }
+}

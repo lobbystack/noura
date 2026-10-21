@@ -1,7 +1,8 @@
 [licenses]
 # The owner approves every license added here before it lands. OFL-1.1 and
-# Ubuntu-font-1.0 cover egui's default fonts (approved 2026-10-20).
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "CC0-1.0", "CDLA-Permissive-2.0", "Zlib", "MPL-2.0", "OFL-1.1", "Ubuntu-font-1.0"]
+# Ubuntu-font-1.0 cover egui's default fonts, and BSL-1.0 covers arboard's
+# Windows clipboard crates (both approved 2026-10-20).
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "BSL-1.0", "ISC", "Unicode-3.0", "CC0-1.0", "CDLA-Permissive-2.0", "Zlib", "MPL-2.0", "OFL-1.1", "Ubuntu-font-1.0"]
 confidence-threshold = 0.8
 
 [advisories]
@@ -20,6 +21,7 @@ ignore = [
   # The desktop crate uses `drag` on macOS and Windows only, so no build
   # compiles them, but cargo deny reads every target's dependencies.
   "RUSTSEC-2024-0370",
+  "RUSTSEC-2026-0192", # ttf-parser, through glyphon's cosmic-text and fontdb
   # yrs 0.26.0 enables `small-client` for Yjs interoperability and currently
   # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
   # not a reported vulnerability; decoder isolation remains a release gate.
