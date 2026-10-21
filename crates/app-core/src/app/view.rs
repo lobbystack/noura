@@ -1,18 +1,23 @@
 //! Tabs, the rail, the sidebar's layout and the file tree's open folders:
 //! what the window shows and how you move between it. Every refresh of
-//! the tree runs through `App::replace_tree`, where the tabs follow their
-//! files, the open folders are saved and the other windows learn of it.
+//! the tree runs through `App::replace_tree`, after Noura's own change, or
+//! `App::poll_listing`, after another window's or the watch thread's.
+//! Both make the tabs follow their files and save the open folders.
 
 use std::time::Instant;
+
+use local_core::ChangeCounts;
 
 use super::{App, Change};
 use crate::{
     AppError, DropSpot, FileTree, Layout, OpenAs, Page, Tab, TabId, TabPlace, TreeAction,
+    error::Access,
     files::{remap, shown_name},
     layout::sidebar_width,
     rail::FILES_PAGE,
     tabs::{Restored, TabContent},
     view_state::StoredWindow,
+    watch::Snapshot,
 };
 
 impl App {
@@ -294,38 +299,54 @@ impl App {
     /// tree and the tabs in line with it. A managed note's tab follows its
     /// stable ID, even when another file now sits at its old path; a tab
     /// whose file is gone, or moved without an ID to follow, closes. The
-    /// watcher (ticket 10) runs this after outside changes.
+    /// watch thread does the same on its own after outside changes, and
+    /// [`App::poll`] applies it; this does it now.
     pub fn rescan(&mut self) {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        let tree = workspace.changed_file_tree();
-        self.replace_tree(tree, None);
+        // Every file, not only the ones the watcher reported: the plain
+        // listing trusts the index for paths it already knows, so a file
+        // that another app replaced would keep the old file's stable ID.
+        if let Err(error) = workspace.engine().reconcile() {
+            let error = AppError::from_core(error, workspace.root(), Access::ReadWorkspace);
+            self.show_notice("Couldn't read the files", error, None);
+            return;
+        }
+        self.refresh_tree(None);
     }
 
-    /// Show a tree read again: it keeps the old tree's open folders and
-    /// current row, which follow the item that moved from `moved.0` to
-    /// `moved.1`, and the tabs follow their files into it. Every refresh
-    /// of the tree comes through here, so the open folders it carries over
-    /// are saved, and the other windows show the new tree too.
+    /// Show the files listed again after Noura's own change, as
+    /// `snapshot` when the engine's change counts were `counts`: the tree
+    /// keeps the old tree's open folders, current row and drag, which
+    /// follow the item that moved from `moved.0` to `moved.1`, the tabs
+    /// follow their files into it, and the problems update. The other
+    /// windows show the new tree too.
     pub(super) fn replace_tree(
         &mut self,
-        tree: Result<FileTree, AppError>,
+        listing: Result<(Snapshot, ChangeCounts), AppError>,
         moved: Option<(&str, &str)>,
     ) {
-        match tree {
-            Ok(tree) => {
-                self.listing_seen =
-                    self.session
-                        .publish_listing(self.key, self.opening, &tree, moved);
+        match listing {
+            Ok((snapshot, counts)) => {
+                let tree = FileTree::from_entries(&snapshot.entries);
+                self.listing_seen = self.session.publish_listing(
+                    self.key,
+                    self.opening,
+                    &tree,
+                    moved,
+                    &snapshot,
+                    counts,
+                );
                 self.show_tree(tree, moved.as_slice());
+                self.set_problems(snapshot.problems);
             }
             Err(error) => self.show_notice("Couldn't read the files", error, None),
         }
     }
 
-    /// Show the files as another window listed them last, after the moves
-    /// it made since this window's listing.
+    /// Show the files as another window or the watch thread listed them
+    /// last, after the moves the windows made since this window's listing.
     pub(super) fn poll_listing(&mut self) -> bool {
         let Some(listing) = self.session.listing_since(self.listing_seen) else {
             return false;
@@ -345,10 +366,13 @@ impl App {
             .map(|(from, to)| (from.as_str(), to.as_str()))
             .collect();
         self.show_tree(listing.tree, &moves);
+        self.set_problems(listing.problems);
         // A row being renamed, or a folder waiting for the trash, that
-        // another window took away stops waiting.
+        // another window or app took away stops waiting.
         let tree = self.tree.as_ref();
-        let gone = |path: &str| tree.is_none_or(|tree| tree.follow(path, None).is_none());
+        let gone = |path: &str| {
+            tree.is_none_or(|tree| !tree.is_folder(path) && tree.follow(path, None).is_none())
+        };
         if self
             .renaming
             .as_ref()
@@ -366,18 +390,36 @@ impl App {
         true
     }
 
-    /// Show `tree`, keeping the old tree's open folders and current row,
-    /// which follow the items in `moves`, let the tabs follow their files
-    /// into it, and rank quick open's matches again.
+    /// Show `tree`, keeping the old tree's open folders, current row and
+    /// drag, which follow the items in `moves`, and let the tabs follow
+    /// their files into it. Quick open ranks the files again when they
+    /// changed. The watch thread may list files that look as they did, so
+    /// only what changed is announced and saved.
     fn show_tree(&mut self, mut tree: FileTree, moves: &[(&str, &str)]) {
-        if let Some(old) = &self.tree {
-            tree.carry_over(old, moves);
-        }
+        let (items_changed, shown_changed, folders_changed) = match &self.tree {
+            Some(old) => {
+                tree.carry_over(old, moves);
+                (
+                    !tree.lists_same_items(old),
+                    tree.rows() != old.rows()
+                        || tree.dragging() != old.dragging()
+                        || tree.drop_target() != old.drop_target(),
+                    tree.expanded_folders() != old.expanded_folders(),
+                )
+            }
+            None => (true, true, true),
+        };
         self.tree = Some(tree);
-        self.listeners.emit(Change::Tree);
-        self.rank_files();
+        if shown_changed {
+            self.listeners.emit(Change::Tree);
+        }
+        if items_changed {
+            self.rank_files();
+        }
         self.follow_files();
-        self.save_view();
+        if folders_changed {
+            self.save_view();
+        }
     }
 
     /// Close the tabs of the item at `relative_path`, a file or a folder,
@@ -408,7 +450,7 @@ impl App {
     /// Point each file tab at its file in the tree: a managed object's
     /// file by its stable ID, any other file by its path. Tabs whose file
     /// is gone close.
-    fn follow_files(&mut self) {
+    pub(super) fn follow_files(&mut self) {
         let Some(tree) = &self.tree else {
             return;
         };

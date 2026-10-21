@@ -111,6 +111,15 @@ pub(crate) struct IndexedFileMetadata {
     pub revision: String,
 }
 
+/// One stable ID that several files use. Operations on that ID stop with
+/// `identity_conflict` until only one file keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityConflict {
+    pub object_id: String,
+    /// The files that use the ID, in path order.
+    pub relative_paths: Vec<String>,
+}
+
 /// Identity, location, and revision of one indexed object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObjectHead {
@@ -249,9 +258,17 @@ impl IndexStore {
         connection
             .busy_timeout(BUSY_TIMEOUT)
             .map_err(|error| CoreError::index(error, "index_open"))?;
-        connection
-            .execute_batch(SCHEMA)
-            .map_err(|error| CoreError::index(error, "index_migrate"))?;
+        connection.execute_batch(SCHEMA).map_err(|error| {
+            let damaged = matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
+            );
+            let mut value = CoreError::index(error, "index_migrate");
+            if damaged {
+                value.code = "index_damaged".into();
+            }
+            value
+        })?;
         forget_older_files(&mut connection)
             .map_err(|error| CoreError::index(error, "index_migrate"))?;
         connection.set_prepared_statement_cache_capacity(64);
@@ -767,6 +784,35 @@ impl IndexStore {
         self.connection
             .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
             .map_err(|error| CoreError::index(error, "index_count"))
+    }
+
+    /// Every stable ID that more than one file uses, with those files'
+    /// paths in order.
+    pub fn identity_conflicts(&self) -> Result<Vec<IdentityConflict>> {
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT o.stable_id,f.relative_path FROM objects o JOIN files f ON f.id=o.file_id \
+                 WHERE o.identity_status='conflict' ORDER BY o.stable_id,f.relative_path",
+            )
+            .map_err(|error| CoreError::index(error, "diagnostics"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| CoreError::index(error, "diagnostics"))?;
+        let mut conflicts: Vec<IdentityConflict> = Vec::new();
+        for row in rows {
+            let (id, path) = row.map_err(|error| CoreError::index(error, "diagnostics"))?;
+            match conflicts.last_mut() {
+                Some(conflict) if conflict.object_id == id => conflict.relative_paths.push(path),
+                _ => conflicts.push(IdentityConflict {
+                    object_id: id,
+                    relative_paths: vec![path],
+                }),
+            }
+        }
+        Ok(conflicts)
     }
 
     pub fn diagnostics(&self) -> Result<Vec<crate::Diagnostic>> {

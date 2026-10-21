@@ -493,9 +493,7 @@ impl WorkspaceEngine {
             self.sync_prepare_parent(trash_path)?;
             std::fs::rename(&source, &trash).map_err(|_| invalid("collaboration_delete_failed"))?;
             sync_rename_parents(&source, &trash, "collaboration_delete")?;
-            if let Ok(mut writes) = self.self_writes.lock() {
-                writes.insert(previous_path.clone(), "<deleted>".into());
-            }
+            self.expect_own_write(&previous_path, None);
         } else if previous_path == next_path {
             self.sync_write_file_checked(&next.path, &bytes, Some(&intent.base_revision))?;
         } else {
@@ -505,10 +503,8 @@ impl WorkspaceEngine {
             std::fs::rename(&source, &destination)
                 .map_err(|_| invalid("collaboration_move_failed"))?;
             sync_rename_parents(&source, &destination, "collaboration_move")?;
-            if let Ok(mut writes) = self.self_writes.lock() {
-                writes.insert(previous_path.clone(), "<deleted>".into());
-                writes.insert(next_path.clone(), next.revision.clone());
-            }
+            self.expect_own_write(&previous_path, None);
+            self.expect_own_write(&next_path, Some(&next.revision));
         }
         self.collaboration_mutation_boundary(1)?;
         self.collaboration_finish(&intent)?;

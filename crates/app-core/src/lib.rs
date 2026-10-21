@@ -24,8 +24,10 @@ mod layout;
 mod login;
 mod menus;
 mod notes;
+mod objects;
 mod operations;
 mod preferences;
+mod problems;
 mod quick_open;
 mod rail;
 mod recents;
@@ -37,11 +39,12 @@ mod store;
 mod system;
 mod tabs;
 mod view_state;
+mod watch;
 mod workspace;
 
 pub use app::{
-    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Palette, PaletteMode,
-    Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
+    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
+    PaletteMode, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
 };
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
@@ -54,13 +57,17 @@ pub use files::{
 };
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+#[cfg(feature = "test-hooks")]
+pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use notes::{
     NoteSession, NoteSync, Property, PropertyValue, SAVE_AT_LEAST_EVERY, SAVE_PAUSE, SaveProblem,
 };
+pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
+pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
@@ -72,6 +79,7 @@ pub use settings::{
 };
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};
+pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
 
 /// Where Noura keeps per-device state, such as indexes and the recent

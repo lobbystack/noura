@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::UNIX_EPOCH,
 };
@@ -46,6 +46,7 @@ mod files;
 mod import;
 mod manifest;
 mod objects;
+mod own_writes;
 mod raw_markdown;
 mod reconcile;
 mod scan;
@@ -58,6 +59,7 @@ use drafts::*;
 use durable::*;
 use manifest::*;
 use objects::*;
+use own_writes::OwnWrites;
 use raw_markdown::*;
 use scan::*;
 
@@ -72,6 +74,8 @@ pub use raw_markdown::{
     MarkdownLinkTarget, RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead,
     RawReconcileInput, RawReconcileResult, RawSaveInput, RawSaveResult,
 };
+pub use scan::is_online_only;
+pub(crate) use scan::{ensure_downloaded, not_downloaded};
 pub use sync::SYNC_PLUGIN_ID;
 pub use trash::{SystemTrash, os_trash};
 
@@ -83,14 +87,25 @@ pub struct WorkspaceEngine {
     lock_path: PathBuf,
     event_sender: tokio::sync::broadcast::Sender<CoreEvent>,
     watcher: WatchCoordinator,
-    /// Paths this engine wrote, with the revision it wrote. Shared with the
-    /// watcher thread so our own writes do not mark the index dirty.
-    self_writes: Arc<Mutex<HashMap<String, String>>>,
+    /// The changes this engine made recently. Shared with the watcher
+    /// thread so our own writes do not mark the index dirty.
+    self_writes: Arc<Mutex<OwnWrites>>,
     /// Set by the watcher thread when a visible path changes and cleared when
     /// a workspace walk starts. Reads skip the walk while it stays clear.
     dirty: Arc<AtomicBool>,
     /// What the last full walk found beyond the index itself.
     scan_state: Mutex<ScanState>,
+    /// Held while files and their index entries change: by every write
+    /// through [`Self::write_lock`], from its disk change to its index
+    /// update and event, and by every walk that lists the workspace or
+    /// changes the index. A walk then never finds one of our writes on
+    /// disk before the index has it, and never indexes it as another
+    /// app's. Reentrant, because some writes reconcile while they hold it.
+    change_gate: parking_lot::ReentrantMutex<()>,
+    /// File changes announced so far, by who made them. Unlike the event
+    /// channel these never drop a change, however many arrive at once.
+    own_changes: AtomicU64,
+    outside_changes: AtomicU64,
     chat_mutation_fault: Mutex<Option<ChatMutationFault>>,
     #[cfg(test)]
     collaboration_mutation_fault: Mutex<Option<u8>>,
@@ -263,9 +278,9 @@ impl WorkspaceEngine {
         std::fs::create_dir_all(&local_dir)
             .map_err(|error| CoreError::io(error, "workspace_open", local_dir.to_str()))?;
         let index_path = local_dir.join("index.sqlite");
-        let index = IndexStore::open(&index_path)?;
+        let (index, rebuild) = open_index(&index_path)?;
         let (event_sender, _) = tokio::sync::broadcast::channel(256);
-        let self_writes = Arc::new(Mutex::new(HashMap::new()));
+        let self_writes = Arc::new(Mutex::new(OwnWrites::default()));
         let dirty = Arc::new(AtomicBool::new(false));
         let watcher = WatchCoordinator::new(
             &root,
@@ -282,6 +297,9 @@ impl WorkspaceEngine {
             self_writes,
             dirty,
             scan_state: Mutex::new(ScanState::default()),
+            change_gate: parking_lot::ReentrantMutex::new(()),
+            own_changes: AtomicU64::new(0),
+            outside_changes: AtomicU64::new(0),
             chat_mutation_fault: Mutex::new(None),
             #[cfg(test)]
             collaboration_mutation_fault: Mutex::new(None),
@@ -290,6 +308,9 @@ impl WorkspaceEngine {
             system_trash: std::sync::RwLock::new(None),
         };
         engine.recover_pending_chat_mutations()?;
+        if rebuild {
+            engine.rebuild_index()?;
+        }
         engine.reconcile()?;
         engine.migrate_sync_plugin();
         engine.emit(
@@ -336,7 +357,43 @@ impl WorkspaceEngine {
         }
     }
 
-    fn write_lock(&self, operation: &str) -> Result<WorkspaceLock> {
+    /// Every stable ID that more than one file uses, with those files.
+    pub fn identity_conflicts(&self) -> Result<Vec<crate::IdentityConflict>> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("diagnostics"))?
+            .identity_conflicts()
+    }
+
+    /// How many file changes this engine has announced, by who made them.
+    pub fn change_counts(&self) -> ChangeCounts {
+        ChangeCounts {
+            own: self.own_changes.load(Ordering::SeqCst),
+            outside: self.outside_changes.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Run `read` while no write, walk or watcher batch can change the
+    /// files or the index, and return its result with the change counts as
+    /// they stand when it ends. A listing made inside `read` shows exactly
+    /// the changes those counts count, so comparing two readings tells
+    /// which listing is newer.
+    pub fn read_settled<T>(&self, read: impl FnOnce() -> T) -> (T, ChangeCounts) {
+        let _changes = self.hold_changes();
+        let value = read();
+        (value, self.change_counts())
+    }
+
+    /// Hold off walks and other writes until the guard drops. A write that
+    /// reconciles after it releases [`Self::write_lock`] holds this across
+    /// both, so no walk runs in between.
+    fn hold_changes(&self) -> parking_lot::ReentrantMutexGuard<'_, ()> {
+        self.change_gate.lock()
+    }
+
+    fn write_lock(&self, operation: &str) -> Result<WorkspaceLock<'_>> {
+        // Always before the file lock, so the two are taken in one order.
+        let gate = self.hold_changes();
         if let Some(parent) = self.lock_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| CoreError::io(error, operation, parent.to_str()))?;
@@ -350,10 +407,19 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
         file.lock_exclusive()
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
-        Ok(WorkspaceLock(file))
+        Ok(WorkspaceLock { file, _gate: gate })
     }
 
     fn emit(&self, event_type: &str, source: EventSource, payload: serde_json::Value) {
+        if announces_file_change(event_type) {
+            let count = match source {
+                EventSource::Application => &self.own_changes,
+                EventSource::External | EventSource::Reconciliation | EventSource::Sync => {
+                    &self.outside_changes
+                }
+            };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
         let _ = self.event_sender.send(CoreEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: event_type.into(),
@@ -362,6 +428,120 @@ impl WorkspaceEngine {
             source,
             payload,
         });
+    }
+
+    /// Note that this engine is about to write `revision` to `relative`, or
+    /// delete it when `revision` is `None`, along with the folders the
+    /// write creates or changes. Call it before touching the disk: the
+    /// watcher can report the change before the write returns, and an
+    /// unexpected change reads as another app's.
+    fn expect_own_write(&self, relative: &str, revision: Option<&str>) {
+        let expected = match revision {
+            Some(revision) => own_writes::Expected::Revision(revision.to_owned()),
+            None => own_writes::Expected::Deleted,
+        };
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.expect(&self.root, relative, expected, std::time::Instant::now());
+        }
+    }
+
+    /// Forget an expected write that failed.
+    fn forget_own_write(&self, relative: &str) {
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.forget(&self.root, relative);
+        }
+    }
+
+    /// Note that this engine is about to create the folder `relative`,
+    /// along with the folders above it that don't exist yet.
+    fn expect_own_folder(&self, relative: &str) {
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.expect(
+                &self.root,
+                relative,
+                own_writes::Expected::Folder,
+                std::time::Instant::now(),
+            );
+        }
+    }
+
+    /// Note the file at `relative` as this engine just left it, for a write
+    /// whose content isn't known before it lands. Call it while the change
+    /// gate is still held: the watcher thread checks no report against the
+    /// journal until the gate is free, so the entry is there in time.
+    fn expect_own_file(&self, relative: &str) {
+        let Ok(metadata) = std::fs::symlink_metadata(self.root.join(relative)) else {
+            return;
+        };
+        let expected = own_writes::Expected::Unchanged(own_writes::Stat::of(&metadata));
+        if let Ok(mut journal) = self.self_writes.lock() {
+            journal.expect(&self.root, relative, expected, std::time::Instant::now());
+        }
+    }
+
+    /// Note that this engine is about to move the file or folder at `from`
+    /// to `to`, or out of the workspace when `to` is `None`. `from` and
+    /// everything in it then read as gone and `to` and everything in it as
+    /// the item, unchanged, along with the folders the move creates or
+    /// changes. After a case-only rename both names show the item. Call it
+    /// before touching the disk. Returns every path it noted, for
+    /// [`Self::forget_own_writes`].
+    fn expect_own_move(&self, from: &str, to: Option<&str>) -> Vec<String> {
+        use own_writes::Expected;
+
+        let source = self.root.join(from);
+        let case_only = to.is_some_and(|to| same_file(&source, &self.root.join(to)));
+        let items = own_writes::moved_items(&source);
+        let now = std::time::Instant::now();
+        let mut noted = Vec::new();
+        let Ok(mut journal) = self.self_writes.lock() else {
+            return noted;
+        };
+        for (inner, moved) in items {
+            let inside = |item: &str| match inner.as_str() {
+                "" => item.to_owned(),
+                inner => format!("{item}/{inner}"),
+            };
+            let left = if case_only {
+                moved.clone()
+            } else {
+                Expected::Deleted
+            };
+            let mut paths = vec![(inside(from), left)];
+            if let Some(to) = to {
+                paths.push((inside(to), moved));
+            }
+            for (path, expected) in paths {
+                // The item's own entries also note the folders above it.
+                if inner.is_empty() {
+                    journal.expect(&self.root, &path, expected, now);
+                } else {
+                    journal.expect_only(&path, expected, now);
+                }
+                noted.push(path);
+            }
+        }
+        noted
+    }
+
+    /// Forget expected changes that never happened.
+    fn forget_own_writes(&self, relative_paths: &[String]) {
+        if let Ok(mut journal) = self.self_writes.lock() {
+            for relative in relative_paths {
+                journal.forget(&self.root, relative);
+            }
+        }
+    }
+
+    /// Announce a change this engine made to the files or folders at
+    /// `relative_paths`. A view then lists the workspace again, even when
+    /// no index entry changed, as for a new folder or a moved picture.
+    fn announce_own_change(&self, relative_paths: &[&str]) {
+        self.emit(
+            "file:changed",
+            EventSource::Application,
+            serde_json::json!({ "paths": relative_paths }),
+        );
     }
 
     fn index_outcome(&self, result: Result<()>) -> (IndexStatus, Vec<CoreWarning>) {
@@ -386,10 +566,104 @@ impl WorkspaceEngine {
     }
 }
 
-struct WorkspaceLock(File);
-impl Drop for WorkspaceLock {
+/// Open a workspace's index, and say whether it must be rebuilt from the
+/// files: it's missing, it isn't a database anymore, or a rebuild stopped
+/// before it finished. An unfinished rebuild never destroyed the previous
+/// index, so that index stays in use until the rebuild completes.
+fn open_index(path: &Path) -> Result<(IndexStore, bool)> {
+    let next = path.with_extension("sqlite.next");
+    let previous = path.with_extension("sqlite.previous");
+    let exists = |path: &Path| {
+        path.try_exists()
+            .map_err(|error| CoreError::io(error, "index_open", path.to_str()))
+    };
+    let unfinished = exists(&next)? || exists(&previous)?;
+    if !exists(path)? && exists(&previous)? {
+        // The rebuild set the index aside and stopped before the new one
+        // took its place.
+        std::fs::rename(&previous, path)
+            .map_err(|error| CoreError::io(error, "index_open", path.to_str()))?;
+    }
+    if !exists(path)? {
+        return Ok((IndexStore::in_memory()?, true));
+    }
+    match IndexStore::open(path) {
+        Ok(index) => Ok((index, unfinished)),
+        Err(error) if error.code == "index_damaged" => {
+            tracing::warn!(details = ?error.details, "the index is damaged; rebuilding it");
+            remove_index_files(path, "index_open")?;
+            Ok((IndexStore::in_memory()?, true))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Delete an index database and the journal files SQLite keeps beside it.
+pub(super) fn remove_index_files(path: &Path, operation: &str) -> Result<()> {
+    let name = path.as_os_str();
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut file = name.to_owned();
+        file.push(suffix);
+        let file = PathBuf::from(file);
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(CoreError::io(error, operation, file.to_str())),
+        }
+    }
+    Ok(())
+}
+
+/// What one poll of the native watcher found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatchPoll {
+    /// The workspace paths another app changed.
+    pub changed: Vec<String>,
+    /// Whether the watcher lost events, so a full rescan ran instead. The
+    /// rescan can find changes no index entry holds, such as a new folder,
+    /// so a caller that shows the files lists them again.
+    pub rescanned: bool,
+}
+
+/// File changes an engine has announced, by who made them. Both counts
+/// only grow, so a caller compares two readings to learn what happened in
+/// between.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChangeCounts {
+    /// Changes this engine made.
+    pub own: u64,
+    /// Changes another app, a cloud drive or a sync made, which the
+    /// watcher or a walk found.
+    pub outside: u64,
+}
+
+impl ChangeCounts {
+    /// Whether these counts miss a change that `later` counts, so they were
+    /// read before it.
+    pub fn is_before(self, later: Self) -> bool {
+        self.own < later.own || self.outside < later.outside
+    }
+}
+
+/// Whether an event says files or their index entries changed.
+fn announces_file_change(event_type: &str) -> bool {
+    event_type.starts_with("file:")
+        || event_type.starts_with("object:")
+        || event_type.starts_with("objects:")
+        || matches!(
+            event_type,
+            "search:index-updated" | "workspace:manifest-updated"
+        )
+}
+
+/// The cross-process write lock, which also holds the change gate.
+struct WorkspaceLock<'a> {
+    file: File,
+    _gate: parking_lot::ReentrantMutexGuard<'a, ()>,
+}
+impl Drop for WorkspaceLock<'_> {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        let _ = self.file.unlock();
     }
 }
 
@@ -406,6 +680,37 @@ fn lock_error(operation: &str) -> CoreError {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn a_settled_read_shows_exactly_the_changes_its_counts_count() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let start = engine.change_counts();
+        let folders = 120;
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                for folder in 0..folders {
+                    engine.create_folder(&format!("F{folder:03}")).unwrap();
+                }
+            });
+            let mut reads = 0;
+            while !writer.is_finished() || reads == 0 {
+                let (entries, counts) =
+                    engine.read_settled(|| engine.list_workspace_entries().unwrap());
+                // Each new folder is one announced change.
+                assert_eq!(entries.len() as u64, counts.own - start.own);
+                reads += 1;
+            }
+            writer.join().unwrap();
+        });
+        let (entries, counts) = engine.read_settled(|| engine.list_workspace_entries().unwrap());
+        assert_eq!(entries.len(), folders);
+        assert_eq!(counts.own - start.own, folders as u64);
+        assert!(!counts.is_before(start) && start.is_before(counts));
+    }
 
     #[test]
     fn create_does_not_overwrite_an_existing_manifest() {

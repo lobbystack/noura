@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use local_core::WorkspaceEntryKind;
+use local_core::{WorkspaceEntry, WorkspaceEntryKind, is_online_only};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
 use crate::{AppError, Workspace, error::Access};
@@ -219,6 +219,19 @@ impl FileTree {
         tree.top = top;
         tree.refresh_rows();
         tree
+    }
+
+    /// The tree of a workspace listing, with every folder closed.
+    pub(crate) fn from_entries(entries: &[WorkspaceEntry]) -> Self {
+        Self::new(entries.iter().map(|entry| TreeEntry {
+            kind: match entry.kind {
+                WorkspaceEntryKind::Folder => EntryKind::Folder,
+                WorkspaceEntryKind::File => EntryKind::File,
+            },
+            relative_path: entry.relative_path.clone(),
+            not_downloaded: entry.not_downloaded,
+            object_id: entry.object_id.clone(),
+        }))
     }
 
     fn folder(&mut self, path: &str, folders: &mut HashMap<String, usize>) -> usize {
@@ -525,7 +538,7 @@ impl FileTree {
             return None;
         }
         let drag = self.drag.take()?;
-        self.close_opened(&drag, drag.target.as_deref());
+        self.close_opened(&drag.opened, drag.target.as_deref());
         drag.target
     }
 
@@ -598,7 +611,7 @@ impl FileTree {
         let node = self.drag.as_ref()?.node?;
         let drag = self.drag.take()?;
         let target = drag.target.clone();
-        self.close_opened(&drag, target.as_deref());
+        self.close_opened(&drag.opened, target.as_deref());
         target.map(|folder| TreeAction::Move {
             relative_path: self.nodes[node].relative_path.clone(),
             folder,
@@ -609,15 +622,16 @@ impl FileTree {
     /// drag opened.
     pub fn cancel_drag(&mut self) {
         if let Some(drag) = self.drag.take() {
-            self.close_opened(&drag, None);
+            self.close_opened(&drag.opened, None);
         }
     }
 
-    fn close_opened(&mut self, drag: &Drag, kept: Option<&str>) {
-        if drag.opened.is_empty() {
+    /// Close the folders a drag `opened`, except those that hold `kept`.
+    fn close_opened(&mut self, opened: &[usize], kept: Option<&str>) {
+        if opened.is_empty() {
             return;
         }
-        for folder in &drag.opened {
+        for folder in opened {
             let path = &self.nodes[*folder].relative_path;
             let holds_drop = kept.is_some_and(|kept| remap(kept, path, path).is_some());
             if !holds_drop {
@@ -634,28 +648,104 @@ impl FileTree {
             .is_some_and(|node| self.nodes[*node].kind == EntryKind::Folder)
     }
 
-    /// Take over `old`'s open folders and current row. When items moved,
-    /// each from `from` to `to` in the order of `moves`, their open
-    /// folders and the current row follow them.
+    /// Whether this tree lists the same files and folders as `other`, each
+    /// with the same object ID and download state.
+    pub(crate) fn lists_same_items(&self, other: &FileTree) -> bool {
+        self.nodes.len() == other.nodes.len()
+            && self.nodes.iter().all(|node| {
+                other
+                    .by_path
+                    .get(&node.relative_path)
+                    .is_some_and(|&index| {
+                        let theirs = &other.nodes[index];
+                        theirs.kind == node.kind
+                            && theirs.not_downloaded == node.not_downloaded
+                            && theirs.object_id == node.object_id
+                    })
+            })
+    }
+
+    /// Take over the state of `old`, the tree this one replaces: its open
+    /// folders, current row, type-ahead and drag. When items moved, each
+    /// from `from` to `to` in the order of `moves`, their open folders, the
+    /// current row and a drag of them follow them. When the current row
+    /// went away, the current row stays at its place in the list. A drag
+    /// whose row went away stops, and the folders it opened close.
     pub(crate) fn carry_over(&mut self, old: &FileTree, moves: &[(&str, &str)]) {
         let follow = |path: &str| {
             moves.iter().fold(path.to_owned(), |path, (from, to)| {
                 remap(&path, from, to).unwrap_or(path)
             })
         };
-        for node in &old.expanded {
-            let path = follow(&old.nodes[*node].relative_path);
-            if let Some(&index) = self.by_path.get(&path) {
-                self.expanded.insert(index);
-            }
-        }
+        let open: Vec<usize> = old
+            .expanded
+            .iter()
+            .filter_map(|node| self.folder_at(&follow(&old.nodes[*node].relative_path)))
+            .collect();
+        self.expanded.extend(open);
         self.refresh_rows();
-        if let Some(row) = old.focused {
-            let path = follow(&old.rows[row].relative_path);
-            if let Some(&node) = self.by_path.get(&path) {
-                self.focused = self.row_of(node);
-            }
+        self.focused = old.focused.and_then(|row| {
+            self.find_row(&follow(&old.rows[row].relative_path))
+                .or_else(|| self.rows.len().checked_sub(1).map(|last| row.min(last)))
+        });
+        self.typed.clone_from(&old.typed);
+        self.typed_at = old.typed_at;
+        if let Some(drag) = &old.drag {
+            self.carry_drag(old, drag, &follow);
         }
+    }
+
+    /// Take over `old`'s drag, `drag`, by path.
+    fn carry_drag(&mut self, old: &FileTree, drag: &Drag, follow: &impl Fn(&str) -> String) {
+        let opened: Vec<usize> = drag
+            .opened
+            .iter()
+            .filter_map(|node| self.folder_at(&follow(&old.nodes[*node].relative_path)))
+            .collect();
+        // The row a drop would move, found again by its path.
+        let node = drag.node.map(|node| {
+            let dragged = &old.nodes[node];
+            self.by_path
+                .get(&follow(&dragged.relative_path))
+                .copied()
+                .filter(|node| self.nodes[*node].kind == dragged.kind)
+        });
+        let node = match node {
+            Some(Some(node)) => Some(node),
+            // A row dragged within the tree went away: nothing is left to
+            // drop.
+            Some(None) if !drag.from_outside => {
+                self.close_opened(&opened, None);
+                return;
+            }
+            // Files from outside still drop, as copies when the row they
+            // came from went away.
+            Some(None) | None => None,
+        };
+        let resting = drag.resting.and_then(|(folder, since)| {
+            self.folder_at(&follow(&old.nodes[folder].relative_path))
+                .filter(|folder| !self.expanded.contains(folder))
+                .map(|folder| (folder, since))
+        });
+        let target = drag.target.as_deref().map(follow).filter(|folder| {
+            (folder.is_empty() || self.folder_at(folder).is_some())
+                && node.is_none_or(|node| can_move_into(&self.nodes[node].relative_path, folder))
+        });
+        self.drag = Some(Drag {
+            node,
+            from_outside: drag.from_outside,
+            resting,
+            target,
+            opened,
+        });
+    }
+
+    /// The folder at `relative_path`.
+    fn folder_at(&self, relative_path: &str) -> Option<usize> {
+        self.by_path
+            .get(relative_path)
+            .copied()
+            .filter(|node| self.nodes[*node].kind == EntryKind::Folder)
     }
 
     /// Open or close the folder at `row`. Focus inside a folder that closes
@@ -784,33 +874,13 @@ impl FileTree {
 }
 
 impl Workspace {
-    /// The file tree after reading every file again, for when files may
-    /// have changed outside Noura. Until the index's watcher reports a
-    /// change, the plain listing trusts the index for paths it already
-    /// knows, so a file that another app replaced would keep the old
-    /// file's stable ID.
-    pub(crate) fn changed_file_tree(&self) -> Result<FileTree, AppError> {
-        self.engine()
-            .reconcile()
-            .map_err(|error| AppError::from_core(error, self.root(), Access::ReadWorkspace))?;
-        self.file_tree()
-    }
-
     /// The workspace's file tree with every folder closed.
     pub fn file_tree(&self) -> Result<FileTree, AppError> {
         let entries = self
             .engine()
             .list_workspace_entries()
             .map_err(|error| AppError::from_core(error, self.root(), Access::ReadWorkspace))?;
-        Ok(FileTree::new(entries.into_iter().map(|entry| TreeEntry {
-            kind: match entry.kind {
-                WorkspaceEntryKind::Folder => EntryKind::Folder,
-                WorkspaceEntryKind::File => EntryKind::File,
-            },
-            relative_path: entry.relative_path,
-            not_downloaded: entry.not_downloaded,
-            object_id: entry.object_id,
-        })))
+        Ok(FileTree::from_entries(&entries))
     }
 
     /// The file at `relative_path`, for the document area. Reads nothing
@@ -822,9 +892,9 @@ impl Workspace {
             .resolve_managed_path(relative_path, "file_open")
             .map_err(|error| AppError::from_core(error, relative_path, Access::ReadFile))?;
         match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_file() && !is_dataless(&metadata) => {}
-            Ok(metadata) if metadata.is_file() => return Err(not_downloaded()),
-            _ if has_icloud_placeholder(&path) => return Err(not_downloaded()),
+            Ok(metadata) if metadata.is_file() && !is_online_only(&metadata) => {}
+            Ok(metadata) if metadata.is_file() => return Err(AppError::not_downloaded()),
+            _ if has_icloud_placeholder(&path) => return Err(AppError::not_downloaded()),
             _ => {
                 return Err(AppError::new(
                     "file_missing",
@@ -836,35 +906,20 @@ impl Workspace {
     }
 }
 
-fn not_downloaded() -> AppError {
-    AppError::new(
-        "file_not_downloaded",
-        "This file isn't downloaded yet. Try again once it is.",
-    )
-}
-
 /// Whether iCloud keeps `.Name.icloud` in place of the missing `Name`, as
 /// `local-core`'s scan lists it.
-fn has_icloud_placeholder(path: &std::path::Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
+pub(crate) fn has_icloud_placeholder(path: &std::path::Path) -> bool {
+    icloud_placeholder(path).is_some()
+}
+
+/// The `.Name.icloud` file iCloud keeps in place of the missing `Name`, if
+/// there is one.
+pub(crate) fn icloud_placeholder(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = path.file_name()?.to_str()?;
     let placeholder = path.with_file_name(format!(".{name}.icloud"));
-    std::fs::symlink_metadata(placeholder).is_ok_and(|metadata| metadata.is_file())
-}
-
-/// Whether macOS reports the file as dataless: its content lives only in
-/// cloud storage. `local-core`'s scan marks these rows as not downloaded.
-#[cfg(target_os = "macos")]
-fn is_dataless(metadata: &std::fs::Metadata) -> bool {
-    use std::os::macos::fs::MetadataExt;
-    const SF_DATALESS: u32 = 0x4000_0000;
-    metadata.st_flags() & SF_DATALESS != 0
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_dataless(_metadata: &std::fs::Metadata) -> bool {
-    false
+    std::fs::symlink_metadata(&placeholder)
+        .is_ok_and(|metadata| metadata.is_file())
+        .then_some(placeholder)
 }
 
 pub(crate) fn parent_of(path: &str) -> Option<&str> {

@@ -9,24 +9,23 @@ pub(super) const OBJECT_EVENT_BATCH_LIMIT: usize = 32;
 
 impl WorkspaceEngine {
     pub fn rebuild_index(&self) -> Result<()> {
+        // A write that lands mid-rebuild would update the index this
+        // replaces and be lost.
+        let _changes = self.hold_changes();
         self.emit(
             "workspace:rebuilding",
             EventSource::Application,
             serde_json::json!({}),
         );
+        // A rebuild that stopped midway may have left a partial database
+        // and its journal behind.
         let next = self.index_path.with_extension("sqlite.next");
-        if next.exists() {
-            std::fs::remove_file(&next)
-                .map_err(|error| CoreError::io(error, "index_rebuild", next.to_str()))?;
-        }
+        super::remove_index_files(&next, "index_rebuild")?;
         let mut replacement = IndexStore::open(&next)?;
         scan_into(&self.root, &self.current_ignore(), &mut replacement)?;
         drop(replacement);
         let previous = self.index_path.with_extension("sqlite.previous");
-        if previous.exists() {
-            std::fs::remove_file(&previous)
-                .map_err(|error| CoreError::io(error, "index_rebuild", previous.to_str()))?;
-        }
+        super::remove_index_files(&previous, "index_rebuild")?;
         // Close the active connection before replacing the database. Windows does not allow an
         // open SQLite file to be renamed, while Unix happens to tolerate it.
         let mut index = self.index.lock().map_err(|_| lock_error("index_rebuild"))?;
@@ -51,7 +50,7 @@ impl WorkspaceEngine {
         }
         *index = IndexStore::open(&self.index_path)?;
         drop(index);
-        let _ = std::fs::remove_file(previous);
+        let _ = super::remove_index_files(&previous, "index_rebuild");
         self.emit(
             "workspace:ready",
             EventSource::Application,
@@ -69,6 +68,32 @@ impl WorkspaceEngine {
     /// read as the app's own changes rather than edits from another program.
     pub(super) fn reconcile_as_application(&self) -> Result<()> {
         self.reconcile_forced_with_source(&HashSet::new(), EventSource::Application)
+    }
+
+    /// Whether the native watcher reports changes. When it doesn't, callers
+    /// must rescan the workspace to see changes other apps make.
+    pub fn is_watching(&self) -> bool {
+        self.watcher.is_available()
+    }
+
+    /// Test hook: make the native watcher fail from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn force_watch_fault(&self, fault: crate::WatchFault) {
+        self.watcher.force_fault(fault);
+    }
+
+    /// Test hook: deliver one native watcher event naming `paths`, which
+    /// may lie anywhere, as the platform would.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn inject_watch_event(&self, paths: Vec<PathBuf>) {
+        self.watcher.inject(paths);
+    }
+
+    /// Test hook: deliver one native watcher event that asks for a full
+    /// rescan, as the platform would.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn inject_watch_rescan_request(&self) {
+        self.watcher.inject_rescan_request();
     }
 
     /// Bring the index in line after a file change this app made and
@@ -123,6 +148,9 @@ impl WorkspaceEngine {
         source: EventSource,
         list_entries: bool,
     ) -> Result<WorkspaceScan> {
+        // A write of ours never lands mid-walk, so the walk can't index it
+        // as another app's.
+        let _changes = self.hold_changes();
         self.recover_pending_chat_mutations()?;
         // Clear before walking: a change that lands mid-walk marks it again.
         self.dirty.store(false, Ordering::SeqCst);
@@ -137,7 +165,7 @@ impl WorkspaceEngine {
             Some((&metadata, forced)),
             list_entries,
         )?;
-        let removed = scan.removed(&metadata);
+        let removed = scan.removed(metadata.keys());
         self.store_scan_state(&scan);
         let changed = std::mem::take(&mut scan.changed);
         scan.touched = changed
@@ -162,6 +190,7 @@ impl WorkspaceEngine {
     /// Re-read specific Markdown files and update only their index rows.
     /// A missing file counts as removed unless iCloud still holds it.
     pub(super) fn reconcile_paths(&self, paths: &[String], source: EventSource) -> Result<()> {
+        let _changes = self.hold_changes();
         let mut changed = Vec::new();
         let mut removed = Vec::new();
         for relative in paths {
@@ -230,23 +259,44 @@ impl WorkspaceEngine {
         Ok(())
     }
 
+    /// Wait up to `wait` for the native watcher and reconcile what it
+    /// reports. Returns the workspace paths another app changed.
     pub fn poll_external_changes(&self, wait: std::time::Duration) -> Result<Vec<String>> {
+        self.poll_watcher(wait).map(|poll| poll.changed)
+    }
+
+    /// [`Self::poll_external_changes`], also saying whether the watcher
+    /// lost events and a full rescan ran instead.
+    pub fn poll_watcher(&self, wait: std::time::Duration) -> Result<WatchPoll> {
         let paths = self.watcher.drain_coalesced(wait)?;
+        // Our writes finish before these reports are checked against the
+        // journal, so a write caught between its journal entry and its
+        // disk change never reads as another app's.
+        let _changes = self.hold_changes();
         if self.watcher.take_overflow() {
             // Events were lost, so the paths are incomplete: walk everything.
             self.sync_external_manifest(&[self.root.join(WORKSPACE_MANIFEST_PATH)])?;
             let scan = self.reconcile_walk(&HashSet::new(), EventSource::External, false)?;
-            if let Ok(mut journal) = self.self_writes.lock() {
-                journal.clear();
+            // A burst of our own writes is the usual reason events are lost.
+            // A walk that finds nothing new then announces nothing, or those
+            // writes would read as another app's. The journal stays, for
+            // the reports of them that arrive after the walk.
+            if !scan.touched.is_empty() {
+                self.emit(
+                    "file:changed",
+                    EventSource::External,
+                    serde_json::json!({ "paths": scan.touched, "rescanned": true }),
+                );
             }
-            self.emit(
-                "file:changed",
-                EventSource::External,
-                serde_json::json!({ "paths": scan.touched, "rescanned": true }),
-            );
-            return Ok(scan.touched);
+            return Ok(WatchPoll {
+                changed: scan.touched,
+                rescanned: true,
+            });
         }
-        self.process_external_changes(paths)
+        Ok(WatchPoll {
+            changed: self.process_external_changes(paths)?,
+            rescanned: false,
+        })
     }
 
     pub(super) fn process_external_changes(&self, paths: Vec<PathBuf>) -> Result<Vec<String>> {
@@ -258,10 +308,14 @@ impl WorkspaceEngine {
         self.sync_external_manifest(&paths)?;
         let ignores = compile_workspace_ignores(&self.root, &self.current_ignore())?;
         let mut external = Vec::new();
+        // A name with no UTF-8 form can't be indexed or reported by path. The
+        // walk below records it as a problem and handles the rest.
+        let mut unrepresentable = false;
         let mut journal = self
             .self_writes
             .lock()
             .map_err(|_| lock_error("watcher_poll"))?;
+        let now = std::time::Instant::now();
         for path in paths {
             let Ok(relative) = path.strip_prefix(&self.root) else {
                 continue;
@@ -279,35 +333,22 @@ impl WorkspaceEngine {
             {
                 continue;
             }
-            let relative = relative
-                .to_str()
-                .map(|value| value.replace('\\', "/"))
-                .ok_or_else(|| {
-                    CoreError::validation(
-                        "non_utf8_path",
-                        "A changed workspace path is not UTF-8",
-                        "watcher_poll",
-                    )
-                })?;
-            if let Some(expected) = journal.get(&relative).cloned() {
-                let matches = if expected == "<deleted>" {
-                    !path.exists()
-                } else {
-                    std::fs::read(&path)
-                        .ok()
-                        .is_some_and(|bytes| markdown::revision(&bytes) == expected)
-                };
-                journal.remove(&relative);
-                if matches {
-                    continue;
-                }
+            let Some(relative) = relative.to_str().map(|value| value.replace('\\', "/")) else {
+                unrepresentable = true;
+                continue;
+            };
+            // A report of a path that still shows our recent write is our
+            // own. One that went online-only meanwhile is outside, and
+            // the check never reads it.
+            if journal.reported(&relative, &path, now) {
+                continue;
             }
             external.push(relative);
         }
         drop(journal);
         external.sort();
         external.dedup();
-        if !external.is_empty() {
+        if !external.is_empty() || unrepresentable {
             self.reconcile_forced_with_source(
                 &external.iter().cloned().collect(),
                 EventSource::External,
@@ -445,6 +486,364 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_write_of_ours_the_platform_reports_twice_never_reads_as_an_outside_change() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Ours".into(),
+                body: "Body".into(),
+                relative_path: Some("ours.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let path = engine.root().join("ours.md");
+
+        let first = engine.process_external_changes(vec![path.clone()]).unwrap();
+        let second = engine.process_external_changes(vec![path.clone()]).unwrap();
+        std::fs::write(&path, "# Theirs\n").unwrap();
+        let third = engine.process_external_changes(vec![path]).unwrap();
+
+        assert_eq!(
+            (first, second, third),
+            (Vec::new(), Vec::new(), vec!["ours.md".to_owned()])
+        );
+    }
+
+    #[test]
+    fn reports_of_the_folders_a_write_of_ours_creates_never_read_as_an_outside_change() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let mut events = engine.subscribe();
+        engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Ours".into(),
+                body: "Body".into(),
+                relative_path: Some("Inbox/Deep/ours.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let root = engine.root().to_owned();
+
+        let ours = engine
+            .process_external_changes(vec![
+                root.join("Inbox"),
+                root.join("Inbox/Deep"),
+                root.join("Inbox/Deep/ours.md"),
+            ])
+            .unwrap();
+        std::fs::create_dir(root.join("Inbox/Theirs")).unwrap();
+        let theirs = engine
+            .process_external_changes(vec![root.join("Inbox"), root.join("Inbox/Theirs")])
+            .unwrap();
+
+        let outside = std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| event.source == EventSource::External)
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            (ours, theirs, outside),
+            (
+                Vec::new(),
+                vec!["Inbox/Theirs".to_owned()],
+                vec!["file:changed".to_owned()]
+            )
+        );
+    }
+
+    /// A workspace with a note, a PDF, and a folder holding a note and a
+    /// folder with a picture, all indexed.
+    fn tree_fixture() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceEngine) {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        for (path, bytes) in [
+            ("Plan.md", "# Plan\n"),
+            ("scan.pdf", "%PDF-1.7\n"),
+            ("Docs/Spec.md", "# Spec\n"),
+            ("Docs/Photos/cat.jpg", "jpg"),
+        ] {
+            let path = engine.root().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        engine.reconcile().unwrap();
+        (workspace, app_data, engine)
+    }
+
+    /// Hand the engine one watcher batch naming `paths`, and return the
+    /// ones it took for another app's changes.
+    fn report(engine: &WorkspaceEngine, paths: &[&str]) -> Vec<String> {
+        let root = engine.root().to_owned();
+        engine
+            .process_external_changes(paths.iter().map(|path| root.join(path)).collect())
+            .unwrap()
+    }
+
+    /// The tree operations note what they change before they touch the
+    /// disk, so the watcher's reports of every path they create, move or
+    /// remove, inside the item and above it, read as Noura's own.
+    #[test]
+    fn reports_of_the_paths_noura_s_tree_operations_change_never_read_as_outside_changes() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("notes.txt"), "notes").unwrap();
+        std::fs::create_dir(outside.path().join("Album")).unwrap();
+        std::fs::write(outside.path().join("Album/dog.jpg"), "dog").unwrap();
+        std::fs::write(outside.path().join("Album/Idea.md"), "# Idea\n").unwrap();
+
+        engine.create_folder("New/Deep").unwrap();
+        let created = report(&engine, &["New", "New/Deep"]);
+        engine.move_file("Plan.md", "Later/Plan.md").unwrap();
+        let moved_note = report(&engine, &["Plan.md", "Later", "Later/Plan.md"]);
+        engine.move_file("scan.pdf", "New/scan.pdf").unwrap();
+        let moved_pdf = report(&engine, &["scan.pdf", "New", "New/scan.pdf"]);
+        engine.move_folder("Docs", "Archive/Docs").unwrap();
+        let moved_folder = report(
+            &engine,
+            &[
+                "Docs",
+                "Docs/Spec.md",
+                "Docs/Photos",
+                "Docs/Photos/cat.jpg",
+                "Archive",
+                "Archive/Docs",
+                "Archive/Docs/Spec.md",
+                "Archive/Docs/Photos",
+                "Archive/Docs/Photos/cat.jpg",
+            ],
+        );
+        engine.copy_file("New/scan.pdf", "New/scan 1.pdf").unwrap();
+        let copied = report(&engine, &["New", "New/scan 1.pdf"]);
+        engine.trash_path("Archive").unwrap();
+        let trashed = report(
+            &engine,
+            &[
+                "Archive",
+                "Archive/Docs",
+                "Archive/Docs/Spec.md",
+                "Archive/Docs/Photos",
+                "Archive/Docs/Photos/cat.jpg",
+            ],
+        );
+        engine
+            .import_external(
+                &[
+                    outside.path().join("notes.txt"),
+                    outside.path().join("Album"),
+                ],
+                "New",
+            )
+            .unwrap();
+        let imported = report(
+            &engine,
+            &[
+                "New",
+                "New/notes.txt",
+                "New/Album",
+                "New/Album/dog.jpg",
+                "New/Album/Idea.md",
+            ],
+        );
+
+        assert_eq!(
+            [
+                created,
+                moved_note,
+                moved_pdf,
+                moved_folder,
+                copied,
+                trashed,
+                imported
+            ],
+            <[Vec<String>; 7]>::default()
+        );
+    }
+
+    /// On a case-insensitive volume both names show the renamed item, and
+    /// on a case-sensitive one the old name is gone. Either way the
+    /// reports read as Noura's own.
+    #[test]
+    fn reports_of_a_case_only_rename_never_read_as_outside_changes() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+
+        engine.move_file("Plan.md", "plan.md").unwrap();
+        let file = report(&engine, &["Plan.md", "plan.md"]);
+        engine.move_folder("Docs", "docs").unwrap();
+        let folder = report(
+            &engine,
+            &[
+                "Docs",
+                "docs",
+                "Docs/Spec.md",
+                "docs/Spec.md",
+                "docs/Photos/cat.jpg",
+            ],
+        );
+
+        assert_eq!((file, folder), (Vec::new(), Vec::new()));
+    }
+
+    /// Another app's change to a path a tree operation just moved, copied
+    /// or emptied still reads as outside.
+    #[test]
+    fn another_app_s_change_right_after_a_tree_operation_still_reads_as_outside() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let root = engine.root().to_owned();
+        engine.move_file("Plan.md", "Later/Plan.md").unwrap();
+        engine.move_file("scan.pdf", "Later/scan.pdf").unwrap();
+        engine
+            .copy_file("Later/scan.pdf", "Later/scan 1.pdf")
+            .unwrap();
+        engine.create_folder("New").unwrap();
+
+        std::fs::write(root.join("Later/Plan.md"), "# Theirs\n").unwrap();
+        std::fs::write(root.join("Later/scan.pdf"), "%PDF-1.7 theirs\n").unwrap();
+        std::fs::write(root.join("Later/scan 1.pdf"), "%PDF-1.7 theirs\n").unwrap();
+        std::fs::write(root.join("Plan.md"), "# Back\n").unwrap();
+        std::fs::remove_dir(root.join("New")).unwrap();
+
+        assert_eq!(
+            report(
+                &engine,
+                &[
+                    "Later/Plan.md",
+                    "Later/scan.pdf",
+                    "Later/scan 1.pdf",
+                    "Plan.md",
+                    "New"
+                ]
+            ),
+            [
+                "Later/Plan.md",
+                "Later/scan 1.pdf",
+                "Later/scan.pdf",
+                "New",
+                "Plan.md"
+            ]
+        );
+    }
+
+    /// The tree operations announce their changes as Noura's own, even
+    /// the ones that change no index entry: a new folder, or a moved,
+    /// copied, trashed or imported picture.
+    #[test]
+    fn noura_s_tree_operations_announce_their_changes_as_its_own() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("dog.jpg"), "dog").unwrap();
+        let operations: [(&str, &dyn Fn()); 6] = [
+            ("new folder", &|| engine.create_folder("New").unwrap()),
+            ("move", &|| {
+                engine.move_file("scan.pdf", "New/scan.pdf").unwrap()
+            }),
+            ("folder move", &|| {
+                engine.move_folder("Docs/Photos", "New/Photos").unwrap()
+            }),
+            ("copy", &|| {
+                engine.copy_file("New/scan.pdf", "New/scan 1.pdf").unwrap()
+            }),
+            ("trash", &|| {
+                engine.trash_path("New/Photos").unwrap();
+            }),
+            ("import", &|| {
+                engine
+                    .import_external(&[outside.path().join("dog.jpg")], "New")
+                    .unwrap();
+            }),
+        ];
+
+        let silent = operations
+            .iter()
+            .filter_map(|(name, operation)| {
+                let before = engine.change_counts();
+                operation();
+                let after = engine.change_counts();
+                (after.own == before.own || after.outside != before.outside).then_some(*name)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(silent, Vec::<&str>::new());
+    }
+
+    /// A burst of Noura's own writes is the usual reason the watcher loses
+    /// events. The full rescan that follows then finds nothing new and
+    /// announces no outside change, but still tells the caller it ran, so
+    /// a view lists the workspace again.
+    #[test]
+    fn a_rescan_after_lost_events_announces_only_the_outside_changes_it_finds() {
+        let (_workspace, _app_data, engine) = tree_fixture();
+        let quiet = || std::time::Duration::from_millis(1);
+        let before = engine.change_counts();
+
+        engine.watcher.simulate_overflow();
+        let nothing_new = engine.poll_watcher(quiet()).unwrap();
+        let after_nothing = engine.change_counts();
+        std::fs::write(engine.root().join("Theirs.md"), "# Theirs\n").unwrap();
+        engine.watcher.simulate_overflow();
+        let theirs = engine.poll_watcher(quiet()).unwrap();
+
+        assert_eq!(
+            (nothing_new.rescanned, nothing_new.changed),
+            (true, Vec::new())
+        );
+        assert_eq!(after_nothing.outside, before.outside);
+        assert_eq!(
+            (theirs.rescanned, theirs.changed),
+            (true, vec!["Theirs.md".to_owned()])
+        );
+        assert!(engine.change_counts().outside > after_nothing.outside);
+    }
+
+    #[test]
+    fn change_counts_keep_every_change_and_its_origin_when_listeners_fall_behind() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        // A listener that never reads falls behind once the channel fills.
+        let mut events = engine.subscribe();
+        let before = engine.change_counts();
+        for note in 0..300 {
+            engine
+                .create_object(CreateObjectInput {
+                    object_type: "note".into(),
+                    title: "Ours".into(),
+                    body: String::new(),
+                    relative_path: Some(format!("{note}.md")),
+                    properties: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        let ours = engine.change_counts();
+        std::fs::write(engine.root().join("theirs.md"), "# Theirs\n").unwrap();
+        engine.reconcile().unwrap();
+        let theirs = engine.change_counts();
+
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+        ));
+        assert_eq!(
+            (ours.own - before.own, ours.outside - before.outside),
+            (300, 0)
+        );
+        assert_eq!(theirs.own, ours.own);
+        assert!(theirs.outside > ours.outside);
     }
 
     #[test]

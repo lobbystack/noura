@@ -1,23 +1,27 @@
 //! What every window of the app shares: the open workspace, with its one
-//! index and watcher, the newest listing of its files, the rail order,
-//! this device's preferences, each window's view state, which it saves
-//! together, and a quit or workspace switch that waits for every
-//! window's notes to save.
+//! index and watcher, the newest listing of its files and their problems,
+//! the rail order, this device's preferences, each window's view state,
+//! which it saves together, and a quit or workspace switch that waits for
+//! every window's notes to save.
 //!
 //! Each [`App`](crate::App) is one window. A window that changes what
 //! the others show publishes it here and wakes them; each one applies it
-//! on its next [`App::poll`](crate::App::poll).
+//! on its next [`App::poll`](crate::App::poll). The watch thread publishes
+//! the changes it finds here too, and tells every window who made them.
 
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, Weak},
 };
 
+use local_core::ChangeCounts;
+
 use crate::{
-    FileTree, Preferences, System, Workspace, WorkspaceService,
+    FileTree, Preferences, Problem, System, Workspace, WorkspaceService,
     app::{Change, Listeners},
     view_state::{StoredView, StoredWindow, ViewStore},
+    watch::{Rescans, Snapshot, Update, Watch},
 };
 
 /// How many moves the session remembers for windows that haven't caught
@@ -33,6 +37,8 @@ pub(crate) struct Session {
     pub(crate) app_data: PathBuf,
     pub(crate) service: Arc<WorkspaceService>,
     pub(crate) system: Arc<dyn System>,
+    /// How often the watch thread walks the whole workspace.
+    rescans: Rescans,
     state: Mutex<State>,
 }
 
@@ -44,6 +50,13 @@ struct State {
     /// The newest listing of the open workspace's files, with every
     /// folder closed.
     tree: Option<FileTree>,
+    /// The open workspace's problems in that listing.
+    problems: Vec<Problem>,
+    /// The engine's change counts when that listing was made. An older
+    /// listing never replaces it.
+    counts: ChangeCounts,
+    /// Keeps the open workspace in step with its folder.
+    watch: Option<Watch>,
     /// Counts the listings so far.
     listing: u64,
     /// Items that moved, each with the listing that first showed it.
@@ -103,6 +116,7 @@ pub(crate) struct Adopted {
 pub(crate) struct Listing {
     pub(crate) version: u64,
     pub(crate) tree: FileTree,
+    pub(crate) problems: Vec<Problem>,
     /// What moved since the window's listing, in order.
     pub(crate) moves: Vec<(String, String)>,
 }
@@ -111,20 +125,25 @@ pub(crate) struct Listing {
 pub(crate) struct Current {
     pub(crate) listing: u64,
     pub(crate) tree: Option<FileTree>,
+    pub(crate) problems: Vec<Problem>,
     pub(crate) rail: u64,
     pub(crate) recents: u64,
 }
 
 impl Session {
-    pub(crate) fn new(app_data: &Path, system: Arc<dyn System>) -> Arc<Self> {
+    pub(crate) fn new(app_data: &Path, system: Arc<dyn System>, rescans: Rescans) -> Arc<Self> {
         Arc::new(Self {
             app_data: app_data.to_owned(),
             service: Arc::new(WorkspaceService::with_system(app_data, system.clone())),
             system,
+            rescans,
             state: Mutex::new(State {
                 workspace: None,
                 opening: 0,
                 tree: None,
+                problems: Vec::new(),
+                counts: ChangeCounts::default(),
+                watch: None,
                 listing: 0,
                 moves: VecDeque::new(),
                 rail_order: Vec::new(),
@@ -195,20 +214,30 @@ impl Session {
         self.lock().opening
     }
 
-    /// The window `key` opened `workspace`, listed as `tree`. Every other
-    /// window closes. Returns the workspace's saved view state for the
-    /// window to restore.
+    /// The window `key` opened `workspace`, listed as `snapshot` when the
+    /// engine's change counts were `counts`, and shown as `tree`. Every
+    /// other window closes, the previous workspace's watch thread stops,
+    /// and a new one watches `workspace`. Returns the workspace's saved
+    /// view state for the window to restore.
     pub(crate) fn adopt(
-        &self,
+        self: &Arc<Self>,
         key: WindowKey,
         workspace: Arc<Workspace>,
         tree: &FileTree,
+        snapshot: &Snapshot,
+        counts: ChangeCounts,
     ) -> Adopted {
         let mut state = self.lock();
+        // The previous workspace's watch thread publishes nothing once the
+        // opening changes, and stops below, once the lock is free for it.
+        let previous = state.watch.take();
         state.opening += 1;
         state.listing += 1;
         state.tree = Some(tree.clone());
+        state.problems.clone_from(&snapshot.problems);
+        state.counts = counts;
         state.moves.clear();
+        state.watch = self.watch(&workspace, snapshot, counts, state.opening);
         let view = state.views.load(workspace.id());
         state.workspace = Some(workspace);
         state.rail_order.clone_from(&view.rail_order);
@@ -230,6 +259,9 @@ impl Session {
             view,
         };
         drop(state);
+        if let Some(previous) = previous {
+            previous.finish();
+        }
         for listeners in closing {
             listeners.emit(Change::Screen);
         }
@@ -242,27 +274,42 @@ impl Session {
         Current {
             listing: state.listing,
             tree: state.tree.clone(),
+            problems: state.problems.clone(),
             rail: state.rail,
             recents: state.recents,
         }
     }
 
-    /// The window `key` listed the files again as `tree`, after the item
-    /// at `moved.0` moved to `moved.1`. The other windows wake to show
-    /// it. Returns the listing's version.
+    /// The window `key` listed the files again as `snapshot`, shown as
+    /// `tree`, when the engine's change counts were `counts`, after the
+    /// item at `moved.0` moved to `moved.1`. The other windows wake to
+    /// show it, and the watch thread compares its next listings with it.
+    /// Returns the listing version the window shows. When the watch thread
+    /// published a newer listing meanwhile, the session keeps that one, and
+    /// the window wakes to show it too.
     pub(crate) fn publish_listing(
         &self,
         key: WindowKey,
         opening: u64,
         tree: &FileTree,
         moved: Option<(&str, &str)>,
+        snapshot: &Snapshot,
+        counts: ChangeCounts,
     ) -> u64 {
         let mut state = self.lock();
         if opening != state.opening {
             return state.listing;
         }
         state.listing += 1;
-        state.tree = Some(tree.clone());
+        let newest = !counts.is_before(state.counts);
+        if newest {
+            state.tree = Some(tree.clone());
+            state.problems.clone_from(&snapshot.problems);
+            state.counts = counts;
+        }
+        if let Some(watch) = &state.watch {
+            watch.show(snapshot, counts);
+        }
         if let Some((from, to)) = moved {
             let listing = state.listing;
             state
@@ -273,10 +320,67 @@ impl Session {
             }
         }
         let listing = state.listing;
-        let others = state.others(key);
+        let mut woken = state.others(key);
+        if !newest {
+            woken.extend(state.listeners(key));
+        }
         drop(state);
-        wake(others);
-        listing
+        wake(woken);
+        if newest { listing } else { listing - 1 }
+    }
+
+    /// Start the thread that keeps `workspace` in step with its folder,
+    /// for the workspace opening `opening`. It holds the session weakly,
+    /// so the session closes once its last window goes.
+    fn watch(
+        self: &Arc<Self>,
+        workspace: &Workspace,
+        snapshot: &Snapshot,
+        counts: ChangeCounts,
+        opening: u64,
+    ) -> Option<Watch> {
+        let session: Weak<Self> = Arc::downgrade(self);
+        Watch::start(
+            workspace.shared_engine(),
+            workspace.root().to_owned(),
+            snapshot.clone(),
+            counts,
+            self.rescans,
+            Box::new(move |update| {
+                session
+                    .upgrade()
+                    .is_some_and(|session| session.publish_watch(opening, update))
+            }),
+        )
+    }
+
+    /// The watch thread listed the files of the workspace opening
+    /// `opening` again after a change. Every window wakes and hears who
+    /// made the change; the listing replaces the session's unless that is
+    /// newer. Returns false once that workspace has closed.
+    fn publish_watch(&self, opening: u64, update: Update) -> bool {
+        let mut state = self.lock();
+        if opening != state.opening {
+            return false;
+        }
+        if !update.counts.is_before(state.counts) {
+            state.listing += 1;
+            state.tree = Some(update.tree);
+            state.problems = update.snapshot.problems;
+            state.counts = update.counts;
+        }
+        let windows: Vec<Listeners> = state
+            .windows
+            .iter()
+            .filter_map(|window| window.listeners.clone())
+            .collect();
+        drop(state);
+        for listeners in windows {
+            for origin in &update.origins {
+                listeners.emit(Change::Files(*origin));
+            }
+        }
+        true
     }
 
     /// The newest listing, when it is newer than `seen`.
@@ -288,6 +392,7 @@ impl Session {
         Some(Listing {
             version: state.listing,
             tree: state.tree.clone()?,
+            problems: state.problems.clone(),
             moves: state
                 .moves
                 .iter()
@@ -489,13 +594,6 @@ impl State {
         self.windows.iter_mut().find(|window| window.key == key)
     }
 
-    fn listeners(&self, key: WindowKey) -> Option<Listeners> {
-        self.windows
-            .iter()
-            .find(|window| window.key == key)
-            .and_then(|window| window.listeners.clone())
-    }
-
     /// Whether every open window that shows notes is ready for the
     /// departure.
     fn all_ready(&self) -> bool {
@@ -545,6 +643,14 @@ impl State {
         self.views.save(&id, view);
     }
 
+    /// How to wake the window `key`, while it is open.
+    fn listeners(&self, key: WindowKey) -> Option<Listeners> {
+        self.windows
+            .iter()
+            .find(|window| window.key == key)
+            .and_then(|window| window.listeners.clone())
+    }
+
     /// How to wake every open window except `key`.
     fn others(&self, key: WindowKey) -> Vec<Listeners> {
         self.windows
@@ -552,6 +658,20 @@ impl State {
             .filter(|window| window.key != key)
             .filter_map(|window| window.listeners.clone())
             .collect()
+    }
+}
+
+impl Drop for Session {
+    /// Stop the watch thread and wait for it, so the workspace's files
+    /// and index are free once the last window goes.
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(watch) = state.watch.take() {
+            watch.finish();
+        }
     }
 }
 
