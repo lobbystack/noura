@@ -36,8 +36,6 @@ pub(crate) struct Chrome {
     /// The query find last closed with, for the next time it opens with
     /// nothing selected.
     last_query: String,
-    /// An input method is composing text.
-    composing: bool,
     /// The formats at the selection, for the toolbars' pressed states.
     formats: Vec<Format>,
     /// The text version and selection `formats` were read at.
@@ -426,23 +424,6 @@ impl Editor {
         }
     }
 
-    /// Notes what an input method is doing from this frame's events.
-    pub(crate) fn track_composition(&mut self, ctx: &Context) {
-        ctx.input(|input| {
-            for event in &input.events {
-                match event {
-                    egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
-                        self.chrome.composing = !text.is_empty();
-                    }
-                    egui::Event::Ime(egui::ImeEvent::Commit(_)) => {
-                        self.chrome.composing = false;
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
-
     /// Mod-F opens find, unless another text field has the keyboard.
     pub(crate) fn handle_find_key(&mut self, ctx: &Context) {
         let elsewhere = ctx.text_edit_focused() && !self.find_focused(ctx);
@@ -748,7 +729,7 @@ impl Editor {
         if !self.formattable()
             || selection.is_empty()
             || self.edit.in_progress_selection.is_some()
-            || self.chrome.composing
+            || self.edit.renderer.doc.composition().is_some()
         {
             return false;
         }

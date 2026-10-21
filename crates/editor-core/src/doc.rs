@@ -10,7 +10,40 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use comrak::nodes::AstNode;
 use comrak::{Arena, Options};
 
+use crate::ast::Ast;
+use crate::background::{BackgroundParser, Wake};
 use crate::bounds::Bounds;
+
+/// Notes at least this long reparse edits in place and parse in full in
+/// the background. A full parse of a note this size takes well under a
+/// millisecond.
+pub const LARGE_NOTE_BYTES: usize = 64 * 1024;
+
+/// A run of top-level blocks an in-place reparse replaced, between two
+/// versions of the bounds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockEdit {
+    /// `bounds_seq` before the reparse, and after it.
+    pub from_bounds_seq: u64,
+    pub to_bounds_seq: u64,
+    /// The blocks replaced, as indices among the root's children before.
+    pub old_blocks: std::ops::Range<usize>,
+    /// The blocks that replaced them, as indices after.
+    pub new_blocks: std::ops::Range<usize>,
+}
+
+/// What parsing a note has cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParseStats {
+    /// Parses of the whole text on the thread that edits the note.
+    pub full_parses: usize,
+    /// Edits that reparsed only the blocks they reached.
+    pub in_place: usize,
+    /// Background parses taken in.
+    pub installed: usize,
+    /// Background parses dropped because the text had changed since.
+    pub dropped: usize,
+}
 use crate::buffer::{self, Buffer};
 use crate::input::cursor::CursorState;
 use crate::input::{Event, TextLayout};
@@ -64,11 +97,33 @@ pub struct MdDoc {
     /// Events an edit queued to apply after the current batch, such as the
     /// fold-tag edit a fold command makes.
     pub deferred_events: Vec<crate::input::Event>,
+    /// The parse of the current text, between calls that use it.
+    ast: Option<Ast>,
+    /// Full parses of a large note's text, made on another thread.
+    background: Option<BackgroundParser>,
+    /// What a background parse calls when it finishes.
+    wake: Option<Wake>,
+    /// Notes at least this many bytes long reparse an edit in place and
+    /// parse in full in the background.
+    large_note_bytes: usize,
+    /// What parsing has cost this thread so far.
+    stats: ParseStats,
+    /// The top-level blocks the last in-place reparse replaced.
+    last_block_edit: Option<BlockEdit>,
+    /// Marked text an input method is composing at the caret. It never
+    /// reaches the buffer; see [`crate::ime`].
+    pub(crate) composition: Option<crate::ime::Composition>,
     pub debug: bool,
 }
 
 /// A node and one of its source lines.
-pub type LinePrefixKey = (u64, (Grapheme, Grapheme));
+pub type LinePrefixKey = (NodeKey, (Grapheme, Grapheme));
+
+/// A node's cache key; see [`MdDoc::pack_node_key`].
+pub type NodeKey = u128;
+
+/// The maps the caches keep: keyed by a node, and hashed fast.
+pub type NodeMap<K, V> = HashMap<K, V, rustc_hash::FxBuildHasher>;
 /// The prefix length the node owns on that line, and whether it's complete.
 pub type LinePrefixValue = (Graphemes, bool);
 
@@ -76,14 +131,17 @@ pub type LinePrefixValue = (Graphemes, bool);
 /// changes ([`TextCache::ensure_text_consistent`]).
 #[derive(Default)]
 pub struct TextCache {
-    pub line_prefix_len: RefCell<HashMap<LinePrefixKey, LinePrefixValue>>,
-    pub node_range: RefCell<HashMap<u64, (Grapheme, Grapheme)>>,
+    pub line_prefix_len: RefCell<NodeMap<LinePrefixKey, LinePrefixValue>>,
+    pub node_range: RefCell<NodeMap<NodeKey, (Grapheme, Grapheme)>>,
     /// Depends on `reveal_seq` too: `hidden_by_fold_deps` holds the
     /// `reveal_seq` it was last populated at, or `None` if never.
-    pub hidden_by_fold: RefCell<HashMap<u64, bool>>,
+    pub hidden_by_fold: RefCell<NodeMap<NodeKey, bool>>,
     pub hidden_by_fold_deps: Cell<Option<u64>>,
     /// The `text_seq` this cache was last consistent with.
     pub text_seq: Cell<u64>,
+    /// Whether a list item is selected, and the selection that answer is
+    /// for.
+    pub any_item_selected: Cell<Option<((Grapheme, Grapheme), bool)>>,
 }
 
 impl TextCache {
@@ -92,6 +150,7 @@ impl TextCache {
         self.node_range.borrow_mut().clear();
         self.hidden_by_fold.borrow_mut().clear();
         self.hidden_by_fold_deps.set(None);
+        self.any_item_selected.set(None);
     }
 
     /// Wipe and re-stamp if `current` differs from the recorded text_seq.
@@ -132,6 +191,13 @@ impl MdDoc {
             opened_links: Vec::new(),
             copied: None,
             deferred_events: Vec::new(),
+            ast: None,
+            background: None,
+            wake: None,
+            large_note_bytes: LARGE_NOTE_BYTES,
+            stats: ParseStats::default(),
+            last_block_edit: None,
+            composition: None,
             debug: false,
         }
     }
@@ -182,22 +248,22 @@ impl MdDoc {
         events: impl IntoIterator<Item = Event>,
         layout: &dyn TextLayout,
     ) -> buffer::Response {
-        let arena = Arena::new();
-        let root = self.reparse(&arena);
         let mut ops = Vec::new();
         let mut response = buffer::Response::default();
         let mut undo_redo = false;
-        for event in events {
-            undo_redo |= matches!(event, Event::Undo | Event::Redo);
-            response |= self.calc_operations(root, event, &mut ops, layout);
-        }
+        self.with_ast(|doc, root| {
+            for event in events {
+                undo_redo |= matches!(event, Event::Undo | Event::Redo);
+                response |= doc.calc_operations(root, event, &mut ops, layout);
+            }
+        });
         self.buffer.queue(ops);
         response |= self.buffer.update();
         if response.text_updated {
             self.bump_text_seq();
         }
         let edited = response.text_updated || response.selection_user_moved;
-        response |= self.unfold_after_edit(&arena, edited, undo_redo);
+        response |= self.unfold_after_edit(edited, undo_redo);
         response
     }
 
@@ -220,17 +286,192 @@ impl MdDoc {
 
     /// Re-parse the buffer into a fresh AST and rebuild all text-derived
     /// bounds (source lines, words, inline paragraphs). The caller owns the
-    /// [`Arena`] — comrak's AST is arena-allocated.
+    /// [`Arena`] — comrak's AST is arena-allocated. [`Self::take_ast`]
+    /// reuses one parse per text version instead.
     pub fn reparse<'a>(&mut self, arena: &'a Arena<'a>) -> &'a AstNode<'a> {
         self.cache.ensure_text_consistent(self.text_seq);
 
         let options = Self::comrak_options();
         let text_with_newline = self.buffer.current.text_with("\n");
         let root = comrak::parse_document(arena, &text_with_newline, &options);
+        self.ensure_bounds(root);
+        root
+    }
 
+    /// The parse of the current text, with its bounds built: the one the
+    /// last call handed back with [`Self::put_ast`], or a new one. Hand it
+    /// back when done so the next call reuses it.
+    ///
+    /// In a large note, an edit since the last call reparses only the
+    /// blocks it reaches, and a full parse follows in the background; see
+    /// [`crate::background`].
+    pub fn take_ast(&mut self) -> Ast {
+        self.cache.ensure_text_consistent(self.text_seq);
+        self.install_background_parse();
+        let ast = match self.ast.take() {
+            Some(ast) if ast.text_seq() == self.text_seq => ast,
+            Some(mut ast) if self.reparses_in_place(&ast) => {
+                let reparsed = ast.update(
+                    self.buffer.current.text_with("\n"),
+                    &Self::comrak_options(),
+                    self.text_seq,
+                );
+                let from_bounds_seq = self.bounds_seq;
+                ast.with_root(|root| self.update_bounds(root, &reparsed));
+                self.last_block_edit = Some(BlockEdit {
+                    from_bounds_seq,
+                    to_bounds_seq: self.bounds_seq,
+                    old_blocks: reparsed.blocks.start..reparsed.blocks.start + reparsed.replaced,
+                    new_blocks: reparsed.blocks.clone(),
+                });
+                self.stats.in_place += 1;
+                let wake = self.wake.clone();
+                let background = self
+                    .background
+                    .take()
+                    .unwrap_or_else(|| BackgroundParser::new(wake));
+                background.request(self);
+                self.background = Some(background);
+                ast
+            }
+            _ => return self.take_full_ast(),
+        };
+        ast.with_root(|root| self.ensure_bounds(root));
+        ast
+    }
+
+    /// [`Self::take_ast`], parsing the whole text unless the cached parse
+    /// is of the current text.
+    pub(crate) fn take_full_ast(&mut self) -> Ast {
+        self.cache.ensure_text_consistent(self.text_seq);
+        let ast = match self.ast.take() {
+            Some(ast) if ast.text_seq() == self.text_seq => ast,
+            _ => {
+                self.stats.full_parses += 1;
+                Ast::parse(
+                    self.buffer.current.text_with("\n"),
+                    &Self::comrak_options(),
+                    self.text_seq,
+                )
+            }
+        };
+        ast.with_root(|root| self.ensure_bounds(root));
+        ast
+    }
+
+    /// Whether an edit to the text `ast` parsed can reparse in place: the
+    /// note is large, the bounds are `ast`'s, and no fold tag, which hides
+    /// blocks far from it, is in the text.
+    fn reparses_in_place(&self, ast: &Ast) -> bool {
+        self.buffer.current.len_bytes() >= self.large_note_bytes
+            && self.bounds.text_seq == ast.text_seq()
+            && !self.bounds.has_fold_tags
+            && memchr::memmem::find(self.text().as_bytes(), crate::fold::FOLD_TAG.as_bytes())
+                .is_none()
+    }
+
+    /// Takes in a finished background parse of the current text, or drops
+    /// one of text that has changed since.
+    fn install_background_parse(&mut self) {
+        let Some(background) = &mut self.background else {
+            return;
+        };
+        let Some(parsed) = background.take() else {
+            return;
+        };
+        if parsed.ast.text_seq() != self.text_seq || parsed.bounds.text_seq != self.text_seq {
+            background.dropped += 1;
+            return;
+        }
+        background.installed += 1;
+        // The full parse's arena holds no nodes an in-place reparse left
+        // behind.
+        self.ast = Some(parsed.ast);
+        if self.bounds.same_text_bounds(&parsed.bounds) {
+            // The in-place reparse built what the full parse did, so what
+            // was worked out from it still holds.
+            return;
+        }
+        let wrap_lines = std::mem::take(&mut self.bounds.wrap_lines);
+        self.bounds = Bounds {
+            wrap_lines,
+            ..parsed.bounds
+        };
+        self.bounds_seq = self.next_seq();
+        self.cache.clear();
+    }
+
+    /// Calls `wake` from the background thread whenever a full parse
+    /// finishes, such as to ask the window for a frame that takes it in.
+    pub fn on_background_parse(&mut self, wake: impl Fn() + Send + Sync + 'static) {
+        self.wake = Some(std::sync::Arc::new(wake));
+        self.background = None;
+    }
+
+    /// Treats notes of at least `bytes` bytes as large: an edit reparses
+    /// in place and a full parse follows in the background.
+    pub fn set_large_note_bytes(&mut self, bytes: usize) {
+        self.large_note_bytes = bytes;
+    }
+
+    /// Holds background parses back while `hold` is set, as a test does to
+    /// see typing go on without them.
+    pub fn hold_background_parses(&mut self, hold: bool) {
+        let wake = self.wake.clone();
+        self.background
+            .get_or_insert_with(|| BackgroundParser::new(wake))
+            .hold(hold);
+    }
+
+    /// Waits up to `timeout` for a background parse to finish, without
+    /// taking it in. The next [`Self::take_ast`] does.
+    pub fn wait_for_background_parse(&mut self, timeout: std::time::Duration) -> bool {
+        self.background
+            .as_mut()
+            .is_some_and(|background| background.wait(timeout))
+    }
+
+    /// The top-level blocks the last in-place reparse replaced, for caches
+    /// of per-block values that can keep the rest across it.
+    pub fn last_block_edit(&self) -> Option<&BlockEdit> {
+        self.last_block_edit.as_ref()
+    }
+
+    /// What parsing has cost so far.
+    pub fn parse_stats(&self) -> ParseStats {
+        ParseStats {
+            installed: self.background.as_ref().map_or(0, |b| b.installed),
+            dropped: self.background.as_ref().map_or(0, |b| b.dropped),
+            ..self.stats
+        }
+    }
+
+    /// Keeps `ast` for the next [`Self::take_ast`], unless the text
+    /// changed since it was parsed.
+    pub fn put_ast(&mut self, ast: Ast) {
+        if ast.text_seq() == self.text_seq {
+            self.ast = Some(ast);
+        }
+    }
+
+    /// Runs `work` with this document and the parse of its current text.
+    pub fn with_ast<R>(&mut self, work: impl for<'a> FnOnce(&mut Self, &'a AstNode<'a>) -> R) -> R {
+        let ast = self.take_ast();
+        let result = ast.with_root(|root| work(self, root));
+        self.put_ast(ast);
+        result
+    }
+
+    /// Rebuilds the bounds `root`, a parse of the current text, gives when
+    /// the text changed since they were built, and the fold state when the
+    /// reveal state changed.
+    fn ensure_bounds<'a>(&mut self, root: &'a AstNode<'a>) {
         // Bounds depend only on text. Skip rebuild + bump bounds_seq
         // when text hasn't changed.
         if self.bounds.text_seq != self.text_seq {
+            self.bounds.has_fold_tags =
+                memchr::memmem::find(self.text().as_bytes(), crate::fold::FOLD_TAG.as_bytes())
+                    .is_some();
             self.bounds.inline_paragraphs.clear();
             self.calc_source_lines();
             self.calc_fold_bounds(root);
@@ -251,8 +492,6 @@ impl MdDoc {
             // changes (text seq same, reveal_seq advanced).
             self.populate_hidden_by_fold(root);
         }
-
-        root
     }
 
     pub fn comrak_options() -> Options<'static> {

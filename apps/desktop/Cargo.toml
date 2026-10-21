@@ -30,6 +30,8 @@ logroller.workspace = true
 muda.workspace = true
 opener.workspace = true
 rfd.workspace = true
+# NSSpellChecker on macOS and ISpellChecker on Windows; nothing on Linux.
+spell-check = { version = "0.2.0", path = "../../crates/spell-check" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 winit.workspace = true

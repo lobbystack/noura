@@ -2028,6 +2028,7 @@ dependencies = [
  "opener",
  "rfd",
  "serde_json",
+ "spell-check",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -2268,9 +2269,11 @@ name = "editor-core"
 version = "0.2.0"
 dependencies = [
  "comrak",
+ "memchr",
  "proptest",
  "regex",
  "ropey",
+ "rustc-hash 2.1.3",
  "similar",
  "tempfile",
  "unicode-segmentation",
@@ -2293,6 +2296,7 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "spell-check",
  "tempfile",
  "tracing",
  "unicode-linebreak",
@@ -7755,6 +7759,16 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spell-check"
+version = "0.2.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "windows 0.62.2",
 ]
 
 [[package]]

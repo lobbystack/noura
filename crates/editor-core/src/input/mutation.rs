@@ -430,6 +430,21 @@ impl<'ast> MdDoc {
                     text: (if checked { " " } else { "x" }).into(),
                 }));
             }
+            Event::Compose { text, selected } => {
+                self.set_composition(text, selected);
+            }
+            Event::Commit { text } => {
+                self.set_composition(String::new(), None);
+                if self.readonly || text.is_empty() {
+                    return response;
+                }
+                let event = Event::Replace {
+                    region: Region::Selection,
+                    text,
+                    advance_cursor: true,
+                };
+                response |= self.calc_operations(root, event, operations, layout);
+            }
             Event::Unfold { tag } => {
                 // Only a tag that folds a section; anything else at this
                 // range is text the user wrote.

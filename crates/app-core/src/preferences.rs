@@ -1,5 +1,5 @@
-//! Appearance, text size, line width and zoom: choices that stay on this
-//! device, kept in `preferences.json` in the app data folder and never in
+//! Appearance, text size, line width, zoom and spell check: choices that
+//! stay on this device, kept in `preferences.json` in the app data folder and never in
 //! a workspace.
 
 use std::path::Path;
@@ -137,6 +137,9 @@ pub struct Preferences {
     pub line_width: LineWidth,
     /// The zoom level in percent, one of [`ZOOM_LEVELS`].
     pub zoom: u16,
+    /// Whether every open note marks misspelled words, where the system
+    /// has a spell checker.
+    pub spell_check: bool,
 }
 
 impl Default for Preferences {
@@ -146,6 +149,7 @@ impl Default for Preferences {
             text_size: TextSize::default(),
             line_width: LineWidth::default(),
             zoom: ACTUAL_SIZE,
+            spell_check: true,
         }
     }
 }
@@ -179,6 +183,7 @@ struct Saved {
     text_size: Value,
     line_width: Value,
     zoom: Value,
+    spell_check: Value,
 }
 
 impl From<Saved> for Preferences {
@@ -200,11 +205,13 @@ impl From<Saved> for Preferences {
             .into_iter()
             .find(|level| saved.zoom.as_u64() == Some(u64::from(*level)))
             .unwrap_or(defaults.zoom);
+        let spell_check = saved.spell_check.as_bool().unwrap_or(defaults.spell_check);
         Self {
             appearance,
             text_size,
             line_width,
             zoom,
+            spell_check,
         }
     }
 }
@@ -216,6 +223,7 @@ impl From<&Preferences> for Saved {
             text_size: preferences.text_size.key().into(),
             line_width: preferences.line_width.key().into(),
             zoom: preferences.zoom.into(),
+            spell_check: preferences.spell_check.into(),
         }
     }
 }

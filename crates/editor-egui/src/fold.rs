@@ -71,6 +71,7 @@ impl<'ast> MdRender {
             format: format.clone(),
             source_range: node_range,
             chip: true,
+            misspelled: false,
         });
         layout.push_override(node_range, FOLD_CHIP_TEXT, format);
         layout.style_close();
