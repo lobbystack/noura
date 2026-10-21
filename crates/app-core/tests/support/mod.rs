@@ -20,6 +20,7 @@ pub enum Call {
     OpenTerminal(PathBuf),
     Copy(String),
     OpenUrl(String),
+    OpenFile(PathBuf),
 }
 
 /// A system that records every request. Its trash moves items to a folder
@@ -116,6 +117,16 @@ impl System for FakeSystem {
     fn open_url(&self, url: &str) -> io::Result<()> {
         self.record(Call::OpenUrl(url.to_owned()));
         Ok(())
+    }
+
+    /// Opens files that exist, as the system's default app would.
+    fn open_file(&self, path: &Path) -> io::Result<()> {
+        self.record(Call::OpenFile(path.to_owned()));
+        if path.is_file() {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::NotFound, "no such file"))
+        }
     }
 }
 

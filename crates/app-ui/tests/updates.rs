@@ -1,5 +1,4 @@
-//! The update section that Settings hosts, and the Restart offer, through
-//! AccessKit.
+//! Settings' Updates section and the Restart offer, through AccessKit.
 
 mod support;
 
@@ -11,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, PendingUpdate, UpdateError, UpdateErrorKind, UpdateSource};
+use app_core::{App, PendingUpdate, UpdateError, UpdateErrorKind, UpdateSource, settings_section};
 use app_ui::NouraUi;
 use egui::accesskit::Role;
 use egui_kittest::{
@@ -95,14 +94,27 @@ fn app_with(source: &FakeSource, app_data: &std::path::Path) -> App {
     app
 }
 
-fn section(app: App) -> Harness<'static, App> {
-    Harness::builder().with_size([600.0, 400.0]).build_ui_state(
-        |ui, app: &mut App| {
-            app.poll();
-            app_ui::update_settings(ui, app);
-        },
-        app,
-    )
+/// The window with Settings open on its Updates section.
+fn section(mut app: App) -> Harness<'static, NouraUi> {
+    app.open_settings_at(settings_section::UPDATES);
+    let ui = NouraUi::new(app, Box::new(FakePicker::default()));
+    let mut harness = Harness::builder()
+        .with_size([1000.0, 700.0])
+        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui);
+    harness.step();
+    let updates = harness
+        .get_by_role_and_label(Role::Navigation, "Settings sections")
+        .get_by_role_and_label(Role::Button, "Updates");
+    assert_eq!(
+        updates.accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True)
+    );
+    harness
+}
+
+/// The open Settings dialog.
+fn dialog<'a>(harness: &'a Harness<'static, NouraUi>) -> egui_kittest::Node<'a> {
+    harness.get_by_role_and_label(Role::Dialog, "Settings")
 }
 
 /// Run frames until `label` shows. Steps one frame at a time, because the
@@ -127,8 +139,8 @@ fn check_for_updates_says_when_noura_is_up_to_date() {
     let mut harness = section(app_with(&source, app_data.path()));
     harness.run();
 
-    harness.get_by_label_contains("You have version 0.2.0.");
-    harness
+    dialog(&harness).get_by_label_contains("You have version 0.2.0.");
+    dialog(&harness)
         .get_by_role_and_label(Role::Button, "Check for updates")
         .click();
     wait_for(&mut harness, "Noura is up to date.");

@@ -94,11 +94,13 @@ Every package ships `THIRD_PARTY_LICENSES.html`, which lists the crates the desk
 
 cargo-packager puts the file in each package's resources: `Noura.app/Contents/Resources` on macOS, the install folder on Windows, and `/usr/lib/noura` in the `.deb` and the AppImage. The release also attaches it as `third-party-licenses-<platform>.html`.
 
+The **Third-party licenses** link in **Settings** > **About Noura** opens this file. A build that cargo-packager didn't package has no copy, so the link opens `THIRD_PARTY_NOTICES.md` on GitHub instead.
+
 ## How the app updates
 
-Noura checks `latest.json` on the latest GitHub release 5 seconds after launch and every 6 hours. **Settings** also has a **Check for updates** button. When Noura finds a newer version, it downloads the bundle and verifies its signature in the background, then offers a **Restart** button. Noura installs nothing until you choose it.
+Noura checks `latest.json` on the latest GitHub release 5 seconds after launch and every 6 hours. **Settings** > **Updates** also has a **Check for updates** button. When Noura finds a newer version, it downloads the bundle and verifies its signature in the background, then offers a **Restart** button. Noura installs nothing until you choose it.
 
-Before installing, Noura waits for every pending write to reach disk. If a write fails, Noura keeps running the current version and says which file it couldn't save and why.
+Before installing, Noura saves changes it holds back, such as typing that waits for a pause. It then waits for every pending write to reach disk. If a save or a write fails, Noura keeps running the current version and says why, naming the file when it knows it.
 
 On macOS the update replaces the app bundle, and on Windows it runs the new `.msi`. On Linux, only the AppImage updates itself. The `.deb` package runs without the updater, so people who use it install each new version from the website. Development builds never update themselves.
 

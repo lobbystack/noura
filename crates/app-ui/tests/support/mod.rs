@@ -165,6 +165,11 @@ impl System for FakeSystem {
         self.record(format!("browse {url}"));
         Ok(())
     }
+
+    fn open_file(&self, path: &Path) -> io::Result<()> {
+        self.record(format!("open file {}", path.display()));
+        Ok(())
+    }
 }
 
 /// Run frames until the app finishes background work and settles.

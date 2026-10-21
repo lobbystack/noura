@@ -1,5 +1,5 @@
-//! The update section that Settings hosts, and the Restart offer every
-//! screen shows once an update is ready.
+//! Settings' Updates section, and the Restart offer every screen shows
+//! once an update is ready.
 
 use egui::{
     Align2, Area, Frame, Id, Margin, Order, RichText, Spinner, Stroke, Ui, UiBuilder, Widget,
@@ -15,14 +15,13 @@ use crate::{
 
 /// The Updates section: the running version, Check for updates and where
 /// updating stands, or Restart to update once a new version is ready.
-pub fn update_settings(ui: &mut Ui, app: &mut App) {
+pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
     let updates = app.updates();
     let version = updates.current_version().to_owned();
     let status = updates.status().clone();
     let busy = updates.is_busy();
     let palette = Palette::of(ui.ctx());
 
-    ui.label(RichText::new("Updates").strong());
     if let UpdateStatus::Unavailable { reason } = &status {
         muted(ui, &format!("You have version {version}. {reason}"));
         return;

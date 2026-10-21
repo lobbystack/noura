@@ -25,8 +25,6 @@ use std::{
 use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
 use egui::{Event, ThemePreference};
 
-pub use updates::update_settings;
-
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
 pub trait FolderPicker {

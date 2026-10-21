@@ -12,8 +12,8 @@ use std::{
 };
 
 use app_core::{
-    App, AppError, FIRST_UPDATE_CHECK, PendingUpdate, PendingWrite, UpdateError, UpdateErrorKind,
-    UpdateSource, UpdateStatus,
+    App, AppError, FIRST_UPDATE_CHECK, PendingSaves, PendingUpdate, PendingWrite, UpdateError,
+    UpdateErrorKind, UpdateSource, UpdateStatus,
 };
 
 const HOURS: u64 = 60 * 60;
@@ -157,6 +157,32 @@ fn held_write(write: PendingWrite, path: &Path, bytes: &'static [u8]) -> Sender<
         }));
     });
     release
+}
+
+/// Changes still waiting to be saved, as the editor keeps typing until a
+/// pause. Saving them writes `bytes` to `path` durably, or fails with
+/// `refusal`.
+struct FakeSaves {
+    path: PathBuf,
+    bytes: &'static [u8],
+    refusal: Option<AppError>,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+impl PendingSaves for FakeSaves {
+    fn save_now(&self, relative_path: &str) -> Result<(), AppError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("save {relative_path:?}"));
+        if let Some(refusal) = &self.refusal {
+            return Err(refusal.clone());
+        }
+        let mut file = atomic_write_file::AtomicWriteFile::open(&self.path).unwrap();
+        file.write_all(self.bytes).unwrap();
+        file.commit().unwrap();
+        Ok(())
+    }
 }
 
 /// An app with version 0.3.0 downloaded and ready, and a workspace folder
@@ -394,6 +420,67 @@ fn a_failed_write_keeps_this_version_running_and_says_why() {
     assert_eq!(
         source.calls(),
         ["check", "download", "install saw saved again", "restart"]
+    );
+}
+
+#[test]
+fn restart_saves_every_change_still_waiting_before_installing() {
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    app.set_pending_saves(Arc::new(FakeSaves {
+        path: folder.path().join("Notes/Plan.md"),
+        bytes: b"typed",
+        refusal: None,
+        log: source.log.clone(),
+    }));
+
+    app.restart_to_update();
+    settle(&mut app, now);
+
+    // The workspace root stands for every file in it.
+    assert_eq!(
+        source.calls(),
+        [
+            "check",
+            "download",
+            "save \"\"",
+            "install saw typed",
+            "restart"
+        ]
+    );
+}
+
+#[test]
+fn a_failed_save_keeps_this_version_running_and_says_why() {
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    app.set_pending_saves(Arc::new(FakeSaves {
+        path: folder.path().join("Notes/Plan.md"),
+        bytes: b"typed",
+        refusal: Some(AppError::new(
+            "write_failed",
+            "The disk is full. Free some space, then try again.",
+        )),
+        log: source.log.clone(),
+    }));
+
+    app.restart_to_update();
+    settle(&mut app, now);
+
+    assert_eq!(
+        app.updates().status(),
+        &UpdateStatus::Ready {
+            version: "0.3.0".into(),
+            notes: None,
+            problem: Some(
+                "Noura didn't restart, because it couldn't save your changes. The disk is \
+                 full. Free some space, then try again."
+                    .into()
+            ),
+        }
+    );
+    assert_eq!(source.calls(), ["check", "download", "save \"\""]);
+    assert_eq!(
+        std::fs::read_to_string(folder.path().join("Notes/Plan.md")).unwrap(),
+        "old"
     );
 }
 

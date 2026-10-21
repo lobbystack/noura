@@ -171,6 +171,8 @@ pub struct App {
     login_item: Arc<dyn LoginItem>,
     /// Where the local diagnostic log lives.
     log_folder: PathBuf,
+    /// The third-party license list this copy's package ships, if any.
+    third_party_licenses: Option<PathBuf>,
     /// A folder waiting to go to the trash until you confirm.
     pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
@@ -236,6 +238,7 @@ impl App {
             settings_sections: kernel_sections(),
             login_item: Arc::new(NoLoginItem),
             log_folder: crate::log_folder(app_data.as_ref()),
+            third_party_licenses: None,
             pending_trash: None,
             failed_restore: None,
             pending: None,
@@ -418,11 +421,12 @@ impl App {
         self.updates.check();
     }
 
-    /// Wait for pending writes, then install the downloaded update and
-    /// restart. If a write or the install fails, this version keeps
-    /// running and the update status says why.
+    /// Save every change still waiting, wait for pending writes, then
+    /// install the downloaded update and restart. If a save, a write or
+    /// the install fails, this version keeps running and the update status
+    /// says why.
     pub fn restart_to_update(&mut self) {
-        self.updates.restart();
+        self.updates.restart(self.pending_saves.clone());
     }
 
     /// Stop offering Restart outside Settings until the next update.

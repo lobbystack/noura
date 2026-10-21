@@ -1,10 +1,11 @@
 //! Settings: opening it, its sections and what each section does.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use super::{App, Change};
 use crate::{
-    LoginItem, Notice, NoticeKind, OpenAtLogin, Settings, SettingsGroup, SettingsSection,
+    AboutLink, LoginItem, Notice, NoticeKind, OpenAtLogin, Settings, SettingsGroup,
+    SettingsSection, THIRD_PARTY_LICENSES,
     diagnostics::{self, WorkspaceHealth},
     settings::{is_web_link, settings_section},
 };
@@ -268,6 +269,33 @@ impl App {
             self.settings_notice(
                 "Couldn't open the link",
                 "Noura couldn't open your web browser.",
+                NoticeKind::Problem,
+            );
+        }
+    }
+
+    /// Use the third-party license list at `path`, which this copy's
+    /// package ships, for About's Third-party licenses link.
+    pub fn set_third_party_licenses(&mut self, path: PathBuf) {
+        self.third_party_licenses = Some(path);
+    }
+
+    /// Open one of About's links. Third-party licenses opens the list the
+    /// package ships when there is one; every other link goes to the
+    /// browser through [`App::open_link`].
+    pub fn open_about_link(&mut self, link: &AboutLink) {
+        let bundled = (*link == THIRD_PARTY_LICENSES)
+            .then(|| self.third_party_licenses.clone())
+            .flatten();
+        let Some(path) = bundled else {
+            self.open_link(link.url);
+            return;
+        };
+        if let Err(error) = self.system.open_file(&path) {
+            tracing::warn!(%error, "the third-party license list didn't open");
+            self.settings_notice(
+                "Couldn't open the license list",
+                "Noura couldn't open the list of third-party licenses it ships with.",
                 NoticeKind::Problem,
             );
         }

@@ -57,8 +57,8 @@ pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use settings::{
-    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection, VERSION,
-    settings_section,
+    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
+    THIRD_PARTY_LICENSES, VERSION, settings_section,
 };
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};

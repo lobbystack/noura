@@ -225,6 +225,9 @@ fn main() -> eframe::Result {
             let system = system::DesktopSystem::new(creation.egui_ctx.clone());
             let mut app = App::launch_with(&app_data, Arc::new(system));
             app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
+            if let Some(list) = licenses::bundled_licenses() {
+                app.set_third_party_licenses(list);
+            }
             let updates = set_up_updates(&mut app, &creation.egui_ctx, launched);
             let smoke = smoke.then(|| smoke_report(&updates));
             let ui = NouraUi::new(app, Box::new(SystemFolderPicker));

@@ -16,7 +16,7 @@ use std::{
 };
 
 use crate::{
-    PendingWrites,
+    AppError, PendingSaves, PendingWrites,
     app::{Change, Listeners},
     writes::WriteFailure,
 };
@@ -253,10 +253,10 @@ impl Updates {
         }
     }
 
-    /// Wait for pending writes, install the downloaded update and restart.
-    /// A write that fails, or an install that fails, keeps this version
-    /// running and says why.
-    pub(crate) fn restart(&mut self) {
+    /// Save the changes `saves` holds back, wait for pending writes,
+    /// install the downloaded update and restart. A save, a write or an
+    /// install that fails keeps this version running and says why.
+    pub(crate) fn restart(&mut self, saves: Arc<dyn PendingSaves>) {
         let UpdateStatus::Ready { version, .. } = &self.status else {
             return;
         };
@@ -273,6 +273,14 @@ impl Updates {
         let writes = self.writes.clone();
         let installing = version.clone();
         let started = self.spawn("update-install", move |send| {
+            // The workspace root stands for every file in it.
+            if let Err(error) = saves.save_now("") {
+                send(Event::NotInstalled {
+                    update,
+                    problem: unsaved_changes_problem(&error),
+                });
+                return;
+            }
             if let Err(failure) = writes.flush() {
                 send(Event::NotInstalled {
                     update,
@@ -439,6 +447,13 @@ impl Updates {
             }
         }
     }
+}
+
+fn unsaved_changes_problem(error: &AppError) -> String {
+    format!(
+        "Noura didn't restart, because it couldn't save your changes. {}",
+        error.message
+    )
 }
 
 fn unsaved_problem(failure: &WriteFailure) -> String {
