@@ -12,7 +12,8 @@
 //! - `markdown:deep`: Markdown nodes with emphasis, quotes and lists
 //!   nested a hundred thousand deep.
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
-//! - `events`: the events the plugin received, oldest first.
+//! - `events`: the events the plugin received, oldest first: a press as
+//!   `<page> pressed <node>`, any other event in its debug form.
 //! - anything else: a panel with a line of text and a button.
 //!
 //! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
@@ -21,7 +22,10 @@
 
 use std::sync::Mutex;
 
-use plugin_sdk::{Error, Event, Node, NodeKind, Page, Plugin, View, workspace};
+use plugin_sdk::{
+    Choice, Column, Error, Event, Input, Item, MenuItem, Node, NodeKind, Page, Plugin, Table,
+    Value, View, VirtualRow, workspace,
+};
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -90,12 +94,16 @@ impl Plugin for Probe {
         view.into_nodes()
     }
 
+    fn rows(_page: String, _node: String, _start: u32, _count: u32) -> Vec<VirtualRow> {
+        Vec::new()
+    }
+
     fn handle_event(page: String, event: Event) {
-        let Event::Pressed(node) = event;
-        EVENTS
-            .lock()
-            .unwrap()
-            .push(format!("{page} pressed {node}"));
+        let what = match event {
+            Event::Pressed(node) => format!("pressed {node}"),
+            other => format!("{other:?}"),
+        };
+        EVENTS.lock().unwrap().push(format!("{page} {what}"));
     }
 }
 
@@ -231,8 +239,149 @@ fn broken(case: &str) -> Vec<Node> {
         "duplicate-id" => vec![root(&[1, 2]), text("same"), text("same")],
         "children-of-text" => vec![root(&[1]), node("a", NodeKind::Text("a".into()), &[0])],
         "empty" => Vec::new(),
+        "row-cells" => vec![
+            root(&[1]),
+            node("plants", table(&["Plant", "Bed"]), &[2]),
+            node(
+                "basil",
+                NodeKind::Row(cells(&["Basil", "Herbs", "April"])),
+                &[],
+            ),
+        ],
+        "unlabeled-input" => vec![
+            root(&[1]),
+            node("name", input(" ", Value::Text(String::new())), &[]),
+        ],
+        "empty-menu" => vec![
+            root(&[1]),
+            node("more", NodeKind::Button("More".into()), &[2]),
+            node("more-menu", NodeKind::Menu("More actions".into()), &[3]),
+            node("gap", NodeKind::Separator, &[]),
+        ],
+        "item-outside-list" => vec![root(&[1]), node("north", item("North bed"), &[])],
+        "panel-in-list" => vec![
+            root(&[1]),
+            node("beds", NodeKind::List("Beds".into()), &[2]),
+            node("inner", NodeKind::Panel(None), &[]),
+        ],
+        "two-menus" => vec![
+            root(&[1]),
+            node("beds", NodeKind::List("Beds".into()), &[2]),
+            node("north", item("North bed"), &[3, 5]),
+            node("menu-a", NodeKind::Menu("A".into()), &[4]),
+            node("water", menu_item("Water"), &[]),
+            node("menu-b", NodeKind::Menu("B".into()), &[6]),
+            node("weed", menu_item("Weed"), &[]),
+        ],
+        "menu-in-panel" => vec![
+            root(&[1]),
+            node("loose", NodeKind::Menu("Loose".into()), &[2]),
+            node("water", menu_item("Water"), &[]),
+        ],
+        "bad-date" => vec![
+            root(&[1]),
+            node(
+                "sown",
+                input("Sown on", Value::Date(Some("2026-02-30".into()))),
+                &[],
+            ),
+        ],
+        "bad-date-time" => vec![
+            root(&[1]),
+            node(
+                "at",
+                input(
+                    "Transplant at",
+                    Value::DateTime(Some("2026-10-21 09:30".into())),
+                ),
+                &[],
+            ),
+        ],
+        "unknown-choice" => vec![
+            root(&[1]),
+            node(
+                "sun",
+                NodeKind::Input(Input {
+                    label: "Sun".into(),
+                    value: Value::Choice(Some("moon".into())),
+                    choices: vec![Choice {
+                        id: "full".into(),
+                        label: "Full sun".into(),
+                    }],
+                }),
+                &[],
+            ),
+        ],
+        "choices-on-text" => vec![
+            root(&[1]),
+            node(
+                "name",
+                NodeKind::Input(Input {
+                    label: "Name".into(),
+                    value: Value::Text(String::new()),
+                    choices: vec![Choice {
+                        id: "full".into(),
+                        label: "Full sun".into(),
+                    }],
+                }),
+                &[],
+            ),
+        ],
+        "form-in-form" => vec![
+            root(&[1]),
+            node("outer", form("Outer"), &[2]),
+            node("inner", form("Inner"), &[]),
+        ],
+        "no-columns" => vec![root(&[1]), node("plants", table(&[]), &[])],
         _ => vec![root(&[])],
     }
+}
+
+fn cells(cells: &[&str]) -> Vec<String> {
+    cells.iter().map(|cell| (*cell).to_owned()).collect()
+}
+
+fn table(titles: &[&str]) -> NodeKind {
+    NodeKind::Table(Table {
+        label: "Plants".into(),
+        columns: titles
+            .iter()
+            .map(|title| Column {
+                id: title.to_lowercase(),
+                title: (*title).to_owned(),
+                sorted: None,
+            })
+            .collect(),
+    })
+}
+
+fn input(label: &str, value: Value) -> NodeKind {
+    NodeKind::Input(Input {
+        label: label.into(),
+        value,
+        choices: Vec::new(),
+    })
+}
+
+fn item(label: &str) -> NodeKind {
+    NodeKind::Item(Item {
+        label: label.into(),
+        detail: None,
+    })
+}
+
+fn menu_item(label: &str) -> NodeKind {
+    NodeKind::MenuItem(MenuItem {
+        label: label.into(),
+        enabled: true,
+    })
+}
+
+fn form(label: &str) -> NodeKind {
+    NodeKind::Form(plugin_sdk::Form {
+        label: label.into(),
+        submit: "Save".into(),
+    })
 }
 
 plugin_sdk::export!(Probe);

@@ -1,7 +1,7 @@
 //! A test plugin that lists a folder with `std::fs`, which makes the
 //! component import `wasi:filesystem`. The host must refuse to load it.
 
-use plugin_sdk::{Event, Node, Page, Plugin, View};
+use plugin_sdk::{Event, Node, Page, Plugin, View, VirtualRow};
 
 struct UsesFiles;
 
@@ -15,6 +15,10 @@ impl Plugin for UsesFiles {
         let mut view = View::panel("root", None);
         view.text(View::ROOT, "count", &format!("{count} entries"));
         view.into_nodes()
+    }
+
+    fn rows(_page: String, _node: String, _start: u32, _count: u32) -> Vec<VirtualRow> {
+        Vec::new()
     }
 
     fn handle_event(_page: String, _event: Event) {}

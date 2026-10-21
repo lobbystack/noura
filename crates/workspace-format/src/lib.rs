@@ -421,18 +421,29 @@ fn validate_task_due(value: &str) -> Result<(), FormatError> {
 /// Checks for a civil date (`YYYY-MM-DD`) or an RFC 3339 instant with an
 /// explicit offset.
 fn valid_date_value(value: &str) -> bool {
-    let date_only = value.len() == 10
+    is_civil_date(value) || is_instant(value)
+}
+
+/// Whether `value` is a date as the workspace format writes one:
+/// `YYYY-MM-DD`, naming a day that exists.
+pub fn is_civil_date(value: &str) -> bool {
+    value.len() == 10
         && value.as_bytes().get(4) == Some(&b'-')
         && value.as_bytes().get(7) == Some(&b'-')
-        && value.parse::<jiff::civil::Date>().is_ok();
-    let timed = (value.ends_with('Z')
+        && value.parse::<jiff::civil::Date>().is_ok()
+}
+
+/// Whether `value` is a date and time as the workspace format writes one:
+/// an RFC 3339 instant with an explicit offset, such as
+/// `2026-10-21T09:30:00-04:00`.
+pub fn is_instant(value: &str) -> bool {
+    (value.ends_with('Z')
         || value
             .as_bytes()
             .iter()
             .skip(10)
             .any(|byte| matches!(byte, b'+' | b'-')))
-        && value.parse::<jiff::Timestamp>().is_ok();
-    date_only || timed
+        && value.parse::<jiff::Timestamp>().is_ok()
 }
 
 fn split_title(content: &str) -> (String, String) {

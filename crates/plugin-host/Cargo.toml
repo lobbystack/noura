@@ -19,6 +19,8 @@ thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
 wasmtime.workspace = true
+# The workspace format's date and date-time rules, which input values follow.
+workspace-format = { version = "0.2.0", path = "../workspace-format" }
 
 [dev-dependencies]
 egui = { workspace = true, features = ["default_fonts"] }

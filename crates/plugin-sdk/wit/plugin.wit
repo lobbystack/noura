@@ -83,7 +83,95 @@ interface workspace {
 
 // UI as data. WIT has no recursive types, so a view is a flat list of nodes
 // whose `children` hold indices into the list. The first node is the root.
+//
+// Every label must hold more than spaces: Noura reads it to screen readers.
 interface ui {
+  // A line in a list: a label and an optional quieter line under it.
+  record item {
+    label: string,
+    detail: option<string>,
+  }
+
+  // A list of items fetched as they scroll into view, so it can hold more
+  // rows than a view holds nodes. Noura calls the view's `rows` for them.
+  record virtual-list {
+    // Names the list for screen readers.
+    label: string,
+    // How many rows the list holds.
+    rows: u32,
+  }
+
+  // One row of a virtual list, as `rows` returns it.
+  record virtual-row {
+    // Unique within the list. Events name the row by this ID.
+    id: string,
+    item: item,
+  }
+
+  enum sort-order {
+    ascending,
+    descending,
+  }
+
+  // A table's column.
+  record column {
+    // Unique within the table. A header press names the column by it.
+    id: string,
+    // The header's text.
+    title: string,
+    // Shows that the table is sorted by this column, and in which order.
+    sorted: option<sort-order>,
+  }
+
+  record table {
+    // Names the table for screen readers.
+    label: string,
+    columns: list<column>,
+  }
+
+  record form {
+    // Names the form for screen readers.
+    label: string,
+    // The label of the button that submits the form.
+    submit: string,
+  }
+
+  // What an input holds. The case sets the kind of input Noura draws.
+  variant value {
+    // A single line of text.
+    text(string),
+    // Several lines of text.
+    multiline(string),
+    checkbox(bool),
+    // The ID of the chosen option, or none.
+    choice(option<string>),
+    // A date as `YYYY-MM-DD`, the workspace format's date, or none.
+    date(option<string>),
+    // A date and time in RFC 3339 with an explicit offset, such as
+    // `2026-10-21T09:30:00-04:00`, or none.
+    date-time(option<string>),
+  }
+
+  // One option of a single-choice input.
+  record choice {
+    // Unique within the input. The input's value names the option by it.
+    id: string,
+    label: string,
+  }
+
+  record input {
+    label: string,
+    value: value,
+    // The options of a choice input. Other inputs have none.
+    choices: list<choice>,
+  }
+
+  record menu-item {
+    label: string,
+    // A disabled item shows but can't be chosen.
+    enabled: bool,
+  }
+
   variant node-kind {
     // Lays out its children from top to bottom. The label names the panel
     // for screen readers.
@@ -93,15 +181,42 @@ interface ui {
     // Markdown, drawn by Noura. Images show as their description and never
     // load from the network.
     markdown(string),
-    // A button with this label. Presses come back by the node's ID.
+    // A button with this label. Presses come back by the node's ID. A
+    // button whose child is a menu opens the menu instead.
     button(string),
+    // A list you select items in, by click or arrow keys, named for screen
+    // readers by this label. Its children are its items.
+    %list(string),
+    // An item of a list. Its only child may be a menu, which opens by
+    // right-click or from the keyboard.
+    item(item),
+    // A list whose rows come from the view's `rows`. It holds no children.
+    virtual-list(virtual-list),
+    // A table. Its children are its rows.
+    table(table),
+    // A table row: one cell per column. Its only child may be a menu.
+    row(list<string>),
+    // Lays out its children like a panel, with a submit button after them.
+    // Submitting sends the value of every input inside it.
+    form(form),
+    // A labeled input. Changes come back by the node's ID.
+    input(input),
+    // A menu with this label, the child of an item, a row or a button. Its
+    // children are menu items and separators, at least one item among them.
+    menu(string),
+    // A menu item. Choosing it sends its node ID.
+    menu-item(menu-item),
+    // A line between menu items.
+    separator,
   }
 
   record node {
     // Unique within the view. Events name the node by this ID.
     id: string,
     kind: node-kind,
-    // Indices into the view's node list. Only panels hold children.
+    // Indices into the view's node list. Panels and forms hold the nodes
+    // they lay out, lists their items, tables their rows, and menus their
+    // items; an item, a row or a button may hold one menu.
     children: list<u32>,
   }
 }
@@ -109,7 +224,7 @@ interface ui {
 // Pages in Noura's rail, drawn from the plugin's nodes. Noura calls these
 // only when the manifest declares the `views` capability.
 interface view {
-  use ui.{node};
+  use ui.{node, value, virtual-row};
 
   record page {
     // Unique within the plugin.
@@ -118,9 +233,51 @@ interface view {
     title: string,
   }
 
+  // An item of a list or a row of a table.
+  record target {
+    // The node ID of the list, virtual list or table.
+    node: string,
+    // The item's or the row's node ID, or a virtual list row's ID.
+    item: string,
+  }
+
+  // A header press in a table.
+  record column-press {
+    // The table's node ID.
+    node: string,
+    // The column's ID.
+    column: string,
+  }
+
+  // An input's value.
+  record field {
+    // The input's node ID.
+    node: string,
+    value: value,
+  }
+
+  record submission {
+    // The form's node ID.
+    node: string,
+    // Every input inside the form, in view order.
+    fields: list<field>,
+  }
+
   variant event {
     // The button with this node ID was pressed.
     pressed(string),
+    // An item or a row was selected, by click or arrow keys.
+    selected(target),
+    // An item or a row was opened, by double-click or Enter.
+    activated(target),
+    // A table's column header was pressed, so the plugin can sort.
+    sorted(column-press),
+    // An input's value changed.
+    changed(field),
+    // A form was submitted.
+    submitted(submission),
+    // The menu item with this node ID was chosen.
+    chosen(string),
   }
 
   // The pages the plugin adds to the rail.
@@ -128,6 +285,11 @@ interface view {
 
   // The nodes of a page's view.
   render: func(page: string) -> list<node>;
+
+  // Rows `start` up to `start + count` of the virtual list with node ID
+  // `node` in a page's view, as they scroll into view. Return fewer when
+  // the list ends sooner.
+  rows: func(page: string, node: string, start: u32, count: u32) -> list<virtual-row>;
 
   // Something happened in a page's view. Noura renders the page again
   // afterwards.

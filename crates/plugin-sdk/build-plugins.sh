@@ -9,4 +9,4 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 
 CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_DEV_STRIP=debuginfo \
   cargo build --manifest-path "$repo/Cargo.toml" --target wasm32-wasip2 --locked \
-  --package hello-plugin --package probe-plugin --package uses-files-plugin
+  --package hello-plugin --package kit-plugin --package probe-plugin --package uses-files-plugin

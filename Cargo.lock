@@ -4397,6 +4397,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kit-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+]
+
+[[package]]
 name = "kittest"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5906,6 +5913,7 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wat",
+ "workspace-format",
 ]
 
 [[package]]

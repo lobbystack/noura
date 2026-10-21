@@ -21,8 +21,13 @@ mod bindings {
 }
 
 use bindings::Plugin;
-pub use bindings::exports::noura::plugin::view::{Event, Page};
-pub use bindings::noura::plugin::ui::{Node, NodeKind};
+pub use bindings::exports::noura::plugin::view::{
+    ColumnPress, Event, Field, Page, Submission, Target,
+};
+pub use bindings::noura::plugin::ui::{
+    Choice, Column, Form, Input, Item, MenuItem, Node, NodeKind, SortOrder, Table, Value,
+    VirtualList, VirtualRow,
+};
 use bindings::noura::plugin::{types, workspace};
 
 /// Why a call into a running plugin failed.
@@ -196,6 +201,24 @@ impl PluginInstance {
         self.bindings
             .noura_plugin_view()
             .call_render(&mut self.store, page)
+            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
+    }
+
+    /// Rows `start` up to `start + count` of the virtual list `node` in a
+    /// page's view, as the plugin returned them. See [`crate::check_rows`]
+    /// for the checks before drawing them.
+    pub fn rows(
+        &mut self,
+        page: &str,
+        node: &str,
+        start: u32,
+        count: u32,
+    ) -> Result<Vec<VirtualRow>, PluginError> {
+        self.views()?;
+        self.start_call();
+        self.bindings
+            .noura_plugin_view()
+            .call_rows(&mut self.store, page, node, start, count)
             .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
     }
 
