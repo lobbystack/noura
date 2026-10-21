@@ -404,7 +404,7 @@ fn index_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk>
 /// them against the journal and reconciles if they turn out to be external.
 pub(super) fn dirty_marker(
     root: PathBuf,
-    journal: Arc<Mutex<HashMap<String, String>>>,
+    journal: Arc<Mutex<super::OwnWrites>>,
     dirty: Arc<AtomicBool>,
 ) -> impl Fn(&notify::Event) + Send + 'static {
     move |event| {
@@ -428,7 +428,7 @@ pub(super) fn dirty_marker(
             let key = relative.to_string_lossy().replace('\\', "/");
             if journal
                 .lock()
-                .map(|journal| journal.contains_key(&key))
+                .map(|journal| journal.covers(&key, std::time::Instant::now()))
                 .unwrap_or(false)
             {
                 continue;

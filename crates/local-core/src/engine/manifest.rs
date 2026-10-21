@@ -134,12 +134,10 @@ impl WorkspaceEngine {
         )?;
         // Journal like every other write site so the watcher poll does not
         // resurface this engine's own atomic manifest write as external.
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(
-                WORKSPACE_MANIFEST_PATH.to_owned(),
-                markdown::revision(bytes.as_bytes()),
-            );
-        }
+        self.expect_own_write(
+            WORKSPACE_MANIFEST_PATH,
+            Some(&markdown::revision(bytes.as_bytes())),
+        );
         *self
             .manifest
             .write()
@@ -215,18 +213,17 @@ impl WorkspaceEngine {
         if !touched {
             return Ok(());
         }
-        let journaled = self
+        let ours = self
             .self_writes
             .lock()
             .map_err(|_| lock_error("watcher_poll"))?
-            .remove(WORKSPACE_MANIFEST_PATH);
-        if let Some(expected) = journaled {
-            let unchanged = std::fs::read(self.root.join(WORKSPACE_MANIFEST_PATH))
-                .ok()
-                .is_some_and(|bytes| markdown::revision(&bytes) == expected);
-            if unchanged {
-                return Ok(());
-            }
+            .reported(
+                WORKSPACE_MANIFEST_PATH,
+                &self.root.join(WORKSPACE_MANIFEST_PATH),
+                std::time::Instant::now(),
+            );
+        if ours {
+            return Ok(());
         }
         self.apply_external_manifest()
     }

@@ -243,18 +243,20 @@ impl WorkspaceEngine {
                 "object_move",
             ));
         }
-        if let Some(parent) = destination_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| CoreError::io(error, "object_move", Some(destination)))?;
-        }
         let old = object.relative_path.clone();
+        // Before the folders exist, so the watcher's reports of them read
+        // as ours too.
         self.expect_own_write(&old, None);
         self.expect_own_write(destination, Some(&markdown::revision(&bytes)));
-        std::fs::rename(&source, &destination_path).map_err(|error| {
+        let forget = |error| {
             self.forget_own_write(&old);
             self.forget_own_write(destination);
             CoreError::io(error, "object_move", Some(destination))
-        })?;
+        };
+        if let Some(parent) = destination_path.parent() {
+            std::fs::create_dir_all(parent).map_err(forget)?;
+        }
+        std::fs::rename(&source, &destination_path).map_err(forget)?;
         sync_rename_parents(&source, &destination_path, "object_move")?;
         object.relative_path = destination.into();
         let index_result = (|| {

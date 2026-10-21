@@ -46,6 +46,7 @@ mod files;
 mod import;
 mod manifest;
 mod objects;
+mod own_writes;
 mod raw_markdown;
 mod reconcile;
 mod scan;
@@ -58,6 +59,7 @@ use drafts::*;
 use durable::*;
 use manifest::*;
 use objects::*;
+use own_writes::OwnWrites;
 use raw_markdown::*;
 use scan::*;
 
@@ -84,9 +86,9 @@ pub struct WorkspaceEngine {
     lock_path: PathBuf,
     event_sender: tokio::sync::broadcast::Sender<CoreEvent>,
     watcher: WatchCoordinator,
-    /// Paths this engine wrote, with the revision it wrote. Shared with the
-    /// watcher thread so our own writes do not mark the index dirty.
-    self_writes: Arc<Mutex<HashMap<String, String>>>,
+    /// The changes this engine made recently. Shared with the watcher
+    /// thread so our own writes do not mark the index dirty.
+    self_writes: Arc<Mutex<OwnWrites>>,
     /// Set by the watcher thread when a visible path changes and cleared when
     /// a workspace walk starts. Reads skip the walk while it stays clear.
     dirty: Arc<AtomicBool>,
@@ -266,7 +268,7 @@ impl WorkspaceEngine {
         let index_path = local_dir.join("index.sqlite");
         let (index, rebuild) = open_index(&index_path)?;
         let (event_sender, _) = tokio::sync::broadcast::channel(256);
-        let self_writes = Arc::new(Mutex::new(HashMap::new()));
+        let self_writes = Arc::new(Mutex::new(OwnWrites::default()));
         let dirty = Arc::new(AtomicBool::new(false));
         let watcher = WatchCoordinator::new(
             &root,
@@ -377,22 +379,24 @@ impl WorkspaceEngine {
     }
 
     /// Note that this engine is about to write `revision` to `relative`, or
-    /// delete it when `revision` is `None`. Call it before touching the
-    /// file: the watcher can report the change before the write returns,
-    /// and an unexpected change reads as another app's.
+    /// delete it when `revision` is `None`, along with the folders the
+    /// write creates or changes. Call it before touching the disk: the
+    /// watcher can report the change before the write returns, and an
+    /// unexpected change reads as another app's.
     fn expect_own_write(&self, relative: &str, revision: Option<&str>) {
+        let expected = match revision {
+            Some(revision) => own_writes::Expected::Revision(revision.to_owned()),
+            None => own_writes::Expected::Deleted,
+        };
         if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(
-                relative.to_owned(),
-                revision.unwrap_or("<deleted>").to_owned(),
-            );
+            journal.expect(&self.root, relative, expected, std::time::Instant::now());
         }
     }
 
     /// Forget an expected write that failed.
     fn forget_own_write(&self, relative: &str) {
         if let Ok(mut journal) = self.self_writes.lock() {
-            journal.remove(relative);
+            journal.forget(&self.root, relative);
         }
     }
 

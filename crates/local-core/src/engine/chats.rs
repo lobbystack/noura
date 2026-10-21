@@ -741,9 +741,7 @@ impl WorkspaceEngine {
         let bytes = serialize_chat(chat)?;
         let revision = markdown::revision(&bytes);
         atomic_write_checked(&self.root, &relative, &bytes, expected_revision, operation)?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(chat.relative_path.clone(), revision.clone());
-        }
+        self.expect_own_write(&chat.relative_path, Some(&revision));
         chat.revision = revision;
         let parsed = ParsedMarkdown::Managed(chat.workspace_object());
         let result = self
@@ -856,11 +854,9 @@ impl WorkspaceEngine {
             Err(error) if error.code == "trash_destination_exists" => return Ok(false),
             Err(error) => return Err(error),
         }
-        if let Ok(mut journal) = self.self_writes.lock() {
-            for file in files {
-                if let Some(relative) = file.strip_prefix(&self.root).ok().and_then(Path::to_str) {
-                    journal.insert(relative.replace('\\', "/"), "<deleted>".into());
-                }
+        for file in files {
+            if let Some(relative) = file.strip_prefix(&self.root).ok().and_then(Path::to_str) {
+                self.expect_own_write(&relative.replace('\\', "/"), None);
             }
         }
         Ok(true)

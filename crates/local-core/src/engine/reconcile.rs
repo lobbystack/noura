@@ -260,6 +260,7 @@ impl WorkspaceEngine {
             .self_writes
             .lock()
             .map_err(|_| lock_error("watcher_poll"))?;
+        let now = std::time::Instant::now();
         for path in paths {
             let Ok(relative) = path.strip_prefix(&self.root) else {
                 continue;
@@ -281,21 +282,11 @@ impl WorkspaceEngine {
                 unrepresentable = true;
                 continue;
             };
-            if let Some(expected) = journal.get(&relative).cloned() {
-                let matches = if expected == "<deleted>" {
-                    !path.exists()
-                } else {
-                    std::fs::read(&path)
-                        .ok()
-                        .is_some_and(|bytes| markdown::revision(&bytes) == expected)
-                };
-                // While the file still holds what this engine wrote, any
-                // report of it is our own write: platforms often report one
-                // write several times. Another app's change ends the entry.
-                if matches {
-                    continue;
-                }
-                journal.remove(&relative);
+            // A report of a path that still shows our recent write is our
+            // own. One that went online-only meanwhile is outside, and
+            // the check never reads it.
+            if journal.reported(&relative, &path, now) {
+                continue;
             }
             external.push(relative);
         }
@@ -468,6 +459,51 @@ mod tests {
         assert_eq!(
             (first, second, third),
             (Vec::new(), Vec::new(), vec!["ours.md".to_owned()])
+        );
+    }
+
+    #[test]
+    fn reports_of_the_folders_a_write_of_ours_creates_never_read_as_an_outside_change() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let mut events = engine.subscribe();
+        engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Ours".into(),
+                body: "Body".into(),
+                relative_path: Some("Inbox/Deep/ours.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let root = engine.root().to_owned();
+
+        let ours = engine
+            .process_external_changes(vec![
+                root.join("Inbox"),
+                root.join("Inbox/Deep"),
+                root.join("Inbox/Deep/ours.md"),
+            ])
+            .unwrap();
+        std::fs::create_dir(root.join("Inbox/Theirs")).unwrap();
+        let theirs = engine
+            .process_external_changes(vec![root.join("Inbox"), root.join("Inbox/Theirs")])
+            .unwrap();
+
+        let outside = std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| event.source == EventSource::External)
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            (ours, theirs, outside),
+            (
+                Vec::new(),
+                vec!["Inbox/Theirs".to_owned()],
+                vec!["file:changed".to_owned()]
+            )
         );
     }
 

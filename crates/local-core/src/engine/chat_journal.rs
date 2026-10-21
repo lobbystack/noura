@@ -305,16 +305,14 @@ impl WorkspaceEngine {
     }
 
     fn journal_chat_mutation(&self, intent: &ChatMutationIntent) {
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(
-                intent.chat.relative_path.clone(),
-                markdown::revision(intent.chat.bytes.as_bytes()),
-            );
-            journal.insert(
-                intent.message.relative_path.clone(),
-                markdown::revision(intent.message.bytes.as_bytes()),
-            );
-        }
+        self.expect_own_write(
+            &intent.chat.relative_path,
+            Some(&markdown::revision(intent.chat.bytes.as_bytes())),
+        );
+        self.expect_own_write(
+            &intent.message.relative_path,
+            Some(&markdown::revision(intent.message.bytes.as_bytes())),
+        );
     }
 
     fn clear_chat_mutation_intent(&self, path: &Path, operation: &str) -> Result<()> {

@@ -517,67 +517,229 @@ impl Drop for App {
 mod tests {
     use std::{
         collections::BTreeMap,
-        sync::mpsc::channel,
+        sync::mpsc::{Receiver, channel},
         time::{Duration, Instant},
     };
 
-    use local_core::CreateObjectInput;
+    use local_core::{CreateObjectInput, WorkspaceEngine};
 
     use super::*;
 
+    /// How long a test waits for the change stream before it fails.
+    const PATIENCE: Duration = Duration::from_secs(15);
+
+    /// How long a test keeps listening once the view shows a write, to
+    /// catch a late report that would mark it as from outside. The watch
+    /// thread polls every 100 ms, and platforms report within a second.
+    const SETTLE: Duration = Duration::from_secs(2);
+
+    /// An app with an empty workspace open and every change it announces.
     /// App-core has no file operations of its own yet (ticket 08 adds
-    /// them), so this writes through the engine the way they will.
+    /// them), so the tests write through the engine the way they will.
+    struct Live {
+        app: App,
+        changes: Receiver<Change>,
+        seen: Vec<Change>,
+        _app_data: tempfile::TempDir,
+        _folder: tempfile::TempDir,
+    }
+
+    impl Live {
+        fn open() -> Self {
+            let app_data = tempfile::tempdir().unwrap();
+            let folder = tempfile::tempdir().unwrap();
+            let mut app = App::launch(app_data.path());
+            let (sender, changes) = channel();
+            app.subscribe(move |change| {
+                let _ = sender.send(change);
+            });
+            app.open_folder(folder.path().to_owned());
+            let mut live = Self {
+                app,
+                changes,
+                seen: Vec::new(),
+                _app_data: app_data,
+                _folder: folder,
+            };
+            live.wait_until("the workspace opens", |app| {
+                !app.is_busy() && app.workspace().is_some()
+            });
+            live.seen.clear();
+            live
+        }
+
+        fn engine(&self) -> &WorkspaceEngine {
+            self.app.workspace().unwrap().engine()
+        }
+
+        /// Create a note at `relative_path` as Noura does, and return its ID.
+        fn create_note(&self, relative_path: &str) -> String {
+            self.engine()
+                .create_object(CreateObjectInput {
+                    object_type: "note".into(),
+                    title: "Mine".into(),
+                    body: String::new(),
+                    relative_path: Some(relative_path.into()),
+                    properties: BTreeMap::new(),
+                })
+                .unwrap()
+                .value
+                .id
+        }
+
+        /// Wait on the change stream, polling after each change, until
+        /// `done` holds for the view state.
+        fn wait_until(&mut self, what: &str, done: impl Fn(&App) -> bool) {
+            let deadline = Instant::now() + PATIENCE;
+            loop {
+                self.app.poll();
+                self.seen.extend(self.changes.try_iter());
+                if done(&self.app) {
+                    return;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(!left.is_zero(), "timed out waiting until {what}");
+                if let Ok(change) = self.changes.recv_timeout(left) {
+                    self.seen.push(change);
+                }
+            }
+        }
+
+        /// Keep polling and recording changes for `SETTLE`.
+        fn settle(&mut self) {
+            let deadline = Instant::now() + SETTLE;
+            loop {
+                self.app.poll();
+                self.seen.extend(self.changes.try_iter());
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                if let Ok(change) = self
+                    .changes
+                    .recv_timeout(left.min(Duration::from_millis(100)))
+                {
+                    self.seen.push(change);
+                }
+            }
+        }
+    }
+
+    fn rows(app: &App) -> Vec<String> {
+        app.tree()
+            .map(|tree| {
+                tree.rows()
+                    .iter()
+                    .map(|row| row.relative_path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn path_of(app: &App, id: &str) -> Option<String> {
+        app.workspace()?
+            .find_object(id)
+            .ok()
+            .flatten()
+            .map(|object| object.relative_path)
+    }
+
     #[test]
     fn a_file_noura_writes_reaches_the_tree_marked_as_noura_s_own() {
-        let app_data = tempfile::tempdir().unwrap();
-        let folder = tempfile::tempdir().unwrap();
-        let mut app = App::launch(app_data.path());
-        let (sender, changes) = channel();
-        app.subscribe(move |change| {
-            let _ = sender.send(change);
+        let mut live = Live::open();
+
+        live.create_note("Mine.md");
+
+        live.wait_until("the note shows in the tree", |app| rows(app) == ["Mine.md"]);
+        live.settle();
+        assert!(live.seen.contains(&Change::Files(Origin::Noura)));
+        assert!(!live.seen.contains(&Change::Files(Origin::Outside)));
+    }
+
+    /// The folders a write creates, and the folders whose listing it
+    /// changes, are Noura's own changes too.
+    #[test]
+    fn notes_noura_writes_into_new_folders_moves_and_deletes_are_never_marked_as_from_outside() {
+        let mut live = Live::open();
+
+        let id = live.create_note("Inbox/Deep/Mine.md");
+        live.wait_until("the note's folders show", |app| {
+            rows(app) == ["Inbox"] && path_of(app, &id).as_deref() == Some("Inbox/Deep/Mine.md")
         });
-        app.open_folder(folder.path().to_owned());
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while app.is_busy() {
-            assert!(Instant::now() < deadline, "the workspace never opened");
-            let _ = changes.recv_timeout(Duration::from_millis(50));
-            app.poll();
-        }
-        let _ = changes.try_iter().count();
 
-        app.workspace()
-            .unwrap()
-            .engine()
-            .create_object(CreateObjectInput {
-                object_type: "note".into(),
-                title: "Mine".into(),
-                body: String::new(),
-                relative_path: Some("Mine.md".into()),
-                properties: BTreeMap::new(),
-            })
+        let revision = live.engine().get_object(&id).unwrap().unwrap().revision;
+        live.engine()
+            .move_object(&id, "Archive/2026/Mine.md", &revision)
             .unwrap();
+        live.wait_until("the moved note shows", |app| {
+            rows(app) == ["Archive", "Inbox"]
+                && path_of(app, &id).as_deref() == Some("Archive/2026/Mine.md")
+        });
 
-        let mut seen = Vec::new();
-        loop {
-            app.poll();
-            seen.extend(changes.try_iter());
-            let rows: Vec<&str> = app
-                .tree()
-                .unwrap()
-                .rows()
-                .iter()
-                .map(|row| row.relative_path.as_str())
-                .collect();
-            if rows == ["Mine.md"] {
-                break;
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "the note never showed in the tree");
-            if let Ok(change) = changes.recv_timeout(left) {
-                seen.push(change);
-            }
+        live.engine().delete_object(&id, &revision).unwrap();
+        live.wait_until("the note is gone", |app| path_of(app, &id).is_none());
+
+        live.settle();
+        assert!(live.seen.contains(&Change::Files(Origin::Noura)));
+        assert!(
+            !live.seen.contains(&Change::Files(Origin::Outside)),
+            "{:?}",
+            live.seen
+        );
+    }
+
+    /// A file Noura wrote that the cloud provider then takes online-only
+    /// shows as not downloaded, and Noura doesn't read it to compare it
+    /// with what it wrote. The offline attribute is the one online-only
+    /// mark a test can set without a cloud sync root, and Windows still
+    /// lets Noura read the file, so reading it would hide the change.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_noura_wrote_that_goes_online_only_shows_as_not_downloaded() {
+        use std::os::windows::ffi::OsStrExt;
+
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_OFFLINE, GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SetFileAttributesW,
+        };
+
+        let mut live = Live::open();
+        // The test delivers the watcher's events itself.
+        live.app
+            .workspace()
+            .unwrap()
+            .force_watch_fault(crate::WatchFault::Silent);
+        live.create_note("Mine.md");
+        live.app
+            .workspace()
+            .unwrap()
+            .inject_watch_event(&["Mine.md"]);
+        live.wait_until("the note shows", |app| rows(app) == ["Mine.md"]);
+        let not_downloaded = |app: &App| {
+            app.tree().and_then(|tree| {
+                tree.find_row("Mine.md")
+                    .map(|row| tree.rows()[row].not_downloaded)
+            })
+        };
+        assert_eq!(not_downloaded(&live.app), Some(false));
+
+        let path = live.engine().root().join("Mine.md");
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        // SAFETY: `wide` is a NUL-terminated path that outlives both calls.
+        unsafe {
+            let attributes = GetFileAttributesW(wide.as_ptr());
+            assert_ne!(attributes, INVALID_FILE_ATTRIBUTES);
+            assert_ne!(
+                SetFileAttributesW(wide.as_ptr(), attributes | FILE_ATTRIBUTE_OFFLINE),
+                0
+            );
         }
-        assert!(seen.contains(&Change::Files(Origin::Noura)));
-        assert!(!seen.contains(&Change::Files(Origin::Outside)));
+        live.app
+            .workspace()
+            .unwrap()
+            .inject_watch_event(&["Mine.md"]);
+
+        live.wait_until("the note shows as not downloaded", |app| {
+            not_downloaded(app) == Some(true)
+        });
     }
 }
