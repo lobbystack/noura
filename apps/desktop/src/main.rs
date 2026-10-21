@@ -22,13 +22,13 @@ mod updates;
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         mpsc::{Receiver, channel},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use app_core::App;
+use app_core::{App, PendingWrites};
 use app_ui::{FolderPicker, NouraUi};
 use eframe::egui;
 use menu::{Choice, EditInput};
@@ -134,6 +134,10 @@ impl eframe::App for Desktop {
 const LOG_FILTER: &str =
     "info,eframe=warn,egui_wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn,winit=warn";
 
+/// How long Noura waits, once its window has closed, for writes still
+/// running to reach disk before it quits anyway.
+const QUIT_WAIT: Duration = Duration::from_secs(30);
+
 /// The size at which the log moves to `noura.log.1` and starts again.
 const LOG_FILE_BYTES: u64 = 1_000_000;
 
@@ -216,29 +220,52 @@ fn main() -> eframe::Result {
         event_loop_builder: Some(Box::new(configure_event_loop)),
         ..Default::default()
     };
-    eframe::run_native(
+    let writes = Arc::new(OnceLock::<PendingWrites>::new());
+    let install_at_exit = updates::InstallAtExit::default();
+    let closed = eframe::run_native(
         "Noura",
         options,
-        Box::new(move |creation| {
-            app_ui::theme::install(&creation.egui_ctx);
-            // The last workspace starts reopening now, off the UI thread.
-            let system = system::DesktopSystem::new(creation.egui_ctx.clone());
-            let mut app = App::launch_with(&app_data, Arc::new(system));
-            app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
-            if let Some(list) = licenses::bundled_licenses() {
-                app.set_third_party_licenses(list);
+        Box::new({
+            let writes = writes.clone();
+            let install_at_exit = install_at_exit.clone();
+            move |creation| {
+                app_ui::theme::install(&creation.egui_ctx);
+                // The last workspace starts reopening now, off the UI thread.
+                let system = system::DesktopSystem::new(creation.egui_ctx.clone());
+                let mut app = App::launch_with(&app_data, Arc::new(system));
+                let _ = writes.set(app.pending_writes().clone());
+                app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
+                if let Some(list) = licenses::bundled_licenses() {
+                    app.set_third_party_licenses(list);
+                }
+                let updates =
+                    set_up_updates(&mut app, &creation.egui_ctx, launched, install_at_exit);
+                let smoke = smoke.then(|| smoke_report(&updates));
+                let ui = NouraUi::new(app, Box::new(SystemFolderPicker));
+                Ok(Box::new(Desktop::new(creation, ui, smoke)))
             }
-            let updates = set_up_updates(&mut app, &creation.egui_ctx, launched);
-            let smoke = smoke.then(|| smoke_report(&updates));
-            let ui = NouraUi::new(app, Box::new(SystemFolderPicker));
-            Ok(Box::new(Desktop::new(creation, ui, smoke)))
         }),
-    )
+    );
+    // The window is gone, so nothing starts a new write. Writes still
+    // running finish before the process ends, whichever way Noura quit.
+    if let Some(writes) = writes.get()
+        && !writes.wait_for_running(QUIT_WAIT)
+    {
+        tracing::error!("Noura quit while a write was still running");
+    }
+    install_at_exit.run();
+    closed
 }
 
 /// Turn on updates from the release feed when this copy can replace
-/// itself. Returns why not otherwise.
-fn set_up_updates(app: &mut App, ctx: &egui::Context, launched: Instant) -> Result<(), String> {
+/// itself. Returns why not otherwise. On Windows an update waits in
+/// `install_at_exit` until Noura has quit.
+fn set_up_updates(
+    app: &mut App,
+    ctx: &egui::Context,
+    launched: Instant,
+    install_at_exit: updates::InstallAtExit,
+) -> Result<(), String> {
     let version = env!("CARGO_PKG_VERSION");
     let executable = std::env::current_exe().unwrap_or_default();
     let appimage = std::env::var_os("APPIMAGE");
@@ -254,12 +281,20 @@ fn set_up_updates(app: &mut App, ctx: &egui::Context, launched: Instant) -> Resu
     }
     let ctx = ctx.clone();
     let quit = move || ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    match updates::FeedSource::new(
+    let source = updates::FeedSource::new(
         updates::RELEASE_FEED,
         updates::RELEASE_PUBLIC_KEY,
         version,
         quit,
-    ) {
+    )
+    .map(|source| {
+        if cfg!(windows) {
+            source.installing_at_exit(install_at_exit)
+        } else {
+            source
+        }
+    });
+    match source {
         Ok(source) => {
             app.enable_updates(version, Arc::new(source), launched);
             Ok(())

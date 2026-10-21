@@ -100,9 +100,15 @@ The **Third-party licenses** link in **Settings** > **About Noura** opens this f
 
 Noura checks `latest.json` on the latest GitHub release 5 seconds after launch and every 6 hours. **Settings** > **Updates** also has a **Check for updates** button. When Noura finds a newer version, it downloads the bundle and verifies its signature in the background, then offers a **Restart** button. Noura installs nothing until you choose it.
 
-Before installing, Noura saves changes it holds back, such as typing that waits for a pause. It then waits for every pending write to reach disk. If a save or a write fails, Noura keeps running the current version and says why, naming the file when it knows it.
+Before installing, Noura saves changes it holds back, such as typing that waits for a pause. It then waits for every pending write to reach disk, including a workspace you're still opening or creating. If a save or a write fails, Noura keeps running the current version and says why, naming the file when it knows it.
 
-On macOS the update replaces the app bundle, and on Windows it runs the new `.msi`. On Linux, only the AppImage updates itself. The `.deb` package runs without the updater, so people who use it install each new version from the website. Development builds never update themselves.
+The install can take a while, for example while macOS asks for an administrator password, and you can keep working while it runs. After the install, Noura saves and waits again before it restarts. If that second round fails, Noura keeps running, and the new version starts the next time you open Noura.
+
+When you quit Noura, it waits up to 30 seconds after its window closes for writes still running. A restart for an update quits the same way.
+
+On macOS the update replaces the app bundle. On Windows the `.msi` installer ends the running app as soon as it starts, so Noura keeps the update until its window has closed and its writes have finished. Noura then starts the installer, which opens the new version when it's done.
+
+On Linux, only the AppImage updates itself. The `.deb` package runs without the updater, so people who use it install each new version from the website. Development builds never update themselves.
 
 ## Release checks in CI
 

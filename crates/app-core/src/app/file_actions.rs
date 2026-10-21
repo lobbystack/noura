@@ -300,6 +300,7 @@ impl App {
         let next = self.row_after_removing(relative_path);
         match workspace.trash(relative_path) {
             Ok(place) => {
+                self.writes.forget(relative_path);
                 self.close_inside(relative_path);
                 self.refresh_tree(None);
                 if let Some(next) = next {
@@ -483,6 +484,7 @@ impl App {
         match arrived {
             Some(to) => self.follow_move(from, to),
             None => {
+                self.writes.forget(from);
                 self.close_inside(from);
                 self.refresh_tree(None);
             }
@@ -505,6 +507,7 @@ impl App {
     /// After the item at `from` moved to `to`: its tabs and open folders
     /// follow it, and the tree reads the files again and selects it.
     fn follow_move(&mut self, from: &str, to: &str) {
+        self.writes.moved(from, to);
         self.move_tabs(from, to);
         self.refresh_tree(Some((from, to)));
         self.select(to);

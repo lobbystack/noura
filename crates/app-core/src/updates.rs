@@ -130,8 +130,11 @@ enum Event {
     UpToDate,
     Ready(Box<dyn PendingUpdate>),
     Failed(UpdateError),
-    NotInstalled {
+    /// Noura kept running. `installed` says whether the update replaced
+    /// the installed app before the problem.
+    NotRestarted {
         update: Box<dyn PendingUpdate>,
+        installed: bool,
         problem: String,
     },
     Restarting,
@@ -146,6 +149,9 @@ pub struct Updates {
     next_check: Option<Instant>,
     /// The downloaded update, waiting for a restart.
     ready: Option<Box<dyn PendingUpdate>>,
+    /// The ready update already replaced the installed app, and only the
+    /// restart is left.
+    installed: bool,
     /// Results from the background thread, while one runs.
     events: Option<Receiver<Event>>,
     offer_hidden: bool,
@@ -163,6 +169,7 @@ impl Updates {
             source: None,
             next_check: None,
             ready: None,
+            installed: false,
             events: None,
             offer_hidden: false,
             writes,
@@ -212,6 +219,7 @@ impl Updates {
         self.source = None;
         self.next_check = None;
         self.ready = None;
+        self.installed = false;
         self.set(UpdateStatus::Unavailable {
             reason: reason.to_owned(),
         });
@@ -254,8 +262,9 @@ impl Updates {
     }
 
     /// Save the changes `saves` holds back, wait for pending writes,
-    /// install the downloaded update and restart. A save, a write or an
-    /// install that fails keeps this version running and says why.
+    /// install the downloaded update, save and wait again for changes made
+    /// meanwhile, and restart. A save, a write or an install that fails
+    /// keeps this version running and says why.
     pub(crate) fn restart(&mut self, saves: Arc<dyn PendingSaves>) {
         let UpdateStatus::Ready { version, .. } = &self.status else {
             return;
@@ -272,29 +281,40 @@ impl Updates {
         };
         let writes = self.writes.clone();
         let installing = version.clone();
+        let mut installed = self.installed;
         let started = self.spawn("update-install", move |send| {
-            // The workspace root stands for every file in it.
-            if let Err(error) = saves.save_now("") {
-                send(Event::NotInstalled {
-                    update,
-                    problem: unsaved_changes_problem(&error),
-                });
-                return;
+            if !installed {
+                if let Err(problem) = settle(saves.as_ref(), &writes) {
+                    send(Event::NotRestarted {
+                        update,
+                        installed,
+                        problem,
+                    });
+                    return;
+                }
+                if let Err(error) = update.install() {
+                    tracing::warn!(detail = %error.detail, "the update could not be installed");
+                    send(Event::NotRestarted {
+                        update,
+                        installed,
+                        problem: format!(
+                            "Noura couldn't install version {installing} and kept this \
+                             version running. Try again later."
+                        ),
+                    });
+                    return;
+                }
+                installed = true;
             }
-            if let Err(failure) = writes.flush() {
-                send(Event::NotInstalled {
+            // The install can take a while, for example while macOS asks
+            // for an administrator password, and you can keep working
+            // meanwhile. Those changes reach disk before Noura quits too.
+            if let Err(problem) = settle(saves.as_ref(), &writes) {
+                send(Event::NotRestarted {
                     update,
-                    problem: unsaved_problem(&failure),
-                });
-                return;
-            }
-            if let Err(error) = update.install() {
-                tracing::warn!(detail = %error.detail, "the update could not be installed");
-                send(Event::NotInstalled {
-                    update,
+                    installed,
                     problem: format!(
-                        "Noura couldn't install version {installing} and kept this version \
-                         running. Try again later."
+                        "{problem} Version {installing} runs the next time you open Noura."
                     ),
                 });
                 return;
@@ -375,16 +395,22 @@ impl Updates {
                     problem: None,
                 };
                 self.ready = Some(update);
+                self.installed = false;
                 self.offer_hidden = false;
                 self.set(status);
             }
-            Event::NotInstalled { update, problem } => {
+            Event::NotRestarted {
+                update,
+                installed,
+                problem,
+            } => {
                 let status = UpdateStatus::Ready {
                     version: update.version().to_owned(),
                     notes: update.notes().map(str::to_owned),
                     problem: Some(problem),
                 };
                 self.ready = Some(update);
+                self.installed = installed;
                 self.offer_hidden = false;
                 self.set(status);
             }
@@ -449,6 +475,16 @@ impl Updates {
     }
 }
 
+/// Save the changes `saves` holds back and wait for pending writes. The
+/// error says what didn't reach disk and what to do.
+fn settle(saves: &dyn PendingSaves, writes: &PendingWrites) -> Result<(), String> {
+    // The workspace root stands for every file in it.
+    saves
+        .save_now("")
+        .map_err(|error| unsaved_changes_problem(&error))?;
+    writes.flush().map_err(|failure| unsaved_problem(&failure))
+}
+
 fn unsaved_changes_problem(error: &AppError) -> String {
     format!(
         "Noura didn't restart, because it couldn't save your changes. {}",
@@ -458,7 +494,8 @@ fn unsaved_changes_problem(error: &AppError) -> String {
 
 fn unsaved_problem(failure: &WriteFailure) -> String {
     format!(
-        "Noura didn't restart, because it couldn't save \u{201c}{}\u{201d}. {}",
+        "Noura didn't restart, because it couldn't save \u{201c}{}\u{201d}. {} Save it again, \
+         or move it to the trash, then restart. If you quit Noura instead, you lose that change.",
         failure.file, failure.message
     )
 }

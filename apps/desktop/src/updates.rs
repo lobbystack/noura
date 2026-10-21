@@ -3,7 +3,12 @@
 //! module talks to the feed, verifies downloads against Noura's updater key
 //! and replaces the installed app.
 
-use std::{ffi::OsStr, path::Path, time::Duration};
+use std::{
+    ffi::OsStr,
+    path::Path,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
 use app_core::{PendingUpdate, UpdateError, UpdateErrorKind, UpdateSource};
 use cargo_packager_updater::{Config, Error, Update, UpdaterBuilder, semver::Version, url::Url};
@@ -60,6 +65,41 @@ fn in_app_bundle(executable: &Path) -> bool {
         && bundle.extension() == Some(OsStr::new("app"))
 }
 
+/// An update that installs only after Noura's window has closed and its
+/// writes have reached disk. On Windows the `.msi` installer ends the
+/// running app the moment it starts, so Noura stages the update here and
+/// `main` installs it last.
+#[derive(Clone, Default)]
+pub struct InstallAtExit(Arc<Mutex<Option<Staged>>>);
+
+/// A downloaded and verified update, waiting to install.
+struct Staged {
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+impl InstallAtExit {
+    /// Install the staged update, if there is one. On Windows this starts
+    /// the installer and ends the process, and the installer opens the new
+    /// version when it finishes.
+    pub fn run(&self) {
+        let Some(Staged { update, bytes }) = self.take() else {
+            return;
+        };
+        if let Err(error) = update.install(bytes) {
+            tracing::error!(%error, "the staged update could not be installed");
+        }
+    }
+
+    fn stage(&self, update: Update, bytes: Vec<u8>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Staged { update, bytes });
+    }
+
+    fn take(&self) -> Option<Staged> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+}
+
 /// Releases from a signed feed.
 pub struct FeedSource {
     endpoint: Url,
@@ -69,6 +109,9 @@ pub struct FeedSource {
     quit: Box<dyn Fn() + Send + Sync>,
     /// The executable whose app an update replaces, when not this one.
     executable: Option<std::path::PathBuf>,
+    /// Where updates wait to install as Noura quits, when they can't
+    /// install while it runs.
+    at_exit: Option<InstallAtExit>,
 }
 
 impl FeedSource {
@@ -86,7 +129,15 @@ impl FeedSource {
                 .map_err(|error| format!("{error}"))?,
             quit: Box::new(quit),
             executable: None,
+            at_exit: None,
         })
+    }
+
+    /// Stage downloaded updates in `at_exit` instead of installing them
+    /// while Noura runs.
+    pub fn installing_at_exit(mut self, at_exit: InstallAtExit) -> Self {
+        self.at_exit = Some(at_exit);
+        self
     }
 }
 
@@ -108,6 +159,7 @@ impl UpdateSource for FeedSource {
             Box::new(FeedUpdate {
                 update,
                 bytes: None,
+                at_exit: self.at_exit.clone(),
             }) as Box<dyn PendingUpdate>
         }))
     }
@@ -124,6 +176,7 @@ impl UpdateSource for FeedSource {
 struct FeedUpdate {
     update: Update,
     bytes: Option<Vec<u8>>,
+    at_exit: Option<InstallAtExit>,
 }
 
 impl PendingUpdate for FeedUpdate {
@@ -145,6 +198,10 @@ impl PendingUpdate for FeedUpdate {
         let bytes = self.bytes.clone().ok_or_else(|| {
             UpdateError::new(UpdateErrorKind::Install, "the update isn't downloaded")
         })?;
+        if let Some(at_exit) = &self.at_exit {
+            at_exit.stage(self.update.clone(), bytes);
+            return Ok(());
+        }
         self.update
             .install(bytes)
             .map_err(|error| UpdateError::new(UpdateErrorKind::Install, error.to_string()))
@@ -475,6 +532,30 @@ mod tests {
             .map(|entry| entry.unwrap().path())
             .collect();
         assert!(untouched.is_empty(), "nothing installed: {untouched:?}");
+    }
+
+    #[test]
+    fn an_update_staged_for_exit_installs_nothing_while_noura_runs() {
+        let keys = keys();
+        let bundle = b"Noura 99.0.0".to_vec();
+        let (base, _) = release(&keys, "99.0.0", &bundle, &bundle);
+        let install_over = tempfile::tempdir().unwrap();
+        let at_exit = InstallAtExit::default();
+        let source =
+            source(&base, &keys.public, install_over.path()).installing_at_exit(at_exit.clone());
+
+        let mut update = source.check().unwrap().expect("a newer release");
+        update.download().unwrap();
+        update.install().unwrap();
+
+        let untouched: Vec<PathBuf> = std::fs::read_dir(install_over.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert!(untouched.is_empty(), "nothing installed: {untouched:?}");
+        let staged = at_exit.take().expect("the update waits for Noura to quit");
+        assert_eq!(staged.update.version, "99.0.0");
+        assert_eq!(staged.bytes, bundle);
     }
 
     #[test]

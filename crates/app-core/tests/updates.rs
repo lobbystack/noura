@@ -12,11 +12,14 @@ use std::{
 };
 
 use app_core::{
-    App, AppError, FIRST_UPDATE_CHECK, PendingSaves, PendingUpdate, PendingWrite, UpdateError,
-    UpdateErrorKind, UpdateSource, UpdateStatus,
+    App, AppError, FIRST_UPDATE_CHECK, PendingSaves, PendingUpdate, PendingWrite, Screen, System,
+    UpdateError, UpdateErrorKind, UpdateSource, UpdateStatus,
 };
 
 const HOURS: u64 = 60 * 60;
+
+/// Work that runs inside a fake install.
+type WhileInstalling = Box<dyn FnOnce() + Send>;
 
 /// What the fake source does when asked, and a log of what it was asked.
 #[derive(Clone, Default)]
@@ -31,6 +34,12 @@ struct FakeSource {
     /// before it ran.
     watched: Arc<Mutex<Option<PathBuf>>>,
     install_fails: Arc<Mutex<bool>>,
+    /// Runs inside the next install, as you might keep working while it
+    /// runs.
+    during_install: Arc<Mutex<Option<WhileInstalling>>>,
+    /// A file whose bytes the restart logs, to show what reached disk
+    /// before Noura quit.
+    restart_sees: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl FakeSource {
@@ -64,12 +73,17 @@ impl UpdateSource for FakeSource {
                 error: *self.download_error.lock().unwrap(),
                 watched: self.watched.clone(),
                 install_fails: self.install_fails.clone(),
+                during_install: self.during_install.clone(),
             }) as Box<dyn PendingUpdate>
         }))
     }
 
     fn restart(&self) -> Result<(), UpdateError> {
-        self.log.lock().unwrap().push("restart".into());
+        let entry = match &*self.restart_sees.lock().unwrap() {
+            Some(path) => format!("restart saw {}", std::fs::read_to_string(path).unwrap()),
+            None => "restart".into(),
+        };
+        self.log.lock().unwrap().push(entry);
         Ok(())
     }
 }
@@ -81,6 +95,7 @@ struct FakeUpdate {
     error: Option<UpdateErrorKind>,
     watched: Arc<Mutex<Option<PathBuf>>>,
     install_fails: Arc<Mutex<bool>>,
+    during_install: Arc<Mutex<Option<WhileInstalling>>>,
 }
 
 impl PendingUpdate for FakeUpdate {
@@ -109,6 +124,9 @@ impl PendingUpdate for FakeUpdate {
             None => "install".into(),
         };
         self.log.lock().unwrap().push(entry);
+        if let Some(work) = self.during_install.lock().unwrap().take() {
+            work();
+        }
         if *self.install_fails.lock().unwrap() {
             return Err(UpdateError::new(
                 UpdateErrorKind::Install,
@@ -205,6 +223,59 @@ fn ready_to_restart() -> (
     settle(&mut app, first);
     assert!(matches!(app.updates().status(), UpdateStatus::Ready { .. }));
     (app, source, first, app_data, folder)
+}
+
+/// Open the folder at `folder` as the workspace and wait until it shows.
+fn open_workspace(app: &mut App, folder: &Path, now: Instant) {
+    app.open_folder(folder.to_owned());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app.screen() != &Screen::Workspace {
+        assert!(Instant::now() < deadline, "the workspace never opened");
+        std::thread::sleep(Duration::from_millis(5));
+        app.poll_at(now);
+    }
+}
+
+/// System services whose first trash check waits for a message. A
+/// workspace that is opening asks right after it writes its manifest and
+/// before it writes the recent list, so the check holds its setup there.
+struct HeldSystem {
+    gate: Mutex<Option<Receiver<()>>>,
+}
+
+impl System for HeldSystem {
+    fn has_trash(&self) -> bool {
+        if let Some(gate) = self.gate.lock().unwrap().take() {
+            gate.recv().unwrap();
+        }
+        false
+    }
+
+    fn trash(&self, _path: &Path) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
+    fn reveal(&self, _path: &Path) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
+    fn open_folder(&self, _folder: &Path) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
+    fn open_terminal(&self, _folder: &Path) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
+    fn copy_text(&self, _text: &str) {}
+
+    fn open_url(&self, _url: &str) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
+    fn open_file(&self, _path: &Path) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 }
 
 fn launch_with(source: &FakeSource) -> (App, Instant, tempfile::TempDir) {
@@ -399,7 +470,8 @@ fn a_failed_write_keeps_this_version_running_and_says_why() {
             notes: None,
             problem: Some(
                 "Noura didn't restart, because it couldn't save \u{201c}Notes/Plan.md\u{201d}. \
-                 Its folder was moved or deleted outside Noura."
+                 Its folder was moved or deleted outside Noura. Save it again, or move it to \
+                 the trash, then restart. If you quit Noura instead, you lose that change."
                     .into()
             ),
         }
@@ -436,7 +508,8 @@ fn restart_saves_every_change_still_waiting_before_installing() {
     app.restart_to_update();
     settle(&mut app, now);
 
-    // The workspace root stands for every file in it.
+    // The workspace root stands for every file in it. Noura saves again
+    // after the install, for changes made while it ran.
     assert_eq!(
         source.calls(),
         [
@@ -444,6 +517,7 @@ fn restart_saves_every_change_still_waiting_before_installing() {
             "download",
             "save \"\"",
             "install saw typed",
+            "save \"\"",
             "restart"
         ]
     );
@@ -512,6 +586,201 @@ fn a_failed_install_keeps_this_version_running_and_restart_can_try_again() {
         source.calls(),
         ["check", "download", "install", "install", "restart"]
     );
+}
+
+#[test]
+fn restart_waits_for_a_write_that_starts_while_the_update_installs() {
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    let plan = folder.path().join("Notes/Plan.md");
+    *source.restart_sees.lock().unwrap() = Some(plan.clone());
+    let (started, held) = channel::<Sender<()>>();
+    let writes = app.pending_writes().clone();
+    *source.during_install.lock().unwrap() = Some(Box::new(move || {
+        let write = writes.begin("Notes/Plan.md");
+        started
+            .send(held_write(write, &plan, b"typed while installing"))
+            .unwrap();
+    }));
+
+    app.restart_to_update();
+    let release = held.recv_timeout(Duration::from_secs(20)).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    app.poll_at(now);
+    assert!(matches!(
+        app.updates().status(),
+        UpdateStatus::Installing { .. }
+    ));
+    assert_eq!(
+        source.calls(),
+        ["check", "download", "install saw old"],
+        "Noura doesn't quit while the write runs"
+    );
+
+    release.send(()).unwrap();
+    settle(&mut app, now);
+    assert_eq!(
+        source.calls(),
+        [
+            "check",
+            "download",
+            "install saw old",
+            "restart saw typed while installing"
+        ]
+    );
+    assert_eq!(
+        app.updates().status(),
+        &UpdateStatus::Restarting {
+            version: "0.3.0".into()
+        }
+    );
+}
+
+#[test]
+fn a_write_that_fails_while_the_update_installs_keeps_this_version_running_and_says_why() {
+    let (mut app, source, now, _app_data, _folder) = ready_to_restart();
+    let writes = app.pending_writes().clone();
+    *source.during_install.lock().unwrap() = Some(Box::new(move || {
+        writes
+            .begin("Notes/Plan.md")
+            .finish(Err(AppError::new("write_failed", "The disk is full.")));
+    }));
+
+    app.restart_to_update();
+    settle(&mut app, now);
+
+    assert_eq!(
+        app.updates().status(),
+        &UpdateStatus::Ready {
+            version: "0.3.0".into(),
+            notes: None,
+            problem: Some(
+                "Noura didn't restart, because it couldn't save \u{201c}Notes/Plan.md\u{201d}. \
+                 The disk is full. Save it again, or move it to the trash, then restart. If you \
+                 quit Noura instead, you lose that change. Version 0.3.0 runs the next time \
+                 you open Noura."
+                    .into()
+            ),
+        }
+    );
+    assert!(app.updates().offers_restart());
+    assert_eq!(source.calls(), ["check", "download", "install saw old"]);
+
+    // Once the file saves, Restart only restarts: the update is installed.
+    app.pending_writes().begin("Notes/Plan.md").finish(Ok(()));
+    app.restart_to_update();
+    settle(&mut app, now);
+    assert_eq!(
+        source.calls(),
+        ["check", "download", "install saw old", "restart"]
+    );
+}
+
+#[test]
+fn restart_waits_for_a_workspace_that_is_still_being_set_up() {
+    let source = FakeSource::default();
+    *source.release.lock().unwrap() = Some("0.3.0".into());
+    let app_data = tempfile::tempdir().unwrap();
+    let (hold, gate) = channel();
+    let mut app = App::launch_with(
+        app_data.path(),
+        Arc::new(HeldSystem {
+            gate: Mutex::new(Some(gate)),
+        }),
+    );
+    let launched = Instant::now();
+    app.enable_updates("0.2.0", Arc::new(source.clone()), launched);
+    let now = launched + FIRST_UPDATE_CHECK;
+    settle(&mut app, now);
+    let folder = tempfile::tempdir().unwrap();
+
+    app.create_workspace("Plans", folder.path().to_owned());
+    app.restart_to_update();
+    std::thread::sleep(Duration::from_millis(200));
+    app.poll_at(now);
+    assert!(matches!(
+        app.updates().status(),
+        UpdateStatus::Installing { .. }
+    ));
+    assert_eq!(
+        source.calls(),
+        ["check", "download"],
+        "nothing installs while the workspace is set up"
+    );
+
+    hold.send(()).unwrap();
+    settle(&mut app, now);
+    assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
+    assert_eq!(app.recents()[0].name, "Plans");
+}
+
+#[test]
+fn moving_a_file_whose_write_failed_to_the_trash_lets_restart_go_ahead() {
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    *source.watched.lock().unwrap() = None;
+    open_workspace(&mut app, folder.path(), now);
+    drop(app.pending_writes().begin("Notes/Plan.md"));
+
+    app.restart_to_update();
+    settle(&mut app, now);
+    assert_eq!(source.calls(), ["check", "download"]);
+
+    app.trash("Notes/Plan.md");
+    app.restart_to_update();
+    settle(&mut app, now);
+    assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
+}
+
+#[test]
+fn a_failed_write_follows_its_file_when_you_rename_its_folder() {
+    let (mut app, source, now, _app_data, folder) = ready_to_restart();
+    *source.watched.lock().unwrap() = None;
+    open_workspace(&mut app, folder.path(), now);
+    app.pending_writes()
+        .begin("Notes/Plan.md")
+        .finish(Err(AppError::new("write_failed", "The disk is full.")));
+
+    app.start_rename("Notes");
+    assert!(app.commit_rename("Archive"));
+    app.restart_to_update();
+    settle(&mut app, now);
+    let UpdateStatus::Ready {
+        problem: Some(problem),
+        ..
+    } = app.updates().status()
+    else {
+        panic!("expected a problem, got {:?}", app.updates().status());
+    };
+    assert!(
+        problem.contains("\u{201c}Archive/Plan.md\u{201d}"),
+        "{problem}"
+    );
+
+    app.pending_writes().begin("Archive/Plan.md").finish(Ok(()));
+    app.restart_to_update();
+    settle(&mut app, now);
+    assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
+}
+
+#[test]
+fn noura_waits_for_running_writes_before_it_quits() {
+    let app_data = tempfile::tempdir().unwrap();
+    let app = App::launch(app_data.path());
+    let writes = app.pending_writes().clone();
+    let write = writes.begin("Notes/Plan.md");
+    let work = writes.begin_work("workspace");
+
+    assert!(!writes.wait_for_running(Duration::from_millis(50)));
+    write.finish(Ok(()));
+    assert!(
+        !writes.wait_for_running(Duration::from_millis(50)),
+        "the workspace setup still runs"
+    );
+    let finished = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(work);
+    });
+    assert!(writes.wait_for_running(Duration::from_secs(20)));
+    finished.join().unwrap();
 }
 
 #[test]

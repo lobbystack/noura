@@ -429,9 +429,9 @@ impl App {
     }
 
     /// Save every change still waiting, wait for pending writes, then
-    /// install the downloaded update and restart. If a save, a write or
-    /// the install fails, this version keeps running and the update status
-    /// says why.
+    /// install the downloaded update, save and wait again for changes made
+    /// during the install, and restart. If a save, a write or the install
+    /// fails, this version keeps running and the update status says why.
     pub fn restart_to_update(&mut self) {
         self.updates.restart(self.pending_saves.clone());
     }
@@ -555,10 +555,15 @@ impl App {
         let service = self.service.clone();
         let listeners = self.listeners.clone();
         let work = job.clone();
+        // Opening a workspace can write its manifest and the recent list,
+        // so restarting to update and quitting wait for it. Its notice
+        // reports a failure.
+        let writing = self.writes.begin_work("workspace");
         let spawned = std::thread::Builder::new()
             .name("workspace-open".into())
             .spawn(move || {
                 let result = run(&service, &work);
+                drop(writing);
                 // The app may have closed meanwhile; nothing is waiting then.
                 let _ = sender.send(result);
                 listeners.emit(Change::WorkFinished);

@@ -71,7 +71,7 @@ pub use updates::{
     UpdateSource, UpdateStatus, Updates,
 };
 pub use workspace::{Workspace, WorkspaceService};
-pub use writes::{PendingWrite, PendingWrites, WriteFailure};
+pub use writes::{PendingWork, PendingWrite, PendingWrites, WriteFailure};
 
 /// Where Noura keeps per-device state, such as indexes and the recent
 /// list: the operating system's local app data folder.
