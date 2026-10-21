@@ -6,9 +6,9 @@
 //! reached twice or from itself, a node where its kind can't go, a repeated
 //! node ID, an unlabeled control, a table row whose cells don't match the
 //! columns or hold no text, an empty menu, an input value of the wrong
-//! form, a virtual list too long to draw, or a view too large or deep to
-//! draw. [`check_rows`] does the same for the rows of a
-//! virtual list.
+//! form, a virtual list too long to draw, a board without columns, or a
+//! view too large or deep to draw. [`check_rows`] does the same for the
+//! rows of a virtual list.
 
 use std::collections::HashSet;
 
@@ -38,8 +38,8 @@ pub struct ViewNode {
     pub id: String,
     pub kind: ViewKind,
     /// The nodes a panel or a form lays out, a list's items, a table's
-    /// rows or a menu's items. An item, a row or a button holds its menu
-    /// here, if it has one.
+    /// rows, a board's columns, a column's cards or a menu's items. An
+    /// item, a row, a card or a button holds its menu here, if it has one.
     pub children: Vec<ViewNode>,
 }
 
@@ -58,9 +58,11 @@ pub enum ViewKind {
     Button {
         label: String,
     },
-    /// A list whose children are its items.
+    /// A list whose children are its items. With `reorder`, you can drag
+    /// them to new positions.
     List {
         label: String,
+        reorder: bool,
     },
     /// An item of a list, which may hold a menu.
     Item {
@@ -104,6 +106,19 @@ pub enum ViewKind {
     },
     /// A line between menu items.
     Separator,
+    /// A board whose children are its columns, at least one.
+    Board {
+        label: String,
+    },
+    /// A board's column, headed by `label`, whose children are its cards.
+    BoardColumn {
+        label: String,
+    },
+    /// A card in a board column, which may hold a menu.
+    Card {
+        label: String,
+        detail: Option<String>,
+    },
 }
 
 /// Why a node list or a virtual list's rows can't be drawn. The message
@@ -144,6 +159,8 @@ pub enum ViewError {
     NoColumns { node: String },
     #[error("The menu {node} has no items.")]
     EmptyMenu { node: String },
+    #[error("The board {node} has no columns.")]
+    NoBoardColumns { node: String },
     /// An input's value, options or a table's columns break a rule. The
     /// message says which.
     #[error("{0}")]
@@ -248,6 +265,9 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Menu(_) => "menu",
         NodeKind::MenuItem(_) => "menu item",
         NodeKind::Separator => "separator",
+        NodeKind::Board(_) => "board",
+        NodeKind::BoardColumn(_) => "board column",
+        NodeKind::Card(_) => "card",
     }
 }
 
@@ -269,21 +289,29 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
             invalid(format!("The row {id} has no cell with text."))
         }
         NodeKind::Row(_) => Ok(()),
-        NodeKind::Button(label) | NodeKind::List(label) | NodeKind::Menu(label) => {
+        NodeKind::Button(label)
+        | NodeKind::Menu(label)
+        | NodeKind::Board(label)
+        | NodeKind::BoardColumn(label) => {
             if blank(label) {
                 Err(unlabeled())
             } else {
                 Ok(())
             }
         }
-        NodeKind::Item(item) if blank(&item.label) => Err(unlabeled()),
+        NodeKind::List(list) if blank(&list.label) => Err(unlabeled()),
+        NodeKind::Item(item) | NodeKind::Card(item) if blank(&item.label) => Err(unlabeled()),
         NodeKind::VirtualList(list) if blank(&list.label) => Err(unlabeled()),
         NodeKind::VirtualList(list) if list.rows > MAX_ROWS => Err(ViewError::TooLong {
             node: id.clone(),
             rows: list.rows,
         }),
         NodeKind::MenuItem(item) if blank(&item.label) => Err(unlabeled()),
-        NodeKind::Item(_) | NodeKind::VirtualList(_) | NodeKind::MenuItem(_) => Ok(()),
+        NodeKind::List(_)
+        | NodeKind::Item(_)
+        | NodeKind::Card(_)
+        | NodeKind::VirtualList(_)
+        | NodeKind::MenuItem(_) => Ok(()),
         NodeKind::Form(form) if blank(&form.label) => Err(unlabeled()),
         NodeKind::Form(form) if blank(&form.submit) => {
             invalid(format!("The form {id} has no submit label."))
@@ -384,11 +412,18 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
         (NodeKind::Item(_), _) => misplaced(format!("The item {id} isn't in a list.")),
         (NodeKind::Row(_), Some(NodeKind::Table(_))) => Ok(()),
         (NodeKind::Row(_), _) => misplaced(format!("The row {id} isn't in a table.")),
-        (NodeKind::Menu(_), Some(NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Button(_))) => {
-            Ok(())
+        (NodeKind::BoardColumn(_), Some(NodeKind::Board(_))) => Ok(()),
+        (NodeKind::BoardColumn(_), _) => {
+            misplaced(format!("The board column {id} isn't in a board."))
         }
+        (NodeKind::Card(_), Some(NodeKind::BoardColumn(_))) => Ok(()),
+        (NodeKind::Card(_), _) => misplaced(format!("The card {id} isn't in a board column.")),
+        (
+            NodeKind::Menu(_),
+            Some(NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_)),
+        ) => Ok(()),
         (NodeKind::Menu(_), _) => misplaced(format!(
-            "The menu {id} isn't on an item, a row or a button."
+            "The menu {id} isn't on an item, a row, a card or a button."
         )),
         (NodeKind::MenuItem(_) | NodeKind::Separator, Some(NodeKind::Menu(_))) => Ok(()),
         (NodeKind::MenuItem(_) | NodeKind::Separator, _) => misplaced(format!(
@@ -400,8 +435,9 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
 }
 
 /// The nodes `parent` may hold: blocks in a panel or a form, items in a
-/// list, rows in a table with one cell per column, items and separators
-/// in a menu, and at most one menu on an item, a row or a button.
+/// list, rows in a table with one cell per column, columns in a board and
+/// cards in a column, items and separators in a menu, and at most one
+/// menu on an item, a row, a card or a button.
 fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
     let id = &parent.id;
     let kind = kind_name(&parent.kind);
@@ -443,7 +479,32 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
-        NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Button(_) => {
+        NodeKind::Board(_) => {
+            if parent.children.is_empty() {
+                return Err(ViewError::NoBoardColumns { node: id.clone() });
+            }
+            for child in children {
+                if !matches!(child.kind, NodeKind::BoardColumn(_)) {
+                    return misplaced(format!(
+                        "The board {id} holds {}, which isn't a board column.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
+        NodeKind::BoardColumn(_) => {
+            for child in children {
+                if !matches!(child.kind, NodeKind::Card(_)) {
+                    return misplaced(format!(
+                        "The board column {id} holds {}, which isn't a card.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
+        NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_) => {
             if parent.children.len() > 1 {
                 return misplaced(format!("The {kind} {id} holds more than one menu."));
             }
@@ -529,8 +590,9 @@ fn build(
         NodeKind::Button(label) => ViewKind::Button {
             label: label.clone(),
         },
-        NodeKind::List(label) => ViewKind::List {
-            label: label.clone(),
+        NodeKind::List(list) => ViewKind::List {
+            label: list.label.clone(),
+            reorder: list.reorder,
         },
         NodeKind::Item(item) => ViewKind::Item {
             label: item.label.clone(),
@@ -564,6 +626,16 @@ fn build(
             enabled: item.enabled,
         },
         NodeKind::Separator => ViewKind::Separator,
+        NodeKind::Board(label) => ViewKind::Board {
+            label: label.clone(),
+        },
+        NodeKind::BoardColumn(label) => ViewKind::BoardColumn {
+            label: label.clone(),
+        },
+        NodeKind::Card(card) => ViewKind::Card {
+            label: card.label.clone(),
+            detail: card.detail.clone().filter(|detail| !blank(detail)),
+        },
     };
     let children = node
         .children

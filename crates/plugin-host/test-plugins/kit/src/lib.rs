@@ -18,11 +18,16 @@
 //!   says which rows Noura asked for, such as `Asked for rows: 0 to 63`.
 //!   Below it, the virtual list Repeated of 100 rows, whose row IDs start
 //!   over at the 81st row.
+//! - `board`, titled Board: the board Work, with the columns To do, Doing
+//!   and Done. Each card has a menu, Move <card>, with an item per column
+//!   that moves the card to the end of that column. The plugin applies
+//!   every move except one into Done, which it refuses. Below the board,
+//!   the list Queue, whose items you can drag into a new order.
 
 use std::sync::Mutex;
 
 use plugin_sdk::{
-    Column, Event, Field, Item, Node, Page, Plugin, SortOrder, Value, View, VirtualRow,
+    Column, Event, Field, Item, Move, Node, Page, Plugin, SortOrder, Value, View, VirtualRow,
 };
 
 /// The rows the Seeds list holds.
@@ -37,6 +42,17 @@ const REPEATED_IDS: u32 = 80;
 
 /// The rows a press of `insert` puts above the seeds.
 const INSERTED: u32 = 3;
+
+/// The board's columns: ID and label.
+const COLUMNS: [(&str, &str); 3] = [("todo", "To do"), ("doing", "Doing"), ("done", "Done")];
+
+/// A card on the board.
+#[derive(Clone)]
+struct Card {
+    id: &'static str,
+    label: &'static str,
+    detail: Option<&'static str>,
+}
 
 struct Plant {
     id: String,
@@ -62,6 +78,10 @@ struct State {
     batches: u32,
     /// The rows of the Broken list Noura asked for, as `first to last`.
     broken_asks: Vec<String>,
+    /// The cards of each board column, in the order of [`COLUMNS`].
+    columns: Vec<Vec<Card>>,
+    /// The Queue list's items: ID and label.
+    queue: Vec<(&'static str, &'static str)>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -98,6 +118,35 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
         transplant: Some("2026-10-21T09:30:00-04:00".to_owned()),
         batches: 0,
         broken_asks: Vec::new(),
+        columns: vec![
+            vec![
+                Card {
+                    id: "write-report",
+                    label: "Write report",
+                    detail: Some("Due Friday"),
+                },
+                Card {
+                    id: "fix-bug",
+                    label: "Fix bug",
+                    detail: None,
+                },
+            ],
+            vec![Card {
+                id: "review-notes",
+                label: "Review notes",
+                detail: None,
+            }],
+            vec![Card {
+                id: "plan-sprint",
+                label: "Plan sprint",
+                detail: None,
+            }],
+        ],
+        queue: vec![
+            ("first", "Water seedlings"),
+            ("second", "Turn compost"),
+            ("third", "Sow beans"),
+        ],
     });
     f(state)
 }
@@ -112,6 +161,7 @@ impl Plugin for Kit {
             ("form", "Form"),
             ("seeds", "Seeds"),
             ("broken-rows", "Broken rows"),
+            ("board", "Board"),
         ]
         .into_iter()
         .map(|(id, title)| Page {
@@ -128,6 +178,7 @@ impl Plugin for Kit {
                 "table" => "Table",
                 "form" => "Form",
                 "broken-rows" => "Broken rows",
+                "board" => "Board",
                 _ => "Seeds",
             };
             let mut view = View::panel("root", Some(title));
@@ -136,6 +187,7 @@ impl Plugin for Kit {
                 "lists" => lists(&mut view, state),
                 "table" => table(&mut view, state),
                 "form" => form(&mut view, state),
+                "board" => board(&mut view, state),
                 "broken-rows" => {
                     let asked = if state.broken_asks.is_empty() {
                         "none".to_owned()
@@ -218,6 +270,21 @@ impl Plugin for Kit {
                     state.sort = (press.column, order);
                 }
                 Event::Changed(field) => keep(state, field),
+                Event::Moved(placed) => place(state, &placed),
+                Event::Chosen(node) => {
+                    let moved = COLUMNS.iter().find_map(|(column, _)| {
+                        let card = node.strip_suffix(&format!("-to-{column}"))?;
+                        Some(Move {
+                            node: "work".to_owned(),
+                            item: card.to_owned(),
+                            to: (*column).to_owned(),
+                            position: u32::MAX,
+                        })
+                    });
+                    if let Some(moved) = moved {
+                        place(state, &moved);
+                    }
+                }
                 Event::Submitted(submission) => {
                     for field in submission.fields {
                         keep(state, field);
@@ -233,6 +300,66 @@ impl Plugin for Kit {
                 _ => {}
             }
         });
+    }
+}
+
+/// Apply a move on the board or in the queue, except one into Done. A
+/// position past the end puts the card or item last.
+fn place(state: &mut State, placed: &Move) {
+    let at = |len: usize| (placed.position as usize).min(len);
+    if placed.node == "queue" && placed.to == "queue" {
+        if let Some(from) = state.queue.iter().position(|(id, _)| *id == placed.item) {
+            let item = state.queue.remove(from);
+            let index = at(state.queue.len());
+            state.queue.insert(index, item);
+        }
+        return;
+    }
+    if placed.node != "work" || placed.to == "done" {
+        return;
+    }
+    let Some(to) = COLUMNS.iter().position(|(id, _)| *id == placed.to) else {
+        return;
+    };
+    let from = state
+        .columns
+        .iter()
+        .enumerate()
+        .find_map(|(column, cards)| {
+            let index = cards.iter().position(|card| card.id == placed.item)?;
+            Some((column, index))
+        });
+    if let Some((column, index)) = from {
+        let card = state.columns[column].remove(index);
+        let index = at(state.columns[to].len());
+        state.columns[to].insert(index, card);
+    }
+}
+
+fn board(view: &mut View, state: &State) {
+    let board = view.board(View::ROOT, "work", "Work");
+    for ((column_id, column_label), cards) in COLUMNS.iter().zip(&state.columns) {
+        let column = view.board_column(board, column_id, column_label);
+        for card in cards {
+            let node = view.card(column, card.id, card.label, card.detail);
+            let menu = view.menu(
+                node,
+                &format!("{}-menu", card.id),
+                &format!("Move {}", card.label),
+            );
+            for (to, label) in COLUMNS {
+                view.menu_item(
+                    menu,
+                    &format!("{}-to-{to}", card.id),
+                    label,
+                    to != *column_id,
+                );
+            }
+        }
+    }
+    let queue = view.reorderable_list(View::ROOT, "queue", "Queue");
+    for (id, label) in &state.queue {
+        view.item(queue, id, label, None);
     }
 }
 
@@ -372,6 +499,10 @@ fn describe(event: &Event) -> String {
                 .join(", ")
         ),
         Event::Chosen(node) => format!("chose {node}"),
+        Event::Moved(placed) => format!(
+            "moved {} in {} to {} at {}",
+            placed.item, placed.node, placed.to, placed.position
+        ),
     }
 }
 

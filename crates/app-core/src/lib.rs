@@ -81,8 +81,8 @@ pub use notes::{
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use plugin_host::{
-    Choice, Column, ColumnPress, Event as PluginEvent, Field, SortOrder, Submission, Target,
-    Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
+    Choice, Column, ColumnPress, Event as PluginEvent, Field, Move as PluginMove, SortOrder,
+    Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{CapabilityLine, PluginInstall, PluginRow, PluginView};

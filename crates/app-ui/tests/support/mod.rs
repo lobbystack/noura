@@ -2,6 +2,7 @@
 
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
+pub mod kit;
 pub mod plugins;
 
 use std::{
