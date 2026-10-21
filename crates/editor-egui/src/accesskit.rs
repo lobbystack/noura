@@ -47,8 +47,8 @@ struct Run {
 
 impl MdRender {
     /// Reports the note to AccessKit as the node `id`: a multi-line text
-    /// input called `label` whose value is the note's text, with text runs as children and
-    /// the selection. Does nothing while AccessKit is off.
+    /// input called `label` whose value is the note's text, with text runs
+    /// as children and the selection. Does nothing while AccessKit is off.
     pub(crate) fn update_accesskit(&self, ui: &mut Ui, id: Id, label: &str) {
         let text = self.buffer.current.text();
         let reported = ui.ctx().accesskit_node_builder(id, |node| {
@@ -64,6 +64,9 @@ impl MdRender {
         }
 
         let runs = self.accesskit_runs();
+        if runs.is_empty() {
+            return;
+        }
         for (index, run) in runs.iter().enumerate() {
             let run_id = id.with(("text-run", index));
             let builder = UiBuilder::new()
@@ -94,9 +97,6 @@ impl MdRender {
                 character_index,
             }
         };
-        if runs.is_empty() {
-            return;
-        }
         let (anchor, focus) = self.buffer.current.selection;
         ui.ctx().accesskit_node_builder(id, |node| {
             node.set_text_selection(accesskit::TextSelection {
@@ -305,10 +305,11 @@ impl MdRender {
         placed: &std::collections::HashMap<usize, Placed>,
     ) {
         let segs = &self.buffer.current.segs;
-        let line_start = self
-            .fragments
-            .iter()
-            .find(|fragment| fragment.source_range.start() >= range.0);
+        // The frame sorted its fragments by source range.
+        let line_start = self.fragments.get(
+            self.fragments
+                .partition_point(|fragment| fragment.source_range.start() < range.0),
+        );
         let mut run = Run {
             bytes: segs.offset_to_byte(range.0).0..segs.offset_to_byte(range.0).0,
             char_starts: Vec::new(),
