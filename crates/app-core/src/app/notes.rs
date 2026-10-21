@@ -137,6 +137,12 @@ impl App {
         self.notes.sessions.get_mut(&tab)?.take_sync()
     }
 
+    /// The text the editor in the tab `tab` shows in place of its own,
+    /// after Discard changes dropped the edits that weren't on disk.
+    pub fn take_note_reset(&mut self, tab: TabId) -> Option<String> {
+        self.notes.sessions.get_mut(&tab)?.take_reset()
+    }
+
     /// Wait at most `timeout` for a running save before a rename, a move
     /// or a drag out, instead of 30 seconds. Tests only.
     #[doc(hidden)]

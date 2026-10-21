@@ -383,6 +383,112 @@ mod failed_saves {
         assert_ne!(std::fs::read_to_string(&path).unwrap(), NOTE);
     }
 
+    /// The title of the prompt on screen, once one shows.
+    fn prompt_title(harness: &mut Ui) -> String {
+        wait_until(harness, |harness| {
+            harness.query_by_role(Role::AlertDialog).is_some()
+        });
+        harness
+            .get_by_role(Role::AlertDialog)
+            .accesskit_node()
+            .label()
+            .unwrap_or_default()
+    }
+
+    /// Two notes can't save as you quit. Discard changes on the first
+    /// prompt, then Keep editing on the second: the first note stays open
+    /// and its editor shows the file's text, so your next edit saves on top
+    /// of it and never brings the discarded typing back.
+    #[test]
+    fn a_discarded_note_that_stays_open_drops_its_typing_from_the_editor() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Garden");
+        create_workspace(app_data.path(), "Garden", &folder);
+        std::fs::create_dir_all(folder.join("Docs")).unwrap();
+        std::fs::write(folder.join("Docs/Plan.md"), NOTE).unwrap();
+        std::fs::write(folder.join("Docs/Other.md"), "Other text\n").unwrap();
+        let mut harness = harness(app_data.path(), FakePicker::default());
+        settle(&mut harness);
+        open_plan(&mut harness);
+        read_only(&folder.join("Docs"), true);
+        harness.event(Event::Text("Typed. ".into()));
+        harness.run_steps(4);
+        harness
+            .get_by_role_and_label(Role::TreeItem, "Other")
+            .click();
+        harness.run_steps(4);
+        harness.event(Event::Text("Typed. ".into()));
+        harness.run_steps(4);
+        wait_until(&mut harness, |harness| {
+            harness.state().app().tabs().len() == 2
+                && harness
+                    .state()
+                    .app()
+                    .tabs()
+                    .iter()
+                    .filter_map(|tab| harness.state().app().note(tab.id()))
+                    .all(|note| note.save_problem().is_some())
+        });
+
+        assert!(
+            harness
+                .state_mut()
+                .run_menu_command(app_core::command_id::QUIT, Instant::now())
+        );
+        harness.run_steps(4);
+        let first = prompt_title(&mut harness);
+        harness
+            .get_by_role(Role::AlertDialog)
+            .get_by_role_and_label(Role::Button, "Discard changes")
+            .click();
+        harness.run_steps(4);
+        let second = prompt_title(&mut harness);
+        assert_ne!(first, second);
+        harness
+            .get_by_role(Role::AlertDialog)
+            .get_by_role_and_label(Role::Button, "Keep editing")
+            .click();
+        harness.run_steps(4);
+        assert!(harness.query_by_role(Role::AlertDialog).is_none());
+        assert!(!harness.state().is_quitting());
+
+        // Back to the discarded note, now that its folder takes writes.
+        read_only(&folder.join("Docs"), false);
+        let (name, original) = if first.contains("Plan") {
+            ("Plan.md", NOTE)
+        } else {
+            ("Other.md", "Other text\n")
+        };
+        let discarded = harness
+            .state()
+            .app()
+            .tabs()
+            .iter()
+            .find(|tab| {
+                tab.file()
+                    .is_some_and(|file| file.relative_path.ends_with(name))
+            })
+            .unwrap()
+            .id();
+        harness.state_mut().app_mut().activate_tab(discarded);
+        harness.run_steps(4);
+        harness
+            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .click();
+        harness.run_steps(4);
+        harness.event(Event::Text("More. ".into()));
+        harness.run_steps(4);
+
+        let path = folder.join("Docs").join(name);
+        wait_until(&mut harness, |_| {
+            std::fs::read_to_string(&path).unwrap() != original
+        });
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("Typed. "), "{written:?}");
+        assert_eq!(written.replace("More. ", ""), original, "{written:?}");
+    }
+
     #[test]
     fn discard_changes_closes_the_tab_and_leaves_the_file() {
         let app_data = tempfile::tempdir().unwrap();

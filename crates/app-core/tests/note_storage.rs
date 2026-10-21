@@ -210,6 +210,49 @@ fn a_save_reaches_disk_when_the_index_refuses_writes() {
 }
 
 #[test]
+fn a_property_edit_reaches_disk_when_the_index_refuses_writes_and_a_rebuild_shows_it() {
+    let fixture = Fixture::new(&[("Plan.md", &note(A, "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let files = index_files(&fixture, &app);
+    let connection = rusqlite::Connection::open(&files[0]).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER refuse_update BEFORE UPDATE ON files \
+               BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    // The edit counts as unsaved until its durable write returns.
+    let lock = support::hold_writes(&fixture, &app);
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    app.poll();
+    assert!(app.note(tab).unwrap().is_saving());
+    assert!(app.note(tab).unwrap().is_unsaved());
+    assert_eq!(fixture.read("Plan.md"), note(A, "Body\n"));
+    lock.unlock().unwrap();
+    settle_saves(&mut app);
+
+    let written = String::from_utf8(fixture.read("Plan.md")).unwrap();
+    assert!(written.contains("\ncolor: blue\n"), "{written:?}");
+    assert!(written.ends_with("---\n\nBody\n"), "{written:?}");
+    let note_now = app.note(tab).unwrap();
+    assert!(note_now.save_problem().is_none());
+    assert!(!note_now.is_unsaved());
+    let properties = note_now.properties();
+    drop(app);
+
+    for file in &files {
+        let _ = std::fs::remove_file(file);
+    }
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    assert_eq!(app.note(tab).unwrap().properties(), properties);
+}
+
+#[test]
 fn moving_an_open_note_saves_its_typing_and_the_tab_follows() {
     let fixture = Fixture::new(&[("Plan.md", &note(A, "Body\n")), ("Docs/a.txt", b"a")]);
     let mut app = fixture.app();

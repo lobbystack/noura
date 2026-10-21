@@ -129,6 +129,17 @@ pub struct NoteSync {
     pub merged: Option<String>,
 }
 
+/// A property edit waiting to be written.
+#[derive(Debug, Clone)]
+struct PropertyEdit {
+    key: String,
+    value: serde_json::Value,
+    /// The value the panel showed when you made the edit, `None` standing
+    /// for no such property. Only a file that still holds it takes the
+    /// edit, so an edit never overwrites another program's.
+    base: Option<serde_json::Value>,
+}
+
 /// The managed object a note's frontmatter describes.
 #[derive(Debug, Clone, PartialEq)]
 struct Managed {
@@ -177,13 +188,16 @@ pub struct NoteSession {
     /// The save running now, with the text and version it writes.
     writing: Option<(usize, String)>,
     /// Property edits waiting to be written, in order.
-    property_edits: Vec<(String, serde_json::Value)>,
+    property_edits: Vec<PropertyEdit>,
     problem: Option<SaveProblem>,
     /// After a failure, saves wait for the next edit or Try again.
     waiting_for_edit: bool,
     /// The next save starts at once, as Mod-S or leaving the note asks.
     forced: bool,
     sync: Option<NoteSync>,
+    /// Discard changes dropped the edits that weren't on disk: the editor
+    /// shows this text, the file's, in place of its own.
+    reset: Option<String>,
     name_problem: Option<String>,
 }
 
@@ -211,6 +225,7 @@ impl NoteSession {
             waiting_for_edit: false,
             forced: false,
             sync: None,
+            reset: None,
             name_problem: None,
         };
         session.whole_file = !matches!(
@@ -329,8 +344,8 @@ impl NoteSession {
                 .property_edits
                 .iter()
                 .rev()
-                .find(|(edited, _)| edited == key)
-                .map_or(value, |(_, value)| value);
+                .find(|edit| edit.key == *key)
+                .map_or(value, |edit| &edit.value);
             let value = PropertyValue::of(shown);
             properties.push(Property {
                 key: key.clone(),
@@ -366,11 +381,8 @@ impl NoteSession {
         if self.writing.is_some() || self.waiting_for_edit {
             return false;
         }
-        if !self.property_edits.is_empty() {
-            return true;
-        }
         if self.text == self.body() {
-            return false;
+            return !self.property_edits.is_empty();
         }
         self.forced || self.next_due().is_some_and(|due| due <= now)
     }
@@ -410,16 +422,19 @@ impl NoteSession {
                 local_body: local,
             }));
         }
-        let managed = self.managed.as_ref()?;
         if self.property_edits.is_empty() {
             return None;
         }
-        let properties: BTreeMap<String, serde_json::Value> =
-            self.property_edits.iter().cloned().collect();
-        let before = properties
-            .keys()
-            .map(|key| (key.clone(), managed.properties.get(key).cloned()))
-            .collect();
+        // The last edit of each property wins, and the file must still
+        // hold the value the first one replaced.
+        let mut properties = BTreeMap::new();
+        let mut before = BTreeMap::new();
+        for edit in &self.property_edits {
+            properties.insert(edit.key.clone(), edit.value.clone());
+            before
+                .entry(edit.key.clone())
+                .or_insert_with(|| edit.base.clone());
+        }
         self.writing = Some((self.version, self.text.clone()));
         self.forced = false;
         Some(Write::Properties {
@@ -430,7 +445,8 @@ impl NoteSession {
                 body: None,
                 properties,
                 remove_properties: Vec::new(),
-                expected_revision: self.revision.clone(),
+                // The write takes the revision of the file as it finds it.
+                expected_revision: String::new(),
             },
             count: self.property_edits.len(),
         })
@@ -491,6 +507,15 @@ impl NoteSession {
                     self.saved(version, sent, Some(merged));
                 }
             }
+            Written::PropertyChanged(key) => {
+                tracing::warn!("a property edit met an outside edit of the same property");
+                self.failed(
+                    format!(
+                        "Another program changed \u{201c}{key}\u{201d} while you were editing it."
+                    ),
+                    now,
+                );
+            }
             Written::Text(Err(error)) | Written::Properties(Err(error)) => {
                 tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't save");
                 self.failed(save_reason(&error), now);
@@ -500,7 +525,12 @@ impl NoteSession {
 
     /// The file holds `sent`, the editor's text at `version`.
     fn saved(&mut self, version: usize, sent: String, merged: Option<String>) {
-        self.problem = None;
+        // Property edits still waiting keep the problem until they're
+        // written, so a text save never hides a property edit that can't
+        // go in.
+        if self.property_edits.is_empty() {
+            self.problem = None;
+        }
         self.sync = Some(NoteSync {
             saved: (version, sent),
             merged,
@@ -518,9 +548,14 @@ impl NoteSession {
     }
 
     /// Drop the edits that aren't on disk, leaving the file as it is. The
-    /// note's tab is about to close.
+    /// editor drops them too, as [`Self::take_reset`] tells it, in case the
+    /// note stays open.
     pub(crate) fn discard(&mut self) {
-        self.text = self.body().to_owned();
+        if self.text != self.body() {
+            self.text = self.body().to_owned();
+            self.reset = Some(self.text.clone());
+            self.sync = None;
+        }
         self.property_edits.clear();
         self.problem = None;
         self.waiting_for_edit = false;
@@ -533,8 +568,26 @@ impl NoteSession {
         self.sync.take()
     }
 
+    pub(crate) fn take_reset(&mut self) -> Option<String> {
+        self.reset.take()
+    }
+
+    /// Queue `value` for the property `key`, over the value the panel
+    /// shows for it now.
     pub(crate) fn queue_property(&mut self, key: String, value: serde_json::Value) {
-        self.property_edits.push((key, value));
+        let base = match self
+            .property_edits
+            .iter()
+            .rev()
+            .find(|edit| edit.key == key)
+        {
+            Some(earlier) => Some(earlier.value.clone()),
+            None => self
+                .managed
+                .as_ref()
+                .and_then(|managed| managed.properties.get(&key).cloned()),
+        };
+        self.property_edits.push(PropertyEdit { key, value, base });
         self.waiting_for_edit = false;
     }
 
@@ -561,8 +614,8 @@ pub(crate) enum Write {
     /// The file's whole new text, merged with outside edits made since
     /// `base_revision`.
     Text(RawSaveInput),
-    /// Property edits for the file at `relative_path`, which only a file
-    /// still at the expected revision takes, or one whose edited
+    /// Property edits for the file at `relative_path`, which go into the
+    /// file as it is when the write runs, but only while its edited
     /// properties still hold the values in `before`. `count` edits are in
     /// the patch.
     Properties {
@@ -579,6 +632,8 @@ pub(crate) enum Written {
     Text(Result<RawSaveResult, CoreError>),
     /// How many property edits went in, and the file as it is now.
     Properties(Result<(usize, local_core::RawMarkdownRead), CoreError>),
+    /// Another program changed this edited property, and its value stays.
+    PropertyChanged(String),
 }
 
 impl Write {
@@ -593,26 +648,24 @@ impl Write {
                 patch,
                 count,
             } => {
-                let written = match engine.update_object_at(&relative_path, patch.clone()) {
-                    // Another program changed the file since Noura read it.
-                    // When it left the edited properties as they were, the
-                    // edits go into the file as it is now.
-                    Err(error) if error.code == "revision_conflict" => {
-                        match engine.read_raw_markdown(&relative_path) {
-                            Ok(current) if holds(&relative_path, &current.body, &before) => engine
-                                .update_object_at(
-                                    &relative_path,
-                                    ObjectPatch {
-                                        expected_revision: current.revision,
-                                        ..patch
-                                    },
-                                ),
-                            _ => Err(error),
-                        }
-                    }
-                    written => written,
+                // The file as it is now: another program may have changed it
+                // since Noura read it, and a text save may have merged that
+                // in since you made the edits.
+                let current = match engine.read_raw_markdown(&relative_path) {
+                    Ok(current) => current,
+                    Err(error) => return Written::Properties(Err(error)),
                 };
-                Written::Properties(match written {
+                if let Some(key) = changed_property(&relative_path, &current.body, &before) {
+                    return Written::PropertyChanged(key);
+                }
+                // The edits go into the file as it is now, keeping every
+                // other change, and only while it still holds what Noura
+                // just read.
+                let patch = ObjectPatch {
+                    expected_revision: current.revision,
+                    ..patch
+                };
+                Written::Properties(match engine.update_object_at(&relative_path, patch) {
                     Ok(_) => engine
                         .read_raw_markdown(&relative_path)
                         .map(|read| (count, read)),
@@ -623,18 +676,21 @@ impl Write {
     }
 }
 
-/// Whether the managed note `text` gives each property in `values` that
-/// value, `None` standing for no such property.
-fn holds(
+/// The first property in `values` to which the managed note `text` no
+/// longer gives that value, `None` standing for no such property. `None`
+/// when they all hold, or when `text` holds no managed note, which the
+/// write then reports.
+fn changed_property(
     relative_path: &str,
     text: &str,
     values: &BTreeMap<String, Option<serde_json::Value>>,
-) -> bool {
+) -> Option<String> {
     match local_core::parse_markdown(relative_path, text.as_bytes()) {
         ParsedMarkdown::Managed(object) => values
             .iter()
-            .all(|(key, value)| object.properties.get(key) == value.as_ref()),
-        _ => false,
+            .find(|(key, value)| object.properties.get(*key) != value.as_ref())
+            .map(|(key, _)| key.clone()),
+        _ => None,
     }
 }
 
@@ -721,9 +777,8 @@ pub(crate) fn save_reason(error: &CoreError) -> String {
         "raw_markdown_missing" | "object_not_found" | "file_not_found" => {
             "The file was moved or deleted outside Noura.".to_owned()
         }
-        "invalid_utf8" | "object_parse_failed" => {
-            "The file on disk isn't UTF-8 text Noura can read anymore.".to_owned()
-        }
+        "invalid_utf8" => "The file on disk isn't UTF-8 text Noura can read anymore.".to_owned(),
+        "object_parse_failed" => "Noura can't read the file's properties anymore.".to_owned(),
         "revision_conflict" => "The file changed outside Noura while it was saving.".to_owned(),
         "disk_full" => "The disk is full. Free up some space, then try again.".to_owned(),
         _ => match error.category {
@@ -777,6 +832,10 @@ mod tests {
             (
                 error("invalid_utf8", ErrorCategory::Parse),
                 "The file on disk isn't UTF-8 text Noura can read anymore.",
+            ),
+            (
+                error("object_parse_failed", ErrorCategory::Parse),
+                "Noura can't read the file's properties anymore.",
             ),
             (
                 error("revision_conflict", ErrorCategory::Conflict),

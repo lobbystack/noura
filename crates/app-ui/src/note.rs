@@ -105,6 +105,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             note.editor.apply_disk_version(merged);
         }
     }
+    // Discard changes dropped the edits that weren't on disk: the editor
+    // takes the file's text as an outside edit of everything it shows.
+    if let Some(text) = app.take_note_reset(tab) {
+        let (version, shown) = note.editor.flush_for_save();
+        note.editor.record_disk_save(version, shown);
+        note.editor.apply_disk_version(text);
+    }
     header(ui, app, note, tab);
     save_notice(ui, app, tab);
     if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {

@@ -14,6 +14,7 @@ use crate::{
     error::Access,
     files::{remap, shown_name},
     layout::sidebar_width,
+    notes::NoteSession,
     rail::FILES_PAGE,
     tabs::{Restored, TabContent},
     view_state::StoredWindow,
@@ -298,7 +299,8 @@ impl App {
     /// Read the workspace folder again, every file included, and bring the
     /// tree and the tabs in line with it. A managed note's tab follows its
     /// stable ID, even when another file now sits at its old path; a tab
-    /// whose file is gone, or moved without an ID to follow, closes. The
+    /// whose file is gone, or moved without an ID to follow, closes unless
+    /// its note has edits that aren't on disk. The
     /// watch thread does the same on its own after outside changes, and
     /// [`App::poll`] applies it; this does it now.
     pub fn rescan(&mut self) {
@@ -449,13 +451,26 @@ impl App {
 
     /// Point each file tab at its file in the tree: a managed object's
     /// file by its stable ID, any other file by its path. Tabs whose file
-    /// is gone close.
+    /// is gone close, except a note with edits that aren't on disk: it
+    /// stays open at its path, so its save says the file is gone and
+    /// closing it asks first.
     pub(super) fn follow_files(&mut self) {
         let Some(tree) = &self.tree else {
             return;
         };
+        let unsaved: Vec<&str> = self
+            .notes
+            .sessions
+            .values()
+            .filter(|session| session.is_unsaved())
+            .map(NoteSession::relative_path)
+            .collect();
         let (changed, active_changed) = self.tabs.follow_files(|path, id| {
-            let path = tree.follow(path, id)?;
+            let Some(path) = tree.follow(path, id) else {
+                return unsaved
+                    .contains(&path)
+                    .then(|| (path.to_owned(), id.map(str::to_owned)));
+            };
             let id = tree.object_id(&path).map(str::to_owned);
             Some((path, id))
         });

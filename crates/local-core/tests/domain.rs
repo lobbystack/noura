@@ -1142,6 +1142,50 @@ fn an_update_at_a_path_refuses_traversal_missing_files_and_titles() {
     );
 }
 
+/// A file that another program turned into something other than a managed
+/// object refuses property edits and keeps its bytes.
+#[test]
+fn an_update_at_a_path_refuses_a_file_that_holds_no_managed_object_anymore() {
+    let (workspace, _app_data, engine) = engine();
+    engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: "Body\n".into(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+
+    for broken in [
+        "---\nid: [unclosed\n---\nBody\n",
+        "---\ntitle: no id\n---\nBody\n",
+        "Body without frontmatter\n",
+    ] {
+        std::fs::write(workspace.path().join("one.md"), broken).unwrap();
+        let read = engine.read_raw_markdown("one.md").unwrap();
+
+        let error = engine
+            .update_object_at(
+                "one.md",
+                ObjectPatch {
+                    title: None,
+                    body: None,
+                    properties: BTreeMap::from([("color".into(), serde_json::json!("blue"))]),
+                    remove_properties: Vec::new(),
+                    expected_revision: read.revision,
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, "object_parse_failed", "{broken:?}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("one.md")).unwrap(),
+            broken
+        );
+    }
+}
+
 #[test]
 fn reconciliation_repairs_an_external_save() {
     let (workspace, _app_data, engine) = engine();

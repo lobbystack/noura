@@ -34,6 +34,18 @@ fn save_after_pause(app: &mut App, at: Instant) {
     settle_saves(app);
 }
 
+/// Why a property edit didn't go in when another program changed `color`.
+const COLOR_CHANGED: &str =
+    "Another program changed \u{201c}color\u{201d} while you were editing it.";
+
+/// `managed("\n", body)` after another program set `color` to red.
+fn red(body: &str) -> Vec<u8> {
+    String::from_utf8(managed("\n", body))
+        .unwrap()
+        .replace("color: green", "color: red")
+        .into_bytes()
+}
+
 fn modified(fixture: &Fixture, relative: &str) -> std::time::SystemTime {
     std::fs::metadata(fixture.root.join(relative))
         .unwrap()
@@ -412,7 +424,7 @@ fn a_property_edit_never_overwrites_an_outside_edit_of_the_same_property() {
     assert_eq!(fixture.read("Plan.md"), outside);
     assert_eq!(
         app.note(tab).unwrap().save_problem().unwrap().reason,
-        "The file changed outside Noura while it was saving."
+        COLOR_CHANGED
     );
     app.save_note_now(tab);
     settle_saves(&mut app);
@@ -463,6 +475,84 @@ fn a_property_edit_lands_on_an_outside_edit_of_the_rest_of_the_file() {
         "{written:?}"
     );
     assert!(written.contains("color: blue\n"), "{written:?}");
+}
+
+#[test]
+fn a_refused_property_edit_stays_refused_when_typing_saves_the_text() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    support::write(&fixture.root, "Plan.md", &red("Body\n"));
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+    settle_saves(&mut app);
+    assert_eq!(fixture.read("Plan.md"), red("Body\n"));
+
+    // The text save merges the outside edit in, and the property edit
+    // tries again after it.
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}typed\n"));
+    save_after_pause(&mut app, at);
+    app.save_due_notes(Instant::now());
+    settle_saves(&mut app);
+
+    assert_eq!(fixture.read("Plan.md"), red("Body\ntyped\n"));
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.save_problem().unwrap().reason, COLOR_CHANGED);
+    assert!(note.is_unsaved());
+}
+
+#[test]
+fn a_property_edit_made_while_typing_waits_never_overwrites_an_outside_edit_of_it() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    type_into(&mut app, tab, Instant::now(), |text| {
+        format!("{text}typed\n")
+    });
+    support::write(&fixture.root, "Plan.md", &red("Body\n"));
+
+    // The typing saves first and merges the outside edit in; the
+    // property edit follows.
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+    settle_saves(&mut app);
+    app.save_due_notes(Instant::now());
+    settle_saves(&mut app);
+
+    assert_eq!(fixture.read("Plan.md"), red("Body\ntyped\n"));
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.save_problem().unwrap().reason, COLOR_CHANGED);
+    assert!(note.is_unsaved());
+}
+
+#[test]
+fn a_property_edit_goes_in_once_the_panel_shows_the_outside_value() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}typed\n"));
+    support::write(&fixture.root, "Plan.md", &red("Body\n"));
+    save_after_pause(&mut app, at);
+    let color = |app: &App| {
+        app.note(tab)
+            .unwrap()
+            .properties()
+            .unwrap()
+            .into_iter()
+            .find(|property| property.key == "color")
+            .unwrap()
+            .value
+    };
+    assert_eq!(color(&app), PropertyValue::Text("red".into()));
+
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+    settle_saves(&mut app);
+
+    let written = String::from_utf8(fixture.read("Plan.md")).unwrap();
+    assert!(written.contains("\ncolor: blue\n"), "{written:?}");
+    assert!(written.ends_with("---\nBody\ntyped\n"), "{written:?}");
+    assert!(app.note(tab).unwrap().save_problem().is_none());
+    assert!(!app.note(tab).unwrap().is_unsaved());
 }
 
 #[test]
@@ -588,6 +678,49 @@ fn a_save_of_a_file_deleted_outside_noura_says_so_and_keeps_the_text() {
     assert!(note.is_unsaved());
     assert_eq!(note.text(), "Body\ntyped\n");
     assert!(!fixture.exists("Plan.md"), "a failed save writes nothing");
+}
+
+#[test]
+fn a_note_deleted_outside_noura_before_its_typing_saved_stays_open_and_says_so() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}typed\n"));
+
+    std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
+    app.rescan();
+
+    assert!(app.tabs().iter().any(|open| open.id() == tab));
+    assert_eq!(app.note(tab).unwrap().text(), "Body\ntyped\n");
+    save_after_pause(&mut app, at);
+    let note = app.note(tab).unwrap();
+    assert_eq!(
+        note.save_problem().unwrap().reason,
+        "The file was moved or deleted outside Noura."
+    );
+    assert!(note.is_unsaved());
+    assert!(!fixture.exists("Plan.md"));
+
+    // Closing it asks, and Discard changes lets it go.
+    app.close_tab(tab);
+    settle_saves(&mut app);
+    assert!(app.unsaved_prompt().is_some());
+    app.discard_and_leave();
+    assert!(app.tabs().iter().all(|open| open.id() != tab));
+}
+
+#[test]
+fn a_saved_note_deleted_outside_noura_closes_its_tab() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+
+    std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
+    app.rescan();
+
+    assert!(app.tabs().iter().all(|open| open.id() != tab));
+    assert!(app.note(tab).is_none());
 }
 
 #[test]
@@ -770,6 +903,60 @@ mod failures {
         assert!(app.is_closed());
         read_only(&fixture, "Docs", false);
         assert_eq!(fixture.read("Docs/Plan.md"), managed("\n", "Body\n"));
+    }
+
+    /// Discard changes drops one note's edits, the editor's included, and
+    /// Keep editing on the next note's prompt leaves the first one open
+    /// showing the file's text.
+    #[test]
+    fn a_discarded_note_that_stays_open_shows_and_saves_the_file_s_text() {
+        let fixture = Fixture::new(&[
+            ("Docs/Plan.md", &managed("\n", "Body\n")),
+            ("Docs/Other.md", &managed("\n", "Other\n")),
+        ]);
+        let mut app = fixture.app();
+        let plan = failing(&fixture, &mut app);
+        let other = open_from_tree(&mut app, "Docs/Other.md");
+        let at = Instant::now();
+        type_into(&mut app, other, at, |text| format!("{text}typed\n"));
+        save_after_pause(&mut app, at);
+        assert!(app.note(other).unwrap().save_problem().is_some());
+
+        assert!(app.run_command("quit", CommandSource::Key, Instant::now()));
+        settle_saves(&mut app);
+        let first = app.unsaved_prompt().unwrap().title.clone();
+        let (discarded, kept, body) = if first.contains("Plan") {
+            (plan, other, "Body\n")
+        } else {
+            (other, plan, "Other\n")
+        };
+        app.discard_and_leave();
+        assert_ne!(app.unsaved_prompt().unwrap().title, first);
+        app.keep_editing();
+
+        assert!(!app.take_quit());
+        assert_eq!(app.active_tab().map(|open| open.id()), Some(kept));
+        let note = app.note(discarded).unwrap();
+        assert!(!note.is_unsaved());
+        assert_eq!(note.text(), body);
+        assert_eq!(
+            app.take_note_reset(discarded).as_deref(),
+            Some(body),
+            "the editor drops the edits too"
+        );
+        assert_eq!(app.take_note_reset(kept), None);
+
+        // The next edit saves on top of the file's text.
+        read_only(&fixture, "Docs", false);
+        let at = Instant::now();
+        type_into(&mut app, discarded, at, |text| format!("{text}more\n"));
+        save_after_pause(&mut app, at);
+        let path = if discarded == plan {
+            "Docs/Plan.md"
+        } else {
+            "Docs/Other.md"
+        };
+        assert_eq!(fixture.read(path), managed("\n", &format!("{body}more\n")));
     }
 
     #[test]
