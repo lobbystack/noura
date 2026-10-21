@@ -11,10 +11,11 @@ mod files;
 mod ignored;
 mod operations;
 mod recents;
+mod saves;
 mod system;
 mod workspace;
 
-pub use app::{App, Change, IgnoredFiles, Notice, NoticeKind, Question, Rename, Screen};
+pub use app::{App, Change, DragOut, IgnoredFiles, Notice, NoticeKind, Question, Rename, Screen};
 pub use error::AppError;
 pub use files::{
     DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
@@ -22,6 +23,7 @@ pub use files::{
 };
 pub use operations::Imported;
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use saves::{NoPendingSaves, PendingSaves};
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use workspace::{Workspace, WorkspaceService};
 
