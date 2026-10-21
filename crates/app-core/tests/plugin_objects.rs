@@ -378,7 +378,7 @@ fn view_texts(node: &ViewNode, texts: &mut Vec<String>) {
 /// What the plugin's properties panel of the note in `tab` shows once the
 /// plugin drew it on its thread, or `None` when the kernel's panel shows.
 fn panel(app: &mut App, tab: TabId) -> Option<Vec<String>> {
-    app.plugin_panel(tab)?;
+    let _asked = app.plugin_panel(tab)?;
     support::settle(app);
     let view = app.plugin_panel(tab)?.expect("the panel draws");
     let mut texts = Vec::new();

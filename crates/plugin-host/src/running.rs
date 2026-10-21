@@ -19,7 +19,7 @@ use wasmtime::component::Component;
 
 use crate::{
     Capability, Command, Event, InboxSection, Limits, Node, Page, PluginError, PluginManifest,
-    Services, Tool,
+    Services, Tool, VirtualRow,
     instance::{CallError, Grants, PluginInstance, Registration},
     object_types::next_instance,
     runtime::EpochTicker,
@@ -163,6 +163,19 @@ impl RunningPlugin {
 
     pub fn render(&self, page: &str) -> Result<Vec<Node>, PluginError> {
         self.call(|instance| instance.render(page))
+    }
+
+    /// Rows `start` up to `start + count` of the virtual list `node` in a
+    /// page's view, as the plugin returned them. See [`crate::check_rows`]
+    /// for the checks before drawing them.
+    pub fn rows(
+        &self,
+        page: &str,
+        node: &str,
+        start: u32,
+        count: u32,
+    ) -> Result<Vec<VirtualRow>, PluginError> {
+        self.call(|instance| instance.rows(page, node, start, count))
     }
 
     pub fn handle_event(&self, page: &str, event: &Event) -> Result<(), PluginError> {

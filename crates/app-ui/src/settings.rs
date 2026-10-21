@@ -32,11 +32,13 @@ pub(crate) struct SettingsView {
     name: Option<String>,
 }
 
-/// Draw Settings while it is open. Once it closes, the keyboard goes back
-/// where it was, or to the rail's Settings button when nothing had it.
+/// Draw Settings while it is open in the window whose ID salt is
+/// `window`. Once it closes, the keyboard goes back where it was, or to
+/// the rail's Settings button when nothing had it.
 pub(crate) fn show(
     ui: &mut Ui,
     app: &mut App,
+    window: Id,
     view: &mut SettingsView,
     picker: &mut dyn FolderPicker,
     spelling: bool,
@@ -80,7 +82,9 @@ pub(crate) fn show(
                     .id_salt(("settings-content", &settings.section))
                     .auto_shrink(false)
                     .show(ui, |ui| {
-                        ui.vertical(|ui| content(ui, app, &settings, view, picker, spelling))
+                        ui.vertical(|ui| {
+                            content(ui, app, window, &settings, view, picker, spelling)
+                        })
                     });
             });
         });
@@ -129,6 +133,7 @@ fn nav(ui: &mut Ui, app: &mut App, settings: &Settings, opened: bool) {
 fn content(
     ui: &mut Ui,
     app: &mut App,
+    window: Id,
     settings: &Settings,
     view: &mut SettingsView,
     picker: &mut dyn FolderPicker,
@@ -152,25 +157,9 @@ fn content(
         settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
-        id if app.is_plugin_settings(id) => plugin_page(ui, app, id),
+        id if app.is_plugin_settings(id) => crate::plugin_view::show_settings(ui, app, window, id),
         // Sections that later areas register draw themselves later.
         _ => {}
-    }
-}
-
-/// A plugin's page in Settings, drawn from its nodes. Presses go back to
-/// the plugin by node ID.
-fn plugin_page(ui: &mut Ui, app: &mut App, id: &str) {
-    let Some(view) = app.plugin_settings_view(id) else {
-        muted(ui, "The plugin that adds this page isn't running.");
-        return;
-    };
-    let asked = crate::plugin_view::draw(ui, ("plugin-settings", id), &view);
-    if let Some(node) = asked.pressed {
-        app.press_plugin_settings_button(id, &node);
-    }
-    if let Some(url) = asked.link {
-        app.open_link(&url);
     }
 }
 

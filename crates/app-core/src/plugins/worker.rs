@@ -15,6 +15,7 @@ use std::{
 
 use plugin_host::{
     Command, Event, Health, InboxSection, Page, PluginError, RunningPlugin, Surface, View,
+    VirtualRow,
 };
 
 use super::{PluginView, Wake};
@@ -36,6 +37,25 @@ pub(super) enum Job {
     /// Tell the plugin about `event` in the properties panel of the object
     /// with this ID, then draw that panel and its views again.
     PanelEvent(String, Event),
+    /// Fetch `count` rows from `start` of the virtual list `node` on the
+    /// page `page`, for the views drawn `drawn` times.
+    Rows {
+        page: String,
+        node: String,
+        start: u32,
+        count: u32,
+        drawn: u64,
+    },
+}
+
+/// Rows the plugin returned for a virtual list, or why it couldn't.
+pub(super) struct RowsFetched {
+    pub(super) page: String,
+    pub(super) node: String,
+    pub(super) start: u32,
+    pub(super) count: u32,
+    pub(super) drawn: u64,
+    pub(super) rows: Result<Vec<VirtualRow>, String>,
 }
 
 /// A properties panel the plugin drew.
@@ -117,6 +137,8 @@ pub(super) struct Outcome {
     pub(super) views: Option<BTreeMap<Surface, PluginView>>,
     /// The properties panel the job drew.
     pub(super) panel: Option<PanelDrawn>,
+    /// The rows of a virtual list the job fetched.
+    pub(super) rows: Option<RowsFetched>,
     /// The plugin ran code that may have written files: it handled an
     /// event or ran a command.
     pub(super) acted: bool,
@@ -132,6 +154,7 @@ pub(super) enum Doing {
     Drawing,
     Handling,
     Running,
+    Listing,
 }
 
 /// The worker's half of a running plugin.
@@ -155,6 +178,7 @@ impl Worker {
             let mut refused_types = None;
             let mut failed = None;
             let mut panel = None;
+            let mut rows = None;
             let mut acted = true;
             let mut draws = true;
             match job {
@@ -171,6 +195,31 @@ impl Worker {
                         view: draw_panel(&self.plugin, &object),
                         object,
                         revision: Some(revision),
+                    });
+                }
+                Job::Rows {
+                    page,
+                    node,
+                    start,
+                    count,
+                    drawn,
+                } => {
+                    acted = false;
+                    draws = false;
+                    let fetched = self
+                        .plugin
+                        .rows(&page, &node, start, count)
+                        .map_err(|error| {
+                            tracing::warn!(%error, "a plugin failed to list rows");
+                            failure_message(&error, Doing::Listing)
+                        });
+                    rows = Some(RowsFetched {
+                        page,
+                        node,
+                        start,
+                        count,
+                        drawn,
+                        rows: fetched,
                     });
                 }
                 Job::PanelEvent(object, event) => {
@@ -217,6 +266,7 @@ impl Worker {
                 refused_types,
                 views,
                 panel,
+                rows,
                 acted,
                 health: self.plugin.health(),
                 failed,
@@ -258,11 +308,22 @@ fn register_object_types(plugin: &RunningPlugin) -> Vec<String> {
 /// The properties panel of the object `object`, as the plugin draws it.
 fn draw_panel(plugin: &RunningPlugin, object: &str) -> PluginView {
     match plugin.render_panel(object) {
-        Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+        Ok(nodes) => checked(nodes, "in a properties panel"),
         Err(error) => {
             tracing::warn!(%error, "a plugin failed to draw a properties panel");
             Err(failure_message(&error, Doing::Drawing))
         }
+    }
+}
+
+/// The view `nodes` make, or why it can't be drawn. Only a page has the
+/// `rows` that fetch a virtual list's rows, so a view `elsewhere` can't
+/// hold one.
+fn checked(nodes: Vec<plugin_host::Node>, elsewhere: &str) -> PluginView {
+    let view = View::from_nodes(nodes).map_err(|error| error.to_string())?;
+    match super::virtual_list_in(view.root()) {
+        Some(list) => Err(format!("The virtual list {list} can't show {elsewhere}.")),
+        None => Ok(view),
     }
 }
 
@@ -349,7 +410,11 @@ fn draw(plugin: &RunningPlugin, registrations: &Registrations) -> BTreeMap<Surfa
         .into_iter()
         .map(|surface| {
             let view = match plugin.render_surface(&surface) {
-                Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+                Ok(nodes) => match &surface {
+                    Surface::Page(_) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+                    Surface::InboxSection(_) => checked(nodes, "in an Inbox section"),
+                    Surface::Settings => checked(nodes, "on a page in Settings"),
+                },
                 Err(error) => {
                     tracing::warn!(%error, "a plugin failed to draw a view");
                     Err(failure_message(&error, Doing::Drawing))
@@ -384,6 +449,7 @@ pub(super) fn failure_message(error: &PluginError, doing: Doing) -> String {
             Doing::Drawing => "The plugin failed while drawing this view.",
             Doing::Handling => "The plugin failed while handling what you did.",
             Doing::Running => "The plugin failed while running it.",
+            Doing::Listing => "The plugin failed while listing these rows.",
         }
         .to_owned(),
     }

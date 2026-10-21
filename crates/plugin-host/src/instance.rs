@@ -37,7 +37,10 @@ use bindings::exports::noura::plugin::{
     settings as settings_export, tools as tools_export, view as view_export,
 };
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
-pub use bindings::noura::plugin::ui::{Event, Node, NodeKind};
+pub use bindings::noura::plugin::ui::{
+    Choice, Column, ColumnPress, Event, Field, Form, Input, Item, MenuItem, Node, NodeKind,
+    SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+};
 use bindings::noura::plugin::{command_calls, network, objects, types, workspace};
 
 /// The capability behind object types, their panels and object writes.
@@ -684,6 +687,20 @@ impl PluginInstance {
     pub(crate) fn render(&mut self, page: &str) -> Result<Vec<Node>, PluginError> {
         let view = self.view()?;
         view.call_render(&mut self.store, page)
+            .map_err(|error| self.failed(&error))
+    }
+
+    /// Rows `start` up to `start + count` of the virtual list `node` in a
+    /// page's view, as the plugin returned them.
+    pub(crate) fn rows(
+        &mut self,
+        page: &str,
+        node: &str,
+        start: u32,
+        count: u32,
+    ) -> Result<Vec<VirtualRow>, PluginError> {
+        let view = self.view()?;
+        view.call_rows(&mut self.store, page, node, start, count)
             .map_err(|error| self.failed(&error))
     }
 

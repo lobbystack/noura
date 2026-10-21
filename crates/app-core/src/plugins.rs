@@ -22,7 +22,8 @@ mod reload;
 mod worker;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    ops::Range,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -34,14 +35,14 @@ use std::{
 use local_core::HostRequests;
 use plugin_host::{
     Candidate, Capability, Event, Grant, InstallError, Node, NodeKind, ObjectTypes, PluginHost,
-    PluginManifest, Router, RunningPlugin, Services, Surface, View, WorkspaceObjects,
-    WorkspaceReads,
+    PluginManifest, Router, RunningPlugin, Services, Surface, Value, View, ViewError, ViewKind,
+    ViewNode, VirtualRow, WorkspaceObjects, WorkspaceReads, check_rows,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{AppError, Workspace, plugin_objects::ObjectStore, store::JsonStore};
 use reload::{Reload, Watcher};
-use worker::{Doing, Job, Outcome, Registrations, ToolEntry, Worker};
+use worker::{Doing, Job, Outcome, Registrations, RowsFetched, ToolEntry, Worker};
 
 /// Where the plugin host keeps installed plugins and their compiled code,
 /// under the app data folder.
@@ -61,6 +62,10 @@ pub(crate) const SETTINGS_PREFIX: &str = "plugin-settings:";
 /// The IDs of plugins' commands in the command palette start with this,
 /// then the plugin's ID and the command's own ID.
 pub(crate) const COMMAND_PREFIX: &str = "plugin-command:";
+
+/// How many rows of a virtual list Noura asks a plugin for at once. Each
+/// batch starts at a multiple of this.
+const ROW_BATCH: u32 = 64;
 
 /// A capability, or one host or target of one, as Settings, the install
 /// dialog and the first-run screen show it.
@@ -282,6 +287,47 @@ struct Running {
     failed: bool,
     /// The properties panels it drew, by object ID.
     panels: BTreeMap<String, Panel>,
+    /// The rows of each virtual list fetched since the views were drawn,
+    /// by page and node ID.
+    rows: HashMap<(String, String), Rows>,
+    /// Counts the times its views were drawn, so rows fetched for views
+    /// drawn before are dropped.
+    drawn: u64,
+}
+
+/// The rows of one virtual list fetched so far.
+#[derive(Default)]
+struct Rows {
+    /// The start of each batch asked for, whatever came back.
+    asked: HashSet<u32>,
+    rows: HashMap<u32, VirtualRow>,
+    /// The rows fetched before the views were last drawn, which show until
+    /// the plugin returns the rows at their places again, so the list
+    /// doesn't empty while it does.
+    earlier: HashMap<u32, VirtualRow>,
+    /// The ID of every row fetched, which no other row may repeat.
+    ids: HashSet<String>,
+    /// Why the plugin's rows can't be shown.
+    problem: Option<String>,
+}
+
+impl Rows {
+    /// Ask for every row again, as after the views were drawn again.
+    fn again(&mut self) {
+        let fetched = std::mem::take(&mut self.rows);
+        self.earlier.extend(fetched);
+        self.asked.clear();
+        self.ids.clear();
+        self.problem = None;
+    }
+
+    /// The row at `index`, fetched since the views were drawn or before.
+    fn get(&self, index: u32) -> Option<VirtualRow> {
+        self.rows
+            .get(&index)
+            .or_else(|| self.earlier.get(&index))
+            .cloned()
+    }
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -650,6 +696,8 @@ impl Plugins {
                 views,
                 failed: false,
                 panels: BTreeMap::new(),
+                rows: HashMap::new(),
+                drawn: 0,
             },
         );
         self.send(id, Job::Refresh);
@@ -991,6 +1039,14 @@ impl Plugins {
         }
         if let Some(views) = outcome.views {
             running.views = views;
+            // Virtual lists ask for their rows again.
+            for rows in running.rows.values_mut() {
+                rows.again();
+            }
+            running.drawn += 1;
+        }
+        if let Some(fetched) = outcome.rows {
+            running.take_rows(fetched);
         }
         if outcome.acted {
             self.acts += 1;
@@ -1143,24 +1199,80 @@ impl Plugins {
             .cloned()
     }
 
-    /// Tell the plugin `plugin` that the button `node` was pressed in the
-    /// view at `surface`, and draw its views again once it has heard.
-    fn press_at(&mut self, plugin: &str, surface: Surface, node: &str) {
+    /// Tell the plugin `plugin` about `event` in the view at `surface`,
+    /// and draw its views again once it has heard. An input value of the
+    /// wrong form, such as a date that isn't `YYYY-MM-DD`, never reaches
+    /// the plugin.
+    fn event_at(&mut self, plugin: &str, surface: Surface, event: &Event) {
         let shown = self
             .running
             .get(plugin)
             .is_some_and(|running| running.views.contains_key(&surface));
-        if shown {
-            self.send(plugin, Job::Event(surface, Event::Pressed(node.to_owned())));
+        if shown && well_formed_event(event) {
+            self.send(plugin, Job::Event(surface, event.clone()));
         }
     }
 
-    /// Press the button `node` in the rail page `page_id`.
-    pub(crate) fn press(&mut self, page_id: &str, node: &str) {
+    /// Tell the plugin behind the rail page `page_id` about `event` there.
+    pub(crate) fn send_event(&mut self, page_id: &str, event: &Event) {
         if let Some((plugin, page)) = split_page_id(page_id) {
             let (plugin, page) = (plugin.to_owned(), page.to_owned());
-            self.press_at(&plugin, Surface::Page(page), node);
+            self.event_at(&plugin, Surface::Page(page), event);
         }
+    }
+
+    /// The rows in `range` of the virtual list `node` in the plugin page
+    /// `page_id`, each `None` until the plugin returns it. The plugin
+    /// fetches rows it hasn't returned yet on its own thread, in batches of
+    /// [`ROW_BATCH`], once each until the page draws again. A row whose ID
+    /// repeats one fetched before breaks the list's rules.
+    pub(crate) fn virtual_rows(
+        &mut self,
+        page_id: &str,
+        node: &str,
+        range: Range<u32>,
+    ) -> Result<Vec<Option<VirtualRow>>, String> {
+        let gone = || "The plugin that adds this page isn't running.".to_owned();
+        let (plugin, page) = split_page_id(page_id).ok_or_else(gone)?;
+        let running = self
+            .running
+            .get_mut(plugin)
+            .filter(|running| !running.failed)
+            .ok_or_else(gone)?;
+        let total = match running.views.get(&Surface::Page(page.to_owned())) {
+            Some(Ok(view)) => virtual_list_rows(view.root(), node),
+            _ => None,
+        }
+        .ok_or_else(|| format!("The page has no virtual list {node}."))?;
+        let range = range.start.min(total)..range.end.min(total);
+        let drawn = running.drawn;
+        let rows = running
+            .rows
+            .entry((page.to_owned(), node.to_owned()))
+            .or_default();
+        if let Some(problem) = &rows.problem {
+            return Err(problem.clone());
+        }
+        let first = range.start / ROW_BATCH * ROW_BATCH;
+        let mut wanted = Vec::new();
+        for start in (first..range.end).step_by(ROW_BATCH as usize) {
+            if rows.asked.insert(start) {
+                let count = ROW_BATCH.min(total - start);
+                wanted.push(Job::Rows {
+                    page: page.to_owned(),
+                    node: node.to_owned(),
+                    start,
+                    count,
+                    drawn,
+                });
+            }
+        }
+        let shown = range.map(|index| rows.get(index)).collect();
+        let plugin = plugin.to_owned();
+        for job in wanted {
+            self.send(&plugin, job);
+        }
+        Ok(shown)
     }
 
     /// The commands the running plugins add to the command palette, as
@@ -1232,10 +1344,10 @@ impl Plugins {
             .collect()
     }
 
-    /// Press the button `node` in the Inbox section `section` of the
-    /// plugin `plugin`.
-    pub(crate) fn press_inbox(&mut self, plugin: &str, section: &str, node: &str) {
-        self.press_at(plugin, Surface::InboxSection(section.to_owned()), node);
+    /// Tell the plugin `plugin` about `event` in its Inbox section
+    /// `section`.
+    pub(crate) fn send_inbox(&mut self, plugin: &str, section: &str, event: &Event) {
+        self.event_at(plugin, Surface::InboxSection(section.to_owned()), event);
     }
 
     /// The files changed, as the listing `listing` shows: each running
@@ -1270,11 +1382,12 @@ impl Plugins {
         self.view_at(plugin, &Surface::Settings)
     }
 
-    /// Press the button `node` on a plugin's page in Settings.
-    pub(crate) fn press_settings(&mut self, section_id: &str, node: &str) {
+    /// Tell the plugin behind its page `section_id` in Settings about
+    /// `event` there.
+    pub(crate) fn send_settings(&mut self, section_id: &str, event: &Event) {
         if let Some(plugin) = section_id.strip_prefix(SETTINGS_PREFIX) {
             let plugin = plugin.to_owned();
-            self.press_at(&plugin, Surface::Settings, node);
+            self.event_at(&plugin, Surface::Settings, event);
         }
     }
 
@@ -1398,16 +1511,16 @@ impl Plugins {
         Some(view)
     }
 
-    /// Tell the plugin that holds `object_type` that the button `node` was
-    /// pressed in the properties panel of the object `object_id`. It draws
-    /// the panel and its views again once it has heard.
-    pub(crate) fn press_panel(&mut self, object_type: &str, object_id: &str, node: &str) {
+    /// Tell the plugin that holds `object_type` about `event` in the
+    /// properties panel of the object `object_id`. It draws the panel and
+    /// its views again once it has heard. An input value of the wrong form
+    /// never reaches the plugin.
+    pub(crate) fn send_panel(&mut self, object_type: &str, object_id: &str, event: &Event) {
         let Some(owner) = self.types.owner(object_type) else {
             return;
         };
-        if self.running.contains_key(&owner) {
-            let event = Event::Pressed(node.to_owned());
-            self.send(&owner, Job::PanelEvent(object_id.to_owned(), event));
+        if self.running.contains_key(&owner) && well_formed_event(event) {
+            self.send(&owner, Job::PanelEvent(object_id.to_owned(), event.clone()));
         }
     }
 
@@ -1496,6 +1609,87 @@ impl Plugins {
     }
 }
 
+impl Running {
+    /// Keep the rows a plugin fetched for a virtual list, unless its views
+    /// were drawn again since it was asked. A batch that breaks the list's
+    /// rules stops the list.
+    fn take_rows(&mut self, fetched: RowsFetched) {
+        if fetched.drawn != self.drawn {
+            return;
+        }
+        let Some(rows) = self.rows.get_mut(&(fetched.page, fetched.node)) else {
+            return;
+        };
+        let checked = fetched
+            .rows
+            .and_then(|batch| check_rows(batch, fetched.count).map_err(|error| error.to_string()))
+            .and_then(|batch| {
+                // `check_rows` checks one batch; a row may not repeat the
+                // ID of a row in another.
+                match batch.iter().find(|row| rows.ids.contains(&row.id)) {
+                    Some(row) => Err(ViewError::DuplicateRowId { id: row.id.clone() }.to_string()),
+                    None => Ok(batch),
+                }
+            });
+        match checked {
+            Ok(batch) => {
+                rows.ids.extend(batch.iter().map(|row| row.id.clone()));
+                let end = fetched.start + fetched.count;
+                rows.earlier
+                    .retain(|index, _| !(fetched.start..end).contains(index));
+                rows.rows.extend((fetched.start..).zip(batch));
+            }
+            Err(problem) => rows.problem = Some(problem),
+        }
+    }
+}
+
+/// How many rows the virtual list `id` under `node` holds.
+fn virtual_list_rows(node: &ViewNode, id: &str) -> Option<u32> {
+    match &node.kind {
+        ViewKind::VirtualList { rows, .. } if node.id == id => Some(*rows),
+        _ => node
+            .children
+            .iter()
+            .find_map(|child| virtual_list_rows(child, id)),
+    }
+}
+
+/// The ID of the first virtual list under `node`, if any.
+pub(super) fn virtual_list_in(node: &ViewNode) -> Option<&str> {
+    match &node.kind {
+        ViewKind::VirtualList { .. } => Some(&node.id),
+        _ => node.children.iter().find_map(virtual_list_in),
+    }
+}
+
+/// Whether the input values `event` carries have the form the plugin
+/// interface promises. Logs the ones that don't.
+fn well_formed_event(event: &Event) -> bool {
+    let well_formed = match event {
+        Event::Changed(field) => well_formed(&field.value),
+        Event::Submitted(submission) => submission
+            .fields
+            .iter()
+            .all(|field| well_formed(&field.value)),
+        _ => true,
+    };
+    if !well_formed {
+        tracing::warn!("an input value of the wrong form didn't reach a plugin");
+    }
+    well_formed
+}
+
+/// Whether an input value has the form the plugin interface promises:
+/// dates as `YYYY-MM-DD` and dates and times in RFC 3339 with an offset.
+fn well_formed(value: &Value) -> bool {
+    match value {
+        Value::Date(Some(date)) => workspace_format::is_civil_date(date),
+        Value::DateTime(Some(at)) => workspace_format::is_instant(at),
+        _ => true,
+    }
+}
+
 fn no_update() -> AppError {
     AppError::new(
         "no_plugin_update",
@@ -1523,4 +1717,48 @@ fn from_install(error: &InstallError) -> AppError {
         "a plugin couldn't be installed or loaded"
     );
     AppError::new(error.code.as_str(), error.message.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use plugin_host::{Field, Node, NodeKind, VirtualList};
+
+    use super::*;
+
+    #[test]
+    fn a_virtual_list_inside_a_panel_is_found_at_any_depth() {
+        let node = |id: &str, kind, children| Node {
+            id: id.to_owned(),
+            kind,
+            children,
+        };
+        let seeds = NodeKind::VirtualList(VirtualList {
+            label: "Seeds".to_owned(),
+            rows: 10,
+        });
+        let nested = View::from_nodes(vec![
+            node("recipe", NodeKind::Panel(None), vec![1]),
+            node("more", NodeKind::Panel(None), vec![2]),
+            node("seeds", seeds, Vec::new()),
+        ])
+        .expect("a well-formed view");
+        assert_eq!(virtual_list_in(nested.root()), Some("seeds"));
+
+        let plain = View::from_nodes(vec![node("recipe", NodeKind::Panel(None), Vec::new())])
+            .expect("a well-formed view");
+        assert_eq!(virtual_list_in(plain.root()), None);
+    }
+
+    #[test]
+    fn an_event_with_a_date_of_the_wrong_form_is_refused() {
+        let changed = |date: &str| {
+            Event::Changed(Field {
+                node: "sown".to_owned(),
+                value: Value::Date(Some(date.to_owned())),
+            })
+        };
+        assert!(well_formed_event(&changed("2026-10-21")));
+        assert!(!well_formed_event(&changed("21/10/2026")));
+        assert!(well_formed_event(&Event::Pressed("vegetarian".to_owned())));
+    }
 }

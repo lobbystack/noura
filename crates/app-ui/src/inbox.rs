@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use app_core::{App, FileLink, Inbox, InboxSection, OpenAs};
 use egui::{
-    Align, Frame, Label, Layout, Margin, Rect, Response, RichText, Stroke, Ui, UiBuilder,
+    Align, Frame, Id, Label, Layout, Margin, Rect, Response, RichText, Stroke, Ui, UiBuilder,
     accesskit::Role, pos2, vec2,
 };
 
@@ -21,18 +21,14 @@ const COLUMN_WIDTH: f32 = 640.0;
 /// The space between the Inbox's parts.
 const GAP: f32 = 20.0;
 
-/// A link you chose, and how to open what it names, or what you did in a
-/// plugin's section.
+/// A link you chose, and how to open what it names.
 enum Follow {
     Link(FileLink, OpenAs),
     Note(String, OpenAs),
-    /// A button pressed in a plugin's section: (plugin, section, node).
-    Press(String, String, String),
-    /// A link clicked in a plugin's section.
-    Web(String),
 }
 
-pub(crate) fn show(ui: &mut Ui, app: &mut App) {
+/// The Inbox in the window whose ID salt is `window`.
+pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id) {
     let inbox = app.inbox();
     // The greeting changes with the hour.
     ui.ctx().request_repaint_after(Duration::from_secs(60));
@@ -45,19 +41,17 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
     let builder = UiBuilder::new()
         .max_rect(column)
         .layout(Layout::top_down(Align::Min));
-    let follow = ui.scope_builder(builder, |ui| page(ui, &inbox)).inner;
+    let follow = ui
+        .scope_builder(builder, |ui| page(ui, app, window, &inbox))
+        .inner;
     match follow {
         Some(Follow::Link(link, how)) => app.follow_link(&link, how),
         Some(Follow::Note(path, how)) => app.open_file(&path, how),
-        Some(Follow::Press(plugin, section, node)) => {
-            app.press_inbox_button(&plugin, &section, &node);
-        }
-        Some(Follow::Web(url)) => app.open_link(&url),
         None => {}
     }
 }
 
-fn page(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
+fn page(ui: &mut Ui, app: &mut App, window: Id, inbox: &Inbox) -> Option<Follow> {
     let mut follow = None;
     heading(ui, inbox.greeting, 0, TITLE_SIZE);
     if !inbox.needs_attention.is_empty() {
@@ -66,7 +60,7 @@ fn page(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
     }
     for section in &inbox.sections {
         ui.add_space(GAP);
-        follow = plugin_section(ui, section).or(follow);
+        plugin_section(ui, app, window, section);
     }
     ui.add_space(GAP);
     follow.or(recent(ui, inbox))
@@ -155,8 +149,8 @@ fn needs_attention(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
 }
 
 /// A plugin's section: the view it drew, or why it couldn't load or draw,
-/// in its own place.
-fn plugin_section(ui: &mut Ui, section: &InboxSection) -> Option<Follow> {
+/// in its own place. What you do there goes back to the plugin.
+fn plugin_section(ui: &mut Ui, app: &mut App, window: Id, section: &InboxSection) {
     heading(ui, &section.title, 1, BODY_SIZE);
     ui.add_space(8.0);
     let empty = section
@@ -164,18 +158,10 @@ fn plugin_section(ui: &mut Ui, section: &InboxSection) -> Option<Follow> {
         .as_ref()
         .is_ok_and(|view| view.root().children.is_empty());
     if empty {
-        return None;
+        return;
     }
-    let salt = ("inbox-section", &section.plugin_id, &section.section_id);
-    let asked = plugin_view::draw(ui, salt, &section.content);
-    if let Some(node) = asked.pressed {
-        return Some(Follow::Press(
-            section.plugin_id.clone(),
-            section.section_id.clone(),
-            node,
-        ));
-    }
-    asked.link.map(Follow::Web)
+    let place = (section.plugin_id.as_str(), section.section_id.as_str());
+    plugin_view::show_section(ui, app, window, place, &section.content);
 }
 
 fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {

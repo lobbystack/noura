@@ -34,7 +34,9 @@ impl Plugin for Misbehave {
     }
 
     fn handle_event(_page: String, event: Event) {
-        let Event::Pressed(node) = event;
+        let Event::Pressed(node) = event else {
+            return;
+        };
         match node.as_str() {
             "loop" => {
                 spin();

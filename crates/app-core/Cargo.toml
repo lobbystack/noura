@@ -26,6 +26,9 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
+# The workspace format's date and date-time rules, which plugin input
+# values follow.
+workspace-format = { version = "0.2.0", path = "../workspace-format" }
 
 [dev-dependencies]
 app-core = { path = ".", features = ["test-hooks"] }

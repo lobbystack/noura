@@ -25,7 +25,8 @@ thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
 wasmtime.workspace = true
-# The envelope and schemas of the object types plugins register.
+# The workspace format's date and date-time rules, which input values
+# follow, and the envelope and schemas of the object types plugins register.
 workspace-format = { version = "0.2.0", path = "../workspace-format" }
 
 [dev-dependencies]

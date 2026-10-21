@@ -7,7 +7,9 @@
 //! beside an object of its own type. Every window shares the session's
 //! plugins service and shows what the plugins it runs add.
 
-use std::path::PathBuf;
+use std::{ops::Range, path::PathBuf};
+
+use plugin_host::{Event, VirtualRow};
 
 use super::{App, Change};
 use crate::{
@@ -199,8 +201,30 @@ impl App {
     /// hears of it on its own thread and draws its views again; the window
     /// shows them, and open notes take what it wrote, once they arrive.
     pub fn press_plugin_button(&mut self, page_id: &str, node_id: &str) {
-        self.session.plugins().press(page_id, node_id);
+        self.send_plugin_event(page_id, &Event::Pressed(node_id.to_owned()));
+    }
+
+    /// Tell the plugin behind the page `page_id` about `event` in the
+    /// page's view, such as a selection or a changed input. The plugin
+    /// hears of it on its own thread and draws its views again, and open
+    /// notes take what it wrote once its answer arrives. A date or a date
+    /// and time of the wrong form never reaches it.
+    pub fn send_plugin_event(&mut self, page_id: &str, event: &Event) {
+        self.session.plugins().send_event(page_id, event);
         self.plugins_changed();
+    }
+
+    /// The rows in `range` of the virtual list `node_id` in the plugin
+    /// page `page_id`. The plugin fetches rows on its own thread as they're
+    /// first asked for, and a row is `None` until it arrives. The error
+    /// says why the plugin's rows can't be shown.
+    pub fn plugin_rows(
+        &mut self,
+        page_id: &str,
+        node_id: &str,
+        range: Range<u32>,
+    ) -> Result<Vec<Option<VirtualRow>>, String> {
+        self.session.plugins().virtual_rows(page_id, node_id, range)
     }
 
     /// Whether the Settings section `section_id` is a plugin's page.
@@ -216,16 +240,29 @@ impl App {
 
     /// Press the button `node_id` on a plugin's page in Settings.
     pub fn press_plugin_settings_button(&mut self, section_id: &str, node_id: &str) {
-        self.session.plugins().press_settings(section_id, node_id);
+        self.send_plugin_settings_event(section_id, &Event::Pressed(node_id.to_owned()));
+    }
+
+    /// Tell the plugin behind its page `section_id` in Settings about
+    /// `event` there.
+    pub fn send_plugin_settings_event(&mut self, section_id: &str, event: &Event) {
+        self.session.plugins().send_settings(section_id, event);
         self.plugins_changed();
     }
 
     /// Press the button `node_id` in the Inbox section `section_id` of the
     /// plugin `plugin_id`.
     pub fn press_inbox_button(&mut self, plugin_id: &str, section_id: &str, node_id: &str) {
+        let event = Event::Pressed(node_id.to_owned());
+        self.send_inbox_event(plugin_id, section_id, &event);
+    }
+
+    /// Tell the plugin `plugin_id` about `event` in its Inbox section
+    /// `section_id`.
+    pub fn send_inbox_event(&mut self, plugin_id: &str, section_id: &str, event: &Event) {
         self.session
             .plugins()
-            .press_inbox(plugin_id, section_id, node_id);
+            .send_inbox(plugin_id, section_id, event);
         self.plugins_changed();
     }
 
@@ -277,6 +314,15 @@ impl App {
     /// the answer arrives: at once when it has nothing unsaved, and merged
     /// with your typing at its next save when it has.
     pub fn press_panel_button(&mut self, tab: TabId, node_id: &str) {
+        self.send_panel_event(tab, &Event::Pressed(node_id.to_owned()));
+    }
+
+    /// Tell the plugin that draws the properties panel of the object open
+    /// in `tab` about `event` in the panel, such as a press, a selection
+    /// or a changed input. Its panel draws again and the note takes what
+    /// it wrote, as after [`Self::press_panel_button`]. A date or a date
+    /// and time of the wrong form never reaches it.
+    pub fn send_panel_event(&mut self, tab: TabId, event: &Event) {
         let Some(session) = self.notes.sessions.get(&tab) else {
             return;
         };
@@ -287,7 +333,7 @@ impl App {
         let (object_type, object_id) = (object_type.to_owned(), object_id.to_owned());
         self.session
             .plugins()
-            .press_panel(&object_type, &object_id, node_id);
+            .send_panel(&object_type, &object_id, event);
         self.plugins_changed();
     }
 

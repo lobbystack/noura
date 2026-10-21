@@ -64,6 +64,13 @@ pub fn probe_manifest_with(more: &[&str]) -> String {
     manifest
 }
 
+/// A manifest for the kit test plugin, which adds pages to the rail.
+pub fn kit_manifest() -> String {
+    "id = \"kit\"\nname = \"Kit\"\nversion = \"0.1.0\"\ninterface-version = \"0.1.0\"\n\
+     entry = \"plugin.wasm\"\nplatforms = [\"desktop\"]\n\n[[capabilities]]\nname = \"views\"\n"
+        .to_owned()
+}
+
 /// Install the plugin in `folder` in the workspace that `app_data` opens
 /// at launch, and turn it on there, before the harness starts.
 pub fn install_and_enable(app_data: &Path, folder: &Path, id: &str) {

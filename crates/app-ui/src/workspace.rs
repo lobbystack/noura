@@ -248,7 +248,7 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             return;
         };
         if matches!(content, TabContent::File { .. })
-            && crate::note::show(ui, &mut state.app, &mut state.notes, id)
+            && crate::note::show(ui, &mut state.app, &mut state.notes, state.window, id)
         {
             state.shown_tab = Some(id);
             return;
@@ -273,12 +273,12 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
                 ui.label(RichText::new(&file.name).size(TITLE_SIZE).strong());
                 muted(ui, &file.relative_path);
             }
-            TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app),
+            TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app, state.window),
             TabContent::Page { title, page_id } => {
                 ui.label(RichText::new(title).size(TITLE_SIZE).strong());
                 if state.app.is_plugin_page(page_id) {
                     ui.add_space(8.0);
-                    crate::plugin_view::show(ui, &mut state.app, page_id);
+                    crate::plugin_view::show(ui, &mut state.app, state.window, page_id);
                 }
             }
         });
