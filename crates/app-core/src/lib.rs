@@ -69,7 +69,7 @@ pub use inbox::{
 };
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
-pub use links::NoteLinks;
+pub use links::{EMBED_PREVIEW_CHARS, NoteEmbed, NoteLinks};
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};

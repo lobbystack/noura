@@ -44,6 +44,11 @@ pub enum ConstructKind {
     Underline,
     /// `[[target#heading|alias]]`, drawn as its alias or its target.
     WikiLink,
+    /// `![[target]]`: a block with the note's title and text when it's
+    /// alone on its line and names a note, and a link otherwise.
+    Embed {
+        block: bool,
+    },
 }
 
 /// Where a construct leads.
@@ -69,6 +74,8 @@ pub struct Construct {
     /// What the editor draws in place of the hidden syntax, such as a
     /// callout's type.
     pub label: Option<String>,
+    /// The text a note embed shows under its title.
+    pub preview: Option<String>,
     /// Where a wikilink or an embed leads, as the embedding app answers.
     pub link: Option<ConstructLink>,
     /// Whether the syntax shows, because the caret, the selection, a find
@@ -86,22 +93,42 @@ impl MdDoc {
             .filter_map(|node| self.construct(node))
             .collect();
         constructs.extend(self.bounds.spans.iter().filter_map(|span| {
-            let kind = match span.kind {
+            let mut construct = Construct {
+                kind: ConstructKind::Comment,
+                range: span.range,
+                syntax: span.syntax.clone(),
+                label: None,
+                preview: None,
+                link: None,
+                revealed: self.span_revealed(span),
+            };
+            construct.kind = match &span.kind {
                 SpanKind::Comment => ConstructKind::Comment,
                 SpanKind::Tag => ConstructKind::Tag,
                 SpanKind::BlockId => ConstructKind::BlockId,
                 SpanKind::Underline => ConstructKind::Underline,
+                SpanKind::Embed { target, alias, .. } => {
+                    let block = self.embedded_note(span);
+                    construct.label = Some(match &block {
+                        Some(note) => note.title.clone(),
+                        None => alias.clone().unwrap_or_else(|| target.clone()),
+                    });
+                    construct.link = Some(ConstructLink {
+                        target: target.clone(),
+                        exists: !matches!(
+                            self.link_state_for_wikilink(target),
+                            LinkState::Broken { .. }
+                        ),
+                    });
+                    construct.preview = block.as_ref().map(|note| note.text.clone());
+                    ConstructKind::Embed {
+                        block: block.is_some(),
+                    }
+                }
                 // A callout's construct covers its marker and title.
                 SpanKind::CalloutMarker { .. } | SpanKind::CalloutTitle { .. } => return None,
             };
-            Some(Construct {
-                kind,
-                range: span.range,
-                syntax: span.syntax.clone(),
-                label: None,
-                link: None,
-                revealed: self.span_revealed(span),
-            })
+            Some(construct)
         }));
         // Stable, so a construct and one nested at its start keep their order.
         constructs.sort_by_key(|construct| construct.range.start());
@@ -201,6 +228,7 @@ impl MdDoc {
             range,
             syntax,
             label,
+            preview: None,
             link,
             revealed,
         })

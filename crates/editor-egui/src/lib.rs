@@ -684,7 +684,7 @@ impl Editor {
             self.edit.renderer.layout_cache.clear();
         }
 
-        let embeds_seq = self.edit.renderer.embeds.seq();
+        let embeds_seq = self.edit.renderer.content_seq();
         let embeds_updated = embeds_seq != self.embeds_seq;
         self.embeds_seq = embeds_seq;
 

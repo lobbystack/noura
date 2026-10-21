@@ -60,6 +60,18 @@ impl<'ast> MdRender {
                             );
                             true
                         }
+                        // An embed that isn't drawn as a block draws as a
+                        // link named by its alias or its target.
+                        SpanKind::Embed { target, alias, .. } => {
+                            let state = self.link_state_for_wikilink(target);
+                            let format = self.text_format_link(node.parent().unwrap(), state);
+                            layout.push_override(
+                                hidden,
+                                alias.as_deref().unwrap_or(target),
+                                format,
+                            );
+                            true
+                        }
                         _ => false,
                     };
                     if !label {
@@ -97,7 +109,9 @@ impl<'ast> MdRender {
                         format.bold = true;
                         format.color = self.callout_color(*family);
                     }
-                    SpanKind::CalloutTitle { .. } | SpanKind::CalloutMarker { .. } => {}
+                    SpanKind::CalloutTitle { .. }
+                    | SpanKind::CalloutMarker { .. }
+                    | SpanKind::Embed { .. } => {}
                 }
             }
             if let Some(search_range) = self.search_range

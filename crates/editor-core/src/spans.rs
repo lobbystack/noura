@@ -30,6 +30,14 @@ pub enum SpanKind {
     /// `<u>text</u>`: the text draws underlined and the tags hide away
     /// from the caret.
     Underline,
+    /// `![[target|alias]]`. An embed of a note alone on its line draws as
+    /// a block with the note's title and text; any other draws as a link.
+    Embed {
+        target: String,
+        alias: Option<String>,
+        /// Whether the embed is all its line holds, spaces aside.
+        alone: bool,
+    },
 }
 
 /// Syntax found in text.
@@ -124,6 +132,37 @@ fn pairs(text: &str, open: &str, close: &str) -> Vec<(usize, usize)> {
     found
 }
 
+/// `![[target|alias]]` embeds in `text`. The target and alias hold no `]`.
+fn embeds(text: &str) -> Vec<Found> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(start) = text[from..].find("![[").map(|index| from + index) {
+        let inner_start = start + 3;
+        let inner_len = text[inner_start..].find(']').unwrap_or(0);
+        let inner = &text[inner_start..inner_start + inner_len];
+        if inner_len == 0 || !text[inner_start + inner_len..].starts_with("]]") {
+            from = start + 1;
+            continue;
+        }
+        let end = inner_start + inner_len + 2;
+        let (target, alias) = match inner.split_once('|') {
+            Some((target, alias)) => (target.trim(), Some(alias.trim().to_string())),
+            None => (inner.trim(), None),
+        };
+        found.push((
+            SpanKind::Embed {
+                target: target.to_string(),
+                alias,
+                alone: false,
+            },
+            start..end,
+            vec![start..end],
+        ));
+        from = end;
+    }
+    found
+}
+
 fn comments(text: &str) -> Vec<Found> {
     pairs(text, "%%", "%%")
         .into_iter()
@@ -196,26 +235,34 @@ impl<'ast> MdDoc {
                 (self.node_range(node), text)
             })
             .collect();
-        let lines = if matches!(container.data.borrow().value, NodeValue::TableCell) {
-            vec![self.node_range(container)]
-        } else {
-            self.node_lines(container)
-                .iter()
-                .map(|line_idx| self.node_line(container, self.bounds.source_lines[line_idx]))
-                .collect()
-        };
-        for line in lines {
+        // Each line of the container's text, with the whole source line it
+        // sits on. A table cell shares its line with other cells.
+        let lines: Vec<((Grapheme, Grapheme), Option<(Grapheme, Grapheme)>)> =
+            if matches!(container.data.borrow().value, NodeValue::TableCell) {
+                vec![(self.node_range(container), None)]
+            } else {
+                self.node_lines(container)
+                    .iter()
+                    .map(|line_idx| {
+                        let line = self.bounds.source_lines[line_idx];
+                        (self.node_line(container, line), Some(line))
+                    })
+                    .collect()
+            };
+        for (line, source_line) in lines {
             let text = &self.buffer[line];
             let line_start = self.offset_to_byte(line.start());
             let to_range = |bytes: &std::ops::Range<usize>| {
                 self.range_to_char_ceil((line_start + bytes.start, line_start + bytes.end))
             };
-            let mut comments_here: Vec<(Grapheme, Grapheme)> = Vec::new();
+            // Comments, then embeds, take their text from what they hold.
+            let mut taken: Vec<(Grapheme, Grapheme)> = Vec::new();
             let mut found = comments(text);
+            found.extend(embeds(text));
             found.extend(underlines(text));
             found.extend(tags(text));
             found.extend(block_id(text));
-            for (kind, bytes, syntax) in found {
+            for (mut kind, bytes, syntax) in found {
                 let range = to_range(&bytes);
                 if excluded.iter().any(|ex| range.intersects(ex, false)) {
                     continue;
@@ -227,20 +274,29 @@ impl<'ast> MdDoc {
                         && !range.contains_range(node, true, true)
                         && !node.contains_range(&range, true, true)
                 });
-                if crosses {
+                if crosses || taken.iter().any(|taken| taken.intersects(&range, false)) {
                     continue;
                 }
-                if kind == SpanKind::Comment {
-                    comments_here.push(range);
-                } else if comments_here
-                    .iter()
-                    .any(|comment| comment.contains_range(&range, true, true))
-                {
-                    // Syntax inside a comment is part of the comment.
-                    continue;
+                let mut reveal_range = range;
+                match &mut kind {
+                    SpanKind::Comment => taken.push(range),
+                    SpanKind::Embed { alone, .. } => {
+                        taken.push(range);
+                        if let Some(line) = source_line
+                            && self.buffer[line].trim() == &text[bytes.clone()]
+                        {
+                            // An embed alone on its line draws as a block,
+                            // which the caret anywhere on the line opens.
+                            *alone = true;
+                            reveal_range = line;
+                        }
+                    }
+                    _ => {}
                 }
                 let syntax = syntax.iter().map(to_range).collect();
-                spans.push(InlineSpan::new(kind, range, syntax));
+                let mut span = InlineSpan::new(kind, range, syntax);
+                span.reveal_range = reveal_range;
+                spans.push(span);
             }
         }
     }
@@ -282,6 +338,19 @@ impl<'ast> MdDoc {
             .iter()
             .take_while(move |span| span.range.start() <= range.end())
             .filter(move |span| span.range.intersects(&range, true))
+    }
+
+    /// The note an embed draws as a block: it's alone on its line and the
+    /// embedding app finds a note for its target.
+    pub fn embedded_note(&self, span: &InlineSpan) -> Option<crate::resolvers::EmbeddedNote> {
+        match &span.kind {
+            SpanKind::Embed {
+                target,
+                alone: true,
+                ..
+            } => self.link_resolver.embed(target),
+            _ => None,
+        }
     }
 
     /// Whether `span` shows its syntax: while the caret, the selection, a

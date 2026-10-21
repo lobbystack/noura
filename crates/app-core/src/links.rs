@@ -7,11 +7,14 @@
 //! out of it.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use local_core::WorkspaceEngine;
 
 use crate::FileTree;
+
+/// How much of an embedded note's text an embed shows, in characters.
+pub const EMBED_PREVIEW_CHARS: usize = 800;
 
 /// The open workspace's files as its newest listing shows them. The
 /// session updates it with each listing, and every note's links read it.
@@ -21,11 +24,13 @@ pub(crate) struct LinkFiles(Arc<RwLock<Arc<LinkIndex>>>);
 impl LinkFiles {
     /// Take the files `tree` lists.
     pub(crate) fn list(&self, tree: &FileTree) {
-        let index = Arc::new(LinkIndex::new(tree.file_paths()));
-        *self
+        let mut current = self
             .0
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = index;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut index = LinkIndex::new(tree.file_paths());
+        index.seq = current.seq + 1;
+        *current = Arc::new(index);
     }
 
     fn get(&self) -> Arc<LinkIndex> {
@@ -37,11 +42,17 @@ impl LinkFiles {
 }
 
 /// The workspace's files, by path and by lowercase file name, so a note
-/// with many links resolves them quickly in a large workspace.
+/// with many links resolves them quickly in a large workspace, with the
+/// notes embedded since this listing.
 #[derive(Default)]
 pub(crate) struct LinkIndex {
+    /// Counts the listings so far.
+    seq: u64,
     paths: HashSet<String>,
     by_name: HashMap<String, Vec<String>>,
+    /// What each note embedded since this listing shows. A change to any
+    /// file makes a new listing, which starts over.
+    embeds: Mutex<HashMap<String, Option<NoteEmbed>>>,
 }
 
 impl LinkIndex {
@@ -56,6 +67,15 @@ impl LinkIndex {
     }
 }
 
+/// What an embedded note shows: its title, which is its file name, and
+/// the first [`EMBED_PREVIEW_CHARS`] characters of its text. A note of
+/// Noura's own shows the text after its frontmatter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteEmbed {
+    pub title: String,
+    pub text: String,
+}
+
 /// What the links in one note lead to. A note's editor holds one and asks
 /// it about each link and embed it draws; it reads the workspace's newest
 /// listing, so links follow files as they appear, move and go.
@@ -63,7 +83,6 @@ impl LinkIndex {
 pub struct NoteLinks {
     source: String,
     files: LinkFiles,
-    #[allow(dead_code, reason = "embeds and images read through it")]
     engine: Arc<WorkspaceEngine>,
 }
 
@@ -81,10 +100,53 @@ impl NoteLinks {
         &self.source
     }
 
+    /// Changes with each listing of the workspace's files, after which any
+    /// answer may differ.
+    pub fn seq(&self) -> u64 {
+        self.files.get().seq
+    }
+
     /// The workspace file `target` leads to, or `None` when it names no
     /// file in the workspace. A `#heading` part is ignored.
     pub fn resolve(&self, target: &str) -> Option<String> {
         resolve_link_path(&self.source, target, &self.files.get())
+    }
+
+    /// What an `![[target]]` embed shows when `target` names a Markdown
+    /// note, or `None` when it names anything else or nothing. It reads
+    /// the note and writes nothing.
+    pub fn embed(&self, target: &str) -> Option<NoteEmbed> {
+        let index = self.files.get();
+        let path = resolve_link_path(&self.source, target, &index)?;
+        if !crate::notes::is_markdown(&path) {
+            return None;
+        }
+        let mut embeds = index
+            .embeds
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        embeds
+            .entry(path.clone())
+            .or_insert_with(|| self.read_embed(&path))
+            .clone()
+    }
+
+    fn read_embed(&self, path: &str) -> Option<NoteEmbed> {
+        let read = self.engine.read_raw_markdown(path).ok()?;
+        let text = match local_core::parse_markdown(path, read.body.as_bytes()) {
+            local_core::ParsedMarkdown::Managed(_) => {
+                let start = local_core::frontmatter_end(&read.body).unwrap_or(0);
+                &read.body[start..]
+            }
+            _ => read.body.as_str(),
+        };
+        Some(NoteEmbed {
+            title: crate::files::shown_name(
+                path.rsplit('/').next().unwrap_or(path),
+                crate::EntryKind::File,
+            ),
+            text: text.chars().take(EMBED_PREVIEW_CHARS).collect(),
+        })
     }
 }
 

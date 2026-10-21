@@ -3,7 +3,7 @@
 //! resolves in the workspace or leads nowhere.
 
 use app_core::NoteLinks;
-use editor_egui::resolvers::{LinkResolver, LinkState, ResolvedLink};
+use editor_egui::resolvers::{EmbeddedNote, LinkResolver, LinkState, ResolvedLink};
 
 /// What a link that names no file in the workspace says.
 const NOT_IN_WORKSPACE: &str = "No file in this workspace matches this link.";
@@ -55,5 +55,16 @@ impl LinkResolver for WorkspaceLinks {
                 message: NOT_IN_WORKSPACE.into(),
             },
         }
+    }
+
+    fn embed(&self, target: &str) -> Option<EmbeddedNote> {
+        self.0.embed(target).map(|note| EmbeddedNote {
+            title: note.title,
+            text: note.text,
+        })
+    }
+
+    fn seq(&self) -> u64 {
+        self.0.seq()
     }
 }

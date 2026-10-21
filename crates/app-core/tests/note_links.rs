@@ -119,6 +119,60 @@ fn a_file_behind_a_symlinked_folder_leads_nowhere() {
     }
 }
 
+/// Every file under the workspace, with its bytes and modification time.
+fn snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>, std::time::SystemTime)> {
+    let mut files = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                let metadata = std::fs::metadata(&path).unwrap();
+                files.push((
+                    path.strip_prefix(root).unwrap().display().to_string(),
+                    std::fs::read(&path).unwrap(),
+                    metadata.modified().unwrap(),
+                ));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn an_embedded_note_shows_its_title_and_the_first_800_characters_of_its_text() {
+    let long = "word ".repeat(400);
+    let managed = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\n\
+        created: 2026-10-20T10:00:00Z\nupdated: 2026-10-20T10:00:00Z\n---\nManaged body.\n";
+    let mut files = FILES.to_vec();
+    files.push(("Long.md", long.as_bytes()));
+    files.push(("Notes/Managed.md", managed.as_bytes()));
+    let fixture = Fixture::new(&files);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Inbox.md");
+    let links = app.note_links(tab).unwrap();
+    let before = snapshot(&fixture.root);
+
+    let old = links.embed("Old notes").expect("the note embeds");
+    assert_eq!(
+        (old.title.as_str(), old.text.as_str()),
+        ("Old notes", "Old\n")
+    );
+    let long_embed = links.embed("Long").expect("the note embeds");
+    assert_eq!(long_embed.title, "Long");
+    assert_eq!(long_embed.text, long.chars().take(800).collect::<String>());
+    let managed_embed = links.embed("Managed").expect("the note embeds");
+    assert_eq!(managed_embed.text, "Managed body.\n");
+    for not_a_note in ["Nowhere", "diagram.png", "paper.pdf"] {
+        assert_eq!(links.embed(not_a_note), None, "{not_a_note:?}");
+    }
+
+    assert_eq!(snapshot(&fixture.root), before, "embedding writes nothing");
+}
+
 #[test]
 fn links_follow_files_created_after_the_note_opened() {
     let fixture = Fixture::new(FILES);

@@ -8,8 +8,37 @@ mod corpus;
 use editor_core::offset_types::Grapheme;
 use editor_core::unicode_segs;
 use editor_egui::input::{Event, Location, Region};
+use editor_egui::resolvers::{EmbeddedNote, LinkResolver, LinkState, ResolvedLink};
 use editor_egui::{Editor, MdConfig};
 use egui_kittest::Harness;
+
+/// Finds every link and embeds every note, so embeds draw as blocks.
+struct Everything;
+
+impl LinkResolver for Everything {
+    fn resolve_link(&self, url: &str) -> Option<ResolvedLink> {
+        Some(ResolvedLink::File(url.into()))
+    }
+
+    fn resolve_wikilink(&self, title: &str) -> Option<String> {
+        Some(format!("{title}.md"))
+    }
+
+    fn link_state(&self, _url: &str) -> LinkState {
+        LinkState::Normal
+    }
+
+    fn wikilink_state(&self, _title: &str) -> LinkState {
+        LinkState::Normal
+    }
+
+    fn embed(&self, target: &str) -> Option<EmbeddedNote> {
+        Some(EmbeddedNote {
+            title: target.into(),
+            text: "Some **text** of the note\nover two lines.".into(),
+        })
+    }
+}
 
 #[test]
 fn the_editor_draws_every_caret_position_without_changing_the_note() {
@@ -22,7 +51,11 @@ fn the_editor_draws_every_caret_position_without_changing_the_note() {
             .build_ui_state(
                 move |ui, editor: &mut Option<Editor>| {
                     editor
-                        .get_or_insert_with(|| Editor::new(ui.ctx(), note, MdConfig::default()))
+                        .get_or_insert_with(|| {
+                            let mut editor = Editor::new(ui.ctx(), note, MdConfig::default());
+                            editor.set_link_resolver(Box::new(Everything));
+                            editor
+                        })
                         .show(ui);
                 },
                 None,

@@ -542,7 +542,14 @@ impl MdRender {
 
 impl<'ast> MdRender {
     fn height_deps(&self) -> HeightDeps {
-        [self.width_seq, self.embeds.seq(), self.reveal_seq]
+        [self.width_seq, self.content_seq(), self.reveal_seq]
+    }
+
+    /// Changes whenever loaded content or a link's answer could change a
+    /// block's size: an image finishing loading, or an embedded note
+    /// changing or appearing.
+    pub fn content_seq(&self) -> u64 {
+        self.embeds.seq() ^ self.link_resolver.seq().rotate_left(32)
     }
 
     pub fn get_cached_node_height(&self, node: &'ast AstNode<'ast>) -> Option<f32> {

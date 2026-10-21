@@ -4,7 +4,7 @@
 use egui::{CornerRadius, Rect, Ui, Vec2};
 
 pub use editor_core::resolvers::{
-    LinkResolver, LinkState, NotFound, OpenedLink, ResolvedLink, open_link,
+    EmbeddedNote, LinkResolver, LinkState, NotFound, OpenedLink, ResolvedLink, open_link,
 };
 
 /// What the embedding app knows about the content a URL names.

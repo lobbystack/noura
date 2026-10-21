@@ -100,14 +100,24 @@ pub fn hid_text(editor: &Editor, range: (Grapheme, Grapheme)) -> bool {
     })
 }
 
-/// The text the last frame drew in place of source, such as a label.
+/// The text the last frame drew in place of source, such as a label, one
+/// entry per source range, its words joined by spaces.
 pub fn drawn_in_place(editor: &Editor) -> Vec<String> {
-    editor
-        .painted_spans()
-        .into_iter()
-        .filter(|span| span.glyphs && !span.shown_as_written && !span.text.is_empty())
-        .map(|span| span.text)
-        .collect()
+    let mut drawn: Vec<((Grapheme, Grapheme), String)> = Vec::new();
+    for span in editor.painted_spans() {
+        let text = span.text.trim();
+        if !span.glyphs || span.shown_as_written || text.is_empty() {
+            continue;
+        }
+        match drawn.last_mut() {
+            Some((range, words)) if *range == span.source_range => {
+                words.push(' ');
+                words.push_str(text);
+            }
+            _ => drawn.push((span.source_range, text.to_string())),
+        }
+    }
+    drawn.into_iter().map(|(_, words)| words).collect()
 }
 
 /// Where the last frame drew the first grapheme of `range`.
