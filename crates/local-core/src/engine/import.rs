@@ -58,8 +58,9 @@ impl WorkspaceEngine {
             ids: HashSet::new(),
             skipped: 0,
         };
-        let mut imported = Vec::new();
-        let copied = sources.iter().try_for_each(|source| {
+        // Every source passes the checks before anything is copied, so a
+        // refused import copies nothing.
+        for source in sources {
             if !source.is_absolute() {
                 return Err(CoreError::validation(
                     "absolute_path_required",
@@ -83,15 +84,17 @@ impl WorkspaceEngine {
                     operation,
                 ));
             }
+        }
+        let mut imported = Vec::new();
+        let copied = sources.iter().try_for_each(|source| {
             if let Some(path) = import.entry(source, folder)? {
                 imported.push(path);
             }
             Ok(())
         });
         // Whatever landed before a failure is on disk; index it either way.
-        let indexed = self.reconcile_as_application();
+        self.reconcile_after_change(operation);
         copied?;
-        indexed?;
         Ok(ImportResult {
             imported,
             skipped: import.skipped,

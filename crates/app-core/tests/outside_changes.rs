@@ -3,11 +3,14 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{Receiver, channel},
+    sync::{
+        Arc,
+        mpsc::{Receiver, channel},
+    },
     time::{Duration, Instant},
 };
 
-use app_core::{App, Change, Origin, Rescans, Screen, WatchFault, Workspace};
+use app_core::{App, Change, NoSystem, Origin, Rescans, Screen, WatchFault, Workspace};
 
 /// How long a test waits for the change stream before it fails.
 const PATIENCE: Duration = Duration::from_secs(15);
@@ -36,7 +39,7 @@ impl Live {
         for (relative, text) in files {
             write(&folder, relative, text);
         }
-        let mut app = App::launch_with(app_data.path(), rescans);
+        let mut app = App::launch_with_rescans(app_data.path(), Arc::new(NoSystem), rescans);
         let (sender, changes) = channel();
         app.subscribe(move |change| {
             let _ = sender.send(change);

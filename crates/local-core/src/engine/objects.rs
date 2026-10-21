@@ -248,15 +248,18 @@ impl WorkspaceEngine {
         // as ours too.
         self.expect_own_write(&old, None);
         self.expect_own_write(destination, Some(&markdown::revision(&bytes)));
-        let forget = |error| {
+        let moved = destination_path
+            .parent()
+            .map_or(Ok(()), |parent| create_folders(parent, "object_move"))
+            .and_then(|()| {
+                std::fs::rename(&source, &destination_path)
+                    .map_err(|error| CoreError::io(error, "object_move", Some(destination)))
+            });
+        if let Err(error) = moved {
             self.forget_own_write(&old);
             self.forget_own_write(destination);
-            CoreError::io(error, "object_move", Some(destination))
-        };
-        if let Some(parent) = destination_path.parent() {
-            std::fs::create_dir_all(parent).map_err(forget)?;
+            return Err(error);
         }
-        std::fs::rename(&source, &destination_path).map_err(forget)?;
         sync_rename_parents(&source, &destination_path, "object_move")?;
         object.relative_path = destination.into();
         let index_result = (|| {

@@ -1845,6 +1845,45 @@ fn manifest_update_rewrites_enabled_plugins_durably_and_in_memory() {
 }
 
 #[test]
+fn manifest_update_refuses_a_manifest_edited_on_disk_since_its_revision_was_read() {
+    let (workspace, _app_data, engine) = engine();
+    let manifest_path = workspace.path().join(WORKSPACE_MANIFEST_PATH);
+    let (read, revision) = engine.read_manifest_revision().unwrap();
+    assert_eq!(read, engine.read_manifest().unwrap());
+    // An outside edit that keeps `updated` as it was.
+    let edited = std::fs::read_to_string(&manifest_path)
+        .unwrap()
+        .replace("ignore: []", "ignore:\n- drafts/");
+    std::fs::write(&manifest_path, &edited).unwrap();
+
+    let error = engine
+        .manifest_update(ManifestUpdateInput {
+            ignore: Some(vec!["build/".into()]),
+            expected_revision: Some(revision),
+            ..Default::default()
+        })
+        .unwrap_err();
+
+    assert_eq!(error.code, "manifest_conflict");
+    assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), edited);
+    let (read, revision) = engine.read_manifest_revision().unwrap();
+    assert_eq!(read.ignore, ["drafts/"]);
+    let saved = engine
+        .manifest_update(ManifestUpdateInput {
+            ignore: Some(vec!["drafts/".into(), "build/".into()]),
+            expected_revision: Some(revision),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(saved.ignore, ["drafts/", "build/"]);
+    assert!(
+        std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .contains("- build/")
+    );
+}
+
+#[test]
 fn manifest_update_rejects_invalid_fields_and_leaves_no_op_patches_untouched() {
     let (_workspace, _app_data, engine) = engine();
     let unchanged = engine

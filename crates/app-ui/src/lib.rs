@@ -5,6 +5,7 @@
 
 mod chooser;
 mod common;
+mod ignored_files;
 pub mod theme;
 mod tree;
 mod workspace;
@@ -27,6 +28,7 @@ pub struct NouraUi {
     /// The New workspace form, while it is open.
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
+    ignored: ignored_files::IgnoredFilesView,
     started: bool,
 }
 
@@ -37,6 +39,7 @@ impl NouraUi {
             picker,
             new_workspace: None,
             tree: tree::TreeView::default(),
+            ignored: ignored_files::IgnoredFilesView::default(),
             started: false,
         }
     }

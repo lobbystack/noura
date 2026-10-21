@@ -13,10 +13,16 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, OpenedFile, RecentWorkspace, Workspace, WorkspaceService,
+    AppError, FileTree, NoSystem, OpenedFile, RecentWorkspace, System, Workspace, WorkspaceService,
     files::shown_name,
     watch::{Rescans, Snapshot, Watch},
 };
+
+mod file_actions;
+mod ignored_files;
+
+pub use file_actions::{Question, Rename};
+pub use ignored_files::IgnoredFiles;
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +35,7 @@ pub enum Screen {
     Workspace,
 }
 
-/// A message about an action that failed.
+/// A message about an action: why it failed, or where its result went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub title: String,
@@ -37,6 +43,15 @@ pub struct Notice {
     /// The recent workspace that failed to open, which the notice offers to
     /// remove from the recent list.
     pub remove_recent: Option<String>,
+    pub kind: NoticeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// The action failed.
+    Problem,
+    /// The action worked, and the notice says where its result went.
+    Done,
 }
 
 /// Who changed files in the workspace.
@@ -58,6 +73,8 @@ pub enum Change {
     Tree,
     Document,
     Notice,
+    /// The Ignored files page changed.
+    Settings,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
     /// Files in the open workspace changed on disk; call [`App::poll`] to
@@ -114,12 +131,19 @@ struct Pending {
 /// open workspace with its file tree, and the open file.
 pub struct App {
     service: Arc<WorkspaceService>,
+    system: Arc<dyn System>,
     screen: Screen,
     recents: Vec<RecentWorkspace>,
     workspace: Option<Workspace>,
     tree: Option<FileTree>,
     document: Option<OpenedFile>,
     notice: Option<Notice>,
+    /// The tree row being renamed in place.
+    renaming: Option<Rename>,
+    /// The Ignored files page, while it is open.
+    ignored_files: Option<IgnoredFiles>,
+    /// A folder waiting to go to the trash until you confirm.
+    pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
     pending: Option<Pending>,
@@ -132,26 +156,45 @@ pub struct App {
 }
 
 impl App {
-    /// Start the app with per-device state in `app_data`. When a workspace
-    /// was open last time, it reopens in the background while the screen
-    /// shows [`Screen::Loading`].
+    /// Start the app with per-device state in `app_data` and no operating
+    /// system services: deleted items go to the workspace's trash folder.
+    /// See [`App::launch_with`].
     pub fn launch(app_data: impl AsRef<Path>) -> Self {
-        Self::launch_with(app_data, Rescans::default())
+        Self::launch_with(app_data, Arc::new(NoSystem))
     }
 
-    /// [`App::launch`] with other intervals for the full rescans that back
-    /// up the native watcher.
-    pub fn launch_with(app_data: impl AsRef<Path>, rescans: Rescans) -> Self {
-        let service = Arc::new(WorkspaceService::new(app_data.as_ref()));
+    /// Start the app with per-device state in `app_data`, using `system`
+    /// for the trash, the file manager, terminals and the clipboard. When a
+    /// workspace was open last time, it reopens in the background while
+    /// the screen shows [`Screen::Loading`].
+    pub fn launch_with(app_data: impl AsRef<Path>, system: Arc<dyn System>) -> Self {
+        Self::launch_with_rescans(app_data, system, Rescans::default())
+    }
+
+    /// [`App::launch_with`] with other intervals for the full rescans that
+    /// back up the native watcher.
+    pub fn launch_with_rescans(
+        app_data: impl AsRef<Path>,
+        system: Arc<dyn System>,
+        rescans: Rescans,
+    ) -> Self {
+        let service = Arc::new(WorkspaceService::with_system(
+            app_data.as_ref(),
+            system.clone(),
+        ));
         let recents = service.recents();
         let mut app = Self {
             service,
+            system,
             screen: Screen::Chooser { problem: None },
             recents,
             workspace: None,
             tree: None,
             document: None,
             notice: None,
+            renaming: None,
+            ignored_files: None,
+            pending_trash: None,
             failed_restore: None,
             pending: None,
             listeners: Listeners::default(),
@@ -341,6 +384,9 @@ impl App {
                 self.workspace = None;
                 self.tree = None;
                 self.document = None;
+                self.renaming = None;
+                self.ignored_files = None;
+                self.pending_trash = None;
                 self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),
@@ -426,6 +472,9 @@ impl App {
         self.tree = Some(opened.tree);
         self.document = None;
         self.notice = None;
+        self.renaming = None;
+        self.ignored_files = None;
+        self.pending_trash = None;
         self.listeners.emit(Change::Tree);
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
@@ -443,6 +492,7 @@ impl App {
             title: title.to_owned(),
             message: error.message,
             remove_recent,
+            kind: NoticeKind::Problem,
         });
         self.listeners.emit(Change::Notice);
         if self.screen == Screen::Loading {
@@ -555,7 +605,7 @@ mod tests {
         fn open_with(rescans: Rescans) -> Self {
             let app_data = tempfile::tempdir().unwrap();
             let folder = tempfile::tempdir().unwrap();
-            let mut app = App::launch_with(app_data.path(), rescans);
+            let mut app = App::launch_with_rescans(app_data.path(), Arc::new(NoSystem), rescans);
             let (sender, changes) = channel();
             app.subscribe(move |change| {
                 let _ = sender.send(change);

@@ -9,6 +9,8 @@ rust-version.workspace = true
 # Lets tests force the native watcher to fail or deliver chosen events.
 # Never enabled in a shipped build.
 test-hooks = []
+# Lets tests record which folders a mutation syncs. Test builds only.
+durability-probe = []
 
 [dependencies]
 yrs.workspace = true

@@ -8,22 +8,30 @@
 mod app;
 mod error;
 mod files;
+mod ignored;
 mod objects;
+mod operations;
 mod problems;
 mod recents;
+mod system;
 mod watch;
 mod workspace;
 
-pub use app::{App, Change, Notice, Origin, Screen};
+pub use app::{
+    App, Change, IgnoredFiles, Notice, NoticeKind, Origin, Question, Rename, Screen,
+};
 pub use error::AppError;
 pub use files::{
-    EntryKind, FileTree, OpenedFile, TYPE_AHEAD_TIMEOUT, TreeAction, TreeKey, TreeRow,
+    DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
+    TreeKey, TreeRow,
 };
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use objects::{ObjectRef, SearchHit};
+pub use operations::Imported;
 pub use problems::Problem;
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
 
