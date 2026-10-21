@@ -123,7 +123,7 @@ pub(crate) fn menu_bar(platform: Platform, commands: &[Command]) -> Vec<Menu> {
     use command_id::*;
 
     let file = vec![
-        vec![Item(NEW_NOTE), Item(NEW_FOLDER)],
+        vec![Item(NEW_NOTE), Item(NEW_FOLDER), Item(NEW_WINDOW)],
         vec![Item(QUICK_OPEN), Item(SEARCH)],
         vec![Item(CLOSE_TAB), Item(CLOSE_WINDOW)],
         vec![Others(MenuName::File)],

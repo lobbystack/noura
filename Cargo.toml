@@ -69,6 +69,9 @@ genai = "=0.6.5"
 hkdf = "=0.12.4"
 hmac = "=0.12.1"
 ignore = "0.4"
+# Local sockets for single-instance handling: Unix domain sockets on macOS
+# and Linux, named pipes on Windows.
+interprocess = "2.4.6"
 jiff = { version = "0.2", features = ["serde"] }
 keyring = "4"
 # Rotates the local diagnostic log at 1 MB and keeps three old files.

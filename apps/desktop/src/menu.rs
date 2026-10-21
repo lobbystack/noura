@@ -1,8 +1,9 @@
 //! The native menu bar on macOS and Windows, built with muda from the
 //! menu model in `app-core`. Choosing a command item, Quit and About
 //! among them, runs the command through the same dispatch as its
-//! shortcut; the Edit items act on the focused text field, as the S6
-//! trial (ticket 04) proved.
+//! shortcut in the window that had focus last; the Edit items act on the
+//! focused text field, as the S6 trial (ticket 04) proved. macOS has one
+//! menu bar for the app, and on Windows every window carries its own.
 
 use std::collections::HashMap;
 
@@ -248,6 +249,14 @@ pub(crate) mod native {
     pub(crate) struct NativeMenu {
         menu: muda::Menu,
         shown: Vec<Menu>,
+        /// On Windows, the first window and its menu bar's accelerator
+        /// table.
+        #[cfg(target_os = "windows")]
+        main: isize,
+        /// On Windows, the menu bar of every other window. Each window
+        /// owns its menu bar, which Windows destroys with the window.
+        #[cfg(target_os = "windows")]
+        others: Vec<(isize, muda::Menu)>,
     }
 
     /// Build the menu bar and attach it to the app on macOS, or to the
@@ -258,11 +267,21 @@ pub(crate) mod native {
     ) -> muda::Result<NativeMenu> {
         let menu = muda::Menu::new();
         let window_menu = fill(&menu, menus)?;
+        #[cfg(target_os = "windows")]
+        let main = attach(cc, &menu, window_menu.as_ref())?;
+        #[cfg(not(target_os = "windows"))]
         attach(cc, &menu, window_menu.as_ref())?;
-        Ok(NativeMenu {
+        let native = NativeMenu {
             menu,
             shown: menus.to_vec(),
-        })
+            #[cfg(target_os = "windows")]
+            main,
+            #[cfg(target_os = "windows")]
+            others: Vec::new(),
+        };
+        #[cfg(target_os = "windows")]
+        native.publish_accelerators();
+        Ok(native)
     }
 
     impl NativeMenu {
@@ -272,16 +291,29 @@ pub(crate) mod native {
             if self.shown == menus {
                 return Ok(());
             }
-            for item in self.menu.items() {
-                if let MenuItemKind::Submenu(submenu) = item {
-                    self.menu.remove(&submenu)?;
-                }
-            }
-            let window_menu = fill(&self.menu, menus)?;
+            let window_menu = refill(&self.menu, menus)?;
             after_update(&self.menu, window_menu.as_ref());
+            #[cfg(target_os = "windows")]
+            {
+                for (_, menu) in &self.others {
+                    refill(menu, menus)?;
+                }
+                self.publish_accelerators();
+            }
             self.shown = menus.to_vec();
             Ok(())
         }
+    }
+
+    /// Take every submenu out of `menu` and fill it with `menus` again.
+    /// Returns the Window menu.
+    fn refill(menu: &muda::Menu, menus: &[Menu]) -> muda::Result<Option<Submenu>> {
+        for item in menu.items() {
+            if let MenuItemKind::Submenu(submenu) = item {
+                menu.remove(&submenu)?;
+            }
+        }
+        fill(menu, menus)
     }
 
     /// Append one submenu per menu. Returns the Window menu.
@@ -353,46 +385,146 @@ pub(crate) mod native {
         }
     }
 
+    /// Attach the menu bar to the main window. Returns the window.
     #[cfg(target_os = "windows")]
     fn attach(
         cc: &eframe::CreationContext<'_>,
         menu: &muda::Menu,
         _window_menu: Option<&Submenu>,
-    ) -> muda::Result<()> {
+    ) -> muda::Result<isize> {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
         if let Ok(handle) = cc.window_handle()
             && let RawWindowHandle::Win32(handle) = handle.as_raw()
         {
+            let hwnd = handle.hwnd.get();
             // SAFETY: the handle is eframe's live main window.
-            unsafe { menu.init_for_hwnd(handle.hwnd.get())? };
-            after_update(menu, None);
+            unsafe { menu.init_for_hwnd(hwnd)? };
+            return Ok(hwnd);
         }
-        Ok(())
+        Ok(0)
     }
 
     #[cfg(target_os = "windows")]
-    fn after_update(menu: &muda::Menu, _window_menu: Option<&Submenu>) {
-        ACCELERATORS.store(menu.haccel(), std::sync::atomic::Ordering::Relaxed);
+    fn after_update(_menu: &muda::Menu, _window_menu: Option<&Submenu>) {}
+
+    #[cfg(target_os = "windows")]
+    impl NativeMenu {
+        /// Give every window of the app that has no menu bar its own, and
+        /// let go of the menu bars of windows that closed. Returns how
+        /// many windows other than the first have one.
+        pub(crate) fn cover_windows(&mut self) -> muda::Result<usize> {
+            use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+
+            let before = self.others.len();
+            // Windows destroyed the menu bar of a window that closed, with
+            // the window.
+            // SAFETY: IsWindow takes any handle and only reads it.
+            self.others
+                .retain(|(hwnd, _)| unsafe { IsWindow(*hwnd as _) } != 0);
+            let mut changed = self.others.len() != before;
+            for hwnd in windows_without_menu() {
+                // A new window may reuse the handle of one that closed.
+                self.others.retain(|(other, _)| *other != hwnd);
+                let menu = muda::Menu::new();
+                fill(&menu, &self.shown)?;
+                // SAFETY: the handle is one of this thread's live windows.
+                unsafe { menu.init_for_hwnd(hwnd)? };
+                self.others.push((hwnd, menu));
+                changed = true;
+            }
+            if changed {
+                self.publish_accelerators();
+            }
+            Ok(self.others.len())
+        }
+
+        /// Hand the message hook each window's accelerator table.
+        fn publish_accelerators(&self) {
+            let tables = std::iter::once((self.main, self.menu.haccel()))
+                .chain(
+                    self.others
+                        .iter()
+                        .map(|(hwnd, menu)| (*hwnd, menu.haccel())),
+                )
+                .collect();
+            *ACCELERATORS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = tables;
+        }
     }
 
-    /// The menu bar's accelerator table, for the message hook.
+    /// This thread's eframe windows that have no menu bar yet: windows
+    /// that opened since the last look. winit gives each of its windows
+    /// the class "Window Class".
     #[cfg(target_os = "windows")]
-    static ACCELERATORS: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+    fn windows_without_menu() -> Vec<isize> {
+        use windows_sys::{
+            Win32::{
+                Foundation::{HWND, LPARAM},
+                System::Threading::GetCurrentThreadId,
+                UI::WindowsAndMessaging::{EnumThreadWindows, GetClassNameW, GetMenu},
+            },
+            core::BOOL,
+        };
+
+        unsafe extern "system" fn add(hwnd: HWND, found: LPARAM) -> BOOL {
+            const WINIT_CLASS: &str = "Window Class";
+            let mut class = [0u16; 64];
+            // SAFETY: the buffer holds `class.len()` characters, and
+            // `found` is the vector `windows_without_menu` passed in.
+            unsafe {
+                let length = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+                let class = String::from_utf16_lossy(&class[..length.max(0) as usize]);
+                if class == WINIT_CLASS && GetMenu(hwnd).is_null() {
+                    (*(found as *mut Vec<isize>)).push(hwnd as isize);
+                }
+            }
+            1
+        }
+
+        let mut found: Vec<isize> = Vec::new();
+        // SAFETY: the callback only runs during the call, while `found`
+        // lives.
+        unsafe {
+            EnumThreadWindows(
+                GetCurrentThreadId(),
+                Some(add),
+                &mut found as *mut Vec<isize> as LPARAM,
+            );
+        }
+        found
+    }
+
+    /// Each window and its menu bar's accelerator table, for the message
+    /// hook.
+    #[cfg(target_os = "windows")]
+    static ACCELERATORS: std::sync::Mutex<Vec<(isize, isize)>> = std::sync::Mutex::new(Vec::new());
 
     /// winit's message hook: turns menu shortcuts into menu choices before
-    /// the window sees the key. Returns true when it handled the message.
+    /// the window sees the key, with the accelerator table of the window
+    /// that got it. Returns true when it handled the message.
     #[cfg(target_os = "windows")]
     pub(crate) fn translate_accelerator(message: *const std::ffi::c_void) -> bool {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, TranslateAcceleratorW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GA_ROOT, GetAncestor, MSG, TranslateAcceleratorW,
+        };
 
-        let accelerators = ACCELERATORS.load(std::sync::atomic::Ordering::Relaxed);
-        if accelerators == 0 {
-            return false;
-        }
         let message = message.cast::<MSG>();
-        // SAFETY: winit passes a valid MSG for the duration of the hook.
-        unsafe { TranslateAcceleratorW((*message).hwnd, accelerators as _, message) != 0 }
+        // SAFETY: winit passes a valid MSG for the duration of the hook,
+        // and GetAncestor only reads the handle.
+        let window = unsafe { GetAncestor((*message).hwnd, GA_ROOT) };
+        let Some(table) = ACCELERATORS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .find(|(hwnd, table)| *hwnd == window as isize && *table != 0)
+            .map(|(_, table)| *table)
+        else {
+            return false;
+        };
+        // SAFETY: as above; the table belongs to that window's live menu.
+        unsafe { TranslateAcceleratorW(window, table as _, message) != 0 }
     }
 }
 

@@ -91,7 +91,7 @@ fn arrows_move_the_highlight_within_the_list() {
     app.move_palette_selection(1);
     app.run_palette_selection(Instant::now());
     assert_eq!(app.palette(), None);
-    assert!(app.take_close_window());
+    assert!(app.is_closed());
 }
 
 #[test]

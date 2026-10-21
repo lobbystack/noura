@@ -16,7 +16,7 @@ pub struct Page {
 
 /// The pages registered so far, in the order they arrived, and the order
 /// you gave the open workspace's rail.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Rail {
     pages: Vec<Page>,
     /// Page IDs in the order you left them, including pages that aren't

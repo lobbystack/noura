@@ -1,6 +1,6 @@
-//! Each workspace's view state on this device: its tabs and active tab,
-//! the file tree's open folders and the rail's order. It lives in the app
-//! data folder, never in the workspace.
+//! Each workspace's view state on this device: the windows open on it,
+//! with each window's tabs, active tab and open folders, and the rail's
+//! order. It lives in the app data folder, never in the workspace.
 
 use std::{
     path::{Path, PathBuf},
@@ -14,22 +14,29 @@ use serde_json::Value;
 use crate::store::JsonStore;
 
 /// The view state format this version writes.
-const VERSION: u64 = 1;
+const VERSION: u64 = 2;
 
-/// A workspace's saved view state. Anything Noura can't read comes back
-/// empty, and tabs it can't read drop out one by one: view state is a
-/// convenience, never workspace data.
+/// A workspace's saved view state: its windows, in the order they opened,
+/// and the rail order they share. Anything Noura can't read comes back
+/// empty, and windows and tabs it can't read drop out one by one: view
+/// state is a convenience, never workspace data.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "Saved", into = "Saved")]
 pub(crate) struct StoredView {
+    pub(crate) windows: Vec<StoredWindow>,
+    /// The rail's page IDs in the order you gave them. Empty until you
+    /// move a page.
+    pub(crate) rail_order: Vec<String>,
+}
+
+/// One window's saved view state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct StoredWindow {
     pub(crate) tabs: Vec<StoredTab>,
     /// The index of the active tab in `tabs`.
     pub(crate) active: Option<usize>,
     /// The file tree's open folders.
     pub(crate) expanded_folders: Vec<String>,
-    /// The rail's page IDs in the order you gave them. Empty until you
-    /// move a page.
-    pub(crate) rail_order: Vec<String>,
 }
 
 /// One saved tab: a file by workspace-relative path, or a rail page.
@@ -65,10 +72,17 @@ impl StoredTab {
 #[serde(rename_all = "camelCase", default)]
 struct Saved {
     version: Value,
+    windows: Vec<Value>,
+    rail_order: Vec<Value>,
+}
+
+/// One window's shape in the file.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct SavedWindow {
     tabs: Vec<Value>,
     active: Value,
     expanded_folders: Vec<Value>,
-    rail_order: Vec<Value>,
 }
 
 impl From<Saved> for StoredView {
@@ -77,6 +91,21 @@ impl From<Saved> for StoredView {
             tracing::warn!("a workspace's view state has an unknown version");
             return Self::default();
         }
+        Self {
+            // A window Noura can't read drops out as if closed.
+            windows: saved
+                .windows
+                .into_iter()
+                .filter_map(|window| serde_json::from_value::<SavedWindow>(window).ok())
+                .map(StoredWindow::from)
+                .collect(),
+            rail_order: strings(saved.rail_order),
+        }
+    }
+}
+
+impl From<SavedWindow> for StoredWindow {
+    fn from(saved: SavedWindow) -> Self {
         let tabs: Vec<Option<StoredTab>> = saved
             .tabs
             .into_iter()
@@ -93,26 +122,41 @@ impl From<Saved> for StoredView {
             tabs: tabs.into_iter().flatten().collect(),
             active,
             expanded_folders: strings(saved.expanded_folders),
-            rail_order: strings(saved.rail_order),
         }
     }
 }
 
 impl From<StoredView> for Saved {
     fn from(view: StoredView) -> Self {
-        let values = |items: Vec<String>| items.into_iter().map(Value::String).collect();
         Self {
             version: VERSION.into(),
-            tabs: view
+            windows: view
+                .windows
+                .into_iter()
+                .map(SavedWindow::from)
+                .filter_map(|window| serde_json::to_value(window).ok())
+                .collect(),
+            rail_order: values(view.rail_order),
+        }
+    }
+}
+
+impl From<StoredWindow> for SavedWindow {
+    fn from(window: StoredWindow) -> Self {
+        Self {
+            tabs: window
                 .tabs
                 .into_iter()
                 .filter_map(|tab| serde_json::to_value(tab).ok())
                 .collect(),
-            active: view.active.map_or(Value::Null, Into::into),
-            expanded_folders: values(view.expanded_folders),
-            rail_order: values(view.rail_order),
+            active: window.active.map_or(Value::Null, Into::into),
+            expanded_folders: values(window.expanded_folders),
         }
     }
+}
+
+fn values(items: Vec<String>) -> Vec<Value> {
+    items.into_iter().map(Value::String).collect()
 }
 
 /// The strings in `values`, leaving out anything else.

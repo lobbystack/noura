@@ -1,8 +1,8 @@
-//! Dragging files between the window and the file manager. Files dragged
+//! Dragging files between a window and the file manager. Files dragged
 //! in arrive through egui, and this module tells egui where the pointer is
 //! while they hover, which winit 0.30 doesn't. A tree row dragged out of
-//! the window becomes a native drag through the `drag` crate on macOS and
-//! Windows.
+//! a window becomes a native drag through the `drag` crate on macOS and
+//! Windows. Each window keeps its own [`FileDrag`].
 
 use std::sync::{
     Arc,
@@ -43,7 +43,7 @@ impl FileDrag {
             native.and_then(cursor::on_screen)
         };
         let last = LastFrame {
-            pointer: ctx.input(|input| input.pointer.latest_pos()),
+            pointer: ctx.input_for(raw_input.viewport_id, |input| input.pointer.latest_pos()),
             zoom: ctx.zoom_factor(),
             told: self.told,
         };
@@ -58,11 +58,11 @@ impl FileDrag {
     /// left the window, if one is waiting, or tell the app that the last
     /// one ended. The app hears of the end after the frames that may still
     /// carry a drop of the row back on the tree, which moves it.
-    pub fn after_frame(&mut self, ui: &mut NouraUi, ctx: &egui::Context, frame: &eframe::Frame) {
+    pub fn after_frame(&mut self, ui: &mut NouraUi, ctx: &egui::Context, from: DragSource<'_>) {
         if let Some(request) = ui.take_drag_out() {
             // The new drag takes the place of the one that ended.
             self.ending = None;
-            if let Err(error) = native::start(frame, request.path, ctx, &self.ended) {
+            if let Err(error) = native::start(from, request.path, ctx, &self.ended) {
                 tracing::warn!(%error, "could not start dragging a file out");
                 ui.drag_out_failed();
             }
@@ -74,6 +74,19 @@ impl FileDrag {
             ctx.request_repaint();
         }
     }
+}
+
+/// The window a native drag starts from.
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(dead_code, reason = "Linux drags nothing out of a window")
+)]
+pub enum DragSource<'a> {
+    /// The first window, which eframe hands over.
+    Main(&'a eframe::Frame),
+    /// Another window: the one with keyboard focus, where the row left.
+    Focused,
 }
 
 /// Count down the frames until the app hears that a native drag ended.
@@ -209,31 +222,115 @@ mod native {
     };
 
     use eframe::egui;
+    use winit::raw_window_handle::HasWindowHandle;
+
+    use super::DragSource;
 
     /// The picture under the pointer while a file is dragged out.
     const DRAG_ICON: &[u8] = include_bytes!("../assets/drag-icon.png");
 
-    /// Start a native drag of `path` out of the main window, which hands the
-    /// app it lands in a copy. When the drag ends, `ended` goes up and the
-    /// window draws again: later on macOS, before this returns on Windows.
+    /// Start a native drag of `path` out of the window `from`, which hands
+    /// the app it lands in a copy. When the drag ends, `ended` goes up and
+    /// the window draws again: later on macOS, before this returns on
+    /// Windows.
     pub fn start(
-        frame: &eframe::Frame,
+        from: DragSource<'_>,
+        path: PathBuf,
+        ctx: &egui::Context,
+        ended: &Arc<AtomicBool>,
+    ) -> Result<(), drag::Error> {
+        match from {
+            DragSource::Main(frame) => start_from(frame, path, ctx, ended),
+            DragSource::Focused => {
+                let window = focused::Window::find().ok_or(drag::Error::FailedToStartDrag)?;
+                start_from(&window, path, ctx, ended)
+            }
+        }
+    }
+
+    fn start_from(
+        window: &impl HasWindowHandle,
         path: PathBuf,
         ctx: &egui::Context,
         ended: &Arc<AtomicBool>,
     ) -> Result<(), drag::Error> {
         let ended = ended.clone();
         let ctx = ctx.clone();
+        let viewport = ctx.viewport_id();
         drag::start_drag(
-            frame,
+            window,
             drag::DragItem::Files(vec![path]),
             drag::Image::Raw(DRAG_ICON.to_vec()),
             move |_result, _cursor| {
                 ended.store(true, Ordering::Release);
-                ctx.request_repaint();
+                ctx.request_repaint_of(viewport);
             },
             drag::Options::default(),
         )
+    }
+
+    /// The window with keyboard focus, which eframe doesn't hand over for
+    /// windows other than the first. A row dragged out of a window leaves
+    /// it with the pointer held down, so that window has focus.
+    mod focused {
+        #[cfg(target_os = "macos")]
+        use std::ptr::NonNull;
+
+        use winit::raw_window_handle::{
+            HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
+        };
+
+        /// AppKit's key window, by its content view.
+        #[cfg(target_os = "macos")]
+        pub struct Window {
+            view: objc2::rc::Retained<objc2_app_kit::NSView>,
+        }
+
+        #[cfg(target_os = "macos")]
+        impl Window {
+            pub fn find() -> Option<Self> {
+                let main_thread = objc2::MainThreadMarker::new()?;
+                let app = objc2_app_kit::NSApplication::sharedApplication(main_thread);
+                let view = app.keyWindow()?.contentView()?;
+                Some(Self { view })
+            }
+
+            fn raw(&self) -> RawWindowHandle {
+                let view = NonNull::from(&*self.view).cast();
+                RawWindowHandle::AppKit(winit::raw_window_handle::AppKitWindowHandle::new(view))
+            }
+        }
+
+        /// The active window of the UI thread.
+        #[cfg(target_os = "windows")]
+        pub struct Window {
+            hwnd: std::num::NonZeroIsize,
+        }
+
+        #[cfg(target_os = "windows")]
+        impl Window {
+            pub fn find() -> Option<Self> {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
+                // SAFETY: the call takes no arguments and touches no memory.
+                let hwnd = unsafe { GetActiveWindow() };
+                Some(Self {
+                    hwnd: std::num::NonZeroIsize::new(hwnd as isize)?,
+                })
+            }
+
+            fn raw(&self) -> RawWindowHandle {
+                RawWindowHandle::Win32(winit::raw_window_handle::Win32WindowHandle::new(self.hwnd))
+            }
+        }
+
+        impl HasWindowHandle for Window {
+            fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+                // SAFETY: the window outlives the borrow: `find` holds on
+                // to its view on macOS, and on Windows the drag runs on
+                // this thread while the window stays open.
+                Ok(unsafe { WindowHandle::borrow_raw(self.raw()) })
+            }
+        }
     }
 }
 
@@ -248,8 +345,10 @@ mod native {
 
     use eframe::egui;
 
+    use super::DragSource;
+
     pub fn start(
-        _frame: &eframe::Frame,
+        _from: DragSource<'_>,
         _path: PathBuf,
         _ctx: &egui::Context,
         _ended: &Arc<AtomicBool>,

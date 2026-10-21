@@ -1,14 +1,15 @@
 //! Product behavior and view state shared by every Noura client.
 //!
 //! This crate depends on no UI crate, so a mobile client can reuse it later.
-//! Clients draw [`App`]'s view state and send it what people do. The
-//! workspace service opens workspaces and keeps the recent list, and the
-//! files service builds the file tree. The app keeps each workspace's tabs,
-//! open folders and rail order, the sidebar's layout, and the appearance,
-//! text size and zoom, in this device's app data. One command registry
-//! feeds the key handling, the command palette, the native menus and the
-//! shortcuts list. Settings lists its sections from one list that later
-//! areas extend.
+//! Clients draw [`App`]'s view state and send it what people do. Each `App`
+//! is one window, and the windows of one launch share the open workspace.
+//! The workspace service opens workspaces and keeps the recent list, and
+//! the files service builds the file tree. The app keeps each workspace's
+//! windows with their tabs and open folders, its rail order, the sidebar's
+//! layout, and the appearance, text size and zoom, in this device's app
+//! data. One command registry feeds the key handling, the command palette,
+//! the native menus and the shortcuts list. Settings lists its sections
+//! from one list that later areas extend.
 
 mod app;
 mod commands;
@@ -27,6 +28,7 @@ mod rail;
 mod recents;
 mod saves;
 mod search;
+mod session;
 mod settings;
 mod store;
 mod system;

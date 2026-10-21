@@ -42,6 +42,8 @@ impl App {
         if self.preferences != before {
             self.preferences_store.save(&self.preferences);
             self.listeners.emit(Change::Preferences);
+            // Every window draws with the same preferences.
+            self.preferences_seen = self.session.set_preferences(self.key, self.preferences);
         }
     }
 }

@@ -179,6 +179,33 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, "manifest_read", Some(WORKSPACE_MANIFEST_PATH)))
     }
 
+    /// The manifest of the workspace in `root`, read without opening the
+    /// workspace or its index, or `None` when the folder holds no
+    /// manifest. A caller can tell which workspace a folder holds before
+    /// it opens one, as when a copy of a folder keeps the workspace ID
+    /// and so the index of the workspace it was copied from.
+    pub fn read_manifest_at(root: impl AsRef<Path>) -> Result<Option<WorkspaceManifest>> {
+        let bytes = match std::fs::read(root.as_ref().join(WORKSPACE_MANIFEST_PATH)) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(CoreError::io(
+                    error,
+                    "manifest_read",
+                    Some(WORKSPACE_MANIFEST_PATH),
+                ));
+            }
+        };
+        parse_workspace_manifest(&bytes, "manifest_read").map(Some)
+    }
+
     /// Read one plugin-local cache value. The state lives in the disposable
     /// index: durable plugin data belongs in workspace files.
     pub fn plugin_state_get(
@@ -477,6 +504,61 @@ mod tests {
                 .is_some_and(|manifest| validate_manifest(&manifest, "manifest_validate").is_ok());
             assert_eq!(accepted, fixture.valid);
         }
+    }
+
+    /// A folder's manifest reads without opening its index, and a copy of
+    /// the folder reads with the same workspace ID.
+    #[test]
+    fn a_folder_s_manifest_reads_without_opening_the_workspace() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let id = engine.manifest().id;
+        drop(engine);
+        let copy = tempdir().unwrap();
+        std::fs::create_dir(copy.path().join(".noura")).unwrap();
+        std::fs::copy(
+            workspace.path().join(WORKSPACE_MANIFEST_PATH),
+            copy.path().join(WORKSPACE_MANIFEST_PATH),
+        )
+        .unwrap();
+        let index = app_data.path().join("workspaces").join(&id);
+        std::fs::remove_dir_all(&index).unwrap();
+
+        let read = WorkspaceEngine::read_manifest_at(workspace.path()).unwrap();
+        let copied = WorkspaceEngine::read_manifest_at(copy.path()).unwrap();
+
+        assert_eq!(read.map(|manifest| manifest.id), Some(id.clone()));
+        assert_eq!(copied.map(|manifest| manifest.id), Some(id));
+        assert!(!index.exists(), "reading opened the index");
+    }
+
+    #[test]
+    fn a_folder_without_a_manifest_reads_as_none_and_a_malformed_one_fails() {
+        let plain = tempdir().unwrap();
+        assert!(
+            WorkspaceEngine::read_manifest_at(plain.path())
+                .unwrap()
+                .is_none()
+        );
+        // `.noura` is a file, not a folder.
+        std::fs::write(plain.path().join(".noura"), b"x").unwrap();
+        assert!(
+            WorkspaceEngine::read_manifest_at(plain.path())
+                .unwrap()
+                .is_none()
+        );
+
+        let malformed = tempdir().unwrap();
+        std::fs::create_dir(malformed.path().join(".noura")).unwrap();
+        std::fs::write(malformed.path().join(WORKSPACE_MANIFEST_PATH), b"id: [").unwrap();
+        assert!(WorkspaceEngine::read_manifest_at(malformed.path()).is_err());
+        assert_eq!(
+            std::fs::read(malformed.path().join(WORKSPACE_MANIFEST_PATH)).unwrap(),
+            b"id: ["
+        );
     }
 
     #[test]

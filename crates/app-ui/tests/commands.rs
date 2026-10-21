@@ -180,6 +180,10 @@ fn the_rail_s_search_button_opens_the_palette_and_a_click_runs_a_command() {
     harness.run();
     assert!(palette_open(&harness));
 
+    // The list is taller than the palette, so narrow it to bring the row
+    // into view.
+    harness.get_by_label("Search commands").type_text("sidebar");
+    harness.run();
     row(&harness, "Toggle Sidebar").click();
     harness.run();
     assert!(!palette_open(&harness));
@@ -355,13 +359,9 @@ fn on_linux_every_shortcut_runs_from_the_window() {
     press(&mut harness, ctrl, Key::K);
     assert!(!palette_open(&harness));
 
-    // One event, so one frame whose output holds the window's commands.
-    harness.event(key_down(Key::W, shift));
-    harness.step();
-    assert!(closes_the_main_window(&harness));
-
     // Ctrl+Q quits, which closes the main window and ends the app, even
-    // from a text field.
+    // from a text field. One event, so one frame whose output holds the
+    // window's commands.
     tree_row(&harness, "Ideas").focus();
     harness.run();
     press(&mut harness, Modifiers::NONE, Key::F2);
@@ -369,6 +369,14 @@ fn on_linux_every_shortcut_runs_from_the_window() {
     harness.event(key_down(Key::Q, ctrl));
     harness.step();
     assert!(closes_the_main_window(&harness));
+    assert!(harness.state().is_quitting());
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+
+    // Ctrl+Shift+W closes the window, which the desktop then stops
+    // showing.
+    assert!(!harness.state().is_closed());
+    press(&mut harness, shift, Key::W);
+    assert!(harness.state().is_closed());
 }
 
 fn key_down(key: Key, modifiers: Modifiers) -> egui::Event {
