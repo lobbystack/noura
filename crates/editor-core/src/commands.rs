@@ -755,17 +755,26 @@ impl MdDoc {
             segs.offset_to_char(Byte(from)),
             segs.offset_to_char(Byte(to)),
         );
-        for node in root.descendants() {
-            let format = match node.data.borrow().value {
-                NodeValue::Strong => Format::Bold,
-                NodeValue::Emph => Format::Italic,
-                NodeValue::Strikethrough => Format::Strikethrough,
-                NodeValue::Code(_) => Format::Code,
-                NodeValue::Link(_) => Format::Link,
-                _ => continue,
-            };
-            if self.node_range(node).contains_range(&selection, true, true) {
-                add(format);
+        // Only the nodes around the selection can hold it, so the walk
+        // descends into those alone.
+        let mut around = vec![root];
+        while let Some(node) = around.pop() {
+            for child in node.children() {
+                if !self
+                    .node_range(child)
+                    .contains_range(&selection, true, true)
+                {
+                    continue;
+                }
+                match child.data.borrow().value {
+                    NodeValue::Strong => add(Format::Bold),
+                    NodeValue::Emph => add(Format::Italic),
+                    NodeValue::Strikethrough => add(Format::Strikethrough),
+                    NodeValue::Code(_) => add(Format::Code),
+                    NodeValue::Link(_) => add(Format::Link),
+                    _ => {}
+                }
+                around.push(child);
             }
         }
         for &char in b"*_" {

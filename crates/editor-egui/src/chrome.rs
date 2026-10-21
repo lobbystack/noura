@@ -406,6 +406,16 @@ impl Editor {
         ctx.request_repaint();
     }
 
+    /// Finds the matches again after the text changed.
+    pub(crate) fn refresh_find(&mut self) {
+        let Some(bar) = self.chrome.find.as_mut() else {
+            return;
+        };
+        bar.find.refresh(&self.edit.renderer.doc);
+        let current = bar.find.current();
+        self.set_find_match(current);
+    }
+
     /// Shows `range` as find's current match: its syntax reveals like the
     /// caret's.
     fn set_find_match(&mut self, range: Option<(Grapheme, Grapheme)>) {
@@ -448,6 +458,9 @@ impl Editor {
     /// Reads the formats at the selection for the toolbars, once per text
     /// version and selection.
     pub(crate) fn update_formats<'a>(&mut self, root: &'a comrak::nodes::AstNode<'a>) {
+        if !self.formattable() {
+            return;
+        }
         let doc = &self.edit.renderer.doc;
         let key = Some((doc.text_seq, doc.selection()));
         if self.chrome.formats_read_at != key {

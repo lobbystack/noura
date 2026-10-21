@@ -702,6 +702,8 @@ impl Editor {
         let prior_selection = self.edit.renderer.buffer.current.selection;
         let prior_entered_atom = self.edit.renderer.entered_atom;
         let buf_resp = self.handle_input(ui);
+        // Find's matches follow this frame's edits before they draw.
+        self.refresh_find();
 
         if !self.initialized || buf_resp.text_updated {
             resp.text_updated = true;
