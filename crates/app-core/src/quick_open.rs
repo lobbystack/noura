@@ -1,10 +1,11 @@
 //! Quick open: find any file in the tree by name from the keyboard.
 //!
 //! A file matches when its name holds every typed word's letters in
-//! order, or failing that, its folder and name together do. Name matches
-//! come before folder matches, an exact name before a name that starts
-//! with what you typed, and that before other name matches. Within each
-//! group, `nucleo-matcher` ranks consecutive letters and word starts above
+//! order, or failing that, its path does, folders and extension included,
+//! so "groceries.md" finds Groceries.md. Name matches come before path
+//! matches, an exact name before a name that starts with what you typed,
+//! and that before other name matches. Within each group,
+//! `nucleo-matcher` ranks consecutive letters and word starts above
 //! scattered letters, ignoring case and accents.
 
 use std::cmp::{Ordering, Reverse};
@@ -35,8 +36,8 @@ pub struct QuickOpenMatch {
 /// Where a file's match ranks, best last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Group {
-    /// The folder and name together hold the letters.
-    Folder,
+    /// The path, folders and extension included, holds the letters.
+    Path,
     /// The name holds the letters.
     Name,
     /// The name starts with what you typed.
@@ -100,12 +101,10 @@ pub(crate) fn rank<'a>(
                     };
                     (group, score)
                 }
-                None if folder.is_empty() => return None,
                 None => {
-                    let shown = format!("{folder}/{name}");
                     let score =
-                        pattern.score(Utf32Str::new(&shown, &mut buffer), &mut paths_matcher)?;
-                    (Group::Folder, score)
+                        pattern.score(Utf32Str::new(path, &mut buffer), &mut paths_matcher)?;
+                    (Group::Path, score)
                 }
             };
             Some(Ranked {

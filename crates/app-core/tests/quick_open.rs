@@ -1,6 +1,6 @@
 //! Seam 1: quick open finds any file in the tree by name. A file matches
-//! when its name, or its folder and name, holds the typed letters in
-//! order. Name matches beat folder matches, exact names beat prefixes, and
+//! when its name, or its path, holds the typed letters in order. Name
+//! matches beat folder matches, exact names beat prefixes, and
 //! consecutive letters and word starts beat scattered letters.
 
 mod support;
@@ -72,6 +72,10 @@ fn quick_open_finds_files_whose_name_holds_the_letters_in_order() {
         "Reading/Books/The Pragmatic Programmer.pdf"
     );
     assert_eq!(best(&mut app, "cafe"), "Café menu.md");
+    // The path counts with its extension, as the tree's file names have it.
+    assert_eq!(best(&mut app, "groceries.md"), "Groceries.md");
+    assert_eq!(best(&mut app, "brief.md"), "Projects/Launch brief.md");
+    assert_eq!(best(&mut app, "report.txt"), "Docs/report.txt");
     assert!(matches(&mut app, "xyz").is_empty());
     assert!(matches(&mut app, "  ").is_empty());
 }
