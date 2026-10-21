@@ -401,6 +401,24 @@ fn any_command() -> impl Strategy<Value = Event> {
     ])
 }
 
+/// An empty task nested after a tab (`-\t- [ ] `) once made the parser read
+/// past the end of its line. The proptest below found it.
+#[test]
+fn an_empty_task_nested_after_a_tab_formats_and_undoes() {
+    for text in ["-\t- [ ] ", "* \t- [ ] ", "1.\t- [ ] ", "- a\n*\t- [ ] "] {
+        let mut note = doc(text, 0, 0);
+        note.apply([format(Format::Italic)], &NoLayout);
+        note.apply([Event::Undo], &NoLayout);
+        assert_eq!(note.text(), text);
+    }
+    let text = "  - [ ] a</u>\n  - **</u>a\n\t- [ ] ";
+    let mut note = doc(text, 0, 26);
+    note.apply([format(Format::Italic)], &NoLayout);
+    assert_eq!(note.text(), "*  - [ ] a</u>\n  - **</u>a\n*\t- [ ] ");
+    note.apply([Event::Undo], &NoLayout);
+    assert_eq!(note.text(), text);
+}
+
 /// Lines with list, quote and heading markers, Unicode whitespace in their
 /// indents, and inline syntax, wide and combining characters after them.
 fn any_note() -> impl Strategy<Value = String> {

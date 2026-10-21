@@ -73,6 +73,7 @@ To the workspace crate's editor:
 - Removed the editor's chrome: the toolbar, find bar, emoji and link completions, context menus, link hover cards and link sheets. Removed the mobile host command surface, `MdLabel`, and the workspace persistence of scroll position and selection.
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
 - `alert_type_title_ranges` gives a callout whose first line names no known type an empty type and uses the whole line as its title. Lockbook panicked there. You can reach that case by typing `---` above a line that holds a lone carriage return, which makes frontmatter that comrak counts one line short.
+- `own_prefix_len_task_item` keeps a task item's prefix inside its line. A parent item's padding counts columns, so after a tab it can claim part of the task's marker, as in `-\t- [ ] `. Lockbook then read past the end of the line and panicked.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
 - Inserts an input method's committed text the way a key press inserts text. Lockbook's desktop path ignored egui's input method events.
