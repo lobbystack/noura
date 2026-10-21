@@ -8,8 +8,8 @@ mod support;
 
 use std::{path::PathBuf, time::Instant};
 
-use app_core::{App, ConflictChoice, SAVE_PAUSE, TabId};
-use support::{Fixture, note, open_from_tree, settle_saves};
+use app_core::{App, ConflictChoice, DropSpot, Platform, SAVE_PAUSE, TabId};
+use support::{FakeSystem, Fixture, note, open_from_tree, settle_saves};
 
 const A: &str = "01jbcdefghjkmnpqrstvwxyz0a";
 
@@ -254,15 +254,23 @@ fn a_rebuilt_index_shows_the_saved_text_file_the_same_way() {
 }
 
 #[test]
-fn renaming_a_text_file_puts_its_typing_durably_on_disk_first() {
+fn a_text_files_save_before_a_drag_out_is_durable_before_the_drag_starts() {
     let fixture = Fixture::new(&[("Docs/notes.txt", b"one\n")]);
-    let mut app = fixture.app();
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
     let tab = open_from_tree(&mut app, "Docs/notes.txt");
     type_into(&mut app, tab, |text| format!("{text}two\n"));
+    let row = app.tree().unwrap().find_row("Docs/notes.txt").unwrap();
 
-    let ((), synced) = local_core::durability_probe::record(|| app.rename_note(tab, "renamed"));
+    // The drag leaves the file where it is, so only the save syncs its
+    // folder.
+    let ((), synced) = local_core::durability_probe::record(|| {
+        app.start_tree_drag(row);
+        app.drag_tree_over(DropSpot::Away, Instant::now());
+        app.drag_row_out();
+    });
 
-    assert_eq!(fixture.read("Docs/renamed.txt"), b"one\ntwo\n");
+    assert!(app.take_drag_out().is_some());
+    assert_eq!(fixture.read("Docs/notes.txt"), b"one\ntwo\n");
     let docs = fixture.root.join("Docs").canonicalize().unwrap();
     assert!(
         synced
@@ -270,4 +278,100 @@ fn renaming_a_text_file_puts_its_typing_durably_on_disk_first() {
             .any(|folder| folder.canonicalize().ok().as_ref() == Some(&docs)),
         "{synced:?}"
     );
+    assert!(!app.note(tab).unwrap().is_unsaved());
+}
+
+/// Change the files with `change` while Noura is closed, then put back
+/// the index from before the change.
+fn with_a_stale_index(fixture: &Fixture, change: impl FnOnce()) {
+    let app = fixture.app();
+    let files = index_files(fixture, &app);
+    drop(app);
+    let stale = tempfile::tempdir().unwrap();
+    for file in &files {
+        if file.exists() {
+            std::fs::copy(file, stale.path().join(file.file_name().unwrap())).unwrap();
+        }
+    }
+    change();
+    for file in &files {
+        let _ = std::fs::remove_file(file);
+        let old = stale.path().join(file.file_name().unwrap());
+        if old.exists() {
+            std::fs::copy(old, file).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_stale_index_never_hides_a_notes_broken_properties() {
+    let fixture = Fixture::new(&[("Plan.md", &note(A, "Body\n"))]);
+    let broken = format!("---\nid: note_{A}\ncolor: green\n---\n\nBody\n");
+    with_a_stale_index(&fixture, || {
+        support::write(&fixture.root, "Plan.md", broken.as_bytes());
+    });
+
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let shown = app.note(tab).unwrap();
+    assert_eq!(shown.text(), broken);
+    assert!(shown.shows_source());
+    assert_eq!(
+        shown.broken_properties(),
+        Some("The properties have an ID but no type.")
+    );
+    assert_eq!(shown.object_id(), None);
+    assert_eq!(shown.properties(), None);
+    let at = type_into(&mut app, tab, |text| format!("{text}typed\n"));
+    save(&mut app, at);
+
+    assert_eq!(
+        String::from_utf8(fixture.read("Plan.md")).unwrap(),
+        format!("{broken}typed\n")
+    );
+    assert!(app.note(tab).unwrap().save_problem().is_none());
+}
+
+#[test]
+fn a_stale_index_never_makes_a_note_renamed_to_a_text_file_a_note() {
+    let fixture = Fixture::new(&[("Plan.md", &note(A, "Body\n"))]);
+    with_a_stale_index(&fixture, || {
+        std::fs::rename(fixture.root.join("Plan.md"), fixture.root.join("Plan.txt")).unwrap();
+    });
+
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.txt");
+    let shown = app.note(tab).unwrap();
+    let text = String::from_utf8(note(A, "Body\n")).unwrap();
+    assert_eq!(shown.text(), text);
+    assert!(shown.shows_source());
+    assert_eq!(shown.object_id(), None);
+    assert_eq!(shown.properties(), None);
+    assert_eq!(shown.broken_properties(), None);
+    let at = type_into(&mut app, tab, |text| {
+        text.replace("color: green", "color: red")
+    });
+    save(&mut app, at);
+
+    assert_eq!(
+        fixture.read("Plan.txt"),
+        text.replace("color: green", "color: red").as_bytes()
+    );
+    assert!(app.note(tab).unwrap().save_problem().is_none());
+    // The text file stays out of the index, and the note it held is gone
+    // from it.
+    let connection = rusqlite::Connection::open(&index_files(&fixture, &app)[0]).unwrap();
+    let indexed: Vec<String> = connection
+        .prepare("SELECT relative_path FROM files")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        !indexed.iter().any(|path| path.starts_with("Plan.")),
+        "{indexed:?}"
+    );
+    let objects = app.workspace().unwrap().objects().unwrap();
+    assert!(objects.is_empty(), "{objects:?}");
 }
