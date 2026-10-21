@@ -433,7 +433,7 @@ impl App {
     }
 
     /// The item's shown name in curly quotes, for notices.
-    fn quoted(&self, relative_path: &str) -> String {
+    pub(super) fn quoted(&self, relative_path: &str) -> String {
         let is_folder = self
             .tree
             .as_ref()
@@ -458,7 +458,7 @@ impl App {
 
     /// Open the folders above the item at `relative_path` and make its row
     /// current. Returns whether the tree shows the item.
-    fn select(&mut self, relative_path: &str) -> bool {
+    pub(super) fn select(&mut self, relative_path: &str) -> bool {
         self.change_tree(|tree| Some(tree.select(relative_path)))
             .unwrap_or(false)
     }
@@ -468,7 +468,7 @@ impl App {
     /// syncing its folder failed. Then the tree reads the files again, and
     /// the item's tabs follow it to `to` when it's there and close
     /// otherwise. Returns whether the item left.
-    fn follow_failed_change(&mut self, from: &str, to: Option<&str>) -> bool {
+    pub(super) fn follow_failed_change(&mut self, from: &str, to: Option<&str>) -> bool {
         let Some(workspace) = &self.workspace else {
             return false;
         };
@@ -523,7 +523,7 @@ impl App {
     }
 
     /// Say where an action's result went.
-    fn show_done(&mut self, title: &str, message: String) {
+    pub(super) fn show_done(&mut self, title: &str, message: String) {
         self.notice = Some(Notice {
             title: title.to_owned(),
             message,

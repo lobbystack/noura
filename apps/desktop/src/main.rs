@@ -1,5 +1,6 @@
 //! The Noura desktop app.
 
+mod file_drag;
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows")),
     allow(dead_code, reason = "Linux shows no native menu bar")
@@ -32,6 +33,7 @@ impl FolderPicker for SystemFolderPicker {
 
 struct Desktop {
     ui: NouraUi,
+    file_drag: file_drag::FileDrag,
     /// Menu choices, sent from muda's event handler.
     choices: Receiver<Choice>,
     edit: EditInput,
@@ -60,6 +62,7 @@ impl Desktop {
         };
         Self {
             ui,
+            file_drag: file_drag::FileDrag::default(),
             choices,
             edit: EditInput::default(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -88,11 +91,14 @@ impl eframe::App for Desktop {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.ui.ui(ui);
+        let ctx = ui.ctx().clone();
+        self.file_drag.after_frame(&mut self.ui, &ctx, frame);
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.file_drag.complete_input(ctx, raw_input);
         self.edit.inject(raw_input);
     }
 }

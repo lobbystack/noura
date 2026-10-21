@@ -19,6 +19,7 @@ mod menus;
 mod operations;
 mod rail;
 mod recents;
+mod saves;
 mod store;
 mod system;
 mod tabs;
@@ -26,7 +27,8 @@ mod view_state;
 mod workspace;
 
 pub use app::{
-    App, Change, CommandPalette, IgnoredFiles, Notice, NoticeKind, Question, Rename, Screen,
+    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Question, Rename,
+    Screen,
 };
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
@@ -42,6 +44,7 @@ pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use operations::Imported;
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use saves::{NoPendingSaves, PendingSaves};
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};
 pub use workspace::{Workspace, WorkspaceService};

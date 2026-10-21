@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Area, CommandSource, Menu, Screen, TabId};
+use app_core::{App, Area, CommandSource, DragOut, Menu, Screen, TabId};
 use egui::Event;
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
@@ -88,6 +88,24 @@ impl NouraUi {
     /// Run the command a native menu item stands for, chosen at `at`.
     pub fn run_menu_command(&mut self, id: &str, at: Instant) -> bool {
         self.app.run_command(id, CommandSource::Menu, at)
+    }
+
+    /// The native drag of a tree row that left the window, for the desktop
+    /// shell to start now.
+    pub fn take_drag_out(&mut self) -> Option<DragOut> {
+        self.app.take_drag_out()
+    }
+
+    /// The desktop shell couldn't start the native drag from
+    /// [`Self::take_drag_out`].
+    pub fn drag_out_failed(&mut self) {
+        self.app.drag_out_failed();
+    }
+
+    /// The native drag from [`Self::take_drag_out`] ended, wherever it
+    /// landed.
+    pub fn drag_out_ended(&mut self) {
+        self.app.drag_out_ended();
     }
 
     /// Draw one frame.

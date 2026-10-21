@@ -13,17 +13,19 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, Layout, NoSystem, OpenedFile, RecentWorkspace, System, Tab, Workspace,
-    WorkspaceService, commands::Registry, layout::LayoutStore, rail::Rail, tabs::Tabs,
-    view_state::ViewStore,
+    AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
+    RecentWorkspace, System, Tab, Workspace, WorkspaceService, commands::Registry,
+    layout::LayoutStore, rail::Rail, tabs::Tabs, view_state::ViewStore,
 };
 
 mod commands;
+mod drops;
 mod file_actions;
 mod ignored_files;
 mod palette;
 mod view;
 
+pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
 pub use ignored_files::IgnoredFiles;
 pub use palette::CommandPalette;
@@ -154,6 +156,14 @@ pub struct App {
     failed_restore: Option<String>,
     pending: Option<Pending>,
     listeners: Listeners,
+    /// Changes waiting to be saved, which a drag out of the window saves
+    /// first.
+    pending_saves: Arc<dyn PendingSaves>,
+    /// The native drag waiting for the desktop shell to start it.
+    drag_out: Option<DragOut>,
+    /// The item the last native drag carried, so a drop of it back on the
+    /// tree moves it instead of copying it.
+    dragged_out: Option<String>,
     registry: Registry,
     palette: Option<CommandPalette>,
     shortcuts_open: bool,
@@ -198,6 +208,9 @@ impl App {
             failed_restore: None,
             pending: None,
             listeners: Listeners::default(),
+            pending_saves: Arc::new(NoPendingSaves),
+            drag_out: None,
+            dragged_out: None,
             registry: Registry::default(),
             palette: None,
             shortcuts_open: false,
@@ -365,6 +378,8 @@ impl App {
                 self.renaming = None;
                 self.ignored_files = None;
                 self.pending_trash = None;
+                self.drag_out = None;
+                self.dragged_out = None;
                 self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),
@@ -393,6 +408,8 @@ impl App {
         self.renaming = None;
         self.ignored_files = None;
         self.pending_trash = None;
+        self.drag_out = None;
+        self.dragged_out = None;
         self.listeners.emit(Change::Tree);
         self.listeners.emit(Change::Tabs);
         self.listeners.emit(Change::Document);

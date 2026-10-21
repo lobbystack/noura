@@ -19,12 +19,25 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 winit.workspace = true
 
-# Windows sends menu shortcuts through the menu's accelerator table.
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
+# A tree row dragged out of the window becomes a native drag through `drag`.
+# On Linux the crate drags out through GTK, which winit windows don't use.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+drag.workspace = true
 
-# The S6 desktop trial (ticket 04) lives in examples/desktop_trial. Its
-# drag-out crate stays a dev-dependency until ticket 09 moves it into the app.
+# While Finder drags files over the window, the window asks AppKit where the
+# pointer is, since winit doesn't say.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["std", "NSEvent", "NSScreen"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSGeometry"] }
+
+# While Explorer drags files over the window, the window asks Windows where
+# the pointer is, since winit doesn't say. Menu shortcuts go through the
+# menu's accelerator table.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+# The S6 desktop trial (ticket 04) lives in examples/desktop_trial.
 [[example]]
 name = "desktop_trial"
 test = true
@@ -32,10 +45,6 @@ test = true
 [dev-dependencies]
 egui_kittest.workspace = true
 tempfile.workspace = true
-
-# On Linux the drag crate drags out through GTK, which winit windows don't use.
-[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dev-dependencies]
-drag.workspace = true
 
 # The smoke run sends menu shortcuts through AppKit's main menu.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
