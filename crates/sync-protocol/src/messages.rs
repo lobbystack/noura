@@ -673,6 +673,7 @@ pub const SERVER_ERRORS: &[(&str, u16)] = &[
     ("invitation_limit", 409),
     ("invitation_invalid", 404),
     ("share_limit", 409),
+    ("internal", 500),
 ];
 
 /// The HTTP status of a server error code.

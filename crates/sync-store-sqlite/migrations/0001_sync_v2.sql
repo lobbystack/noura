@@ -78,6 +78,9 @@ CREATE TABLE domains (
     epoch INTEGER NOT NULL,
     epoch_digest BLOB NOT NULL,
     epoch_policy_revision INTEGER NOT NULL,
+    -- The highest retention floor the server published (§19); ticket 59
+    -- raises it.
+    retention_floor INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace, domain)
 ) STRICT, WITHOUT ROWID;
 

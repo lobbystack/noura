@@ -26,9 +26,6 @@ pub(crate) const ENTRY_POLICY: u8 = 9;
 pub(crate) const KEY_EPOCH: u8 = 3;
 pub(crate) const KEY_ENVELOPE: u8 = 4;
 
-/// The retention floor until ticket 59 moves it.
-const RETENTION_FLOOR: u64 = 0;
-
 /// A refusal of one record of a push: the record's own code, with the
 /// `detail` of §26 that names its index, its code and its own detail.
 pub(crate) fn failure(index: usize, refusal: Refusal) -> Error {
@@ -316,7 +313,7 @@ async fn apply(
     }
     let reached_none = op.checkpoint_seq == 0 && op.checkpoint.is_zero();
     if op.generation == generation
-        && op.checkpoint_seq >= RETENTION_FLOOR
+        && op.checkpoint_seq >= domain_row.retention_floor
         && !reached_none
         && !txn
             .checkpoint_exists(workspace, domain, op.checkpoint_seq, op.checkpoint)

@@ -165,6 +165,8 @@ pub struct DomainRow {
     pub epoch_digest: Digest,
     /// That epoch record's `policy_revision`.
     pub epoch_policy_revision: u64,
+    /// The highest retention floor the server published (§19).
+    pub retention_floor: u64,
 }
 
 /// A device's chain head in one domain, with the fields the next record is

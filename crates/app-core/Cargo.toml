@@ -21,8 +21,13 @@ jiff.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
 nucleo-matcher.workspace = true
 plugin-host = { version = "0.2.0", path = "../plugin-host" }
+# The sync service's HTTP client for the v2 API.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+thiserror.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
 
@@ -35,7 +40,11 @@ proptest.workspace = true
 # The tests stop the index from accepting writes.
 rusqlite.workspace = true
 serde_yaml_ng.workspace = true
+# The sync tests run the real server on SQLite in-process.
+sync-server = { version = "0.2.0", path = "../sync-server" }
+sync-store = { version = "0.2.0", path = "../sync-store" }
 tempfile.workspace = true
+tokio.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision\n             FROM domains WHERE workspace = ?1 AND domain = ?2",
+  "query": "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor\n             FROM domains WHERE workspace = ?1 AND domain = ?2",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "epoch_policy_revision"
           }
         }
+      },
+      {
+        "name": "retention_floor",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "retention_floor"
+          }
+        }
       }
     ],
     "parameters": {
@@ -55,8 +66,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "3908ed8cd3cd945b0eebb76fa055565cc0d14558ea25bda193ceaa12401109e9"
+  "hash": "c51f03be617b9d6d61fb6cbbb65f099d2ff5cdf5b9a67965529686bcae87cc07"
 }

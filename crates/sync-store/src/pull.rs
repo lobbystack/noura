@@ -121,6 +121,7 @@ pub(crate) async fn snapshot(
         pages.push(Page {
             complete_through,
             head: domain.head_seq,
+            retention_floor: domain.retention_floor,
             entries: Sorted::new(entries).map_err(|e| Error::internal(e.name()))?,
             ..empty(PageStatus::Ok)
         });

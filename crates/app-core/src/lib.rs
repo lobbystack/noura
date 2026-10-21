@@ -41,6 +41,7 @@ mod search;
 mod session;
 mod settings;
 mod store;
+pub mod sync;
 mod system;
 mod tabs;
 mod updates;

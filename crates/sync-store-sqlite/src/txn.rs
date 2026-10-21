@@ -275,7 +275,7 @@ impl ReadTxn for SqliteTxn {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
         let row = sqlx::query!(
-            "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision
+            "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor
              FROM domains WHERE workspace = ?1 AND domain = ?2",
             workspace,
             domain
@@ -289,6 +289,7 @@ impl ReadTxn for SqliteTxn {
                 epoch: uint(r.epoch)?,
                 epoch_digest: digest(r.epoch_digest)?,
                 epoch_policy_revision: uint(r.epoch_policy_revision)?,
+                retention_floor: uint(r.retention_floor)?,
             })
         })
         .transpose()

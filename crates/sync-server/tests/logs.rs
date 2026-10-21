@@ -5,6 +5,7 @@
 mod support;
 
 use jiff::tz::TimeZone;
+use sqlx::Connection;
 use support::{Client, Server, push_body, run, seed};
 use sync_protocol::codec::{Bytes, Encode, List};
 use sync_protocol::messages::{PullCursor, PullRequest, PushResponse};
@@ -45,7 +46,7 @@ async fn logs_keep_routes_request_ids_and_statuses_for_14_days() {
         .await
         .decode();
     let refused = client
-        .post(&format!("/v2/workspaces/{w}/ops"), push_body(&[op.clone()]))
+        .post(&format!("/v2/workspaces/{w}/ops"), push_body(std::slice::from_ref(&op)))
         .await;
     assert!(refused.status.is_success(), "a retry gets its receipt");
     let conflicting = created.op(&account.keys[0], 1, Digest::ZERO, |o| {
@@ -78,6 +79,28 @@ async fn logs_keep_routes_request_ids_and_statuses_for_14_days() {
         .await;
     let _ = client.get("/v1/limits#fragment-secret").await;
     let _ = Client::new(server.base(), None).get("/v2/workspaces").await;
+    // A database failure: the response says `internal` and nothing more,
+    // and the cause stays in the local log.
+    let mut connection = sqlx::SqliteConnection::connect(&format!(
+        "sqlite://{}",
+        data.join(sync_store_sqlite::DATABASE_FILE).display()
+    ))
+    .await
+    .expect("the database opens");
+    sqlx::query("DROP TABLE profiles")
+        .execute(&mut connection)
+        .await
+        .expect("a table goes missing");
+    connection.close().await.expect("closed");
+    let failed = client.get("/v2/workspaces").await;
+    assert_eq!(failed.status.as_u16(), 500);
+    let error = failed.error();
+    assert_eq!(error.code.as_str(), "internal");
+    assert!(
+        !error.message.as_str().contains("profiles"),
+        "{}",
+        error.message.as_str()
+    );
     server.kill();
 
     assert!(
@@ -141,4 +164,12 @@ async fn logs_keep_routes_request_ids_and_statuses_for_14_days() {
         "{today_log}"
     );
     assert!(today_log.contains("status=401"), "{today_log}");
+    assert!(
+        today_log.contains("store failure") && today_log.contains("no such table: profiles"),
+        "the cause of a store failure stays in the local log: {today_log}"
+    );
+    assert!(
+        today_log.contains("route=/v2/workspaces status=500"),
+        "{today_log}"
+    );
 }
