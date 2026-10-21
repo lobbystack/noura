@@ -444,7 +444,8 @@ impl App {
     /// Rename the note in the tab `tab` from its name field to `typed`. The
     /// name loses what a file name can't hold; an empty or unchanged name
     /// keeps the old one, and so does a taken one, which the note's
-    /// [`NoteSession::name_problem`] then explains. The note keeps its ID.
+    /// [`NoteSession::name_problem`] then explains. The note keeps its ID,
+    /// and a plain-text or code file keeps its extension.
     pub fn rename_note(&mut self, tab: TabId, typed: &str) {
         let Some(session) = self.notes.sessions.get_mut(&tab) else {
             return;
@@ -456,6 +457,7 @@ impl App {
             self.listeners.emit(Change::Note);
             return;
         }
+        let name = session.renamed_file_name(&name);
         if let Err((_, problem)) = self.flush_notes_inside(&from) {
             self.set_name_problem(
                 tab,

@@ -378,15 +378,31 @@ impl NoteSession {
         &self.relative_path
     }
 
-    /// The note's name: its file name without `.md`.
+    /// The note's name, as the name field shows it: its file name without
+    /// `.md`, or a plain-text or code file's name without its extension.
     pub fn name(&self) -> String {
-        crate::files::shown_name(
-            self.relative_path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&self.relative_path),
-            crate::EntryKind::File,
-        )
+        let file_name = self.file_name();
+        if self.text_file {
+            return split_extension(file_name).0.to_owned();
+        }
+        crate::files::shown_name(file_name, crate::EntryKind::File)
+    }
+
+    /// The file name a rename to `name`, the name field's text, gives the
+    /// file: a plain-text or code file keeps its extension. A Markdown
+    /// file's `.md` comes back with the rename itself.
+    pub(crate) fn renamed_file_name(&self, name: &str) -> String {
+        if self.text_file {
+            return format!("{name}{}", split_extension(self.file_name()).1);
+        }
+        name.to_owned()
+    }
+
+    fn file_name(&self) -> &str {
+        self.relative_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.relative_path)
     }
 
     /// The text the editor shows.
@@ -1202,7 +1218,7 @@ fn open_error(error: CoreError, relative_path: &str) -> AppError {
     match error.code.as_str() {
         "invalid_utf8" => AppError::new(
             "invalid_utf8",
-            "This file isn't UTF-8 text, so the editor can't open it.",
+            "Noura can't read this file as text because it isn't UTF-8.",
         ),
         "file_not_downloaded" => AppError::new(
             "file_not_downloaded",
@@ -1239,6 +1255,16 @@ fn misread_frontmatter(text: &str) -> bool {
         && text
             .match_indices('\r')
             .any(|(index, _)| !text[index + 1..].starts_with('\n'))
+}
+
+/// `file_name` split before its extension's dot: `config.json` into
+/// `config` and `.json`. A name with no dot past its first character has no
+/// extension.
+fn split_extension(file_name: &str) -> (&str, &str) {
+    match file_name.rfind('.') {
+        Some(dot) if dot > 0 => file_name.split_at(dot),
+        _ => (file_name, ""),
+    }
 }
 
 /// Whether the file at `relative_path` opens in the editor: a Markdown file,
