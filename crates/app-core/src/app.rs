@@ -14,15 +14,19 @@ use std::{
 
 use crate::{
     AppError, FileTree, Layout, NoSystem, OpenedFile, RecentWorkspace, System, Tab, Workspace,
-    WorkspaceService, layout::LayoutStore, rail::Rail, tabs::Tabs, view_state::ViewStore,
+    WorkspaceService, commands::Registry, layout::LayoutStore, rail::Rail, tabs::Tabs,
+    view_state::ViewStore,
 };
 
+mod commands;
 mod file_actions;
 mod ignored_files;
+mod palette;
 mod view;
 
 pub use file_actions::{Question, Rename};
 pub use ignored_files::IgnoredFiles;
+pub use palette::CommandPalette;
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,8 +74,14 @@ pub enum Change {
     Layout,
     Document,
     Notice,
-    /// The Ignored files page changed.
+    /// The Ignored files page or the Keyboard shortcuts page changed.
     Settings,
+    /// A command registered.
+    Commands,
+    /// The command palette opened, closed or changed.
+    Palette,
+    /// Close Window ran; see [`App::take_close_window`].
+    Window,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -144,6 +154,11 @@ pub struct App {
     failed_restore: Option<String>,
     pending: Option<Pending>,
     listeners: Listeners,
+    registry: Registry,
+    palette: Option<CommandPalette>,
+    shortcuts_open: bool,
+    /// Close Window ran and the window hasn't closed yet.
+    close_window: bool,
 }
 
 impl App {
@@ -183,7 +198,12 @@ impl App {
             failed_restore: None,
             pending: None,
             listeners: Listeners::default(),
+            registry: Registry::default(),
+            palette: None,
+            shortcuts_open: false,
+            close_window: false,
         };
+        app.register_kernel_commands();
         app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
