@@ -83,6 +83,12 @@ impl Workspace {
         self.engine
             .inject_watch_event(relative_paths.iter().map(|path| root.join(path)).collect());
     }
+
+    /// Test hook: deliver one native watcher event that asks for a full
+    /// rescan, as the platform would.
+    pub fn inject_watch_rescan_request(&self) {
+        self.engine.inject_watch_rescan_request();
+    }
 }
 
 /// Creates and opens workspaces, and keeps the recent list. Per-device

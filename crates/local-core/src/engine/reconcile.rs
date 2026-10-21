@@ -89,6 +89,13 @@ impl WorkspaceEngine {
         self.watcher.inject(paths);
     }
 
+    /// Test hook: deliver one native watcher event that asks for a full
+    /// rescan, as the platform would.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn inject_watch_rescan_request(&self) {
+        self.watcher.inject_rescan_request();
+    }
+
     /// Whether a read must walk the workspace before trusting the index:
     /// the watcher is down, or it saw a change nobody reconciled yet.
     pub(super) fn needs_reconcile(&self) -> bool {

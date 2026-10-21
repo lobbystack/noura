@@ -252,6 +252,24 @@ fn after_the_watcher_overflows_a_full_rescan_finds_the_lost_changes() {
 }
 
 #[test]
+fn when_the_platform_asks_for_a_rescan_a_full_rescan_finds_the_changes() {
+    let mut live = Live::open_with(&[("A.md", "# A\n")], NO_RESCANS);
+    // The watcher reports nothing on its own, as when the platform dropped
+    // its events and only says to rescan.
+    live.workspace().force_watch_fault(WatchFault::Silent);
+
+    write(&live.folder, "Fresh.md", "# Fresh\n");
+    write(&live.folder, "Scan.pdf", "%PDF-1.7\n");
+    std::fs::remove_file(live.path("A.md")).unwrap();
+    live.workspace().inject_watch_rescan_request();
+
+    live.wait_until("a rescan finds the changes", |app| {
+        rows(app) == ["Fresh.md", "Scan.pdf"]
+    });
+    assert!(live.seen.contains(&Change::Files(Origin::Outside)));
+}
+
+#[test]
 fn the_periodic_rescan_finds_a_change_the_watcher_missed() {
     let periodic = Duration::from_secs(3);
     let mut live = Live::open_with(

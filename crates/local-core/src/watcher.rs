@@ -77,13 +77,9 @@ impl WatchCoordinator {
                     LOSE_SILENTLY => return,
                     _ => {}
                 }
+                // A rescan request is noticed when the poller drains it.
                 match &event {
-                    Ok(event) => {
-                        if event.need_rescan() {
-                            flag.store(true, Ordering::SeqCst);
-                        }
-                        on_event(event);
-                    }
+                    Ok(event) => on_event(event),
                     Err(_) => flag.store(true, Ordering::SeqCst),
                 }
                 if sender.try_send(event).is_err() {
@@ -146,6 +142,16 @@ impl WatchCoordinator {
         }
     }
 
+    /// Test hook: queue one native event that asks for a full rescan, as
+    /// the platform does when it lost track of changes.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn inject_rescan_request(&self) {
+        let event = Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        if self.injector.try_send(Ok(event)).is_err() {
+            self.overflowed.store(true, Ordering::SeqCst);
+        }
+    }
+
     /// Report and clear a lost-event condition (queue overflow, a native
     /// rescan request, or a watcher error) since the last call.
     pub fn take_overflow(&self) -> bool {
@@ -181,7 +187,14 @@ impl WatchCoordinator {
             let Some(event) = event else { break };
             received = true;
             match event {
-                Ok(event) => paths.extend(event.paths),
+                Ok(event) => {
+                    // The platform lost track of changes and asks for a
+                    // full rescan.
+                    if event.need_rescan() {
+                        self.overflowed.store(true, Ordering::SeqCst);
+                    }
+                    paths.extend(event.paths);
+                }
                 // An unreadable event loses paths; reconcile everything.
                 Err(_) => self.overflowed.store(true, Ordering::SeqCst),
             }
@@ -269,6 +282,21 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert!(watcher.take_overflow());
+        assert!(!watcher.take_overflow());
+    }
+
+    #[test]
+    fn a_platform_rescan_request_requests_a_full_reconcile() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        sender
+            .send(Ok(
+                Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan)
+            ))
+            .unwrap();
+        drop(sender);
+        let watcher = WatchCoordinator::from_receiver(receiver);
+        watcher.drain_coalesced(Duration::from_millis(10)).unwrap();
         assert!(watcher.take_overflow());
         assert!(!watcher.take_overflow());
     }
