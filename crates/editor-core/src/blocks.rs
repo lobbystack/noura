@@ -848,7 +848,10 @@ impl<'ast> MdDoc {
         } else if line_content_text.starts_with("[!CAUTION]") {
             "[!CAUTION]".len()
         } else {
-            unreachable!("supported alert types are note, tip, important, warning, caution")
+            // comrak found an alert whose first line the editor reads
+            // elsewhere, as after frontmatter that holds a lone carriage
+            // return: the type is empty and the whole line is the title.
+            0
         };
         let _type = (line_content.start(), line_content.start() + type_len);
 
@@ -1690,7 +1693,7 @@ impl<'ast> MdDoc {
         line: (Grapheme, Grapheme),
     ) -> Option<Graphemes> {
         let node_line = self.node_line(node, line);
-        let mut result = 0.into();
+        let mut result: Graphemes = 0.into();
 
         // "If a sequence of lines Ls constitutes a list item according to rule
         // #1, #2, or #3, then the result of indenting each line of Ls by 1-3
@@ -1715,10 +1718,12 @@ impl<'ast> MdDoc {
 
             // spaces + content
             let marker_width = 5;
-            let text = &self.buffer[(
-                node_line.start() + indentation + marker_width,
-                node_line.end(),
-            )];
+            // The parent item's padding counts columns, so after a tab it
+            // can claim part of the marker and leave a line shorter than
+            // the marker (`-\t- [ ] `); clamp rather than read past it.
+            let after_marker =
+                (node_line.start() + indentation + marker_width).min(node_line.end());
+            let text = &self.buffer[(after_marker, node_line.end())];
             marker_width
                 + if text.starts_with("   ") {
                     "   ".len()
@@ -1773,7 +1778,7 @@ impl<'ast> MdDoc {
             result += consume_indent_columns_ceil(text, indentation + parent_padding);
         }
 
-        Some(result)
+        Some(result.min(node_line.len()))
     }
 
     pub fn compute_bounds_task_item(&mut self, node: &'ast AstNode<'ast>) {

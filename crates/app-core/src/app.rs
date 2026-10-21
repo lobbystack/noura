@@ -13,14 +13,15 @@ use std::{
         Arc, Mutex,
         mpsc::{Receiver, TryRecvError, channel},
     },
+    time::Instant,
 };
 
 use local_core::{ChangeCounts, WorkspaceEngine};
 
 use crate::{
     AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
-    PendingSaves, PluginInstall, Preferences, Problem, RecentWorkspace, Settings, SettingsSection,
-    System, Tab, Workspace, WorkspaceService,
+    PendingSaves, PendingWrites, PluginInstall, Preferences, Problem, RecentWorkspace, Settings,
+    SettingsSection, System, Tab, UpdateSource, Updates, Workspace, WorkspaceService,
     commands::Registry,
     inbox::Sections,
     layout::LayoutStore,
@@ -41,6 +42,7 @@ mod file_actions;
 mod finder;
 mod ignored_files;
 mod inbox;
+mod notes;
 mod palette;
 mod plugins;
 mod preferences;
@@ -51,6 +53,7 @@ pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
 pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
+pub use notes::UnsavedPrompt;
 pub use palette::{CommandPalette, Palette, PaletteMode};
 
 /// What the window shows.
@@ -108,6 +111,8 @@ pub enum Change {
     Layout,
     Document,
     Notice,
+    /// The update status changed.
+    Update,
     /// Settings or the Ignored files page changed.
     Settings,
     /// The appearance, text size or zoom changed.
@@ -123,6 +128,9 @@ pub enum Change {
     /// [`App::is_closed`], [`App::take_opened_windows`] and
     /// [`App::take_quit`].
     Window,
+    /// An open note changed: its text, a save, its properties or its name,
+    /// or the prompt about a note that couldn't save.
+    Note,
     /// Background work finished, or another window changed what this one
     /// shows, such as the files; call [`App::poll`] to apply it.
     WorkFinished,
@@ -251,11 +259,15 @@ pub struct App {
     login_item: Arc<dyn LoginItem>,
     /// Where the local diagnostic log lives.
     log_folder: PathBuf,
+    /// The third-party license list this copy's package ships, if any.
+    third_party_licenses: Option<PathBuf>,
     /// A folder waiting to go to the trash until you confirm.
     pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
     pending: Option<Pending>,
+    writes: PendingWrites,
+    updates: Updates,
     listeners: Listeners,
     /// Changes waiting to be saved, which a drag out of the window saves
     /// first.
@@ -273,6 +285,13 @@ pub struct App {
     searcher: Searcher,
     /// Quit ran and the app hasn't closed yet.
     quit: bool,
+    /// The Markdown files open in tabs, and their saves.
+    notes: crate::notes::Notes,
+    /// What waits for notes to save before it happens.
+    leaving: Option<notes::Leaving>,
+    /// The last quit or workspace switch this window saved its notes
+    /// for, which any window may ask for.
+    departure_seen: u64,
     /// The open workspace's problems, such as files that share an ID, as
     /// this window shows them.
     problems: Vec<Problem>,
@@ -355,9 +374,12 @@ impl App {
             settings_sections: kernel_sections(),
             login_item: Arc::new(NoLoginItem),
             log_folder: crate::log_folder(&session.app_data),
+            third_party_licenses: None,
             pending_trash: None,
             failed_restore: None,
             pending: None,
+            updates: session.updates.clone(),
+            writes: session.writes.clone(),
             listeners,
             pending_saves: Arc::new(NoPendingSaves),
             drag_out: None,
@@ -366,6 +388,9 @@ impl App {
             palette: None,
             searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
             quit: false,
+            notes: crate::notes::Notes::default(),
+            leaving: None,
+            departure_seen: 0,
             problems: Vec::new(),
             recent: Vec::new(),
             inbox_sections: Sections::default(),
@@ -420,21 +445,35 @@ impl App {
         window.preferences_seen = self.preferences_seen;
         window.plugins_seen = self.plugins_seen;
         // The commands and Settings sections registered so far, what saves
-        // pending changes and the login item serve every window.
+        // pending changes, the login item and the packaged license list
+        // serve every window.
         window.registry = self.registry.copy();
         window.settings_sections = self.settings_sections.clone();
         window.inbox_sections = self.inbox_sections.clone();
         window.pending_saves = self.pending_saves.clone();
         window.login_item = self.login_item.clone();
+        window
+            .third_party_licenses
+            .clone_from(&self.third_party_licenses);
         window.restore_view(stored);
         window
     }
 
-    /// Close this window. The other windows keep their tabs, and this
-    /// one's tabs leave the windows that come back at the next launch,
-    /// unless it was the last window open: then it comes back, as when
-    /// Noura quits.
+    /// Close this window once its notes are saved, as Close Window and
+    /// the window's close button do: the window stays while saves run,
+    /// and asks when one fails. The other windows keep their tabs, and
+    /// this one's tabs leave the windows that come back at the next
+    /// launch, unless it was the last window open: then it comes back, as
+    /// when Noura quits.
     pub fn close_window(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.leave(notes::Leave::CloseWindow);
+    }
+
+    /// Close this window now: its notes are on disk.
+    fn close_window_now(&mut self) {
         if self.closed {
             return;
         }
@@ -459,6 +498,9 @@ impl App {
         self.searcher.cancel();
         self.palette = None;
         self.settings = None;
+        self.notes.sessions.clear();
+        self.notes.unreadable.clear();
+        self.leaving = None;
         self.plugin_install = None;
         self.listeners.emit(Change::Screen);
     }
@@ -539,7 +581,8 @@ impl App {
         }
     }
 
-    /// Open the workspace in `folder`, or make one of a plain folder.
+    /// Open the workspace in `folder`, or make one of a plain folder. Every
+    /// window's open notes save first, since the other windows close.
     pub fn open_folder(&mut self, folder: PathBuf) {
         // It's open already, in every window. The background job also
         // catches the folder spelled another way, before it opens anything.
@@ -550,18 +593,20 @@ impl App {
         {
             return;
         }
-        self.start(Job::OpenFolder(folder));
+        self.depart(notes::Departure::Open(Job::OpenFolder(folder)));
     }
 
-    /// Create a workspace named `name` in `folder` and open it.
+    /// Create a workspace named `name` in `folder` and open it. Every
+    /// window's open notes save first.
     pub fn create_workspace(&mut self, name: &str, folder: PathBuf) {
-        self.start(Job::Create {
+        self.depart(notes::Departure::Open(Job::Create {
             name: name.to_owned(),
             folder,
-        });
+        }));
     }
 
-    /// Open a workspace from the recent list.
+    /// Open a workspace from the recent list. Every window's open notes
+    /// save first.
     pub fn open_recent(&mut self, workspace_id: &str) {
         // It's open already, in every window.
         if self
@@ -576,10 +621,10 @@ impl App {
             .iter()
             .find(|recent| recent.workspace_id == workspace_id)
             .map_or_else(String::new, |recent| recent.name.clone());
-        self.start(Job::OpenRecent {
+        self.depart(notes::Departure::Open(Job::OpenRecent {
             workspace_id: workspace_id.to_owned(),
             name,
-        });
+        }));
     }
 
     /// Retry the workspace the launch couldn't reopen. Never opens another
@@ -618,9 +663,65 @@ impl App {
         }
     }
 
-    /// Apply finished background work and what other windows changed,
-    /// such as the files. Returns whether anything changed.
+    /// Writes that must reach disk before Noura restarts. Services that
+    /// write files on another thread register each write here. Every
+    /// window shares the list.
+    pub fn pending_writes(&self) -> &PendingWrites {
+        &self.writes
+    }
+
+    /// Where updating stands. Every window shares the update service.
+    pub fn updates(&self) -> &Updates {
+        &self.updates
+    }
+
+    /// Check `source` for updates, first [`crate::FIRST_UPDATE_CHECK`]
+    /// after `launched` and then every [`crate::UPDATE_CHECK_INTERVAL`].
+    pub fn enable_updates(
+        &mut self,
+        current_version: &str,
+        source: Arc<dyn UpdateSource>,
+        launched: Instant,
+    ) {
+        self.updates.enable(current_version, source, launched);
+    }
+
+    /// Say that this build doesn't update itself, and why.
+    pub fn disable_updates(&mut self, current_version: &str, reason: &str) {
+        self.updates.disable(current_version, reason);
+    }
+
+    /// Check for updates now, as Settings' Check for updates does.
+    pub fn check_for_updates(&mut self) {
+        self.updates.check();
+    }
+
+    /// Save every window's notes, then save every change still waiting,
+    /// wait for pending writes, install the downloaded update, save and
+    /// wait again for changes made during the install, and restart. A note
+    /// that couldn't save asks first, as when Noura quits, and Keep editing
+    /// keeps this version running. If a save, a write or the install
+    /// fails, this version keeps running and the update status says why.
+    pub fn restart_to_update(&mut self) {
+        self.depart(notes::Departure::Restart);
+    }
+
+    /// Stop offering Restart outside Settings until the next update, in
+    /// every window.
+    pub fn hide_update_offer(&mut self) {
+        self.updates.hide_offer();
+    }
+
+    /// Apply finished background work, such as note saves, and what other
+    /// windows changed, such as the files, and start an update check that
+    /// is due. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
+        self.poll_at(Instant::now())
+    }
+
+    /// [`App::poll`] with the time given, so tests can step through the
+    /// update schedule.
+    pub fn poll_at(&mut self, now: Instant) -> bool {
         if self.closed {
             return false;
         }
@@ -628,14 +729,26 @@ impl App {
             self.closed_by_another_window();
             return true;
         }
+        let saved = self.collect_note_writes();
+        let updated = self.updates.poll(now);
         let searched = self.take_search_answer();
         let opened = self.take_opened();
         let listed = self.poll_listing();
         let rail = self.poll_rail();
         let recents = self.poll_recents();
         let preferences = self.poll_preferences();
+        let departing = self.poll_departure();
         let plugins = self.poll_plugins();
-        searched || opened || listed || rail || recents || preferences || plugins
+        saved
+            | updated
+            | searched
+            | opened
+            | listed
+            | rail
+            | recents
+            | preferences
+            | departing
+            | plugins
     }
 
     /// Take the workspace a background job opened, or why it couldn't.
@@ -867,10 +980,15 @@ impl App {
         let listeners = self.listeners.clone();
         let work = job.clone();
         let shown = self.workspace.as_deref().map(Shown::of);
+        // Opening a workspace can write its manifest and the recent list,
+        // so restarting to update and quitting wait for it. Its notice
+        // reports a failure.
+        let writing = self.writes.begin_work("workspace");
         let spawned = std::thread::Builder::new()
             .name("workspace-open".into())
             .spawn(move || {
                 let result = run(&service, &work, shown.as_ref());
+                drop(writing);
                 // The app may have closed meanwhile; nothing is waiting then.
                 let _ = sender.send(result);
                 listeners.emit(Change::WorkFinished);

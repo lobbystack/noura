@@ -4,12 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "The open workspace for humans and AI."
+homepage = "https://noura.app"
+repository = "https://github.com/lobbystack/noura"
+
+[[bin]]
+name = "noura"
+path = "src/main.rs"
 
 [dependencies]
 app-core = { version = "0.2.0", path = "../../crates/app-core" }
 app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
 auto-launch.workspace = true
+cargo-packager-updater.workspace = true
 eframe.workspace = true
+# The note editor paints its text through eframe's wgpu renderer.
+editor-egui = { version = "0.2.0", path = "../../crates/editor-egui" }
 egui.workspace = true
 # One running copy per user: a second launch asks the running copy to come
 # forward through a local socket.
@@ -51,9 +61,12 @@ name = "desktop_trial"
 test = true
 
 [dev-dependencies]
+base64.workspace = true
 # The eframe feature runs `App::logic` before `App::ui` in each step, as
 # eframe does.
 egui_kittest = { workspace = true, features = ["eframe"] }
+minisign.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 # The smoke run sends menu shortcuts through AppKit's main menu.
@@ -61,3 +74,35 @@ tempfile.workspace = true
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSResponder"] }
 objc2-foundation = { workspace = true, features = ["std", "NSGeometry", "NSString"] }
+
+# cargo-packager reads this. scripts/package-desktop.sh builds the binary,
+# generates the license list and runs cargo-packager. The release workflow
+# adds the macOS signing identity at build time.
+[package.metadata.packager]
+product-name = "Noura"
+identifier = "org.noura.desktop"
+publisher = "Noura"
+category = "Productivity"
+license-file = "../../LICENSE"
+icons = [
+    "icons/32x32.png",
+    "icons/64x64.png",
+    "icons/128x128.png",
+    "icons/128x128@2x.png",
+    "icons/icon.icns",
+    "icons/icon.ico",
+]
+resources = [
+    { src = "packaging/THIRD_PARTY_LICENSES.html", target = "THIRD_PARTY_LICENSES.html" },
+]
+
+# winit and wgpu load these libraries when the app starts.
+[package.metadata.packager.deb]
+depends = [
+    "libxkbcommon-x11-0",
+    "libxcursor1",
+    "libxrandr2",
+    "libxi6",
+    "libegl1",
+    "libvulkan1",
+]

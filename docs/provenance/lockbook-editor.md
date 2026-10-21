@@ -42,6 +42,7 @@ Paths on the left are relative to `libs/content/workspace/src/`.
 | `resolvers/embed.rs` (the `EmbedResolver` trait) | `crates/editor-egui/src/resolvers.rs` |
 | `resolvers/link.rs` (the `LinkResolver` trait and `LinkState`) | `crates/editor-core/src/resolvers.rs`, rewritten for the embedding app |
 | `test_utils/prop.rs`, `byte_source.rs`, `shrink.rs` | `crates/editor-egui/src/tests/test_utils/` |
+| `tab/markdown_editor/widget/find.rs` (added by ticket 19) | `crates/editor-core/src/find.rs` (matches, the current match, stepping and replacing) and the find bar in `crates/editor-egui/src/chrome.rs` |
 
 ## Files adapted from lb-rs (BSD-3-Clause)
 
@@ -62,13 +63,18 @@ To the workspace crate's editor:
 - Ported from egui 0.32.3 to egui and eframe 0.37 (`Id::unique`, `Ui::scope_id`, `Context::run_ui`, the new IME output fields, `fonts_mut`) and to Rust edition 2024.
 - Ported from glyphon 0.9 to 0.12 and cosmic-text 0.14 to 0.19, which shape on an explicit `shape_until_scroll` call. glyphon 0.12 targets wgpu 30, the version eframe 0.37 uses, so the build holds one wgpu version.
 - Split the editor in two. `editor-core`'s `MdDoc` holds the buffer, the parse, the reveal state and the edit commands. `editor-egui`'s renderer holds an `MdDoc` and derefs to it. Edit commands ask layout questions (where a click lands, which offset sits a row away) through a `TextLayout` trait that `editor-egui` answers from the fragments it painted. With no layout, Up and Down step over source lines and hold a column counted in graphemes.
-- Moved three edits that `editor-egui` decided into `editor-core` events: `Paste` (non-breaking spaces become spaces, and a URL pasted over selected text links it), `ToggleTask` (the checkbox writes `x` or a space) and `Unfold` (the fold chip removes its tag). A URL pasted over a selection in plain-text mode now replaces the selection; Lockbook dropped the paste.
-- Replaced `lb-rs` link and image lookups with the `LinkResolver` and `EmbedResolver` interfaces the embedding app implements. Opening a link reports an `OpenedLink` to the app instead of opening it. A wikilink to a missing note reports not found and creates nothing. `EmbedResolver` answers with an `EmbedState` that can say not found, and the editor draws a broken-image marker for it. The `()` resolver finds nothing.
+- Moved three edits that `editor-egui` decided into `editor-core` events: `Paste`, `ToggleTask` (the checkbox writes `x` or a space) and `Unfold` (the fold chip removes its tag). Ticket 19 made a paste replace the selection with the pasted text as copied, with Windows line endings turned into `\n`. Lockbook turned non-breaking spaces into spaces and linked selected text to a pasted URL.
+- Ticket 19 replaced Lockbook's formatting commands, Tab handling and shortcuts with the legacy app's rules, ported from `packages/editor/src/commands.ts` into `crates/editor-core/src/commands.rs`, and a keymap in `crates/editor-core/src/keymap.rs` that `editor-egui` runs. Tab nests a list item with its children under the item above and Shift-Tab lifts them out; outside a list Tab moves the keyboard to the next control. Mod-Enter checks a task instead of opening the links in the selection. Ticket 19 also removed Lockbook's shortcuts for highlight, spoilers, subscript, superscript, code blocks, thematic breaks and headings 4 to 6. The code block and thematic break shortcuts reached `toggle_style` paths that panic.
+- Ticket 19 adapted Lockbook's find widget. Matching, the current match, stepping and replacing moved to `editor-core`, which matches literal text ignoring case through `regex`. The bar uses egui's own text fields and buttons. Lockbook's case, whole-word and regex modes stayed behind.
+- Replaced `lb-rs` link and image lookups with the `LinkResolver` and `EmbedResolver` interfaces the embedding app implements. Opening a link reports an `OpenedLink` to the app instead of opening it. A wikilink to a missing note reports not found and creates nothing. `EmbedResolver` answers with an `EmbedState` that can say not found, and the editor draws a broken-image marker for it. The `()` resolver finds nothing. Both traits require `Send`, so an editor can sit in a window that egui draws as a deferred viewport.
 - Removed every network request: link cards, link metadata fetching, and Lockbook's image cache, which read files through `lb-rs` and fetched remote images.
 - Removed code-block and plain-text syntax highlighting with its syntect and syntect-assets dependencies. Code draws as plain monospace until ticket 18 picks a highlighter and checks its grammar licenses.
 - Removed Lockbook's fonts. `register_font_system` takes a font database from the embedding app, and `fonts::default_font_database` offers egui's bundled fonts. Phosphor and Nerd Font icon glyphs became painted shapes (the heading fold caret, the alert dot) or text (the `…` fold chip), and emoji no longer route to Twemoji.
 - Removed the editor's chrome: the toolbar, find bar, emoji and link completions, context menus, link hover cards and link sheets. Removed the mobile host command surface, `MdLabel`, and the workspace persistence of scroll position and selection.
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
+- `alert_type_title_ranges` gives a callout whose first line names no known type an empty type and uses the whole line as its title. Lockbook panicked there. You can reach that case by typing `---` above a line that holds a lone carriage return, which makes frontmatter that comrak counts one line short.
+- `own_prefix_len_task_item` keeps a task item's prefix inside its line. A parent item's padding counts columns, so after a tab it can claim part of the task's marker, as in `-\t- [ ] `. Lockbook then read past the end of the line and panicked.
+- Ticket 23 made the plain-text mode leave Markdown out of editing too. Return only breaks the line, Backspace only deletes, Tab nests nothing, and the mode reports no constructs, folds or images. Lockbook's plain-text mode drew the source as it is but still continued lists and quotes on Return and removed their markers on Backspace.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
 - Inserts an input method's committed text the way a key press inserts text. Lockbook's desktop path ignored egui's input method events.
@@ -78,10 +84,12 @@ To the `lb-rs` text model:
 - The buffer keeps its text in a ropey rope instead of a `String`. Edits, undo, redo and merged outside edits write the rope, and the save text comes from it. A contiguous copy, rebuilt from the rope after each change, feeds comrak and `&str` slices.
 - Rewrote the operation history as two lists, received and applied, in place of `Ops`, and dropped the base snapshot, `Buffer::merge` and the `open_camera` response flag. `queue_at` takes the time of an edit, so tests set keystroke times instead of sleeping.
 - `lb-rs` merged a reload by diffing the file against the last text loaded or saved, then applying the diff at the version that held that text. Undo past that version, followed by any edit or reload, drops the version from the history. A merge into unsaved edits leaves no version holding the file's text. In both cases `lb-rs` applied the diff to the wrong text and mangled the note. Noura's buffer merges on its next update instead. While a version still holds the last text loaded or saved, it transforms the diff through the edits made since. Otherwise it merges three texts: that one, the buffer's and the file's. Offsets that still run past the text clamp to it instead of panicking.
+- Undo takes back your own edits only. `lb-rs` undid a merged outside edit as it undid typing. When an outside edit arrived after your last unit, Noura's undo first rewrites that stretch of the history so the outside edit comes before your unit. It then takes your unit back. Where the outside edit changed text your unit wrote, the outside edit stays.
+- `lb-rs` moved both ends of a replacement past text an earlier edit inserted there. Merging another app's edit of a word then deleted a keystroke you typed right after it. Noura keeps a replacement's end before such an insertion, and `buffer_merge_insert_replace` now expects your keystroke to stay.
 - Restructured the word diff around a `Side` helper with the same algorithm, and took only `measure_replace` and `last_grapheme` from `units.rs`.
 - Uses `std::time` in place of `web_time`, and renamed identifiers throughout.
 
-Lockbook's editing behaviors stay as they were, including the ones that write files: fold tags, Tab handling, non-breaking spaces flattened on paste, setext headings turned off, `__` drawn as underline, and soft breaks drawn as hard breaks. Ticket 18 removes those.
+Lockbook's editing behaviors stay as they were, including the ones that write files: fold tags, setext headings turned off, `__` drawn as underline, and soft breaks drawn as hard breaks. Ticket 18 removes those. Ticket 19 removed Lockbook's Tab handling and the flattening of non-breaking spaces on paste.
 
 ## Left behind
 
@@ -93,7 +101,7 @@ Lockbook's editing behaviors stay as they were, including the ones that write fi
 | `lb-rs/src/model/text/units.rs`, except `measure_replace` and `last_grapheme` | Codepoint units and strict byte conversions the editor doesn't call |
 | `tab/markdown_editor/assets/placeholders.tmTheme` | Syntax highlighting stays out until ticket 18 |
 | `tab/markdown_editor/widget/inline/link/card.rs`, `widget/inline/link/meta.rs` | Link cards fetch web pages |
-| `tab/markdown_editor/widget/toolbar.rs`, `widget/find.rs`, `widget/emoji_completions.rs`, `widget/link_completions.rs` | Chrome around the editor that later tickets rebuild for Noura. Link completions also listed files through `lb-rs` |
+| `tab/markdown_editor/widget/toolbar.rs`, `widget/emoji_completions.rs`, `widget/link_completions.rs` | Chrome around the editor that later tickets rebuild for Noura. The toolbar is the phone toolbar, with Lockbook's actions and its style tokens; Noura's desktop toolbar in `crates/editor-egui/src/chrome.rs` is new code laid out like the legacy app's. Link completions also listed files through `lb-rs`, and belong to ticket 20 |
 | `tab/markdown_editor/commands.rs` | Platform commands for the iOS and Android hosts |
 | `tab/markdown_editor/input/events.rs` | `MdEdit::drain_workspace_events` took Markdown edits, Undo and Redo from Lockbook's workspace event queue. The fork has no such queue: the embedding app passes events to `Editor::push_event` |
 | `tab/markdown_editor/md_label.rs` | A read-only Markdown label for Lockbook's chat and search previews |
@@ -119,7 +127,7 @@ These 52 didn't come along:
 | `widget/inline/link/meta.rs`: `description_absent_is_none`, `falls_back_to_html_title`, `favicon_falls_back_to_origin_root`, `full_card_metadata`, `no_title_yields_none`, `prefers_open_graph_over_html_title`, `real_titles_are_not_junk`, `site_name_falls_back_to_host_without_www`, `twitter_card_fallbacks`, `wall_titles_and_markers_are_junk` | They test scraping fetched pages for link cards |
 | `widget/emoji_completions.rs`: `colon_after_space_or_start_does_trigger`, `colon_after_word_does_not_trigger`, `empty_note_has_no_in_doc_recents`, `in_doc_recents_first_appearance_and_cap`, `parse_shortcode_token` | The emoji completion popup stayed behind |
 | `widget/link_completions.rs`: `destination_completion_replaces_link_keeping_title`, `destination_context_detected_and_title_kept`, `list_markers_hold_the_popup`, `out_of_scope_links_insert_the_external_url`, `path_query_matches_folder_and_leaf`, `wikilink_completions_resolve_back` | Link completions stayed behind; they need `lb-rs`'s file cache |
-| `tests/regressions.rs`: `find_esc_closes_widget` | The find bar stayed behind |
+| `tests/regressions.rs`: `find_esc_closes_widget` | It tested Lockbook's find bar; `crates/editor-egui/tests/editing_commands.rs` checks that Escape closes Noura's |
 | `tests/regressions.rs`: `icon_glyphs_skip_emoji_font` | The icon fonts and Twemoji routing came out with `lb-fonts` |
 | `tests/regressions.rs`: `layout_cache_consistent_under_link_title` | Link titles came from fetched metadata |
 | `tests/regressions.rs`: `out_of_scope_embed_leaves_image_cache_alone` | It tests `lb-rs`'s image cache and share scope |
@@ -144,6 +152,17 @@ These 2 didn't come along:
 |---|---|
 | `buffer.rs`: `buffer_merge_fuzz_chain_2`, `buffer_merge_fuzz_chain_5` | They check that Lockbook's file sync converges through `Buffer::merge` across chains of devices. That merge stayed behind, and Noura's sync merges through yrs |
 
+### Tests removed by ticket 19
+
+Ticket 19 removed seven ported tests that checked Lockbook's Tab handling, which the legacy app's list nesting replaced. `crates/editor-core/tests/formatting.rs` checks the new rules. The paths below are relative to `crates/editor-egui/`.
+
+| Test | What it checked |
+|---|---|
+| `src/tests/edit_props.rs`: `indent_only_moves_selected_line` | Tab left an item's children in place |
+| `src/tests/edit_props.rs`: `indent_is_permissive`, `shift_tab_strips_one_bq` | Shift-Tab removed a quote marker |
+| `src/tests/regressions.rs`: `tab_promotes_target_child_becomes_sibling`, `tab_indent_no_list_child_uses_one_unit`, `tab_indents_parent_to_child_keeps_child_level` | Tab left an item's children in place, or aligned the item with its child |
+| `src/tests/regressions.rs`: `shift_tab_mixed_container_cases` | Shift-Tab removed quote and callout markers |
+
 ## Notices
 
 The Unlicense asks for no notice. Noura keeps this record so you can trace each file back to its source.
@@ -153,4 +172,4 @@ BSD-3-Clause requires binary distributions to reproduce the copyright notice, th
 ## Review
 
 - Reviewer: Claude (author review). Owner review pending.
-- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code.
+- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals, and for ticket 23's plain-text mode.

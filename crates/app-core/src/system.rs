@@ -1,7 +1,7 @@
 //! What Noura asks of the operating system: its trash, its file manager,
-//! a terminal, the clipboard, the web browser and the clock. The desktop
-//! app passes the real system; tests pass a fake that records each
-//! request.
+//! a terminal, the clipboard, the web browser, the apps that open files
+//! and the clock. The desktop app passes the real system; tests pass a
+//! fake that records each request.
 
 use std::{io, path::Path};
 
@@ -87,6 +87,10 @@ pub trait System: Send + Sync {
     /// that `url` is an `http` or `https` link first.
     fn open_url(&self, url: &str) -> io::Result<()>;
 
+    /// Open the file at `path` in the app the system chooses for its
+    /// type, such as the browser for an HTML page.
+    fn open_file(&self, path: &Path) -> io::Result<()>;
+
     /// The hour of the day on this computer's clock, in its time zone,
     /// from 0 to 23.
     fn local_hour(&self) -> u8 {
@@ -95,8 +99,8 @@ pub trait System: Send + Sync {
 }
 
 /// No operating system services: deleted items go to the workspace's trash
-/// folder, and showing files, terminals, the clipboard and the browser are
-/// unavailable.
+/// folder, and showing files, terminals, the clipboard, the browser and
+/// opening files are unavailable.
 pub struct NoSystem;
 
 impl System for NoSystem {
@@ -123,6 +127,10 @@ impl System for NoSystem {
     fn copy_text(&self, _text: &str) {}
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
+        Err(unavailable())
+    }
+
+    fn open_file(&self, _path: &Path) -> io::Result<()> {
         Err(unavailable())
     }
 }

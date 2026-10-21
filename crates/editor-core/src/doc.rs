@@ -146,6 +146,13 @@ impl MdDoc {
         self.buffer.current.selection
     }
 
+    /// The changes made to the text since the last call, in order: one per
+    /// replacement the buffer applied. Replaying them on the text the note
+    /// opened with gives its text now.
+    pub fn take_changes(&mut self) -> Vec<crate::buffer::TextChange> {
+        self.buffer.take_changes()
+    }
+
     /// Applies a batch of events the way one frame of input applies them:
     /// the edits they make undo together. `layout` answers the questions an
     /// edit asks about where text was drawn; [`NoLayout`] answers for a

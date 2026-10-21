@@ -11,7 +11,7 @@ use crate::bounds::{BoundExt as _, RangesExt as _};
 use crate::buffer::{self};
 use crate::doc::MdDoc;
 use crate::input::{Advance, Bound, Event, Increment, Location, Region, TextLayout};
-use crate::nodes::{NodeValueExt as _, leading_indent_cols, leading_indent_range};
+use crate::nodes::NodeValueExt as _;
 use crate::offset_types::{
     Bytes, Grapheme, Graphemes, IntoRangeExt as _, RangeExt as _, RangeIterExt as _,
     ToRangeExt as _,
@@ -25,6 +25,16 @@ pub struct EventState {
 }
 
 impl MdDoc {
+    /// Applies the operations earlier events of a batch queued, so a
+    /// command that reads the text sees their edits.
+    fn flush_operations(&mut self, operations: &mut Vec<Operation>) -> buffer::Response {
+        if operations.is_empty() {
+            return buffer::Response::default();
+        }
+        self.buffer.queue(std::mem::take(operations));
+        self.buffer.update()
+    }
+
     /// Reorder a list item to the gap at `insert_offset` via
     /// [`MdDoc::plan_block_move`]. The selection is left where the
     /// edit transform lands it — a drop doesn't reselect the moved item.
@@ -96,6 +106,22 @@ impl<'ast> MdDoc {
                     self.toggle_style(root, region, style, current_selection, operations, layout);
                 }
             }
+            Event::Format(format) => {
+                // Formatting writes Markdown syntax, which a plain-text
+                // file shows as literal text.
+                if self.readonly || self.plaintext {
+                    return response;
+                }
+                response |= self.flush_operations(operations);
+                response |= self.run_format(format);
+            }
+            Event::ToggleTaskLine => {
+                if self.readonly || self.plaintext {
+                    return response;
+                }
+                response |= self.flush_operations(operations);
+                response |= self.run_toggle_task_line();
+            }
             Event::Newline { shift } => {
                 // Enter after a `···` fold chip creates the new heading / list
                 // item after the hidden contents
@@ -106,6 +132,12 @@ impl<'ast> MdDoc {
 
                 // insert/extend/terminate container blocks
                 let mut handled = || {
+                    // A plain-text file has no Markdown blocks: Return only
+                    // breaks the line.
+                    if self.plaintext {
+                        return false;
+                    }
+
                     // selection must be empty
                     let Some(offset) = self.selection_offset() else {
                         return false;
@@ -206,6 +238,12 @@ impl<'ast> MdDoc {
 
                 // delete container block prefix
                 let mut handled = || {
+                    // A plain-text file has no Markdown blocks: Backspace
+                    // only deletes.
+                    if self.plaintext {
+                        return false;
+                    }
+
                     // must be mostly vanilla backspace
                     if !matches!(
                         region,
@@ -265,164 +303,13 @@ impl<'ast> MdDoc {
                 operations.push(Operation::Select(current_selection.start().to_range()));
             }
             Event::Indent { deindent } => {
-                let selected_lines = self
-                    .bounds
-                    .source_lines
-                    .find_intersecting(current_selection, true);
-                let first_selected_line_idx = selected_lines.0;
-                let first_selected_line = self.bounds.source_lines[first_selected_line_idx];
-
-                if !deindent {
-                    // indent into extension of block on prior line
-                    let mut handled = || {
-                        // must not be first line
-                        if first_selected_line_idx == 0 {
-                            return false;
-                        }
-
-                        let prior_line_idx = first_selected_line_idx - 1;
-                        let prior_line = self.bounds.source_lines[prior_line_idx];
-                        let prior_line_deepest_container =
-                            self.deepest_container_block_at_offset(root, prior_line.end());
-                        let first_selected_line_deepest =
-                            self.deepest_container_block_at_offset(root, first_selected_line.end());
-
-                        // Pick the highest matching ancestor (last
-                        // assignment wins). Use AST ancestry — list-
-                        // item continuation prefixes are claimed
-                        // greedily by the outermost item, so prefix
-                        // presence isn't a reliable "already inside"
-                        // signal. See `consume_indent_columns`.
-                        let mut prior_line_container_extension_prefix = None;
-                        for prior_line_container in prior_line_deepest_container.ancestors() {
-                            let has_prefix_on_prior_line = !self
-                                .line_own_prefix(prior_line_container, prior_line)
-                                .is_empty();
-                            let already_inside_prior_container = first_selected_line_deepest
-                                .ancestors()
-                                .any(|a| a.same_node(prior_line_container));
-
-                            if has_prefix_on_prior_line
-                                && !already_inside_prior_container
-                                && let Some(extension_prefix) =
-                                    self.extension_own_prefix(prior_line_container)
-                            {
-                                prior_line_container_extension_prefix = Some(extension_prefix);
-                            }
-                        }
-                        let Some(prior_line_container_extension_prefix) =
-                            prior_line_container_extension_prefix
-                        else {
-                            return false;
-                        };
-
-                        // Indent only the selected line(s). Children
-                        // keep their absolute indentation and are not
-                        // dragged along; an item with children is
-                        // aligned to its deepest direct child so that
-                        // child's level is unchanged (it detaches to a
-                        // sibling instead of being pushed a level
-                        // deeper). Symmetric to deindent dropping to
-                        // the parent's column.
-                        let mut done = std::collections::BTreeSet::new();
-                        for line_idx in selected_lines.iter() {
-                            if !done.insert(line_idx) {
-                                continue;
-                            }
-                            let line = self.bounds.source_lines[line_idx];
-                            let container =
-                                self.deepest_container_block_at_offset(root, line.end());
-                            let container_own_prefix = self.line_own_prefix(container, line);
-
-                            // Marker line: insert before the marker
-                            // (whole block shifts). Continuation:
-                            // insert after the prefix (content
-                            // shifts).
-                            let is_continuation =
-                                Some(self.buffer[container_own_prefix].to_string())
-                                    == self.extension_own_prefix(container);
-                            let insertion_offset = if is_continuation {
-                                container_own_prefix.end()
-                            } else {
-                                container_own_prefix.start()
-                            };
-
-                            // For a whitespace-nested item with
-                            // children, indent it to its deepest
-                            // direct child's column instead of one
-                            // unit, so the child detaches as a sibling
-                            // at its unchanged level.
-                            let mut insert_text = prior_line_container_extension_prefix.clone();
-                            if !is_continuation
-                                && !insert_text.is_empty()
-                                && insert_text.bytes().all(|b| b == b' ')
-                                && let Some(max_child_col) = max_child_marker_col(self, container)
-                            {
-                                let cur_col = leading_indent_cols(&self.buffer[line]);
-                                let one_unit = insert_text.chars().count();
-                                let want = (cur_col + one_unit).max(max_child_col);
-                                insert_text = " ".repeat(want - cur_col);
-                            }
-                            // Only `1.` can interrupt the parent item's
-                            // paragraph; a higher source number (common in
-                            // imported lists) collapses the new sublist into
-                            // plain text. Later items render off the list
-                            // start, so forcing `1.` is harmless.
-                            let renumber = (!is_continuation)
-                                .then(|| ordered_marker_digits(self, container, line))
-                                .flatten();
-                            match renumber {
-                                Some(digits) => operations.push(Operation::Replace(Replace {
-                                    range: digits,
-                                    text: format!("{insert_text}1"),
-                                })),
-                                None => operations.push(Operation::Replace(Replace {
-                                    range: insertion_offset.into_range(),
-                                    text: insert_text,
-                                })),
-                            }
-                        }
-
-                        true
-                    };
-                    if !handled() {
-                        // default -> do nothing
-                    }
-                } else {
-                    // Cascade descendants too, so children stay
-                    // nested under a deindented parent.
-                    let mut handled = || {
-                        for line_idx in selected_lines.iter() {
-                            let line = self.bounds.source_lines[line_idx];
-                            if find_deindent(self, root, line).is_none() {
-                                return false;
-                            }
-                        }
-                        let mut done = std::collections::BTreeSet::new();
-                        for line_idx in selected_lines.iter() {
-                            if !done.insert(line_idx) {
-                                continue;
-                            }
-                            let line = self.bounds.source_lines[line_idx];
-                            let Some((range, text)) = find_deindent(self, root, line) else {
-                                continue;
-                            };
-                            let cur_cols = leading_indent_cols(&self.buffer[range]);
-                            let new_cols = text.chars().count();
-                            let delta = -(cur_cols.saturating_sub(new_cols) as isize);
-                            operations.push(Operation::Replace(Replace { range, text }));
-                            let container =
-                                self.deepest_container_block_at_offset(root, line.end());
-                            cascade_deindent_delta(self, container, delta, &mut done, operations);
-                        }
-                        true
-                    };
-                    if !handled() {
-                        // default -> do nothing
-                    }
+                // Tab nests Markdown lists, which a plain-text file has none
+                // of.
+                if self.readonly || self.plaintext {
+                    return response;
                 }
-
-                operations.push(Operation::Select(current_selection));
+                response |= self.flush_operations(operations);
+                response |= self.run_indent(deindent);
             }
             Event::Undo => {
                 response |= self.buffer.undo();
@@ -517,7 +404,7 @@ impl<'ast> MdDoc {
                 }
             }
             Event::Paste { text } => {
-                let event = self.paste_event(root, text, current_selection);
+                let event = self.paste_event(text);
                 response |= self.calc_operations(root, event, operations, layout);
             }
             Event::ToggleTask { node: range } => {
@@ -1171,168 +1058,6 @@ impl<'ast> MdDoc {
     }
 }
 
-/// Buffer edit that deindents `line` past `ancestor`, or `None`.
-/// Items/TaskItems/FootnoteDefinitions nest via whitespace: rewrite
-/// the indent run minus one level's columns (tabs expand to spaces).
-/// BlockQuotes/Alerts nest via `>` markers: drop them, but only when
-/// nested inside another quote/alert (top-level deindent would
-/// silently demote `> foo` to a paragraph).
-fn deindent_replacement<'ast>(
-    renderer: &MdDoc,
-    ancestor: &'ast AstNode<'ast>,
-    line: (Grapheme, Grapheme),
-) -> Option<((Grapheme, Grapheme), String)> {
-    use NodeValue::*;
-    match &ancestor.data.borrow().value {
-        Item(_) | TaskItem(_) | FootnoteDefinition(_) => {
-            let level_cols = renderer.deindent_level_cols(ancestor)?;
-            if level_cols == 0 {
-                return None;
-            }
-            let indent_range = leading_indent_range(&renderer.buffer, line);
-            let cur_cols = leading_indent_cols(&renderer.buffer[indent_range]);
-            // Land at `ancestor`'s own marker column: escaping a
-            // container drops to its level. Using the marker column
-            // (not `cur - padding`) pops out one full level even when
-            // the source over-indents the nested item — otherwise an
-            // item indented past the minimum only moves part-way and
-            // stays nested.
-            let target_cols =
-                leading_indent_cols(&renderer.buffer[renderer.node_first_line(ancestor)]);
-            if cur_cols <= target_cols {
-                return None;
-            }
-            Some((indent_range, " ".repeat(target_cols)))
-        }
-        BlockQuote | Alert(_) => {
-            // No-op at top level — only deindent when there's an
-            // outer quote/alert to escape into.
-            let nested = ancestor
-                .ancestors()
-                .skip(1)
-                .any(|a| matches!(&a.data.borrow().value, BlockQuote | Alert(_)));
-            if !nested {
-                return None;
-            }
-            let own_prefix = renderer.line_own_prefix(ancestor, line);
-            if own_prefix.is_empty() {
-                return None;
-            }
-            Some((own_prefix, String::new()))
-        }
-        _ => None,
-    }
-}
-
-/// First deindent edit produced walking the line's container
-/// ancestors. `skip_container` walks past the deepest container
-/// when the cursor's on its marker line, so shift-tab there
-/// deindents the whole block instead of its content.
-fn find_deindent<'ast>(
-    renderer: &MdDoc,
-    root: &'ast AstNode<'ast>,
-    line: (Grapheme, Grapheme),
-) -> Option<((Grapheme, Grapheme), String)> {
-    let container = renderer.deepest_container_block_at_offset(root, line.end());
-    let container_own_prefix = renderer.line_own_prefix(container, line);
-    let skip_container = Some(renderer.buffer[container_own_prefix].to_string())
-        != renderer.extension_own_prefix(container);
-    container.ancestors().find_map(|ancestor| {
-        if container.same_node(ancestor) && skip_container {
-            return None;
-        }
-        deindent_replacement(renderer, ancestor, line)
-    })
-}
-
-/// Largest leading-indent column among `item`'s direct child list
-/// items (the items one level nested under it), or `None` if it has
-/// none. Used so indent can align the item to its child, leaving the
-/// child's level unchanged.
-/// Grapheme range of an ordered-list item's leading marker digits on `line`
-/// (the `12` in `12. `), or `None` if `container` isn't an ordered list item.
-fn ordered_marker_digits<'ast>(
-    renderer: &MdDoc,
-    container: &'ast AstNode<'ast>,
-    line: (Grapheme, Grapheme),
-) -> Option<(Grapheme, Grapheme)> {
-    let parent = container.parent()?;
-    if !matches!(
-        parent.data.borrow().value,
-        NodeValue::List(NodeList {
-            list_type: ListType::Ordered,
-            ..
-        })
-    ) {
-        return None;
-    }
-    let own_prefix = renderer.line_own_prefix(container, line);
-    let digits = renderer.buffer[own_prefix]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .count();
-    (digits > 0).then(|| (own_prefix.start(), own_prefix.start() + Graphemes(digits)))
-}
-
-fn max_child_marker_col<'ast>(renderer: &MdDoc, item: &'ast AstNode<'ast>) -> Option<usize> {
-    item.children()
-        .filter(|c| matches!(&c.data.borrow().value, NodeValue::List(_)))
-        .flat_map(|list| list.children())
-        .filter(|n| {
-            matches!(
-                &n.data.borrow().value,
-                NodeValue::Item(_) | NodeValue::TaskItem(_)
-            )
-        })
-        .map(|child| {
-            let line = renderer.bounds.source_lines[renderer.node_first_line_idx(child)];
-            leading_indent_cols(&renderer.buffer[line])
-        })
-        .max()
-}
-
-/// Drags `container`'s descendants left with a deindented parent so
-/// children stay nested instead of being stranded — a child left four
-/// or more columns deep with no list-item ancestor reparses as an
-/// indented code block. `delta_cols` is negative (the columns removed
-/// from the parent). Only fires for whitespace-nested containers (Item,
-/// TaskItem, FootnoteDefinition); quote/alert nesting is per-line
-/// markers with no column delta. Tabs in the indent expand to spaces.
-///
-/// There is deliberately no indent counterpart: indenting only the
-/// targeted line(s) can't strand a child (it always retains a list
-/// ancestor), so a tight child simply re-parents to a sibling.
-fn cascade_deindent_delta<'ast>(
-    renderer: &MdDoc,
-    container: &'ast AstNode<'ast>,
-    delta_cols: isize,
-    done: &mut std::collections::BTreeSet<usize>,
-    operations: &mut Vec<Operation>,
-) {
-    if !matches!(
-        &container.data.borrow().value,
-        NodeValue::Item(_) | NodeValue::TaskItem(_) | NodeValue::FootnoteDefinition(_)
-    ) {
-        return;
-    }
-
-    let first = renderer.node_first_line_idx(container);
-    let last = renderer.node_last_line_idx(container);
-    for i in first..=last {
-        if !done.insert(i) {
-            continue;
-        }
-        let line = renderer.bounds.source_lines[i];
-        let range = leading_indent_range(&renderer.buffer, line);
-        let cur = leading_indent_cols(&renderer.buffer[range]) as isize;
-        let new = (cur + delta_cols).max(0) as usize;
-        operations.push(Operation::Replace(Replace {
-            range,
-            text: " ".repeat(new),
-        }));
-    }
-}
-
 impl<'ast> MdDoc {
     fn dehead_ast_node(&self, node: &'ast AstNode<'ast>, operations: &mut Vec<Operation>) {
         if let Some(range) = self.head_range(node) {
@@ -1564,57 +1289,15 @@ impl HeadTail for NodeValue {
     }
 }
 
-impl<'ast> MdDoc {
-    /// What a paste does. Non-breaking spaces become spaces, because the
-    /// parser handles them poorly. A URL pasted over selected text that
-    /// isn't already part of a link or image links the selection to the URL.
-    /// Anything else replaces the selection.
-    pub fn paste_event(
-        &self,
-        root: &'ast AstNode<'ast>,
-        text: String,
-        selection: (Grapheme, Grapheme),
-    ) -> Event {
-        let text = text.replace('\u{a0}', " ");
-
-        let links_selection = !self.plaintext
-            && !selection.is_empty()
-            && is_autolink(&text)
-            && !root.descendants().any(|node| {
-                matches!(
-                    node.data().value,
-                    NodeValue::Link(_) | NodeValue::WikiLink(_) | NodeValue::Image(_)
-                ) && self.node_range(node).intersects(&selection, false)
-            });
-
-        if links_selection {
-            Event::ToggleStyle {
-                region: Region::Selection,
-                style: NodeValue::Link(
-                    NodeLink {
-                        url: text,
-                        ..Default::default()
-                    }
-                    .into(),
-                ),
-            }
-        } else {
-            Event::Replace {
-                region: Region::Selection,
-                text,
-                advance_cursor: true,
-            }
+impl MdDoc {
+    /// The edit a paste makes: the pasted text replaces the selection as
+    /// copied, except that Windows line endings become `\n`, the newline
+    /// typing Return inserts.
+    pub fn paste_event(&self, text: String) -> Event {
+        Event::Replace {
+            region: Region::Selection,
+            text: text.replace("\r\n", "\n"),
+            advance_cursor: true,
         }
     }
-}
-
-/// Whether comrak's autolink extension reads `text`, alone, as one link to
-/// itself.
-fn is_autolink(text: &str) -> bool {
-    let arena = comrak::Arena::new();
-    let mut options = comrak::Options::default();
-    options.extension.autolink = true;
-    let root = comrak::parse_document(&arena, &format!("{text}\n"), &options);
-    root.descendants()
-        .any(|node| matches!(&node.data.borrow().value, NodeValue::Link(link) if link.url == text))
 }

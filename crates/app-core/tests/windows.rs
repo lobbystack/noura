@@ -317,6 +317,9 @@ fn a_workspace_opened_again_brings_back_the_windows_it_had() {
     second.open_file("B.md", OpenAs::Kept);
     let other = tempfile::tempdir().unwrap();
     first.open_folder(other.path().to_owned());
+    // The switch waits for the second window, which shows a note, to have
+    // it on disk.
+    second.poll();
     settle(&mut first);
     assert!(second.is_closed());
 

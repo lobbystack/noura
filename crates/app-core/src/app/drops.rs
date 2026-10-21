@@ -53,6 +53,9 @@ impl App {
             .tree
             .as_ref()
             .is_some_and(|tree| tree.is_folder(&relative_path));
+        if !self.save_before(&relative_path, "dragging it out") {
+            return;
+        }
         if let Err(error) = self.pending_saves.save_now(&relative_path) {
             let title = format!("Couldn't save {quoted} before dragging it out");
             self.show_notice(&title, error, None);

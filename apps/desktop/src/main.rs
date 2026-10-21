@@ -1,7 +1,16 @@
 //! The Noura desktop app.
+//!
+//! `--smoke` opens the first window, prints what this copy found about
+//! itself once that window's first frame is on screen, and quits. CI runs
+//! it from each installed package.
+
+// A release build on Windows opens no console window. Output still reaches
+// a pipe, so the smoke run's report does too.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod file_drag;
 mod instance;
+mod licenses;
 mod login;
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows")),
@@ -9,20 +18,22 @@ mod login;
 )]
 mod menu;
 mod system;
+mod updates;
 mod windows;
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
-use app_core::App;
+use app_core::{App, PendingWrites};
 use app_ui::FolderPicker;
 use eframe::egui;
 
 use crate::{
     instance::{Claim, Instance},
-    windows::Windows,
+    windows::{QuitRequest, Windows},
 };
 
 /// The system folder dialog.
@@ -38,6 +49,10 @@ impl FolderPicker for SystemFolderPicker {
 /// up, and only warnings from the window and graphics crates.
 const LOG_FILTER: &str =
     "info,eframe=warn,egui_wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn,winit=warn";
+
+/// How long Noura waits, once its windows have closed, for writes still
+/// running to reach disk before it quits anyway.
+const QUIT_WAIT: Duration = Duration::from_secs(30);
 
 /// The size at which the log moves to `noura.log.1` and starts again.
 const LOG_FILE_BYTES: u64 = 1_000_000;
@@ -100,7 +115,34 @@ fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<eframe
     let _ = builder;
 }
 
+/// Give the note editor its fonts, egui's own then the system's so text in
+/// other scripts finds glyphs, and the renderer resources it paints with.
+fn register_editor(
+    creation: &eframe::CreationContext<'_>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let render_state = creation
+        .wgpu_render_state
+        .as_ref()
+        .ok_or("Noura needs the wgpu renderer to draw notes")?;
+    let mut fonts = editor_egui::fonts::default_font_database();
+    fonts.load_system_fonts();
+    let font_system = editor_egui::register_font_system(&creation.egui_ctx, fonts);
+    editor_egui::register_render_callback_resources(
+        &render_state.device,
+        &render_state.queue,
+        render_state.target_format,
+        &mut render_state.renderer.write(),
+        font_system,
+        1,
+    );
+    Ok(())
+}
+
 fn main() -> eframe::Result {
+    let launched = Instant::now();
+    let smoke = std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--smoke");
     let app_data = app_core::default_app_data_dir();
     let has_app_data = app_data.is_some();
     let app_data = app_data.unwrap_or_else(|| std::env::temp_dir().join("Noura"));
@@ -124,22 +166,121 @@ fn main() -> eframe::Result {
         event_loop_builder: Some(Box::new(configure_event_loop)),
         ..Default::default()
     };
-    eframe::run_native(
+    let writes = Arc::new(OnceLock::<PendingWrites>::new());
+    let install_at_exit = updates::InstallAtExit::default();
+    let closed = eframe::run_native(
         "Noura",
         options,
-        Box::new(move |creation| {
-            app_ui::theme::install(&creation.egui_ctx);
-            // The last workspace starts reopening now, off the UI thread.
-            let system = system::DesktopSystem::new(creation.egui_ctx.clone());
-            let mut app = App::launch_with(&app_data, Arc::new(system));
-            app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
-            if let Some(instance) = &instance {
-                let ctx = creation.egui_ctx.clone();
-                instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
+        Box::new({
+            let writes = writes.clone();
+            let install_at_exit = install_at_exit.clone();
+            move |creation| {
+                app_ui::theme::install(&creation.egui_ctx);
+                register_editor(creation)?;
+                // The last workspace starts reopening now, off the UI thread.
+                let system = system::DesktopSystem::new(creation.egui_ctx.clone());
+                let mut app = App::launch_with(&app_data, Arc::new(system));
+                let _ = writes.set(app.pending_writes().clone());
+                app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
+                if let Some(list) = licenses::bundled_licenses() {
+                    app.set_third_party_licenses(list);
+                }
+                let quit = QuitRequest::default();
+                let updates = set_up_updates(
+                    &mut app,
+                    &creation.egui_ctx,
+                    launched,
+                    install_at_exit,
+                    quit.clone(),
+                );
+                if let Some(instance) = &instance {
+                    let ctx = creation.egui_ctx.clone();
+                    instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
+                }
+                let mut windows =
+                    Windows::new(app, instance, || Box::new(SystemFolderPicker)).quitting_on(quit);
+                if smoke {
+                    windows = windows.smoke_test(smoke_report(&updates));
+                }
+                windows.install_menu_bar(creation);
+                Ok(Box::new(windows))
             }
-            let mut windows = Windows::new(app, instance, || Box::new(SystemFolderPicker));
-            windows.install_menu_bar(creation);
-            Ok(Box::new(windows))
         }),
+    );
+    // The windows are gone, so nothing starts a new write. Writes still
+    // running finish before the process ends, whichever way Noura quit.
+    if let Some(writes) = writes.get()
+        && !writes.wait_for_running(QUIT_WAIT)
+    {
+        tracing::error!("Noura quit while a write was still running");
+    }
+    install_at_exit.run();
+    closed
+}
+
+/// Turn on updates from the release feed when this copy can replace
+/// itself. Returns why not otherwise. On Windows an update waits in
+/// `install_at_exit` until Noura has quit.
+fn set_up_updates(
+    app: &mut App,
+    ctx: &egui::Context,
+    launched: Instant,
+    install_at_exit: updates::InstallAtExit,
+    quit: QuitRequest,
+) -> Result<(), String> {
+    let version = env!("CARGO_PKG_VERSION");
+    let executable = std::env::current_exe().unwrap_or_default();
+    let appimage = std::env::var_os("APPIMAGE");
+    let available = updates::availability(
+        cfg!(debug_assertions),
+        std::env::consts::OS,
+        &executable,
+        appimage.as_deref(),
+    );
+    if let Err(reason) = available {
+        app.disable_updates(version, reason);
+        return Err(reason.to_owned());
+    }
+    // Once the relaunch is arranged, Noura quits as Quit does, and every
+    // window comes back in the new version.
+    let ctx = ctx.clone();
+    let quit = move || quit.ask(&ctx);
+    let source = updates::FeedSource::new(
+        updates::RELEASE_FEED,
+        updates::RELEASE_PUBLIC_KEY,
+        version,
+        quit,
+    )
+    .map(|source| {
+        if cfg!(windows) {
+            source.installing_at_exit(install_at_exit)
+        } else {
+            source
+        }
+    });
+    match source {
+        Ok(source) => {
+            app.enable_updates(version, Arc::new(source), launched);
+            Ok(())
+        }
+        Err(error) => {
+            tracing::error!(%error, "the update feed is misconfigured");
+            let reason = "This copy can't check for updates. Download new versions from noura.app.";
+            app.disable_updates(version, reason);
+            Err(reason.to_owned())
+        }
+    }
+}
+
+fn smoke_report(updates: &Result<(), String>) -> String {
+    let licenses = licenses::bundled_licenses()
+        .map_or_else(|| "missing".to_owned(), |path| path.display().to_string());
+    let updates = match updates {
+        Ok(()) => "on".to_owned(),
+        Err(reason) => format!("off ({reason})"),
+    };
+    format!(
+        "Noura {} drew its first window.\nThird-party licenses: {licenses}\nUpdates: {updates}",
+        env!("CARGO_PKG_VERSION")
     )
 }

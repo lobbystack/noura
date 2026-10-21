@@ -51,10 +51,18 @@ struct Opened {
 /// A workspace named Garden, opened at launch, with a fake system and a
 /// fake login item.
 fn opened() -> Opened {
+    opened_with(&[])
+}
+
+/// [`opened`], with `files` in the workspace.
+fn opened_with(files: &[(&str, &str)]) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
     create_workspace(app_data.path(), "Garden", &folder);
+    for (name, text) in files {
+        std::fs::write(folder.join(name), text).unwrap();
+    }
     let system = FakeSystem::new(Platform::MacOs);
     let login = Arc::new(FakeLoginItem::default());
     let item = login.clone();
@@ -137,7 +145,10 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                 "Workspace".to_owned(),
                 vec!["Name and location".to_owned(), "Plugins".to_owned()]
             ),
-            ("App".to_owned(), vec!["About Noura".to_owned()]),
+            (
+                "App".to_owned(),
+                vec!["About Noura".to_owned(), "Updates".to_owned()]
+            ),
         ]
     );
     // General shows first, and has the keyboard focus.
@@ -192,6 +203,7 @@ fn every_section_and_control_carries_a_label() {
         "Name and location",
         "Plugins",
         "About Noura",
+        "Updates",
     ] {
         choose_section(&mut harness, title);
         let controls = controls(&harness);
@@ -261,6 +273,47 @@ fn settings_works_from_the_keyboard() {
     assert_eq!(preferences.appearance, app_core::Appearance::Dark);
     assert_eq!(preferences.zoom, 110);
     assert!(*login.0.lock().unwrap());
+}
+
+#[test]
+fn the_editor_section_sets_the_line_width_of_every_open_note() {
+    let Opened {
+        mut harness,
+        folders: _folders,
+        ..
+    } = opened_with(&[("Plan.md", "Plan\n")]);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Plan")
+        .click();
+    harness.run();
+    let width = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .rect()
+            .width()
+    };
+    assert!(width(&harness) > 640.0, "{}", width(&harness));
+
+    open_settings(&mut harness);
+    choose_section(&mut harness, "Editor");
+    let group = dialog(&harness).get_by_role_and_label(Role::RadioGroup, "Line width");
+    let choices: Vec<String> = group
+        .get_all_by_role(Role::RadioButton)
+        .filter_map(|choice| choice.accesskit_node().label())
+        .collect();
+    assert_eq!(choices, ["Narrow", "Default", "Full width"]);
+    group
+        .get_by_role_and_label(Role::RadioButton, "Narrow")
+        .click();
+    harness.run();
+    assert_eq!(
+        harness.state().app().preferences().line_width,
+        app_core::LineWidth::Narrow
+    );
+
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert_eq!(width(&harness), 640.0);
 }
 
 /// The window's theme and the background it paints.
@@ -378,6 +431,32 @@ fn about_links_open_in_the_browser_and_diagnostics_reach_the_clipboard() {
     assert!(calls[browsed.len()].starts_with("copy Noura "), "{calls:?}");
     harness.get_by_role(Role::Status);
     harness.get_by_label("Diagnostics copied");
+}
+
+#[test]
+fn about_opens_the_license_list_the_package_ships() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    let list = parent.path().join("THIRD_PARTY_LICENSES.html");
+    let system = FakeSystem::new(Platform::MacOs);
+    let bundled = list.clone();
+    let mut harness = harness_on(
+        app_data.path(),
+        FakePicker::default(),
+        system.clone(),
+        move |app| app.set_third_party_licenses(bundled),
+    );
+    settle(&mut harness);
+    open_settings(&mut harness);
+    choose_section(&mut harness, "About Noura");
+
+    harness
+        .get_by_role_and_label(Role::Link, "Third-party licenses")
+        .click();
+    harness.run();
+
+    assert_eq!(system.calls(), [format!("open file {}", list.display())]);
 }
 
 #[test]

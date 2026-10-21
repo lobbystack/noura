@@ -1,9 +1,9 @@
-//! Seam 1: appearance, text size and zoom, kept for this device in the
-//! app data folder.
+//! Seam 1: appearance, text size, line width and zoom, kept for this
+//! device in the app data folder.
 
 mod support;
 
-use app_core::{App, Appearance, Preferences, TextSize};
+use app_core::{App, Appearance, LineWidth, Preferences, TextSize};
 use support::{Fixture, settle};
 
 /// Quit by dropping `app`, then launch again on the same app data.
@@ -32,6 +32,7 @@ fn a_new_device_matches_the_system_theme_at_default_text_size_and_full_zoom() {
         Preferences {
             appearance: Appearance::MatchSystem,
             text_size: TextSize::Default,
+            line_width: LineWidth::Default,
             zoom: 100,
         }
     );
@@ -60,6 +61,26 @@ fn appearance_and_text_size_survive_a_relaunch_and_leave_the_workspace_alone() {
     let app = relaunch(app, &fixture);
     assert_eq!(app.preferences().appearance, Appearance::MatchSystem);
     assert_eq!(workspace_bytes(&fixture), before);
+}
+
+#[test]
+fn line_width_survives_a_relaunch_and_leaves_the_workspace_alone() {
+    let fixture = Fixture::new(&[("Plan.md", b"plan")]);
+    let mut app = fixture.app();
+    let before = workspace_bytes(&fixture);
+
+    for width in [LineWidth::Narrow, LineWidth::Full, LineWidth::Default] {
+        app.set_line_width(width);
+        app = relaunch(app, &fixture);
+        assert_eq!(app.preferences().line_width, width);
+    }
+    assert_eq!(workspace_bytes(&fixture), before);
+    let layout =
+        std::fs::read_to_string(fixture.app_data.path().join("layout.json")).unwrap_or_default();
+    assert!(
+        !layout.contains("lineWidth"),
+        "the line width lives with the other preferences: {layout}"
+    );
 }
 
 #[test]
@@ -117,7 +138,7 @@ fn an_unreadable_preferences_file_falls_back_to_the_defaults_and_launch_goes_on(
 
     for broken in [
         &b"\xff\xfe not json"[..],
-        b"{\"appearance\": \"purple\", \"textSize\": 3, \"zoom\": 333}",
+        b"{\"appearance\": \"purple\", \"textSize\": 3, \"lineWidth\": 1, \"zoom\": 333}",
         b"[]",
     ] {
         std::fs::write(&file, broken).unwrap();
@@ -147,7 +168,7 @@ fn one_unreadable_choice_falls_back_alone() {
     let file = fixture.app_data.path().join("preferences.json");
     std::fs::write(
         &file,
-        b"{\"appearance\": \"dark\", \"textSize\": \"huge\", \"zoom\": 150}",
+        b"{\"appearance\": \"dark\", \"textSize\": \"huge\", \"lineWidth\": \"narrow\", \"zoom\": 150}",
     )
     .unwrap();
 
@@ -159,6 +180,7 @@ fn one_unreadable_choice_falls_back_alone() {
         Preferences {
             appearance: Appearance::Dark,
             text_size: TextSize::Default,
+            line_width: LineWidth::Narrow,
             zoom: 150,
         }
     );

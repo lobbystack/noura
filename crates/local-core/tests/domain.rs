@@ -7,8 +7,9 @@ use local_core::{
     FinishChatAssistantInput, FinishChatToolCallInput, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
     MarkdownLinkTarget, ObjectPatch, ParseStatus, ParsedMarkdown, RawConflictResolveInput,
-    RawSaveInput, RawSaveResult, RenameChatInput, SearchInput, WORKSPACE_MANIFEST_PATH,
-    WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id, parse_markdown,
+    RawRestoreInput, RawSaveInput, RawSaveResult, RenameChatInput, SearchInput,
+    WORKSPACE_MANIFEST_PATH, WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id,
+    parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -885,7 +886,8 @@ fn managed_draft_save_updates_an_unchanged_canonical_file() {
         panic!("expected clean-base save, got {result:?}");
     };
 
-    assert_eq!(current.title, "Renamed");
+    // The title is the file name, which a draft doesn't rename.
+    assert_eq!(current.title, "Original");
     assert_eq!(current.body, "edited body");
     assert_eq!(current.properties["status"], "in-progress");
     assert_eq!(current.properties["priority"], "high");
@@ -962,7 +964,8 @@ fn idless_markdown_requires_explicit_adoption() {
         parse_markdown("draft.md", &std::fs::read(path).unwrap()),
         ParsedMarkdown::Managed(_)
     ));
-    assert_eq!(adopted.value.title, "Draft");
+    assert_eq!(adopted.value.title, "draft");
+    assert_eq!(adopted.value.body, "# Draft\n\nText\n");
 }
 
 #[test]
@@ -1040,6 +1043,150 @@ fn duplicate_ids_are_indexed_but_block_identity_reads() {
     assert_eq!(error.code, "identity_conflict");
 }
 
+/// The file at a path says which object it holds, so a copy that shares
+/// its original's ID takes its own edits, and the index never redirects
+/// them.
+#[test]
+fn an_update_at_a_path_writes_that_file_even_when_another_shares_its_id() {
+    let (workspace, _app_data, engine) = engine();
+    let note = engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: "Body\n".into(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+    std::fs::copy(
+        workspace.path().join("one.md"),
+        workspace.path().join("two.md"),
+    )
+    .unwrap();
+    engine.reconcile().unwrap();
+    let original = std::fs::read(workspace.path().join("one.md")).unwrap();
+
+    let updated = engine
+        .update_object_at(
+            "two.md",
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("color".into(), serde_json::json!("blue"))]),
+                remove_properties: Vec::new(),
+                expected_revision: note.revision.clone(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(updated.value.relative_path, "two.md");
+    assert_eq!(
+        std::fs::read(workspace.path().join("one.md")).unwrap(),
+        original
+    );
+    let two = std::fs::read_to_string(workspace.path().join("two.md")).unwrap();
+    assert!(two.contains("color: blue\n"), "{two:?}");
+    assert!(two.ends_with("Body\n"), "{two:?}");
+
+    // The file must still hold the revision the caller read.
+    let stale = engine
+        .update_object_at(
+            "two.md",
+            ObjectPatch {
+                title: None,
+                body: None,
+                properties: BTreeMap::from([("color".into(), serde_json::json!("red"))]),
+                remove_properties: Vec::new(),
+                expected_revision: note.revision.clone(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(stale.code, "revision_conflict");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("two.md")).unwrap(),
+        two
+    );
+}
+
+#[test]
+fn an_update_at_a_path_refuses_traversal_missing_files_and_titles() {
+    let (_workspace, _app_data, engine) = engine();
+    let note = engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: String::new(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+    let patch = |title: Option<&str>| ObjectPatch {
+        title: title.map(str::to_owned),
+        body: Some("changed".into()),
+        properties: BTreeMap::new(),
+        remove_properties: Vec::new(),
+        expected_revision: note.revision.clone(),
+    };
+
+    let codes: Vec<String> = [
+        engine.update_object_at("../one.md", patch(None)),
+        engine.update_object_at("gone.md", patch(None)),
+        engine.update_object_at("one.md", patch(Some("Two"))),
+    ]
+    .into_iter()
+    .map(|result| result.unwrap_err().code)
+    .collect();
+
+    assert_eq!(
+        codes,
+        ["unsafe_path", "object_not_found", "title_not_supported"]
+    );
+}
+
+/// A file that another program turned into something other than a managed
+/// object refuses property edits and keeps its bytes.
+#[test]
+fn an_update_at_a_path_refuses_a_file_that_holds_no_managed_object_anymore() {
+    let (workspace, _app_data, engine) = engine();
+    engine
+        .create_object(CreateObjectInput {
+            object_type: "note".into(),
+            title: "One".into(),
+            body: "Body\n".into(),
+            relative_path: Some("one.md".into()),
+            properties: BTreeMap::new(),
+        })
+        .unwrap();
+
+    for broken in [
+        "---\nid: [unclosed\n---\nBody\n",
+        "---\ntitle: no id\n---\nBody\n",
+        "Body without frontmatter\n",
+    ] {
+        std::fs::write(workspace.path().join("one.md"), broken).unwrap();
+        let read = engine.read_raw_markdown("one.md").unwrap();
+
+        let error = engine
+            .update_object_at(
+                "one.md",
+                ObjectPatch {
+                    title: None,
+                    body: None,
+                    properties: BTreeMap::from([("color".into(), serde_json::json!("blue"))]),
+                    remove_properties: Vec::new(),
+                    expected_revision: read.revision,
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, "object_parse_failed", "{broken:?}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("one.md")).unwrap(),
+            broken
+        );
+    }
+}
+
 #[test]
 fn reconciliation_repairs_an_external_save() {
     let (workspace, _app_data, engine) = engine();
@@ -1099,6 +1246,67 @@ fn path_traversal_is_rejected_before_a_write() {
         })
         .unwrap_err();
     assert_eq!(error.code, "unsafe_path");
+}
+
+#[test]
+fn restoring_a_deleted_markdown_file_writes_it_back_and_never_replaces_one() {
+    let (workspace, _app_data, engine) = engine();
+    let restore = |relative_path: &str| RawRestoreInput {
+        relative_path: relative_path.into(),
+        body: "one\ntwo\n".into(),
+        uses_crlf: true,
+        has_bom: false,
+    };
+    for (unsafe_path, code) in [
+        ("../outside.md", "unsafe_path"),
+        ("Docs/../../outside.md", "unsafe_path"),
+        ("/tmp/outside.md", "absolute_path"),
+    ] {
+        let error = engine
+            .restore_raw_markdown(restore(unsafe_path))
+            .unwrap_err();
+        assert_eq!(error.code, code, "{unsafe_path}");
+    }
+    assert!(
+        !workspace
+            .path()
+            .parent()
+            .unwrap()
+            .join("outside.md")
+            .exists()
+    );
+    #[cfg(unix)]
+    {
+        let outside = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("Linked")).unwrap();
+        let error = engine
+            .restore_raw_markdown(restore("Linked/Plan.md"))
+            .unwrap_err();
+        assert_eq!(error.code, "symlink_escape");
+        assert!(!outside.path().join("Plan.md").exists());
+    }
+
+    let restored = engine
+        .restore_raw_markdown(restore("Docs/Plan.md"))
+        .unwrap();
+    assert_eq!(
+        std::fs::read(workspace.path().join("Docs/Plan.md")).unwrap(),
+        b"one\r\ntwo\r\n"
+    );
+    assert_eq!(
+        restored.revision,
+        engine.read_raw_markdown("Docs/Plan.md").unwrap().revision
+    );
+
+    std::fs::write(workspace.path().join("Docs/Plan.md"), "Another app's\n").unwrap();
+    let error = engine
+        .restore_raw_markdown(restore("Docs/Plan.md"))
+        .unwrap_err();
+    assert_eq!(error.code, "raw_markdown_exists");
+    assert_eq!(
+        std::fs::read(workspace.path().join("Docs/Plan.md")).unwrap(),
+        b"Another app's\n"
+    );
 }
 
 #[test]
@@ -1517,11 +1725,105 @@ fn raw_markdown_save_keeps_mixed_line_endings() {
 }
 
 #[test]
-fn raw_markdown_rejects_traversal_and_non_markdown_paths() {
-    let (_workspace, _app_data, engine) = engine();
+fn raw_markdown_rejects_traversal_and_files_that_arent_text() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+    std::fs::write(workspace.path().join("notes/photo.png"), b"\x89PNG\r\n").unwrap();
     assert!(engine.read_raw_markdown("../outside.md").is_err());
-    assert!(engine.read_raw_markdown("notes/file.txt").is_err());
+    assert!(engine.read_raw_markdown("../outside.txt").is_err());
+    assert!(engine.read_raw_markdown("/etc/hosts.txt").is_err());
     assert!(engine.read_raw_markdown(".noura/history/notes.md").is_err());
+    let error = engine.read_raw_markdown("notes/photo.png").unwrap_err();
+    assert_eq!(error.code, "invalid_raw_markdown_path");
+    let error = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "notes/photo.png".into(),
+            base_revision: String::new(),
+            base_body: String::new(),
+            local_body: "text".into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_raw_markdown_path");
+    assert_eq!(
+        std::fs::read(workspace.path().join("notes/photo.png")).unwrap(),
+        b"\x89PNG\r\n"
+    );
+}
+
+#[test]
+fn raw_text_saves_keep_a_code_files_bytes_and_stay_out_of_the_index() {
+    let (workspace, _app_data, engine) = engine();
+    let path = workspace.path().join("config.yaml");
+    std::fs::write(
+        &path,
+        b"\xEF\xBB\xBF---\r\nkey: needle\r\nother: 1\nlast: x",
+    )
+    .unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("config.yaml").unwrap();
+    assert!(base.has_bom);
+    assert_eq!(base.body, "---\nkey: needle\nother: 1\nlast: x");
+
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "config.yaml".into(),
+            base_revision: base.revision.clone(),
+            base_body: base.body.clone(),
+            local_body: base.body.replace("other: 1\n", "other: 2\nnew: 3\n"),
+        })
+        .unwrap();
+
+    let RawSaveResult::Saved {
+        current,
+        managed_object,
+    } = saved
+    else {
+        panic!("expected a save, got {saved:?}");
+    };
+    assert!(managed_object.is_none());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"\xEF\xBB\xBF---\r\nkey: needle\r\nother: 2\nnew: 3\r\nlast: x"
+    );
+    assert_eq!(
+        current.revision,
+        blake3::hash(&std::fs::read(&path).unwrap())
+            .to_hex()
+            .to_string()
+    );
+    let found = engine
+        .search(&SearchInput {
+            query: "needle".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn raw_text_reads_refuse_a_code_file_that_isnt_utf8() {
+    let (workspace, _app_data, engine) = engine();
+    let path = workspace.path().join("latin1.txt");
+    std::fs::write(&path, b"caf\xe9\n").unwrap();
+    let error = engine.read_raw_markdown("latin1.txt").unwrap_err();
+    assert_eq!(error.code, "invalid_utf8");
+    let error = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "latin1.txt".into(),
+            base_revision: String::new(),
+            base_body: String::new(),
+            local_body: "cafe\n".into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_utf8");
+    assert_eq!(std::fs::read(&path).unwrap(), b"caf\xe9\n");
+}
+
+#[test]
+fn reading_a_missing_raw_markdown_file_says_it_is_gone() {
+    let (_workspace, _app_data, engine) = engine();
+    let error = engine.read_raw_markdown("gone.md").unwrap_err();
+    assert_eq!(error.code, "raw_markdown_missing");
 }
 
 #[test]

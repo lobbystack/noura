@@ -15,6 +15,7 @@ use crate::{
 
 /// An open workspace. Every window of the app shares it.
 pub struct Workspace {
+    /// Shared with the threads that save notes and other background work.
     engine: Arc<WorkspaceEngine>,
     system: Arc<dyn System>,
     id: String,
@@ -68,7 +69,8 @@ impl Workspace {
         &self.engine
     }
 
-    /// The engine, for background work that outlives a borrow.
+    /// The engine, for background work that outlives a borrow, such as
+    /// a thread that saves a note.
     pub(crate) fn shared_engine(&self) -> Arc<WorkspaceEngine> {
         self.engine.clone()
     }

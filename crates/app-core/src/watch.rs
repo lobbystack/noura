@@ -217,11 +217,14 @@ impl Worker {
             // the files itself, another app can put them back the way this
             // thread saw them last.
             let stale = snapshot != self.shown.0;
-            if snapshot == self.seen && !stale {
+            let mut origins = origins_between(self.heard, counts);
+            // Another app's edit of a file outside the index, such as a
+            // plain-text file, leaves the listing as it was. The views still
+            // hear of it, so an open file shows the edit.
+            if snapshot == self.seen && !stale && !origins.contains(&Origin::Outside) {
                 self.heard = counts;
                 continue;
             }
-            let mut origins = origins_between(self.heard, counts);
             // Only another app changes files without a count, so a listing
             // that differs with nothing counted in between shows its change.
             let unannounced = stale && origins_between(self.shown.1, counts).is_empty();

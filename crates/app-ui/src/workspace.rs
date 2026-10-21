@@ -228,10 +228,11 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     }
 }
 
-/// What the active tab shows: a file's name and workspace-relative path,
-/// which the editor and the file viewers replace later, the Inbox, or
-/// another page's title, which the page's own view replaces. Each tab
-/// keeps its scroll position.
+/// What the active tab shows: a Markdown file in the note editor, another
+/// file's name and workspace-relative path, which the file viewers replace
+/// later, the Inbox, or another page's title, which the page's own view
+/// replaces. Each tab keeps its scroll position; a note's editor keeps its
+/// own.
 fn content(state: &mut NouraUi, ui: &mut Ui) {
     let active = state
         .app
@@ -246,6 +247,12 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             ui.centered_and_justified(|ui| muted(ui, "Open a file from the sidebar."));
             return;
         };
+        if matches!(content, TabContent::File { .. })
+            && crate::note::show(ui, &mut state.app, &mut state.notes, id)
+        {
+            state.shown_tab = Some(id);
+            return;
+        }
         let is_inbox = matches!(
             &content,
             TabContent::Page { page_id, .. } if page_id == INBOX_PAGE

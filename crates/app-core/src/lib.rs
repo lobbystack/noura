@@ -2,16 +2,19 @@
 //!
 //! This crate depends on no UI crate, so a mobile client can reuse it later.
 //! Clients draw [`App`]'s view state and send it what people do. Each `App`
-//! is one window, and the windows of one launch share the open workspace.
-//! The workspace service opens workspaces and keeps the recent list, and
-//! the files service builds the file tree. The app keeps each workspace's
-//! windows with their tabs and open folders, its rail order, the sidebar's
-//! layout, and the appearance, text size and zoom, in this device's app
-//! data. One command registry feeds the key handling, the command palette,
-//! the native menus and the shortcuts list. Settings lists its sections
-//! from one list that later areas extend. The plugins service installs
-//! plugins from folders, keeps this device's approvals, turns plugins on
-//! and off per workspace and runs them through `plugin-host`.
+//! is one window, and the windows of one launch share the open workspace
+//! and the update service. The workspace service opens workspaces and
+//! keeps the recent list, the files service builds the file tree, the
+//! editor sessions service keeps each note open in a tab and saves its
+//! edits, and the update service keeps the app current. The app keeps each
+//! workspace's windows with their tabs and open folders, its rail order,
+//! the sidebar's layout, and the appearance, text size, line width and
+//! zoom, in this device's app data. One command registry feeds the key
+//! handling, the command palette, the native menus and the shortcuts
+//! list. Settings lists its sections from one list that later areas
+//! extend. The plugins service installs plugins from folders, keeps this
+//! device's approvals, turns plugins on and off per workspace and runs
+//! them through `plugin-host`.
 
 mod app;
 mod commands;
@@ -24,6 +27,7 @@ mod keys;
 mod layout;
 mod login;
 mod menus;
+mod notes;
 mod objects;
 mod operations;
 mod plugin_inputs;
@@ -40,13 +44,15 @@ mod settings;
 mod store;
 mod system;
 mod tabs;
+mod updates;
 mod view_state;
 mod watch;
 mod workspace;
+mod writes;
 
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
-    PaletteMode, Question, QuickOpen, Rename, Screen, Search,
+    PaletteMode, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
 };
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
@@ -67,6 +73,10 @@ pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
+pub use notes::{
+    ConflictChoice, NoteConflict, NoteSession, NoteSync, Property, PropertyValue,
+    SAVE_AT_LEAST_EVERY, SAVE_PAUSE, SaveProblem,
+};
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use plugin_host::{
@@ -75,7 +85,7 @@ pub use plugin_host::{
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{CapabilityLine, PluginInstall, PluginRow, PluginView};
-pub use preferences::{ACTUAL_SIZE, Appearance, Preferences, TextSize, ZOOM_LEVELS};
+pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
@@ -83,13 +93,18 @@ pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
 pub use settings::{
-    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection, VERSION,
-    settings_section,
+    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
+    THIRD_PARTY_LICENSES, VERSION, settings_section,
 };
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};
+pub use updates::{
+    FIRST_UPDATE_CHECK, PendingUpdate, UPDATE_CHECK_INTERVAL, UpdateError, UpdateErrorKind,
+    UpdateSource, UpdateStatus, Updates,
+};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
+pub use writes::{PendingWork, PendingWrite, PendingWrites, WriteFailure};
 
 /// Where Noura keeps per-device state, such as indexes and the recent
 /// list: the operating system's local app data folder.

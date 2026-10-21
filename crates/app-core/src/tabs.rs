@@ -169,6 +169,18 @@ pub(crate) struct Tabs {
     next_id: u64,
 }
 
+/// What [`Tabs::follow_files`] changed.
+#[derive(Debug, Default)]
+pub(crate) struct Followed {
+    /// Whether any tab changed.
+    pub(crate) changed: bool,
+    /// Whether the active tab's file changed.
+    pub(crate) active_changed: bool,
+    /// The tabs that took the place of a later tab because both came to
+    /// show one file. What such a tab showed may be another file's.
+    pub(crate) merged: Vec<TabId>,
+}
+
 impl Tabs {
     pub(crate) fn list(&self) -> &[Tab] {
         &self.tabs
@@ -420,15 +432,17 @@ impl Tabs {
     /// Point each file tab at where its file is now, or close it.
     /// `follow` gets a file tab's path and stable ID and answers with the
     /// file's path and stable ID now, or `None` when the file is gone.
-    /// Returns whether any tab changed, and whether the active tab's file
-    /// did.
+    /// Two tabs that now show one file become one, unless the later one is
+    /// in `keep`, as a note with edits that aren't on disk is.
     pub(crate) fn follow_files(
         &mut self,
+        keep: &[TabId],
         mut follow: impl FnMut(&str, Option<&str>) -> Option<(String, Option<String>)>,
-    ) -> (bool, bool) {
+    ) -> Followed {
         let active = self.active;
         let mut changed = false;
         let mut active_changed = false;
+        let mut merged = Vec::new();
         let mut gone = Vec::new();
         for tab in &mut self.tabs {
             let TabContent::File { file, object_id } = &mut tab.content else {
@@ -455,11 +469,15 @@ impl Tabs {
                 .iter()
                 .position(|earlier| !gone.contains(&earlier.id) && earlier.shows(&tab.content));
             match survivor {
-                Some(survivor) if !gone.contains(&tab.id) => {
+                Some(survivor) if !gone.contains(&tab.id) && !keep.contains(&tab.id) => {
                     changed = true;
                     active_changed |= self.active == Some(tab.id);
-                    let merged = self.tabs.remove(index);
-                    self.merge_into(merged, survivor);
+                    let later = self.tabs.remove(index);
+                    let survivor_id = self.tabs[survivor].id;
+                    if !merged.contains(&survivor_id) {
+                        merged.push(survivor_id);
+                    }
+                    self.merge_into(later, survivor);
                 }
                 _ => index += 1,
             }
@@ -469,7 +487,11 @@ impl Tabs {
             active_changed |= self.active == Some(id);
             self.close(id);
         }
-        (changed, active_changed)
+        Followed {
+            changed,
+            active_changed,
+            merged,
+        }
     }
 
     /// Fold the tab `merged`, already out of the list, into the tab at

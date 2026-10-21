@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noura third-party licenses</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+  body { margin: 0 auto; max-width: 48rem; padding: 2rem 1rem; }
+  pre { white-space: pre-wrap; font-size: 0.8125rem; max-height: 20rem; overflow: auto; padding: 0.75rem; border: 1px solid #8884; border-radius: 0.5rem; }
+  ul.crates { columns: 2; padding-left: 1.25rem; }
+  section { margin-top: 2.5rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>Third-party licenses</h1>
+<p>Noura is MIT licensed. It includes the open source crates below, under the licenses that follow.</p>
+<h2>Licenses</h2>
+<ul>
+{{#each overview}}
+  <li><a href="#{{id}}">{{name}}</a>, used by {{count}} crates</li>
+{{/each}}
+</ul>
+{{#each licenses}}
+<section>
+  {{#if first_of_kind}}<h2 id="{{id}}">{{name}}</h2>{{/if}}
+  <h3>Used by</h3>
+  <ul class="crates">
+  {{#each used_by}}
+    <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+  {{/each}}
+  </ul>
+  <pre>{{text}}</pre>
+</section>
+{{/each}}
+</main>
+</body>
+</html>
