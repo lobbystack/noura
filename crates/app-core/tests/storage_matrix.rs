@@ -7,7 +7,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use app_core::App;
+use app_core::{App, OpenAs};
 use support::{FakeSystem, Fixture, document, note, notice, object_id, rows};
 
 const A: &str = "01jbcdefghjkmnpqrstvwxyz0a";
@@ -369,7 +369,7 @@ fn changes_finish_and_the_tree_follows_when_the_index_refuses_writes() {
         ("Old/Inner.md", b"i"),
     ]);
     let mut app = fixture.app_with(FakeSystem::without_trash());
-    app.open_file("Plan.md");
+    app.open_file("Plan.md", OpenAs::Preview);
     let index = refuse_index_writes(&fixture, &app);
 
     // Each change is on disk, so each one succeeds and the tree shows it,

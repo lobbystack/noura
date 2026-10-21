@@ -2,6 +2,7 @@
 
 mod support;
 
+use app_core::OpenAs;
 use support::{Fixture, current, document, note, notice, object_id, rows};
 
 const PLAN_ID: &str = "01jbcdefghjkmnpqrstvwxyz00";
@@ -31,7 +32,7 @@ fn renaming_a_managed_note_keeps_md_its_id_and_every_byte() {
 fn renaming_the_open_file_keeps_it_open_under_its_new_name() {
     let fixture = Fixture::new(&[("Plan.md", b"x")]);
     let mut app = fixture.app();
-    app.open_file("Plan.md");
+    app.open_file("Plan.md", OpenAs::Preview);
     app.start_rename("Plan.md");
 
     assert!(app.commit_rename("Roadmap"));
@@ -62,7 +63,7 @@ fn renaming_a_folder_keeps_its_contents_ids_and_open_state() {
     let fixture = Fixture::new(&[("Docs/Plan.md", &bytes), ("Docs/Deep/Inner.md", b"i")]);
     let mut app = fixture.app();
     support::select(&mut app, "Docs/Deep/Inner.md");
-    app.open_file("Docs/Deep/Inner.md");
+    app.open_file("Docs/Deep/Inner.md", OpenAs::Preview);
 
     app.start_rename("Docs");
     assert!(app.commit_rename("Guides"));
@@ -165,7 +166,7 @@ fn keeping_the_same_name_or_cancelling_changes_nothing() {
 fn renaming_an_item_that_left_the_workspace_says_so_and_drops_its_row() {
     let fixture = Fixture::new(&[("Plan.md", b"x"), ("Readme.md", b"r")]);
     let mut app = fixture.app();
-    app.open_file("Plan.md");
+    app.open_file("Plan.md", OpenAs::Preview);
     app.start_rename("Plan.md");
     std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
 
@@ -188,7 +189,7 @@ fn renaming_an_item_that_left_the_workspace_says_so_and_drops_its_row() {
 fn a_rename_that_fails_after_the_item_moved_follows_it() {
     let fixture = Fixture::new(&[("Docs/Plan.md", b"x"), ("Readme.md", b"r")]);
     let mut app = fixture.app();
-    app.open_file("Docs/Plan.md");
+    app.open_file("Docs/Plan.md", OpenAs::Preview);
     app.start_rename("Docs/Plan.md");
     // The file already has the new name, as when the move happened and
     // only syncing its folder failed.

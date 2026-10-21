@@ -13,12 +13,13 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, NoSystem, OpenedFile, RecentWorkspace, System, Workspace, WorkspaceService,
-    files::shown_name,
+    AppError, FileTree, Layout, NoSystem, OpenedFile, RecentWorkspace, System, Tab, Workspace,
+    WorkspaceService, layout::LayoutStore, rail::Rail, tabs::Tabs, view_state::ViewStore,
 };
 
 mod file_actions;
 mod ignored_files;
+mod view;
 
 pub use file_actions::{Question, Rename};
 pub use ignored_files::IgnoredFiles;
@@ -61,6 +62,12 @@ pub enum Change {
     Screen,
     Recents,
     Tree,
+    /// The open tabs or the active tab changed.
+    Tabs,
+    /// The rail's pages or their order changed.
+    Rail,
+    /// The sidebar showed, hid, resized or folded a section.
+    Layout,
     Document,
     Notice,
     /// The Ignored files page changed.
@@ -112,7 +119,7 @@ struct Pending {
 }
 
 /// The state every client draws: which screen shows, the recent list, the
-/// open workspace with its file tree, and the open file.
+/// open workspace with its file tree, and its tabs.
 pub struct App {
     service: Arc<WorkspaceService>,
     system: Arc<dyn System>,
@@ -120,7 +127,12 @@ pub struct App {
     recents: Vec<RecentWorkspace>,
     workspace: Option<Workspace>,
     tree: Option<FileTree>,
-    document: Option<OpenedFile>,
+    tabs: Tabs,
+    rail: Rail,
+    /// Each workspace's tabs, kept in this device's app data.
+    views: ViewStore,
+    layout: Layout,
+    layouts: LayoutStore,
     notice: Option<Notice>,
     /// The tree row being renamed in place.
     renaming: Option<Rename>,
@@ -159,7 +171,11 @@ impl App {
             recents,
             workspace: None,
             tree: None,
-            document: None,
+            tabs: Tabs::default(),
+            rail: Rail::default(),
+            views: ViewStore::new(app_data.as_ref()),
+            layout: Layout::default(),
+            layouts: LayoutStore::new(app_data.as_ref()),
             notice: None,
             renaming: None,
             ignored_files: None,
@@ -168,6 +184,7 @@ impl App {
             pending: None,
             listeners: Listeners::default(),
         };
+        app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;
@@ -207,13 +224,27 @@ impl App {
         self.tree.as_ref()
     }
 
+    /// The file tree, to move its focus or type ahead in it. Opening and
+    /// closing folders goes through `App`'s own methods, such as
+    /// [`App::activate_tree_row`] and [`App::collapse_all`], so the
+    /// workspace remembers which folders are open.
     pub fn tree_mut(&mut self) -> Option<&mut FileTree> {
         self.tree.as_mut()
     }
 
-    /// The file shown in the document area.
+    /// The file shown in the document area: the active tab's file.
     pub fn document(&self) -> Option<&OpenedFile> {
-        self.document.as_ref()
+        self.tabs.active().and_then(Tab::file)
+    }
+
+    /// The open tabs, in order.
+    pub fn tabs(&self) -> &[Tab] {
+        self.tabs.list()
+    }
+
+    /// The tab the window shows.
+    pub fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.active()
     }
 
     pub fn notice(&self) -> Option<&Notice> {
@@ -287,29 +318,6 @@ impl App {
         }
     }
 
-    /// Show a file from the tree in the document area.
-    pub fn open_file(&mut self, relative_path: &str) {
-        let Some(workspace) = &self.workspace else {
-            return;
-        };
-        match workspace.open_file(relative_path) {
-            Ok(file) => {
-                self.document = Some(file);
-                self.listeners.emit(Change::Document);
-            }
-            Err(error) => {
-                let title = format!(
-                    "Couldn't open \u{201c}{}\u{201d}",
-                    shown_name(
-                        relative_path.rsplit('/').next().unwrap_or(relative_path),
-                        crate::EntryKind::File
-                    )
-                );
-                self.show_notice(&title, error, None);
-            }
-        }
-    }
-
     /// Apply finished background work. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
         let Some(pending) = &self.pending else {
@@ -333,7 +341,7 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
-                self.document = None;
+                self.restore_view();
                 self.renaming = None;
                 self.ignored_files = None;
                 self.pending_trash = None;
@@ -360,12 +368,13 @@ impl App {
         self.failed_restore = None;
         self.workspace = Some(opened.workspace);
         self.tree = Some(opened.tree);
-        self.document = None;
+        self.restore_view();
         self.notice = None;
         self.renaming = None;
         self.ignored_files = None;
         self.pending_trash = None;
         self.listeners.emit(Change::Tree);
+        self.listeners.emit(Change::Tabs);
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
         self.set_screen(Screen::Workspace);

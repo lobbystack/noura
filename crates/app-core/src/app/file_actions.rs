@@ -1,9 +1,9 @@
 //! What people do to files from the tree: each action runs through the
-//! files service, then updates the tree, the open file and the notice.
+//! files service, then updates the tree, the tabs and the notice.
 
 use super::{App, Change, Notice, NoticeKind};
 use crate::{
-    AppError, EntryKind, OpenedFile, Platform, TreeAction, TreeKey,
+    AppError, EntryKind, OpenAs, Platform, TreeAction, TreeKey,
     files::{remap, shown_name},
     operations::{join, renamed_path},
 };
@@ -31,7 +31,7 @@ pub struct Rename {
 
 impl App {
     /// Create a note in `folder`, or in the current row's folder when
-    /// `folder` is `None`, then select and open it.
+    /// `folder` is `None`, then select it and open it in a kept tab.
     pub fn new_note(&mut self, folder: Option<&str>) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
@@ -43,7 +43,7 @@ impl App {
             Ok(path) => {
                 self.refresh_tree(None);
                 self.select(&path);
-                self.open_file(&path);
+                self.open_file(&path, OpenAs::Kept);
             }
             Err(error) => self.show_notice("Couldn't create the note", error, None),
         }
@@ -89,8 +89,8 @@ impl App {
         }
     }
 
-    /// Copy the file at `relative_path` next to itself, then select and
-    /// open the copy.
+    /// Copy the file at `relative_path` next to itself, then select the
+    /// copy and open it in a kept tab.
     pub fn duplicate(&mut self, relative_path: &str) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
@@ -101,7 +101,7 @@ impl App {
             Ok(copy) => {
                 self.refresh_tree(None);
                 self.select(&copy);
-                self.open_file(&copy);
+                self.open_file(&copy, OpenAs::Kept);
             }
             Err(error) => {
                 let title = format!("Couldn't duplicate {}", self.quoted(relative_path));
@@ -184,7 +184,7 @@ impl App {
         let tree = self.tree.as_ref()?;
         if key == TreeKey::Enter {
             let current = tree.focused().map(|row| &tree.rows()[row]);
-            let open = self.document.as_ref().map(|file| &file.relative_path);
+            let open = self.document().map(|file| &file.relative_path);
             if let Some(row) = current
                 && row.kind == EntryKind::File
                 && Some(&row.relative_path) == open
@@ -194,7 +194,7 @@ impl App {
                 return None;
             }
         }
-        let action = self.tree.as_mut()?.press(key)?;
+        let action = self.change_tree(|tree| tree.press(key))?;
         self.apply(action)
     }
 
@@ -202,7 +202,9 @@ impl App {
     /// owner has to carry out itself.
     pub fn apply(&mut self, action: TreeAction) -> Option<TreeAction> {
         match action {
-            TreeAction::OpenFile { relative_path } => self.open_file(&relative_path),
+            TreeAction::OpenFile { relative_path } => {
+                self.open_file(&relative_path, OpenAs::Preview);
+            }
             TreeAction::Rename { relative_path } => self.start_rename(&relative_path),
             TreeAction::Trash { relative_path } => self.request_trash(&relative_path),
             TreeAction::Move {
@@ -216,8 +218,13 @@ impl App {
 
     /// Close every folder in the tree.
     pub fn collapse_all(&mut self) {
-        if let Some(tree) = &mut self.tree {
-            tree.collapse_all();
+        if self
+            .change_tree(|tree| {
+                tree.collapse_all();
+                Some(())
+            })
+            .is_some()
+        {
             self.listeners.emit(Change::Tree);
         }
     }
@@ -277,8 +284,8 @@ impl App {
     }
 
     /// Move the item at `relative_path` to the trash and say which trash it
-    /// went to. A file open in the document area closes, and the next row
-    /// becomes current.
+    /// went to. The tabs of the item and of everything inside it close,
+    /// and the next row becomes current.
     pub fn trash(&mut self, relative_path: &str) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
@@ -336,12 +343,12 @@ impl App {
 
     /// Start renaming the item at `relative_path` in place.
     pub fn start_rename(&mut self, relative_path: &str) {
-        let Some(tree) = &mut self.tree else {
-            return;
-        };
-        if !tree.select(relative_path) {
+        if !self.select(relative_path) {
             return;
         }
+        let Some(tree) = &self.tree else {
+            return;
+        };
         let name = tree
             .focused()
             .map(|row| tree.rows()[row].name.clone())
@@ -449,16 +456,17 @@ impl App {
             .unwrap_or_default()
     }
 
-    fn select(&mut self, relative_path: &str) {
-        if let Some(tree) = &mut self.tree {
-            tree.select(relative_path);
-        }
+    /// Open the folders above the item at `relative_path` and make its row
+    /// current. Returns whether the tree shows the item.
+    fn select(&mut self, relative_path: &str) -> bool {
+        self.change_tree(|tree| Some(tree.select(relative_path)))
+            .unwrap_or(false)
     }
 
     /// After a change that failed, the item at `from` may have left its
     /// place anyway: another app moved it, or Noura moved it and only
     /// syncing its folder failed. Then the tree reads the files again, and
-    /// the open file follows the item to `to` when it's there and closes
+    /// the item's tabs follow it to `to` when it's there and close
     /// otherwise. Returns whether the item left.
     fn follow_failed_change(&mut self, from: &str, to: Option<&str>) -> bool {
         let Some(workspace) = &self.workspace else {
@@ -478,30 +486,22 @@ impl App {
         true
     }
 
-    /// Close the open file and stop renaming when either is the item at
-    /// `relative_path` or inside it.
+    /// Close the tabs of the item at `relative_path` and of everything
+    /// inside it, and stop renaming when the row being renamed is one of
+    /// them.
     fn close_inside(&mut self, relative_path: &str) {
-        let inside = |path: &str| remap(path, relative_path, relative_path).is_some();
-        if self
-            .document
-            .as_ref()
-            .is_some_and(|file| inside(&file.relative_path))
-        {
-            self.document = None;
-            self.listeners.emit(Change::Document);
-        }
-        if self
-            .renaming
-            .as_ref()
-            .is_some_and(|rename| inside(&rename.relative_path))
-        {
+        self.close_tabs_inside(relative_path);
+        if self.renaming.as_ref().is_some_and(|rename| {
+            remap(&rename.relative_path, relative_path, relative_path).is_some()
+        }) {
             self.renaming = None;
         }
     }
 
-    /// After the item at `from` moved to `to`: read the tree, select the
-    /// item, and keep the open file open at its new path.
+    /// After the item at `from` moved to `to`: its tabs and open folders
+    /// follow it, and the tree reads the files again and selects it.
     fn follow_move(&mut self, from: &str, to: &str) {
+        self.move_tabs(from, to);
         self.refresh_tree(Some((from, to)));
         self.select(to);
         if let Some(rename) = &mut self.renaming
@@ -509,36 +509,17 @@ impl App {
         {
             rename.relative_path = path;
         }
-        let moved = self
-            .document
-            .as_ref()
-            .and_then(|file| remap(&file.relative_path, from, to));
-        if let Some(path) = moved {
-            self.document = Some(OpenedFile {
-                name: shown_name(file_name(&path), EntryKind::File),
-                relative_path: path,
-            });
-            self.listeners.emit(Change::Document);
-        }
     }
 
-    /// Read the tree again after a change, keeping open folders and the
-    /// current row. `moved` names an item that moved, so its open folders
-    /// and the current row follow it.
+    /// Read the tree again after a change Noura made, keeping open folders
+    /// and the current row. `moved` names an item that moved, so its open
+    /// folders and the current row follow it.
     pub(super) fn refresh_tree(&mut self, moved: Option<(&str, &str)>) {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        match workspace.file_tree() {
-            Ok(mut tree) => {
-                if let Some(old) = &self.tree {
-                    tree.carry_over(old, moved);
-                }
-                self.tree = Some(tree);
-                self.listeners.emit(Change::Tree);
-            }
-            Err(error) => self.show_notice("Couldn't read the files", error, None),
-        }
+        let tree = workspace.file_tree();
+        self.replace_tree(tree, moved);
     }
 
     /// Say where an action's result went.
