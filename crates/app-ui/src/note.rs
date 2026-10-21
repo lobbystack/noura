@@ -205,9 +205,15 @@ fn property_field_id(tab: TabId, key: &str) -> Id {
     Id::unique(("note-property", tab, key))
 }
 
-/// Draw the note in `tab`, or why it couldn't open. Returns whether the tab
-/// shows a note.
-pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) -> bool {
+/// Draw the note in `tab`, or why it couldn't open, in the window whose ID
+/// salt is `window`. Returns whether the tab shows a note.
+pub(crate) fn show(
+    ui: &mut Ui,
+    app: &mut App,
+    view: &mut NoteView,
+    window: Id,
+    tab: TabId,
+) -> bool {
     if let Some(error) = app.note_unreadable(tab) {
         let message = error.message.clone();
         let mut retry = false;
@@ -302,7 +308,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     // An object of a running plugin's type shows the plugin's panel in
     // place of the kernel's.
     if let Some(view) = app.plugin_panel(tab) {
-        panel.show(ui, |ui| plugin_panel(ui, app, tab, &view));
+        panel.show(ui, |ui| plugin_panel(ui, app, window, tab, &view));
     } else if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
         panel.show(ui, |ui| properties_panel(ui, app, note, tab, &properties));
     }
@@ -703,14 +709,16 @@ fn body(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
 }
 
 /// The properties panel the plugin that holds the object's type draws.
-fn plugin_panel(ui: &mut Ui, app: &mut App, tab: TabId, view: &PluginView) {
+fn plugin_panel(ui: &mut Ui, app: &mut App, window: Id, tab: TabId, view: &PluginView) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::Group)
         .accessibility_label("Properties");
     ui.scope_builder(builder, |ui| {
         ScrollArea::vertical()
             .id_salt(("note-plugin-panel-scroll", tab))
-            .show(ui, |ui| crate::plugin_view::show_panel(ui, app, tab, view));
+            .show(ui, |ui| {
+                crate::plugin_view::show_panel(ui, app, window, tab, view);
+            });
     });
 }
 

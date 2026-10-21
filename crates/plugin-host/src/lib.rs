@@ -22,7 +22,9 @@ mod view;
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::{
-    Event, Node, NodeKind, ObjectType, Page, PluginError, PluginInstance, Registration, Services,
+    Choice, Column, ColumnPress, Event, Field, Form, Input, Item, MenuItem, Node, NodeKind,
+    ObjectType, Page, PluginError, PluginInstance, Registration, Services, SortOrder, Submission,
+    Table, Target, Value, VirtualList, VirtualRow,
 };
 pub use manifest::{
     Capability, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
@@ -34,4 +36,4 @@ pub use services::{
     Entry, EntryKind, FileRead, Listed, NewObject, ObjectChanges, ObjectRead, ObjectRecord,
     PropertyProblem, ServiceError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
 };
-pub use view::{MAX_DEPTH, MAX_NODES, View, ViewError, ViewKind, ViewNode};
+pub use view::{MAX_DEPTH, MAX_NODES, MAX_ROWS, View, ViewError, ViewKind, ViewNode, check_rows};

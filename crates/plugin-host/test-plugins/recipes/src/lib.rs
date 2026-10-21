@@ -64,7 +64,9 @@ impl Plugin for Recipes {
     }
 
     fn handle_event(_page: String, event: Event) {
-        let Event::Pressed(call) = event;
+        let Event::Pressed(call) = event else {
+            return;
+        };
         *ANSWER.lock().unwrap() = Some(run(&call));
     }
 
@@ -125,7 +127,9 @@ impl Plugin for Recipes {
     }
 
     fn handle_panel_event(object: String, event: Event) {
-        let Event::Pressed(node) = event;
+        let Event::Pressed(node) = event else {
+            return;
+        };
         if node != "vegetarian" {
             return;
         }
