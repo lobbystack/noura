@@ -479,7 +479,8 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
             Area::FileTree,
             Area::Tabs,
             Area::Pages,
-            Area::Writing
+            Area::Writing,
+            Area::Note
         ]
     );
     let entry = |area: Area, label: &str| {
@@ -567,6 +568,24 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
         entry(Area::Writing, "Redo"),
         Some(vec![Shortcut::command(Key::Z).with_shift()])
     );
+    // A note's text formats with its own keys.
+    for (label, shortcut) in [
+        ("Bold", Shortcut::command(Key::B)),
+        ("Italic", Shortcut::command(Key::I)),
+        ("Underline", Shortcut::command(Key::U)),
+        ("Strikethrough", Shortcut::command(Key::X).with_shift()),
+        ("Link", Shortcut::command(Key::K)),
+        ("Heading 1", Shortcut::command(Key::Num1).with_alt()),
+        ("Quote", Shortcut::command(Key::Q).with_alt()),
+        ("Inline code", Shortcut::command(Key::C).with_shift()),
+        ("Bulleted list", Shortcut::command(Key::Num8).with_shift()),
+        ("Check or uncheck a task", Shortcut::command(Key::Enter)),
+        ("Nest a list item", Shortcut::new(Key::Tab)),
+        ("Find in the note", Shortcut::command(Key::F)),
+        ("Rename the note", Shortcut::new(Key::F2)),
+    ] {
+        assert_eq!(entry(Area::Note, label), Some(vec![shortcut]), "{label}");
+    }
     // Commands without keys stay off the list.
     assert_eq!(entry(Area::Anywhere, "Keyboard Shortcuts"), None);
     drop(app);
@@ -596,7 +615,45 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
             ]),
             "{platform:?}"
         );
+        assert_eq!(
+            entry(Area::Note, "Redo"),
+            Some(vec![
+                Shortcut::command(Key::Z).with_shift(),
+                Shortcut::command(Key::Y)
+            ]),
+            "{platform:?}"
+        );
     }
+}
+
+#[test]
+fn in_a_note_mod_k_inserts_a_link_and_elsewhere_it_opens_the_palette() {
+    let fixture = Fixture::new(&[]);
+    let app = fixture.app_with(FakeSystem::on(Platform::Windows));
+    let mod_k = KeyPress::new(Key::K).with_ctrl();
+
+    assert_eq!(app.command_for_key(&mod_k, Some(Area::Note)), None);
+    for focus in [None, Some(Area::Writing), Some(Area::FileTree)] {
+        assert_eq!(
+            app.command_for_key(&mod_k, focus).as_deref(),
+            Some(command_id::COMMAND_PALETTE),
+            "{focus:?}"
+        );
+    }
+    // The note's other formatting keys stay with it too, and commands for
+    // anywhere still run.
+    for press in [
+        KeyPress::new(Key::B).with_ctrl(),
+        KeyPress::new(Key::Num8).with_ctrl().with_shift(),
+        KeyPress::new(Key::Enter).with_ctrl(),
+    ] {
+        assert_eq!(app.command_for_key(&press, Some(Area::Note)), None);
+    }
+    assert_eq!(
+        app.command_for_key(&KeyPress::new(Key::N).with_ctrl(), Some(Area::Note))
+            .as_deref(),
+        Some(command_id::NEW_NOTE)
+    );
 }
 
 #[test]
@@ -609,7 +666,13 @@ fn keys_the_tree_tabs_and_pages_open_things_with_stay_with_them() {
     register_counting(&mut app, command, &runs).unwrap();
     for key in [Key::Space, Key::Enter] {
         let press = KeyPress::new(key);
-        for area in [Area::FileTree, Area::Tabs, Area::Pages, Area::Writing] {
+        for area in [
+            Area::FileTree,
+            Area::Tabs,
+            Area::Pages,
+            Area::Writing,
+            Area::Note,
+        ] {
             assert_eq!(
                 app.command_for_key(&press, Some(area)),
                 None,

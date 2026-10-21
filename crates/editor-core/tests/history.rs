@@ -380,13 +380,14 @@ fn buffer_merge_insert() {
     assert_eq!(merge(base, remote, local), "content remote local");
 }
 
-/// Documents behavior more than it asserts a goal.
+/// Text typed right after a word the other side replaced stays, after the
+/// new word. Lockbook's merge dropped it in the first case.
 #[test]
 fn buffer_merge_insert_replace() {
     let base = "content";
     let local = "content local";
     let remote = "remote";
-    assert_eq!(merge(base, local, remote), "remote");
+    assert_eq!(merge(base, local, remote), "remote local");
     assert_eq!(merge(base, remote, local), "remote local");
 }
 

@@ -8,9 +8,8 @@
 use comrak::nodes::{AstNode, NodeHeading, NodeValue};
 
 use crate::bounds::RangesExt as _;
-use crate::buffer::Buffer;
 use crate::doc::MdDoc;
-use crate::offset_types::{Byte, Grapheme, Graphemes, RangeExt as _, RangeIterExt as _};
+use crate::offset_types::{Byte, Grapheme, RangeExt as _, RangeIterExt as _};
 
 impl<'ast> MdDoc {
     /// Returns the range for the node.
@@ -398,36 +397,6 @@ pub fn consume_indent_columns_ceil(text: &str, target_columns: usize) -> usize {
         }
     }
     graphemes
-}
-
-/// Grapheme range of the leading ` ` / `\t` run. Lexical, not
-/// structural — see [`consume_indent_columns`] for why ownership
-/// is ambiguous.
-pub fn leading_indent_range(buffer: &Buffer, line: (Grapheme, Grapheme)) -> (Grapheme, Grapheme) {
-    let text = &buffer[line];
-    let mut graphemes = 0usize;
-    for c in text.chars() {
-        if c == ' ' || c == '\t' {
-            graphemes += 1;
-        } else {
-            break;
-        }
-    }
-    (line.start(), line.start() + Graphemes(graphemes))
-}
-
-/// Column count of leading whitespace, expanding tabs to 4-col
-/// stops.
-pub fn leading_indent_cols(text: &str) -> usize {
-    let mut cols = 0;
-    for c in text.chars() {
-        match c {
-            ' ' => cols += 1,
-            '\t' => cols = (cols / 4 + 1) * 4,
-            _ => break,
-        }
-    }
-    cols
 }
 
 /// Width, in columns, of `text`'s leading indentation, measured until it

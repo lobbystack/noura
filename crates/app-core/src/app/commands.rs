@@ -130,8 +130,9 @@ impl App {
     /// The command a key press runs while `focus` has the keyboard: a
     /// command for anywhere, or one for that area. The keys the focused
     /// area handles itself, as the shortcuts list shows them, stay with
-    /// it. While a text field has the keyboard ([`Area::Writing`]), so do
-    /// the keys it types and edits with. While no workspace is open, only
+    /// it. While a text field or a note's text has the keyboard
+    /// ([`Area::Writing`], [`Area::Note`]), so do the keys it types and
+    /// edits with. While no workspace is open, only
     /// Quit and Close Window take their keys.
     pub fn command_for_key(&self, press: &KeyPress, focus: Option<Area>) -> Option<String> {
         let id = self

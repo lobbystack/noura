@@ -80,7 +80,8 @@ pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use notes::{
-    NoteSession, NoteSync, Property, PropertyValue, SAVE_AT_LEAST_EVERY, SAVE_PAUSE, SaveProblem,
+    ConflictChoice, NoteConflict, NoteSession, NoteSync, Property, PropertyValue,
+    SAVE_AT_LEAST_EVERY, SAVE_PAUSE, SaveProblem,
 };
 pub use objects::ObjectRef;
 pub use operations::Imported;

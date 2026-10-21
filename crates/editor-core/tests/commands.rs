@@ -4,6 +4,7 @@
 use editor_core::MdDoc;
 use editor_core::input::{Event, Location, NoLayout, Region};
 use editor_core::offset_types::Grapheme;
+use proptest::prelude::*;
 
 fn g(offset: usize) -> Grapheme {
     Grapheme(offset)
@@ -53,13 +54,23 @@ fn pasting_onto_a_selection_replaces_it_and_puts_the_caret_after() {
 }
 
 #[test]
-fn pasting_a_url_onto_selected_text_links_it() {
+fn pasting_keeps_non_breaking_spaces() {
+    let mut doc = MdDoc::new("ab");
+    select(&mut doc, 1, 1);
+
+    paste(&mut doc, "x\u{a0}y");
+
+    assert_eq!(doc.text(), "ax\u{a0}yb");
+}
+
+#[test]
+fn pasting_a_url_onto_selected_text_replaces_the_text_with_the_url() {
     let mut doc = MdDoc::new("see the docs here");
     select(&mut doc, 8, 12);
 
     paste(&mut doc, "https://example.com");
 
-    assert_eq!(doc.text(), "see the [docs](https://example.com) here");
+    assert_eq!(doc.text(), "see the https://example.com here");
 }
 
 #[test]
@@ -80,6 +91,60 @@ fn pasting_a_url_inside_a_link_replaces_the_selection() {
     paste(&mut doc, "https://new.example");
 
     assert_eq!(doc.text(), "[docs](https://new.example)");
+}
+
+#[test]
+fn pasted_windows_line_endings_become_the_newline_return_types() {
+    let mut doc = MdDoc::new("ab");
+    select(&mut doc, 1, 1);
+
+    paste(&mut doc, "one\r\ntwo\r\n");
+
+    assert_eq!(doc.text(), "aone\ntwo\nb");
+    assert_eq!(doc.selection(), (g(9), g(9)));
+}
+
+#[test]
+fn pasted_markdown_lands_as_copied() {
+    let mut doc = MdDoc::new("- item\n");
+    select(&mut doc, 6, 6);
+
+    paste(&mut doc, " **bold** [[link]]\n\n# heading\t");
+
+    assert_eq!(doc.text(), "- item **bold** [[link]]\n\n# heading\t\n");
+}
+
+proptest! {
+    /// Pasting replaces only the selection: every byte before and after
+    /// it stays as it was, and the pasted text lands as copied, with
+    /// Windows line endings as `\n`.
+    #[test]
+    fn pasting_changes_no_byte_outside_the_selection(
+        before in "[ -~\u{a0}é\n\r*#>\\[\\]-]{0,40}",
+        selected in "[ -~é\n]{0,10}",
+        after in "[ -~\u{a0}é\n\r*#>\\[\\]-]{0,40}",
+        pasted in "[ -~\u{a0}é\n\r\t]{0,30}",
+    ) {
+        let text = format!("{before}{selected}{after}");
+        let mut doc = MdDoc::new(&text);
+        let segs = editor_core::unicode_segs::calc(&text);
+        // Only whole clusters can be selected.
+        let start = segs.byte_to_char_floor(before.len().into());
+        let end = segs.byte_to_char_ceil((before.len() + selected.len()).into());
+        let (start_byte, end_byte) = (segs.offset_to_byte(start).0, segs.offset_to_byte(end).0);
+        select(&mut doc, start.0, end.0);
+
+        paste(&mut doc, &pasted);
+
+        let result = doc.text().as_bytes();
+        let expected = pasted.replace("\r\n", "\n");
+        prop_assert_eq!(&result[..start_byte], &text.as_bytes()[..start_byte]);
+        prop_assert_eq!(&result[result.len() - (text.len() - end_byte)..], &text.as_bytes()[end_byte..]);
+        prop_assert_eq!(
+            &result[start_byte..result.len() - (text.len() - end_byte)],
+            expected.as_bytes()
+        );
+    }
 }
 
 #[test]
