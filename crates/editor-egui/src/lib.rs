@@ -19,6 +19,7 @@ use input::mutation::EventState;
 use widget::block::LayoutCache;
 
 pub use editor_core::bounds;
+mod chrome;
 pub mod fold;
 pub mod fonts;
 pub mod input;
@@ -266,6 +267,9 @@ pub struct MdConfig {
     pub readonly: bool,
     /// The file extension. Anything other than `md` shows as plain text.
     pub ext: String,
+    /// Draws the formatting toolbar above the note and the small toolbar
+    /// over a selection. Find opens with Mod-F either way.
+    pub toolbar: bool,
 }
 
 impl Default for MdConfig {
@@ -273,6 +277,7 @@ impl Default for MdConfig {
         Self {
             readonly: false,
             ext: "md".into(),
+            toolbar: false,
         }
     }
 }
@@ -293,6 +298,9 @@ pub struct Editor {
 
     // outputs from drawing a frame need an additional frame to process before reporting
     next_resp: Response,
+
+    /// The toolbars and the find bar.
+    chrome: chrome::Chrome,
 }
 
 static PRINT: bool = false;
@@ -479,7 +487,11 @@ impl std::ops::DerefMut for MdRender {
 
 impl Editor {
     pub fn new(ctx: &Context, md: &str, config: MdConfig) -> Self {
-        let MdConfig { readonly, ext } = config;
+        let MdConfig {
+            readonly,
+            ext,
+            toolbar,
+        } = config;
         let mut renderer = MdRender::new(ctx.clone(), md, &ext, readonly);
         renderer.interactive = true;
         let phone_mode = false;
@@ -493,6 +505,7 @@ impl Editor {
             unprocessed_scroll: Default::default(),
             prev_dimensions: None,
             next_resp: Default::default(),
+            chrome: chrome::Chrome::new(toolbar),
         }
     }
 
@@ -504,6 +517,7 @@ impl Editor {
             MdConfig {
                 readonly: false,
                 ext: "md".into(),
+                toolbar: false,
             },
         )
     }
@@ -634,7 +648,26 @@ impl Editor {
         self.edit.renderer.plaintext
     }
 
+    /// Draws the note: the formatting toolbar and the find bar when they
+    /// show, the text below them, and the selection toolbar over the text.
     pub fn show(&mut self, ui: &mut Ui) -> Response {
+        let ctx = ui.ctx().clone();
+        self.track_composition(&ctx);
+        self.handle_find_key(&ctx);
+        self.show_toolbar(ui);
+        if self.find_open() {
+            self.show_find_bar(ui);
+        }
+        let rest = ui.available_rect_before_wrap();
+        self.chrome.text_rect = Some(rest);
+        let resp = ui
+            .scope_builder(UiBuilder::new().max_rect(rest), |ui| self.show_text(ui))
+            .inner;
+        self.show_selection_toolbar(&ctx);
+        resp
+    }
+
+    fn show_text(&mut self, ui: &mut Ui) -> Response {
         let mut resp: Response = mem::take(&mut self.next_resp);
 
         let height = ui.available_size().y.round();
@@ -707,6 +740,7 @@ impl Editor {
             let text_with_newline = self.edit.renderer.buffer.current.text_with("\n");
             comrak::parse_document(&arena, &text_with_newline, &options)
         };
+        self.update_formats(root);
 
         if PRINT {
             println!("{}", "=".repeat(80));
@@ -1085,6 +1119,8 @@ impl Editor {
                             }
                         }
 
+                        self.paint_find_matches(ui);
+
                         // read-only search-preview snippet highlight
                         if let Some(range) = self.edit.renderer.preview_match {
                             let theme = self.edit.renderer.ctx.get_lb_theme();
@@ -1118,10 +1154,21 @@ impl Editor {
                 ui.advance_cursor_after_rect(canvas_rect);
             });
 
+        if matches!(self.edit.pending_scroll, Some(ScrollTarget::FindMatch)) {
+            self.edit.pending_scroll = None;
+            if let (Some(canvas_rect), Some(range)) =
+                (captured_canvas_rect, self.edit.renderer.find_current_match)
+            {
+                self.scroll_to_range(canvas_rect, range);
+            }
+        }
+
         if matches!(self.edit.pending_scroll, Some(ScrollTarget::Preview)) {
             self.edit.pending_scroll = None;
-            if let Some(canvas_rect) = captured_canvas_rect {
-                self.scroll_to_preview(canvas_rect);
+            if let (Some(canvas_rect), Some(range)) =
+                (captured_canvas_rect, self.edit.renderer.preview_match)
+            {
+                self.scroll_to_range(canvas_rect, range);
             }
         }
     }
@@ -1174,11 +1221,9 @@ impl Editor {
         }
     }
 
-    fn scroll_to_preview(&mut self, canvas_rect: Rect) {
-        let Some(match_range) = self.edit.renderer.preview_match else {
-            return;
-        };
-
+    /// Scrolls `range`, a find match or a search preview, to the middle of
+    /// the view.
+    fn scroll_to_range(&mut self, canvas_rect: Rect, match_range: (Grapheme, Grapheme)) {
         let arena = Arena::new();
         let root = self.edit.renderer.reparse(&arena);
         let content = scroll_content::DocScrollContent::for_frame(
