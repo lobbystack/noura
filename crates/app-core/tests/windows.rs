@@ -335,9 +335,13 @@ fn opening_the_open_workspace_again_keeps_every_window_on_it() {
     let mut second = first.new_window().unwrap();
 
     second.open_folder(folder.path().to_owned());
+    // The same folder spelled another way opens it in the background
+    // before Noura can tell it's the open workspace.
+    second.open_folder(folder.path().join("."));
     settle(&mut second);
     first.poll();
 
+    assert!(second.notice().is_none());
     assert!(!first.is_closed());
     assert!(!second.is_closed());
     assert_eq!(titles(&first), ["A"]);

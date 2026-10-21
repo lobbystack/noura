@@ -371,6 +371,15 @@ impl App {
 
     /// Open the workspace in `folder`, or make one of a plain folder.
     pub fn open_folder(&mut self, folder: PathBuf) {
+        // It's open already, in every window. A path spelled another way
+        // still opens, and `adopt` keeps the workspace the windows share.
+        if self
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| folder.to_str() == Some(workspace.root()))
+        {
+            return;
+        }
         self.start(Job::OpenFolder(folder));
     }
 
