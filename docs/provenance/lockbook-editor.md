@@ -76,7 +76,12 @@ To the workspace crate's editor:
 - `own_prefix_len_task_item` keeps a task item's prefix inside its line. A parent item's padding counts columns, so after a tab it can claim part of the task's marker, as in `-\t- [ ] `. Lockbook then read past the end of the line and panicked.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
-- Inserts an input method's committed text the way a key press inserts text. Lockbook's desktop path ignored egui's input method events.
+- Ticket 22 shows an input method's marked text inline at the caret, underlined, and keeps it out of the buffer: `editor-core` holds the composition, and the commit replaces the selection as one edit. Lockbook's desktop path ignored egui's input method events.
+- Ticket 22 parses a note once per text version, where Lockbook parsed it three or four times a frame. `editor-core`'s `Ast` owns its comrak arena, so a parse outlives the call that made it. In a note of 64 KiB or more, an edit reparses the top-level blocks it reaches and rebuilds their bounds, and a background thread makes the full parse that replaces them.
+- Ticket 22 took several passes over the whole note out of each frame. Dropping the words inside list prefixes compared each word with each prefix. The fold buttons looked for a selected list item in every node, block lookups by offset tried every top-level block, and a heading measured its whole section to tell whether the pointer was over it.
+- Node cache keys give lines 32 bits instead of 14, so two nodes 16,384 lines apart no longer share a cached range or height.
+- A block's estimated height ignores the selection unless the note holds fold tags, and the scroll area keeps each block's estimate across an edit that reparses in place.
+- Ticket 22 added the note's AccessKit text node and the spell-check underlines, both new code.
 
 To the `lb-rs` text model:
 
@@ -85,6 +90,7 @@ To the `lb-rs` text model:
 - `lb-rs` merged a reload by diffing the file against the last text loaded or saved, then applying the diff at the version that held that text. Undo past that version, followed by any edit or reload, drops the version from the history. A merge into unsaved edits leaves no version holding the file's text. In both cases `lb-rs` applied the diff to the wrong text and mangled the note. Noura's buffer merges on its next update instead. While a version still holds the last text loaded or saved, it transforms the diff through the edits made since. Otherwise it merges three texts: that one, the buffer's and the file's. Offsets that still run past the text clamp to it instead of panicking.
 - Restructured the word diff around a `Side` helper with the same algorithm, and took only `measure_replace` and `last_grapheme` from `units.rs`.
 - Uses `std::time` in place of `web_time`, and renamed identifiers throughout.
+- Ticket 22 updates the contiguous copy and the grapheme index around each replacement instead of rebuilding them from the rope. A cluster never crosses a line ending, so the buffer segments only the lines next to the edit again.
 
 Lockbook's editing behaviors stay as they were, including the ones that write files: fold tags, setext headings turned off, `__` drawn as underline, and soft breaks drawn as hard breaks. Ticket 18 removes those. Ticket 19 removed Lockbook's Tab handling and the flattening of non-breaking spaces on paste.
 
@@ -169,4 +175,4 @@ BSD-3-Clause requires binary distributions to reproduce the copyright notice, th
 ## Review
 
 - Reviewer: Claude (author review). Owner review pending.
-- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals.
+- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals, and for ticket 22's input method, parsing and performance changes.
