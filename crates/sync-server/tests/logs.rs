@@ -5,7 +5,7 @@
 mod support;
 
 use jiff::tz::TimeZone;
-use sqlx::Connection;
+use sqlx::{ConnectOptions, Connection};
 use support::{Client, Server, push_body, run, seed};
 use sync_protocol::codec::{Bytes, Encode, List};
 use sync_protocol::messages::{PullCursor, PullRequest, PushResponse};
@@ -84,12 +84,11 @@ async fn logs_keep_routes_request_ids_and_statuses_for_14_days() {
     let _ = Client::new(server.base(), None).get("/v2/workspaces").await;
     // A database failure: the response says `internal` and nothing more,
     // and the cause stays in the local log.
-    let mut connection = sqlx::SqliteConnection::connect(&format!(
-        "sqlite://{}",
-        data.join(sync_store_sqlite::DATABASE_FILE).display()
-    ))
-    .await
-    .expect("the database opens");
+    let mut connection = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(data.join(sync_store_sqlite::DATABASE_FILE))
+        .connect()
+        .await
+        .expect("the database opens");
     sqlx::query("DROP TABLE profiles")
         .execute(&mut connection)
         .await

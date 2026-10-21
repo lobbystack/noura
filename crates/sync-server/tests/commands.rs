@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sqlx::Connection;
+use sqlx::{ConnectOptions, Connection};
 use support::{BIN, Client, Server, push_body, run, seed};
 use sync_protocol::codec::{Encode, List};
 use sync_protocol::ids::secret_check;
@@ -37,12 +37,11 @@ fn stderr(output: &std::process::Output) -> String {
 }
 
 async fn database(data: &Path) -> sqlx::SqliteConnection {
-    sqlx::SqliteConnection::connect(&format!(
-        "sqlite://{}",
-        data.join(sync_store_sqlite::DATABASE_FILE).display()
-    ))
-    .await
-    .expect("the database opens")
+    sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(data.join(sync_store_sqlite::DATABASE_FILE))
+        .connect()
+        .await
+        .expect("the database opens")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -278,7 +277,7 @@ async fn the_server_writes_nothing_outside_its_data_directory() {
     }
     let listed = files(&data);
     let allowed = |path: &PathBuf| {
-        let name = path.to_string_lossy();
+        let name = path.to_string_lossy().replace('\\', "/");
         name == "server-secret"
             || name.starts_with("sync.sqlite3")
             || name == "logs"

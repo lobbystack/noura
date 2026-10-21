@@ -16,6 +16,8 @@ Resumable uploads use `@tus/server`, `@tus/file-store`, and `@tus/utils` (MIT). 
 
 The browser viewer uses Marked (MIT), DOMPurify (the Apache-2.0 option of its dual license), and Public Sans (OFL-1.1). Native and portable encryption use age, aes-gcm, ed25519-dalek, x25519-dalek (BSD-3-Clause), hkdf (MIT/Apache-2.0), and zeroize under their permissive Cargo-declared license options. These are dependencies, not copied donor implementations. The pinned Cargo and Bun lockfiles remain the complete dependency inventories.
 
+The v2 sync server (`sync-server`, `sync-store` and `sync-store-sqlite`) uses axum (MIT), sqlx (MIT/Apache-2.0) with the SQLite it bundles (public domain), tokio and tracing (MIT), and jiff (MIT/Unlicense). These are dependencies, not copied donor implementations. Atuin's server (MIT) served as a layout reference, and noura copied none of its code.
+
 Sync protocol v2 (`sync-protocol` and `sync-key-envelope`) uses ed25519-dalek 3 and x25519-dalek 3 (BSD-3-Clause), hpke with x-wing and ml-kem, chacha20poly1305, aead-stream and getrandom (MIT/Apache-2.0), and blake3 (CC0-1.0/Apache-2.0). These are dependencies, not copied donor implementations. Its tests read one draft-ietf-hpke-pq vector taken from the `hpke` package and the Wycheproof sets through the `wycheproof` crate (Apache-2.0); see `docs/provenance/sync-v2-test-vectors.md`.
 
 The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3 device fingerprints and attachment content revisions, and `@noble/ciphers` (MIT) for the ChaCha20-Poly1305 primitive inside the byte-compatible `age` attachment stream; the Rust side uses the `blake3` and `age` crates. These are dependencies, not copied donor implementations.

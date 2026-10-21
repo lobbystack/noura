@@ -4,7 +4,6 @@
 //! read transaction while they wait.
 
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -157,8 +156,8 @@ async fn a_waiting_pull_holds_no_read_transaction() {
     assert!(!waiting.is_finished(), "the pull waits");
     // A truncating checkpoint resets the log only when no reader holds a
     // snapshot in it.
-    let mut connection = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
-        .expect("options")
+    let mut connection = SqliteConnectOptions::new()
+        .filename(&path)
         .busy_timeout(Duration::from_secs(1))
         .connect()
         .await
