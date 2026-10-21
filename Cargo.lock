@@ -304,6 +304,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "windows-sys 0.61.2",
+ "workspace-format",
 ]
 
 [[package]]

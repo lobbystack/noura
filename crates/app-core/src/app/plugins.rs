@@ -4,7 +4,9 @@
 //! window shares the session's plugins service and shows the pages of the
 //! plugins it runs.
 
-use std::path::PathBuf;
+use std::{ops::Range, path::PathBuf};
+
+use plugin_host::{Event, VirtualRow};
 
 use super::{App, Change};
 use crate::{NoticeKind, PluginInstall, PluginRow, PluginView, plugins::is_plugin_page};
@@ -144,8 +146,29 @@ impl App {
     /// Press the button `node_id` in the plugin page `page_id`. The plugin
     /// hears of it and draws its pages again.
     pub fn press_plugin_button(&mut self, page_id: &str, node_id: &str) {
-        self.session.plugins().press(page_id, node_id);
+        self.send_plugin_event(page_id, &Event::Pressed(node_id.to_owned()));
+    }
+
+    /// Tell the plugin behind the page `page_id` about `event` in the
+    /// page's view, such as a selection or a changed input. The plugin
+    /// draws its pages again. A date or a date and time of the wrong form
+    /// never reaches it.
+    pub fn send_plugin_event(&mut self, page_id: &str, event: &Event) {
+        self.session.plugins().send(page_id, event);
         self.plugins_changed();
+    }
+
+    /// The rows in `range` of the virtual list `node_id` in the plugin
+    /// page `page_id`, fetched from the plugin as they're first asked for.
+    /// A row is `None` until the plugin returns it. The error says why the
+    /// plugin's rows can't be shown.
+    pub fn plugin_rows(
+        &mut self,
+        page_id: &str,
+        node_id: &str,
+        range: Range<u32>,
+    ) -> Result<Vec<Option<VirtualRow>>, String> {
+        self.session.plugins().virtual_rows(page_id, node_id, range)
     }
 
     /// Show what changed in the plugins service now, and wake the other
