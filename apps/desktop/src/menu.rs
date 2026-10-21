@@ -1,8 +1,8 @@
 //! The native menu bar on macOS and Windows, built with muda from the
-//! menu model in `app-core`. Choosing a command item, Quit among them,
-//! runs the command through the same dispatch as its shortcut; the Edit
-//! items act on the focused text field, as the S6 trial (ticket 04)
-//! proved.
+//! menu model in `app-core`. Choosing a command item, Quit and About
+//! among them, runs the command through the same dispatch as its
+//! shortcut; the Edit items act on the focused text field, as the S6
+//! trial (ticket 04) proved.
 
 use std::collections::HashMap;
 
@@ -240,7 +240,7 @@ pub(crate) fn own_item(item: &MenuItem) -> Option<(Choice, String, Option<Shortc
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) mod native {
     use app_core::{Menu, MenuItem, SystemItem};
-    use muda::{AboutMetadata, IsMenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+    use muda::{IsMenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 
     use super::{accelerator, item_id, own_item};
 
@@ -323,15 +323,6 @@ pub(crate) mod native {
 
     fn predefined(item: SystemItem) -> PredefinedMenuItem {
         match item {
-            SystemItem::About => PredefinedMenuItem::about(
-                Some("About Noura"),
-                Some(AboutMetadata {
-                    name: Some("Noura".to_owned()),
-                    version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                    license: Some("MIT".to_owned()),
-                    ..Default::default()
-                }),
-            ),
             SystemItem::Services => PredefinedMenuItem::services(None),
             SystemItem::Hide => PredefinedMenuItem::hide(None),
             SystemItem::HideOthers => PredefinedMenuItem::hide_others(None),
@@ -443,8 +434,8 @@ mod tests {
             let id = muda::MenuId::new(item_id(&choice));
             assert_eq!(choice_for(&id), Some(choice));
         }
-        let about = muda::MenuId::new(item_id(&Choice::System(SystemItem::About)));
-        assert_eq!(choice_for(&about), None, "the system shows About");
+        let services = muda::MenuId::new(item_id(&Choice::System(SystemItem::Services)));
+        assert_eq!(choice_for(&services), None, "the system handles Services");
         assert_eq!(choice_for(&muda::MenuId::new("unknown")), None);
     }
 
@@ -483,7 +474,7 @@ mod tests {
             shortcut.as_ref().and_then(accelerator),
             Some(parse("CmdOrCtrl+Shift+P"))
         );
-        assert_eq!(own_item(&MenuItem::System(SystemItem::About)), None);
+        assert_eq!(own_item(&MenuItem::System(SystemItem::Services)), None);
     }
 
     /// Runs an Edit item and feeds the main window the input it asks

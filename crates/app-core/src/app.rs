@@ -13,9 +13,10 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
-    RecentWorkspace, System, Tab, Workspace, WorkspaceService, commands::Registry,
-    layout::LayoutStore, rail::Rail, tabs::Tabs, view_state::ViewStore,
+    AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
+    PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
+    WorkspaceService, commands::Registry, layout::LayoutStore, preferences::PreferencesStore,
+    rail::Rail, settings::kernel_sections, tabs::Tabs, view_state::ViewStore,
 };
 
 mod commands;
@@ -23,6 +24,8 @@ mod drops;
 mod file_actions;
 mod ignored_files;
 mod palette;
+mod preferences;
+mod settings;
 mod view;
 
 pub use drops::DragOut;
@@ -76,8 +79,10 @@ pub enum Change {
     Layout,
     Document,
     Notice,
-    /// The Ignored files page or the Keyboard shortcuts page changed.
+    /// Settings or the Ignored files page changed.
     Settings,
+    /// The appearance, text size or zoom changed.
+    Preferences,
     /// A command registered.
     Commands,
     /// The command palette opened, closed or changed.
@@ -146,11 +151,22 @@ pub struct App {
     views: ViewStore,
     layout: Layout,
     layouts: LayoutStore,
+    /// This device's appearance, text size and zoom.
+    preferences: Preferences,
+    preferences_store: PreferencesStore,
     notice: Option<Notice>,
     /// The tree row being renamed in place.
     renaming: Option<Rename>,
     /// The Ignored files page, while it is open.
     ignored_files: Option<IgnoredFiles>,
+    /// Settings, while it is open.
+    settings: Option<Settings>,
+    /// Settings' sections, in the order they registered.
+    settings_sections: Vec<SettingsSection>,
+    /// The system's apps that open at login.
+    login_item: Arc<dyn LoginItem>,
+    /// Where the local diagnostic log lives.
+    log_folder: PathBuf,
     /// A folder waiting to go to the trash until you confirm.
     pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
@@ -167,7 +183,6 @@ pub struct App {
     dragged_out: Option<String>,
     registry: Registry,
     palette: Option<CommandPalette>,
-    shortcuts_open: bool,
     /// Close Window ran and the window hasn't closed yet.
     close_window: bool,
     /// Quit ran and the app hasn't closed yet.
@@ -183,9 +198,9 @@ impl App {
     }
 
     /// Start the app with per-device state in `app_data`, using `system`
-    /// for the trash, the file manager, terminals and the clipboard. When a
-    /// workspace was open last time, it reopens in the background while
-    /// the screen shows [`Screen::Loading`].
+    /// for the trash, the file manager, terminals, the clipboard and the
+    /// browser. When a workspace was open last time, it reopens in the
+    /// background while the screen shows [`Screen::Loading`].
     pub fn launch_with(app_data: impl AsRef<Path>, system: Arc<dyn System>) -> Self {
         let service = Arc::new(WorkspaceService::with_system(
             app_data.as_ref(),
@@ -204,9 +219,15 @@ impl App {
             views: ViewStore::new(app_data.as_ref()),
             layout: Layout::default(),
             layouts: LayoutStore::new(app_data.as_ref()),
+            preferences: Preferences::default(),
+            preferences_store: PreferencesStore::new(app_data.as_ref()),
             notice: None,
             renaming: None,
             ignored_files: None,
+            settings: None,
+            settings_sections: kernel_sections(),
+            login_item: Arc::new(NoLoginItem),
+            log_folder: crate::log_folder(app_data.as_ref()),
             pending_trash: None,
             failed_restore: None,
             pending: None,
@@ -216,12 +237,12 @@ impl App {
             dragged_out: None,
             registry: Registry::default(),
             palette: None,
-            shortcuts_open: false,
             close_window: false,
             quit: false,
         };
         app.register_kernel_commands();
         app.layout = app.layouts.load();
+        app.preferences = app.preferences_store.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;

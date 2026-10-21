@@ -293,16 +293,7 @@ fn mod_is_command_on_macos_and_ctrl_on_windows_and_linux() {
 #[test]
 fn zoom_follows_the_printed_character_so_equals_and_plus_both_zoom_in() {
     let fixture = Fixture::new(&[]);
-    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
-    // Ticket 15 registers zoom; its keys come from the keymap.
-    for (id, label) in [
-        (command_id::ZOOM_IN, "Zoom In"),
-        (command_id::ZOOM_OUT, "Zoom Out"),
-        (command_id::ZOOM_RESET, "Actual Size"),
-    ] {
-        app.register_command(Command::new(id, label, Area::Anywhere), |_| {})
-            .unwrap();
-    }
+    let app = fixture.app_with(FakeSystem::on(Platform::MacOs));
 
     let zoom_in = Some(command_id::ZOOM_IN.to_owned());
     let cmd = |key| KeyPress::new(key).with_cmd();

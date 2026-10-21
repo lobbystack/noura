@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use app_core::{App, Area, Command, Platform, Shortcut};
+use app_core::{App, Area, Command, Platform, Shortcut, settings_section};
 use app_ui::NouraUi;
 use egui::{Key, Modifiers, accesskit::Role};
 use egui_kittest::{
@@ -472,7 +472,11 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
         assert_eq!(description.as_deref(), Some(keys), "{label}");
     }
 
-    harness.get_by_label("Done").click();
+    // The page is a section of Settings.
+    harness
+        .get_by_role_and_label(Role::Dialog, "Settings")
+        .get_by_role_and_label(Role::Button, "Close")
+        .click();
     harness.run();
     assert!(
         harness
@@ -506,7 +510,10 @@ fn a_test_command_shows_in_the_palette_and_the_shortcuts_page() {
     );
     press(&mut harness, Modifiers::NONE, Key::Escape);
 
-    harness.state_mut().app_mut().open_shortcuts();
+    harness
+        .state_mut()
+        .app_mut()
+        .open_settings_at(settings_section::SHORTCUTS);
     harness.run();
     let entry = harness.get_by_role_and_label(Role::ListItem, "Ping");
     assert_eq!(
