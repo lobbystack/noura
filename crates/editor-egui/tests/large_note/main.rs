@@ -2,10 +2,12 @@
 //! release-build replay that measures typing in it.
 //!
 //! The checks here run with `cargo test`. The measurements are ignored
-//! tests that print a report:
+//! tests that print a report. Run them one at a time, on an otherwise idle
+//! machine:
 //!
 //! ```sh
-//! cargo test -p editor-egui --release --test large_note -- --ignored --nocapture
+//! cargo test -p editor-egui --release --test large_note -- \
+//!     --ignored --nocapture --test-threads=1 measure_ replay_
 //! ```
 
 mod fixture;
