@@ -1,8 +1,10 @@
 //! Input method composition, as egui delivers it from an input method such
-//! as macOS's Japanese one: the composition never reaches the note, the
-//! commit lands at the caret as typed text, and a cancelled composition
-//! leaves the note's bytes as they were. Checked through `editor-core`'s
-//! document, inside bold text, a heading and a list item.
+//! as macOS's Japanese one: the composition shows inline at the caret but
+//! never reaches the note, the commit lands at the caret as typed text, a
+//! cancelled composition leaves the note's bytes as they were, and the
+//! candidate window opens at the marked text. Checked through
+//! `editor-core`'s document and what the editor drew, inside bold text, a
+//! heading and a list item.
 
 use editor_core::MdDoc;
 use editor_core::buffer::TextChange;
@@ -21,15 +23,47 @@ type State = (Option<Editor>, Vec<TextChange>);
 type EditorHarness = Harness<'static, State>;
 
 fn harness() -> EditorHarness {
+    harness_on(NOTE)
+}
+
+fn harness_on(note: &'static str) -> EditorHarness {
+    build(note, false)
+}
+
+/// The id of the text field [`harness_with_field`] shows above the editor.
+fn field_id() -> egui::Id {
+    egui::Id::unique("another field")
+}
+
+/// Set in egui's memory to leave the editor out of the frame, as when
+/// another tab shows.
+fn hidden_id() -> egui::Id {
+    egui::Id::unique("editor hidden")
+}
+
+/// A harness with another text field above the editor, to move the
+/// keyboard to.
+fn harness_with_field(note: &'static str) -> EditorHarness {
+    build(note, true)
+}
+
+fn build(note: &'static str, field: bool) -> EditorHarness {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(800.0, 600.0))
         .with_context_setup(|ctx| {
             editor_egui::register_font_system(ctx, editor_egui::fonts::default_font_database());
         })
         .build_ui_state(
-            |ui, (editor, changes): &mut State| {
+            move |ui, (editor, changes): &mut State| {
+                if field {
+                    ui.add(egui::TextEdit::singleline(&mut String::new()).id(field_id()))
+                        .accessible_name("Another field");
+                }
+                if ui.data(|data| data.get_temp::<bool>(hidden_id()).unwrap_or(false)) {
+                    return;
+                }
                 let response = editor
-                    .get_or_insert_with(|| Editor::new(ui.ctx(), NOTE, MdConfig::default()))
+                    .get_or_insert_with(|| Editor::new(ui.ctx(), note, MdConfig::default()))
                     .show(ui);
                 changes.extend(response.changes);
             },
@@ -59,7 +93,8 @@ fn changes(harness: &mut EditorHarness) -> Vec<TextChange> {
 /// Puts the caret right after the first `before` in the note. The note is
 /// ASCII, so its byte offsets are its grapheme offsets.
 fn place_caret_after(harness: &mut EditorHarness, before: &str) -> Grapheme {
-    let caret = Grapheme(NOTE.find(before).expect("the note holds it") + before.len());
+    let text = doc(harness).text();
+    let caret = Grapheme(text.find(before).expect("the note holds it") + before.len());
     harness
         .state_mut()
         .0
@@ -161,6 +196,27 @@ fn a_committed_composition_inserts_only_its_text_inside_bold_a_heading_and_a_lis
     }
 }
 
+/// An autosave in the middle of a composition writes the note without the
+/// marked text, and the commit reaches the next save.
+#[test]
+fn a_save_while_composing_writes_no_marked_text() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "# Head");
+    compose(&mut harness, caret);
+
+    let editor = harness.state_mut().0.as_mut().unwrap();
+    let (version, saved) = editor.flush_for_save();
+    assert_eq!(saved, NOTE);
+    editor.record_disk_save(version, saved);
+
+    send(&mut harness, ImeEvent::Commit("日本".into()));
+    let (_, saved) = harness.state_mut().0.as_mut().unwrap().flush_for_save();
+    assert_eq!(
+        saved,
+        "# Head日本ing\n\nSome **bold** text.\n\n- item one\n- item two\n"
+    );
+}
+
 #[test]
 fn a_cancelled_composition_leaves_the_bytes_unchanged() {
     for before in ["**bo", "# Head", "- item"] {
@@ -181,4 +237,268 @@ fn a_cancelled_composition_leaves_the_bytes_unchanged() {
             "a cancelled composition made no change"
         );
     }
+}
+
+/// The spans the last frame drew for marked text: glyphs standing for no
+/// source at the caret.
+fn marked_spans(harness: &EditorHarness, caret: Grapheme) -> Vec<egui::Rect> {
+    editor(harness)
+        .painted_spans()
+        .into_iter()
+        .filter(|span| {
+            span.glyphs && span.source_range == (caret, caret) && span.rect.width() > 0.0
+        })
+        .map(|span| span.rect)
+        .collect()
+}
+
+fn editor(harness: &EditorHarness) -> &Editor {
+    harness
+        .state()
+        .0
+        .as_ref()
+        .expect("the first frame created the editor")
+}
+
+/// Where the last frame drew the grapheme at `offset`.
+fn drawn_at(harness: &EditorHarness, offset: Grapheme) -> egui::Rect {
+    editor(harness)
+        .painted_spans()
+        .into_iter()
+        .find(|span| span.glyphs && span.source_range.0 <= offset && offset < span.source_range.1)
+        .unwrap_or_else(|| panic!("nothing drew {offset:?}"))
+        .rect
+}
+
+/// Where the focused editor told the platform its caret is.
+fn ime_cursor(harness: &EditorHarness) -> egui::Rect {
+    harness
+        .output()
+        .platform_output
+        .ime
+        .as_ref()
+        .expect("the focused editor reports where text goes")
+        .cursor_rect
+}
+
+#[test]
+fn marked_text_draws_inline_at_the_caret_and_moves_the_rest_of_the_line_along() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "**bo");
+    let caret_x = ime_cursor(&harness).left();
+
+    send(&mut harness, preedit("ni hao"));
+
+    let marked = marked_spans(&harness, caret);
+    assert!(!marked.is_empty(), "the marked text drew");
+    assert!(
+        editor(&harness)
+            .painted_spans()
+            .iter()
+            .filter(|span| span.source_range == (caret, caret) && span.glyphs)
+            .all(|span| span.underlined),
+        "the marked text is underlined"
+    );
+    let left = marked
+        .iter()
+        .map(|rect| rect.left())
+        .fold(f32::INFINITY, f32::min);
+    let right = marked
+        .iter()
+        .map(|rect| rect.right())
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!((left - caret_x).abs() < 0.5, "it starts at the caret");
+    assert!(right > left + 10.0, "it takes room");
+    let after = drawn_at(&harness, caret);
+    assert!(
+        (after.left() - right).abs() < 0.5,
+        "the text after the caret moved past it"
+    );
+    assert_eq!(doc(&harness).text(), NOTE);
+
+    send(&mut harness, preedit(""));
+    assert!(
+        marked_spans(&harness, caret).is_empty(),
+        "cancelling clears it"
+    );
+    assert!((ime_cursor(&harness).left() - caret_x).abs() < 0.5);
+}
+
+#[test]
+fn the_candidate_window_sits_at_the_marked_text() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "- item");
+
+    send(&mut harness, preedit("ni hao"));
+
+    let marked = marked_spans(&harness, caret);
+    let cursor = ime_cursor(&harness);
+    assert!((cursor.left() - marked[0].left()).abs() < 0.5);
+    assert!(cursor.top() <= marked[0].center().y);
+    assert!(marked[0].center().y <= cursor.bottom());
+}
+
+#[test]
+fn the_candidate_window_follows_the_marked_text_when_the_note_scrolls() {
+    let note: &'static str = Box::leak(
+        (1..=80)
+            .map(|line| format!("Line {line} of a long note.\n\n"))
+            .collect::<String>()
+            .into_boxed_str(),
+    );
+    let mut harness = harness_on(note);
+    let caret = place_caret_after(&mut harness, "Line 12 of");
+    send(&mut harness, preedit("ni hao"));
+    let before = ime_cursor(&harness);
+
+    harness.event(egui::Event::PointerMoved(egui::pos2(400.0, 300.0)));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -120.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(2);
+
+    let marked = marked_spans(&harness, caret);
+    let after = ime_cursor(&harness);
+    assert!(after.top() < before.top() - 60.0, "the note scrolled up");
+    assert!((after.left() - marked[0].left()).abs() < 0.5);
+    assert!(after.top() <= marked[0].center().y);
+    assert!(marked[0].center().y <= after.bottom());
+}
+
+#[test]
+fn marked_text_draws_on_a_blank_line_and_in_an_empty_note() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "# Heading\n");
+    send(&mut harness, preedit("ni hao"));
+    assert!(!marked_spans(&harness, caret).is_empty(), "on a blank line");
+
+    let mut harness = harness_on("");
+    send(&mut harness, preedit("ni hao"));
+    assert!(
+        !marked_spans(&harness, Grapheme(0)).is_empty(),
+        "in an empty note"
+    );
+    assert_eq!(doc(&harness).text(), "");
+}
+
+/// Moving the keyboard elsewhere interrupts the input method, which drops
+/// its marked text without an empty composition or a commit. The editor
+/// ends the composition too: nothing stays drawn, the note keeps its
+/// bytes, and typing back in the note inserts only what you type.
+#[test]
+fn moving_the_keyboard_elsewhere_ends_the_composition() {
+    let mut harness = harness_with_field(NOTE);
+    let caret = place_caret_after(&mut harness, "# Head");
+    send(&mut harness, preedit("nihao"));
+    assert!(!marked_spans(&harness, caret).is_empty());
+
+    harness
+        .ctx
+        .memory_mut(|memory| memory.request_focus(field_id()));
+    harness.run_steps(2);
+
+    assert!(!editor(&harness).focused(&harness.ctx));
+    assert_eq!(doc(&harness).composition(), None);
+    assert!(
+        marked_spans(&harness, caret).is_empty(),
+        "no marked text stays drawn"
+    );
+    assert_eq!(doc(&harness).text().as_bytes(), NOTE.as_bytes());
+    assert_eq!(changes(&mut harness), []);
+
+    let id = editor(&harness).id();
+    harness.ctx.memory_mut(|memory| memory.request_focus(id));
+    harness.run_steps(1);
+    harness.event(egui::Event::Text("x".into()));
+    harness.run_steps(1);
+
+    assert_eq!(
+        doc(&harness).text(),
+        "# Headxing\n\nSome **bold** text.\n\n- item one\n- item two\n"
+    );
+    assert!(
+        marked_spans(&harness, caret + 1).is_empty(),
+        "no marked text follows the caret"
+    );
+}
+
+/// A click in the note asks for the keyboard again, which interrupts the
+/// input method as well.
+#[test]
+fn a_click_in_the_note_ends_the_composition() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "- item");
+    send(&mut harness, preedit("nihao"));
+    assert!(!marked_spans(&harness, caret).is_empty());
+
+    let heading = drawn_at(&harness, Grapheme(2));
+    harness.hover_at(heading.center());
+    harness.run_steps(1);
+    harness.drag_at(heading.center());
+    harness.run_steps(1);
+    harness.drop_at(heading.center());
+    harness.run_steps(2);
+
+    assert_eq!(doc(&harness).composition(), None);
+    assert!(marked_spans(&harness, caret).is_empty());
+    assert_eq!(doc(&harness).text().as_bytes(), NOTE.as_bytes());
+}
+
+/// An editor that isn't shown for a frame doesn't hold the input method,
+/// which drops its composition then; the editor ends it when it shows
+/// again.
+#[test]
+fn a_composition_ends_when_the_editor_is_not_shown_for_a_frame() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "**bo");
+    send(&mut harness, preedit("nihao"));
+
+    // A frame without the editor, as when another tab shows.
+    harness
+        .ctx
+        .data_mut(|data| data.insert_temp(hidden_id(), true));
+    harness.run_steps(1);
+    harness
+        .ctx
+        .data_mut(|data| data.insert_temp(hidden_id(), false));
+    harness.run_steps(2);
+
+    assert_eq!(doc(&harness).composition(), None);
+    assert!(marked_spans(&harness, caret).is_empty());
+    assert_eq!(doc(&harness).text().as_bytes(), NOTE.as_bytes());
+}
+
+/// The candidate window opens under the start of the clause the input
+/// method converts, measured by the glyphs before it, which can be narrower
+/// or wider than the rest of the marked text: here narrow letters come
+/// before wide ones in one word.
+#[test]
+fn the_candidate_window_opens_at_the_converted_clause_in_mixed_width_marked_text() {
+    let mut harness = harness();
+    let caret = place_caret_after(&mut harness, "- item");
+    send(&mut harness, preedit("iii"));
+    let narrow = marked_spans(&harness, caret);
+    let narrow_right = narrow
+        .iter()
+        .map(|rect| rect.right())
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    send(
+        &mut harness,
+        ImeEvent::Preedit {
+            text: "iiiWWW".into(),
+            active_range_chars: Some(3..6),
+        },
+    );
+
+    let cursor = ime_cursor(&harness);
+    assert!(
+        (cursor.left() - narrow_right).abs() < 1.0,
+        "the clause starts after the narrow letters: {} against {narrow_right}",
+        cursor.left()
+    );
 }

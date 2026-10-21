@@ -210,6 +210,31 @@ fn the_selection_toolbar_hides_while_an_input_method_composes() {
     harness.get_by_label("Bold selection");
 }
 
+/// Opening find mid-composition moves the keyboard to the query, and the
+/// input method drops its marked text there; the editor ends the
+/// composition, so the toolbar shows again once the keyboard comes back.
+#[test]
+fn the_selection_toolbar_shows_again_after_find_interrupts_a_composition() {
+    let mut harness = harness("one two three\n");
+    select(&mut harness, 4, 7);
+    harness.event(egui::Event::Ime(egui::ImeEvent::Preedit {
+        text: "に".into(),
+        active_range_chars: None,
+    }));
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Bold selection").is_none());
+
+    press(&mut harness, Modifiers::COMMAND, Key::F);
+    assert!(harness.get_by_label("Find in note").is_focused());
+    assert!(editor(&harness).edit.renderer.doc.composition().is_none());
+
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert!(editor(&harness).focused(&harness.ctx));
+    assert_eq!(editor(&harness).selection(), (Grapheme(4), Grapheme(7)));
+    assert_eq!(text(&harness), "one two three\n");
+    harness.get_by_label("Bold selection");
+}
+
 #[test]
 fn the_selection_toolbar_hides_during_a_pointer_drag() {
     let mut harness = harness("alpha beta gamma delta\n");

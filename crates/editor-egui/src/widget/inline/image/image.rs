@@ -255,7 +255,7 @@ impl<'ast> MdEdit {
                     wikilink: false,
                 });
             } else {
-                ui.memory_mut(|m| m.request_focus(id));
+                self.request_focus(ui.ctx(), id);
                 let region = Region::BetweenLocations {
                     start: Location::Grapheme(node_range.start()),
                     end: Location::Grapheme(node_range.end()),

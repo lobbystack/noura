@@ -1,5 +1,6 @@
 use std::mem;
 
+use comrak::nodes::AstNode;
 use editor_core::offset_types::{Grapheme, RangeExt as _};
 use egui::{Color32, Pos2, Rangef, Rect, Sense, Ui, Vec2};
 
@@ -195,7 +196,7 @@ impl MdEdit {
         }
     }
 
-    pub fn scroll_to_cursor(&mut self, canvas_rect: Rect) {
+    pub fn scroll_to_cursor<'ast>(&mut self, canvas_rect: Rect, root: &'ast AstNode<'ast>) {
         use crate::build_target_reveal;
         use crate::scroll_content::DocScrollContent;
         use crate::widgets::affine_scroll::Align;
@@ -217,10 +218,7 @@ impl MdEdit {
             self.renderer.layout.row_spacing / 2.0
         };
 
-        let arena = comrak::Arena::new();
-        let root = self.renderer.reparse(&arena);
         let content = DocScrollContent::for_frame(&self.renderer, root, canvas_rect.height());
-
         let Some(target_rect) = build_target_reveal(
             &self.renderer,
             &content,

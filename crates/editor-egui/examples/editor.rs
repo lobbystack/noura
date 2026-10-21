@@ -71,6 +71,7 @@ fn main() -> eframe::Result {
                     readonly: false,
                     ext,
                     toolbar: true,
+                    ..MdConfig::default()
                 },
             );
             Ok(Box::new(ExampleApp {

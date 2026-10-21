@@ -5,10 +5,10 @@
 //! preview, and plain-text and code files and notes with broken properties
 //! as source.
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use app_core::{App, ConflictChoice, PluginView, Property, PropertyValue, TabId};
-use editor_egui::{Editor, MdConfig};
+use editor_egui::{Editor, MdConfig, SpellChecker};
 use egui::{
     Button, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
     TextEdit, Ui, UiBuilder,
@@ -31,6 +31,9 @@ pub(crate) struct NoteView {
     notes: HashMap<TabId, OpenNote>,
     /// The note this frame drew.
     drawn: Option<TabId>,
+    /// The system's spell checker, which notes use while the Check
+    /// spelling setting is on.
+    pub(crate) spell_checker: Option<Arc<dyn SpellChecker>>,
 }
 
 /// One note's editor and the fields around it.
@@ -51,6 +54,8 @@ struct OpenNote {
     /// tree, leaves the keyboard where it was. A click puts the caret in
     /// the text.
     give_focus_back: Option<Id>,
+    /// Whether the editor checks spelling.
+    checks_spelling: bool,
 }
 
 impl NoteView {
@@ -235,6 +240,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             } else {
                 ui.memory(|memory| memory.focused())
             },
+            checks_spelling: false,
         }
     });
     // The file shows another way now, as when a save left a note's
@@ -246,12 +252,23 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     {
         let focused = note.editor.focused(ui.ctx());
         note.editor = editor_for(ui.ctx(), session);
+        note.checks_spelling = false;
         note.whole_file = whole_file;
         if focused {
             note.editor.focus(ui.ctx());
         }
         app.take_note_sync(tab);
         app.take_note_reset(tab);
+    }
+    // The Check spelling setting reaches every open note.
+    let spelling = app
+        .preferences()
+        .spell_check
+        .then(|| view.spell_checker.clone())
+        .flatten();
+    if spelling.is_some() != note.checks_spelling {
+        note.checks_spelling = spelling.is_some();
+        note.editor.set_spell_checker(spelling);
     }
     // A save brought the file in line with the editor, or merged an edit
     // made outside Noura.
@@ -666,12 +683,8 @@ fn body(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
         .max_rect(rect)
         .accessibility_role(Role::Document)
         .accessibility_label("Note text");
+    // The editor reports itself as the note's text field, "Note text".
     let response = ui.scope_builder(builder, |ui| note.editor.show(ui)).inner;
-    // The widget that takes the keyboard reads as the note's text field.
-    ui.ctx().accesskit_node_builder(note.editor.id(), |node| {
-        node.set_role(Role::MultilineTextInput);
-        node.set_label("Note text");
-    });
     if let Some(id) = note.give_focus_back.take() {
         ui.memory_mut(|memory| memory.request_focus(id));
     }
