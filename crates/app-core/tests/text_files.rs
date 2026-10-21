@@ -100,6 +100,28 @@ fn other_files_stay_out_of_the_editor() {
     }
 }
 
+/// The watcher hears another app's edit, which changes no file name, and
+/// the open file shows it.
+#[test]
+fn another_apps_edit_of_an_open_text_file_shows_in_the_editor() {
+    let fixture = Fixture::new(&[("list.txt", b"one\n")]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "list.txt");
+
+    support::write(&fixture.root, "list.txt", b"one\ntwo, outside\n");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while app.note(tab).unwrap().text() != "one\ntwo, outside\n" {
+        assert!(Instant::now() < deadline, "the edit never showed");
+        std::thread::sleep(Duration::from_millis(20));
+        app.poll();
+    }
+    assert_eq!(
+        app.take_note_reset(tab).as_deref(),
+        Some("one\ntwo, outside\n")
+    );
+}
+
 #[test]
 fn a_text_file_that_isnt_utf8_says_noura_cant_read_it_and_stays_untouched() {
     let bytes = b"caf\xe9 au lait\r\n";
