@@ -522,6 +522,16 @@ impl Editor {
         Id::unique("md_editor").with(self.id_salt)
     }
 
+    /// Draw body text `points` high, and headings and spacing in
+    /// proportion. The next frame lays the note out again at the new size.
+    pub fn set_text_size(&mut self, points: f32) {
+        let renderer = &mut self.edit.renderer;
+        if renderer.layout.row_height != points {
+            renderer.layout.row_height = points;
+            renderer.layout_cache.clear();
+        }
+    }
+
     /// The note's current text.
     pub fn text(&self) -> &str {
         self.edit.renderer.buffer.current.text()

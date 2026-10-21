@@ -21,7 +21,6 @@ use local_core::{
     CoreError, ErrorCategory, ObjectPatch, ParsedMarkdown, RawSaveInput, RawSaveResult,
     WorkspaceEngine,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{AppError, TabId};
 
@@ -30,40 +29,6 @@ pub const SAVE_PAUSE: Duration = Duration::from_millis(300);
 
 /// The longest continuous typing goes before a save starts anyway.
 pub const SAVE_AT_LEAST_EVERY: Duration = Duration::from_secs(2);
-
-/// How wide a note's lines run.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LineWidth {
-    Narrow,
-    #[default]
-    Default,
-    /// The whole width of the window.
-    Full,
-}
-
-impl LineWidth {
-    /// Every width, in the order a menu offers them.
-    pub const ALL: [Self; 3] = [Self::Narrow, Self::Default, Self::Full];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Narrow => "Narrow",
-            Self::Default => "Default",
-            Self::Full => "Full width",
-        }
-    }
-
-    /// The widest a note's text runs, in points, as the legacy app sized it
-    /// (40rem and 48rem), or `None` for the whole width.
-    pub fn points(self) -> Option<f32> {
-        match self {
-            Self::Narrow => Some(640.0),
-            Self::Default => Some(768.0),
-            Self::Full => None,
-        }
-    }
-}
 
 /// A frontmatter property as the properties panel shows it.
 #[derive(Debug, Clone, PartialEq)]

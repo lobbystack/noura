@@ -1,7 +1,7 @@
 //! The workspace screen: the rail, the sidebar with the workspace switcher
 //! and the file tree, the tab bar, and the document area.
 
-use app_core::{LineWidth, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
+use app_core::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
     Button, CentralPanel, Frame, Id, Margin, Modal, Panel, RichText, ScrollArea, Ui, UiBuilder,
     accesskit::Role, containers::menu::MenuButton, vec2,
@@ -152,8 +152,6 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     let mut create = false;
     let mut reveal = false;
     let mut ignored = false;
-    let line_width = state.app.line_width();
-    let mut new_width = None;
     let reveal_label = state.app.platform().reveal_label();
     let button = Button::new(RichText::new(&name).strong()).frame(false);
     let (menu, _) = MenuButton::from_button(button).ui(ui, |ui| {
@@ -193,16 +191,6 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
             ignored = true;
             ui.close();
         }
-        // Until Settings exists, as Ignored files is.
-        ui.menu_button("Line width", |ui| {
-            for width in LineWidth::ALL {
-                let current = width == line_width;
-                if ui.add(Button::selectable(current, width.title())).clicked() {
-                    new_width = Some(width);
-                    ui.close();
-                }
-            }
-        });
         let others: Vec<_> = recents
             .iter()
             .filter(|recent| recent.workspace_id != current)
@@ -236,9 +224,6 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     }
     if ignored {
         state.app.open_ignored_files();
-    }
-    if let Some(width) = new_width {
-        state.app.set_line_width(width);
     }
 }
 

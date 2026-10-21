@@ -155,6 +155,41 @@ fn a_deleted_index_doesnt_stop_saves_and_rebuilds_from_the_files() {
 }
 
 #[test]
+fn a_stale_index_never_decides_what_a_note_shows_or_saves() {
+    let fixture = Fixture::new(&[("Plan.md", &note(A, "Body\n"))]);
+    let app = fixture.app();
+    let files = index_files(&fixture, &app);
+    drop(app);
+    let stale = tempfile::tempdir().unwrap();
+    for file in &files {
+        if file.exists() {
+            std::fs::copy(file, stale.path().join(file.file_name().unwrap())).unwrap();
+        }
+    }
+    // An edit outside Noura while it's closed, then the index from before.
+    support::write(&fixture.root, "Plan.md", &note(A, "Body, edited outside\n"));
+    for file in &files {
+        let _ = std::fs::remove_file(file);
+        let old = stale.path().join(file.file_name().unwrap());
+        if old.exists() {
+            std::fs::copy(old, file).unwrap();
+        }
+    }
+
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    assert_eq!(app.note(tab).unwrap().text(), "\nBody, edited outside\n");
+    let at = type_into(&mut app, tab, |text| format!("{text}typed\n"));
+    save(&mut app, at);
+
+    assert_eq!(
+        fixture.read("Plan.md"),
+        note(A, "Body, edited outside\ntyped\n")
+    );
+    assert!(app.note(tab).unwrap().save_problem().is_none());
+}
+
+#[test]
 fn a_save_reaches_disk_when_the_index_refuses_writes() {
     let fixture = Fixture::new(&[("Plan.md", &note(A, "Body\n"))]);
     let mut app = fixture.app();

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::{App, Change, Job};
 use crate::{
-    AppError, LineWidth, TabId,
+    AppError, TabId,
     files::remap,
     notes::{Finished, NoteSession, NoteSync, PropertyValue, SaveProblem, is_markdown},
 };
@@ -203,19 +203,6 @@ impl App {
             session.set_name_problem(Some(problem));
         }
         self.listeners.emit(Change::Note);
-    }
-
-    /// The line width every open note uses.
-    pub fn line_width(&self) -> LineWidth {
-        self.layout.line_width
-    }
-
-    /// Use `width` for every open note, on this device, from now on.
-    pub fn set_line_width(&mut self, width: LineWidth) {
-        if self.layout.line_width != width {
-            self.layout.line_width = width;
-            self.layout_changed();
-        }
     }
 
     /// The prompt about a note that couldn't save before something closed.

@@ -210,7 +210,8 @@ fn save_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
     ui.add_space(8.0);
 }
 
-/// The editor, as wide as the line width setting lets it run, centered.
+/// The editor, as wide as the line width setting lets it run, centered,
+/// with its text at the text size setting.
 fn body(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
     // F2 in the text moves to the name field.
     if note.editor.focused(ui.ctx())
@@ -220,11 +221,13 @@ fn body(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
         ui.ctx().request_repaint();
     }
     let available = ui.available_rect_before_wrap();
-    let width = app
-        .line_width()
+    let preferences = app.preferences();
+    let width = preferences
+        .line_width
         .points()
         .map_or(available.width(), |points| points.min(available.width()));
     note.editor.edit.renderer.layout.max_width = width;
+    note.editor.set_text_size(preferences.text_size.points());
     let left = available.left() + (available.width() - width) / 2.0;
     let rect = egui::Rect::from_min_size(
         egui::pos2(left, available.top()),

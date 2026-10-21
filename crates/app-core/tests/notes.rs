@@ -498,15 +498,14 @@ fn a_save_of_a_file_deleted_outside_noura_says_so_and_keeps_the_text() {
 fn line_width_applies_to_every_note_and_survives_a_restart() {
     let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
     let mut app = fixture.app();
-    assert_eq!(app.line_width(), LineWidth::Default);
+    assert_eq!(app.preferences().line_width, LineWidth::Default);
 
     app.set_line_width(LineWidth::Narrow);
-    assert_eq!(app.line_width(), LineWidth::Narrow);
+    assert_eq!(app.preferences().line_width, LineWidth::Narrow);
     drop(app);
 
     let app = fixture.app();
-    assert_eq!(app.line_width(), LineWidth::Narrow);
-    assert_eq!(app.layout().line_width, LineWidth::Narrow);
+    assert_eq!(app.preferences().line_width, LineWidth::Narrow);
     assert_eq!(LineWidth::Narrow.points(), Some(640.0));
     assert_eq!(LineWidth::Default.points(), Some(768.0));
     assert_eq!(LineWidth::Full.points(), None);

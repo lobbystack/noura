@@ -54,11 +54,10 @@ pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use notes::{
-    LineWidth, NoteSession, NoteSync, Property, PropertyValue, SAVE_AT_LEAST_EVERY, SAVE_PAUSE,
-    SaveProblem,
+    NoteSession, NoteSync, Property, PropertyValue, SAVE_AT_LEAST_EVERY, SAVE_PAUSE, SaveProblem,
 };
 pub use operations::Imported;
-pub use preferences::{ACTUAL_SIZE, Appearance, Preferences, TextSize, ZOOM_LEVELS};
+pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
