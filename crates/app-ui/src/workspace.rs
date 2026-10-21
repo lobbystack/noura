@@ -3,8 +3,8 @@
 
 use app_core::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
-    Button, CentralPanel, Frame, Id, Key, Margin, Modal, Modifiers, Panel, RichText, ScrollArea,
-    Ui, UiBuilder, accesskit::Role, containers::menu::MenuButton, vec2,
+    Button, CentralPanel, Frame, Id, Margin, Modal, Panel, RichText, ScrollArea, Ui, UiBuilder,
+    accesskit::Role, containers::menu::MenuButton, vec2,
 };
 
 use crate::{
@@ -17,10 +17,6 @@ use crate::{
 };
 
 pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
-    // Cmd-\ on macOS and Ctrl-\ elsewhere shows or hides the sidebar.
-    if ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Backslash)) {
-        state.app.toggle_sidebar();
-    }
     let palette = Palette::of(ui.ctx());
     Panel::left("rail")
         .resizable(false)
@@ -147,7 +143,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
         return;
     };
     let current = workspace.id().to_owned();
-    let name = workspace.name().to_owned();
+    let name = workspace.name();
     let recents = state.app.recents().to_vec();
     let busy = state.app.is_busy();
     let mut open = None;

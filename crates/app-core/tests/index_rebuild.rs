@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Problem, Screen};
+use app_core::{App, Problem, Screen, SearchQuery, Workspace};
 
 /// The files of the shared queries-v1 fixture: notes, tasks and a project,
 /// two notes that share an ID, a broken note, a hidden note and an image.
@@ -121,8 +121,18 @@ fn leftovers(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// One search result: the object ID, the path and the title.
+/// One search result: the object type, the path and the title.
 type Hit = (Option<String>, String, String);
+
+/// The files that match `query`.
+fn search(workspace: &Workspace, query: &str) -> Vec<app_core::SearchHit> {
+    workspace
+        .search(&SearchQuery {
+            text: query.to_owned(),
+            ..SearchQuery::default()
+        })
+        .unwrap()
+}
 
 /// What you see of the workspace: the whole tree, the objects, search
 /// results and problems.
@@ -160,11 +170,9 @@ fn seen(app: &mut App) -> Seen {
     let search = QUERIES
         .iter()
         .map(|query| {
-            let mut hits: Vec<_> = workspace
-                .search(query)
-                .unwrap()
+            let mut hits: Vec<_> = search(workspace, query)
                 .into_iter()
-                .map(|hit| (hit.object_id, hit.relative_path, hit.title))
+                .map(|hit| (hit.object_type, hit.relative_path, hit.title))
                 .collect();
             hits.sort();
             ((*query).to_owned(), hits)
@@ -312,11 +320,7 @@ fn change_files_outside(folder: &Path) {
 }
 
 fn hit_paths(app: &App, query: &str) -> Vec<String> {
-    let mut paths: Vec<String> = app
-        .workspace()
-        .unwrap()
-        .search(query)
-        .unwrap()
+    let mut paths: Vec<String> = search(app.workspace().unwrap(), query)
         .into_iter()
         .map(|hit| hit.relative_path)
         .collect();

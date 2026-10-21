@@ -1,21 +1,33 @@
-//! The rail: a narrow column of pages, such as Files and the Inbox. A
-//! click shows a page, and you reorder pages by dragging them or with
-//! Alt-Up and Alt-Down. `app-core` owns the pages and their order.
+//! The rail: a narrow column of pages, such as Files and the Inbox, with
+//! the Search and Settings buttons at the bottom. A click shows a page,
+//! and you reorder pages by dragging them or with Alt-Up and Alt-Down.
+//! `app-core` owns the pages and their order.
 
-use app_core::{App, FILES_PAGE, INBOX_PAGE, OpenAs};
+use std::time::Instant;
+
+use app_core::{App, CommandSource, FILES_PAGE, INBOX_PAGE, OpenAs, command_id};
 use egui::{
-    Align2, Color32, DragAndDrop, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, Ui,
-    UiBuilder, WidgetInfo,
-    accesskit::{Action, AriaCurrent, Role},
+    Align, Align2, Color32, DragAndDrop, FontId, Id, Key, Layout, Modifiers, Pos2, Rect, Sense,
+    Shape, Stroke, Ui, UiBuilder, WidgetInfo,
+    accesskit::{Action, AriaCurrent, HasPopup, Role},
     pos2, vec2,
 };
 
-use crate::theme::{Palette, radius};
+use crate::{
+    keys,
+    theme::{Palette, radius},
+};
 
 /// The rail's width.
 pub(crate) const RAIL_WIDTH: f32 = 56.0;
 const ITEM_SIZE: f32 = 36.0;
 const ITEM_GAP: f32 = 4.0;
+
+/// The Settings button's ID, so focus can return to it when Settings
+/// closes.
+pub(crate) fn settings_button_id() -> Id {
+    Id::unique("rail-settings")
+}
 
 /// The page you're dragging to a new place, as egui's drag-and-drop
 /// payload. egui drops the payload when you press Escape.
@@ -26,6 +38,12 @@ struct Dragged {
 
 fn item_id(page_id: &str) -> Id {
     Id::unique(("rail-page", page_id))
+}
+
+/// Whether one of the rail's pages has keyboard focus.
+pub(crate) fn has_focus(ctx: &egui::Context, app: &App) -> bool {
+    ctx.memory(|memory| memory.focused())
+        .is_some_and(|focused| app.rail().iter().any(|page| item_id(&page.id) == focused))
 }
 
 /// Draw a page's symbol in `rect`: an outline icon for the kernel pages,
@@ -214,6 +232,21 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
         }
     });
 
+    ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+        ui.add_space(12.0);
+        if settings_button(ui, app).clicked() {
+            app.open_settings();
+        }
+        ui.add_space(ITEM_GAP);
+        if search_button(ui, app).clicked() {
+            app.run_command(
+                command_id::COMMAND_PALETTE,
+                CommandSource::Button,
+                Instant::now(),
+            );
+        }
+    });
+
     if let Some((page_id, how)) = open {
         app.open_page(&page_id, how);
     }
@@ -227,4 +260,95 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
 enum Move {
     By(isize),
     To(usize),
+}
+
+/// The shortcut of the command `id`, as the platform writes it.
+fn shortcut_text(app: &App, id: &str) -> Option<String> {
+    app.commands()
+        .into_iter()
+        .find(|command| command.id == id)
+        .and_then(|command| command.shortcuts.first().copied())
+        .map(|shortcut| keys::shortcut_text(&shortcut, app.platform()))
+}
+
+/// A button at the foot of the rail that opens a dialog. Its tooltip
+/// shows the shortcut of the command `command`.
+fn foot_button(
+    ui: &mut Ui,
+    app: &App,
+    id: Id,
+    label: &str,
+    command: &str,
+    paint: impl FnOnce(&egui::Painter, Rect, Stroke),
+) -> egui::Response {
+    let shortcut = shortcut_text(app, command);
+    let rect = ui.allocate_space(vec2(ITEM_SIZE, ITEM_SIZE)).1;
+    let response = ui.interact(rect, id, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_has_popup(HasPopup::Dialog);
+        if let Some(shortcut) = &shortcut {
+            node.set_keyboard_shortcut(shortcut.clone());
+        }
+    });
+    let palette = Palette::of(ui.ctx());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, radius(1.2), palette.sidebar_accent);
+        }
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                radius(1.2),
+                Stroke::new(1.0, palette.ring),
+                egui::StrokeKind::Inside,
+            );
+        }
+        paint(painter, rect, Stroke::new(1.5, palette.muted_foreground));
+    }
+    let tooltip = match &shortcut {
+        Some(shortcut) => format!("{label} ({shortcut})"),
+        None => label.to_owned(),
+    };
+    response.on_hover_text(tooltip)
+}
+
+/// The Search button, which opens the command palette.
+fn search_button(ui: &mut Ui, app: &App) -> egui::Response {
+    foot_button(
+        ui,
+        app,
+        Id::unique("rail-search"),
+        "Search",
+        command_id::COMMAND_PALETTE,
+        |painter, rect, stroke| {
+            // A magnifying glass.
+            let center = rect.center() + vec2(-1.5, -1.5);
+            painter.circle_stroke(center, 5.5, stroke);
+            painter.line_segment([center + vec2(4.0, 4.0), center + vec2(8.0, 8.0)], stroke);
+        },
+    )
+}
+
+/// The Settings button: a gear.
+fn settings_button(ui: &mut Ui, app: &App) -> egui::Response {
+    foot_button(
+        ui,
+        app,
+        settings_button_id(),
+        "Settings",
+        command_id::SETTINGS,
+        |painter, rect, stroke| {
+            // A ring with eight teeth.
+            let center = rect.center();
+            painter.circle_stroke(center, 3.0, stroke);
+            painter.circle_stroke(center, 6.5, stroke);
+            for tooth in 0..8 {
+                let angle = std::f32::consts::FRAC_PI_4 * tooth as f32;
+                let direction = vec2(angle.cos(), angle.sin());
+                painter.line_segment([center + direction * 6.5, center + direction * 9.0], stroke);
+            }
+        },
+    )
 }

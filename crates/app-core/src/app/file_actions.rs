@@ -3,7 +3,7 @@
 
 use super::{App, Change, Notice, NoticeKind};
 use crate::{
-    AppError, EntryKind, FileTree, OpenAs, Platform, TreeAction, TreeKey,
+    AppError, EntryKind, OpenAs, Platform, TreeAction, TreeKey,
     files::{remap, shown_name},
     operations::{join, renamed_path},
     watch::Snapshot,
@@ -142,7 +142,11 @@ impl App {
             return;
         };
         if let Err(error) = workspace.reveal_root() {
-            self.show_notice("Couldn't show the workspace", error, None);
+            self.settings_notice(
+                "Couldn't show the workspace",
+                &error.message,
+                NoticeKind::Problem,
+            );
         }
     }
 
@@ -434,7 +438,7 @@ impl App {
     }
 
     /// The item's shown name in curly quotes, for notices.
-    fn quoted(&self, relative_path: &str) -> String {
+    pub(super) fn quoted(&self, relative_path: &str) -> String {
         let is_folder = self
             .tree
             .as_ref()
@@ -459,7 +463,7 @@ impl App {
 
     /// Open the folders above the item at `relative_path` and make its row
     /// current. Returns whether the tree shows the item.
-    fn select(&mut self, relative_path: &str) -> bool {
+    pub(super) fn select(&mut self, relative_path: &str) -> bool {
         self.change_tree(|tree| Some(tree.select(relative_path)))
             .unwrap_or(false)
     }
@@ -469,7 +473,7 @@ impl App {
     /// syncing its folder failed. Then the tree reads the files again, and
     /// the item's tabs follow it to `to` when it's there and close
     /// otherwise. Returns whether the item left.
-    fn follow_failed_change(&mut self, from: &str, to: Option<&str>) -> bool {
+    pub(super) fn follow_failed_change(&mut self, from: &str, to: Option<&str>) -> bool {
         let Some(workspace) = &self.workspace else {
             return false;
         };
@@ -519,24 +523,14 @@ impl App {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        match Snapshot::of(workspace.engine(), workspace.root()) {
-            Ok((snapshot, counts)) => {
-                let tree = FileTree::from_entries(&snapshot.entries);
-                // A watch update listed before this is older, and the watch
-                // thread compares its next listings with this one.
-                self.listed = counts;
-                if let Some(watch) = &self.watch {
-                    watch.show(&snapshot, counts);
-                }
-                self.set_snapshot(snapshot);
-                self.replace_tree(Ok(tree), moved);
-            }
-            Err(error) => self.replace_tree(Err(error), moved),
-        }
+        // The session keeps a newer listing the watch thread made, and the
+        // watch thread compares its next listings with this one.
+        let listing = Snapshot::of(workspace.engine(), workspace.root());
+        self.replace_tree(listing, moved);
     }
 
     /// Say where an action's result went.
-    fn show_done(&mut self, title: &str, message: String) {
+    pub(super) fn show_done(&mut self, title: &str, message: String) {
         self.notice = Some(Notice {
             title: title.to_owned(),
             message,

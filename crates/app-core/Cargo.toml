@@ -11,9 +11,12 @@ rust-version.workspace = true
 test-hooks = ["local-core/test-hooks"]
 
 [dependencies]
+# Finds the workspace's names in log lines for Copy diagnostics.
+aho-corasick.workspace = true
 atomic-write-file.workspace = true
 directories.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
+nucleo-matcher.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -23,6 +26,8 @@ unicode-normalization.workspace = true
 app-core = { path = ".", features = ["test-hooks"] }
 # The tests record which folders each change syncs.
 local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
+# Search treats arbitrary typed text as plain words.
+proptest.workspace = true
 # The tests stop the index from accepting writes.
 rusqlite.workspace = true
 serde_yaml_ng.workspace = true

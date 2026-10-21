@@ -241,6 +241,12 @@ impl Workspace {
         moved.map_err(|error| AppError::from_change(error, from))
     }
 
+    /// Where the file or folder at `relative_path` is on disk, to hand to
+    /// another app.
+    pub(crate) fn path_of(&self, relative_path: &str) -> Result<PathBuf, AppError> {
+        self.existing(relative_path)
+    }
+
     /// Whether a file or folder is at `relative_path` in the workspace.
     pub(crate) fn contains(&self, relative_path: &str) -> bool {
         self.existing(relative_path).is_ok()

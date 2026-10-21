@@ -1,7 +1,6 @@
-//! Notes, tasks, projects and other objects, found by their stable ID or
-//! by the words in them.
+//! Notes, tasks, projects and other objects, found by their stable ID.
 
-use local_core::{CoreError, SearchInput, WorkspaceObject};
+use local_core::{CoreError, WorkspaceObject};
 
 use crate::{AppError, Workspace};
 
@@ -12,17 +11,6 @@ pub struct ObjectRef {
     pub id: String,
     pub object_type: String,
     pub relative_path: String,
-}
-
-/// One file that matches a search.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchHit {
-    /// The ID of the object the file holds, if it has one.
-    pub object_id: Option<String>,
-    pub relative_path: String,
-    pub title: String,
-    /// The matching text from the body.
-    pub snippet: String,
 }
 
 impl From<WorkspaceObject> for ObjectRef {
@@ -43,25 +31,6 @@ impl Workspace {
             .get_object(id)
             .map(|object| object.map(ObjectRef::from))
             .map_err(object_error)
-    }
-
-    /// Files whose text matches every word of `query`, best match first.
-    /// The words are plain text: punctuation never acts as query syntax.
-    pub fn search(&self, query: &str) -> Result<Vec<SearchHit>, AppError> {
-        let input = SearchInput {
-            query: query.to_owned(),
-            ..SearchInput::default()
-        };
-        let results = self.engine().search(&input).map_err(object_error)?;
-        Ok(results
-            .into_iter()
-            .map(|result| SearchHit {
-                object_id: result.object_id,
-                relative_path: result.relative_path,
-                title: result.title,
-                snippet: result.snippet,
-            })
-            .collect())
     }
 
     /// Every object whose ID belongs to exactly one file, by ID.

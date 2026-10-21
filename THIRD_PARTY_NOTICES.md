@@ -135,12 +135,17 @@ The copyright notices in the Software and this entire statement, including the a
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+## 0BSD crates (single-instance handling)
+
+A second launch of the desktop app finds the running copy through `interprocess` 2.4.6, used under the 0BSD option of its `0BSD OR Apache-2.0` license. interprocess depends on `doctest-file` 1.1.1 and, on Windows, `recvmsg` 1.0.0, both under the BSD Zero Clause License. Noura uses all three unmodified, pinned in Cargo.lock, and copies none of their source. The BSD Zero Clause License asks for no notice.
+
 ## MPL-2.0 crates
 
 These Rust dependencies use the Mozilla Public License 2.0. Noura uses them unmodified, and crates.io serves their source at the versions pinned in Cargo.lock:
 
 - `webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5, which give `sync-server` its passkey support
 - `option-ext` 0.2.0, which `local-core` gets through `directories` and `dirs-sys`
+- `nucleo-matcher` 0.3.1, which ranks the desktop app's command palette and quick open in `app-core`
 
 ## Marketing website source record
 

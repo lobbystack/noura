@@ -2,14 +2,14 @@
 //!
 //! A background thread drives `local-core`'s watcher and its full rescans,
 //! so the UI thread never walks the folder. Whenever the files change, the
-//! thread lists the workspace again and hands the app the new view, then
-//! tells listeners who made the change: Noura or another app.
+//! thread lists the workspace again and hands the new view to the session
+//! every window shares, which tells the windows who made the change: Noura
+//! or another app.
 
 use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender, TryRecvError, channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -17,12 +17,7 @@ use std::{
 
 use local_core::{ChangeCounts, WorkspaceEngine, WorkspaceEntry};
 
-use crate::{
-    AppError, FileTree, Problem,
-    app::{Change, Listeners, Origin},
-    error::Access,
-    problems,
-};
+use crate::{AppError, FileTree, Problem, app::Origin, error::Access, problems};
 
 /// How long one wait on the native watcher lasts. The thread notices that
 /// the workspace closed within this time.
@@ -85,12 +80,15 @@ pub(crate) struct Update {
 /// A listing of the files and the change counts it shows.
 type Listing = (Snapshot, ChangeCounts);
 
+/// Hands an update to the views. Returns false once nobody shows the
+/// workspace anymore, which stops the thread.
+pub(crate) type Publish = Box<dyn Fn(Update) -> bool + Send>;
+
 /// The background thread that watches one open workspace. Dropping it
 /// tells the thread to stop.
 pub(crate) struct Watch {
     stop: Arc<AtomicBool>,
-    updates: Receiver<Update>,
-    /// The app's own newest listing, waiting for the thread.
+    /// The windows' own newest listing, waiting for the thread.
     listed: Arc<Mutex<Option<Listing>>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -98,17 +96,16 @@ pub(crate) struct Watch {
 impl Watch {
     /// Start watching. `current` is what the views show now, listed when
     /// the engine's change counts were `counts`, so only later changes
-    /// produce updates.
+    /// produce updates, which go to `publish`.
     pub(crate) fn start(
         engine: Arc<WorkspaceEngine>,
         root: String,
         current: Snapshot,
         counts: ChangeCounts,
         rescans: Rescans,
-        listeners: Listeners,
+        publish: Publish,
     ) -> Option<Self> {
         let stop = Arc::new(AtomicBool::new(false));
-        let (sender, updates) = channel();
         let listed = Arc::new(Mutex::new(None));
         let worker = Worker {
             engine,
@@ -119,8 +116,7 @@ impl Watch {
             listed: listed.clone(),
             rescans,
             stop: stop.clone(),
-            sender,
-            listeners,
+            publish,
         };
         let spawned = std::thread::Builder::new()
             .name("workspace-watch".into())
@@ -128,7 +124,6 @@ impl Watch {
         match spawned {
             Ok(thread) => Some(Self {
                 stop,
-                updates,
                 listed,
                 thread: Some(thread),
             }),
@@ -139,7 +134,7 @@ impl Watch {
         }
     }
 
-    /// Tell the thread the views now show a listing the app made itself,
+    /// Tell the thread the views now show a listing a window made itself,
     /// after one of its own changes. The thread compares later listings
     /// with it, so a change another app makes right after, back to what
     /// the thread listed before, still reaches the views.
@@ -151,32 +146,14 @@ impl Watch {
         *listed = Some((snapshot.clone(), counts));
     }
 
-    /// The newest update since the last call, carrying the origins of every
-    /// update it replaces.
-    pub(crate) fn take(&self) -> Option<Update> {
-        let mut latest: Option<Update> = None;
-        loop {
-            match self.updates.try_recv() {
-                Ok(mut update) => {
-                    if let Some(previous) = latest.take() {
-                        for origin in previous.origins {
-                            if !update.origins.contains(&origin) {
-                                update.origins.push(origin);
-                            }
-                        }
-                    }
-                    latest = Some(update);
-                }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return latest,
-            }
-        }
-    }
-
     /// Stop the thread and wait for it, so the workspace's files and index
-    /// are free once this returns.
+    /// are free once this returns. On the thread itself, as when its
+    /// update outlived every window, it only asks the thread to stop.
     pub(crate) fn finish(mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
+        if let Some(thread) = self.thread.take()
+            && thread.thread().id() != std::thread::current().id()
+        {
             let _ = thread.join();
         }
     }
@@ -201,8 +178,7 @@ struct Worker {
     listed: Arc<Mutex<Option<Listing>>>,
     rescans: Rescans,
     stop: Arc<AtomicBool>,
-    sender: Sender<Update>,
-    listeners: Listeners,
+    publish: Publish,
 }
 
 impl Worker {
@@ -249,14 +225,11 @@ impl Worker {
             let update = Update {
                 snapshot,
                 tree,
-                origins: origins.clone(),
+                origins,
                 counts,
             };
-            if self.sender.send(update).is_err() {
+            if !(self.publish)(update) {
                 return;
-            }
-            for origin in origins {
-                self.listeners.emit(Change::Files(origin));
             }
         }
     }

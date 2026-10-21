@@ -65,18 +65,51 @@ pub fn harness_registering(
     )
 }
 
+/// A harness whose app uses `system`, after `register` runs. On macOS,
+/// as for [`harness_for`], shortcut symbols such as ⌘ draw without the
+/// system's fonts.
 pub fn harness_on(
     app_data: &Path,
     picker: FakePicker,
     system: Arc<FakeSystem>,
     register: impl FnOnce(&mut App),
 ) -> Harness<'static, NouraUi> {
+    let mac = system.platform == Platform::MacOs;
     let mut app = App::launch_with(app_data, system);
     register(&mut app);
     let ui = NouraUi::new(app, Box::new(picker));
+    let mut builder = builder();
+    if mac {
+        builder = builder.allow_missing_glyphs();
+    }
+    builder.build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+}
+
+/// A harness whose app believes it runs on `platform`, after `register`
+/// adds test commands or pages. macOS draws shortcuts with symbols such
+/// as ⌘, which egui's bundled fonts lack; the desktop app finds them in
+/// the system's fonts, which kittest doesn't load.
+pub fn harness_for(
+    app_data: &Path,
+    platform: Platform,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    let mut app = App::launch_with(app_data, FakeSystem::new(platform));
+    register(&mut app);
+    let ui = NouraUi::new(app, Box::new(FakePicker::default()));
+    builder()
+        .allow_missing_glyphs()
+        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+}
+
+/// A harness of the window's size. The watch thread announces each change
+/// to the files, Noura's own included, a moment after it lands, and the
+/// window draws once more to show it, so a run may take a few more frames
+/// than kittest's default allows.
+pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
     Harness::builder()
         .with_size([1000.0, 700.0])
-        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+        .with_max_steps(12)
 }
 
 /// A system that records what Noura asks of it. Its trash refuses, so
@@ -135,6 +168,11 @@ impl System for FakeSystem {
 
     fn copy_text(&self, text: &str) {
         self.record(format!("copy {text}"));
+    }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        self.record(format!("browse {url}"));
+        Ok(())
     }
 }
 

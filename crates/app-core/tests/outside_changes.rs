@@ -12,7 +12,7 @@ use std::{
 
 use app_core::{
     App, Change, DropSpot, NoSystem, OpenAs, Origin, Rescans, SPRING_OPEN_DELAY, Screen,
-    WatchFault, Workspace,
+    SearchQuery, WatchFault, Workspace,
 };
 
 /// How long a test waits for the change stream before it fails.
@@ -161,6 +161,89 @@ fn a_file_another_app_creates_appears_in_the_tree_marked_as_from_outside() {
     assert!(live.seen.contains(&Change::Files(Origin::Outside)));
     assert!(!live.seen.contains(&Change::Files(Origin::Noura)));
     assert!(live.seen.contains(&Change::Tree));
+}
+
+/// Wait on `changes`, polling `app` after each change, until `done` holds
+/// for its view state. Returns the changes heard.
+fn wait_for(
+    app: &mut App,
+    changes: &Receiver<Change>,
+    what: &str,
+    done: impl Fn(&App) -> bool,
+) -> Vec<Change> {
+    let deadline = Instant::now() + PATIENCE;
+    let mut seen = Vec::new();
+    loop {
+        app.poll();
+        seen.extend(changes.try_iter());
+        if done(app) {
+            return seen;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "timed out waiting until {what}");
+        if let Ok(change) = changes.recv_timeout(left) {
+            seen.push(change);
+        }
+    }
+}
+
+/// The windows share one watch thread: every window shows another app's
+/// change and hears that it came from outside, and the windows left keep
+/// showing changes once the window that opened the workspace is gone.
+#[test]
+fn every_window_shows_outside_changes_after_the_first_window_goes() {
+    let mut live = Live::open(&[("Existing.md", "# Existing\n")]);
+    let mut second = live.app.new_window().unwrap();
+    let (sender, changes) = channel();
+    second.subscribe(move |change| {
+        let _ = sender.send(change);
+    });
+
+    write(&live.folder, "Fresh.md", "# Fresh\n");
+    live.wait_until("the first window shows the new file", |app| {
+        rows(app) == ["Existing.md", "Fresh.md"]
+    });
+    let heard = wait_for(
+        &mut second,
+        &changes,
+        "the second window shows the new file",
+        |app| rows(app) == ["Existing.md", "Fresh.md"],
+    );
+    assert!(heard.contains(&Change::Files(Origin::Outside)), "{heard:?}");
+
+    let Live {
+        app: first,
+        folder,
+        _app_data,
+        _parent,
+        ..
+    } = live;
+    drop(first);
+    write(&folder, "Later.md", "# Later\n");
+    let heard = wait_for(
+        &mut second,
+        &changes,
+        "the second window shows the later file",
+        |app| rows(app) == ["Existing.md", "Fresh.md", "Later.md"],
+    );
+    assert!(heard.contains(&Change::Files(Origin::Outside)), "{heard:?}");
+}
+
+/// Another app's change reaches the tree while you name a new folder, and
+/// the name field stays open.
+#[test]
+fn an_outside_change_leaves_a_new_folder_s_name_field_open() {
+    let mut live = Live::open(&[("Existing.md", "# Existing\n")]);
+    live.app.new_folder(Some(""));
+    let renaming = |app: &App| app.renaming().map(|rename| rename.relative_path.clone());
+    assert_eq!(renaming(&live.app).as_deref(), Some("Untitled"));
+
+    write(&live.folder, "Fresh.md", "# Fresh\n");
+    live.wait_until("the new file shows", |app| {
+        rows(app) == ["Untitled", "Existing.md", "Fresh.md"]
+    });
+
+    assert_eq!(renaming(&live.app).as_deref(), Some("Untitled"));
 }
 
 #[test]
@@ -538,7 +621,10 @@ fn not_downloaded(app: &App, relative_path: &str) -> Option<bool> {
 fn hit_paths(app: &App, query: &str) -> Vec<String> {
     app.workspace()
         .unwrap()
-        .search(query)
+        .search(&SearchQuery {
+            text: query.to_owned(),
+            ..SearchQuery::default()
+        })
         .unwrap()
         .into_iter()
         .map(|hit| hit.relative_path)

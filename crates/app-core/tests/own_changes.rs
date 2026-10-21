@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Change, Origin};
+use app_core::{App, Change, Origin, SearchQuery};
 use support::{FakeSystem, Fixture, document, note, rows, select};
 
 const PLAN_ID: &str = "01jbcdefghjkmnpqrstvwxyz00";
@@ -248,7 +248,10 @@ fn importing_files_and_folders_is_noura_s_own_change() {
 fn found(app: &App, query: &str) -> Vec<String> {
     app.workspace()
         .unwrap()
-        .search(query)
+        .search(&SearchQuery {
+            text: query.to_owned(),
+            ..SearchQuery::default()
+        })
         .unwrap()
         .into_iter()
         .map(|hit| hit.relative_path)
