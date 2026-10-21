@@ -18,8 +18,8 @@ use std::{
 };
 
 use local_core::{
-    CoreError, ErrorCategory, ObjectPatch, ParsedMarkdown, RawSaveInput, RawSaveResult,
-    WorkspaceEngine,
+    ConflictResolution, CoreError, ErrorCategory, ObjectPatch, ParsedMarkdown,
+    RawConflictResolveInput, RawRestoreInput, RawSaveInput, RawSaveResult, WorkspaceEngine,
 };
 
 use crate::{AppError, TabId};
@@ -129,6 +129,69 @@ pub struct NoteSync {
     pub merged: Option<String>,
 }
 
+/// Why a note with a conflict can't save, as the prompt before leaving it
+/// says.
+const CONFLICT_REASON: &str = "The file changed in another app.";
+
+/// Why a note whose file went away can't save.
+const GONE_REASON: &str = "The file was moved or deleted outside Noura.";
+
+/// Whether `error` says the note's file isn't there anymore.
+fn is_gone(error: &CoreError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "raw_markdown_missing" | "object_not_found" | "file_not_found"
+    )
+}
+
+/// Another app changed the text you typed in, in the same place. Saves
+/// wait while the conflict review compares your text with the file's and
+/// you choose one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteConflict {
+    /// The file's whole text, with LF line breaks, and its revision.
+    file: String,
+    revision: String,
+    /// The part of `file` the editor would show.
+    shown: String,
+    reviewing: bool,
+    confirming: Option<ConflictChoice>,
+    /// Why the version you chose didn't go in.
+    problem: Option<String>,
+}
+
+impl NoteConflict {
+    /// Why the version you chose didn't go in, until you choose again.
+    pub fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
+    }
+
+    /// The file's version, as the editor would show it.
+    pub fn file_text(&self) -> &str {
+        &self.shown
+    }
+
+    /// Whether the review is open. Keep editing closes it and leaves a
+    /// banner that opens it again.
+    pub fn is_reviewing(&self) -> bool {
+        self.reviewing
+    }
+
+    /// The version waiting for you to confirm it.
+    pub fn confirming(&self) -> Option<ConflictChoice> {
+        self.confirming
+    }
+}
+
+/// Which version a conflict keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    /// Your text replaces the file's.
+    Mine,
+    /// The note takes the file's text.
+    File,
+}
+
 /// A property edit waiting to be written.
 #[derive(Debug, Clone)]
 struct PropertyEdit {
@@ -203,6 +266,17 @@ pub struct NoteSession {
     /// shows this text, the file's, in place of its own.
     reset: Option<String>,
     name_problem: Option<String>,
+    /// The files changed while a save ran: look at the file again once the
+    /// save is in.
+    look_again: bool,
+    conflict: Option<NoteConflict>,
+    /// Another program deleted the file while the note had unsaved edits:
+    /// saves wait, and Restore writes the note back.
+    deleted: bool,
+    /// Whether most lines ended in CRLF and a byte-order mark came first
+    /// when Noura last read the file, for Restore.
+    uses_crlf: bool,
+    has_bom: bool,
 }
 
 impl NoteSession {
@@ -232,15 +306,27 @@ impl NoteSession {
             sync: None,
             reset: None,
             name_problem: None,
+            look_again: false,
+            conflict: None,
+            deleted: false,
+            uses_crlf: false,
+            has_bom: false,
         };
         session.whole_file = !matches!(
             local_core::parse_markdown(relative_path, read.body.as_bytes()),
             ParsedMarkdown::Managed(_)
         );
-        session.read(read.body, read.revision);
+        session.take(read);
         session.text = session.body().to_owned();
         session.source_only = misread_frontmatter(&session.text);
         Ok(session)
+    }
+
+    /// Take `read` as what the file holds now.
+    fn take(&mut self, read: local_core::RawMarkdownRead) {
+        self.uses_crlf = read.uses_crlf;
+        self.has_bom = read.has_bom;
+        self.read(read.body, read.revision);
     }
 
     /// Take `base`, the file's whole LF text, as what the file holds now.
@@ -320,6 +406,18 @@ impl NoteSession {
         self.problem.as_ref()
     }
 
+    /// Another app's edit of the text you typed in, in the same place,
+    /// until you choose a version.
+    pub fn conflict(&self) -> Option<&NoteConflict> {
+        self.conflict.as_ref()
+    }
+
+    /// Whether another program deleted the file while the note had
+    /// unsaved edits. The note keeps its text and offers Restore.
+    pub fn is_deleted(&self) -> bool {
+        self.deleted
+    }
+
     /// Why the name field kept the old name, until the next rename.
     pub fn name_problem(&self) -> Option<&str> {
         self.name_problem.as_deref()
@@ -387,6 +485,11 @@ impl NoteSession {
         if self.writing.is_some() || self.waiting_for_edit {
             return false;
         }
+        if self.conflict.is_some() || self.deleted {
+            // Autosave waits for your choice, or for Restore. Try again
+            // still looks, in case the file changed back.
+            return self.forced;
+        }
         if self.text == self.body() {
             return !self.property_edits.is_empty() && !self.properties_held;
         }
@@ -395,7 +498,12 @@ impl NoteSession {
 
     /// When typing makes the next save due, for a client to wake up then.
     pub(crate) fn next_due(&self) -> Option<Instant> {
-        if self.writing.is_some() || self.waiting_for_edit || self.text == self.body() {
+        if self.writing.is_some()
+            || self.waiting_for_edit
+            || self.conflict.is_some()
+            || self.deleted
+            || self.text == self.body()
+        {
             return None;
         }
         let pause = self.last_edit? + SAVE_PAUSE;
@@ -460,17 +568,19 @@ impl NoteSession {
     }
 
     /// Take the result of the write [`Self::start_write`] handed out.
-    pub(crate) fn finish_write(&mut self, written: Written, now: Instant) {
+    /// Returns whether the save merged another app's edit with your
+    /// typing.
+    pub(crate) fn finish_write(&mut self, written: Written, now: Instant) -> bool {
         let Some((version, sent)) = self.writing.take() else {
-            return;
+            return false;
         };
         match written {
             Written::Text(Ok(RawSaveResult::Saved { current, .. })) => {
-                self.read(current.body, current.revision);
+                self.take(current);
                 self.saved(version, sent, None);
             }
             Written::Text(Ok(RawSaveResult::Merged { current, .. })) => {
-                self.read(current.body, current.revision);
+                self.take(current);
                 let merged = self.body().to_owned();
                 // The editor merges the outside edit in when it shows the
                 // note. Until then the session's text carries it too, so a
@@ -484,20 +594,17 @@ impl NoteSession {
                         .unwrap_or_else(|| std::mem::take(&mut self.text))
                 };
                 self.saved(version, sent, Some(merged));
+                return true;
             }
-            Written::Text(Ok(RawSaveResult::Conflict { .. })) => {
-                self.failed(
-                    "The file changed outside Noura while you were typing, in the same \
-                     place."
-                        .to_owned(),
-                    now,
-                );
+            Written::Text(Ok(RawSaveResult::Conflict { current, .. })) => {
+                tracing::info!("an outside edit changed the text a note's typing changed");
+                self.conflicted(current.body, current.revision);
             }
             Written::Properties(Ok((count, read))) => {
                 self.property_edits
                     .drain(..count.min(self.property_edits.len()));
                 let body = self.body().to_owned();
-                self.read(read.body, read.revision);
+                self.take(read);
                 self.problem = None;
                 if self.body() != body {
                     // The edits went into the file as another program left
@@ -524,15 +631,57 @@ impl NoteSession {
                 tracing::warn!(code = %error.code, operation = %error.operation, "a property edit didn't save");
                 self.property_failed(save_reason(&error));
             }
+            Written::Text(Err(error)) if is_gone(&error) => {
+                tracing::warn!(code = %error.code, operation = %error.operation, "a note's file is gone");
+                self.gone(now);
+            }
             Written::Text(Err(error)) => {
                 tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't save");
                 self.failed(save_reason(&error), now);
             }
         }
+        false
+    }
+
+    /// Another app changed the text you typed in: the file holds `file`
+    /// at `revision`. Saves wait until you choose a version. The review
+    /// opens the first time, and stays as you left it when the file
+    /// changes again.
+    fn conflicted(&mut self, file: String, revision: String) {
+        let shown = self.shown_part(&file).to_owned();
+        let reviewing = self
+            .conflict
+            .as_ref()
+            .is_none_or(|conflict| conflict.reviewing);
+        let confirming = self
+            .conflict
+            .as_ref()
+            .and_then(|conflict| conflict.confirming);
+        self.conflict = Some(NoteConflict {
+            file,
+            revision,
+            shown,
+            reviewing,
+            confirming,
+            problem: None,
+        });
+        self.problem = Some(SaveProblem {
+            reason: CONFLICT_REASON.to_owned(),
+        });
+    }
+
+    /// The part of `file`, a whole LF text, that the editor shows: after
+    /// the frontmatter of a managed note, or all of it.
+    fn shown_part<'a>(&self, file: &'a str) -> &'a str {
+        if self.whole_file {
+            return file;
+        }
+        local_core::frontmatter_end(file).map_or(file, |end| &file[end..])
     }
 
     /// The file holds `sent`, the editor's text at `version`.
     fn saved(&mut self, version: usize, sent: String, merged: Option<String>) {
+        self.conflict = None;
         // Property edits still waiting keep the problem until they're
         // written, so a text save never hides a property edit that can't
         // go in.
@@ -547,6 +696,49 @@ impl NoteSession {
         if self.text != self.body() && self.first_unsaved.is_none() {
             self.first_unsaved = self.last_edit;
         }
+    }
+
+    /// Another program deleted the file, or moved a file Noura can't
+    /// follow: the note keeps its text and offers Restore, and saves wait.
+    fn gone(&mut self, now: Instant) {
+        self.deleted = true;
+        self.conflict = None;
+        self.problem = Some(SaveProblem {
+            reason: GONE_REASON.to_owned(),
+        });
+        self.first_unsaved.get_or_insert(now);
+    }
+
+    /// Write the note back where its file was, after another program
+    /// deleted it. Saves run again afterwards.
+    pub(crate) fn restore(&mut self, engine: &WorkspaceEngine) -> Result<(), CoreError> {
+        let body = format!("{}{}", &self.base[..self.body_start], self.text);
+        let restored = engine.restore_raw_markdown(RawRestoreInput {
+            relative_path: self.relative_path.clone(),
+            body,
+            uses_crlf: self.uses_crlf,
+            has_bom: self.has_bom,
+        })?;
+        self.deleted = false;
+        self.problem = None;
+        self.waiting_for_edit = false;
+        self.forced = false;
+        self.first_unsaved = None;
+        self.last_edit = None;
+        self.take(restored);
+        self.sync = Some(NoteSync {
+            saved: (self.version, self.text.clone()),
+            merged: None,
+        });
+        Ok(())
+    }
+
+    /// Restore failed: the note says why and keeps offering it.
+    pub(crate) fn restore_failed(&mut self, error: &CoreError) {
+        tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't restore");
+        self.problem = Some(SaveProblem {
+            reason: save_reason(error),
+        });
     }
 
     fn failed(&mut self, reason: String, now: Instant) {
@@ -566,6 +758,11 @@ impl NoteSession {
     /// editor drops them too, as [`Self::take_reset`] tells it, in case the
     /// note stays open.
     pub(crate) fn discard(&mut self) {
+        if let Some(conflict) = self.conflict.take() {
+            // The file holds another app's version now, which the note
+            // shows.
+            self.read(conflict.file, conflict.revision);
+        }
         if self.text != self.body() {
             self.text = self.body().to_owned();
             self.reset = Some(self.text.clone());
@@ -646,6 +843,170 @@ impl NoteSession {
     pub(crate) fn moved_to(&mut self, relative_path: &str) {
         relative_path.clone_into(&mut self.relative_path);
     }
+
+    /// Look at the file after the files changed on disk. A note with
+    /// nothing unsaved takes what another app wrote, which the editor shows
+    /// as an outside edit, as [`Self::take_reset`] tells it. A note with
+    /// unsaved edits meets the other app's edit at its next save, and
+    /// learns at once when its file went away or came back.
+    pub(crate) fn file_changed(&mut self, engine: &WorkspaceEngine) -> FileCheck {
+        if self.is_saving() {
+            // The save's result tells whether it met an outside edit made
+            // before it read the file; look again once it's in.
+            self.look_again = true;
+            return FileCheck::Same;
+        }
+        self.look_again = false;
+        if !self.is_unsaved() {
+            return if self.reread(engine) {
+                FileCheck::Shown
+            } else {
+                FileCheck::Same
+            };
+        }
+        let read = match engine.read_raw_markdown(&self.relative_path) {
+            Ok(read) => read,
+            Err(error) if is_gone(&error) && !self.deleted => {
+                self.gone(Instant::now());
+                return FileCheck::Shown;
+            }
+            Err(_) => return FileCheck::Same,
+        };
+        if self.deleted {
+            // The file came back: its text meets your typing as another
+            // app's edit would.
+            self.deleted = false;
+            self.problem = None;
+            return FileCheck::Changed;
+        }
+        match &self.conflict {
+            // The review compares an older version of the file: look
+            // again, in case the edits no longer meet.
+            Some(conflict) if read.revision != conflict.revision => FileCheck::Changed,
+            // The next save, due once typing pauses, merges another app's
+            // edit or finds a conflict.
+            _ => FileCheck::Same,
+        }
+    }
+
+    /// Ask for confirmation of `choice`, or take the question back with
+    /// `None`. Returns whether the note has a conflict.
+    pub(crate) fn set_confirming(&mut self, choice: Option<ConflictChoice>) -> bool {
+        let Some(conflict) = &mut self.conflict else {
+            return false;
+        };
+        conflict.confirming = choice;
+        if choice.is_some() {
+            conflict.reviewing = true;
+        }
+        conflict.problem = None;
+        true
+    }
+
+    /// Keep the version you confirmed. Both choices first save the version
+    /// they replace as a recovery snapshot in the workspace's history
+    /// folder: Use my version writes your text over the file, and Use the
+    /// file's version shows the file's text in the note. Saves then run
+    /// again. When the file changed once more meanwhile, the review shows
+    /// its newest version and you choose again.
+    pub(crate) fn resolve(&mut self, engine: &WorkspaceEngine) {
+        let Some(conflict) = &self.conflict else {
+            return;
+        };
+        let Some(choice) = conflict.confirming else {
+            return;
+        };
+        let input = RawConflictResolveInput {
+            relative_path: self.relative_path.clone(),
+            current_revision: conflict.revision.clone(),
+            local_body: self.mine_over(&conflict.file),
+            resolution: match choice {
+                ConflictChoice::Mine => ConflictResolution::ReplaceExternal,
+                ConflictChoice::File => ConflictResolution::UseExternal,
+            },
+        };
+        match engine.resolve_raw_conflict(input) {
+            Ok(resolved) => {
+                self.conflict = None;
+                self.problem = None;
+                self.waiting_for_edit = false;
+                self.forced = false;
+                self.take(resolved.current);
+                match choice {
+                    // The file holds your text now.
+                    ConflictChoice::Mine => {
+                        self.sync = Some(NoteSync {
+                            saved: (self.version, self.text.clone()),
+                            merged: None,
+                        });
+                    }
+                    ConflictChoice::File => {
+                        self.text = self.body().to_owned();
+                        self.reset = Some(self.text.clone());
+                        self.first_unsaved = None;
+                        self.last_edit = None;
+                    }
+                }
+            }
+            Err(error) if error.code == "revision_conflict" => {
+                tracing::info!("the file changed again during conflict review");
+                if let Ok(read) = engine.read_raw_markdown(&self.relative_path) {
+                    self.conflicted(read.body, read.revision);
+                }
+                self.set_confirming(None);
+            }
+            Err(error) => {
+                tracing::warn!(code = %error.code, operation = %error.operation, "a conflict didn't resolve");
+                if let Some(conflict) = &mut self.conflict {
+                    conflict.confirming = None;
+                    conflict.problem = Some(save_reason(&error));
+                }
+            }
+        }
+    }
+
+    /// Your version as the whole file: your text after the frontmatter of
+    /// `file`, the file's version, so a property another app changed
+    /// stays. A file that lost its frontmatter gets the one Noura read.
+    fn mine_over(&self, file: &str) -> String {
+        if self.whole_file {
+            return self.text.clone();
+        }
+        let frontmatter = match local_core::frontmatter_end(file) {
+            Some(end) => &file[..end],
+            None => &self.base[..self.body_start],
+        };
+        format!("{frontmatter}{}", self.text)
+    }
+
+    /// Open or close the conflict review. Closing it drops a choice
+    /// waiting for confirmation.
+    pub(crate) fn set_reviewing(&mut self, reviewing: bool) -> bool {
+        let Some(conflict) = &mut self.conflict else {
+            return false;
+        };
+        conflict.reviewing = reviewing;
+        conflict.confirming = None;
+        true
+    }
+
+    /// Whether the file changed while a save ran, so it needs another look
+    /// now that the save is in.
+    pub(crate) fn take_look_again(&mut self) -> bool {
+        std::mem::take(&mut self.look_again)
+    }
+}
+
+/// What [`NoteSession::file_changed`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileCheck {
+    /// Nothing the note shows changed.
+    Same,
+    /// The note now shows the file's new text, or that the file is gone.
+    Shown,
+    /// The file came back, or changed again during a conflict: a save
+    /// looks at once.
+    Changed,
 }
 
 /// A write a worker carries out for a note.
@@ -814,9 +1175,7 @@ fn open_error(error: CoreError, relative_path: &str) -> AppError {
 /// Why a save failed, in plain words.
 pub(crate) fn save_reason(error: &CoreError) -> String {
     match error.code.as_str() {
-        "raw_markdown_missing" | "object_not_found" | "file_not_found" => {
-            "The file was moved or deleted outside Noura.".to_owned()
-        }
+        _ if is_gone(error) => GONE_REASON.to_owned(),
         "file_not_downloaded" => {
             "The file is online-only now. Download it, then try again.".to_owned()
         }

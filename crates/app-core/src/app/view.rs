@@ -449,6 +449,7 @@ impl App {
         }
         self.follow_files();
         self.retry_unreadable_notes();
+        self.check_notes_on_disk();
         if folders_changed {
             self.save_view();
         }
