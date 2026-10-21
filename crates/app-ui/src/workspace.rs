@@ -32,7 +32,7 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
         .resizable(false)
         .exact_size(RAIL_WIDTH)
         .frame(Frame::new().fill(palette.sidebar))
-        .show(ui, |ui| rail::show(ui, &mut state.app, &mut state.rail));
+        .show(ui, |ui| rail::show(ui, &mut state.app));
     if state.app.layout().sidebar_shown {
         sidebar(state, ui);
     }

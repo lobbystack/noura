@@ -30,7 +30,6 @@ pub struct NouraUi {
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
     tab_bar: tab_bar::TabBarView,
-    rail: rail::RailView,
     /// The tab the document area showed last frame.
     shown_tab: Option<TabId>,
     started: bool,
@@ -44,7 +43,6 @@ impl NouraUi {
             new_workspace: None,
             tree: tree::TreeView::default(),
             tab_bar: tab_bar::TabBarView::default(),
-            rail: rail::RailView::default(),
             shown_tab: None,
             started: false,
         }

@@ -228,7 +228,8 @@ fn dragging_a_page_moves_it_and_escape_cancels_the_drag() {
     drag_page(&mut harness, "Beta", above_files, |_| {});
     assert_eq!(rail(&harness), ["Beta", "Files", "Alpha"]);
 
-    let below_alpha = page(&harness, "Alpha").rect().center_bottom() + egui::vec2(0.0, 1.0);
+    // Without Escape, this drop would put Beta after Alpha.
+    let below_alpha = page(&harness, "Alpha").rect().center_bottom() - egui::vec2(0.0, 4.0);
     drag_page(&mut harness, "Beta", below_alpha, |harness| {
         harness.key_press(Key::Escape);
         harness.run();

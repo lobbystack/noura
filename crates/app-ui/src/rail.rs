@@ -4,8 +4,8 @@
 
 use app_core::{App, FILES_PAGE, INBOX_PAGE, OpenAs};
 use egui::{
-    Align2, Color32, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, Ui, UiBuilder,
-    WidgetInfo,
+    Align2, Color32, DragAndDrop, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, Ui,
+    UiBuilder, WidgetInfo,
     accesskit::{Action, AriaCurrent, Role},
     pos2, vec2,
 };
@@ -17,16 +17,11 @@ pub(crate) const RAIL_WIDTH: f32 = 56.0;
 const ITEM_SIZE: f32 = 36.0;
 const ITEM_GAP: f32 = 4.0;
 
-/// A page being dragged to a new place.
-struct Drag {
+/// The page you're dragging to a new place, as egui's drag-and-drop
+/// payload. egui drops the payload when you press Escape.
+struct Dragged {
     page_id: String,
     from: usize,
-}
-
-/// What the rail remembers between frames.
-#[derive(Default)]
-pub(crate) struct RailView {
-    drag: Option<Drag>,
 }
 
 fn item_id(page_id: &str) -> Id {
@@ -90,7 +85,7 @@ fn paint_symbol(painter: &egui::Painter, page_id: &str, title: &str, rect: Rect,
     }
 }
 
-pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
+pub(crate) fn show(ui: &mut Ui, app: &mut App) {
     let pages: Vec<(String, String)> = app
         .rail()
         .iter()
@@ -100,8 +95,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
     let palette = Palette::of(ui.ctx());
     let mut open = None;
     let mut moved = None;
-    let mut released = None;
-    let mut rects = Vec::with_capacity(pages.len());
+    let dragged = DragAndDrop::payload::<Dragged>(ui.ctx());
     let builder = UiBuilder::new()
         .accessibility_role(Role::Navigation)
         .accessibility_label("Pages");
@@ -111,7 +105,6 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
             let (_, slot) = ui.allocate_space(vec2(ui.available_width(), ITEM_SIZE));
             ui.add_space(ITEM_GAP);
             let rect = Rect::from_center_size(slot.center(), vec2(ITEM_SIZE, ITEM_SIZE));
-            rects.push(rect);
             let id = item_id(page_id);
             let response = ui.interact(rect, id, Sense::click_and_drag());
             response.widget_info(|| WidgetInfo::labeled(Role::Link, true, title));
@@ -161,27 +154,28 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
                     moved = Some((page_id.clone(), Move::By(step)));
                 }
             }
-            if response.drag_started() {
-                view.drag = Some(Drag {
-                    page_id: page_id.clone(),
-                    from: index,
-                });
+            response.dnd_set_drag_payload(Dragged {
+                page_id: page_id.clone(),
+                from: index,
+            });
+            // Dropping on a page's top half puts the dragged page before
+            // it, and on its bottom half after it.
+            let gap = |pointer: Option<egui::Pos2>| {
+                let below = pointer.is_some_and(|pointer| pointer.y > rect.center().y);
+                index + usize::from(below)
+            };
+            let hovering = response
+                .dnd_hover_payload::<Dragged>()
+                .map(|_| gap(response.hover_pos()));
+            if let Some(dropped) = response.dnd_release_payload::<Dragged>() {
+                let gap = gap(response.hover_pos());
+                // The gap counts the dragged page; its new index doesn't.
+                let to = if gap > dropped.from { gap - 1 } else { gap };
+                moved = Some((dropped.page_id.clone(), Move::To(to)));
             }
-            let dragging = view
-                .drag
+            let dragging = dragged
                 .as_ref()
-                .is_some_and(|drag| drag.page_id == *page_id);
-            // egui ends a drag when you release the button, and also when
-            // you press Escape with the button still down, which cancels.
-            if dragging && response.drag_stopped() {
-                let cancelled = ui.input(|input| input.pointer.any_down());
-                released = Some(
-                    response
-                        .interact_pointer_pos()
-                        .filter(|_| !cancelled)
-                        .map(|pointer| pointer.y),
-                );
-            }
+                .is_some_and(|dragged| dragged.page_id == *page_id);
 
             if ui.is_rect_visible(rect) {
                 let painter = ui.painter();
@@ -205,39 +199,20 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
                     color = color.gamma_multiply(0.4);
                 }
                 paint_symbol(painter, page_id, title, rect, color);
+                if let Some(gap) = hovering {
+                    let y = if gap == index {
+                        rect.top() - ITEM_GAP / 2.0
+                    } else {
+                        rect.bottom() + ITEM_GAP / 2.0
+                    };
+                    painter.line_segment(
+                        [pos2(rect.left(), y), pos2(rect.right(), y)],
+                        Stroke::new(2.0, palette.primary),
+                    );
+                }
             }
         }
     });
-
-    if let Some(released) = released
-        && let Some(drag) = view.drag.take()
-        && let Some(y) = released
-    {
-        let gap = gap_at(&rects, y);
-        // The gap counts the dragged page; its final index doesn't.
-        let index = if gap > drag.from { gap - 1 } else { gap };
-        moved = Some((drag.page_id, Move::To(index)));
-    }
-    if view.drag.is_some() {
-        if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
-            let gap = gap_at(&rects, pointer.y);
-            let y = match rects.get(gap) {
-                Some(rect) => rect.top() - ITEM_GAP / 2.0,
-                None => rects
-                    .last()
-                    .map_or(0.0, |rect| rect.bottom() + ITEM_GAP / 2.0),
-            };
-            if let Some(first) = rects.first() {
-                ui.painter().line_segment(
-                    [pos2(first.left(), y), pos2(first.right(), y)],
-                    Stroke::new(2.0, palette.primary),
-                );
-            }
-        }
-        if !ui.input(|input| input.pointer.any_down()) {
-            view.drag = None;
-        }
-    }
 
     if let Some((page_id, how)) = open {
         app.open_page(&page_id, how);
@@ -252,10 +227,4 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut RailView) {
 enum Move {
     By(isize),
     To(usize),
-}
-
-/// The gap between pages that `y` points at: 0 above the first page, and
-/// one more for each page whose middle is above `y`.
-fn gap_at(rects: &[Rect], y: f32) -> usize {
-    rects.iter().filter(|rect| rect.center().y < y).count()
 }
