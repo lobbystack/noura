@@ -1321,6 +1321,66 @@ fn workspace_entries_skip_symlinks() {
 }
 
 #[test]
+fn reading_a_file_returns_its_bytes_and_revision_and_stays_inside_the_workspace() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir(workspace.path().join("Notes")).unwrap();
+    std::fs::write(workspace.path().join("Notes/Plan.md"), "plan").unwrap();
+
+    let (bytes, revision) = engine.read_file("Notes/Plan.md", 1024).unwrap();
+    assert_eq!(bytes, b"plan");
+    let listed = engine.list_workspace_entries().unwrap();
+    let plan = listed
+        .iter()
+        .find(|entry| entry.relative_path == "Notes/Plan.md")
+        .unwrap();
+    assert_eq!(plan.revision.as_deref(), Some(revision.as_str()));
+
+    for (path, code) in [
+        ("../outside.md", "unsafe_path"),
+        ("/etc/hosts", "absolute_path"),
+        (".noura/workspace.yaml", "reserved_path"),
+        ("Notes", "file_not_found"),
+        ("Missing.md", "file_not_found"),
+    ] {
+        let error = engine.read_file(path, 1024).unwrap_err();
+        assert_eq!(error.code, code, "{path}");
+    }
+    assert_eq!(
+        engine.read_file("Notes/Plan.md", 3).unwrap_err().code,
+        "file_too_large"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reading_a_file_refuses_links_out_of_the_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let (workspace, _app_data, engine) = engine();
+    let outside = tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.md"), "secret").unwrap();
+    symlink(
+        outside.path().join("secret.md"),
+        workspace.path().join("Link.md"),
+    )
+    .unwrap();
+    symlink(outside.path(), workspace.path().join("Shortcut")).unwrap();
+    std::fs::create_dir(workspace.path().join("Notes")).unwrap();
+    std::fs::write(workspace.path().join("Notes/Plan.md"), "plan").unwrap();
+    // A link that stays inside the workspace is refused too.
+    symlink(
+        workspace.path().join("Notes"),
+        workspace.path().join("Inside"),
+    )
+    .unwrap();
+
+    for path in ["Link.md", "Shortcut/secret.md", "Inside/Plan.md"] {
+        let error = engine.read_file(path, 1024).unwrap_err();
+        assert_eq!(error.code, "symlink_escape", "{path}");
+    }
+}
+
+#[test]
 fn overlapping_managed_property_edits_conflict_without_writing() {
     let (_workspace, app_data, engine) = engine();
     let created = engine
