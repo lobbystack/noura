@@ -37,6 +37,11 @@ pub struct Ast {
 // no `Rc` or thread-bound data, only `Cell`, `RefCell` and owned values.
 unsafe impl Send for Ast {}
 
+/// The most text [`Ast::update`] reparses to close the blocks it reparses
+/// the way a full parse would. Parsing this much takes a small part of a
+/// frame.
+const MAX_RUN_BYTES: usize = 32 * 1024;
+
 /// What [`Ast::update`] reparsed: a run of top-level blocks and the lines
 /// around them, in the text before the update and after it. Everything
 /// before the run kept its place; everything after it moved by the
@@ -153,14 +158,21 @@ impl Ast {
         }
         // Parse the run into this tree's arena, with the first line of the
         // block after it: that line closes the run's last block as it does
-        // in a full parse. When the line joins the run instead, the run
-        // takes in that block too and parses again.
+        // in a full parse. When the line joins the run instead, as after an
+        // opening code fence, the run takes in more blocks, twice as many
+        // each time, and parses again. Past `MAX_RUN_BYTES` it stops and
+        // parses without that line, so its last block ends with the run,
+        // and the background parse brings in the rest.
+        let mut more = 1;
         let (old_end_line, new_end_line, parsed, new_blocks) = loop {
             let (old_end_line, new_end_line) = match blocks.get(after_block) {
                 Some((_, next_start, _)) => (*next_start, (*next_start as isize + delta) as usize),
                 None => (old_lines, new_line_total),
             };
-            let with_next_line = if after_block < blocks.len() {
+            let run_bytes = byte_of_line(&new_starts, new_end_line, new.len())
+                - byte_of_line(&new_starts, start_line, new.len());
+            let closing_line = after_block < blocks.len() && run_bytes <= MAX_RUN_BYTES;
+            let with_next_line = if closing_line {
                 new_end_line + 1
             } else {
                 new_end_line
@@ -184,10 +196,11 @@ impl Ast {
                 };
                 end_line <= run_lines
             });
-            if closed || after_block == blocks.len() {
+            if closed || !closing_line {
                 break (old_end_line, new_end_line, parsed, new_blocks);
             }
-            after_block += 1;
+            after_block = (after_block + more).min(blocks.len());
+            more *= 2;
         };
         for block in &new_blocks {
             shift_lines(block, start_line as isize);

@@ -187,6 +187,30 @@ fn a_background_parse_of_text_that_changed_since_is_dropped() {
     assert_eq!(doc.parse_stats().installed, 1);
 }
 
+#[test]
+fn the_background_parse_corrects_an_edit_that_reaches_past_its_blocks() {
+    let note: String = (0..4000)
+        .map(|n| format!("Paragraph {n} of the note.\n\n"))
+        .collect();
+    let mut doc = MdDoc::new(&note);
+    doc.set_large_note_bytes(0);
+    doc.hold_background_parses(true);
+    let at = after(&doc, "of the note.\n\nParagraph 99 of the note.\n\n");
+    caret_at(&mut doc, at);
+
+    // An opening fence turns every paragraph after it into code.
+    type_text(&mut doc, "```\n");
+    assert!(
+        !parses_as_fresh(&mut doc),
+        "the in-place reparse stops at the blocks around the fence"
+    );
+
+    doc.hold_background_parses(false);
+    assert!(doc.wait_for_background_parse(Duration::from_secs(60)));
+    assert_matches_fresh_parse(&mut doc);
+    assert!(doc.parse_stats().installed >= 1);
+}
+
 /// A note of blocks that commonly sit side by side.
 fn note() -> impl Strategy<Value = String> {
     let block = prop_oneof![

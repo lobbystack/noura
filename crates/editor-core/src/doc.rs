@@ -384,7 +384,14 @@ impl MdDoc {
             return;
         }
         background.installed += 1;
+        // The full parse's arena holds no nodes an in-place reparse left
+        // behind.
         self.ast = Some(parsed.ast);
+        if self.bounds.same_text_bounds(&parsed.bounds) {
+            // The in-place reparse built what the full parse did, so what
+            // was worked out from it still holds.
+            return;
+        }
         let wrap_lines = std::mem::take(&mut self.bounds.wrap_lines);
         self.bounds = Bounds {
             wrap_lines,

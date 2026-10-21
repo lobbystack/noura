@@ -72,7 +72,7 @@ pub struct Bounds {
 /// steps past the contents (a cursor right of the `···` chip has cursored
 /// *past* the section), and edits against either resolve whole-fold
 /// (engulf the tag / unfold) rather than touching hidden text.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FoldBounds {
     /// The fold tag's range. Never empty.
     pub tag: (Grapheme, Grapheme),
@@ -91,6 +91,20 @@ impl FoldBounds {
     /// `contents.start()` itself is visible (right of the chip).
     pub fn conceals(&self, offset: Grapheme) -> bool {
         self.contents.start() < offset && offset <= self.contents.end()
+    }
+}
+
+impl Bounds {
+    /// Whether `other` holds the same bounds of the text: everything but
+    /// the wrap lines, which come from layout.
+    pub fn same_text_bounds(&self, other: &Bounds) -> bool {
+        self.text_seq == other.text_seq
+            && self.has_fold_tags == other.has_fold_tags
+            && self.source_lines == other.source_lines
+            && self.words == other.words
+            && self.inline_paragraphs == other.inline_paragraphs
+            && self.folds == other.folds
+            && self.images == other.images
     }
 }
 

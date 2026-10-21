@@ -87,3 +87,58 @@ fn row_estimates_kept_across_in_place_edits_match_fresh_ones() {
     }
     assert!(ws.editor.edit.renderer.doc.parse_stats().in_place > 30);
 }
+
+/// An opening code fence in a large note turns everything after it into
+/// code, past what an edit reparses in place: the editor draws the in-place
+/// parse until the background parse arrives, then draws that.
+#[test]
+fn a_fence_opened_in_a_large_note_draws_before_and_after_the_full_parse() {
+    let note: String = (0..3000)
+        .map(|n| format!("Paragraph {n} of the note.\n\n"))
+        .collect();
+    let mut ws = TestEditor::new(&note);
+    ws.editor.edit.renderer.doc.hold_background_parses(true);
+    let at = note.find("Paragraph 1500 ").expect("the note holds it");
+    ws.push(Event::Select {
+        region: Region::Location(Location::Grapheme(Grapheme(at))),
+    });
+    ws.enter_frame();
+    for typed in ["`", "`", "`"] {
+        ws.push(Event::Replace {
+            region: Region::Selection,
+            text: typed.into(),
+            advance_cursor: true,
+        });
+        ws.enter_frame();
+    }
+    ws.push(Event::Newline { shift: false });
+    ws.enter_frame();
+    ws.enter_frame();
+    assert_eq!(ws.editor.edit.renderer.doc.parse_stats().installed, 0);
+
+    ws.editor.edit.renderer.doc.hold_background_parses(false);
+    assert!(
+        ws.editor
+            .edit
+            .renderer
+            .doc
+            .wait_for_background_parse(std::time::Duration::from_secs(60))
+    );
+    ws.enter_frame();
+    ws.enter_frame();
+    let renderer = &mut ws.editor.edit.renderer;
+    assert_eq!(renderer.doc.parse_stats().installed, 1);
+    let ast = renderer.take_ast();
+    let code_blocks = ast.with_root(|root| {
+        root.children()
+            .filter(|block| {
+                matches!(
+                    block.data.borrow().value,
+                    comrak::nodes::NodeValue::CodeBlock(_)
+                )
+            })
+            .count()
+    });
+    renderer.put_ast(ast);
+    assert_eq!(code_blocks, 1, "the fence runs to the end of the note");
+}
