@@ -40,7 +40,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App, picker: &mut dyn FolderPicker)
     let rows = app.plugins();
     if rows.is_empty() {
         ui.add_space(8.0);
-        muted(ui, "No plugins are installed.");
+        muted(ui, "You haven't installed any plugins.");
     }
     let workspace_open = app.workspace().is_some();
     for row in rows {
@@ -77,8 +77,8 @@ fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
                     if !row.installed {
                         muted(
                             ui,
-                            "This workspace turns it on, but it isn't installed on this \
-                             computer, so it doesn't run here.",
+                            "This workspace turns it on. Install it on this computer to run \
+                             it here.",
                         );
                     }
                     if !row.approved.is_empty() {
@@ -156,8 +156,8 @@ pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView)
                     ui.add_space(4.0);
                     muted(
                         ui,
-                        "None of its code runs until you install it. It gets only what it \
-                         asks for here.",
+                        "Noura runs none of its code until you install it, and gives it only \
+                         these capabilities.",
                     );
                 }
             }

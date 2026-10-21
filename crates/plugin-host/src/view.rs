@@ -60,7 +60,7 @@ pub enum ViewError {
         child: u32,
         count: usize,
     },
-    #[error("Node {node} is reached twice, so the view has a cycle or a shared node.")]
+    #[error("The view reaches node {node} twice, through a cycle or a shared node.")]
     Cycle { node: String },
     #[error("Only panels hold other nodes, and node {node} isn't a panel.")]
     ChildrenOfLeaf { node: String },

@@ -53,7 +53,7 @@ fn problem(ui: &mut Ui, reason: &str) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
-                    RichText::new("This page can't be shown")
+                    RichText::new("Noura can't show this page")
                         .strong()
                         .color(palette.destructive),
                 );

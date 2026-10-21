@@ -392,16 +392,13 @@ impl Plugins {
                 .start(&loaded, &record.approved, Some(reader))
                 .map_err(|error| {
                     tracing::warn!(%error, "a plugin didn't start");
-                    AppError::new(
-                        "plugin_start_failed",
-                        "It stopped with an error as it started.",
-                    )
+                    AppError::new("plugin_start_failed", "It failed to start.")
                 })?;
             let declares_views = loaded.manifest().capabilities.contains(&Capability::Views);
             let pages = if declares_views {
                 instance.pages().map_err(|error| {
                     tracing::warn!(%error, "a plugin didn't list its pages");
-                    AppError::new("plugin_pages_failed", "It stopped with an error.")
+                    AppError::new("plugin_pages_failed", "It failed while listing its pages.")
                 })?
             } else {
                 Vec::new()
@@ -695,7 +692,7 @@ impl Running {
                 Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
                 Err(error) => {
                     tracing::warn!(%error, "a plugin failed to draw a page");
-                    Err("The plugin stopped with an error while drawing this page.".to_owned())
+                    Err("The plugin failed while drawing this page.".to_owned())
                 }
             };
             self.views.insert(page.id.clone(), view);

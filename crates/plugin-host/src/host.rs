@@ -164,9 +164,9 @@ impl PluginHost {
             return Err(InstallError::new(
                 InstallErrorCode::InvalidManifest,
                 format!(
-                    "The folder now holds the plugin {}, not {id}. Uninstall {id} to install \
-                     it.",
-                    manifest.id
+                    "The folder now holds the plugin {new} in place of {id}. Uninstall {id} \
+                     to install {new}.",
+                    new = manifest.id
                 ),
             ));
         }
