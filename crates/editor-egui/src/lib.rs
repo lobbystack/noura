@@ -392,6 +392,10 @@ impl MdRender {
         };
         let dark_mode = ctx.global_style().visuals.dark_mode;
         let mut doc = MdDoc::with_seq(md, crate::seq::ws_seq(&ctx));
+        // A large note's full parse finishes in the background; the next
+        // frame takes it in.
+        let wake = ctx.clone();
+        doc.on_background_parse(move || wake.request_repaint());
         doc.readonly = readonly;
         doc.plaintext = !ext.eq_ignore_ascii_case("md");
         Self {
@@ -477,16 +481,21 @@ impl MdRender {
         // dep-stamp mismatch in the height + spacing caches. Text changes
         // can affect any entry, so the layout cache wipes wholesale here
         // before any reads.
-        self.layout_cache.ensure_text_consistent(self.doc.text_seq);
-        self.doc.reparse(arena)
+        let root = self.doc.reparse(arena);
+        self.layout_cache
+            .ensure_text_consistent(self.doc.bounds_seq);
+        root
     }
 
     /// The parse of the current text, from the document's cache when the
-    /// text hasn't changed. Wipes the layout cache first if it has. Hand it
+    /// text hasn't changed. Wipes the layout cache when the parse is new: the
+    /// text changed, or a background parse of a large note arrived. Hand it
     /// back with [`Self::put_ast`].
     pub fn take_ast(&mut self) -> editor_core::Ast {
-        self.layout_cache.ensure_text_consistent(self.doc.text_seq);
-        self.doc.take_ast()
+        let ast = self.doc.take_ast();
+        self.layout_cache
+            .ensure_text_consistent(self.doc.bounds_seq);
+        ast
     }
 
     /// Keeps `ast` for the next [`Self::take_ast`].

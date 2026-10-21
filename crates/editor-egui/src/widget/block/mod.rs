@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::widget::utils::wrap_layout::Format;
@@ -360,15 +359,17 @@ pub type HeightDeps = [u64; 3];
 
 #[derive(Default)]
 pub struct LayoutCache {
-    pub height: RefCell<HashMap<u64, (f32, HeightDeps)>>,
-    pub height_approx: RefCell<HashMap<u64, (f32, HeightDeps)>>,
+    pub height: RefCell<editor_core::doc::NodeMap<editor_core::doc::NodeKey, (f32, HeightDeps)>>,
+    pub height_approx:
+        RefCell<editor_core::doc::NodeMap<editor_core::doc::NodeKey, (f32, HeightDeps)>>,
 
-    /// `text_seq` this cache was last consistent with. Drives wholesale
-    /// invalidation in [`Self::ensure_text_consistent`] — text changes
-    /// can affect any entry (fold tag insertions move distant sibling
-    /// heights, AST re-parse shifts sourcepos keys), so per-entry
-    /// stamping wouldn't help. Text-derived values live in
-    /// `editor-core`'s `TextCache`.
+    /// The document's `bounds_seq` this cache was last consistent with,
+    /// which moves when the text changes or a new parse of it arrives.
+    /// Drives wholesale invalidation in [`Self::ensure_text_consistent`] —
+    /// text changes can affect any entry (fold tag insertions move distant
+    /// sibling heights, AST re-parse shifts sourcepos keys), so per-entry
+    /// stamping wouldn't help. Text-derived values live in `editor-core`'s
+    /// `TextCache`.
     pub text_seq: std::cell::Cell<u64>,
 }
 

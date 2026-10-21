@@ -9,6 +9,7 @@
 //! parses it with comrak, and turns [`input::Event`]s into edits.
 
 pub mod ast;
+pub mod background;
 pub mod blocks;
 pub mod bounds;
 pub mod buffer;
@@ -20,6 +21,7 @@ pub mod find;
 pub mod fold;
 pub mod images;
 pub mod ime;
+mod incremental;
 pub mod input;
 pub mod keymap;
 pub mod links;
