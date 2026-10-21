@@ -211,3 +211,61 @@ fn typing_over_a_selection_made_leftward_replaces_it() {
     assert_eq!(doc.text(), "one 2 three");
     assert_eq!(doc.selection(), (g(5), g(5)));
 }
+
+fn select(doc: &mut MdDoc, start: usize, end: usize) {
+    doc.apply(
+        [Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(g(start)),
+                end: Location::Grapheme(g(end)),
+            },
+        }],
+        &NoLayout,
+    );
+}
+
+fn underline() -> Event {
+    Event::ToggleStyle {
+        region: Region::Selection,
+        style: NodeValue::Underline,
+    }
+}
+
+#[test]
+fn underline_wraps_the_selection_in_u_tags_and_unwraps_it_again() {
+    let mut doc = MdDoc::new("make this line");
+    select(&mut doc, 10, 14);
+
+    doc.apply([underline()], &NoLayout);
+    assert_eq!(doc.text(), "make this <u>line</u>");
+    assert_eq!(doc.selection(), (g(13), g(17)));
+
+    // The tags around the selection come off again.
+    doc.apply([underline()], &NoLayout);
+    assert_eq!(doc.text(), "make this line");
+    assert_eq!(doc.selection(), (g(10), g(14)));
+}
+
+#[test]
+fn underline_unwraps_a_selection_that_holds_its_tags() {
+    let mut doc = MdDoc::new("make this <u>line</u>");
+    select(&mut doc, 10, 21);
+
+    doc.apply([underline()], &NoLayout);
+
+    assert_eq!(doc.text(), "make this line");
+    assert_eq!(doc.selection(), (g(10), g(14)));
+}
+
+#[test]
+fn underline_at_the_caret_leaves_the_caret_between_new_tags() {
+    let mut doc = MdDoc::new("text ");
+    caret_at(&mut doc, 5);
+
+    doc.apply([underline()], &NoLayout);
+    assert_eq!(doc.text(), "text <u></u>");
+    assert_eq!(doc.selection(), (g(8), g(8)));
+
+    type_text(&mut doc, "u");
+    assert_eq!(doc.text(), "text <u>u</u>");
+}

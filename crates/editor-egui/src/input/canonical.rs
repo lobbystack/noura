@@ -308,48 +308,6 @@ impl<'ast> MdEdit {
                 })
             }
             egui::Event::Key {
-                key: Key::P,
-                pressed: true,
-                modifiers,
-                ..
-            } if modifiers.command && modifiers.shift => {
-                if self.renderer.readonly {
-                    return None;
-                }
-                Some(Event::ToggleStyle {
-                    region: Region::Selection,
-                    style: NodeValue::SpoileredText,
-                })
-            }
-            egui::Event::Key {
-                key: Key::S,
-                pressed: true,
-                modifiers,
-                ..
-            } if modifiers.command && modifiers.shift => {
-                if self.renderer.readonly {
-                    return None;
-                }
-                Some(Event::ToggleStyle {
-                    region: Region::Selection,
-                    style: NodeValue::Subscript,
-                })
-            }
-            egui::Event::Key {
-                key: Key::E,
-                pressed: true,
-                modifiers,
-                ..
-            } if modifiers.command && modifiers.shift => {
-                if self.renderer.readonly {
-                    return None;
-                }
-                Some(Event::ToggleStyle {
-                    region: Region::Selection,
-                    style: NodeValue::Superscript,
-                })
-            }
-            egui::Event::Key {
                 key: Key::K,
                 pressed: true,
                 modifiers,
