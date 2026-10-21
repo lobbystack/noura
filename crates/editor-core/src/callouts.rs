@@ -98,9 +98,14 @@ impl<'ast> MdDoc {
         if !matches!(node.data.borrow().value, NodeValue::BlockQuote) {
             return None;
         }
+        // The first block is a paragraph, or a setext heading when a `---`
+        // or `===` line ends that paragraph. An ATX heading's `#` comes
+        // before the marker, so it never starts a callout.
         let paragraph = node.first_child()?;
-        if !matches!(paragraph.data.borrow().value, NodeValue::Paragraph) {
-            return None;
+        match &paragraph.data.borrow().value {
+            NodeValue::Paragraph => {}
+            NodeValue::Heading(heading) if heading.setext => {}
+            _ => return None,
         }
         // The marker must be text, not the start of a code span or link.
         let first_inline = paragraph.first_child()?;

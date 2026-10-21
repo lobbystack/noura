@@ -104,6 +104,10 @@ pub const NOTES: &[(&str, &str)] = &[
          > [!faq]-\n> folded, no title\n\n>[!note] no space\n\n> not [!a] callout\n",
     ),
     (
+        "callouts over setext headings",
+        "> [!note] Title\n> ---\n\n> [!tip] Tip\n> text\n> ===\n> body\n",
+    ),
+    (
         "wikilinks",
         "[[target#heading|alias]] [[plain]] [[folder/note]] [[#heading]] [[note|]]\n",
     ),

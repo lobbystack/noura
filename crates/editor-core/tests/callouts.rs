@@ -155,3 +155,24 @@ fn a_callout_shows_its_whole_source_while_the_caret_is_anywhere_inside() {
         );
     }
 }
+
+#[test]
+fn a_callout_whose_first_paragraph_ends_in_a_rule_line_stays_a_callout() {
+    // A `---` or `===` line under a paragraph makes it a setext heading, as
+    // in today's editor, and the quote is still a callout.
+    let text = "> [!note] Title\n> ---\n\n> [!tip] Tip\n> text\n> ===\n";
+
+    let labels: Vec<Option<String>> = callouts(text, None)
+        .into_iter()
+        .map(|callout| callout.label)
+        .collect();
+    assert_eq!(
+        labels,
+        vec![Some("Note".to_string()), Some("Tip".to_string())]
+    );
+    let mut doc = MdDoc::new(text);
+    let callout = first_callout(&mut doc);
+    assert_eq!(callout.kind, "note");
+    assert_eq!(source(text, callout.marker), "[!note]");
+    assert_eq!(source(text, callout.title), "Title");
+}
