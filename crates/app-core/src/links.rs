@@ -303,6 +303,25 @@ fn has_scheme(path: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '-'))
 }
 
+/// Whether a link to `url` leads out of the workspace: a web address such
+/// as `www.example.com`, or any address with a scheme, as `https:` or
+/// `mailto:` have. A one-letter scheme is a Windows drive, as in `C:`.
+pub fn is_external_link(url: &str) -> bool {
+    let url = url.trim_start();
+    url.get(..4)
+        .is_some_and(|start| start.eq_ignore_ascii_case("www."))
+        || (has_scheme(url) && url.find(':').is_some_and(|colon| colon > 1))
+}
+
+/// Whether `url` names a remote image, which loads only when you ask.
+pub fn is_remote_image(url: &str) -> bool {
+    let url = url.trim_start();
+    ["http://", "https://"].iter().any(|scheme| {
+        url.get(..scheme.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+    })
+}
+
 /// The paths a link to `candidate` may mean: `candidate` and
 /// `candidate.md`, the one with an extension first.
 fn variants(candidate: &str) -> [String; 2] {
@@ -364,7 +383,39 @@ pub(crate) fn resolve_link_path(source: &str, target: &str, files: &LinkIndex) -
 
 #[cfg(test)]
 mod tests {
-    use super::{has_extension, join_path, link_path};
+    use super::{has_extension, is_external_link, is_remote_image, join_path, link_path};
+
+    #[test]
+    fn web_addresses_and_other_schemes_lead_out_of_the_workspace() {
+        for url in [
+            "https://example.com",
+            "HTTP://example.com/a.png",
+            "mailto:me@example.com",
+            "obsidian://open?vault=x",
+            "  www.example.com",
+            "WWW.example.com/page",
+        ] {
+            assert!(is_external_link(url), "{url:?}");
+        }
+        for url in [
+            "Plan",
+            "notes/Plan.md",
+            "C:/Users/me/Plan.md",
+            "../a b.md",
+            ":x",
+        ] {
+            assert!(!is_external_link(url), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn only_http_and_https_images_are_remote() {
+        assert!(is_remote_image("https://example.com/a.png"));
+        assert!(is_remote_image(" HTTP://example.com/a.png"));
+        assert!(!is_remote_image("pics/a.png"));
+        assert!(!is_remote_image("ftp://example.com/a.png"));
+        assert!(!is_remote_image("www.example.com/a.png"));
+    }
 
     #[test]
     fn paths_leave_headings_and_decode_spaces() {

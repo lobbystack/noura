@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use app_core::{NoteLinks, RemoteImageState};
+use app_core::{NoteLinks, RemoteImageState, is_remote_image};
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
 use egui::load::{SizeHint, TexturePoll};
 use egui::{CornerRadius, Rect, TextureOptions, Ui, Vec2};
@@ -42,12 +42,6 @@ pub(crate) struct WorkspaceImages {
     included: Mutex<Vec<String>>,
 }
 
-/// Whether `url` names a remote image.
-fn is_remote(url: &str) -> bool {
-    let lower = url.trim_start().to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("https://")
-}
-
 /// The extension egui's decoders recognize for a content type.
 fn extension(content_type: &str) -> &'static str {
     match content_type {
@@ -79,7 +73,7 @@ impl WorkspaceImages {
     /// The address egui knows the image at `url` by, once its bytes are in
     /// hand, or the state to report until then.
     fn address(&self, url: &str) -> Result<String, EmbedState> {
-        if is_remote(url) {
+        if is_remote_image(url) {
             return match self.links.remote_image(url) {
                 RemoteImageState::NotLoaded => Err(EmbedState::NotLoaded),
                 RemoteImageState::Loading => Err(EmbedState::Loading(LOADING_SIZE)),
@@ -195,7 +189,7 @@ impl EmbedResolver for WorkspaceImages {
     }
 
     fn prefetch(&self, url: &str) {
-        if !is_remote(url) {
+        if !is_remote_image(url) {
             let _ = self.address(url);
         }
     }

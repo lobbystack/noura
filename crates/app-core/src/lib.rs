@@ -72,7 +72,7 @@ pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use links::{
     EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, MAX_IMAGE_BYTES, NoteEmbed, NoteImage, NoteLinks,
-    is_image,
+    is_external_link, is_image, is_remote_image,
 };
 pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]
