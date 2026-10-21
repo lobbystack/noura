@@ -150,66 +150,11 @@ impl<'ast> MdDoc {
         self.bounds.source_lines[self.node_last_line_idx(node)]
     }
 
-    /// Returns the node that should have a fold node appended to make this node folded, if there is one
-    pub fn foldable(&self, node: &'ast AstNode<'ast>) -> Option<&'ast AstNode<'ast>> {
-        // must not be the first block in a list or in a block quote, since then
-        // we have no space to render the fold button (matches Bear)
-        if let Some(parent) = node.parent() {
-            if matches!(parent.data.borrow().value, NodeValue::List(_)) {
-                if let Some(grandparent) = parent.parent() {
-                    if matches!(grandparent.data.borrow().value, NodeValue::Item(_))
-                        && self.node_first_line_idx(node) == self.node_first_line_idx(grandparent)
-                    {
-                        return None;
-                    }
-                    if matches!(grandparent.data.borrow().value, NodeValue::BlockQuote) {
-                        return None;
-                    }
-                }
-            } else {
-                if matches!(parent.data.borrow().value, NodeValue::Item(_))
-                    && self.node_first_line_idx(node) == self.node_first_line_idx(parent)
-                {
-                    return None;
-                }
-                if matches!(parent.data.borrow().value, NodeValue::BlockQuote) {
-                    return None;
-                }
-            }
-        }
-
-        // list items
-        if matches!(
-            node.data.borrow().value,
-            NodeValue::Item(_) | NodeValue::TaskItem(_)
-        ) {
-            // must have paragraph to add fold html tag + something to fold
-            if node.children().count() < 2 {
-                return None;
-            }
-
-            if let Some(first_child_block) = node.first_child()
-                && first_child_block.data.borrow().value == NodeValue::Paragraph
-            {
-                return Some(first_child_block);
-            }
-        }
-
-        // headings
-        if let NodeValue::Heading(heading) = node.data.borrow().value {
-            // must have something to fold
-            {
-                let next_sibling = node.next_sibling()?;
-                if let NodeValue::Heading(next_heading) = next_sibling.data.borrow().value
-                    && next_heading.level <= heading.level
-                {
-                    return None;
-                }
-            }
-
-            return Some(node);
-        }
-
+    /// The node a fold marker would follow to fold `node`. Lockbook folded
+    /// a section by writing an HTML comment into the note; Noura never
+    /// writes one, so nothing folds and a marker already in a file is
+    /// ordinary text.
+    pub fn foldable(&self, _node: &'ast AstNode<'ast>) -> Option<&'ast AstNode<'ast>> {
         None
     }
 

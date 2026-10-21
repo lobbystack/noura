@@ -255,10 +255,14 @@ impl MdDoc {
         root
     }
 
+    /// How the editor parses notes. The extensions on are the syntax
+    /// today's editor draws. Lockbook's others (spoilers, emoji
+    /// shortcodes, superscript, subscript, `__` as underline, code math)
+    /// stay off, so their text shows as written.
     pub fn comrak_options() -> Options<'static> {
         let mut options = Options::default();
         options.parse.smart = true;
-        options.parse.ignore_setext = true;
+        options.parse.ignore_setext = false;
         options.extension.alerts = true;
         options.extension.autolink = true;
         options.extension.description_lists = false;
@@ -267,18 +271,18 @@ impl MdDoc {
         options.extension.greentext = false;
         options.extension.header_ids = None; // intended for HTML renderers
         options.extension.highlight = true;
-        options.extension.math_code = true; // rendered as code for now
-        options.extension.math_dollars = true; // rendered as code for now
+        options.extension.math_code = false;
+        options.extension.math_dollars = true;
         options.extension.multiline_block_quotes = false;
-        options.extension.shortcodes = true;
-        options.extension.spoiler = true;
+        options.extension.shortcodes = false;
+        options.extension.spoiler = false;
         options.extension.strikethrough = true;
-        options.extension.subscript = true;
-        options.extension.superscript = true;
+        options.extension.subscript = false;
+        options.extension.superscript = false;
         options.extension.table = true;
         options.extension.tagfilter = false; // intended for HTML renderers
         options.extension.tasklist = true;
-        options.extension.underline = true;
+        options.extension.underline = false; // `__` is strong, as CommonMark reads it
         options.extension.wikilinks_title_after_pipe = true; // matches obsidian
         options.extension.wikilinks_title_before_pipe = false; // would not match obsidian
         options.render.escaped_char_spans = true;

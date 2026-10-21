@@ -24,7 +24,6 @@ mod harness;
 mod benches;
 mod block_drag;
 mod edit_props;
-mod folding;
 mod ios_host;
 mod regressions;
 mod render_props;

@@ -469,30 +469,9 @@ impl<'ast> MdDoc {
                 //         self.appearance.base_font_size.map(|size| size - 1.)
                 // }
             }
-            Event::ToggleFold { node: at } => {
-                let unapply = at.is_none().then(|| self.unapply_fold(root));
-                for node in root.descendants() {
-                    let targeted = |selected: bool| match at {
-                        Some(range) => self.node_range(node) == range,
-                        None => selected,
-                    };
-                    let contents = if matches!(node.data().value, NodeValue::Heading(_))
-                        && targeted(self.selected_block(node))
-                    {
-                        self.heading_contents(node)
-                    } else if matches!(
-                        node.data().value,
-                        NodeValue::Item(_) | NodeValue::TaskItem(_)
-                    ) && targeted(self.selected_fold_item(node))
-                    {
-                        self.item_contents(node)
-                    } else {
-                        continue;
-                    };
-                    let unapply = unapply.unwrap_or_else(|| self.fold(node).is_some());
-                    self.apply_fold(node, contents, unapply);
-                }
-            }
+            // Lockbook folded sections by writing a marker into the note.
+            // Noura writes nothing to fold, so folding does nothing.
+            Event::ToggleFold { .. } | Event::Unfold { .. } => {}
             Event::ToggleSpoiler { node: range } => {
                 let Some(node) = root
                     .descendants()
@@ -542,16 +521,6 @@ impl<'ast> MdDoc {
                     range: (check, check + 1),
                     text: (if checked { " " } else { "x" }).into(),
                 }));
-            }
-            Event::Unfold { tag } => {
-                // Only a tag that folds a section; anything else at this
-                // range is text the user wrote.
-                if self.active_fold_at_tag(tag).is_some() {
-                    operations.push(Operation::Replace(Replace {
-                        range: tag,
-                        text: String::new(),
-                    }));
-                }
             }
         }
 
@@ -1565,18 +1534,16 @@ impl HeadTail for NodeValue {
 }
 
 impl<'ast> MdDoc {
-    /// What a paste does. Non-breaking spaces become spaces, because the
-    /// parser handles them poorly. A URL pasted over selected text that
-    /// isn't already part of a link or image links the selection to the URL.
-    /// Anything else replaces the selection.
+    /// What a paste does. A URL pasted over selected text that isn't
+    /// already part of a link or image links the selection to the URL.
+    /// Anything else replaces the selection with the text as copied,
+    /// non-breaking spaces included.
     pub fn paste_event(
         &self,
         root: &'ast AstNode<'ast>,
         text: String,
         selection: (Grapheme, Grapheme),
     ) -> Event {
-        let text = text.replace('\u{a0}', " ");
-
         let links_selection = !self.plaintext
             && !selection.is_empty()
             && is_autolink(&text)

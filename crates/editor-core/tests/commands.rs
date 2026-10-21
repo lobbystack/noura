@@ -1,8 +1,7 @@
-//! Seam 2: pasting, checking tasks and unfolding sections through
-//! `editor-core` alone, with no layout and no UI.
+//! Seam 2: pasting and checking tasks through `editor-core` alone, with
+//! no layout and no UI.
 
 use editor_core::MdDoc;
-use editor_core::fold::FOLD_TAG;
 use editor_core::input::{Event, Location, NoLayout, Region};
 use editor_core::offset_types::Grapheme;
 
@@ -51,16 +50,6 @@ fn pasting_onto_a_selection_replaces_it_and_puts_the_caret_after() {
 
     assert_eq!(doc.text(), "one 2 three");
     assert_eq!(doc.selection(), (g(5), g(5)));
-}
-
-#[test]
-fn pasting_flattens_non_breaking_spaces() {
-    let mut doc = MdDoc::new("ab");
-    select(&mut doc, 1, 1);
-
-    paste(&mut doc, "x\u{a0}y");
-
-    assert_eq!(doc.text(), "ax yb");
 }
 
 #[test]
@@ -125,19 +114,6 @@ fn a_read_only_note_ignores_task_toggles() {
     doc.apply([Event::ToggleTask { node: task }], &NoLayout);
 
     assert_eq!(doc.text(), "- [ ] stay\n");
-}
-
-#[test]
-fn unfolding_removes_the_fold_tag() {
-    let text = format!("# Heading {FOLD_TAG}\n\nhidden\n");
-    let mut doc = MdDoc::new(&text);
-    let arena = editor_core::comrak::Arena::new();
-    doc.reparse(&arena);
-    let tag = doc.bounds.folds[0].tag;
-
-    doc.apply([Event::Unfold { tag }], &NoLayout);
-
-    assert_eq!(doc.text(), "# Heading \n\nhidden\n");
 }
 
 #[test]

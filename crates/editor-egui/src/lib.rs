@@ -69,6 +69,11 @@ pub struct PaintedSpan {
     pub rect: Rect,
     /// Whether the span drew text, as opposed to spacing or an image.
     pub glyphs: bool,
+    /// Whether the span drew its source as written, as opposed to text in
+    /// its place, such as a callout's label.
+    pub shown_as_written: bool,
+    /// The text the span drew.
+    pub text: String,
 }
 
 /// A region painted this frame that a platform deciding touches itself
@@ -556,10 +561,28 @@ impl Editor {
             .renderer
             .fragments
             .iter()
-            .map(|fragment| PaintedSpan {
-                source_range: fragment.source_range,
-                rect: fragment.rect,
-                glyphs: matches!(fragment.content, FragmentContent::Glyphs { .. }),
+            .map(|fragment| {
+                let text = match &fragment.content {
+                    FragmentContent::Glyphs { buffer, .. } => buffer
+                        .read()
+                        .map(|buffer| {
+                            buffer
+                                .lines
+                                .iter()
+                                .map(|line| line.text())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                PaintedSpan {
+                    source_range: fragment.source_range,
+                    rect: fragment.rect,
+                    glyphs: matches!(fragment.content, FragmentContent::Glyphs { .. }),
+                    shown_as_written: !fragment.atomic,
+                    text,
+                }
             })
             .collect()
     }

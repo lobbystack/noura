@@ -79,9 +79,17 @@ impl MdDoc {
                     .collect(),
                 self.range_revealed(self.node_first_line(node), true),
             ),
+            // A setext heading's syntax is the `===` or `---` line under it.
+            NodeValue::Heading(heading) => (
+                ConstructKind::Heading {
+                    level: heading.level,
+                },
+                vec![self.node_line(node, self.node_last_line(node))],
+                self.reveal_setext_syntax(node),
+            ),
             NodeValue::Emph => (ConstructKind::Emphasis, edges(), self.node_revealed(node)),
             NodeValue::Strong => (ConstructKind::Strong, edges(), self.node_revealed(node)),
-            NodeValue::Strikethrough => (
+            NodeValue::Strikethrough if !crate::nodes::is_single_tilde_strikethrough(node) => (
                 ConstructKind::Strikethrough,
                 edges(),
                 self.node_revealed(node),
