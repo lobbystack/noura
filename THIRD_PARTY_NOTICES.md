@@ -137,6 +137,16 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+## AVIF decoding
+
+The desktop app decodes AVIF images in notes with these crates. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.txt` file in each desktop package carries their full license texts.
+
+- `avif-decode` 3.0.0, under the BSD 3-Clause License: Copyright 2021 Kornel Lesiński
+- `rav1d` 1.1.0, a Rust port of the dav1d AV1 decoder, under the BSD 2-Clause License: Copyright © 2018-2019, VideoLAN and dav1d authors, and Copyright © 2023-2024, VideoLAN, dav1d authors, and Internet Security Research Group
+- `yuv` 0.8.19, under the BSD 3-Clause option of its `BSD-3-Clause OR Apache-2.0` license: Copyright (c) Radzivon Bartoshyk
+
+`avif-parse`, which reads the AVIF file around the AV1 data, uses the Mozilla Public License 2.0 and appears in the MPL-2.0 list below.
+
 ## Lockbook Markdown editor
 
 The editor in `crates/editor-core` and `crates/editor-egui` adapts Lockbook's Markdown editor, which its authors dedicated to the public domain under the Unlicense. The Unlicense asks for no notice. [The Lockbook editor provenance record](docs/provenance/lockbook-editor.md) lists the files taken and the changes made.
@@ -178,6 +188,7 @@ These Rust dependencies use the Mozilla Public License 2.0. Noura uses them unmo
 - `webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5, which give `sync-server` its passkey support
 - `option-ext` 0.2.0, which `local-core` gets through `directories` and `dirs-sys`
 - `nucleo-matcher` 0.3.1, which ranks the desktop app's command palette and quick open in `app-core`
+- `avif-parse` 2.1.0, which reads AVIF images in notes for `app-ui`
 
 ## Marketing website source record
 

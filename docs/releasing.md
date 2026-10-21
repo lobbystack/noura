@@ -74,6 +74,8 @@ cargo install cargo-packager --version 0.11.8 --locked
 cargo install cargo-about --version 0.9.2 --locked
 ```
 
+Builds for Intel and AMD processors, including the Intel half of `--universal`, also need [NASM](https://nasm.us) 2.14 or newer on your `PATH`. rav1d, which decodes AVIF images, assembles its x86 code with it. Install it with `brew install nasm`, `sudo apt-get install nasm` or `choco install nasm`.
+
 Then run `scripts/package-desktop.sh` from the repository root. It writes the license list, builds the app in release mode, and packages it for your operating system. The packages land in `target/release`. On macOS, `--universal` builds one app for Apple silicon and Intel instead, which needs the `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets.
 
 To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the first window, prints a short report, and quits. On Linux, run it under `xvfb-run` when you have no display.

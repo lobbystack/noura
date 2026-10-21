@@ -11,10 +11,15 @@ app-core = { version = "0.2.0", path = "../app-core" }
 comrak.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
 # The date picker, and the decoders that draw images in notes: PNG, JPEG
-# and BMP through `image`, GIF and WebP through their loaders, and SVG
-# through resvg. No loader reads files or the network itself.
-egui_extras = { workspace = true, features = ["image", "gif", "webp", "svg"] }
+# and BMP through `image`, GIF and WebP through their loaders. No loader
+# reads files or the network itself. egui_extras' `svg` feature stays off,
+# because its SVG loader lets an SVG read any image file it names.
+egui_extras = { workspace = true, features = ["image", "gif", "webp"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Draws SVG images in notes, with references to other files refused.
+resvg = { version = "0.45.1", default-features = false }
+# Decodes AVIF images in notes in Rust, through rav1d.
+avif-decode = { version = "3.0.0", default-features = false }
 # Draws and edits the open note.
 editor-egui = { version = "0.2.0", path = "../editor-egui" }
 jiff.workspace = true

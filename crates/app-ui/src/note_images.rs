@@ -1,8 +1,9 @@
 //! The images a note's editor draws: workspace images, read through
 //! `app-core`'s containment checks off the UI thread, and remote images,
-//! which load only when their Load image button asks. egui_extras decodes
-//! both from bytes Noura hands it; no loader reads a file or the network
-//! on its own.
+//! which load only when their Load image button asks. The decoders in
+//! `image_decoders` draw both from bytes Noura hands egui. No loader reads
+//! a file or the network on its own, and an SVG's references to other
+//! files draw nothing.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,7 +58,7 @@ fn extension(content_type: &str) -> &'static str {
 
 impl WorkspaceImages {
     pub(crate) fn new(links: NoteLinks, ctx: egui::Context) -> Self {
-        egui_extras::install_image_loaders(&ctx);
+        crate::image_decoders::install(&ctx);
         let listing = links.seq();
         Self {
             links,
