@@ -10,7 +10,11 @@ app-core = { version = "0.2.0", path = "../app-core" }
 # Parses the Markdown that plugins hand Noura, as the editor does.
 comrak.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
-egui_extras.workspace = true
+# The date picker, and the decoders that draw images in notes: PNG, JPEG
+# and BMP through `image`, GIF and WebP through their loaders, and SVG
+# through resvg. No loader reads files or the network itself.
+egui_extras = { workspace = true, features = ["image", "gif", "webp", "svg"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
 # Draws and edits the open note.
 editor-egui = { version = "0.2.0", path = "../editor-egui" }
 jiff.workspace = true

@@ -239,6 +239,11 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     {
         note.links_source = Some(links.source().to_owned());
         note.editor
+            .set_embed_resolver(Box::new(crate::note_images::WorkspaceImages::new(
+                links.clone(),
+                ui.ctx().clone(),
+            )));
+        note.editor
             .set_link_resolver(Box::new(crate::note_links::WorkspaceLinks(links)));
     }
     // A save brought the file in line with the editor, or merged an edit

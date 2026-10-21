@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use app_core::{App, NoteLinks, RemoteImageState};
+use app_core::{App, NoteLinks, RemoteImage, RemoteImageState};
 use support::{Fixture, open_from_tree, settle};
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nimage bytes";
@@ -121,6 +121,14 @@ fn finished(links: &NoteLinks, url: &str) -> RemoteImageState {
     }
 }
 
+/// The test server's image, loaded.
+fn png() -> RemoteImageState {
+    RemoteImageState::Loaded(Arc::new(RemoteImage {
+        bytes: PNG.to_vec(),
+        content_type: "image/png".into(),
+    }))
+}
+
 fn fixture_with(note: &str) -> Fixture {
     Fixture::new(&[("Plan.md", note.as_bytes())])
 }
@@ -143,12 +151,12 @@ fn opening_a_note_sends_no_request_and_load_image_fetches_once() {
     links.load_remote_image(&url, || {});
     assert_eq!(
         finished(&links, &url),
-        RemoteImageState::Loaded(Arc::new(PNG.to_vec()))
+        png()
     );
     links.load_remote_image(&url, || {});
     assert_eq!(
         finished(&links, &url),
-        RemoteImageState::Loaded(Arc::new(PNG.to_vec()))
+        png()
     );
     assert_eq!(server.requests(), 1, "one load, one request");
 }
@@ -171,7 +179,7 @@ fn a_failed_load_can_be_tried_again() {
     links.load_remote_image(&url, || {});
     assert_eq!(
         finished(&links, &url),
-        RemoteImageState::Loaded(Arc::new(PNG.to_vec()))
+        png()
     );
     assert_eq!(server.requests(), 2);
 }

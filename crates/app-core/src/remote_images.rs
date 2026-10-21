@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use local_core::RemoteImageFetcher;
+use local_core::{RemoteImage, RemoteImageFetcher};
 
 /// Where a remote image stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub enum RemoteImageState {
     NotLoaded,
     Loading,
     /// Its bytes, as the server sent them.
-    Loaded(Arc<Vec<u8>>),
+    Loaded(Arc<RemoteImage>),
     /// Why the load failed, in plain words. Loading again tries again.
     Failed(String),
 }
@@ -69,7 +69,7 @@ impl RemoteImages {
         let url = url.to_owned();
         std::thread::spawn(move || {
             let state = match fetcher.fetch(&url) {
-                Ok(image) => RemoteImageState::Loaded(Arc::new(image.bytes)),
+                Ok(image) => RemoteImageState::Loaded(Arc::new(image)),
                 Err(error) => {
                     tracing::info!(code = %error.code, "a remote image didn't load");
                     RemoteImageState::Failed(failure(&error.code))
