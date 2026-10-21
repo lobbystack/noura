@@ -59,3 +59,13 @@ pub fn account_id(server_secret: &SecretKey, email: &str) -> Id {
         normalize_email(email).as_bytes(),
     )))
 }
+
+/// The yrs client ID of a document load (§22): `card_index × 2^29 + load`,
+/// for a card index from 1 to 2^24 − 1 and a load number from 1 to
+/// 2^29 − 1, which keeps every client ID below 2^53. Client ID 0 belongs to
+/// a lineage's first document alone.
+pub fn yrs_client_id(card_index: u32, load: u32) -> Option<u64> {
+    let valid_index = (1..=crate::policy::MAX_CARD_INDEX).contains(&card_index);
+    let valid_load = (1..=crate::records::MAX_LOAD).contains(&load);
+    (valid_index && valid_load).then(|| (u64::from(card_index) << 29) + u64::from(load))
+}

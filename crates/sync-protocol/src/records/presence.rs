@@ -153,8 +153,14 @@ impl Presence {
 
     /// Whether `minute` lies within 2 minutes of the receiver's clock.
     pub fn within_clock_window(&self, now_minute: u32) -> bool {
-        self.minute.abs_diff(now_minute) <= 2
+        within_clock_window(self.minute, now_minute)
     }
+}
+
+/// Whether a presence record sent at `minute` lies within the 2-minute
+/// window receivers allow around their clock's `now_minute` (§23).
+pub fn within_clock_window(minute: u32, now_minute: u32) -> bool {
+    minute.abs_diff(now_minute) <= 2
 }
 
 impl Encode for Presence {

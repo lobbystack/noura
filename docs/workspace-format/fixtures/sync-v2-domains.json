@@ -1,0 +1,57 @@
+{
+	"cases": [
+		{
+			"content": "646f6d61696e3a206c4f6f3957363152395a377862545a614b51426151670a",
+			"expect": "94ea3d5bad51f59ef16d365a29005a42",
+			"kind": "marker",
+			"name": "marker_content"
+		},
+		{
+			"content": "646f6d61696e3a206c4f6f3957363152395a377862545a614b5142615167",
+			"expect": null,
+			"kind": "marker",
+			"name": "missing_line_feed"
+		},
+		{
+			"content": "646f6d61696e3a206c4f6f3957363152395a377862545a614b51426151670d0a",
+			"expect": null,
+			"kind": "marker",
+			"name": "crlf"
+		},
+		{
+			"content": "646f6d61696e3a206c4f6f3957363152395a377862545a614b51426151670a6d6f72650a",
+			"expect": null,
+			"kind": "marker",
+			"name": "extra_line"
+		},
+		{
+			"content": "646f6d61696e3a206c4f6f3957363152395a377862545a614b51426151673d3d0a",
+			"expect": null,
+			"kind": "marker",
+			"name": "padded_base64"
+		},
+		{
+			"content": "446f6d61696e3a206c4f6f3957363152395a377862545a614b51426151670a",
+			"expect": null,
+			"kind": "marker",
+			"name": "other_key"
+		},
+		{
+			"content": "646f6d61696e3a6c4f6f3957363152395a377862545a614b51426151670a",
+			"expect": null,
+			"kind": "marker",
+			"name": "no_space"
+		},
+		{
+			"content": "646f6d61696e3a20414141414141414141414141414141414141414141410a",
+			"expect": null,
+			"kind": "marker",
+			"name": "zero_id"
+		}
+	],
+	"description": "Restricted domain markers (sync-v2.md §9): the exact content of a `.noura-domain` file, one line `domain: <base64url domain ID>` and a line feed, and content that isn't a marker's.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {},
+	"marker_file_name": ".noura-domain",
+	"records": []
+}

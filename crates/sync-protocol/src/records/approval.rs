@@ -80,3 +80,25 @@ pub fn approval_code_text(code: u32) -> String {
     let digits = format!("{code:08}");
     format!("{} {}", &digits[..4], &digits[4..])
 }
+
+/// An offer that doesn't name the candidate's own card, commitment or head:
+/// `sync_approval_mismatch`, and the candidate reveals nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("sync_approval_mismatch")]
+pub struct ApprovalMismatch;
+
+/// The candidate's check before it reveals `nc` (§10): the offer's
+/// `candidate_card_digest` is `BLAKE3` of its own card, `candidate_commit`
+/// its own commitment, and `candidate_head` its own head.
+pub fn check_offer(
+    offer: &Offer,
+    candidate_card: &Card,
+    candidate_head: Option<&AccountHead>,
+    nc: &Key,
+) -> Result<(), ApprovalMismatch> {
+    let digest = candidate_card.fingerprint();
+    let ok = offer.candidate_card_digest == digest
+        && offer.candidate_head.as_ref() == candidate_head
+        && offer.candidate_commit == approval_commit(&digest, candidate_head, nc);
+    if ok { Ok(()) } else { Err(ApprovalMismatch) }
+}

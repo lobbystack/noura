@@ -275,6 +275,22 @@ pub fn operation_ciphertext_len(n: usize) -> u64 {
     padded_length(n as u64 + 4) + AEAD_TAG_LEN as u64
 }
 
+/// A record whose `policy_revision` or `generation` lies below the previous
+/// record's in its chain: the server answers `policy_regressed`, a client
+/// reports `sync_policy_regressed` (§13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("policy_regressed")]
+pub struct Regressed;
+
+/// Checks that neither `policy_revision` nor `generation` decreased from the
+/// previous record of the same chain.
+pub fn check_monotonic(previous: &Operation, next: &Operation) -> Result<(), Regressed> {
+    if next.policy_revision < previous.policy_revision || next.generation < previous.generation {
+        return Err(Regressed);
+    }
+    Ok(())
+}
+
 crate::wire_struct! {
     /// `origin`: where a cross-domain move came from, or where it went.
     pub struct Origin {

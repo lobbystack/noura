@@ -55,6 +55,21 @@ impl SortSpec<Access> for ByAccount {
 /// An access list, sorted by account, so it names each account once.
 pub type AccessList = Sorted<Access, ByAccount, MAX_ACCESS>;
 
+/// A restricted domain's marker file content (§9): one line,
+/// `domain: <base64url domain ID>`, followed by a line feed.
+pub fn marker_content(domain: &Id) -> String {
+    format!("domain: {}\n", domain.to_base64url())
+}
+
+/// The domain a marker file names, when its bytes are exactly what
+/// [`marker_content`] writes; anything else is no marker content.
+pub fn parse_marker(bytes: &[u8]) -> Option<Id> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let encoded = text.strip_prefix("domain: ")?.strip_suffix('\n')?;
+    let domain = Id::from_base64url(encoded).ok()?;
+    (!domain.is_zero()).then_some(domain)
+}
+
 /// Sorts anchors and kit workspaces by workspace.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ByWorkspace;

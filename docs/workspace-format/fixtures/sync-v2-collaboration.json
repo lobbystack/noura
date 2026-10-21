@@ -1,0 +1,82 @@
+{
+	"cases": [
+		{
+			"base": "eec5719b75364c893ef8ed9a14f5ab5b5db5e816b54068211f5bd82b888b9023",
+			"document": "01010000040107636f6e74656e74",
+			"expect": "548c6fd62af311a2228f14117db7bc91",
+			"input": "176e6f7572612e73796e632e746578742e6c696e6561676500028166db9a6e96dd44846df7ac67542047eec5719b75364c893ef8ed9a14f5ab5b5db5e816b54068211f5bd82b888b902301010000040107636f6e74656e74",
+			"kind": "text_lineage",
+			"name": "lineage_of_a_first_document",
+			"rid": "8166db9a6e96dd44846df7ac67542047"
+		},
+		{
+			"base": "eec5719b75364c893ef8ed9a14f5ab5b5db5e816b54068211f5bd82b888b9023",
+			"document": "01010000040107636f6e74656e7400",
+			"expect": "87d1a1c4fc14189868f7c217b12adda0",
+			"input": null,
+			"kind": "text_lineage",
+			"name": "another_first_document_another_lineage",
+			"rid": "8166db9a6e96dd44846df7ac67542047"
+		},
+		{
+			"card_index": 1,
+			"expect": 536870913,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_1_load_1"
+		},
+		{
+			"card_index": 2,
+			"expect": 1073741831,
+			"kind": "client_id",
+			"load": 7,
+			"name": "card_2_load_7"
+		},
+		{
+			"card_index": 16777215,
+			"expect": 9007199254740991,
+			"kind": "client_id",
+			"load": 536870911,
+			"name": "card_16777215_load_536870911"
+		},
+		{
+			"card_index": 8,
+			"expect": 4294967297,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_8_load_1"
+		},
+		{
+			"card_index": 0,
+			"expect": null,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_0_load_1"
+		},
+		{
+			"card_index": 1,
+			"expect": null,
+			"kind": "client_id",
+			"load": 0,
+			"name": "card_1_load_0"
+		},
+		{
+			"card_index": 1,
+			"expect": null,
+			"kind": "client_id",
+			"load": 536870912,
+			"name": "card_1_load_536870912"
+		},
+		{
+			"card_index": 16777216,
+			"expect": null,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_16777216_load_1"
+		}
+	],
+	"description": "Text mode (sync-v2.md §22): the text lineage ID derived from the rid, the base operation's digest and the first document's bytes, and yrs client IDs from a card index and a load number.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {},
+	"records": []
+}

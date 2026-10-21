@@ -1,0 +1,697 @@
+{
+	"cases": [
+		{
+			"classes": [
+				"state",
+				"patch",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 2,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			},
+			"floors": [],
+			"kind": "live_set",
+			"name": "classes_and_covers_of_covered_operations",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						},
+						{
+							"counter": 1,
+							"device": "53f07745fcdc1a9f15ddfd11b930c264"
+						}
+					],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"classes": [
+				"state",
+				"patch",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					}
+				]
+			},
+			"floors": [],
+			"kind": "live_set",
+			"name": "a_cover_supersedes_its_devices_earlier_operations",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 2,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"classes": [
+				"state",
+				"state",
+				"state",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					},
+					{
+						"counter": 1,
+						"device": "cb972fd8531c28e0317d24d1941bbcad"
+					}
+				]
+			},
+			"floors": [],
+			"kind": "live_set",
+			"name": "conflict_and_an_edit_that_covers_only_its_branch",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 2,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "cb972fd8531c28e0317d24d1941bbcad",
+					"digest": "dcf78fda6e8ccb88b273bc5a3abdf6a292145c689126bd3720408baf58b5c878",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 4,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"classes": [
+				"state",
+				"patch"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					},
+					{
+						"counter": 1,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			},
+			"floors": [],
+			"kind": "live_set",
+			"name": "a_delete_that_covers_nothing_counts_as_a_patch",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": true,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"classes": [
+				"state",
+				"state",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					},
+					{
+						"counter": 2,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			},
+			"floors": [
+				{
+					"covered_seq": 5,
+					"dropped": [],
+					"floor": 5,
+					"previous_floor": 0
+				}
+			],
+			"kind": "live_set",
+			"name": "an_edit_against_a_delete_keeps_both",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": true,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"classes": [
+				"state",
+				"state",
+				"patch"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					}
+				]
+			},
+			"floors": [
+				{
+					"after_op": 2,
+					"covered_seq": 10,
+					"dropped": [
+						{
+							"counter": 2,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+							"rid": "c887498ee1ee0e66c38342a3b3bed1c6"
+						}
+					],
+					"floor": 5,
+					"previous_floor": 0
+				}
+			],
+			"kind": "live_set",
+			"name": "a_lone_delete_that_a_rising_floor_passes_leaves_for_good",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": true,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 11,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"classes": [
+				"state",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 2,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			},
+			"floors": [
+				{
+					"covered_seq": 10,
+					"dropped": [],
+					"floor": 5,
+					"previous_floor": 0
+				}
+			],
+			"kind": "live_set",
+			"name": "a_lone_delete_above_the_floor_stays",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": true,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 8,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"expect": "supersedes_incomplete",
+			"kind": "live_check",
+			"name": "a_state_operation_that_leaves_its_own_earlier_state_live",
+			"next": {
+				"counter": 2,
+				"covers": [
+					{
+						"counter": 2,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					}
+				],
+				"delete": false,
+				"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+				"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+				"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+				"seq": 4,
+				"weight": 300
+			},
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "53f07745fcdc1a9f15ddfd11b930c264"
+						}
+					],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "6bfde6fac8e6fe60f584c428764c72fd179c22a570143792b5229c4937a969b7",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"expect": "supersedes_unknown",
+			"kind": "live_check",
+			"name": "a_cover_naming_no_operation",
+			"next": {
+				"counter": 1,
+				"covers": [
+					{
+						"counter": 7,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				],
+				"delete": false,
+				"device": "53f07745fcdc1a9f15ddfd11b930c264",
+				"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+				"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+				"seq": 2,
+				"weight": 300
+			},
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"expect": "state",
+			"kind": "live_check",
+			"name": "a_cover_of_every_live_operation",
+			"next": {
+				"counter": 1,
+				"covers": [
+					{
+						"counter": 1,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					},
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					}
+				],
+				"delete": false,
+				"device": "cb972fd8531c28e0317d24d1941bbcad",
+				"digest": "dcf78fda6e8ccb88b273bc5a3abdf6a292145c689126bd3720408baf58b5c878",
+				"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+				"seq": 3,
+				"weight": 300
+			},
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"chosen": [
+				{
+					"counter": 2,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+				}
+			],
+			"expect": [
+				{
+					"counter": 2,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+				}
+			],
+			"kind": "covers_for",
+			"name": "an_edit_on_one_branch_of_a_conflict",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			],
+			"own_device": "cb972fd8531c28e0317d24d1941bbcad"
+		},
+		{
+			"chosen": [
+				{
+					"counter": 1,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264"
+				},
+				{
+					"counter": 1,
+					"device": "cb972fd8531c28e0317d24d1941bbcad"
+				}
+			],
+			"expect": [
+				{
+					"counter": 1,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264"
+				},
+				{
+					"counter": 1,
+					"device": "cb972fd8531c28e0317d24d1941bbcad"
+				}
+			],
+			"kind": "covers_for",
+			"name": "one_edit_covers_two_identical_branches",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "cb972fd8531c28e0317d24d1941bbcad",
+					"digest": "dcf78fda6e8ccb88b273bc5a3abdf6a292145c689126bd3720408baf58b5c878",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			],
+			"own_device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+		}
+	],
+	"description": "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `covers_for` asks which covers an edit writes.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {},
+	"records": []
+}

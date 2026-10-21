@@ -1,0 +1,1116 @@
+{
+	"cases": [
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"verdict": "accept"
+					},
+					{
+						"verdict": "accept"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "counters_skipped_at_each_start",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1025,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					},
+					{
+						"counter": 2049,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"verdict": "ignore"
+					},
+					{
+						"verdict": "accept"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "retried_upload_served_once",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1025,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"verdict": "accept"
+					}
+				],
+				[
+					{
+						"verdict": "ignore"
+					},
+					{
+						"verdict": "ignore"
+					},
+					{
+						"verdict": "accept"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "page_repeating_applied_positions",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1025,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					}
+				],
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1025,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					},
+					{
+						"counter": 2049,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "gap",
+				"index": 1,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "dropped_record",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 3,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [
+				{
+					"counter": 1,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 1
+				},
+				{
+					"counter": 2,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 2
+				},
+				{
+					"counter": 3,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+					"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 3
+				}
+			],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "gap",
+				"index": 1,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "dropped_record_the_server_cant_produce",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 3,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [
+				{
+					"counter": 1,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 1
+				},
+				{
+					"counter": 3,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+					"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 3
+				}
+			],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "reordered",
+				"index": 1,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "reordered_record",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 3,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [
+				{
+					"counter": 1,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 1
+				},
+				{
+					"counter": 2,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 4
+				},
+				{
+					"counter": 3,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+					"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 3
+				}
+			],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "replayed",
+				"index": 2,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "replayed_record",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 2,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "replayed",
+				"index": 0,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "replay_right_after_bootstrap",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 7
+					}
+				]
+			],
+			"server": [],
+			"start_heads": [
+				{
+					"counter": 2,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 2
+				}
+			]
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "ignore"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "repeat_below_a_bootstrap_head",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					}
+				]
+			],
+			"server": [],
+			"start_heads": [
+				{
+					"counter": 2,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 2
+				}
+			]
+		},
+		{
+			"expect": {
+				"error": "forked",
+				"index": 2,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "forked_record",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 2,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					},
+					{
+						"counter": 2,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "2f8bf9a3ec4bd60f0526c15c042697c019e76982af7c39961c1daf932733f58f",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "forked",
+				"index": 1,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "two_records_at_one_position",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "92f8b44dc35c2d83d52f545a0fa8acb81e5c7d807f73bf1981c4489dee4df059",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"replaced": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"verdict": "replace"
+					},
+					{
+						"replaced": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"verdict": "replace"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "reseal_attempts_in_order",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"seq": 2
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "0b12da951413c4f103565e46d42f4a7753a0d51e259c78adcd6461b82b461482",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"verdict": "ignore"
+					},
+					{
+						"verdict": "ignore"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "reseal_attempts_latest_first",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "0b12da951413c4f103565e46d42f4a7753a0d51e259c78adcd6461b82b461482",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"seq": 1
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"seq": 2
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"replaced": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"verdict": "replace"
+					},
+					{
+						"verdict": "ignore"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "reseal_attempt_linked_through_the_page",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "0b12da951413c4f103565e46d42f4a7753a0d51e259c78adcd6461b82b461482",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"seq": 2
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "forked",
+				"index": 2,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "sibling_attempts",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"seq": 2
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "e3dccba7b7e99461cbe30c9db77ddd95320544f870e99df32e9d5f80fc88b264",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "forked",
+				"index": 2,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "attempt_after_a_successor_of_the_other",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 2,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "f692852288985013b39a1aef316b522c1989b527e8ce69ed64c5e1e1839f1db2",
+						"previous": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1416cc3a9198f192aa94987d06bc9e1b6be9b24e67dd9ff7899fa1a729762004",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"seq": 3
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"replaced": "1b70b51bc0fbbac153afa66652c5d5643e0ba7290067684ab67043f7584a3a2b",
+						"verdict": "replace"
+					},
+					{
+						"replaced": "ceac6335ce90ffb83f11d0b5b58be6d27fb21d1f519628c8aecd882b91e0d744",
+						"verdict": "replace"
+					},
+					{
+						"replaced": "390024b486b518e8e7c99752ee643d4d0c40304406427a41f30b7eff87405cf5",
+						"verdict": "replace"
+					},
+					{
+						"replaced": "066269b4a72453b834fd6657490430ac4774dafdd694d1e757a1a48a3552090e",
+						"verdict": "replace"
+					},
+					{
+						"replaced": "bbd8d703b351fbec2be2718a355edfea886ea3cb5d2fb1c8c43a718d0116819a",
+						"verdict": "replace"
+					},
+					{
+						"replaced": "fee67102e12fb57984472659d8ad31f86aaa1532f90463afd2690a1cda25a4cd",
+						"verdict": "replace"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "more_than_4_reseal_attempts_forced_by_rotations",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1b70b51bc0fbbac153afa66652c5d5643e0ba7290067684ab67043f7584a3a2b",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "ceac6335ce90ffb83f11d0b5b58be6d27fb21d1f519628c8aecd882b91e0d744",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "1b70b51bc0fbbac153afa66652c5d5643e0ba7290067684ab67043f7584a3a2b",
+						"seq": 2
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "390024b486b518e8e7c99752ee643d4d0c40304406427a41f30b7eff87405cf5",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "ceac6335ce90ffb83f11d0b5b58be6d27fb21d1f519628c8aecd882b91e0d744",
+						"seq": 3
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "066269b4a72453b834fd6657490430ac4774dafdd694d1e757a1a48a3552090e",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "390024b486b518e8e7c99752ee643d4d0c40304406427a41f30b7eff87405cf5",
+						"seq": 4
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "bbd8d703b351fbec2be2718a355edfea886ea3cb5d2fb1c8c43a718d0116819a",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "066269b4a72453b834fd6657490430ac4774dafdd694d1e757a1a48a3552090e",
+						"seq": 5
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "fee67102e12fb57984472659d8ad31f86aaa1532f90463afd2690a1cda25a4cd",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "bbd8d703b351fbec2be2718a355edfea886ea3cb5d2fb1c8c43a718d0116819a",
+						"seq": 6
+					},
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "20e6ab10dc2b086c556bee2818354a742b1fe75b70fe21dd814a4d0784bc5dce",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "fee67102e12fb57984472659d8ad31f86aaa1532f90463afd2690a1cda25a4cd",
+						"seq": 7
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					},
+					{
+						"verdict": "accept"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "record_replaced_at_its_position_after_snapshot_required",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 2,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b1f2b3aded49e0a3494d53312ce86c8b034277047e54006e095378bea3f34924",
+						"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous_attempt": "bad1411e3ad5b10e1199ada4115c22f3f9bc959b05dd5e9838ac01388c6a25cc",
+						"seq": 2
+					}
+				]
+			],
+			"server": [],
+			"start_heads": []
+		},
+		{
+			"expect": [
+				[
+					{
+						"verdict": "accept"
+					}
+				],
+				[
+					{
+						"verdict": "accept"
+					}
+				]
+			],
+			"kind": "chain_schedule",
+			"name": "later_attempt_of_the_head_fetched",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					}
+				],
+				[
+					{
+						"counter": 2,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "f692852288985013b39a1aef316b522c1989b527e8ce69ed64c5e1e1839f1db2",
+						"previous": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [
+				{
+					"counter": 1,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+					"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+					"seq": 2
+				},
+				{
+					"counter": 2,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "f692852288985013b39a1aef316b522c1989b527e8ce69ed64c5e1e1839f1db2",
+					"previous": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 3
+				}
+			],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "reordered",
+				"index": 0,
+				"page": 1
+			},
+			"kind": "chain_schedule",
+			"name": "later_attempt_of_the_head_placed_after_its_successor",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					}
+				],
+				[
+					{
+						"counter": 2,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "f692852288985013b39a1aef316b522c1989b527e8ce69ed64c5e1e1839f1db2",
+						"previous": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 3
+					}
+				]
+			],
+			"server": [
+				{
+					"counter": 1,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+					"previous_attempt": "1ddad56aa60a25c0c49fae9f9fddf85f053358129dfdc2640ea01f29a4f3222d",
+					"seq": 4
+				},
+				{
+					"counter": 2,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "f692852288985013b39a1aef316b522c1989b527e8ce69ed64c5e1e1839f1db2",
+					"previous": "8532a7dd44ffaa29475e0d856426b8f13f4f95003c7bf4ec768a90b7ce9f8259",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 3
+				}
+			],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "gap",
+				"index": 1,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "skipping_predecessor_left_out",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1026,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 9
+					}
+				]
+			],
+			"server": [
+				{
+					"counter": 1,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 1
+				},
+				{
+					"counter": 1025,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 4
+				},
+				{
+					"counter": 1026,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+					"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 9
+				}
+			],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "reordered",
+				"index": 1,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "skipping_predecessor_placed_after",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1026,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 9
+					}
+				]
+			],
+			"server": [
+				{
+					"counter": 1,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 1
+				},
+				{
+					"counter": 1025,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 12
+				},
+				{
+					"counter": 1026,
+					"device": "0349bd0015aad69180d5eca4cd740f5c",
+					"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+					"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 9
+				}
+			],
+			"start_heads": []
+		},
+		{
+			"expect": {
+				"error": "pruned",
+				"index": 1,
+				"page": 0
+			},
+			"kind": "chain_schedule",
+			"name": "head_below_the_retention_floor",
+			"pages": [
+				[
+					{
+						"counter": 1,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "b55da50921358b8c4670a809fe98ca6d18bd9b791ef30ececed63c6b6ee6ec23",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 1026,
+						"device": "0349bd0015aad69180d5eca4cd740f5c",
+						"digest": "4a3c2dbbc9293ba161bbea47a3e6e4210bc9464b16342cef5debcd8929f43042",
+						"previous": "94d48720464475842bc5198342e4242cbaa70b053fb7e6332113cbe56c3f25a8",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 9
+					}
+				]
+			],
+			"server": [],
+			"server_pruned": true,
+			"start_heads": []
+		}
+	],
+	"description": "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {},
+	"records": []
+}

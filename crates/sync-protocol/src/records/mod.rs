@@ -18,7 +18,10 @@ mod profile;
 mod recovery;
 mod share;
 
-pub use approval::{Anchor, Offer, approval_code, approval_code_text, approval_commit};
+pub use approval::{
+    Anchor, ApprovalMismatch, Offer, approval_code, approval_code_text, approval_commit,
+    check_offer,
+};
 pub use card::{Card, HPKE_PUBLIC_LEN, HpkePublic, fingerprint_text};
 pub use checkpoint::{ByDeviceCounter, Checkpoint, CheckpointBundle, Heads, Ref};
 pub use device::Enroll;
@@ -31,15 +34,16 @@ pub use link::{AccountHead, AccountLink, ByAccount, LinkKind, MAX_ACTIVE_CARDS, 
 pub use operation::{
     BlobRef, ByDevice, ByKey, Content, Cover, DeleteReason, MAX_BLOBS, MAX_COVERS, MAX_LOAD,
     MAX_OPERATION_CIPHERTEXT, MAX_PATH_LEN, MAX_PAYLOAD_LEN, Meta, MetaList, OpClass, OpenError,
-    Operation, Origin, Payload, PayloadKind, SealError, SyncPath, operation_ciphertext_len,
-    validate_path,
+    Operation, Origin, Payload, PayloadKind, Regressed, SealError, SyncPath, check_monotonic,
+    operation_ciphertext_len, validate_path,
 };
 pub use policy::{
     Access, AccessList, ByWorkspace, Level, MAX_ACCESS, PolicyChange, PolicyKind, Role,
+    marker_content, parse_marker,
 };
 pub use presence::{
     MAX_POSITION_LEN, MAX_PRESENCE_PLAINTEXT, MAX_SELECTIONS, Presence, PresenceError,
-    PresencePayload, PresenceState, Selection, presence_channel,
+    PresencePayload, PresenceState, Selection, presence_channel, within_clock_window,
 };
 pub use profile::{Profile, ProfileError, ProfilePayload};
 pub use recovery::{

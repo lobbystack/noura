@@ -284,7 +284,12 @@ impl ChainVerifier {
             Fetched::Pruned => Err(ChainError::Pruned),
             Fetched::NotFound => Err(ChainError::Gap),
             Fetched::Record(fetched) => {
-                if fetched.counter <= head.counter || fetched.counter > record.counter {
+                // The record itself, or nothing up to it: the server holds no
+                // predecessor, so the chain stops short of the record.
+                if fetched.digest == record.digest
+                    || fetched.counter <= head.counter
+                    || fetched.counter > record.counter
+                {
                     Err(ChainError::Gap)
                 } else if fetched.previous != head.digest || fetched.counter == record.counter {
                     Err(ChainError::Forked)
