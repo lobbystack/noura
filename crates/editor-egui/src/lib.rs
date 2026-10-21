@@ -72,6 +72,9 @@ pub struct PaintedSpan {
     pub rect: Rect,
     /// Whether the span drew text, as opposed to spacing or an image.
     pub glyphs: bool,
+    /// Whether a line runs under the text, as under underlined text or an
+    /// input method's marked text.
+    pub underlined: bool,
 }
 
 /// A region painted this frame that a platform deciding touches itself
@@ -583,6 +586,10 @@ impl Editor {
                 source_range: fragment.source_range,
                 rect: fragment.rect,
                 glyphs: matches!(fragment.content, FragmentContent::Glyphs { .. }),
+                underlined: fragment
+                    .style_stack
+                    .last()
+                    .is_some_and(|style| style.format.underline),
             })
             .collect()
     }

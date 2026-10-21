@@ -532,6 +532,11 @@ impl Layout {
             .or_else(|| self.format_runs.first())
             .map(|(_, _, format)| format);
         let format = format(surrounding);
+        let scope_format = Format {
+            background: egui::Color32::TRANSPARENT,
+            border: egui::Color32::TRANSPARENT,
+            ..format.clone()
+        };
 
         let mut marked = String::new();
         let mut tabs = Vec::new();
@@ -591,9 +596,25 @@ impl Layout {
             source: (at, at),
             one_to_one: false,
         });
+        // Its own style scope, so its underline paints.
+        let event_at = self
+            .events
+            .iter()
+            .position(|(position, _)| *position >= visible_at)
+            .unwrap_or(self.events.len());
         for (position, _) in &mut self.events {
             shift(position);
         }
+        self.events.splice(
+            event_at..event_at,
+            [
+                (
+                    visible_at,
+                    FlowEvent::Open(StyleInfo::new(scope_format, (at, at))),
+                ),
+                (visible_at + len, FlowEvent::Close),
+            ],
+        );
         for position in &mut self.tab_positions {
             shift(position);
         }

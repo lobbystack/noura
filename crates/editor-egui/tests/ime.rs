@@ -242,6 +242,14 @@ fn marked_text_draws_inline_at_the_caret_and_moves_the_rest_of_the_line_along() 
 
     let marked = marked_spans(&harness, caret);
     assert!(!marked.is_empty(), "the marked text drew");
+    assert!(
+        editor(&harness)
+            .painted_spans()
+            .iter()
+            .filter(|span| span.source_range == (caret, caret) && span.glyphs)
+            .all(|span| span.underlined),
+        "the marked text is underlined"
+    );
     let left = marked
         .iter()
         .map(|rect| rect.left())
