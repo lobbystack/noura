@@ -77,6 +77,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
 openssl = "0.10"
 pbkdf2 = "=0.12.2"
+# Without default features proptest leaves out its process-forking runner.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 pulldown-cmark = "0.13"
 rand = "0.8"
 rfd = "0.16"
