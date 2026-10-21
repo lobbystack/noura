@@ -25,6 +25,7 @@ mod ignored;
 mod inbox;
 mod keys;
 mod layout;
+mod links;
 mod login;
 mod menus;
 mod notes;
@@ -68,6 +69,7 @@ pub use inbox::{
 };
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+pub use links::NoteLinks;
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};

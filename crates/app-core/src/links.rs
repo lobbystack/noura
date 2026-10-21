@@ -1,0 +1,245 @@
+//! Where the links and embeds in a note lead. A target resolves the way
+//! Obsidian and today's app resolve it: relative to the note, then from the
+//! workspace root, then by file name anywhere in the workspace, ignoring
+//! case and preferring the note's folder and then the shortest path. `Plan`
+//! finds `Plan.md`. Resolution reads the newest listing of the workspace's
+//! files, which holds nothing outside the workspace, so a link never leads
+//! out of it.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
+
+use local_core::WorkspaceEngine;
+
+use crate::FileTree;
+
+/// The open workspace's files as its newest listing shows them. The
+/// session updates it with each listing, and every note's links read it.
+#[derive(Clone, Default)]
+pub(crate) struct LinkFiles(Arc<RwLock<Arc<LinkIndex>>>);
+
+impl LinkFiles {
+    /// Take the files `tree` lists.
+    pub(crate) fn list(&self, tree: &FileTree) {
+        let index = Arc::new(LinkIndex::new(tree.file_paths()));
+        *self
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = index;
+    }
+
+    fn get(&self) -> Arc<LinkIndex> {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// The workspace's files, by path and by lowercase file name, so a note
+/// with many links resolves them quickly in a large workspace.
+#[derive(Default)]
+pub(crate) struct LinkIndex {
+    paths: HashSet<String>,
+    by_name: HashMap<String, Vec<String>>,
+}
+
+impl LinkIndex {
+    pub(crate) fn new<'a>(files: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut index = Self::default();
+        for file in files {
+            let name = file.rsplit('/').next().unwrap_or(file).to_lowercase();
+            index.by_name.entry(name).or_default().push(file.to_owned());
+            index.paths.insert(file.to_owned());
+        }
+        index
+    }
+}
+
+/// What the links in one note lead to. A note's editor holds one and asks
+/// it about each link and embed it draws; it reads the workspace's newest
+/// listing, so links follow files as they appear, move and go.
+#[derive(Clone)]
+pub struct NoteLinks {
+    source: String,
+    files: LinkFiles,
+    #[allow(dead_code, reason = "embeds and images read through it")]
+    engine: Arc<WorkspaceEngine>,
+}
+
+impl NoteLinks {
+    pub(crate) fn new(source: &str, files: LinkFiles, engine: Arc<WorkspaceEngine>) -> Self {
+        Self {
+            source: source.to_owned(),
+            files,
+            engine,
+        }
+    }
+
+    /// The workspace path of the note these links belong to.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The workspace file `target` leads to, or `None` when it names no
+    /// file in the workspace. A `#heading` part is ignored.
+    pub fn resolve(&self, target: &str) -> Option<String> {
+        resolve_link_path(&self.source, target, &self.files.get())
+    }
+}
+
+/// `target` without its `#heading` or `#^block` part, percent-decoded as
+/// Markdown links write spaces. A target that doesn't decode stays as
+/// written.
+fn link_path(target: &str) -> String {
+    let raw = target.split('#').next().unwrap_or_default().trim();
+    percent_decode(raw).unwrap_or_else(|| raw.to_owned())
+}
+
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = text.get(index + 1..index + 3)?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn folder_of(path: &str) -> &str {
+    path.rfind('/').map_or("", |cut| &path[..cut])
+}
+
+/// `path` joined onto `folder` with `.` and `..` resolved, or `None` when
+/// it leaves the workspace.
+fn join_path(folder: &str, path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = folder.split('/').filter(|part| !part.is_empty()).collect();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            segment => parts.push(segment),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Whether the last part of `path` has an extension of up to 8 letters
+/// and digits.
+fn has_extension(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.rfind('.').is_some_and(|dot| {
+        let extension = &name[dot + 1..];
+        (1..=8).contains(&extension.len()) && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
+    })
+}
+
+/// Whether `path` starts with a URL scheme, as `https:` or `mailto:` do.
+fn has_scheme(path: &str) -> bool {
+    let Some(colon) = path.find(':') else {
+        return false;
+    };
+    let scheme = &path[..colon];
+    scheme
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '-'))
+}
+
+/// The paths a link to `candidate` may mean: `candidate` and
+/// `candidate.md`, the one with an extension first.
+fn variants(candidate: &str) -> [String; 2] {
+    let with_md = format!("{candidate}.md");
+    if has_extension(candidate) {
+        [candidate.to_owned(), with_md]
+    } else {
+        [with_md, candidate.to_owned()]
+    }
+}
+
+/// The file in `files` that `target`, written in the note at `source`,
+/// leads to.
+pub(crate) fn resolve_link_path(source: &str, target: &str, files: &LinkIndex) -> Option<String> {
+    let path = link_path(target);
+    if path.is_empty() || has_scheme(&path) {
+        return None;
+    }
+    let known = |candidate: &str| files.paths.contains(candidate);
+    let source_folder = folder_of(source);
+    let direct = if path.starts_with('/') {
+        vec![join_path("", &path)]
+    } else {
+        vec![join_path(source_folder, &path), join_path("", &path)]
+    };
+    for candidate in direct.into_iter().flatten() {
+        if let Some(found) = variants(&candidate)
+            .into_iter()
+            .find(|variant| known(variant))
+        {
+            return Some(found);
+        }
+    }
+    let wanted = variants(path.trim_start_matches('/')).map(|variant| variant.to_lowercase());
+    wanted
+        .iter()
+        .filter_map(|variant| {
+            files
+                .by_name
+                .get(variant.rsplit('/').next().unwrap_or(variant))
+        })
+        .flatten()
+        .filter(|file| {
+            let lower = file.to_lowercase();
+            wanted
+                .iter()
+                .any(|variant| lower == *variant || lower.ends_with(&format!("/{variant}")))
+        })
+        .min_by(|left, right| {
+            let rank = |file: &str| usize::from(folder_of(file) != source_folder);
+            rank(left)
+                .cmp(&rank(right))
+                .then(left.split('/').count().cmp(&right.split('/').count()))
+                .then(left.to_lowercase().cmp(&right.to_lowercase()))
+                .then(left.cmp(right))
+        })
+        .cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_extension, join_path, link_path};
+
+    #[test]
+    fn paths_leave_headings_and_decode_spaces() {
+        assert_eq!(link_path("Old%20notes.md#Top"), "Old notes.md");
+        assert_eq!(link_path("100%"), "100%");
+        assert_eq!(link_path("  Plan  "), "Plan");
+    }
+
+    #[test]
+    fn joining_never_climbs_out_of_the_workspace() {
+        assert_eq!(join_path("a/b", "../c").as_deref(), Some("a/c"));
+        assert_eq!(join_path("a", "../../c"), None);
+        assert_eq!(join_path("", "./x/./y").as_deref(), Some("x/y"));
+    }
+
+    #[test]
+    fn extensions_are_short_letters_and_digits() {
+        assert!(has_extension("a/diagram.png"));
+        assert!(has_extension("x.markdown"));
+        assert!(!has_extension("v1.2 notes"));
+        assert!(!has_extension("folder.d/Plan"));
+    }
+}

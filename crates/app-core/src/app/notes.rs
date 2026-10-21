@@ -11,6 +11,7 @@ use super::{App, Change, Job};
 use crate::{
     AppError, TabId,
     files::remap,
+    links::NoteLinks,
     notes::{Finished, NoteSession, NoteSync, PropertyValue, SaveProblem, is_markdown},
 };
 
@@ -65,6 +66,18 @@ impl App {
     /// Noura could read.
     pub fn note(&self, tab: TabId) -> Option<&NoteSession> {
         self.notes.sessions.get(&tab)
+    }
+
+    /// What the links and embeds in the note in the tab `tab` lead to, for
+    /// its editor to ask as it draws them.
+    pub fn note_links(&self, tab: TabId) -> Option<NoteLinks> {
+        let note = self.notes.sessions.get(&tab)?;
+        let workspace = self.workspace.as_ref()?;
+        Some(NoteLinks::new(
+            note.relative_path(),
+            self.session.link_files.clone(),
+            workspace.shared_engine(),
+        ))
     }
 
     /// Why the Markdown file in the tab `tab` couldn't open in the editor.

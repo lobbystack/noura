@@ -8,6 +8,7 @@ use comrak::nodes::{AstNode, NodeValue};
 
 use crate::doc::MdDoc;
 use crate::offset_types::{Grapheme, RangeExt as _};
+use crate::resolvers::LinkState;
 use crate::spans::SpanKind;
 
 /// A kind of construct the editor draws in place.
@@ -41,6 +42,17 @@ pub enum ConstructKind {
     BlockId,
     /// `<u>text</u>`, drawn underlined.
     Underline,
+    /// `[[target#heading|alias]]`, drawn as its alias or its target.
+    WikiLink,
+}
+
+/// Where a construct leads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstructLink {
+    /// The target as written, heading included, alias left out.
+    pub target: String,
+    /// Whether the embedding app found what the target names.
+    pub exists: bool,
 }
 
 /// One construct in the note.
@@ -57,6 +69,8 @@ pub struct Construct {
     /// What the editor draws in place of the hidden syntax, such as a
     /// callout's type.
     pub label: Option<String>,
+    /// Where a wikilink or an embed leads, as the embedding app answers.
+    pub link: Option<ConstructLink>,
     /// Whether the syntax shows, because the caret, the selection, a find
     /// match or a search preview reaches into the construct.
     pub revealed: bool,
@@ -85,6 +99,7 @@ impl MdDoc {
                 range: span.range,
                 syntax: span.syntax.clone(),
                 label: None,
+                link: None,
                 revealed: self.span_revealed(span),
             })
         }));
@@ -105,6 +120,7 @@ impl MdDoc {
         };
         let marker = || self.prefix_range(node).into_iter().collect::<Vec<_>>();
         let mut label = None;
+        let mut link = None;
         let (kind, syntax, revealed) = match value {
             NodeValue::Heading(heading) if !heading.setext => (
                 ConstructKind::Heading {
@@ -136,6 +152,16 @@ impl MdDoc {
             NodeValue::Highlight => (ConstructKind::Highlight, edges(), self.node_revealed(node)),
             NodeValue::Code(_) => (ConstructKind::InlineCode, edges(), self.node_revealed(node)),
             NodeValue::Link(_) => (ConstructKind::Link, edges(), self.node_revealed(node)),
+            NodeValue::WikiLink(wikilink) => {
+                link = Some(ConstructLink {
+                    exists: !matches!(
+                        self.link_state_for_wikilink(&wikilink.url),
+                        LinkState::Broken { .. }
+                    ),
+                    target: wikilink.url.clone(),
+                });
+                (ConstructKind::WikiLink, edges(), self.node_revealed(node))
+            }
             NodeValue::Item(_) => (ConstructKind::ListItem, marker(), self.reveal(node)),
             NodeValue::TaskItem(task) => (
                 ConstructKind::TaskItem {
@@ -175,6 +201,7 @@ impl MdDoc {
             range,
             syntax,
             label,
+            link,
             revealed,
         })
     }

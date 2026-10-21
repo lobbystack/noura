@@ -45,6 +45,9 @@ struct OpenNote {
     /// tree, leaves the keyboard where it was. A click puts the caret in
     /// the text.
     give_focus_back: Option<Id>,
+    /// The note path the editor's links resolve from, which a rename
+    /// changes.
+    links_source: Option<String>,
 }
 
 impl NoteView {
@@ -235,8 +238,18 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             } else {
                 ui.memory(|memory| memory.focused())
             },
+            links_source: None,
         }
     });
+    // Links resolve from the note's path, so a renamed or moved note
+    // resolves them from where it is now.
+    if let Some(links) = app.note_links(tab)
+        && note.links_source.as_deref() != Some(links.source())
+    {
+        note.links_source = Some(links.source().to_owned());
+        note.editor
+            .set_link_resolver(Box::new(crate::note_links::WorkspaceLinks(links)));
+    }
     // A save brought the file in line with the editor, or merged an edit
     // made outside Noura.
     if let Some(sync) = app.take_note_sync(tab) {

@@ -21,6 +21,7 @@ use local_core::ChangeCounts;
 use crate::{
     FileTree, PendingWrites, Preferences, Problem, System, Updates, Workspace, WorkspaceService,
     app::{Change, Listeners},
+    links::LinkFiles,
     plugins::Plugins,
     view_state::{StoredView, StoredWindow, ViewStore},
     watch::{Rescans, Snapshot, Update, Watch},
@@ -44,6 +45,9 @@ pub(crate) struct Session {
     pub(crate) updates: Updates,
     /// How often the watch thread walks the whole workspace.
     rescans: Rescans,
+    /// The files of the open workspace's newest listing, which the links
+    /// in its notes resolve against.
+    pub(crate) link_files: LinkFiles,
     state: Mutex<State>,
     /// Held apart from `state`, so a plugin call never blocks a window
     /// that only reads the session.
@@ -186,6 +190,7 @@ impl Session {
             writes,
             updates,
             rescans,
+            link_files: LinkFiles::default(),
             state: Mutex::new(State {
                 workspace: None,
                 opening: 0,
@@ -311,6 +316,7 @@ impl Session {
         state.opening += 1;
         state.listing += 1;
         state.tree = Some(tree.clone());
+        self.link_files.list(tree);
         state.problems.clone_from(&snapshot.problems);
         state.recent.clone_from(&snapshot.recent);
         state.counts = counts;
@@ -383,6 +389,7 @@ impl Session {
         let newest = !counts.is_before(state.counts);
         if newest {
             state.tree = Some(tree.clone());
+            self.link_files.list(tree);
             state.problems.clone_from(&snapshot.problems);
             state.recent.clone_from(&snapshot.recent);
             state.counts = counts;
@@ -445,6 +452,7 @@ impl Session {
         }
         if !update.counts.is_before(state.counts) {
             state.listing += 1;
+            self.link_files.list(&update.tree);
             state.tree = Some(update.tree);
             state.problems = update.snapshot.problems;
             state.recent = update.snapshot.recent;
