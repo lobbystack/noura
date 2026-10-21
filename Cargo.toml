@@ -123,3 +123,7 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# Dependencies build without debug info to keep each worktree's build output small.
+[profile.dev.package."*"]
+debug = false
