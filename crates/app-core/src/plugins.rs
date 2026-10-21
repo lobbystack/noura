@@ -751,6 +751,8 @@ impl Plugins {
         {
             tracing::warn!(%error, "a plugin failed to handle a press");
         }
+        // The press may have written objects whose panels show.
+        running.panels.clear();
         running.render_all();
         self.changed();
     }
