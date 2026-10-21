@@ -22,9 +22,11 @@ mod login;
 mod menus;
 mod operations;
 mod preferences;
+mod quick_open;
 mod rail;
 mod recents;
 mod saves;
+mod search;
 mod settings;
 mod store;
 mod system;
@@ -33,8 +35,8 @@ mod view_state;
 mod workspace;
 
 pub use app::{
-    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Question, Rename,
-    Screen,
+    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Palette, PaletteMode,
+    Question, QuickOpen, Rename, Screen, Search,
 };
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
@@ -51,9 +53,11 @@ pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use operations::Imported;
 pub use preferences::{ACTUAL_SIZE, Appearance, Preferences, TextSize, ZOOM_LEVELS};
+pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use saves::{NoPendingSaves, PendingSaves};
+pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
 pub use settings::{
     ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection, VERSION,
     settings_section,

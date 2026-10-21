@@ -315,6 +315,14 @@ impl FileTree {
             .filter(|node| node.kind == EntryKind::File)
     }
 
+    /// Every file's workspace path, in no particular order.
+    pub(crate) fn file_paths(&self) -> impl Iterator<Item = &str> {
+        self.nodes
+            .iter()
+            .filter(|node| node.kind == EntryKind::File)
+            .map(|node| node.relative_path.as_str())
+    }
+
     /// The stable ID of the managed object at `relative_path`.
     pub(crate) fn object_id(&self, relative_path: &str) -> Option<&str> {
         self.file(relative_path)?.object_id.as_deref()
@@ -892,7 +900,7 @@ pub(crate) fn shown_name(file_name: &str, kind: EntryKind) -> String {
 
 /// A name folded for sorting: lowercase and without accents, so "Émile"
 /// sorts with "emile", as the legacy app's base-sensitivity collator does.
-fn sort_key(name: &str) -> String {
+pub(crate) fn sort_key(name: &str) -> String {
     name.nfd()
         .filter(|character| !is_combining_mark(*character))
         .flat_map(char::to_lowercase)

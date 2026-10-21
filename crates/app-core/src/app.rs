@@ -16,12 +16,13 @@ use crate::{
     AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
     PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
     WorkspaceService, commands::Registry, layout::LayoutStore, preferences::PreferencesStore,
-    rail::Rail, settings::kernel_sections, tabs::Tabs, view_state::ViewStore,
+    rail::Rail, search::Searcher, settings::kernel_sections, tabs::Tabs, view_state::ViewStore,
 };
 
 mod commands;
 mod drops;
 mod file_actions;
+mod finder;
 mod ignored_files;
 mod palette;
 mod preferences;
@@ -30,8 +31,9 @@ mod view;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
+pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
-pub use palette::CommandPalette;
+pub use palette::{CommandPalette, Palette, PaletteMode};
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +87,7 @@ pub enum Change {
     Preferences,
     /// A command registered.
     Commands,
-    /// The command palette opened, closed or changed.
+    /// The palette opened, closed, or changed what it shows.
     Palette,
     /// Close Window or Quit ran; see [`App::take_close_window`] and
     /// [`App::take_quit`].
@@ -143,7 +145,8 @@ pub struct App {
     system: Arc<dyn System>,
     screen: Screen,
     recents: Vec<RecentWorkspace>,
-    workspace: Option<Workspace>,
+    /// The open workspace, which background searches share.
+    workspace: Option<Arc<Workspace>>,
     tree: Option<FileTree>,
     tabs: Tabs,
     rail: Rail,
@@ -182,7 +185,9 @@ pub struct App {
     /// tree moves it instead of copying it.
     dragged_out: Option<String>,
     registry: Registry,
-    palette: Option<CommandPalette>,
+    /// Commands, quick open or search, while the palette is open.
+    palette: Option<Palette>,
+    searcher: Searcher,
     /// Close Window ran and the window hasn't closed yet.
     close_window: bool,
     /// Quit ran and the app hasn't closed yet.
@@ -207,6 +212,8 @@ impl App {
             system.clone(),
         ));
         let recents = service.recents();
+        let listeners = Listeners::default();
+        let answered = listeners.clone();
         let mut app = Self {
             service,
             system,
@@ -231,12 +238,13 @@ impl App {
             pending_trash: None,
             failed_restore: None,
             pending: None,
-            listeners: Listeners::default(),
+            listeners,
             pending_saves: Arc::new(NoPendingSaves),
             drag_out: None,
             dragged_out: None,
             registry: Registry::default(),
             palette: None,
+            searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
             close_window: false,
             quit: false,
         };
@@ -275,7 +283,7 @@ impl App {
     }
 
     pub fn workspace(&self) -> Option<&Workspace> {
-        self.workspace.as_ref()
+        self.workspace.as_deref()
     }
 
     pub fn tree(&self) -> Option<&FileTree> {
@@ -378,6 +386,12 @@ impl App {
 
     /// Apply finished background work. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
+        let searched = self.take_search_answer();
+        self.take_opened() || searched
+    }
+
+    /// Take the workspace a background job opened, or why it couldn't.
+    fn take_opened(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };
@@ -399,6 +413,7 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
+                self.close_palette();
                 self.restore_view();
                 self.renaming = None;
                 self.ignored_files = None;
@@ -426,7 +441,8 @@ impl App {
 
     fn adopt(&mut self, opened: Opened) {
         self.failed_restore = None;
-        self.workspace = Some(opened.workspace);
+        self.close_palette();
+        self.workspace = Some(Arc::new(opened.workspace));
         self.tree = Some(opened.tree);
         self.restore_view();
         self.notice = None;

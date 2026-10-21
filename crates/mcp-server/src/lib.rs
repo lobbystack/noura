@@ -108,9 +108,8 @@ impl NouraMcp {
         let values = self.with_engine(|engine| {
             engine.search(&SearchInput {
                 query: input.query,
-                object_type: None,
-                path_prefix: None,
                 limit: input.limit,
+                ..SearchInput::default()
             })
         })?;
         serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
@@ -623,9 +622,7 @@ mod tests {
         let search = app_engine
             .search(&SearchInput {
                 query: "MCP".into(),
-                object_type: None,
-                path_prefix: None,
-                limit: None,
+                ..SearchInput::default()
             })
             .unwrap();
         assert_eq!(search.len(), 2);

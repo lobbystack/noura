@@ -91,7 +91,7 @@ fn registering_a_command_with_a_taken_shortcut_fails() {
         "shortcut_taken"
     );
 
-    // Mod-O belongs to Quick Open, even before ticket 14 registers it.
+    // Mod-O belongs to Quick Open.
     let (command, runs) = counting("test.count", "Count");
     let reserved = command.with_shortcuts([Shortcut::command(Key::O)]);
     assert_eq!(
