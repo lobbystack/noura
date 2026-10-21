@@ -190,6 +190,7 @@ fn every_section_and_control_carries_a_label() {
         "Editor",
         "Keyboard shortcuts",
         "Name and location",
+        "Plugins",
         "About Noura",
     ] {
         choose_section(&mut harness, title);

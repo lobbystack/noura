@@ -378,7 +378,10 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
         plugins::texts(app, HELLO_PAGE) == Ok(vec!["Probe is running.".to_owned()])
     });
     assert_eq!(app.current_page(), HELLO_PAGE);
-    assert_eq!(rail_titles(&app), ["Files", "Probe", "Workspace"]);
+    assert_eq!(
+        rail_titles(&app),
+        ["Files", "Probe", "Workspace", "Markdown", "Broken"]
+    );
     assert_eq!(app.active_tab().unwrap().title(), "Probe");
 }
 

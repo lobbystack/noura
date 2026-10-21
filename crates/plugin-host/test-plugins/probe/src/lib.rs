@@ -7,19 +7,23 @@
 //!   may read.
 //! - `read-file:<path>`: read a file.
 //! - `read-object:<id>`: read an object by its stable ID.
+//! - `markdown`: a Markdown node with a heading, emphasis, a link, a
+//!   list and a remote image.
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
 //! - `events`: the events the plugin received, oldest first.
 //! - anything else: a panel with a line of text and a button.
 //!
-//! Its pages are `hello`, titled Probe, and `workspace`. The first shares
-//! the hello plugin's page ID, so a test can swap one build for the other
-//! under an open page.
+//! Its pages are `hello`, titled Probe, `workspace`, `markdown` and
+//! `nodes:cycle`, titled Broken. The first shares the hello plugin's page
+//! ID, so a test can swap one build for the other under an open page.
 
 use std::sync::Mutex;
 
 use plugin_sdk::{Error, Event, Node, NodeKind, Page, Plugin, View, workspace};
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+const MARKDOWN: &str = "# Tomatoes\n\nGrow **tomatoes** in *full sun*. Read [the guide](https://example.com/guide).\n\n![A ripe tomato](https://example.com/tomato.png)\n\n- Water daily\n- Pick when red\n";
 
 struct Probe;
 
@@ -34,12 +38,25 @@ impl Plugin for Probe {
                 id: "workspace".into(),
                 title: "Workspace".into(),
             },
+            Page {
+                id: "markdown".into(),
+                title: "Markdown".into(),
+            },
+            Page {
+                id: "nodes:cycle".into(),
+                title: "Broken".into(),
+            },
         ]
     }
 
     fn render(page: String) -> Vec<Node> {
         if let Some(case) = page.strip_prefix("nodes:") {
             return broken(case);
+        }
+        if page == "markdown" {
+            let mut view = View::panel("root", Some("Markdown"));
+            view.markdown(View::ROOT, "notes", MARKDOWN);
+            return view.into_nodes();
         }
         let lines = if page == "list" {
             list()

@@ -74,9 +74,15 @@ jobs:
       - name: Build the trial S7 plugins
         shell: bash
         run: bash crates/plugin-host/trial/build-plugins.sh
+      # The hello plugin and plugin-host's test plugins, which the plugin
+      # tests in plugin-host, app-core and app-ui load.
+      - name: Build the plugins
+        shell: bash
+        run: bash crates/plugin-sdk/build-plugins.sh
       - run: cargo test --workspace --locked
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
+          NOURA_REQUIRE_PLUGINS: '1'
       # A report, not a gate: each checkpoint enforces the budget on the
       # owner's Mac.
       - name: Report the file tree's frame times

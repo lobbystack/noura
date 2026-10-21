@@ -308,6 +308,7 @@ name = "app-ui"
 version = "0.2.0"
 dependencies = [
  "app-core",
+ "comrak",
  "egui",
  "egui_kittest",
  "rusqlite",

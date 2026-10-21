@@ -5,7 +5,7 @@
 //! `cdylib` crate built for `wasm32-wasip2` that implements [`Plugin`] and
 //! names its type once with [`export!`]:
 //!
-//! ```ignore
+//! ```
 //! use plugin_sdk::{Event, Node, Page, Plugin, View};
 //!
 //! struct Hello;
