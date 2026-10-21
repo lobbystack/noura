@@ -87,15 +87,12 @@ pub(crate) fn command_for_key(
 
 impl<'ast> MdEdit {
     /// The edit a shortcut makes, or `None` when it makes none here. Tab
-    /// and Shift-Tab outside a list move the keyboard to the next or
-    /// previous control instead. Find belongs to the [`crate::Editor`].
+    /// and Shift-Tab outside a list, or in a read-only note, move the
+    /// keyboard to the next or previous control instead. Find belongs to
+    /// the [`crate::Editor`].
     fn shortcut_event(&mut self, command: keymap::Command) -> Option<Event> {
-        if self.renderer.readonly {
-            return None;
-        }
-        if matches!(command, keymap::Command::Indent | keymap::Command::Outdent)
-            && !self.renderer.tab_indents()
-        {
+        let tab = matches!(command, keymap::Command::Indent | keymap::Command::Outdent);
+        if tab && (self.renderer.readonly || !self.renderer.tab_indents()) {
             let direction = if command == keymap::Command::Indent {
                 egui::FocusDirection::Next
             } else {
@@ -104,6 +101,9 @@ impl<'ast> MdEdit {
             self.renderer
                 .ctx
                 .memory_mut(|memory| memory.move_focus(direction));
+            return None;
+        }
+        if self.renderer.readonly {
             return None;
         }
         command.event()
