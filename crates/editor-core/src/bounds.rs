@@ -65,6 +65,10 @@ pub struct Bounds {
     /// Obsidian-style syntax found in text, sorted by range: callout
     /// markers and titles, comments, tags, block IDs and underlines.
     pub spans: Vec<crate::spans::InlineSpan>,
+
+    /// The frontmatter the note starts with, delimiters included, when it
+    /// closes within the lookahead.
+    pub frontmatter: Option<(Grapheme, Grapheme)>,
 }
 
 /// Tag + hidden-contents ranges of one actively folded section. Both act
@@ -105,6 +109,7 @@ impl Default for Bounds {
             folds: Vec::default(),
             images: Vec::default(),
             spans: Vec::default(),
+            frontmatter: None,
         }
     }
 }

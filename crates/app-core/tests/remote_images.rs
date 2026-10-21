@@ -149,15 +149,9 @@ fn opening_a_note_sends_no_request_and_load_image_fetches_once() {
 
     links.load_remote_image(&url, || {});
     links.load_remote_image(&url, || {});
-    assert_eq!(
-        finished(&links, &url),
-        png()
-    );
+    assert_eq!(finished(&links, &url), png());
     links.load_remote_image(&url, || {});
-    assert_eq!(
-        finished(&links, &url),
-        png()
-    );
+    assert_eq!(finished(&links, &url), png());
     assert_eq!(server.requests(), 1, "one load, one request");
 }
 
@@ -177,10 +171,7 @@ fn a_failed_load_can_be_tried_again() {
     ));
 
     links.load_remote_image(&url, || {});
-    assert_eq!(
-        finished(&links, &url),
-        png()
-    );
+    assert_eq!(finished(&links, &url), png());
     assert_eq!(server.requests(), 2);
 }
 

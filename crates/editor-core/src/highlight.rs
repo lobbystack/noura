@@ -25,6 +25,9 @@ pub enum CodeStyle {
     Comment,
 }
 
+/// A highlighted piece of code: its range in the note and its style.
+pub type CodeHighlight = ((Grapheme, Grapheme), CodeStyle);
+
 /// The style a tree-sitter capture name draws in, by the part before its
 /// first dot, as in `function.method`.
 fn style(capture: &str) -> Option<CodeStyle> {
@@ -84,7 +87,7 @@ fn styles(language: &str, code: &str) -> Option<Vec<Option<CodeStyle>>> {
 #[derive(Default)]
 pub struct HighlightCache {
     text_seq: u64,
-    blocks: HashMap<(Grapheme, Grapheme), Vec<((Grapheme, Grapheme), CodeStyle)>>,
+    blocks: HashMap<(Grapheme, Grapheme), Vec<CodeHighlight>>,
 }
 
 impl<'ast> MdDoc {
@@ -94,7 +97,7 @@ impl<'ast> MdDoc {
         &self,
         node: &'ast AstNode<'ast>,
         code_block: &NodeCodeBlock,
-    ) -> Vec<((Grapheme, Grapheme), CodeStyle)> {
+    ) -> Vec<CodeHighlight> {
         let range = self.node_range(node);
         let mut cache = self.highlight_cache.borrow_mut();
         if cache.text_seq != self.text_seq {
@@ -112,9 +115,9 @@ impl<'ast> MdDoc {
         &self,
         node: &'ast AstNode<'ast>,
         code_block: &NodeCodeBlock,
-    ) -> Vec<((Grapheme, Grapheme), CodeStyle)> {
+    ) -> Vec<CodeHighlight> {
         // Frontmatter shown in the text is YAML.
-        let language = if self.frontmatter_range() == Some(self.node_range(node)) {
+        let language = if self.bounds.frontmatter == Some(self.node_range(node)) {
             "yaml"
         } else {
             code_block.info.split_whitespace().next().unwrap_or("")
@@ -172,7 +175,7 @@ impl<'ast> MdDoc {
     }
 
     /// Every highlighted piece of code in the note, in order.
-    pub fn code_highlights(&mut self) -> Vec<((Grapheme, Grapheme), CodeStyle)> {
+    pub fn code_highlights(&mut self) -> Vec<CodeHighlight> {
         let arena = Arena::new();
         let root = self.reparse(&arena);
         root.descendants()

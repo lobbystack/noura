@@ -74,6 +74,10 @@ type Found = (
     Vec<std::ops::Range<usize>>,
 );
 
+/// A line of an inline container's text, with the whole source line it
+/// sits on, which a table cell shares with other cells.
+type ContainerLine = ((Grapheme, Grapheme), Option<(Grapheme, Grapheme)>);
+
 /// Whether `ch` can be part of a tag.
 fn tag_char(ch: char) -> bool {
     ch.is_alphabetic() || ch.is_numeric() || matches!(ch, '_' | '/' | '-')
@@ -192,7 +196,7 @@ fn embeds(text: &str) -> Vec<Found> {
                 alone: false,
             }
         };
-        found.push((kind, start..end, vec![start..end]));
+        found.push((kind, start..end, std::iter::once(start..end).collect()));
         from = end;
     }
     found
@@ -201,7 +205,13 @@ fn embeds(text: &str) -> Vec<Found> {
 fn comments(text: &str) -> Vec<Found> {
     pairs(text, "%%", "%%")
         .into_iter()
-        .map(|(start, end)| (SpanKind::Comment, start..end, vec![start..end]))
+        .map(|(start, end)| {
+            (
+                SpanKind::Comment,
+                start..end,
+                std::iter::once(start..end).collect(),
+            )
+        })
         .collect()
 }
 
@@ -272,7 +282,7 @@ impl<'ast> MdDoc {
             .collect();
         // Each line of the container's text, with the whole source line it
         // sits on. A table cell shares its line with other cells.
-        let lines: Vec<((Grapheme, Grapheme), Option<(Grapheme, Grapheme)>)> =
+        let lines: Vec<ContainerLine> =
             if matches!(container.data.borrow().value, NodeValue::TableCell) {
                 vec![(self.node_range(container), None)]
             } else {

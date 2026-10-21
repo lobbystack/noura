@@ -263,7 +263,7 @@ impl MdDoc {
             // Frontmatter shown in the text parses as a fenced code block
             // (see `crate::lookahead`); its syntax is its delimiters.
             NodeValue::CodeBlock(code_block)
-                if code_block.fenced && self.frontmatter_range() == Some(range) =>
+                if code_block.fenced && self.bounds.frontmatter == Some(range) =>
             {
                 (
                     ConstructKind::Frontmatter,

@@ -74,6 +74,7 @@ pub use links::{
     EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, MAX_IMAGE_BYTES, NoteEmbed, NoteImage, NoteLinks,
     is_image,
 };
+pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
@@ -90,7 +91,6 @@ pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
-pub use local_core::RemoteImage;
 pub use remote_images::RemoteImageState;
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
