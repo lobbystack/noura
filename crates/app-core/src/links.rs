@@ -14,6 +14,7 @@ use local_core::WorkspaceEngine;
 
 use crate::FileTree;
 use crate::remote_images::{RemoteImageState, RemoteImages};
+use crate::watch::Snapshot;
 
 /// How much of an embedded note's text an embed shows, in characters.
 pub const EMBED_PREVIEW_CHARS: usize = 800;
@@ -23,25 +24,44 @@ pub const EMBED_PREVIEW_CHARS: usize = 800;
 /// after it.
 const EMBED_READ_BYTES: usize = 256 * 1024 + 4 * EMBED_PREVIEW_CHARS;
 
-/// The open workspace's files as its newest listing shows them. The
-/// session updates it with each listing, and every note's links read it.
+/// The open workspace's files as its newest listing shows them, and what
+/// the notes embedded so far show. The session updates it with each
+/// listing, and every note's links read it.
 #[derive(Clone, Default)]
-pub(crate) struct LinkFiles(Arc<RwLock<Arc<LinkIndex>>>);
+pub(crate) struct LinkFiles {
+    index: Arc<RwLock<Arc<LinkIndex>>>,
+    embeds: Arc<Embeds>,
+}
 
 impl LinkFiles {
-    /// Take the files `tree` lists.
-    pub(crate) fn list(&self, tree: &FileTree) {
+    /// Take the files `tree` lists, whose revisions `snapshot` holds.
+    pub(crate) fn list(&self, tree: &FileTree, snapshot: &Snapshot) {
         let mut current = self
-            .0
+            .index
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut index = LinkIndex::new(tree.file_paths());
         index.seq = current.seq + 1;
+        index.revisions = snapshot
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let revision = entry.revision.clone()?;
+                Some((entry.relative_path.clone(), revision))
+            })
+            .collect();
+        // A note that left the workspace takes what its embeds showed
+        // with it.
+        self.embeds
+            .notes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|path, _| index.paths.contains(path));
         *current = Arc::new(index);
     }
 
     fn get(&self) -> Arc<LinkIndex> {
-        self.0
+        self.index
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -49,20 +69,15 @@ impl LinkFiles {
 }
 
 /// The workspace's files, by path and by lowercase file name, so a note
-/// with many links resolves them quickly in a large workspace, with the
-/// notes embedded since this listing.
+/// with many links resolves them quickly in a large workspace.
 #[derive(Default)]
 pub(crate) struct LinkIndex {
     /// Counts the listings so far.
     seq: u64,
     paths: HashSet<String>,
     by_name: HashMap<String, Vec<String>>,
-    /// What each note embedded since this listing shows, or `None` while
-    /// its read runs. A change to any file makes a new listing, which
-    /// starts over.
-    embeds: Mutex<HashMap<String, Option<Option<NoteEmbed>>>>,
-    /// Counts the embed reads finished since this listing.
-    embeds_read: AtomicU64,
+    /// Each indexed file's revision.
+    revisions: HashMap<String, String>,
 }
 
 impl LinkIndex {
@@ -75,6 +90,42 @@ impl LinkIndex {
         }
         index
     }
+
+    /// Which version of the file at `path` this listing shows: its
+    /// revision, or for a file without one, the listing itself.
+    fn version(&self, path: &str) -> Version {
+        match self.revisions.get(path) {
+            Some(revision) => Version::Revision(revision.clone()),
+            None => Version::Listing(self.seq),
+        }
+    }
+}
+
+/// A version of a file, as a listing shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Version {
+    Revision(String),
+    /// A file without a revision counts as changed in every listing.
+    Listing(u64),
+}
+
+/// What the notes embedded so far show, kept across listings.
+#[derive(Default)]
+struct Embeds {
+    notes: Mutex<HashMap<String, EmbedRead>>,
+    /// Counts the reads finished so far.
+    read: AtomicU64,
+}
+
+/// What an embed of one note shows, and which version of the note it read.
+struct EmbedRead {
+    /// The version the newest read started on.
+    version: Version,
+    /// `None` until the first read ends, then what the newest read found:
+    /// `None` inside when the note couldn't be read.
+    shown: Option<Option<NoteEmbed>>,
+    /// A read runs on another thread.
+    reading: bool,
 }
 
 /// The largest workspace image a note draws, in bytes, as today's app.
@@ -94,11 +145,22 @@ pub fn is_image(path: &str) -> bool {
     })
 }
 
-/// A workspace image a note draws: its path and its bytes.
+/// A workspace image a note draws: its path, its bytes and their version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteImage {
     pub path: String,
     pub bytes: Vec<u8>,
+    pub version: ImageVersion,
+}
+
+/// Which file an image link led to and which version of it: its path, its
+/// size and its modification time. A note reads an image again only when
+/// this changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageVersion {
+    path: String,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 /// The path from the folder of the note at `source` to the workspace
@@ -202,7 +264,7 @@ impl NoteLinks {
 
     /// Changes whenever an embedded note's read finishes.
     pub fn embeds_seq(&self) -> u64 {
-        self.files.get().embeds_read.load(Ordering::SeqCst)
+        self.files.embeds.read.load(Ordering::SeqCst)
     }
 
     /// The workspace file `target` leads to, or `None` when it names no
@@ -213,10 +275,12 @@ impl NoteLinks {
 
     /// What an `![[target]]` embed shows when `target` names a Markdown
     /// note, or `None` when it names anything else or nothing, or the note
-    /// can't be read. The first ask after each listing starts a read of the
-    /// note's start on another thread and answers
-    /// [`Reading`](NoteEmbedState::Reading); `read` runs when that read
-    /// ends. Embedding writes nothing.
+    /// can't be read. The first ask starts a read of the note's start on
+    /// another thread and answers [`Reading`](NoteEmbedState::Reading)
+    /// until it ends; `read` runs when that read ends. Once the note's
+    /// revision changes in a newer listing, the next ask reads it again and
+    /// answers what the last read found until the new one ends. Embedding
+    /// writes nothing.
     pub fn embed(
         &self,
         target: &str,
@@ -227,35 +291,65 @@ impl NoteLinks {
         if !crate::notes::is_markdown(&path) {
             return None;
         }
-        let mut embeds = index
-            .embeds
+        let version = index.version(&path);
+        let embeds = Arc::clone(&self.files.embeds);
+        let mut notes = embeds
+            .notes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match embeds.get(&path) {
-            Some(Some(embed)) => return embed.clone().map(NoteEmbedState::Read),
-            Some(None) => {
-                return Some(NoteEmbedState::Reading {
-                    title: embed_title(&path),
-                });
-            }
-            None => {}
-        }
-        embeds.insert(path.clone(), None);
-        drop(embeds);
-        let title = embed_title(&path);
-        let links = self.clone();
-        let index = Arc::clone(&index);
-        std::thread::spawn(move || {
-            let embed = links.read_embed(&path);
-            index
-                .embeds
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(path, Some(embed));
-            index.embeds_read.fetch_add(1, Ordering::SeqCst);
-            read();
+        let note = notes.entry(path.clone()).or_insert_with(|| EmbedRead {
+            version: version.clone(),
+            shown: None,
+            reading: false,
         });
-        Some(NoteEmbedState::Reading { title })
+        let unread = note.shown.is_none() && !note.reading;
+        if unread || (note.version != version && !note.reading) {
+            note.version = version;
+            note.reading = true;
+            let links = self.clone();
+            let embeds = Arc::clone(&embeds);
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let embed = links.read_embed(&path);
+                if let Some(note) = embeds
+                    .notes
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_mut(&path)
+                {
+                    note.shown = Some(embed);
+                    note.reading = false;
+                }
+                embeds.read.fetch_add(1, Ordering::SeqCst);
+                read();
+            });
+        }
+        match &note.shown {
+            Some(shown) => shown.clone().map(NoteEmbedState::Read),
+            None => Some(NoteEmbedState::Reading {
+                title: embed_title(&path),
+            }),
+        }
+    }
+
+    /// Which version of the workspace image `target` names is on disk,
+    /// without reading it: `None` when it names no image in a format Noura
+    /// shows, or one Noura may not read, such as a file behind a symlink.
+    pub fn image_version(&self, target: &str) -> Option<ImageVersion> {
+        let path = self.resolve(target)?;
+        if !is_image(&path) {
+            return None;
+        }
+        let relative = relative_target(&self.source, &path);
+        let (found, len, modified) = self
+            .engine
+            .local_asset_version(&self.source, &relative)
+            .ok()?;
+        (found == path).then_some(ImageVersion {
+            path,
+            len,
+            modified,
+        })
     }
 
     /// The workspace image `target` names, read through the workspace's
@@ -263,16 +357,19 @@ impl NoteLinks {
     /// Noura shows, sits behind a symlink, can't be read or is larger than
     /// [`MAX_IMAGE_BYTES`].
     pub fn image(&self, target: &str) -> Option<NoteImage> {
-        let path = self.resolve(target)?;
-        if !is_image(&path) {
-            return None;
-        }
-        let relative = relative_target(&self.source, &path);
+        // The version comes first, so a write during the read makes the
+        // next version differ and the note read the image again.
+        let version = self.image_version(target)?;
+        let relative = relative_target(&self.source, &version.path);
         let (read, bytes) = self
             .engine
             .read_local_asset(&self.source, &relative, MAX_IMAGE_BYTES)
             .ok()?;
-        (read == path).then_some(NoteImage { path, bytes })
+        (read == version.path).then_some(NoteImage {
+            path: read,
+            bytes,
+            version,
+        })
     }
 
     fn read_embed(&self, path: &str) -> Option<NoteEmbed> {

@@ -236,3 +236,92 @@ fn an_embed_reads_its_note_on_another_thread_and_says_when_the_read_ends() {
         }))
     );
 }
+
+#[test]
+fn an_embed_keeps_what_it_shows_across_listings_and_reads_again_once_its_note_changes() {
+    let fixture = Fixture::new(FILES);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Inbox.md");
+    let links = app.note_links(tab).unwrap();
+    let old = embed(&links, "Old notes").expect("the note embeds");
+    assert_eq!(old.text, "Old\n");
+
+    // A listing after another file changed, as after a save of the note
+    // itself, shows the same text without reading the note again.
+    let listing = links.seq();
+    std::fs::write(fixture.root.join("Projects/Plan.md"), "Plan, revised\n").unwrap();
+    app.rescan();
+    settle(&mut app);
+    assert_ne!(links.seq(), listing);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    assert_eq!(
+        links.embed("Old notes", move || sender.send(()).unwrap()),
+        Some(app_core::NoteEmbedState::Read(old.clone()))
+    );
+    assert!(
+        receiver
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "the note was read again"
+    );
+
+    // Once the note changes, the embed shows its old text until the new
+    // read ends.
+    std::fs::write(fixture.root.join("Archive/2024/Old notes.md"), "New\n").unwrap();
+    app.rescan();
+    settle(&mut app);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    assert_eq!(
+        links.embed("Old notes", move || sender.send(()).unwrap()),
+        Some(app_core::NoteEmbedState::Read(old))
+    );
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the note is read again");
+    assert_eq!(
+        embed(&links, "Old notes").map(|embed| embed.text),
+        Some("New\n".into())
+    );
+}
+
+#[test]
+fn an_image_keeps_its_version_across_listings_until_its_file_changes() {
+    let fixture = Fixture::new(FILES);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Projects/Plan.md");
+    let links = app.note_links(tab).unwrap();
+    let image = links.image("Assets/diagram.png").expect("the image reads");
+    assert_eq!(
+        (image.path.as_str(), image.bytes.as_slice()),
+        ("Projects/Assets/diagram.png", &b"png"[..])
+    );
+    assert_eq!(
+        links.image_version("Assets/diagram.png"),
+        Some(image.version.clone())
+    );
+
+    std::fs::write(fixture.root.join("Inbox.md"), "# Inbox, revised\n").unwrap();
+    app.rescan();
+    settle(&mut app);
+    assert_eq!(
+        links.image_version("diagram.png"),
+        Some(image.version.clone())
+    );
+
+    std::fs::write(
+        fixture.root.join("Projects/Assets/diagram.png"),
+        b"a larger png",
+    )
+    .unwrap();
+    let changed = links
+        .image_version("Assets/diagram.png")
+        .expect("the image is still there");
+    assert_ne!(changed, image.version);
+    assert_eq!(
+        links.image("Assets/diagram.png").map(|image| image.version),
+        Some(changed)
+    );
+    for not_an_image in ["Inbox", "paper.pdf", "missing.png", "../../outside.png"] {
+        assert_eq!(links.image_version(not_an_image), None, "{not_an_image:?}");
+    }
+}

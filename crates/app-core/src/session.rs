@@ -320,7 +320,7 @@ impl Session {
         state.opening += 1;
         state.listing += 1;
         state.tree = Some(tree.clone());
-        self.link_files.list(tree);
+        self.link_files.list(tree, snapshot);
         state.problems.clone_from(&snapshot.problems);
         state.recent.clone_from(&snapshot.recent);
         state.counts = counts;
@@ -393,7 +393,7 @@ impl Session {
         let newest = !counts.is_before(state.counts);
         if newest {
             state.tree = Some(tree.clone());
-            self.link_files.list(tree);
+            self.link_files.list(tree, snapshot);
             state.problems.clone_from(&snapshot.problems);
             state.recent.clone_from(&snapshot.recent);
             state.counts = counts;
@@ -456,7 +456,7 @@ impl Session {
         }
         if !update.counts.is_before(state.counts) {
             state.listing += 1;
-            self.link_files.list(&update.tree);
+            self.link_files.list(&update.tree, &update.snapshot);
             state.tree = Some(update.tree);
             state.problems = update.snapshot.problems;
             state.recent = update.snapshot.recent;

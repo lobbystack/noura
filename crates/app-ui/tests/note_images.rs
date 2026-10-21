@@ -1,7 +1,7 @@
 //! Images in an open note through AccessKit: a workspace image draws in
-//! place, AVIF included, an SVG draws nothing from the files it names, and
-//! a remote image waits behind its Load image button, which offers a retry
-//! when the load fails.
+//! place, AVIF included, and keeps drawing while the note saves, an SVG
+//! draws nothing from the files it names, and a remote image waits behind
+//! its Load image button, which offers a retry when the load fails.
 
 mod support;
 
@@ -161,4 +161,44 @@ fn a_remote_image_waits_for_load_image_and_offers_a_retry_when_it_fails() {
         std::fs::read_to_string(folder.join("Plan.md")).unwrap(),
         note
     );
+}
+
+#[test]
+fn saving_the_note_leaves_its_images_drawn() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened_note(app_data.path(), &folder, "Intro\n\n![[pic.png]]\n");
+    wait_until(&mut harness, "the image drew at its size", |harness| {
+        drew_small(harness, "pic.png")
+    });
+    let listing = |harness: &Ui| {
+        let app = harness.state().app();
+        let tab = app.active_tab().expect("a tab is open").id();
+        app.note_links(tab).expect("the tab shows a note").seq()
+    };
+    let before = listing(&harness);
+
+    harness.event(egui::Event::Text("Typed. ".into()));
+    // The note saves after a pause, and the save lists the workspace's
+    // files again. Through all of it and for a while after, the image
+    // keeps its own size, where reading it again would draw the box it
+    // takes while it loads.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut listed = None;
+    while listed.is_none_or(|at: Instant| at.elapsed() < Duration::from_millis(500)) {
+        assert!(
+            Instant::now() < deadline,
+            "the save never showed in a listing"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        harness.step();
+        assert!(drew_small(&harness, "pic.png"), "the image loaded again");
+        let saved = std::fs::read_to_string(folder.join("Plan.md"))
+            .unwrap()
+            .contains("Typed. ");
+        if listed.is_none() && saved && listing(&harness) != before {
+            listed = Some(Instant::now());
+        }
+    }
 }

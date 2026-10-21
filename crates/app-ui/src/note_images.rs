@@ -3,13 +3,15 @@
 //! which load only when their Load image button asks. The decoders in
 //! `image_decoders` draw both from bytes Noura hands egui. No loader reads
 //! a file or the network on its own, and an SVG's references to other
-//! files draw nothing.
+//! files draw nothing. A newer listing of the workspace's files, as after
+//! each save of the note, reads again only the images whose file changed,
+//! and each keeps drawing until its new read ends.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use app_core::{NoteLinks, RemoteImageState, is_remote_image};
+use app_core::{ImageVersion, NoteLinks, RemoteImageState, is_remote_image};
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
 use egui::load::{SizeHint, TexturePoll};
 use egui::{CornerRadius, Rect, TextureOptions, Ui, Vec2};
@@ -18,7 +20,7 @@ use egui::{CornerRadius, Rect, TextureOptions, Ui, Vec2};
 const LOADING_SIZE: Vec2 = Vec2::new(96.0, 96.0);
 
 /// Where a workspace image stands.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum Local {
     Reading,
     /// Handed to egui under this address.
@@ -27,14 +29,39 @@ enum Local {
     Missing,
 }
 
+/// What a read on another thread found, for the UI thread to hand egui.
+enum Found {
+    /// The image's bytes, for egui under this address.
+    Image {
+        address: String,
+        bytes: Vec<u8>,
+    },
+    Missing,
+}
+
+/// One workspace image of the note.
+struct Image {
+    state: Local,
+    /// The file the newest read or check found.
+    version: Option<ImageVersion>,
+    /// The listing the newest read or check started under, or `None`
+    /// before the first read.
+    listing: Option<u64>,
+    /// A read or check runs on another thread.
+    busy: bool,
+    /// What a read found that egui doesn't hold yet.
+    found: Option<Found>,
+}
+
+/// The workspace images of one note, by the address the note names them
+/// with.
+type Images = HashMap<String, Image>;
+
 /// Loads and paints the images of one note.
 pub(crate) struct WorkspaceImages {
     links: NoteLinks,
     ctx: egui::Context,
-    local: Arc<Mutex<HashMap<String, Local>>>,
-    /// The listing the local images were read under. A newer listing,
-    /// after any file changed, reads them again.
-    listing: AtomicU64,
+    local: Arc<Mutex<Images>>,
     /// Counts the changes to what this answers.
     seq: Arc<AtomicU64>,
     /// Addresses whose texture finished decoding.
@@ -59,12 +86,10 @@ fn extension(content_type: &str) -> &'static str {
 impl WorkspaceImages {
     pub(crate) fn new(links: NoteLinks, ctx: egui::Context) -> Self {
         crate::image_decoders::install(&ctx);
-        let listing = links.seq();
         Self {
             links,
             ctx,
             local: Arc::default(),
-            listing: AtomicU64::new(listing),
             seq: Arc::default(),
             decoded: Mutex::default(),
             included: Mutex::default(),
@@ -94,60 +119,112 @@ impl WorkspaceImages {
                 }
             };
         }
-        self.forget_old_listing();
-        let state = self.local.lock().unwrap().get(url).cloned();
-        match state {
-            Some(Local::Ready(address)) => Ok(address),
-            Some(Local::Missing) => Err(EmbedState::NotFound),
-            Some(Local::Reading) => Err(EmbedState::Loading(LOADING_SIZE)),
-            None => {
-                self.read(url);
-                Err(EmbedState::Loading(LOADING_SIZE))
-            }
+        let listing = self.links.seq();
+        let mut images = self.local.lock().unwrap();
+        self.hand_over(&mut images, url);
+        let image = images.entry(url.to_owned()).or_insert_with(|| Image {
+            state: Local::Reading,
+            version: None,
+            listing: None,
+            busy: false,
+            found: None,
+        });
+        if image.listing != Some(listing) && !image.busy {
+            // The first read, or a check after a newer listing.
+            let known = image.listing.map(|_| image.version.clone());
+            image.listing = Some(listing);
+            image.busy = true;
+            self.read(url, known);
+        }
+        match &image.state {
+            Local::Ready(address) => Ok(address.clone()),
+            Local::Missing => Err(EmbedState::NotFound),
+            Local::Reading => Err(EmbedState::Loading(LOADING_SIZE)),
         }
     }
 
-    /// Read the workspace image at `url` on another thread.
-    fn read(&self, url: &str) {
-        self.local
-            .lock()
-            .unwrap()
-            .insert(url.to_owned(), Local::Reading);
+    /// Hand egui what a read of the image at `url` found, in place of what
+    /// it held before. egui forgets an address once no image of the note
+    /// draws from it.
+    fn hand_over(&self, images: &mut Images, url: &str) {
+        let Some(found) = images.get_mut(url).and_then(|image| image.found.take()) else {
+            return;
+        };
+        let state = match found {
+            Found::Image { address, bytes } => {
+                // Another image of the note may draw this version of the
+                // same file already.
+                let version = &images[url].version;
+                let held = images.iter().any(|(other, image)| {
+                    other != url
+                        && image.state == Local::Ready(address.clone())
+                        && image.version == *version
+                });
+                if !held {
+                    self.ctx.forget_image(&address);
+                    self.ctx.include_bytes(address.clone(), bytes);
+                    self.decoded.lock().unwrap().retain(|done| *done != address);
+                }
+                Local::Ready(address)
+            }
+            Found::Missing => Local::Missing,
+        };
+        let Some(image) = images.get_mut(url) else {
+            return;
+        };
+        let before = std::mem::replace(&mut image.state, state);
+        if let Local::Ready(old) = before
+            && !images
+                .values()
+                .any(|image| image.state == Local::Ready(old.clone()))
+        {
+            self.ctx.forget_image(&old);
+            self.decoded.lock().unwrap().retain(|done| *done != old);
+        }
+    }
+
+    /// Read the workspace image at `url` on another thread. When `known`
+    /// holds the version an earlier read found, the thread first checks
+    /// the file and reads it only when its version changed.
+    fn read(&self, url: &str, known: Option<Option<ImageVersion>>) {
         let links = self.links.clone();
         let local = Arc::clone(&self.local);
         let seq = Arc::clone(&self.seq);
         let ctx = self.ctx.clone();
         let url = url.to_owned();
         std::thread::spawn(move || {
-            let state = match links.image(&url) {
-                Some(image) => {
-                    let address = format!("bytes://noura-image/{}", image.path);
-                    ctx.include_bytes(address.clone(), image.bytes);
-                    Local::Ready(address)
-                }
-                None => Local::Missing,
+            let version = links.image_version(&url);
+            let unchanged = known.is_some_and(|known| known == version);
+            let read = if unchanged {
+                None
+            } else {
+                Some(version.as_ref().and_then(|_| links.image(&url)))
             };
-            local.lock().unwrap().insert(url, state);
+            let mut images = local.lock().unwrap();
+            let Some(image) = images.get_mut(&url) else {
+                return;
+            };
+            image.busy = false;
+            let Some(read) = read else {
+                return;
+            };
+            match read {
+                Some(read) => {
+                    image.version = Some(read.version);
+                    image.found = Some(Found::Image {
+                        address: format!("bytes://noura-image/{}", read.path),
+                        bytes: read.bytes,
+                    });
+                }
+                None => {
+                    image.version = version;
+                    image.found = Some(Found::Missing);
+                }
+            }
+            drop(images);
             seq.fetch_add(1, Ordering::SeqCst);
             ctx.request_repaint();
         });
-    }
-
-    /// After any file changed, read the images again.
-    fn forget_old_listing(&self) {
-        let listing = self.links.seq();
-        if self.listing.swap(listing, Ordering::SeqCst) == listing {
-            return;
-        }
-        let mut local = self.local.lock().unwrap();
-        for state in local.values() {
-            if let Local::Ready(address) = state {
-                self.ctx.forget_image(address);
-            }
-        }
-        local.clear();
-        self.decoded.lock().unwrap().clear();
-        self.seq.fetch_add(1, Ordering::SeqCst);
     }
 }
 
