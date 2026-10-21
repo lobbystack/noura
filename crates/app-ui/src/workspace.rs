@@ -143,7 +143,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
         return;
     };
     let current = workspace.id().to_owned();
-    let name = workspace.name().to_owned();
+    let name = workspace.name();
     let recents = state.app.recents().to_vec();
     let busy = state.app.is_busy();
     let mut open = None;

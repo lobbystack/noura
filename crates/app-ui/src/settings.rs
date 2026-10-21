@@ -274,7 +274,7 @@ fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
         muted(ui, "Open a workspace to change its name.");
         return;
     };
-    let current = workspace.name().to_owned();
+    let current = workspace.name();
     let root = workspace.root().to_owned();
     let mut rename = false;
     let mut reveal = false;

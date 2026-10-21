@@ -15,7 +15,7 @@ fn manifest_name(fixture: &Fixture) -> String {
 }
 
 fn name(app: &App) -> String {
-    app.workspace().unwrap().name().to_owned()
+    app.workspace().unwrap().name()
 }
 
 fn recent_names(app: &App) -> Vec<String> {
