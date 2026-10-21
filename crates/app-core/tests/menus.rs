@@ -173,6 +173,7 @@ fn items_whose_command_hasn_t_registered_and_their_separators_drop_out() {
             "Zoom Out",
             "Actual Size",
             "-",
+            "Go to Inbox",
             "Go to Files",
             "-",
             "FullScreen"

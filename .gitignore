@@ -13,6 +13,8 @@ index.sqlite*
 src-tauri/gen/
 # Written by scripts/generate-third-party-licenses.ts before release builds
 src-tauri/THIRD_PARTY_LICENSES.txt
+# Written by scripts/package-desktop.sh before packaging
+apps/desktop/packaging/THIRD_PARTY_LICENSES.html
 packages/workspace-format-wasm/wasm/
 crates/workspace-format/bindings/
 

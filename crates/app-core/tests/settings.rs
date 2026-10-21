@@ -8,8 +8,8 @@ use std::{
 };
 
 use app_core::{
-    ABOUT_LINKS, App, LICENSE, LoginItem, NoticeKind, OpenAtLogin, SettingsGroup, VERSION,
-    settings_section,
+    ABOUT_LINKS, App, LICENSE, LoginItem, NoticeKind, OpenAtLogin, SettingsGroup,
+    THIRD_PARTY_LICENSES, VERSION, settings_section,
 };
 use support::{Call, FakeSystem, Fixture};
 
@@ -105,8 +105,14 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                     "Keyboard shortcuts".to_owned()
                 ]
             ),
-            ("Workspace".to_owned(), vec!["Name and location".to_owned()]),
-            ("App".to_owned(), vec!["About Noura".to_owned()]),
+            (
+                "Workspace".to_owned(),
+                vec!["Name and location".to_owned(), "Plugins".to_owned()]
+            ),
+            (
+                "App".to_owned(),
+                vec!["About Noura".to_owned(), "Updates".to_owned()]
+            ),
         ]
     );
     assert_eq!(
@@ -280,6 +286,77 @@ fn about_names_the_version_and_license_and_hands_each_link_to_the_browser() {
         .collect();
     assert_eq!(system.calls(), opened);
     assert_eq!(app.settings().unwrap().notice, None);
+}
+
+#[test]
+fn the_third_party_licenses_link_opens_the_list_this_package_ships() {
+    let fixture = Fixture::new(&[]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    app.open_settings_at(settings_section::ABOUT);
+    assert!(ABOUT_LINKS.contains(&THIRD_PARTY_LICENSES));
+
+    // A build that cargo-packager didn't package has no list of its own,
+    // so the link goes to the list online.
+    app.open_about_link(&THIRD_PARTY_LICENSES);
+    let package = tempfile::tempdir().unwrap();
+    let list = package.path().join("THIRD_PARTY_LICENSES.html");
+    std::fs::write(&list, "<!doctype html>").unwrap();
+    app.set_third_party_licenses(list.clone());
+    app.open_about_link(&THIRD_PARTY_LICENSES);
+    // The other links still go to the browser.
+    app.open_about_link(&ABOUT_LINKS[0]);
+
+    assert_eq!(
+        system.calls(),
+        [
+            Call::OpenUrl(THIRD_PARTY_LICENSES.url.to_owned()),
+            Call::OpenFile(list),
+            Call::OpenUrl(ABOUT_LINKS[0].url.to_owned()),
+        ]
+    );
+    assert_eq!(app.settings().unwrap().notice, None);
+}
+
+/// Every window's About links to the list, including windows opened
+/// after the desktop app found it.
+#[test]
+fn a_new_window_opens_the_same_license_list() {
+    let fixture = Fixture::new(&[]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    let package = tempfile::tempdir().unwrap();
+    let list = package.path().join("THIRD_PARTY_LICENSES.html");
+    std::fs::write(&list, "<!doctype html>").unwrap();
+    app.set_third_party_licenses(list.clone());
+
+    let mut window = app.new_window().expect("a workspace is open");
+    window.open_settings_at(settings_section::ABOUT);
+    window.open_about_link(&THIRD_PARTY_LICENSES);
+
+    assert_eq!(system.calls(), [Call::OpenFile(list)]);
+}
+
+#[test]
+fn a_license_list_that_won_t_open_says_why() {
+    let fixture = Fixture::new(&[]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    app.open_settings_at(settings_section::ABOUT);
+    let package = tempfile::tempdir().unwrap();
+    let list = package.path().join("THIRD_PARTY_LICENSES.html");
+    app.set_third_party_licenses(list.clone());
+
+    app.open_about_link(&THIRD_PARTY_LICENSES);
+
+    assert_eq!(system.calls(), [Call::OpenFile(list)]);
+    let notice = app.settings().unwrap().notice.clone().unwrap();
+    assert_eq!(notice.kind, NoticeKind::Problem);
+    assert_eq!(notice.title, "Couldn't open the license list");
+    assert_eq!(
+        notice.message,
+        "Noura couldn't open the list of third-party licenses it ships with."
+    );
 }
 
 #[test]

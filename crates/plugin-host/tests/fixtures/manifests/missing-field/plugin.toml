@@ -1,0 +1,5 @@
+id = "no-entry"
+name = "No entry"
+version = "0.1.0"
+interface-version = "0.1.0"
+platforms = ["desktop"]

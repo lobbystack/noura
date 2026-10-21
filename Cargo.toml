@@ -11,7 +11,10 @@ members = [
     "crates/mcp-server",
     "crates/plugin-host",
     "crates/plugin-host/trial/rust-hello",
+    "crates/plugin-host/test-plugins/probe",
+    "crates/plugin-host/test-plugins/uses-files",
     "crates/plugin-sdk",
+    "crates/plugins/hello",
     "crates/sync-key-envelope",
     "crates/sync-protocol",
     "crates/sync-server",
@@ -48,6 +51,10 @@ zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 atomic-write-file = "0.3.1"
 blake3 = "1.8"
+# The desktop app's updater. It checks the signatures cargo-packager writes
+# with minisign, which the desktop tests use to sign a local feed.
+cargo-packager-updater = "0.2.3"
+minisign = "0.7"
 # The editor's Markdown parser. Pinned to the release Lockbook's editor was
 # built and tested against; see docs/provenance/lockbook-editor.md.
 comrak = { version = "=0.50.0", default-features = false, features = ["shortcodes"] }
@@ -106,6 +113,8 @@ unicode-segmentation = "1.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
 rmcp = { version = "3.1", features = ["server", "transport-io"] }
 schemars = "1"
+# Plugin versions and interface versions in plugin manifests.
+semver = "1.0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
@@ -115,6 +124,8 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"]
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+# Reads plugin manifests, with the line and column of each error.
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -125,6 +136,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Stays on the 48.x LTS line. cargo deny fails the build on an unpatched advisory.
 wasmtime = { version = "48.0.7", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 url = "2"
+# Generates plugin-sdk's Rust bindings for `noura:plugin`.
+wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
 libc = "0.2"
 windows-sys = "0.61.2"
 # The winit release eframe 0.37 runs on, for its macOS and Windows event loop

@@ -40,8 +40,12 @@ pub mod settings_section {
     pub const SHORTCUTS: &str = "shortcuts";
     /// The workspace's name and folder.
     pub const WORKSPACE: &str = "workspace";
+    /// The plugins installed on this device and enabled in the workspace.
+    pub const PLUGINS: &str = "plugins";
     /// The version, license, links and Copy diagnostics.
     pub const ABOUT: &str = "about";
+    /// Check for updates, and where updating stands.
+    pub const UPDATES: &str = "updates";
 }
 
 /// One section of Settings.
@@ -75,7 +79,13 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             "Name and location",
             SettingsGroup::Workspace,
         ),
+        (
+            settings_section::PLUGINS,
+            "Plugins",
+            SettingsGroup::Workspace,
+        ),
         (settings_section::ABOUT, "About Noura", SettingsGroup::App),
+        (settings_section::UPDATES, "Updates", SettingsGroup::App),
     ]
     .into_iter()
     .map(|(id, title, group)| SettingsSection {
@@ -137,11 +147,17 @@ pub const ABOUT_LINKS: [AboutLink; 6] = [
         title: "Terms and conditions",
         url: "https://noura.app/terms/",
     },
-    AboutLink {
-        title: "Third-party licenses",
-        url: "https://github.com/lobbystack/noura/blob/main/THIRD_PARTY_NOTICES.md",
-    },
+    THIRD_PARTY_LICENSES,
 ];
+
+/// The licenses of the code Noura ships. A packaged copy opens the list
+/// its package carries (see
+/// [`App::set_third_party_licenses`](crate::App::set_third_party_licenses));
+/// other builds open this page.
+pub const THIRD_PARTY_LICENSES: AboutLink = AboutLink {
+    title: "Third-party licenses",
+    url: "https://github.com/lobbystack/noura/blob/main/THIRD_PARTY_NOTICES.md",
+};
 
 /// Whether `url` is a web link Noura hands to the browser: `http` or
 /// `https`, with no spaces or control characters that could split it.

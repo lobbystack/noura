@@ -10,12 +10,14 @@
 //!
 //! The shell around the windows lives here too: the native menu bar,
 //! whose choices go to the window that had focus last, the Edit items'
-//! input, file drags, and a later launch's request to come forward.
+//! input, file drags, a later launch's request to come forward, the quit
+//! that restarting to update asks for, and the smoke run.
 
 use std::{
     collections::HashMap,
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     time::{Duration, Instant},
@@ -64,6 +66,29 @@ pub fn builder(position: Option<Pos2>) -> ViewportBuilder {
     }
 }
 
+/// Ends the app from any thread as Quit does, keeping every window for the
+/// next launch. Restarting to update asks once the relaunch is arranged.
+#[derive(Clone, Default)]
+pub struct QuitRequest(Arc<AtomicBool>);
+
+impl QuitRequest {
+    /// Ask the windows to end the app, and wake them to do it.
+    pub fn ask(&self, ctx: &Context) {
+        self.0.store(true, Ordering::SeqCst);
+        ctx.request_repaint_of(ViewportId::ROOT);
+    }
+
+    fn take(&self) -> bool {
+        self.0.swap(false, Ordering::SeqCst)
+    }
+}
+
+/// The smoke run's report, and how many frames the first window drew.
+struct Smoke {
+    report: String,
+    frames: u32,
+}
+
 pub struct Windows {
     /// The window the root viewport shows, until it closes while other
     /// windows stay open.
@@ -98,6 +123,10 @@ pub struct Windows {
     file_drags: Arc<Mutex<HashMap<ViewportId, FileDrag>>>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     native_menu: Option<crate::menu::native::NativeMenu>,
+    /// Asks from another thread to end the app as Quit does.
+    quit_request: QuitRequest,
+    /// The smoke run, until it has reported.
+    smoke: Option<Smoke>,
 }
 
 /// When a later launch asked, and when Noura last tried.
@@ -150,7 +179,22 @@ impl Windows {
             file_drags: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             native_menu: None,
+            quit_request: QuitRequest::default(),
+            smoke: None,
         }
+    }
+
+    /// End the app as Quit does when `quit` asks.
+    pub fn quitting_on(mut self, quit: QuitRequest) -> Self {
+        self.quit_request = quit;
+        self
+    }
+
+    /// Print `report` once the first window's first frame is on screen,
+    /// then quit.
+    pub fn smoke_test(mut self, report: String) -> Self {
+        self.smoke = Some(Smoke { report, frames: 0 });
+        self
     }
 
     /// Send menu choices to the windows, and on macOS and Windows show the
@@ -375,6 +419,30 @@ impl Windows {
         if !saved {
             tracing::error!("Noura ended with a note it couldn't save");
         }
+    }
+
+    /// End the app as Quit does: the root viewport closes with every
+    /// window open, and every window comes back at the next launch.
+    fn quit_app(&mut self, ctx: &Context) {
+        self.quitting = true;
+        self.ending = true;
+        ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+    }
+
+    /// Print the smoke run's report once the first window's first frame
+    /// is on screen, which it is once the second frame starts, and quit.
+    fn report_smoke(&mut self, ctx: &Context) {
+        let Some(smoke) = &mut self.smoke else {
+            return;
+        };
+        smoke.frames += 1;
+        if smoke.frames < 2 {
+            ctx.request_repaint();
+            return;
+        }
+        println!("{}", smoke.report);
+        self.smoke = None;
+        self.quit_app(ctx);
     }
 
     /// Whether Quit ran in any window.
@@ -617,6 +685,9 @@ impl eframe::App for Windows {
         self.run_menu_choices(ctx);
         self.keep_saving(ctx);
         self.keep_up_waiting(ctx);
+        if self.quit_request.take() {
+            self.quit_app(ctx);
+        }
         if self.quit_requested() {
             self.quitting = true;
             self.ending = true;
@@ -632,6 +703,7 @@ impl eframe::App for Windows {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.show(ui, frame);
+        self.report_smoke(ui.ctx());
     }
 
     fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
@@ -643,13 +715,14 @@ impl eframe::App for Windows {
         self.edit.inject(raw_input);
     }
 
-    /// eframe calls this as Noura ends: after Quit, which saved every
-    /// note first, or when the system quits Noura, as with Quit in the
-    /// Dock or at logout. winit ends Noura then without asking, and Noura
-    /// doesn't take the system's quit request itself yet, so the notes
-    /// save here, and a note that can't save loses the edits that aren't
-    /// on disk. On macOS that request is the quit Apple event, which
-    /// `NSAppleEventManager` could hand to Noura's own Quit, which asks.
+    /// eframe calls this as Noura ends: after Quit or Restart to update,
+    /// which saved every note first, or when the system quits Noura, as
+    /// with Quit in the Dock or at logout. winit ends Noura then without
+    /// asking, and Noura doesn't take the system's quit request itself
+    /// yet, so the notes save here, and a note that can't save loses the
+    /// edits that aren't on disk. On macOS that request is the quit Apple
+    /// event, which `NSAppleEventManager` could hand to Noura's own Quit,
+    /// which asks. Typing during an update's install saves here too.
     fn on_exit(&mut self) {
         // A later launch from now on finds no copy to bring forward. It
         // waits for the lock, which goes once every window has let go of
@@ -700,7 +773,12 @@ mod tests {
         app_data: &std::path::Path,
         instance: Option<Instance>,
     ) -> Harness<'static, Windows> {
-        let windows = Windows::new(App::launch(app_data), instance, || Box::new(NoFolder));
+        harness_of(Windows::new(App::launch(app_data), instance, || {
+            Box::new(NoFolder)
+        }))
+    }
+
+    fn harness_of(windows: Windows) -> Harness<'static, Windows> {
         let mut harness = Harness::builder()
             .with_size([1400.0, 900.0])
             // The palette draws ⌘ and ⇧, which egui's bundled fonts lack;
@@ -1027,6 +1105,59 @@ mod tests {
 
         assert!(!cancels_close(&commands));
         assert!(harness.state().first.is_some());
+    }
+
+    /// Restarting to update ends the app as Quit does once the relaunch
+    /// is arranged, even while every window is minimized, and every window
+    /// comes back in the new version.
+    #[test]
+    fn restarting_to_update_ends_the_app_and_keeps_every_window() {
+        let app_data = workspace();
+        let quit = QuitRequest::default();
+        let windows = Windows::new(App::launch(app_data.path()), None, || Box::new(NoFolder))
+            .quitting_on(quit.clone());
+        let mut harness = harness_of(windows);
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+
+        quit.ask(&harness.ctx);
+        let commands = logic_pass(
+            &mut harness,
+            &[
+                (ViewportId::ROOT, window(true, false)),
+                (second, window(true, false)),
+            ],
+        );
+        assert!(
+            commands
+                .get(&ViewportId::ROOT)
+                .is_some_and(|commands| commands.contains(&ViewportCommand::Close))
+        );
+        let commands = logic_pass(
+            &mut harness,
+            &[root_closing(false), (second, window(true, false))],
+        );
+
+        assert!(!cancels_close(&commands), "the app ends");
+        assert!(harness.state().first.is_some(), "no window closed first");
+        assert_eq!(harness.state().others.len(), 1);
+    }
+
+    /// The smoke run reports once the first window's first frame is on
+    /// screen, and quits as Quit does, so windows the last launch left
+    /// open don't keep it running.
+    #[test]
+    fn the_smoke_run_reports_after_the_first_frame_and_quits() {
+        let app_data = workspace();
+        let windows = Windows::new(App::launch(app_data.path()), None, || Box::new(NoFolder))
+            .smoke_test("Noura drew its first window.".to_owned());
+        let mut harness = harness_of(windows);
+
+        assert!(harness.state().smoke.is_none(), "the report printed");
+        assert!(harness.state().quitting);
+        harness.step();
+        let commands = logic_pass(&mut harness, &[root_closing(true)]);
+        assert!(!cancels_close(&commands), "the app ends");
     }
 
     /// Launch again on another thread, as a second process would.

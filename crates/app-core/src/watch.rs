@@ -17,7 +17,9 @@ use std::{
 
 use local_core::{ChangeCounts, WorkspaceEngine, WorkspaceEntry};
 
-use crate::{AppError, FileTree, Problem, app::Origin, error::Access, problems};
+use crate::{
+    AppError, FileTree, Problem, app::Origin, error::Access, inbox::RECENT_NOTES, problems,
+};
 
 /// How long one wait on the native watcher lasts. The thread notices that
 /// the workspace closed within this time.
@@ -47,13 +49,16 @@ impl Default for Rescans {
 pub(crate) struct Snapshot {
     pub(crate) entries: Vec<WorkspaceEntry>,
     pub(crate) problems: Vec<Problem>,
+    /// The paths of the notes changed last, newest first.
+    pub(crate) recent: Vec<String>,
 }
 
 impl Snapshot {
-    /// List the workspace and its problems, with the engine's change
-    /// counts at that moment. The listing reconciles the index first when
-    /// the watcher saw a change nobody reconciled yet. No change lands
-    /// while it lists, so the counts tell exactly which changes it shows.
+    /// List the workspace, its problems and the notes changed last, with
+    /// the engine's change counts at that moment. The listing reconciles
+    /// the index first when the watcher saw a change nobody reconciled
+    /// yet. No change lands while it lists, so the counts tell exactly
+    /// which changes it shows.
     pub(crate) fn of(
         engine: &WorkspaceEngine,
         root: &str,
@@ -62,7 +67,12 @@ impl Snapshot {
             let failed = |error| AppError::from_core(error, root, Access::ReadWorkspace);
             let entries = engine.list_workspace_entries().map_err(failed)?;
             let problems = problems::collect(engine, root)?;
-            Ok::<_, AppError>(Self { entries, problems })
+            let recent = engine.recent_notes(RECENT_NOTES).map_err(failed)?;
+            Ok::<_, AppError>(Self {
+                entries,
+                problems,
+                recent,
+            })
         });
         Ok((snapshot?, counts))
     }

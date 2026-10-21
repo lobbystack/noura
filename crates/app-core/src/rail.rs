@@ -26,12 +26,20 @@ pub(crate) struct Rail {
 }
 
 impl Default for Rail {
+    /// The kernel's pages, which every window has whatever plugins are on:
+    /// the Inbox and Files.
     fn default() -> Self {
         Self {
-            pages: vec![Page {
-                id: FILES_PAGE.to_owned(),
-                title: "Files".to_owned(),
-            }],
+            pages: vec![
+                Page {
+                    id: INBOX_PAGE.to_owned(),
+                    title: "Inbox".to_owned(),
+                },
+                Page {
+                    id: FILES_PAGE.to_owned(),
+                    title: "Files".to_owned(),
+                },
+            ],
             saved: Vec::new(),
         }
     }
@@ -120,6 +128,14 @@ impl Rail {
                 title: title.to_owned(),
             }),
         }
+    }
+
+    /// Take a page out, as when its plugin stops. Its place in the saved
+    /// order stays, so it comes back there. Returns whether it was there.
+    pub(crate) fn unregister(&mut self, id: &str) -> bool {
+        let before = self.pages.len();
+        self.pages.retain(|page| page.id != id);
+        self.pages.len() != before
     }
 
     pub(crate) fn page(&self, id: &str) -> Option<&Page> {

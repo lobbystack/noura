@@ -141,8 +141,14 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "Keyboard shortcuts".to_owned()
                 ]
             ),
-            ("Workspace".to_owned(), vec!["Name and location".to_owned()]),
-            ("App".to_owned(), vec!["About Noura".to_owned()]),
+            (
+                "Workspace".to_owned(),
+                vec!["Name and location".to_owned(), "Plugins".to_owned()]
+            ),
+            (
+                "App".to_owned(),
+                vec!["About Noura".to_owned(), "Updates".to_owned()]
+            ),
         ]
     );
     // General shows first, and has the keyboard focus.
@@ -195,7 +201,9 @@ fn every_section_and_control_carries_a_label() {
         "Editor",
         "Keyboard shortcuts",
         "Name and location",
+        "Plugins",
         "About Noura",
+        "Updates",
     ] {
         choose_section(&mut harness, title);
         let controls = controls(&harness);
@@ -423,6 +431,32 @@ fn about_links_open_in_the_browser_and_diagnostics_reach_the_clipboard() {
     assert!(calls[browsed.len()].starts_with("copy Noura "), "{calls:?}");
     harness.get_by_role(Role::Status);
     harness.get_by_label("Diagnostics copied");
+}
+
+#[test]
+fn about_opens_the_license_list_the_package_ships() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    let list = parent.path().join("THIRD_PARTY_LICENSES.html");
+    let system = FakeSystem::new(Platform::MacOs);
+    let bundled = list.clone();
+    let mut harness = harness_on(
+        app_data.path(),
+        FakePicker::default(),
+        system.clone(),
+        move |app| app.set_third_party_licenses(bundled),
+    );
+    settle(&mut harness);
+    open_settings(&mut harness);
+    choose_section(&mut harness, "About Noura");
+
+    harness
+        .get_by_role_and_label(Role::Link, "Third-party licenses")
+        .click();
+    harness.run();
+
+    assert_eq!(system.calls(), [format!("open file {}", list.display())]);
 }
 
 #[test]

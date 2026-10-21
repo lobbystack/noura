@@ -7,15 +7,20 @@ mod chooser;
 mod common;
 mod finder;
 mod ignored_files;
+mod inbox;
 mod keys;
+mod markdown;
 mod note;
 mod palette;
+mod plugin_view;
+mod plugins;
 mod rail;
 mod settings;
 mod shortcuts;
 mod tab_bar;
 pub mod theme;
 mod tree;
+mod updates;
 mod workspace;
 
 use std::{
@@ -48,6 +53,7 @@ pub struct NouraUi {
     tree: tree::TreeView,
     ignored: ignored_files::IgnoredFilesView,
     settings: settings::SettingsView,
+    plugin_install: plugins::InstallView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
@@ -70,6 +76,7 @@ impl NouraUi {
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
             settings: settings::SettingsView::default(),
+            plugin_install: plugins::InstallView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
@@ -255,6 +262,11 @@ impl NouraUi {
             // this also keeps the loading spinner turning.
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
+        if let Some(next) = self.app.updates().next_check() {
+            // Wake the window when the next update check is due.
+            ui.ctx()
+                .request_repaint_after(next.saturating_duration_since(Instant::now()));
+        }
         let screen = self.app.screen().clone();
         // Without a workspace, only Quit and Close Window take their keys.
         self.dispatch_keys(ui);
@@ -270,7 +282,9 @@ impl NouraUi {
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
-        settings::show(ui, &mut self.app, &mut self.settings);
+        updates::restart_offer(ui, &mut self.app);
+        settings::show(ui, &mut self.app, &mut self.settings, &mut *self.picker);
+        plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
         palette::show(ui, &mut self.app, &mut self.palette);
         note::unsaved_prompt(ui, &mut self.app);
         self.notes.commit_hidden_drafts(&mut self.app);

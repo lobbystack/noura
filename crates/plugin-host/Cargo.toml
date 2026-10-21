@@ -11,7 +11,13 @@ rust-version.workspace = true
 pulley = ["wasmtime/pulley"]
 
 [dependencies]
+# Names each component's bytes in the compiled code cache.
+blake3.workspace = true
+semver.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
@@ -20,3 +26,5 @@ egui_kittest.workspace = true
 libc.workspace = true
 tempfile.workspace = true
 wasmtime = { workspace = true, features = ["wat"] }
+# Writes hand-made test components as WebAssembly binaries.
+wat = "1.262.0"

@@ -2,10 +2,15 @@
 
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
+pub mod plugins;
+
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -20,6 +25,7 @@ pub enum Call {
     OpenTerminal(PathBuf),
     Copy(String),
     OpenUrl(String),
+    OpenFile(PathBuf),
 }
 
 /// A system that records every request. Its trash moves items to a folder
@@ -31,6 +37,9 @@ pub struct FakeSystem {
     trash: Option<bool>,
     bin: tempfile::TempDir,
     calls: Mutex<Vec<Call>>,
+    /// The hour of the day on the system's clock, 9 am until a test sets
+    /// another.
+    hour: AtomicU8,
 }
 
 impl FakeSystem {
@@ -59,6 +68,7 @@ impl FakeSystem {
             trash,
             bin: tempfile::tempdir().unwrap(),
             calls: Mutex::new(Vec::new()),
+            hour: AtomicU8::new(9),
         })
     }
 
@@ -69,6 +79,11 @@ impl FakeSystem {
     /// Where the system trash put the item it was given as `name`.
     pub fn in_bin(&self, name: &str) -> PathBuf {
         self.bin.path().join(name)
+    }
+
+    /// Set the system's clock to `hour` o'clock.
+    pub fn set_hour(&self, hour: u8) {
+        self.hour.store(hour, Ordering::SeqCst);
     }
 
     fn record(&self, call: Call) {
@@ -116,6 +131,20 @@ impl System for FakeSystem {
     fn open_url(&self, url: &str) -> io::Result<()> {
         self.record(Call::OpenUrl(url.to_owned()));
         Ok(())
+    }
+
+    /// Opens files that exist, as the system's default app would.
+    fn open_file(&self, path: &Path) -> io::Result<()> {
+        self.record(Call::OpenFile(path.to_owned()));
+        if path.is_file() {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::NotFound, "no such file"))
+        }
+    }
+
+    fn local_hour(&self) -> u8 {
+        self.hour.load(Ordering::SeqCst)
     }
 }
 

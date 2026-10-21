@@ -102,6 +102,31 @@ impl Workspace {
         Ok(revision)
     }
 
+    /// Add the plugin `id` to the manifest's enabled plugins list, or take
+    /// it out. Returns once the new manifest is on disk; a list that
+    /// already says so is left as it is.
+    pub(crate) fn set_plugin_enabled(&self, id: &str, enabled: bool) -> Result<(), AppError> {
+        let (manifest, revision) = self
+            .engine
+            .read_manifest_revision()
+            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
+        let mut list = manifest.enabled_plugins;
+        let listed = list.iter().any(|known| known == id);
+        match (enabled, listed) {
+            (true, false) => list.push(id.to_owned()),
+            (false, true) => list.retain(|known| known != id),
+            _ => return Ok(()),
+        }
+        self.engine
+            .manifest_update(ManifestUpdateInput {
+                enabled_plugins: Some(list),
+                expected_revision: Some(revision),
+                ..ManifestUpdateInput::default()
+            })
+            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
+        Ok(())
+    }
+
     /// Show the name in the manifest on disk, as after an outside edit.
     pub(crate) fn set_name(&self, name: String) {
         *self.name.write().unwrap_or_else(PoisonError::into_inner) = name;

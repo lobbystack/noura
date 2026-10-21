@@ -1,5 +1,6 @@
 //! The operating system services `app-core` uses: the system trash, the
-//! file manager, a terminal, the clipboard and the web browser.
+//! file manager, a terminal, the clipboard, the web browser and the apps
+//! that open files.
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::{Child, Command};
@@ -49,6 +50,10 @@ impl System for DesktopSystem {
 
     fn open_url(&self, url: &str) -> io::Result<()> {
         opener::open_browser(url).map_err(io::Error::other)
+    }
+
+    fn open_file(&self, path: &Path) -> io::Result<()> {
+        opener::open(path).map_err(io::Error::other)
     }
 }
 
@@ -133,5 +138,6 @@ mod tests {
 
         assert!(system.reveal(&missing).is_err());
         assert!(system.open_folder(&missing).is_err());
+        assert!(system.open_file(&missing).is_err());
     }
 }

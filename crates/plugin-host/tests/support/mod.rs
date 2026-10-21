@@ -1,4 +1,5 @@
-//! Finds the trial S7 hello plugins that `trial/build-plugins.sh` builds.
+//! Finds the trial S7 hello plugins that `trial/build-plugins.sh` builds,
+//! and, in [`plugins`], the plugins that `plugin-sdk` builds.
 //!
 //! Without the built plugins the trial tests pass with a note on stderr, so a
 //! machine without Node or the wasm32-wasip2 target can still run the
@@ -6,6 +7,8 @@
 //! plugin into a failure.
 
 #![allow(dead_code)]
+
+pub mod plugins;
 
 use std::path::PathBuf;
 

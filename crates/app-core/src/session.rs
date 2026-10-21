@@ -1,8 +1,9 @@
 //! What every window of the app shares: the open workspace, with its one
-//! index and watcher, the newest listing of its files and their problems,
-//! the rail order, this device's preferences, each window's view state,
-//! which it saves together, and a quit or workspace switch that waits for
-//! every window's notes to save.
+//! index and watcher, the newest listing of its files, their problems and
+//! the notes changed last, the rail order, this device's preferences, the
+//! plugins service, each window's view state, which it saves together, the
+//! writes still on their way to disk, the update service, and a quit or
+//! workspace switch that waits for every window's notes to save.
 //!
 //! Each [`App`](crate::App) is one window. A window that changes what
 //! the others show publishes it here and wakes them; each one applies it
@@ -18,8 +19,9 @@ use std::{
 use local_core::ChangeCounts;
 
 use crate::{
-    FileTree, Preferences, Problem, System, Workspace, WorkspaceService,
+    FileTree, PendingWrites, Preferences, Problem, System, Updates, Workspace, WorkspaceService,
     app::{Change, Listeners},
+    plugins::Plugins,
     view_state::{StoredView, StoredWindow, ViewStore},
     watch::{Rescans, Snapshot, Update, Watch},
 };
@@ -37,9 +39,15 @@ pub(crate) struct Session {
     pub(crate) app_data: PathBuf,
     pub(crate) service: Arc<WorkspaceService>,
     pub(crate) system: Arc<dyn System>,
+    /// Writes that must reach disk before Noura restarts or quits.
+    pub(crate) writes: PendingWrites,
+    pub(crate) updates: Updates,
     /// How often the watch thread walks the whole workspace.
     rescans: Rescans,
     state: Mutex<State>,
+    /// Held apart from `state`, so a plugin call never blocks a window
+    /// that only reads the session.
+    plugins: Mutex<Plugins>,
 }
 
 struct State {
@@ -52,6 +60,8 @@ struct State {
     tree: Option<FileTree>,
     /// The open workspace's problems in that listing.
     problems: Vec<Problem>,
+    /// The notes changed last in that listing, newest first.
+    recent: Vec<String>,
     /// The engine's change counts when that listing was made. An older
     /// listing never replaces it.
     counts: ChangeCounts,
@@ -81,8 +91,9 @@ struct State {
     departures: u64,
 }
 
-/// A quit, or a switch to another workspace, which closes every window:
-/// it waits until each open window that shows notes has them on disk.
+/// A quit, or a switch to another workspace, which closes every window,
+/// or a restart to update: it waits until each open window that shows
+/// notes has them on disk.
 struct Departure {
     round: u64,
     /// The window that asked, which quits or opens the workspace once
@@ -117,6 +128,7 @@ pub(crate) struct Listing {
     pub(crate) version: u64,
     pub(crate) tree: FileTree,
     pub(crate) problems: Vec<Problem>,
+    pub(crate) recent: Vec<String>,
     /// What moved since the window's listing, in order.
     pub(crate) moves: Vec<(String, String)>,
 }
@@ -126,22 +138,60 @@ pub(crate) struct Current {
     pub(crate) listing: u64,
     pub(crate) tree: Option<FileTree>,
     pub(crate) problems: Vec<Problem>,
+    pub(crate) recent: Vec<String>,
     pub(crate) rail: u64,
     pub(crate) recents: u64,
 }
 
 impl Session {
     pub(crate) fn new(app_data: &Path, system: Arc<dyn System>, rescans: Rescans) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|session: &Weak<Self>| {
+            let writes = PendingWrites::default();
+            // The update service wakes every open window when its status
+            // changes.
+            let woken = session.clone();
+            let updates = Updates::new(
+                writes.clone(),
+                Arc::new(move |change| {
+                    if let Some(session) = woken.upgrade() {
+                        session.emit_all(change);
+                    }
+                }),
+            );
+            let mut plugins = Plugins::new(app_data);
+            // A plugin's reload watcher wakes every window once it read a
+            // new build.
+            let session = session.clone();
+            plugins.set_wake(Arc::new(move || {
+                if let Some(session) = session.upgrade() {
+                    session.wake_all();
+                }
+            }));
+            Self::with(app_data, system, rescans, writes, updates, plugins)
+        })
+    }
+
+    fn with(
+        app_data: &Path,
+        system: Arc<dyn System>,
+        rescans: Rescans,
+        writes: PendingWrites,
+        updates: Updates,
+        plugins: Plugins,
+    ) -> Self {
+        Self {
             app_data: app_data.to_owned(),
             service: Arc::new(WorkspaceService::with_system(app_data, system.clone())),
             system,
+            writes,
+            updates,
             rescans,
             state: Mutex::new(State {
                 workspace: None,
                 opening: 0,
                 tree: None,
                 problems: Vec::new(),
+                recent: Vec::new(),
                 counts: ChangeCounts::default(),
                 watch: None,
                 listing: 0,
@@ -157,7 +207,34 @@ impl Session {
                 departure: None,
                 departures: 0,
             }),
-        })
+            plugins: Mutex::new(plugins),
+        }
+    }
+
+    /// The plugins service every window shares.
+    pub(crate) fn plugins(&self) -> MutexGuard<'_, Plugins> {
+        self.plugins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Wake every open window to apply a change, such as a plugin's new
+    /// build.
+    pub(crate) fn wake_all(&self) {
+        self.emit_all(Change::WorkFinished);
+    }
+
+    /// Tell every open window about `change`.
+    fn emit_all(&self, change: Change) {
+        let windows: Vec<Listeners> = self
+            .lock()
+            .windows
+            .iter()
+            .filter_map(|window| window.listeners.clone())
+            .collect();
+        for listeners in windows {
+            listeners.emit(change);
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -235,6 +312,7 @@ impl Session {
         state.listing += 1;
         state.tree = Some(tree.clone());
         state.problems.clone_from(&snapshot.problems);
+        state.recent.clone_from(&snapshot.recent);
         state.counts = counts;
         state.moves.clear();
         state.watch = self.watch(&workspace, snapshot, counts, state.opening);
@@ -275,6 +353,7 @@ impl Session {
             listing: state.listing,
             tree: state.tree.clone(),
             problems: state.problems.clone(),
+            recent: state.recent.clone(),
             rail: state.rail,
             recents: state.recents,
         }
@@ -305,6 +384,7 @@ impl Session {
         if newest {
             state.tree = Some(tree.clone());
             state.problems.clone_from(&snapshot.problems);
+            state.recent.clone_from(&snapshot.recent);
             state.counts = counts;
         }
         if let Some(watch) = &state.watch {
@@ -367,6 +447,7 @@ impl Session {
             state.listing += 1;
             state.tree = Some(update.tree);
             state.problems = update.snapshot.problems;
+            state.recent = update.snapshot.recent;
             state.counts = update.counts;
         }
         let windows: Vec<Listeners> = state
@@ -393,6 +474,7 @@ impl Session {
             version: state.listing,
             tree: state.tree.clone()?,
             problems: state.problems.clone(),
+            recent: state.recent.clone(),
             moves: state
                 .moves
                 .iter()
@@ -463,7 +545,8 @@ impl Session {
     }
 
     /// The window `key` asks to quit or to open another workspace, which
-    /// closes every window. The other windows wake to save their notes.
+    /// closes every window, or to restart to update. The other windows
+    /// wake to save their notes.
     /// Returns the departure's round, or `None` while another departure
     /// waits.
     pub(crate) fn begin_departure(&self, key: WindowKey) -> Option<u64> {

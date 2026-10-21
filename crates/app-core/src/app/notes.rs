@@ -25,9 +25,9 @@ pub(super) enum Leave {
     CloseTabs(Vec<TabId>),
     CloseWindow,
     /// A quit or a switch to another workspace, which closes every
-    /// window: each window saves its notes for the departure `round`, and
-    /// the window that asked does `then` once all of them have. The other
-    /// windows have no `then`.
+    /// window, or a restart to update: each window saves its notes for the
+    /// departure `round`, and the window that asked does `then` once all
+    /// of them have. The other windows have no `then`.
     Depart {
         round: u64,
         then: Option<Departure>,
@@ -40,6 +40,8 @@ pub(super) enum Departure {
     Quit,
     /// Open another workspace, or create one.
     Open(Job),
+    /// Install the downloaded update and restart.
+    Restart,
 }
 
 /// The leave waiting for notes to save, and the prompt once a save failed,
@@ -441,8 +443,8 @@ impl App {
         self.advance_leaving();
     }
 
-    /// Ask every window to save its notes, and then quit or open another
-    /// workspace as `then` says. A tab or this window that waits to close
+    /// Ask every window to save its notes, and then quit, open another
+    /// workspace or restart to update as `then` says. A tab or this window that waits to close
     /// gives way to it. Nothing happens while this window already takes
     /// part in a departure, or while another window's departure waits.
     pub(super) fn depart(&mut self, then: Departure) {
@@ -618,7 +620,8 @@ impl App {
         }
     }
 
-    /// Every window's notes are on disk: quit, or open the workspace.
+    /// Every window's notes are on disk: quit, open the workspace, or
+    /// install the update and restart.
     fn go_ahead(&mut self, round: u64, then: Departure) {
         self.leaving = None;
         self.session.end_departure(self.key, round);
@@ -629,6 +632,7 @@ impl App {
                 self.listeners.emit(Change::Window);
             }
             Departure::Open(job) => self.start(job),
+            Departure::Restart => self.updates.restart(self.pending_saves.clone()),
         }
     }
 

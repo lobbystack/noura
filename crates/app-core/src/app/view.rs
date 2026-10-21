@@ -63,6 +63,9 @@ impl App {
     pub fn register_page(&mut self, id: &str, title: &str) {
         self.rail.register(id, title);
         self.listeners.emit(Change::Rail);
+        if self.tabs.rename_page(id, title) {
+            self.tabs_changed(false);
+        }
         let Some(page) = self.rail.page(id) else {
             return;
         };
@@ -72,6 +75,28 @@ impl App {
         };
         if let Some(active_changed) = self.tabs.page_registered(content) {
             self.tabs_changed(active_changed);
+        }
+    }
+
+    /// Take a page out of the rail, as when the plugin that added it stops,
+    /// and close its tab. The page keeps its place in the rail's order for
+    /// when it comes back.
+    pub(crate) fn unregister_page(&mut self, id: &str) {
+        if !self.rail.unregister(id) {
+            return;
+        }
+        self.listeners.emit(Change::Rail);
+        let showing = self.tabs.showing_page(id);
+        let was_active = self
+            .tabs
+            .active()
+            .is_some_and(|tab| showing.contains(&tab.id()));
+        let mut closed = false;
+        for tab in showing {
+            closed |= self.tabs.close(tab);
+        }
+        if closed {
+            self.tabs_changed(was_active);
         }
     }
 
@@ -342,6 +367,8 @@ impl App {
                 );
                 self.show_tree(tree, moved.as_slice());
                 self.set_problems(snapshot.problems);
+                self.set_recent(snapshot.recent);
+                self.reload_inbox_sections();
             }
             Err(error) => self.show_notice("Couldn't read the files", error, None),
         }
@@ -369,6 +396,8 @@ impl App {
             .collect();
         self.show_tree(listing.tree, &moves);
         self.set_problems(listing.problems);
+        self.set_recent(listing.recent);
+        self.reload_inbox_sections();
         // A row being renamed, or a folder waiting for the trash, that
         // another window or app took away stops waiting.
         let tree = self.tree.as_ref();

@@ -96,6 +96,7 @@ fn assert_never_read(
                 })
                 .err(),
         ),
+        ("plugin read", engine.read_file(relative, 1 << 20).err()),
     ];
     for (operation, error) in errors {
         let error = error.unwrap_or_else(|| panic!("{operation} went ahead"));

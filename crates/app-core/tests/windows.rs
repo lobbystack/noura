@@ -503,13 +503,13 @@ fn the_windows_share_the_rail_order_and_its_pages() {
     first.open_folder(folder.path().to_owned());
     settle(&mut first);
     let mut second = first.new_window().unwrap();
-    assert_eq!(rail(&second), ["Files", "Alpha"]);
+    assert_eq!(rail(&second), ["Inbox", "Files", "Alpha"]);
 
     second.move_page("test-alpha", 0);
     first.poll();
 
-    assert_eq!(rail(&first), ["Alpha", "Files"]);
-    assert_eq!(rail(&second), ["Alpha", "Files"]);
+    assert_eq!(rail(&first), ["Alpha", "Inbox", "Files"]);
+    assert_eq!(rail(&second), ["Alpha", "Inbox", "Files"]);
 }
 
 /// Appearance, text size and zoom belong to the device, so every window
