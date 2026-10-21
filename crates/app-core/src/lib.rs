@@ -2,9 +2,10 @@
 //!
 //! This crate depends on no UI crate, so a mobile client can reuse it later.
 //! Clients draw [`App`]'s view state and send it what people do. Each `App`
-//! is one window, and the windows of one launch share the open workspace.
-//! The workspace service opens workspaces and keeps the recent list, and
-//! the files service builds the file tree. The app keeps each workspace's
+//! is one window, and the windows of one launch share the open workspace
+//! and the update service. The workspace service opens workspaces and
+//! keeps the recent list, the files service builds the file tree, and the
+//! update service keeps the app current. The app keeps each workspace's
 //! windows with their tabs and open folders, its rail order, the sidebar's
 //! layout, and the appearance, text size and zoom, in this device's app
 //! data. One command registry feeds the key handling, the command palette,
@@ -39,9 +40,11 @@ mod settings;
 mod store;
 mod system;
 mod tabs;
+mod updates;
 mod view_state;
 mod watch;
 mod workspace;
+mod writes;
 
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
@@ -78,13 +81,18 @@ pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
 pub use settings::{
-    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection, VERSION,
-    settings_section,
+    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
+    THIRD_PARTY_LICENSES, VERSION, settings_section,
 };
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};
+pub use updates::{
+    FIRST_UPDATE_CHECK, PendingUpdate, UPDATE_CHECK_INTERVAL, UpdateError, UpdateErrorKind,
+    UpdateSource, UpdateStatus, Updates,
+};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
+pub use writes::{PendingWork, PendingWrite, PendingWrites, WriteFailure};
 
 /// Where Noura keeps per-device state, such as indexes and the recent
 /// list: the operating system's local app data folder.

@@ -149,6 +149,7 @@ fn content(
         settings_section::WORKSPACE => workspace(ui, app, view),
         settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
         settings_section::ABOUT => about(ui, app),
+        settings_section::UPDATES => crate::updates::update_settings(ui, app),
         // Sections that later areas register draw themselves later.
         _ => {}
     }
@@ -349,14 +350,14 @@ fn about(ui: &mut Ui, app: &mut App) {
     field(ui, "Links", Role::Group, |ui| {
         for link in &ABOUT_LINKS {
             if ui.link(link.title).on_hover_text(link.url).clicked() {
-                opened = Some(link.url);
+                opened = Some(link);
             }
         }
     });
     if copy {
         app.copy_diagnostics();
     }
-    if let Some(url) = opened {
-        app.open_link(url);
+    if let Some(link) = opened {
+        app.open_about_link(link);
     }
 }

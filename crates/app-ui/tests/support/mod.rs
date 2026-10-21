@@ -187,6 +187,11 @@ impl System for FakeSystem {
         Ok(())
     }
 
+    fn open_file(&self, path: &Path) -> io::Result<()> {
+        self.record(format!("open file {}", path.display()));
+        Ok(())
+    }
+
     fn local_hour(&self) -> u8 {
         self.hour.load(Ordering::SeqCst)
     }

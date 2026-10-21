@@ -1,7 +1,8 @@
 //! What every window of the app shares: the open workspace, with its one
 //! index and watcher, the newest listing of its files, their problems and
 //! the notes changed last, the rail order, this device's preferences, the
-//! plugins service, and each window's view state, which it saves together.
+//! plugins service, each window's view state, which it saves together, the
+//! writes still on their way to disk, and the update service.
 //!
 //! Each [`App`](crate::App) is one window. A window that changes what
 //! the others show publishes it here and wakes them; each one applies it
@@ -17,7 +18,7 @@ use std::{
 use local_core::ChangeCounts;
 
 use crate::{
-    FileTree, Preferences, Problem, System, Workspace, WorkspaceService,
+    FileTree, PendingWrites, Preferences, Problem, System, Updates, Workspace, WorkspaceService,
     app::{Change, Listeners},
     plugins::Plugins,
     view_state::{StoredView, StoredWindow, ViewStore},
@@ -37,6 +38,9 @@ pub(crate) struct Session {
     pub(crate) app_data: PathBuf,
     pub(crate) service: Arc<WorkspaceService>,
     pub(crate) system: Arc<dyn System>,
+    /// Writes that must reach disk before Noura restarts or quits.
+    pub(crate) writes: PendingWrites,
+    pub(crate) updates: Updates,
     /// How often the watch thread walks the whole workspace.
     rescans: Rescans,
     state: Mutex<State>,
@@ -123,6 +127,18 @@ pub(crate) struct Current {
 impl Session {
     pub(crate) fn new(app_data: &Path, system: Arc<dyn System>, rescans: Rescans) -> Arc<Self> {
         Arc::new_cyclic(|session: &Weak<Self>| {
+            let writes = PendingWrites::default();
+            // The update service wakes every open window when its status
+            // changes.
+            let woken = session.clone();
+            let updates = Updates::new(
+                writes.clone(),
+                Arc::new(move |change| {
+                    if let Some(session) = woken.upgrade() {
+                        session.emit_all(change);
+                    }
+                }),
+            );
             let mut plugins = Plugins::new(app_data);
             // A plugin's reload watcher wakes every window once it read a
             // new build.
@@ -132,20 +148,24 @@ impl Session {
                     session.wake_all();
                 }
             }));
-            Self::with_plugins(app_data, system, rescans, plugins)
+            Self::with(app_data, system, rescans, writes, updates, plugins)
         })
     }
 
-    fn with_plugins(
+    fn with(
         app_data: &Path,
         system: Arc<dyn System>,
         rescans: Rescans,
+        writes: PendingWrites,
+        updates: Updates,
         plugins: Plugins,
     ) -> Self {
         Self {
             app_data: app_data.to_owned(),
             service: Arc::new(WorkspaceService::with_system(app_data, system.clone())),
             system,
+            writes,
+            updates,
             rescans,
             state: Mutex::new(State {
                 workspace: None,
@@ -180,13 +200,20 @@ impl Session {
     /// Wake every open window to apply a change, such as a plugin's new
     /// build.
     pub(crate) fn wake_all(&self) {
+        self.emit_all(Change::WorkFinished);
+    }
+
+    /// Tell every open window about `change`.
+    fn emit_all(&self, change: Change) {
         let windows: Vec<Listeners> = self
             .lock()
             .windows
             .iter()
             .filter_map(|window| window.listeners.clone())
             .collect();
-        wake(windows);
+        for listeners in windows {
+            listeners.emit(change);
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

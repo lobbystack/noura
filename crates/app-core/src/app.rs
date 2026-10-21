@@ -13,14 +13,15 @@ use std::{
         Arc, Mutex,
         mpsc::{Receiver, TryRecvError, channel},
     },
+    time::Instant,
 };
 
 use local_core::{ChangeCounts, WorkspaceEngine};
 
 use crate::{
     AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
-    PendingSaves, PluginInstall, Preferences, Problem, RecentWorkspace, Settings, SettingsSection,
-    System, Tab, Workspace, WorkspaceService,
+    PendingSaves, PendingWrites, PluginInstall, Preferences, Problem, RecentWorkspace, Settings,
+    SettingsSection, System, Tab, UpdateSource, Updates, Workspace, WorkspaceService,
     commands::Registry,
     inbox::Sections,
     layout::LayoutStore,
@@ -108,6 +109,8 @@ pub enum Change {
     Layout,
     Document,
     Notice,
+    /// The update status changed.
+    Update,
     /// Settings or the Ignored files page changed.
     Settings,
     /// The appearance, text size or zoom changed.
@@ -251,11 +254,15 @@ pub struct App {
     login_item: Arc<dyn LoginItem>,
     /// Where the local diagnostic log lives.
     log_folder: PathBuf,
+    /// The third-party license list this copy's package ships, if any.
+    third_party_licenses: Option<PathBuf>,
     /// A folder waiting to go to the trash until you confirm.
     pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
     pending: Option<Pending>,
+    writes: PendingWrites,
+    updates: Updates,
     listeners: Listeners,
     /// Changes waiting to be saved, which a drag out of the window saves
     /// first.
@@ -355,9 +362,12 @@ impl App {
             settings_sections: kernel_sections(),
             login_item: Arc::new(NoLoginItem),
             log_folder: crate::log_folder(&session.app_data),
+            third_party_licenses: None,
             pending_trash: None,
             failed_restore: None,
             pending: None,
+            updates: session.updates.clone(),
+            writes: session.writes.clone(),
             listeners,
             pending_saves: Arc::new(NoPendingSaves),
             drag_out: None,
@@ -420,12 +430,16 @@ impl App {
         window.preferences_seen = self.preferences_seen;
         window.plugins_seen = self.plugins_seen;
         // The commands and Settings sections registered so far, what saves
-        // pending changes and the login item serve every window.
+        // pending changes, the login item and the packaged license list
+        // serve every window.
         window.registry = self.registry.copy();
         window.settings_sections = self.settings_sections.clone();
         window.inbox_sections = self.inbox_sections.clone();
         window.pending_saves = self.pending_saves.clone();
         window.login_item = self.login_item.clone();
+        window
+            .third_party_licenses
+            .clone_from(&self.third_party_licenses);
         window.restore_view(stored);
         window
     }
@@ -618,9 +632,63 @@ impl App {
         }
     }
 
+    /// Writes that must reach disk before Noura restarts. Services that
+    /// write files on another thread register each write here. Every
+    /// window shares the list.
+    pub fn pending_writes(&self) -> &PendingWrites {
+        &self.writes
+    }
+
+    /// Where updating stands. Every window shares the update service.
+    pub fn updates(&self) -> &Updates {
+        &self.updates
+    }
+
+    /// Check `source` for updates, first [`crate::FIRST_UPDATE_CHECK`]
+    /// after `launched` and then every [`crate::UPDATE_CHECK_INTERVAL`].
+    pub fn enable_updates(
+        &mut self,
+        current_version: &str,
+        source: Arc<dyn UpdateSource>,
+        launched: Instant,
+    ) {
+        self.updates.enable(current_version, source, launched);
+    }
+
+    /// Say that this build doesn't update itself, and why.
+    pub fn disable_updates(&mut self, current_version: &str, reason: &str) {
+        self.updates.disable(current_version, reason);
+    }
+
+    /// Check for updates now, as Settings' Check for updates does.
+    pub fn check_for_updates(&mut self) {
+        self.updates.check();
+    }
+
+    /// Save every change still waiting, wait for pending writes, then
+    /// install the downloaded update, save and wait again for changes made
+    /// during the install, and restart. If a save, a write or the install
+    /// fails, this version keeps running and the update status says why.
+    pub fn restart_to_update(&mut self) {
+        self.updates.restart(self.pending_saves.clone());
+    }
+
+    /// Stop offering Restart outside Settings until the next update, in
+    /// every window.
+    pub fn hide_update_offer(&mut self) {
+        self.updates.hide_offer();
+    }
+
     /// Apply finished background work and what other windows changed,
-    /// such as the files. Returns whether anything changed.
+    /// such as the files, and start an update check that is due. Returns
+    /// whether anything changed.
     pub fn poll(&mut self) -> bool {
+        self.poll_at(Instant::now())
+    }
+
+    /// [`App::poll`] with the time given, so tests can step through the
+    /// update schedule.
+    pub fn poll_at(&mut self, now: Instant) -> bool {
         if self.closed {
             return false;
         }
@@ -628,6 +696,7 @@ impl App {
             self.closed_by_another_window();
             return true;
         }
+        let updated = self.updates.poll(now);
         let searched = self.take_search_answer();
         let opened = self.take_opened();
         let listed = self.poll_listing();
@@ -635,7 +704,7 @@ impl App {
         let recents = self.poll_recents();
         let preferences = self.poll_preferences();
         let plugins = self.poll_plugins();
-        searched || opened || listed || rail || recents || preferences || plugins
+        updated | searched | opened | listed | rail | recents | preferences | plugins
     }
 
     /// Take the workspace a background job opened, or why it couldn't.
@@ -867,10 +936,15 @@ impl App {
         let listeners = self.listeners.clone();
         let work = job.clone();
         let shown = self.workspace.as_deref().map(Shown::of);
+        // Opening a workspace can write its manifest and the recent list,
+        // so restarting to update and quitting wait for it. Its notice
+        // reports a failure.
+        let writing = self.writes.begin_work("workspace");
         let spawned = std::thread::Builder::new()
             .name("workspace-open".into())
             .spawn(move || {
                 let result = run(&service, &work, shown.as_ref());
+                drop(writing);
                 // The app may have closed meanwhile; nothing is waiting then.
                 let _ = sender.send(result);
                 listeners.emit(Change::WorkFinished);

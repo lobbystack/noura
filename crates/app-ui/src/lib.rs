@@ -19,6 +19,7 @@ mod shortcuts;
 mod tab_bar;
 pub mod theme;
 mod tree;
+mod updates;
 mod workspace;
 
 use std::{
@@ -169,6 +170,11 @@ impl NouraUi {
             // this also keeps the loading spinner turning.
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
+        if let Some(next) = self.app.updates().next_check() {
+            // Wake the window when the next update check is due.
+            ui.ctx()
+                .request_repaint_after(next.saturating_duration_since(Instant::now()));
+        }
         let screen = self.app.screen().clone();
         // Without a workspace, only Quit and Close Window take their keys.
         self.dispatch_keys(ui);
@@ -181,6 +187,7 @@ impl NouraUi {
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
+        updates::restart_offer(ui, &mut self.app);
         settings::show(ui, &mut self.app, &mut self.settings, &mut *self.picker);
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
         palette::show(ui, &mut self.app, &mut self.palette);
