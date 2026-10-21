@@ -1,0 +1,898 @@
+//! The plugins service: installs plugins from folders once you approve
+//! their capabilities, keeps those approvals in this device's app data,
+//! turns plugins on and off in the open workspace's manifest, runs the
+//! ones that are on, and reloads a plugin when a new build lands in its
+//! folder.
+//!
+//! Every window shares one service. Installing a plugin from a folder is
+//! Noura's dev mode: the folder stays where it is, and the service copies
+//! each build into the plugin host's library, which compiles it on this
+//! device. Approvals never come from workspace files, so a workspace that
+//! lists a plugin as enabled runs none of its code on a device where you
+//! haven't installed and approved it.
+
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender, channel},
+    },
+    time::Duration,
+};
+
+use local_core::{CoreError, WatchCoordinator, WorkspaceEntryKind};
+use plugin_host::{
+    Candidate, Capability, Entry, EntryKind, Event, FileRead, InstallError, Listed, ObjectRead,
+    Page, PluginHost, PluginInstance, PluginManifest, ServiceError, View, WorkspacePath,
+    WorkspaceReads,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::{AppError, Workspace, store::JsonStore};
+
+/// Where the plugin host keeps installed plugins and their compiled code,
+/// under the app data folder.
+const LIBRARY: &str = "plugins/library";
+
+/// This device's install records and approvals, under the app data folder.
+const RECORDS: &str = "plugins/installed.json";
+
+/// Rail pages that plugins add have IDs that start with this, then the
+/// plugin's ID and the page's own ID.
+const PAGE_PREFIX: &str = "plugin:";
+
+/// How long a plugin folder must stay quiet after a change before a reload
+/// reads it, so a build tool can finish writing.
+const QUIET: Duration = Duration::from_millis(200);
+
+/// How long a reload watcher waits for changes before it checks whether it
+/// should stop.
+const WATCH_WAIT: Duration = Duration::from_millis(500);
+
+/// The largest file a plugin may read.
+const MAX_READ_BYTES: u64 = 16 << 20;
+
+/// A capability as Settings and the install dialog show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityLine {
+    /// The name the manifest uses, such as `workspace-read`.
+    pub name: String,
+    /// What approving it lets the plugin do.
+    pub description: String,
+}
+
+impl CapabilityLine {
+    fn of(capability: &Capability) -> Self {
+        Self {
+            name: capability.name().to_owned(),
+            description: capability.description(),
+        }
+    }
+}
+
+/// A plugin as the Plugins page lists it: installed on this device,
+/// enabled in the open workspace, or both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginRow {
+    pub id: String,
+    /// The manifest's name, or the ID when it isn't installed here.
+    pub name: String,
+    pub version: Option<String>,
+    /// The folder it was installed from.
+    pub folder: Option<String>,
+    /// The capabilities you approved on this device.
+    pub approved: Vec<CapabilityLine>,
+    /// Whether it is installed on this device.
+    pub installed: bool,
+    /// Whether the open workspace's manifest lists it as enabled.
+    pub enabled: bool,
+    pub running: bool,
+    /// Why it isn't running or its last reload failed.
+    pub problem: Option<String>,
+    /// The capabilities a new build in its folder adds, which wait for
+    /// your approval before the build runs. Empty when no build waits.
+    pub update: Vec<CapabilityLine>,
+}
+
+/// The install dialog: a plugin folder, read and compiled but not run,
+/// with the capabilities it asks for, or why Noura won't install it.
+#[derive(Clone)]
+pub struct PluginInstall {
+    /// The folder you chose.
+    pub folder: String,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// Every capability the manifest declares, in its order.
+    pub capabilities: Vec<CapabilityLine>,
+    /// Why the folder can't be installed. Nothing installs while it is
+    /// set.
+    pub problem: Option<String>,
+    candidate: Option<Candidate>,
+}
+
+impl std::fmt::Debug for PluginInstall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PluginInstall")
+            .field("folder", &self.folder)
+            .field("id", &self.id)
+            .field("capabilities", &self.capabilities)
+            .field("problem", &self.problem)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a plugin page shows: its view, or why it can't be drawn.
+pub type PluginView = Result<View, String>;
+
+/// This device's record of an installed plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Record {
+    folder: String,
+    approved: Vec<Capability>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Records {
+    #[serde(default)]
+    plugins: BTreeMap<String, Record>,
+}
+
+/// A running plugin, its pages and the views it last drew.
+struct Running {
+    instance: PluginInstance,
+    pages: Vec<Page>,
+    views: BTreeMap<String, PluginView>,
+}
+
+/// A new build a watcher found in a plugin's folder, or why it can't load.
+struct Reload {
+    id: String,
+    result: Result<Candidate, InstallError>,
+}
+
+/// Stops its reload watcher when dropped.
+struct Watcher {
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+type Wake = Arc<dyn Fn() + Send + Sync>;
+
+pub(crate) struct Plugins {
+    app_data: PathBuf,
+    store: JsonStore<Records>,
+    /// What the store holds. Every window shares this service, so only it
+    /// writes the store.
+    records: Records,
+    host: Option<Arc<PluginHost>>,
+    /// The installed plugins' manifests, read once rather than per frame.
+    manifests: BTreeMap<String, PluginManifest>,
+    /// The workspace the running plugins read.
+    workspace: Option<Arc<Workspace>>,
+    running: BTreeMap<String, Running>,
+    problems: BTreeMap<String, String>,
+    /// New builds whose capabilities wait for your approval.
+    updates: BTreeMap<String, Candidate>,
+    watchers: BTreeMap<String, Watcher>,
+    reload_sender: Sender<Reload>,
+    reloads: Receiver<Reload>,
+    /// Wakes every window, as a reload watcher does once it read a build.
+    wake: Option<Wake>,
+    /// Counts the changes the windows show: plugins, pages and views.
+    version: u64,
+}
+
+impl Plugins {
+    pub(crate) fn new(app_data: &Path) -> Self {
+        let (reload_sender, reloads) = channel();
+        // A missing or unreadable store holds no approvals, so no plugin
+        // runs until you install it again.
+        let store = JsonStore::new(app_data.join(RECORDS), "plugin approvals");
+        let records = store.load();
+        Self {
+            app_data: app_data.to_owned(),
+            store,
+            records,
+            host: None,
+            manifests: BTreeMap::new(),
+            workspace: None,
+            running: BTreeMap::new(),
+            problems: BTreeMap::new(),
+            updates: BTreeMap::new(),
+            watchers: BTreeMap::new(),
+            reload_sender,
+            reloads,
+            wake: None,
+            version: 0,
+        }
+    }
+
+    pub(crate) fn set_wake(&mut self, wake: Wake) {
+        self.wake = Some(wake);
+    }
+
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn changed(&mut self) {
+        self.version += 1;
+    }
+
+    /// Change the records and save them. Returns the error to show when
+    /// they couldn't be saved; the records then stay as they were.
+    fn save_records(&mut self, change: impl FnOnce(&mut Records)) -> Result<(), AppError> {
+        let mut records = Records {
+            plugins: self.records.plugins.clone(),
+        };
+        change(&mut records);
+        self.store.save(&records).map_err(|error| {
+            tracing::warn!(%error, "the plugin approvals weren't saved");
+            AppError::new(
+                "plugin_approvals_unsaved",
+                "Noura couldn't save the plugin approvals in its app data.",
+            )
+        })?;
+        self.records = records;
+        Ok(())
+    }
+
+    /// The plugin host, started the first time something needs it. Starting
+    /// it drops library entries this device has no record of and watches
+    /// each installed plugin's folder for new builds.
+    fn host(&mut self) -> Result<Arc<PluginHost>, AppError> {
+        if let Some(host) = &self.host {
+            return Ok(host.clone());
+        }
+        let host = Arc::new(
+            PluginHost::new(self.app_data.join(LIBRARY)).map_err(|error| from_install(&error))?,
+        );
+        self.host = Some(host.clone());
+        let records = self.records.plugins.clone();
+        for id in host.installed_ids() {
+            if !records.contains_key(&id)
+                && let Err(error) = host.uninstall(&id)
+            {
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    "a plugin without approvals stayed"
+                );
+            }
+        }
+        for (id, record) in records {
+            match host.installed(&id) {
+                Ok((manifest, digest)) => {
+                    self.manifests.insert(id.clone(), manifest);
+                    self.watch(&id, &record.folder, digest);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        code = error.code.as_str(),
+                        "an installed plugin can't be read"
+                    );
+                    self.problems.insert(id, error.message);
+                }
+            }
+        }
+        Ok(host)
+    }
+
+    /// The rows of the Plugins page: every plugin installed here or
+    /// enabled in the open workspace, by ID.
+    pub(crate) fn rows(&mut self) -> Vec<PluginRow> {
+        if !self.records.plugins.is_empty()
+            && let Err(error) = self.host()
+        {
+            tracing::warn!(code = %error.code, "the plugin host didn't start");
+        }
+        let records = &self.records.plugins;
+        let enabled = self.enabled();
+        let mut ids: Vec<&String> = records.keys().chain(enabled.iter()).collect();
+        ids.sort();
+        ids.dedup();
+        ids.into_iter()
+            .map(|id| {
+                let record = records.get(id);
+                let manifest = self.manifests.get(id).filter(|_| record.is_some());
+                let update = match (self.updates.get(id), record) {
+                    (Some(candidate), Some(record)) => candidate
+                        .manifest()
+                        .capabilities
+                        .iter()
+                        .filter(|capability| !record.approved.contains(capability))
+                        .map(CapabilityLine::of)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                PluginRow {
+                    id: id.clone(),
+                    name: manifest.map_or_else(|| id.clone(), |manifest| manifest.name.clone()),
+                    version: manifest.map(|manifest| manifest.version.to_string()),
+                    folder: record.map(|record| record.folder.clone()),
+                    approved: record
+                        .map(|record| record.approved.iter().map(CapabilityLine::of).collect())
+                        .unwrap_or_default(),
+                    installed: record.is_some(),
+                    enabled: enabled.contains(id),
+                    running: self.running.contains_key(id),
+                    problem: self.problems.get(id).cloned(),
+                    update,
+                }
+            })
+            .collect()
+    }
+
+    /// The plugin IDs the open workspace's manifest lists as enabled.
+    fn enabled(&self) -> Vec<String> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.engine().manifest().enabled_plugins)
+            .unwrap_or_default()
+    }
+
+    /// Run the plugins `workspace` enables that this device installed and
+    /// approved, after stopping the ones another workspace ran.
+    pub(crate) fn open_workspace(&mut self, workspace: Option<Arc<Workspace>>) {
+        self.running.clear();
+        self.workspace = workspace;
+        self.changed();
+        if self.workspace.is_none() || self.records.plugins.is_empty() {
+            return;
+        }
+        if let Err(error) = self.host() {
+            tracing::warn!(code = %error.code, "the plugin host didn't start");
+            return;
+        }
+        for id in self.enabled() {
+            self.start(&id);
+        }
+        self.changed();
+    }
+
+    /// Start the installed plugin `id` when every capability its manifest
+    /// declares is approved, and draw its pages.
+    fn start(&mut self, id: &str) {
+        self.running.remove(id);
+        self.problems.remove(id);
+        let Some(record) = self.records.plugins.get(id).cloned() else {
+            return;
+        };
+        let Some(workspace) = self.workspace.clone() else {
+            return;
+        };
+        let started = self.host().and_then(|host| {
+            let loaded = host.load(id).map_err(|error| from_install(&error))?;
+            let unapproved: Vec<&str> = loaded
+                .manifest()
+                .capabilities
+                .iter()
+                .filter(|capability| !record.approved.contains(capability))
+                .map(Capability::name)
+                .collect();
+            if !unapproved.is_empty() {
+                return Err(AppError::new(
+                    "plugin_not_approved",
+                    format!(
+                        "It asks for capabilities you haven't approved: {}.",
+                        unapproved.join(", ")
+                    ),
+                ));
+            }
+            let reader: Arc<dyn WorkspaceReads> = Arc::new(WorkspaceReader(workspace));
+            let mut instance = host
+                .start(&loaded, &record.approved, Some(reader))
+                .map_err(|error| {
+                    tracing::warn!(%error, "a plugin didn't start");
+                    AppError::new(
+                        "plugin_start_failed",
+                        "It stopped with an error as it started.",
+                    )
+                })?;
+            let declares_views = loaded.manifest().capabilities.contains(&Capability::Views);
+            let pages = if declares_views {
+                instance.pages().map_err(|error| {
+                    tracing::warn!(%error, "a plugin didn't list its pages");
+                    AppError::new("plugin_pages_failed", "It stopped with an error.")
+                })?
+            } else {
+                Vec::new()
+            };
+            Ok((instance, pages))
+        });
+        match started {
+            Ok((instance, pages)) => {
+                let pages = pages.into_iter().filter(valid_page).collect();
+                let mut running = Running {
+                    instance,
+                    pages,
+                    views: BTreeMap::new(),
+                };
+                running.render_all();
+                self.running.insert(id.to_owned(), running);
+            }
+            Err(error) => {
+                self.problems.insert(id.to_owned(), error.message);
+            }
+        }
+        self.changed();
+    }
+
+    /// Read the plugin folder `folder` for the install dialog, without
+    /// running any of its code.
+    pub(crate) fn review(&mut self, folder: &Path) -> PluginInstall {
+        let shown = folder.to_string_lossy().into_owned();
+        let refused = |problem: String| PluginInstall {
+            folder: shown.clone(),
+            id: String::new(),
+            name: String::new(),
+            version: String::new(),
+            capabilities: Vec::new(),
+            problem: Some(problem),
+            candidate: None,
+        };
+        let Some(path) = folder.to_str() else {
+            return refused(AppError::unsupported_path().message);
+        };
+        let host = match self.host() {
+            Ok(host) => host,
+            Err(error) => return refused(error.message),
+        };
+        match host.inspect(folder) {
+            Ok(candidate) => {
+                let manifest = candidate.manifest();
+                PluginInstall {
+                    folder: path.to_owned(),
+                    id: manifest.id.clone(),
+                    name: manifest.name.clone(),
+                    version: manifest.version.to_string(),
+                    capabilities: manifest
+                        .capabilities
+                        .iter()
+                        .map(CapabilityLine::of)
+                        .collect(),
+                    problem: None,
+                    candidate: Some(candidate),
+                }
+            }
+            Err(error) => refused(error.message),
+        }
+    }
+
+    /// Install the plugin the dialog shows, approving every capability it
+    /// lists. A plugin the open workspace enables starts at once.
+    pub(crate) fn install(&mut self, install: &PluginInstall) -> Result<(), AppError> {
+        let Some(candidate) = &install.candidate else {
+            return Err(AppError::new(
+                "plugin_refused",
+                install.problem.clone().unwrap_or_default(),
+            ));
+        };
+        let host = self.host()?;
+        host.install(candidate)
+            .map_err(|error| from_install(&error))?;
+        let id = candidate.manifest().id.clone();
+        let record = Record {
+            folder: install.folder.clone(),
+            approved: candidate.manifest().capabilities.clone(),
+        };
+        if let Err(error) = self.save_records(|records| {
+            records.plugins.insert(id.clone(), record);
+        }) {
+            let _ = host.uninstall(&id);
+            return Err(error);
+        }
+        self.manifests
+            .insert(id.clone(), candidate.manifest().clone());
+        self.watch(&id, &install.folder, candidate.digest());
+        if self.enabled().contains(&id) {
+            self.start(&id);
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// Turn the plugin `id` on or off in the open workspace: rewrite the
+    /// manifest's enabled plugins list, then start or stop the plugin.
+    pub(crate) fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), AppError> {
+        let Some(workspace) = self.workspace.clone() else {
+            return Err(AppError::new(
+                "no_workspace",
+                "Open a workspace to turn plugins on or off.",
+            ));
+        };
+        workspace.set_plugin_enabled(id, enabled)?;
+        if enabled {
+            if self.records.plugins.contains_key(id) {
+                self.start(id);
+            }
+        } else {
+            self.running.remove(id);
+            self.problems.remove(id);
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// Remove the plugin `id` from this device: its code, its compiled
+    /// code and its approvals. The workspace's enabled list stays, for
+    /// your other devices.
+    pub(crate) fn uninstall(&mut self, id: &str) -> Result<(), AppError> {
+        let host = self.host()?;
+        self.running.remove(id);
+        self.watchers.remove(id);
+        self.updates.remove(id);
+        self.problems.remove(id);
+        self.manifests.remove(id);
+        self.save_records(|records| {
+            records.plugins.remove(id);
+        })?;
+        let removed = host.uninstall(id).map_err(|error| from_install(&error));
+        self.changed();
+        removed
+    }
+
+    /// Approve the capabilities a waiting build adds, and run it.
+    pub(crate) fn approve_update(&mut self, id: &str) -> Result<(), AppError> {
+        let Some(candidate) = self.updates.remove(id) else {
+            return Err(AppError::new(
+                "no_plugin_update",
+                "No new build of this plugin is waiting.",
+            ));
+        };
+        if !self.records.plugins.contains_key(id) {
+            return Err(AppError::new(
+                "plugin_not_installed",
+                "This plugin isn't installed on this device.",
+            ));
+        }
+        let approved = candidate.manifest().capabilities.clone();
+        self.save_records(|records| {
+            if let Some(record) = records.plugins.get_mut(id) {
+                for capability in approved {
+                    if !record.approved.contains(&capability) {
+                        record.approved.push(capability);
+                    }
+                }
+            }
+        })?;
+        self.apply(id, &candidate)
+    }
+
+    /// Take the builds the reload watchers found. A build that asks for no
+    /// capability beyond your approvals replaces the running one; any
+    /// other waits for approval while the old build keeps running.
+    pub(crate) fn poll(&mut self) {
+        while let Ok(reload) = self.reloads.try_recv() {
+            let Some(record) = self.records.plugins.get(&reload.id).cloned() else {
+                continue;
+            };
+            match reload.result {
+                Ok(candidate) => {
+                    let approved = candidate
+                        .manifest()
+                        .capabilities
+                        .iter()
+                        .all(|capability| record.approved.contains(capability));
+                    if approved {
+                        self.updates.remove(&reload.id);
+                        if let Err(error) = self.apply(&reload.id, &candidate) {
+                            self.problems.insert(reload.id.clone(), error.message);
+                        }
+                    } else {
+                        self.updates.insert(reload.id.clone(), candidate);
+                    }
+                }
+                Err(error) => {
+                    self.problems.insert(
+                        reload.id.clone(),
+                        format!("The new build didn't load: {}", error.message),
+                    );
+                }
+            }
+            self.changed();
+        }
+    }
+
+    /// Install `candidate` over the plugin `id`, and run it in place of the
+    /// old build when the plugin is running.
+    fn apply(&mut self, id: &str, candidate: &Candidate) -> Result<(), AppError> {
+        let host = self.host()?;
+        host.update(candidate)
+            .map_err(|error| from_install(&error))?;
+        self.manifests
+            .insert(id.to_owned(), candidate.manifest().clone());
+        self.problems.remove(id);
+        if self.enabled().iter().any(|enabled| enabled == id) {
+            self.start(id);
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// Watch the folder the plugin `id` came from for new builds.
+    fn watch(&mut self, id: &str, folder: &str, installed: String) {
+        let Some(host) = self.host.clone() else {
+            return;
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = ReloadWatcher {
+            id: id.to_owned(),
+            folder: PathBuf::from(folder),
+            host,
+            installed,
+            sender: self.reload_sender.clone(),
+            wake: self.wake.clone(),
+            stop: stop.clone(),
+        };
+        let spawned = std::thread::Builder::new()
+            .name("plugin-reload".into())
+            .spawn(move || watcher.run());
+        match spawned {
+            Ok(_) => {
+                self.watchers.insert(id.to_owned(), Watcher { stop });
+            }
+            Err(error) => tracing::warn!(%error, "a plugin's folder isn't watched for new builds"),
+        }
+    }
+
+    /// Every page the running plugins add to the rail, as (rail page ID,
+    /// title), by plugin.
+    pub(crate) fn pages(&self) -> Vec<(String, String)> {
+        self.running
+            .iter()
+            .flat_map(|(id, running)| {
+                running
+                    .pages
+                    .iter()
+                    .map(move |page| (page_id(id, &page.id), page.title.clone()))
+            })
+            .collect()
+    }
+
+    /// The view of the rail page `page_id`, when a running plugin adds it.
+    pub(crate) fn view(&self, page_id: &str) -> Option<PluginView> {
+        let (plugin, page) = split_page_id(page_id)?;
+        self.running.get(plugin)?.views.get(page).cloned()
+    }
+
+    /// Tell the plugin behind `page_id` that the button `node` was pressed,
+    /// and draw its pages again.
+    pub(crate) fn press(&mut self, page_id: &str, node: &str) {
+        let Some((plugin, page)) = split_page_id(page_id) else {
+            return;
+        };
+        let Some(running) = self.running.get_mut(plugin) else {
+            return;
+        };
+        if !running.pages.iter().any(|known| known.id == page) {
+            return;
+        }
+        if let Err(error) = running
+            .instance
+            .handle_event(page, &Event::Pressed(node.to_owned()))
+        {
+            tracing::warn!(%error, "a plugin failed to handle a press");
+        }
+        running.render_all();
+        self.changed();
+    }
+}
+
+impl Running {
+    /// Ask the plugin for each page's view and check it.
+    fn render_all(&mut self) {
+        for page in &self.pages {
+            let view = match self.instance.render(&page.id) {
+                Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+                Err(error) => {
+                    tracing::warn!(%error, "a plugin failed to draw a page");
+                    Err("The plugin stopped with an error while drawing this page.".to_owned())
+                }
+            };
+            self.views.insert(page.id.clone(), view);
+        }
+    }
+}
+
+/// Whether a plugin's page has an ID and a title the rail can show.
+fn valid_page(page: &Page) -> bool {
+    let id_ok = !page.id.is_empty()
+        && page.id.len() <= 64
+        && !page.id.chars().any(|c| c.is_control() || c.is_whitespace());
+    let title = page.title.trim();
+    let title_ok =
+        !title.is_empty() && title.chars().count() <= 80 && !title.chars().any(char::is_control);
+    if !(id_ok && title_ok) {
+        tracing::warn!("a plugin page without a usable ID or title was left out");
+    }
+    id_ok && title_ok
+}
+
+/// The rail page ID of a plugin's page.
+pub(crate) fn page_id(plugin: &str, page: &str) -> String {
+    format!("{PAGE_PREFIX}{plugin}:{page}")
+}
+
+/// Whether a rail page belongs to a plugin.
+pub(crate) fn is_plugin_page(page_id: &str) -> bool {
+    page_id.starts_with(PAGE_PREFIX)
+}
+
+fn split_page_id(page_id: &str) -> Option<(&str, &str)> {
+    page_id.strip_prefix(PAGE_PREFIX)?.split_once(':')
+}
+
+fn from_install(error: &InstallError) -> AppError {
+    tracing::warn!(
+        code = error.code.as_str(),
+        "a plugin couldn't be installed or loaded"
+    );
+    AppError::new(error.code.as_str(), error.message.clone())
+}
+
+/// Watches a plugin's folder and reads each new build there.
+struct ReloadWatcher {
+    id: String,
+    folder: PathBuf,
+    host: Arc<PluginHost>,
+    /// The digest of the build installed last, which a change must differ
+    /// from.
+    installed: String,
+    sender: Sender<Reload>,
+    wake: Option<Wake>,
+    stop: Arc<AtomicBool>,
+}
+
+impl ReloadWatcher {
+    fn run(mut self) {
+        let watcher = WatchCoordinator::new(&self.folder, |_| {});
+        let mut last_problem: Option<String> = None;
+        // The folder may have changed while Noura wasn't running.
+        let mut look = true;
+        while !self.stop.load(Ordering::Relaxed) {
+            if !look {
+                let changed = !watcher
+                    .drain_coalesced(WATCH_WAIT)
+                    .unwrap_or_default()
+                    .is_empty()
+                    || watcher.take_overflow()
+                    || !watcher.is_available();
+                if !changed {
+                    continue;
+                }
+                // Let the build tool finish writing.
+                while !self.stop.load(Ordering::Relaxed)
+                    && !watcher
+                        .drain_coalesced(QUIET)
+                        .unwrap_or_default()
+                        .is_empty()
+                {}
+            }
+            look = false;
+            if self.stop.load(Ordering::Relaxed) {
+                return;
+            }
+            let result = match self.host.folder_digest(&self.folder) {
+                Ok(digest) if digest == self.installed => continue,
+                Ok(_) => self.host.inspect_update(&self.id, &self.folder),
+                Err(error) => Err(error),
+            };
+            match &result {
+                Ok(candidate) => {
+                    self.installed = candidate.digest();
+                    last_problem = None;
+                }
+                Err(error) if last_problem.as_ref() == Some(&error.message) => continue,
+                Err(error) => last_problem = Some(error.message.clone()),
+            }
+            let reload = Reload {
+                id: self.id.clone(),
+                result,
+            };
+            if self.sender.send(reload).is_err() {
+                return;
+            }
+            if let Some(wake) = &self.wake {
+                wake();
+            }
+        }
+    }
+}
+
+/// Reads the open workspace for plugins through `local-core`, which keeps
+/// every path inside the workspace.
+struct WorkspaceReader(Arc<Workspace>);
+
+impl WorkspaceReads for WorkspaceReader {
+    fn list_entries(&self) -> Result<Vec<Listed>, ServiceError> {
+        let (entries, unsupported) = self
+            .0
+            .engine()
+            .list_workspace_entries_counting_unsupported()
+            .map_err(|error| service_error(&error, ""))?;
+        let mut listed = Vec::with_capacity(entries.len() + unsupported);
+        for entry in entries {
+            let Ok(path) = WorkspacePath::new(&entry.relative_path) else {
+                listed.push(Listed::Unsupported);
+                continue;
+            };
+            listed.push(Listed::Entry(Entry {
+                path,
+                kind: match entry.kind {
+                    WorkspaceEntryKind::Folder => EntryKind::Folder,
+                    _ => EntryKind::File,
+                },
+                object_id: entry.object_id,
+                object_type: entry.object_type,
+                revision: entry.revision,
+            }));
+        }
+        listed.extend(std::iter::repeat_n(Listed::Unsupported, unsupported));
+        Ok(listed)
+    }
+
+    fn read_file(&self, path: &WorkspacePath) -> Result<FileRead, ServiceError> {
+        let (bytes, revision) = self
+            .0
+            .engine()
+            .read_file(path.as_str(), MAX_READ_BYTES)
+            .map_err(|error| service_error(&error, path.as_str()))?;
+        Ok(FileRead {
+            path: path.clone(),
+            bytes,
+            revision,
+        })
+    }
+
+    fn read_object(&self, id: &str) -> Result<ObjectRead, ServiceError> {
+        let object = self
+            .0
+            .engine()
+            .get_object(id)
+            .map_err(|error| service_error(&error, id))?
+            .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
+        let path =
+            WorkspacePath::new(&object.relative_path).map_err(|_| ServiceError::UnsupportedPath)?;
+        // An object's title is its file name without the extension.
+        let title = Path::new(&object.relative_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        Ok(ObjectRead {
+            id: object.id,
+            object_type: object.object_type,
+            title,
+            path,
+            body: object.body,
+            properties: serde_json::to_string(&object.properties)
+                .unwrap_or_else(|_| "{}".to_owned()),
+            revision: object.revision,
+        })
+    }
+}
+
+/// A `local-core` error as a plugin sees it, with the details logged.
+fn service_error(error: &CoreError, what: &str) -> ServiceError {
+    match error.code.as_str() {
+        "empty_path" | "absolute_path" | "unsafe_path" | "reserved_path" | "symlink_escape" => {
+            ServiceError::InvalidPath(what.to_owned())
+        }
+        "unsupported_path" | "non_utf8_path" => ServiceError::UnsupportedPath,
+        "file_not_found" | "object_not_found" => ServiceError::NotFound(what.to_owned()),
+        "file_too_large" => ServiceError::Failed("The file is larger than 16 MB.".to_owned()),
+        code => {
+            tracing::warn!(code, operation = %error.operation, "a plugin's workspace read failed");
+            ServiceError::Failed("Noura couldn't read the workspace.".to_owned())
+        }
+    }
+}

@@ -2,11 +2,18 @@
 //! do, and the view reports what happened as one text node per line:
 //!
 //! - `list`: list the workspace's entries.
+//! - `workspace`: list the workspace's entries, read each file and each
+//!   object the listing names, then try two paths outside what plugins
+//!   may read.
 //! - `read-file:<path>`: read a file.
 //! - `read-object:<id>`: read an object by its stable ID.
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
 //! - `events`: the events the plugin received, oldest first.
 //! - anything else: a panel with a line of text and a button.
+//!
+//! Its pages are `hello`, titled Probe, and `workspace`. The first shares
+//! the hello plugin's page ID, so a test can swap one build for the other
+//! under an open page.
 
 use std::sync::Mutex;
 
@@ -18,10 +25,16 @@ struct Probe;
 
 impl Plugin for Probe {
     fn pages() -> Vec<Page> {
-        vec![Page {
-            id: "probe".into(),
-            title: "Probe".into(),
-        }]
+        vec![
+            Page {
+                id: "hello".into(),
+                title: "Probe".into(),
+            },
+            Page {
+                id: "workspace".into(),
+                title: "Workspace".into(),
+            },
+        ]
     }
 
     fn render(page: String) -> Vec<Node> {
@@ -30,29 +43,12 @@ impl Plugin for Probe {
         }
         let lines = if page == "list" {
             list()
+        } else if page == "workspace" {
+            everything()
         } else if let Some(path) = page.strip_prefix("read-file:") {
-            vec![match workspace::read_file(path) {
-                Ok(file) => format!(
-                    "file {} revision {} text {}",
-                    file.path,
-                    file.revision,
-                    String::from_utf8_lossy(&file.bytes)
-                ),
-                Err(error) => describe(&error),
-            }]
+            vec![read_file(path)]
         } else if let Some(id) = page.strip_prefix("read-object:") {
-            vec![match workspace::read_object(id) {
-                Ok(object) => format!(
-                    "object {} type {} title {} path {} revision {} body {}",
-                    object.id,
-                    object.object_type,
-                    object.title,
-                    object.path,
-                    object.revision,
-                    object.body.trim()
-                ),
-                Err(error) => describe(&error),
-            }]
+            vec![read_object(id)]
         } else if page == "events" {
             EVENTS.lock().unwrap().clone()
         } else {
@@ -75,6 +71,52 @@ impl Plugin for Probe {
             .unwrap()
             .push(format!("{page} pressed {node}"));
     }
+}
+
+fn read_file(path: &str) -> String {
+    match workspace::read_file(path) {
+        Ok(file) => format!(
+            "file {} revision {} text {}",
+            file.path,
+            file.revision,
+            String::from_utf8_lossy(&file.bytes).trim()
+        ),
+        Err(error) => describe(&error),
+    }
+}
+
+fn read_object(id: &str) -> String {
+    match workspace::read_object(id) {
+        Ok(object) => format!(
+            "object {} type {} title {} path {} revision {} body {}",
+            object.id,
+            object.object_type,
+            object.title,
+            object.path,
+            object.revision,
+            object.body.trim()
+        ),
+        Err(error) => describe(&error),
+    }
+}
+
+/// The listing, then each file and object it names, then two paths a
+/// plugin may not read.
+fn everything() -> Vec<String> {
+    let mut lines = list();
+    if let Ok(entries) = workspace::list_entries() {
+        for entry in entries.into_iter().flatten() {
+            if entry.kind == workspace::EntryKind::File {
+                lines.push(read_file(&entry.path));
+            }
+            if let Some(id) = &entry.object_id {
+                lines.push(read_object(id));
+            }
+        }
+    }
+    lines.push(read_file(".noura/workspace.yaml"));
+    lines.push(read_file("../outside.md"));
+    lines
 }
 
 fn list() -> Vec<String> {

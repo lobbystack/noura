@@ -24,9 +24,9 @@ use wasmtime::Engine;
 use wasmtime::component::Component;
 
 use crate::{
-    Capability, InstallError, InstallErrorCode, MANIFEST_FILE, PluginError, PluginInstance,
-    PluginManifest, WorkspaceReads,
-    manifest::read_manifest,
+    Capability, InstallError, InstallErrorCode, PluginError, PluginInstance, PluginManifest,
+    WorkspaceReads,
+    manifest::read_manifest_bytes,
     runtime::{self, Backend, EpochTicker, Limits},
 };
 
@@ -143,7 +143,7 @@ impl PluginHost {
     /// writing anything or running any of its code. Refuses a plugin whose
     /// ID is installed already.
     pub fn inspect(&self, folder: &Path) -> Result<Candidate, InstallError> {
-        let manifest = read_manifest(folder)?;
+        let (manifest, manifest_bytes) = read_manifest_bytes(folder)?;
         if self.is_installed(&manifest.id) {
             return Err(InstallError::new(
                 InstallErrorCode::AlreadyInstalled,
@@ -153,13 +153,13 @@ impl PluginHost {
                 ),
             ));
         }
-        self.candidate(folder, manifest)
+        self.candidate(folder, manifest, manifest_bytes)
     }
 
     /// Read a new build of the installed plugin `id` from `folder`, as
     /// [`Self::inspect`] does for a new plugin.
     pub fn inspect_update(&self, id: &str, folder: &Path) -> Result<Candidate, InstallError> {
-        let manifest = read_manifest(folder)?;
+        let (manifest, manifest_bytes) = read_manifest_bytes(folder)?;
         if manifest.id != id {
             return Err(InstallError::new(
                 InstallErrorCode::InvalidManifest,
@@ -170,16 +170,52 @@ impl PluginHost {
                 ),
             ));
         }
-        self.candidate(folder, manifest)
+        self.candidate(folder, manifest, manifest_bytes)
+    }
+
+    /// Names the build in `folder` as [`Candidate::digest`] does, without
+    /// compiling it, so a reload can skip a build that is installed
+    /// already.
+    pub fn folder_digest(&self, folder: &Path) -> Result<String, InstallError> {
+        let (manifest, manifest_bytes) = read_manifest_bytes(folder)?;
+        let entry = resolve_entry(folder, &manifest.entry)?;
+        let component_bytes = read_component(&entry, &manifest.entry)?;
+        Ok(digest(&manifest_bytes, &component_bytes))
+    }
+
+    /// The installed plugin's manifest and the digest of its installed
+    /// build, read without compiling it.
+    pub fn installed(&self, id: &str) -> Result<(PluginManifest, String), InstallError> {
+        let (manifest, manifest_bytes, component_bytes) = self.read_installed(id)?;
+        Ok((manifest, digest(&manifest_bytes, &component_bytes)))
+    }
+
+    fn read_installed(&self, id: &str) -> Result<(PluginManifest, Vec<u8>, Vec<u8>), InstallError> {
+        if !self.is_installed(id) {
+            return Err(not_installed(id));
+        }
+        let folder = self.library.join(id);
+        let manifest_bytes = std::fs::read(folder.join(INSTALLED_MANIFEST))
+            .map_err(|error| InstallError::storage("read the installed plugin", &error))?;
+        let manifest = std::str::from_utf8(&manifest_bytes)
+            .map_err(|_| {
+                InstallError::new(
+                    InstallErrorCode::InvalidManifest,
+                    "The installed plugin's manifest isn't UTF-8 text.",
+                )
+            })
+            .and_then(PluginManifest::parse)?;
+        let component_bytes = std::fs::read(folder.join(INSTALLED_COMPONENT))
+            .map_err(|error| InstallError::storage("read the installed plugin", &error))?;
+        Ok((manifest, manifest_bytes, component_bytes))
     }
 
     fn candidate(
         &self,
         folder: &Path,
         manifest: PluginManifest,
+        manifest_bytes: Vec<u8>,
     ) -> Result<Candidate, InstallError> {
-        let manifest_bytes = std::fs::read(folder.join(MANIFEST_FILE))
-            .map_err(|error| InstallError::storage("read plugin.toml", &error))?;
         let entry = resolve_entry(folder, &manifest.entry)?;
         let component_bytes = read_component(&entry, &manifest.entry)?;
         if Engine::detect_precompiled(&component_bytes).is_some() {
@@ -271,22 +307,8 @@ impl PluginHost {
     /// or the installed component compiled again when that code is missing
     /// or was compiled for another engine.
     pub fn load(&self, id: &str) -> Result<LoadedPlugin, InstallError> {
-        if !self.is_installed(id) {
-            return Err(not_installed(id));
-        }
+        let (manifest, manifest_bytes, component_bytes) = self.read_installed(id)?;
         let folder = self.library.join(id);
-        let manifest_bytes = std::fs::read(folder.join(INSTALLED_MANIFEST))
-            .map_err(|error| InstallError::storage("read the installed plugin", &error))?;
-        let manifest = std::str::from_utf8(&manifest_bytes)
-            .map_err(|_| {
-                InstallError::new(
-                    InstallErrorCode::InvalidManifest,
-                    "The installed plugin's manifest isn't UTF-8 text.",
-                )
-            })
-            .and_then(PluginManifest::parse)?;
-        let component_bytes = std::fs::read(folder.join(INSTALLED_COMPONENT))
-            .map_err(|error| InstallError::storage("read the installed plugin", &error))?;
         let compiled = folder.join(self.compiled_name(&component_bytes));
         let (component, source) = match self.load_compiled(&compiled) {
             Some(component) => (component, CodeSource::Cache),
@@ -325,7 +347,7 @@ impl PluginHost {
     }
 
     /// The IDs of the installed plugins, sorted.
-    pub fn installed(&self) -> Vec<String> {
+    pub fn installed_ids(&self) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(&self.library) else {
             return Vec::new();
         };

@@ -97,6 +97,13 @@ impl Capability {
 /// must stay inside the folder; [`crate::PluginHost::inspect`] also checks
 /// that the file it names is there and isn't a link that leaves it.
 pub fn read_manifest(folder: &Path) -> Result<PluginManifest, InstallError> {
+    read_manifest_bytes(folder).map(|(manifest, _)| manifest)
+}
+
+/// [`read_manifest`], with the bytes it parsed.
+pub(crate) fn read_manifest_bytes(
+    folder: &Path,
+) -> Result<(PluginManifest, Vec<u8>), InstallError> {
     let path = folder.join(MANIFEST_FILE);
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
@@ -122,7 +129,8 @@ pub fn read_manifest(folder: &Path) -> Result<PluginManifest, InstallError> {
             format!("{MANIFEST_FILE} isn't UTF-8 text."),
         )
     })?;
-    PluginManifest::parse(text)
+    let manifest = PluginManifest::parse(text)?;
+    Ok((manifest, bytes))
 }
 
 impl PluginManifest {

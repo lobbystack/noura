@@ -1,7 +1,7 @@
 //! What every window of the app shares: the open workspace, with its one
 //! index and watcher, the newest listing of its files, the rail order,
-//! this device's preferences, and each window's view state, which it
-//! saves together.
+//! this device's preferences, the plugins service, and each window's view
+//! state, which it saves together.
 //!
 //! Each [`App`](crate::App) is one window. A window that changes what
 //! the others show publishes it here and wakes them; each one applies it
@@ -16,6 +16,7 @@ use std::{
 use crate::{
     FileTree, Preferences, System, Workspace, WorkspaceService,
     app::{Change, Listeners},
+    plugins::Plugins,
     view_state::{StoredView, StoredWindow, ViewStore},
 };
 
@@ -33,6 +34,9 @@ pub(crate) struct Session {
     pub(crate) service: Arc<WorkspaceService>,
     pub(crate) system: Arc<dyn System>,
     state: Mutex<State>,
+    /// Held apart from `state`, so a plugin call never blocks a window
+    /// that only reads the session.
+    plugins: Mutex<Plugins>,
 }
 
 struct State {
@@ -99,7 +103,22 @@ pub(crate) struct Current {
 
 impl Session {
     pub(crate) fn new(app_data: &Path, system: Arc<dyn System>) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|session: &std::sync::Weak<Self>| {
+            let mut plugins = Plugins::new(app_data);
+            // A plugin's reload watcher wakes every window once it read a
+            // new build.
+            let session = session.clone();
+            plugins.set_wake(Arc::new(move || {
+                if let Some(session) = session.upgrade() {
+                    session.wake_all();
+                }
+            }));
+            Self::with_plugins(app_data, system, plugins)
+        })
+    }
+
+    fn with_plugins(app_data: &Path, system: Arc<dyn System>, plugins: Plugins) -> Self {
+        Self {
             app_data: app_data.to_owned(),
             service: Arc::new(WorkspaceService::with_system(app_data, system.clone())),
             system,
@@ -118,7 +137,27 @@ impl Session {
                 views: ViewStore::new(app_data),
                 next_key: 0,
             }),
-        })
+            plugins: Mutex::new(plugins),
+        }
+    }
+
+    /// The plugins service every window shares.
+    pub(crate) fn plugins(&self) -> MutexGuard<'_, Plugins> {
+        self.plugins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Wake every open window to apply a change, such as a plugin's new
+    /// build.
+    pub(crate) fn wake_all(&self) {
+        let windows: Vec<Listeners> = self
+            .lock()
+            .windows
+            .iter()
+            .filter_map(|window| window.listeners.clone())
+            .collect();
+        wake(windows);
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

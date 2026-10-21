@@ -70,6 +70,15 @@ impl WorkspaceEngine {
     /// files are canonical, so when the index can't be updated the listing
     /// still shows them, with what the index last knew about each.
     pub fn list_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
+        self.list_workspace_entries_counting_unsupported()
+            .map(|(entries, _)| entries)
+    }
+
+    /// [`Self::list_workspace_entries`], and how many files and folders it
+    /// left out because their names can't be represented as UTF-8.
+    pub fn list_workspace_entries_counting_unsupported(
+        &self,
+    ) -> Result<(Vec<WorkspaceEntry>, usize)> {
         let scan = if self.needs_reconcile() {
             match self.reconcile_walk(&HashSet::new(), EventSource::Reconciliation, true) {
                 Ok(scan) => scan,
@@ -118,6 +127,11 @@ impl WorkspaceEngine {
                 Err(error) => return Err(error),
             }
         }
+        let unsupported = scan
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "unsupported_path")
+            .count();
         let mut entries = scan
             .entries
             .into_iter()
@@ -154,7 +168,43 @@ impl WorkspaceEngine {
             .collect::<Vec<_>>();
         entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         entries.dedup_by(|right, left| left.relative_path == right.relative_path);
-        Ok(entries)
+        Ok((entries, unsupported))
+    }
+
+    /// The bytes of the file at `relative_path` and the revision of those
+    /// bytes, for a reader such as a plugin. The path must stay inside the
+    /// workspace, out of the folders Noura keeps to itself and off links.
+    /// A file larger than `max_bytes` is refused.
+    pub fn read_file(&self, relative_path: &str, max_bytes: u64) -> Result<(Vec<u8>, String)> {
+        let operation = "file_read";
+        let path = resolve_for_write(&self.root, relative_path, operation)?;
+        let not_found = || {
+            let mut error = CoreError::new(
+                "file_not_found",
+                ErrorCategory::Filesystem,
+                "The file doesn't exist",
+                operation,
+            );
+            error.path = Some(relative_path.to_owned());
+            error
+        };
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => return Err(not_found()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(not_found()),
+            Err(error) => return Err(CoreError::io(error, operation, Some(relative_path))),
+        };
+        if metadata.len() > max_bytes {
+            return Err(CoreError::validation(
+                "file_too_large",
+                "The file is larger than the reader accepts",
+                operation,
+            ));
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CoreError::io(error, operation, Some(relative_path)))?;
+        let revision = markdown::revision(&bytes);
+        Ok((bytes, revision))
     }
 
     pub fn list_non_managed_markdown(&self) -> Result<Vec<UnmanagedFile>> {

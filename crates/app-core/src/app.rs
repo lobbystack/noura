@@ -3,8 +3,8 @@
 //! Opening a workspace walks its folder, which can take a while, so it runs
 //! on a background thread. A client calls [`App::poll`] on its own thread to
 //! take the result, and [`App::subscribe`] tells it when to. The windows of
-//! one app share a session: the open workspace, its files and the rail
-//! order.
+//! one app share a session: the open workspace, its files, the rail order
+//! and the plugins that run.
 
 use std::{
     path::{Path, PathBuf},
@@ -18,8 +18,8 @@ use local_core::WorkspaceEngine;
 
 use crate::{
     AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
-    PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
-    WorkspaceService,
+    PendingSaves, PluginInstall, Preferences, RecentWorkspace, Settings, SettingsSection, System,
+    Tab, Workspace, WorkspaceService,
     commands::Registry,
     layout::LayoutStore,
     preferences::PreferencesStore,
@@ -38,6 +38,7 @@ mod file_actions;
 mod finder;
 mod ignored_files;
 mod palette;
+mod plugins;
 mod preferences;
 mod settings;
 mod view;
@@ -100,6 +101,9 @@ pub enum Change {
     Preferences,
     /// A command registered.
     Commands,
+    /// A plugin installed, uninstalled, turned on or off, or drew its
+    /// pages again, or the install dialog changed.
+    Plugins,
     /// The palette opened, closed, or changed what it shows.
     Palette,
     /// The window closed, opened another window, or Quit ran; see
@@ -188,6 +192,8 @@ pub struct App {
     rail_seen: u64,
     recents_seen: u64,
     preferences_seen: u64,
+    /// The version of the plugins service this window shows.
+    plugins_seen: u64,
     closed: bool,
     /// Windows this one opened for its workspace's other saved windows,
     /// until the client takes them.
@@ -214,6 +220,8 @@ pub struct App {
     ignored_files: Option<IgnoredFiles>,
     /// Settings, while it is open.
     settings: Option<Settings>,
+    /// The plugin install dialog, while it is open.
+    plugin_install: Option<PluginInstall>,
     /// Settings' sections, in the order they registered.
     settings_sections: Vec<SettingsSection>,
     /// The system's apps that open at login.
@@ -284,6 +292,7 @@ impl App {
             rail_seen: 0,
             recents_seen: 0,
             preferences_seen: 0,
+            plugins_seen: 0,
             closed: false,
             opened_windows: Vec::new(),
             service: session.service.clone(),
@@ -302,6 +311,7 @@ impl App {
             renaming: None,
             ignored_files: None,
             settings: None,
+            plugin_install: None,
             settings_sections: kernel_sections(),
             login_item: Arc::new(NoLoginItem),
             log_folder: crate::log_folder(&session.app_data),
@@ -363,6 +373,7 @@ impl App {
         window.layout = self.layout.clone();
         window.preferences = self.preferences;
         window.preferences_seen = self.preferences_seen;
+        window.plugins_seen = self.plugins_seen;
         // The commands and Settings sections registered so far, what saves
         // pending changes and the login item serve every window.
         window.registry = self.registry.copy();
@@ -402,6 +413,7 @@ impl App {
         self.searcher.cancel();
         self.palette = None;
         self.settings = None;
+        self.plugin_install = None;
         self.listeners.emit(Change::Screen);
     }
 
@@ -571,7 +583,8 @@ impl App {
         let rail = self.poll_rail();
         let recents = self.poll_recents();
         let preferences = self.poll_preferences();
-        searched || opened || listed || rail || recents || preferences
+        let plugins = self.poll_plugins();
+        searched || opened || listed || rail || recents || preferences || plugins
     }
 
     /// Take the workspace a background job opened, or why it couldn't.
@@ -694,12 +707,17 @@ impl App {
         self.recents_seen = adopted.recents;
         self.failed_restore = None;
         self.close_palette();
-        self.workspace = Some(workspace);
+        self.workspace = Some(workspace.clone());
         self.tree = Some(opened.tree);
         self.rail.set_saved_order(adopted.view.rail_order);
+        self.forget_plugin_pages();
         self.listeners.emit(Change::Rail);
         let mut windows = adopted.view.windows.into_iter();
         self.restore_view(windows.next().unwrap_or_default());
+        // The workspace's plugins start, and their pages bring back the
+        // tabs that waited for them.
+        self.session.plugins().open_workspace(Some(workspace));
+        self.poll_plugins();
         self.notice = None;
         self.renaming = None;
         self.ignored_files = None;

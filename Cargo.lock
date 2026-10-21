@@ -292,6 +292,7 @@ dependencies = [
  "directories",
  "local-core",
  "nucleo-matcher",
+ "plugin-host",
  "proptest",
  "rusqlite",
  "serde",

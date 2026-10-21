@@ -70,7 +70,7 @@ fn installing_compiles_once_and_a_second_start_runs_the_cached_code() {
     let candidate = host.inspect(setup.folder.path()).expect("the folder reads");
     assert_eq!(candidate.manifest().id, "hello");
     host.install(&candidate).expect("the plugin installs");
-    assert_eq!(host.installed(), ["hello"]);
+    assert_eq!(host.installed_ids(), ["hello"]);
     drop(host);
 
     // The next start of Noura finds the compiled code the install cached.
@@ -291,7 +291,7 @@ fn uninstalling_removes_the_code_and_its_compiled_cache() {
 
     host.uninstall("hello").expect("the plugin uninstalls");
 
-    assert!(host.installed().is_empty());
+    assert!(host.installed_ids().is_empty());
     assert!(
         setup.library_files().is_empty(),
         "{:?}",
