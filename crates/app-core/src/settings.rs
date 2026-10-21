@@ -40,6 +40,8 @@ pub mod settings_section {
     pub const SHORTCUTS: &str = "shortcuts";
     /// The workspace's name and folder.
     pub const WORKSPACE: &str = "workspace";
+    /// The plugins installed on this device and enabled in the workspace.
+    pub const PLUGINS: &str = "plugins";
     /// The version, license, links and Copy diagnostics.
     pub const ABOUT: &str = "about";
 }
@@ -73,6 +75,11 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         (
             settings_section::WORKSPACE,
             "Name and location",
+            SettingsGroup::Workspace,
+        ),
+        (
+            settings_section::PLUGINS,
+            "Plugins",
             SettingsGroup::Workspace,
         ),
         (settings_section::ABOUT, "About Noura", SettingsGroup::App),

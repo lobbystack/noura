@@ -9,7 +9,10 @@ mod finder;
 mod ignored_files;
 mod inbox;
 mod keys;
+mod markdown;
 mod palette;
+mod plugin_view;
+mod plugins;
 mod rail;
 mod settings;
 mod shortcuts;
@@ -44,6 +47,7 @@ pub struct NouraUi {
     tree: tree::TreeView,
     ignored: ignored_files::IgnoredFilesView,
     settings: settings::SettingsView,
+    plugin_install: plugins::InstallView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// Keys typed in the same frame as the shortcut that opened the
@@ -64,6 +68,7 @@ impl NouraUi {
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
             settings: settings::SettingsView::default(),
+            plugin_install: plugins::InstallView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             type_ahead: Vec::new(),
@@ -176,7 +181,8 @@ impl NouraUi {
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
-        settings::show(ui, &mut self.app, &mut self.settings);
+        settings::show(ui, &mut self.app, &mut self.settings, &mut *self.picker);
+        plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
         palette::show(ui, &mut self.app, &mut self.palette);
         self.close_requested_windows(ui.ctx());
     }

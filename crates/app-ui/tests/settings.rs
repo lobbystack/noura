@@ -133,7 +133,10 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "Keyboard shortcuts".to_owned()
                 ]
             ),
-            ("Workspace".to_owned(), vec!["Name and location".to_owned()]),
+            (
+                "Workspace".to_owned(),
+                vec!["Name and location".to_owned(), "Plugins".to_owned()]
+            ),
             ("App".to_owned(), vec!["About Noura".to_owned()]),
         ]
     );
@@ -187,6 +190,7 @@ fn every_section_and_control_carries_a_label() {
         "Editor",
         "Keyboard shortcuts",
         "Name and location",
+        "Plugins",
         "About Noura",
     ] {
         choose_section(&mut harness, title);

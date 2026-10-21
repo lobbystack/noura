@@ -267,8 +267,12 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
                 muted(ui, &file.relative_path);
             }
             TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app),
-            TabContent::Page { title, .. } => {
+            TabContent::Page { title, page_id } => {
                 ui.label(RichText::new(title).size(TITLE_SIZE).strong());
+                if state.app.is_plugin_page(page_id) {
+                    ui.add_space(8.0);
+                    crate::plugin_view::show(ui, &mut state.app, page_id);
+                }
             }
         });
         let offset = output.state.clamped_offset();

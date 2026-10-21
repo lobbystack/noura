@@ -12,6 +12,7 @@ use egui::{
 };
 
 use crate::{
+    FolderPicker,
     common::muted,
     theme::{Palette, TITLE_SIZE, radius},
 };
@@ -33,7 +34,12 @@ pub(crate) struct SettingsView {
 
 /// Draw Settings while it is open. Once it closes, the keyboard goes back
 /// where it was, or to the rail's Settings button when nothing had it.
-pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
+pub(crate) fn show(
+    ui: &mut Ui,
+    app: &mut App,
+    view: &mut SettingsView,
+    picker: &mut dyn FolderPicker,
+) {
     let Some(settings) = app.settings().cloned() else {
         if view.open {
             let focus = view
@@ -72,7 +78,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
                 ScrollArea::vertical()
                     .id_salt(("settings-content", &settings.section))
                     .auto_shrink(false)
-                    .show(ui, |ui| ui.vertical(|ui| content(ui, app, &settings, view)));
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| content(ui, app, &settings, view, picker))
+                    });
             });
         });
     });
@@ -117,7 +125,13 @@ fn nav(ui: &mut Ui, app: &mut App, settings: &Settings, opened: bool) {
 }
 
 /// The chosen section's title, its notice and its controls.
-fn content(ui: &mut Ui, app: &mut App, settings: &Settings, view: &mut SettingsView) {
+fn content(
+    ui: &mut Ui,
+    app: &mut App,
+    settings: &Settings,
+    view: &mut SettingsView,
+    picker: &mut dyn FolderPicker,
+) {
     let title = app
         .settings_sections()
         .into_iter()
@@ -133,6 +147,7 @@ fn content(ui: &mut Ui, app: &mut App, settings: &Settings, view: &mut SettingsV
         settings_section::EDITOR => editor(ui, app),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
+        settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
         settings_section::ABOUT => about(ui, app),
         // Sections that later areas register draw themselves later.
         _ => {}

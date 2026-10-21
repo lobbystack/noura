@@ -488,6 +488,34 @@ impl Tabs {
         }
     }
 
+    /// Show the page `page_id` under its new title in the tab that shows
+    /// it. Returns whether a tab changed.
+    pub(crate) fn rename_page(&mut self, page_id: &str, title: &str) -> bool {
+        let mut renamed = false;
+        for tab in &mut self.tabs {
+            if let TabContent::Page {
+                page_id: shown,
+                title: shown_title,
+            } = &mut tab.content
+                && shown == page_id
+                && shown_title != title
+            {
+                title.clone_into(shown_title);
+                renamed = true;
+            }
+        }
+        renamed
+    }
+
+    /// The IDs of the tabs that show the page `page_id`.
+    pub(crate) fn showing_page(&self, page_id: &str) -> Vec<TabId> {
+        self.tabs
+            .iter()
+            .filter(|tab| tab.page_id() == Some(page_id))
+            .map(|tab| tab.id)
+            .collect()
+    }
+
     /// Close a tab. Closing the active tab activates the tab that takes
     /// its place, or the one before it at the end; closing the last tab
     /// leaves nothing active. Returns whether the tab was open.

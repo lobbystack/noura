@@ -1,0 +1,14 @@
+[package]
+name = "uses-files-plugin"
+description = "A test plugin that reads files through the standard library, so it imports WASI's filesystem."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+plugin-sdk = { version = "0.2.0", path = "../../../plugin-sdk" }

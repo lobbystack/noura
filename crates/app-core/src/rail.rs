@@ -130,6 +130,14 @@ impl Rail {
         }
     }
 
+    /// Take a page out, as when its plugin stops. Its place in the saved
+    /// order stays, so it comes back there. Returns whether it was there.
+    pub(crate) fn unregister(&mut self, id: &str) -> bool {
+        let before = self.pages.len();
+        self.pages.retain(|page| page.id != id);
+        self.pages.len() != before
+    }
+
     pub(crate) fn page(&self, id: &str) -> Option<&Page> {
         self.pages.iter().find(|page| page.id == id)
     }
