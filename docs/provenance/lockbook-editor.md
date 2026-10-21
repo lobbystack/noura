@@ -69,6 +69,7 @@ To the workspace crate's editor:
 - Removed Lockbook's fonts. `register_font_system` takes a font database from the embedding app, and `fonts::default_font_database` offers egui's bundled fonts. Phosphor and Nerd Font icon glyphs became painted shapes (the heading fold caret, the alert dot) or text (the `…` fold chip), and emoji no longer route to Twemoji.
 - Removed the editor's chrome: the toolbar, find bar, emoji and link completions, context menus, link hover cards and link sheets. Removed the mobile host command surface, `MdLabel`, and the workspace persistence of scroll position and selection.
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
+- `alert_type_title_ranges` gives a callout whose first line names no known type an empty type and uses the whole line as its title. Lockbook panicked there. You can reach that case by typing `---` above a line that holds a lone carriage return, which makes frontmatter that comrak counts one line short.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
 - Inserts an input method's committed text the way a key press inserts text. Lockbook's desktop path ignored egui's input method events.

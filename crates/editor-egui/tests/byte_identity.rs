@@ -5,9 +5,7 @@
 //! Opening reads the note's bytes as Noura does: the byte-order mark and
 //! CRLF line endings go into a layout, and the editor gets LF text.
 //! "Closing" asks the editor for the text a save would write and writes it
-//! with that layout, which must give the bytes the note was opened from. A note that fails the property and
-//! has no fix yet stays in [`KNOWN_FAILURES`] with its cause, and the
-//! generators leave out the input class that triggers it.
+//! with that layout, which must give the bytes the note was opened from.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -102,54 +100,19 @@ fn open_display_close(note: &str) -> Outcome {
     }
 }
 
-/// A note that fails the property today.
-struct KnownFailure {
-    name: &'static str,
-    note: &'static str,
-    /// Why the bytes change or the editor panics.
-    cause: &'static str,
-    /// The ticket that fixes it, or the decision the owner must make.
-    fixed_by: &'static str,
-}
-
-const KNOWN_FAILURES: &[KnownFailure] = &[KnownFailure {
-    name: "a lone carriage return in frontmatter, then a callout",
-    note: "---\na\rb\n---\n> [!note] A\n",
-    cause: "comrak's front matter extension counts the frontmatter's lines by LF alone, \
-            while the rest of comrak and editor-core's source lines also end a line at a \
-            lone CR. Every line number comrak reports after the frontmatter is one short \
-            per lone CR inside it, so the editor reads the callout's title from the \
-            frontmatter's closing line and panics in `alert_type_title_ranges`. Other \
-            constructs after such frontmatter keep their bytes but read the wrong lines.",
-    fixed_by: "ticket 18, which replaces comrak's frontmatter detection with the editor's \
-               own lookahead and rewrites callouts",
-}];
-
-/// Whether `note` belongs to an input class behind a known failure. The
-/// property tests leave these classes out until their fixes land.
-fn known_failure_class(note: &str) -> bool {
-    use editor_core::comrak::nodes::NodeValue;
-
-    let arena = editor_core::comrak::Arena::new();
-    let options = editor_core::MdDoc::comrak_options();
-    let root = editor_core::comrak::parse_document(&arena, note, &options);
-    let Some(first) = root.first_child() else {
-        return false;
-    };
-    let first = first.data.borrow();
-    match &first.value {
-        // A lone CR in frontmatter.
-        NodeValue::FrontMatter(text) => text.replace("\r\n", "\n").contains('\r'),
-        _ => false,
-    }
-}
-
+/// Callouts after frontmatter that holds a lone carriage return, and
+/// callouts near other unusual line endings. comrak's front matter
+/// extension counts the frontmatter's lines by LF alone, while the rest of
+/// comrak and editor-core's source lines also end a line at a lone CR, so
+/// the editor reads every construct after such frontmatter one line off
+/// until ticket 18 replaces that detection. A callout there used to panic
+/// in `alert_type_title_ranges`; it now draws its whole first line as its
+/// title, the note keeps its bytes, and the generators produce such notes.
 #[test]
-fn each_known_failure_belongs_to_a_class_the_generators_leave_out() {
-    for failure in KNOWN_FAILURES {
-        assert!(known_failure_class(failure.note), "{}", failure.name);
-    }
-    for passing in [
+fn callouts_after_unusual_line_endings_keep_their_bytes() {
+    for note in [
+        "---\na\rb\n---\n> [!note] A\n",
+        "---\ra: 1\n---\n# Heading\n\n> [!tip] T\n> body\n",
         "---\r\na: 1\r\n---\r\n> [!note] A\r\n",
         "a\rb\n> [!note] A\n",
         "\u{feff}# Heading\n",
@@ -158,30 +121,38 @@ fn each_known_failure_belongs_to_a_class_the_generators_leave_out() {
         // text, so a callout on the first line reads its own type.
         "\u{feff}> [!note] a\n",
     ] {
-        assert!(!known_failure_class(passing), "{passing:?}");
-        assert_eq!(
-            open_display_close(passing),
-            Outcome::Identical,
-            "{passing:?}"
-        );
+        assert_eq!(open_display_close(note), Outcome::Identical, "{note:?}");
     }
 }
 
+/// Typing can bring a note shown in the live preview into that class:
+/// `---` and a line break at its start turn a first line that holds a lone
+/// carriage return into frontmatter. The editor draws the callout after it
+/// from the wrong line, without a panic.
 #[test]
-fn known_failures_still_fail() {
-    for failure in KNOWN_FAILURES {
-        assert!(
-            !failure.cause.is_empty() && !failure.fixed_by.is_empty(),
-            "{} needs a cause and a fix",
-            failure.name
-        );
-        assert_ne!(
-            open_display_close(failure.note),
-            Outcome::Identical,
-            "{} passes now: move it to the passing notes and let the generators produce it",
-            failure.name
-        );
+fn typing_a_note_into_misread_frontmatter_draws_without_a_panic() {
+    use editor_egui::input::{Event, Location, Region};
+
+    let ctx = egui::Context::default();
+    editor_egui::install_font_system(&ctx, font_system());
+    let mut editor = Editor::new(&ctx, "a\rb\n---\n> [!note] A\n", MdConfig::default());
+    frame(&ctx, &mut editor, Vec2::new(800.0, 600.0));
+
+    editor.push_event(Event::Select {
+        region: Region::Location(Location::Grapheme(editor_core::offset_types::Grapheme(0))),
+    });
+    for typed in ["-", "-", "-", "\n"] {
+        editor.push_event(Event::Replace {
+            region: Region::Selection,
+            text: typed.into(),
+            advance_cursor: true,
+        });
     }
+    for _ in 0..3 {
+        frame(&ctx, &mut editor, Vec2::new(800.0, 600.0));
+    }
+
+    assert_eq!(editor.text(), "---\na\rb\n---\n> [!note] A\n");
 }
 
 /// Asserts that every note in `notes` keeps its bytes, naming each that
@@ -695,24 +666,19 @@ fn check(note: &str) -> Result<(), TestCaseError> {
 }
 
 // 256 cases each by default; PROPTEST_CASES=300000 runs a longer search.
-// About one generated note in 170 falls in a known failure's class.
 proptest! {
     #![proptest_config(Config {
         failure_persistence: None,
-        max_global_rejects: 1_000_000,
         ..Config::default()
     })]
 
     #[test]
     fn generated_notes_keep_their_bytes(note in note()) {
-        // A thematic break or setext rule can open frontmatter too.
-        prop_assume!(!known_failure_class(&note), "a known failure");
         check(&note)?;
     }
 
     #[test]
     fn scrambled_notes_keep_their_bytes(note in scramble()) {
-        prop_assume!(!known_failure_class(&note), "a known failure");
         check(&note)?;
     }
 }
