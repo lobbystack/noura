@@ -180,6 +180,16 @@ fn the_folder_under_dragged_files_lights_up_opens_after_a_second_and_clears_when
         Pos2::new(-20.0, 300.0),
     );
     assert!(drop_targets(&harness).is_empty());
+
+    // The files leave from over a row. The desktop app takes away the
+    // pointer it had from the system, so the row doesn't stay lit.
+    hover_files(&mut harness, std::slice::from_ref(&scan), docs);
+    assert_eq!(drop_targets(&harness), ["Docs"]);
+    harness.input_mut().hovered_files.clear();
+    harness.event(egui::Event::PointerGone);
+    harness.run();
+    assert!(drop_targets(&harness).is_empty());
+    assert_eq!(harness.ctx.input(|input| input.pointer.hover_pos()), None);
 }
 
 #[test]
