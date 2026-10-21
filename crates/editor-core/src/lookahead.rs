@@ -1,6 +1,7 @@
 //! Frontmatter and `$$` display math count only when their closing line
 //! falls within [`LOOKAHEAD`] bytes, as in today's editor; otherwise their
-//! text parses as ordinary Markdown.
+//! text parses as ordinary Markdown. Inside display math, lines that look
+//! like block syntax stay part of the math.
 //!
 //! The editor reads frontmatter itself instead of through comrak's front
 //! matter extension, which only knows `---` closers without trailing
@@ -84,6 +85,132 @@ fn mask_frontmatter(text: &mut String) -> Option<Range<usize>> {
     Some(open.start..close.end)
 }
 
+/// The stand-in for a byte comrak must read as plain text.
+const PLAIN: u8 = 0x01;
+
+/// Whether `line` closes display math: it ends with `$$`, then only spaces
+/// or tabs, as in today's editor.
+fn closes_math(line: &[u8]) -> bool {
+    let end = line
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+        .map_or(0, |last| last + 1);
+    line[..end].ends_with(b"$$")
+}
+
+/// Whether `line` holds all of its display math, as `$$x$$` does.
+fn math_on_one_line(after_opening: &[u8]) -> bool {
+    closes_math(after_opening)
+        && after_opening
+            .iter()
+            .rev()
+            .skip_while(|byte| matches!(byte, b' ' | b'\t'))
+            .skip(2)
+            .any(|byte| !byte.is_ascii_whitespace())
+}
+
+/// Turns the first byte of a line inside display math into [`PLAIN`] when
+/// it could start a block: a list item, quote, heading, setext underline,
+/// thematic break, code fence, HTML block or table row, or a line of only
+/// spaces, which would end the paragraph that holds the math.
+fn keep_inside_paragraph(line: &mut [u8]) {
+    let Some(first) = line.iter().position(|byte| !matches!(byte, b' ' | b'\t')) else {
+        if let Some(byte) = line.first_mut() {
+            *byte = PLAIN;
+        }
+        return;
+    };
+    let starts_block = match line[first] {
+        b'-' | b'+' | b'*' | b'>' | b'#' | b'=' | b'_' | b'`' | b'~' | b'<' | b'|' => true,
+        b'0'..=b'9' => {
+            let digits = line[first..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            matches!(line.get(first + digits), Some(b'.' | b')'))
+        }
+        _ => false,
+    };
+    if starts_block {
+        line[first] = PLAIN;
+    }
+}
+
+/// Keeps each `$$` display math block that closes within the lookahead in
+/// one paragraph, as today's editor reads it as one block: comrak reads
+/// `$$` as inline math, so a line inside that looks like block syntax would
+/// split it. Only blocks outside quotes count, and none inside fenced code.
+/// A block with an empty line inside stays as comrak reads it, as no
+/// stand-in fills an empty line. Bytes change only to [`PLAIN`], so offsets
+/// stay put.
+fn mask_display_math(text: &mut String, from: usize) {
+    let lines: Vec<Range<usize>> = lines(text).filter(|line| line.start >= from).collect();
+    let mut bytes = std::mem::take(text).into_bytes();
+    // For each line, the first line from it on that closes math and the
+    // first that is empty, so each opening looks ahead in constant time.
+    let mut next_close = vec![usize::MAX; lines.len() + 1];
+    let mut next_empty = vec![usize::MAX; lines.len() + 1];
+    for index in (0..lines.len()).rev() {
+        let line = &bytes[lines[index].clone()];
+        next_close[index] = if closes_math(line) {
+            index
+        } else {
+            next_close[index + 1]
+        };
+        next_empty[index] = if line.is_empty() {
+            index
+        } else {
+            next_empty[index + 1]
+        };
+    }
+    let mut fence: Option<(u8, usize)> = None;
+    let mut index = 0;
+    while index < lines.len() {
+        let line = &bytes[lines[index].clone()];
+        let indent = line.iter().take_while(|byte| **byte == b' ').count();
+        let rest = &line[indent.min(line.len())..];
+        index += 1;
+        if indent >= 4 {
+            continue;
+        }
+        let run = |ch: u8| rest.iter().take_while(|byte| **byte == ch).count();
+        if let Some((ch, len)) = fence {
+            let closing = run(ch);
+            if closing >= len
+                && rest[closing..]
+                    .iter()
+                    .all(|byte| matches!(byte, b' ' | b'\t'))
+            {
+                fence = None;
+            }
+            continue;
+        }
+        if run(b'`') >= 3 && !rest[run(b'`')..].contains(&b'`') {
+            fence = Some((b'`', run(b'`')));
+            continue;
+        }
+        if run(b'~') >= 3 {
+            fence = Some((b'~', run(b'~')));
+            continue;
+        }
+        if !rest.starts_with(b"$$") || math_on_one_line(&rest[2..]) {
+            continue;
+        }
+        let start = lines[index - 1].start + indent;
+        let close = next_close[index];
+        // An empty line ends the paragraph, so comrak can't read the block
+        // as math whatever the lines around it hold.
+        if close < lines.len() && lines[close].end <= start + LOOKAHEAD && next_empty[index] > close
+        {
+            for inside in index..=close {
+                keep_inside_paragraph(&mut bytes[lines[inside].clone()]);
+            }
+            index = close + 1;
+        }
+    }
+    *text = String::from_utf8(bytes).expect("ASCII stand-ins keep the text UTF-8");
+}
+
 /// The byte offset where each line of `text` starts, as comrak numbers
 /// lines.
 fn line_starts(text: &str) -> Vec<usize> {
@@ -119,7 +246,8 @@ impl MdDoc {
     pub fn parse<'a>(&self, arena: &'a Arena<'a>) -> &'a AstNode<'a> {
         let options = Self::comrak_options();
         let mut text = self.buffer.current.text_with("\n");
-        mask_frontmatter(&mut text);
+        let frontmatter = mask_frontmatter(&mut text);
+        mask_display_math(&mut text, frontmatter.map_or(0, |range| range.end));
         let mut root = comrak::parse_document(arena, &text, &options);
         // Each pass can only turn more `$$` into text; a few suffice.
         for _ in 0..4 {

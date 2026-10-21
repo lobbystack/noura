@@ -89,3 +89,62 @@ fn math_shows_its_dollar_signs_while_the_caret_is_inside() {
         }
     }
 }
+
+#[test]
+fn display_math_keeps_lines_that_look_like_block_syntax() {
+    // A long equation often continues on a line that starts with `+`, `-`
+    // or `=`. Inside `$$` none of these start a list, quote, heading or
+    // code block, as in today's editor.
+    for body in [
+        "a\n+ b\n- c\n* d",
+        "x\n---",
+        "y\n===",
+        "> q\n# h\n1. i\n2) j",
+        "```\n~~~\n<div>\n| t |",
+        "a\n   \n\tb",
+    ] {
+        let text = format!("intro\n\n$$\n{body}\n$$\n\nafter *em*\n");
+        let block = format!("$$\n{body}\n$$");
+        assert_eq!(
+            math(&text),
+            vec![(true, block.as_str(), vec!["$$", "$$"])],
+            "{body:?}"
+        );
+        let kinds: Vec<ConstructKind> = constructs_with_caret(&text, None)
+            .into_iter()
+            .map(|construct| construct.kind)
+            .filter(|kind| !matches!(kind, ConstructKind::Math { .. }))
+            .collect();
+        assert_eq!(kinds, vec![ConstructKind::Emphasis], "{body:?}");
+    }
+}
+
+#[test]
+fn a_dollar_line_in_code_opens_no_math() {
+    let text = "```sh\n$$\n- a\n$$\n```\n\n    $$\n    - b\n    $$\n";
+
+    assert_eq!(math(text), vec![]);
+}
+
+#[test]
+fn display_math_opened_inside_a_paragraph_still_holds_its_lines() {
+    let text = "Let\n$$\nx\n- y\n$$\nso\n";
+
+    assert_eq!(math(text), vec![(true, "$$\nx\n- y\n$$", vec!["$$", "$$"])]);
+}
+
+#[test]
+fn display_math_with_an_empty_line_inside_leaves_the_lines_around_it_alone() {
+    let text = "$$\nx\n\n# Heading\n- item\ny $$\n";
+
+    let kinds: Vec<ConstructKind> = constructs_with_caret(text, None)
+        .into_iter()
+        .map(|construct| construct.kind)
+        .collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| matches!(kind, ConstructKind::Heading { .. })),
+        "{kinds:?}"
+    );
+}

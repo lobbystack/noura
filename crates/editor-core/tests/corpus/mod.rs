@@ -104,6 +104,10 @@ pub const NOTES: &[(&str, &str)] = &[
          > [!faq]-\n> folded, no title\n\n>[!note] no space\n\n> not [!a] callout\n",
     ),
     (
+        "display math holding lines that look like blocks",
+        "$$\na\n+ b\n- c\n> d\n# e\n===\n   \n1. f\n$$\n\n```\n$$\n- g\n$$\n```\n",
+    ),
+    (
         "callouts over setext headings",
         "> [!note] Title\n> ---\n\n> [!tip] Tip\n> text\n> ===\n> body\n",
     ),
