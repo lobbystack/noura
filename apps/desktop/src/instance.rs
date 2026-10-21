@@ -136,9 +136,16 @@ impl Instance {
         asked
     }
 
+    /// Whether a later launch's request waits for the UI to take it.
+    #[cfg(test)]
+    pub fn is_asked(&self) -> bool {
+        !self.shared.requests().waiting.is_empty()
+    }
+
     /// Stop answering later launches, as this copy quits, but keep the
     /// lock: a launch from now on waits for it, and runs once this copy
     /// drops the instance. Requests the UI hasn't taken go unanswered.
+    /// Calling it again does nothing more.
     pub fn stop_listening(&mut self) {
         {
             let mut requests = self.shared.requests();
@@ -416,7 +423,7 @@ mod tests {
         let name = socket_name(app_data.path()).unwrap();
         let asking = std::thread::spawn(move || ask_to_activate(&name));
         let deadline = Instant::now() + Duration::from_secs(10);
-        while quitting.shared.requests().waiting.is_empty() {
+        while !quitting.is_asked() {
             assert!(Instant::now() < deadline, "the request never arrived");
             std::thread::sleep(Duration::from_millis(10));
         }

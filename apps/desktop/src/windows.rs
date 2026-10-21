@@ -69,6 +69,10 @@ pub struct Windows {
     root_hidden: bool,
     /// Quit ran: the root viewport may close with every window open.
     quitting: bool,
+    /// Quit ran, the root viewport's close went through, or the last
+    /// window closed: eframe ends the app, so this copy answers no later
+    /// launch.
+    ending: bool,
     /// The window that had focus last, which menu choices go to and a
     /// later launch brings forward.
     recent: Arc<Mutex<ViewportId>>,
@@ -125,6 +129,7 @@ impl Windows {
             others: Vec::new(),
             root_hidden: false,
             quitting: false,
+            ending: false,
             recent: Arc::new(Mutex::new(ViewportId::ROOT)),
             instance,
             forward: None,
@@ -223,6 +228,7 @@ impl Windows {
             self.add(app, position);
         }
         if self.first.is_none() && self.others.is_empty() {
+            self.ending = true;
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
             return false;
         }
@@ -267,10 +273,15 @@ impl Windows {
                     .is_some_and(ViewportInfo::close_requested)
             })
         };
-        if requested(ViewportId::ROOT) && !self.quitting && !self.others.is_empty() {
-            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::CancelClose);
-            if let Some(first) = &mut self.first {
-                first.close_window();
+        if requested(ViewportId::ROOT) {
+            if !self.quitting && !self.others.is_empty() {
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::CancelClose);
+                if let Some(first) = &mut self.first {
+                    first.close_window();
+                }
+            } else {
+                // eframe ends the app after this pass.
+                self.ending = true;
             }
         }
         for window in &self.others {
@@ -421,6 +432,18 @@ impl Windows {
         ctx.request_repaint_after_for(FORWARD_RETRY, ViewportId::ROOT);
     }
 
+    /// Stop answering later launches once this copy is ending. A launch
+    /// that heard this copy came forward would exit with nothing left
+    /// running, so a request waiting now gets no answer, and a launch from
+    /// now on finds no one listening. Either one waits for the lock and
+    /// runs once this copy is gone.
+    fn stop_answering(&mut self) {
+        self.forward = None;
+        if let Some(instance) = &mut self.instance {
+            instance.stop_listening();
+        }
+    }
+
     /// The window that had focus last, or another open window when that
     /// one closed.
     fn recent_window(&self) -> Option<ViewportId> {
@@ -510,9 +533,11 @@ impl eframe::App for Windows {
         self.run_menu_choices(ctx);
         if self.quit_requested() {
             self.quitting = true;
+            self.ending = true;
         }
         self.close_requested(ctx);
-        if !self.settle(ctx) {
+        if !self.settle(ctx) || self.ending {
+            self.stop_answering();
             return;
         }
         self.come_forward(ctx);
@@ -982,6 +1007,94 @@ mod tests {
             crate::instance::claim(app_data.path()),
             Ok(Claim::First(_))
         ));
+    }
+
+    /// Wait until a later launch's request reaches the running copy.
+    fn wait_until_asked(harness: &Harness<'static, Windows>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !harness.state().instance.as_ref().unwrap().is_asked() {
+            assert!(Instant::now() < deadline, "no launch asked to come forward");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The root viewport's close button, pressed or sent by Quit.
+    fn root_closing(focused: bool) -> (ViewportId, ViewportInfo) {
+        (
+            ViewportId::ROOT,
+            ViewportInfo {
+                events: vec![ViewportEvent::Close],
+                ..window(false, focused)
+            },
+        )
+    }
+
+    /// A launch while Noura quits hears nothing from it, whether its
+    /// request came before Quit or after. It waits for the lock and runs
+    /// once the copy is gone, instead of exiting with no copy running.
+    #[test]
+    fn a_launch_while_noura_quits_runs_once_it_is_gone() {
+        let app_data = workspace();
+        let Ok(Claim::First(instance)) = crate::instance::claim(app_data.path()) else {
+            panic!("nothing else runs on this app data folder");
+        };
+        let mut harness = harness_with(app_data.path(), Some(instance));
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        let before = launch(app_data.path());
+        wait_until_asked(&harness);
+
+        choose(&mut harness, command_id::QUIT);
+        let after = launch(app_data.path());
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            let commands = logic_pass(
+                &mut harness,
+                &[root_closing(true), (second, window(false, false))],
+            );
+            assert!(!cancels_close(&commands), "Quit ends the app");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!before.is_finished(), "the launch heard a quitting copy");
+        assert!(!after.is_finished(), "the launch heard a quitting copy");
+        eframe::App::on_exit(harness.state_mut());
+        drop(harness);
+
+        // One launch runs, and the other asks it to come forward.
+        let (Ok(before), Ok(after)) = (before.join().unwrap(), after.join().unwrap()) else {
+            panic!("a launch failed");
+        };
+        let running: Vec<_> = [before, after]
+            .into_iter()
+            .filter_map(|claim| match claim {
+                Claim::First(instance) => Some(instance),
+                Claim::Running => None,
+            })
+            .collect();
+        assert_eq!(running.len(), 1, "one launch runs");
+    }
+
+    /// Closing the only window ends the app, so a request that waits then
+    /// gets no answer, and its launch runs once the copy is gone.
+    #[test]
+    fn a_launch_while_the_only_window_closes_runs_once_it_is_gone() {
+        let app_data = workspace();
+        let Ok(Claim::First(instance)) = crate::instance::claim(app_data.path()) else {
+            panic!("nothing else runs on this app data folder");
+        };
+        let mut harness = harness_with(app_data.path(), Some(instance));
+        let later = launch(app_data.path());
+        wait_until_asked(&harness);
+
+        let commands = logic_pass(&mut harness, &[root_closing(true)]);
+
+        assert!(
+            !cancels_close(&commands),
+            "closing the only window ends the app"
+        );
+        eframe::App::on_exit(harness.state_mut());
+        drop(harness);
+        assert!(matches!(later.join().unwrap(), Ok(Claim::First(_))));
     }
 
     #[test]
