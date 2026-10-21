@@ -32,6 +32,12 @@ fn tab_id(tab: TabId) -> Id {
     Id::unique(("tab", tab))
 }
 
+/// Whether one of the tabs has keyboard focus.
+pub(crate) fn has_focus(ctx: &egui::Context, app: &App) -> bool {
+    ctx.memory(|memory| memory.focused())
+        .is_some_and(|focused| app.tabs().iter().any(|tab| tab_id(tab.id()) == focused))
+}
+
 /// Keys the bar takes while one of its tabs has focus.
 const KEY_FILTER: EventFilter = EventFilter {
     tab: false,

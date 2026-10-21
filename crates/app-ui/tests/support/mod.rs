@@ -79,6 +79,24 @@ pub fn harness_on(
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
 }
 
+/// A harness whose app believes it runs on `platform`, after `register`
+/// adds test commands or pages. macOS draws shortcuts with symbols such
+/// as ⌘, which egui's bundled fonts lack; the desktop app finds them in
+/// the system's fonts, which kittest doesn't load.
+pub fn harness_for(
+    app_data: &Path,
+    platform: Platform,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    let mut app = App::launch_with(app_data, FakeSystem::new(platform));
+    register(&mut app);
+    let ui = NouraUi::new(app, Box::new(FakePicker::default()));
+    Harness::builder()
+        .with_size([1000.0, 700.0])
+        .allow_missing_glyphs()
+        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+}
+
 /// A system that records what Noura asks of it. Its trash refuses, so
 /// trashed items land in the workspace's trash folder, where tests can
 /// find them.

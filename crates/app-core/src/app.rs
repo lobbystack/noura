@@ -15,13 +15,15 @@ use std::{
 use crate::{
     AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
     PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
-    WorkspaceService, layout::LayoutStore, preferences::PreferencesStore, rail::Rail,
-    settings::kernel_sections, tabs::Tabs, view_state::ViewStore,
+    WorkspaceService, commands::Registry, layout::LayoutStore, preferences::PreferencesStore,
+    rail::Rail, settings::kernel_sections, tabs::Tabs, view_state::ViewStore,
 };
 
+mod commands;
 mod drops;
 mod file_actions;
 mod ignored_files;
+mod palette;
 mod preferences;
 mod settings;
 mod view;
@@ -29,6 +31,7 @@ mod view;
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
 pub use ignored_files::IgnoredFiles;
+pub use palette::CommandPalette;
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +83,13 @@ pub enum Change {
     Settings,
     /// The appearance, text size or zoom changed.
     Preferences,
+    /// A command registered.
+    Commands,
+    /// The command palette opened, closed or changed.
+    Palette,
+    /// Close Window or Quit ran; see [`App::take_close_window`] and
+    /// [`App::take_quit`].
+    Window,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -171,6 +181,13 @@ pub struct App {
     /// The item the last native drag carried, so a drop of it back on the
     /// tree moves it instead of copying it.
     dragged_out: Option<String>,
+    registry: Registry,
+    palette: Option<CommandPalette>,
+    shortcuts_open: bool,
+    /// Close Window ran and the window hasn't closed yet.
+    close_window: bool,
+    /// Quit ran and the app hasn't closed yet.
+    quit: bool,
 }
 
 impl App {
@@ -219,7 +236,13 @@ impl App {
             pending_saves: Arc::new(NoPendingSaves),
             drag_out: None,
             dragged_out: None,
+            registry: Registry::default(),
+            palette: None,
+            shortcuts_open: false,
+            close_window: false,
+            quit: false,
         };
+        app.register_kernel_commands();
         app.layout = app.layouts.load();
         app.preferences = app.preferences_store.load();
         if let Some(last) = app.recents.first() {
