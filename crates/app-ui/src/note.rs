@@ -1,6 +1,8 @@
-//! The note screen: the note's name, a notice when a save failed, the
-//! live-preview editor, and the properties panel beside it for Noura's own
-//! notes.
+//! The note screen: the note's name, a notice when a save failed or the
+//! properties at the top don't parse, the editor, and the properties panel
+//! beside it for Noura's own notes. The editor shows notes in the live
+//! preview, and plain-text and code files and notes with broken properties
+//! as source.
 
 use std::{collections::HashMap, time::Instant};
 
@@ -33,6 +35,9 @@ pub(crate) struct NoteView {
 /// One note's editor and the fields around it.
 struct OpenNote {
     editor: Editor,
+    /// Whether `editor` shows the file's whole text rather than a managed
+    /// note's text after its frontmatter.
+    whole_file: bool,
     /// What the name field holds while you type in it; `None` shows the
     /// file's name.
     name: Option<String>,
@@ -214,22 +219,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     let Some(session) = app.note(tab) else {
         return false;
     };
+    let shows_source = session.shows_source();
+    let whole_file = session.shows_whole_file();
     let note = view.notes.entry(tab).or_insert_with(|| {
         let clicked = ui.input(|input| input.pointer.any_released());
-        let config = if session.shows_source() {
-            // Any extension but `md` shows the text as source.
-            MdConfig {
-                ext: "txt".into(),
-                ..MdConfig::default()
-            }
-        } else {
-            MdConfig {
-                toolbar: true,
-                ..MdConfig::default()
-            }
-        };
         OpenNote {
-            editor: Editor::new(ui.ctx(), session.text(), config),
+            editor: editor_for(ui.ctx(), session),
+            whole_file,
             name: None,
             focus_name: false,
             drafts: HashMap::new(),
@@ -240,6 +236,22 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
             },
         }
     });
+    // The file shows another way now, as when a save left a note's
+    // properties readable or a rename made a text file Markdown: the editor
+    // starts again from the note's text, with an empty undo history, and
+    // keeps the keyboard.
+    if (note.editor.plaintext_mode() != shows_source || note.whole_file != whole_file)
+        && let Some(session) = app.note(tab)
+    {
+        let focused = note.editor.focused(ui.ctx());
+        note.editor = editor_for(ui.ctx(), session);
+        note.whole_file = whole_file;
+        if focused {
+            note.editor.focus(ui.ctx());
+        }
+        app.take_note_sync(tab);
+        app.take_note_reset(tab);
+    }
     // A save brought the file in line with the editor, or merged an edit
     // made outside Noura.
     if let Some(sync) = app.take_note_sync(tab) {
@@ -257,6 +269,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     }
     view.drawn = Some(tab);
     header(ui, app, note, tab);
+    properties_notice(ui, app, tab);
     file_notice(ui, app, tab);
     if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
         let palette = Palette::of(ui.ctx());
@@ -277,6 +290,53 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
         conflict_review(ui, app, tab);
     }
     true
+}
+
+/// An editor for the note `session` shows: its text as source for a
+/// plain-text or code file and a note whose properties don't parse, or in
+/// the live preview with the formatting toolbar.
+fn editor_for(ctx: &egui::Context, session: &app_core::NoteSession) -> Editor {
+    let config = if session.shows_source() {
+        // Any extension but `md` shows the text as source.
+        MdConfig {
+            ext: "txt".into(),
+            ..MdConfig::default()
+        }
+    } else {
+        MdConfig {
+            toolbar: true,
+            ..MdConfig::default()
+        }
+    };
+    Editor::new(ctx, session.text(), config)
+}
+
+/// Why the properties at the top of a Markdown file don't parse, above
+/// its text, where you fix them.
+fn properties_notice(ui: &mut Ui, app: &App, tab: TabId) {
+    let Some(reason) = app
+        .note(tab)
+        .and_then(|session| session.broken_properties())
+    else {
+        return;
+    };
+    let title = "The properties at the top of this file have an error";
+    let palette = Palette::of(ui.ctx());
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Alert)
+        .accessibility_label(title);
+    ui.scope_builder(builder, |ui| {
+        Frame::new()
+            .stroke(Stroke::new(1.0, palette.border))
+            .corner_radius(radius(1.0))
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(title).strong());
+                ui.label(format!("{reason} Fix them in the text below."));
+            });
+    });
+    ui.add_space(8.0);
 }
 
 /// The note's name, which renames its file: Enter or leaving the field

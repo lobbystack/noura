@@ -462,7 +462,7 @@ fn try_again_opens_a_file_that_couldn_t_open_before() {
         .get_by_role_and_label(Role::TreeItem, "Bytes")
         .click();
     harness.run_steps(4);
-    harness.get_by_label("This file isn't UTF-8 text, so the editor can't open it.");
+    harness.get_by_label("Noura can't read this file as text because it isn't UTF-8.");
 
     std::fs::write(folder.join("Bytes.md"), "Text now\n").unwrap();
     harness
