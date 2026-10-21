@@ -38,6 +38,9 @@ pub enum SpanKind {
         /// Whether the embed is all its line holds, spaces aside.
         alone: bool,
     },
+    /// `![[image.png|300]]`, drawn inline as the image, `width` points
+    /// wide when it says.
+    ImageEmbed { target: String, width: Option<u32> },
 }
 
 /// Syntax found in text.
@@ -132,6 +135,34 @@ fn pairs(text: &str, open: &str, close: &str) -> Vec<(usize, usize)> {
     found
 }
 
+/// The image formats an embed draws inline, as today's app shows them.
+pub const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+
+/// Whether `target`, its `#heading` part aside, names an image by its
+/// extension.
+pub fn is_image_target(target: &str) -> bool {
+    let path = target.split('#').next().unwrap_or(target);
+    path.rsplit_once('.').is_some_and(|(name, extension)| {
+        !name.is_empty()
+            && IMAGE_EXTENSIONS
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension))
+    })
+}
+
+/// The width `![[image.png|300]]` or `|300x200` asks for, in points.
+fn image_width(alias: &str) -> Option<u32> {
+    let width = alias.split_once('x').map_or(alias, |(width, _)| width);
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    let height_ok = alias
+        .split_once('x')
+        .is_none_or(|(_, height)| digits(height));
+    (digits(width) && height_ok)
+        .then(|| width.parse().ok())
+        .flatten()
+        .filter(|width| *width > 0)
+}
+
 /// `![[target|alias]]` embeds in `text`. The target and alias hold no `]`.
 fn embeds(text: &str) -> Vec<Found> {
     let mut found = Vec::new();
@@ -149,15 +180,19 @@ fn embeds(text: &str) -> Vec<Found> {
             Some((target, alias)) => (target.trim(), Some(alias.trim().to_string())),
             None => (inner.trim(), None),
         };
-        found.push((
+        let kind = if is_image_target(target) {
+            SpanKind::ImageEmbed {
+                target: target.to_string(),
+                width: alias.as_deref().and_then(image_width),
+            }
+        } else {
             SpanKind::Embed {
                 target: target.to_string(),
                 alias,
                 alone: false,
-            },
-            start..end,
-            vec![start..end],
-        ));
+            }
+        };
+        found.push((kind, start..end, vec![start..end]));
         from = end;
     }
     found
@@ -279,7 +314,7 @@ impl<'ast> MdDoc {
                 }
                 let mut reveal_range = range;
                 match &mut kind {
-                    SpanKind::Comment => taken.push(range),
+                    SpanKind::Comment | SpanKind::ImageEmbed { .. } => taken.push(range),
                     SpanKind::Embed { alone, .. } => {
                         taken.push(range);
                         if let Some(line) = source_line

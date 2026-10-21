@@ -5,7 +5,7 @@ use editor_core::spans::{InlineSpan, SpanKind};
 
 use crate::MdRender;
 use crate::palette::ThemeExt as _;
-use crate::widget::utils::wrap_layout::{Format, Layout};
+use crate::widget::utils::wrap_layout::{EmbedSpec, Format, Layout};
 
 impl<'ast> MdRender {
     pub fn layout_text(
@@ -72,6 +72,30 @@ impl<'ast> MdRender {
                             );
                             true
                         }
+                        // An image embed draws as the image, or as a link
+                        // named by its target until its size is known.
+                        SpanKind::ImageEmbed { target, width } => {
+                            match self.image_embed_size(node, target, *width) {
+                                Some(size) if hidden == syntax => {
+                                    let (_, kind) = self.embed_texture_size(target);
+                                    layout.push_embed(EmbedSpec {
+                                        advance: size.x,
+                                        ascent: size.y,
+                                        descent: 0.0,
+                                        source_range: syntax,
+                                        url: target.clone(),
+                                        kind,
+                                    });
+                                }
+                                _ => {
+                                    let state = self.link_state_for_wikilink(target);
+                                    let format =
+                                        self.text_format_link(node.parent().unwrap(), state);
+                                    layout.push_override(hidden, target, format);
+                                }
+                            }
+                            true
+                        }
                         _ => false,
                     };
                     if !label {
@@ -111,7 +135,8 @@ impl<'ast> MdRender {
                     }
                     SpanKind::CalloutTitle { .. }
                     | SpanKind::CalloutMarker { .. }
-                    | SpanKind::Embed { .. } => {}
+                    | SpanKind::Embed { .. }
+                    | SpanKind::ImageEmbed { .. } => {}
                 }
             }
             if let Some(search_range) = self.search_range
@@ -123,6 +148,29 @@ impl<'ast> MdRender {
             }
             layout.push_source(piece, &self.buffer[piece], format);
         }
+    }
+
+    /// The size an `![[image.png|width]]` embed in `node`'s block draws
+    /// at, or `None` before its size is known.
+    fn image_embed_size(
+        &self,
+        node: &'ast AstNode<'ast>,
+        target: &str,
+        width: Option<u32>,
+    ) -> Option<egui::Vec2> {
+        use crate::widget::utils::NodeValueExt as _;
+
+        let block = node
+            .ancestors()
+            .skip(1)
+            .find(|ancestor| ancestor.data.borrow().value.is_leaf_block())?;
+        let (texture_size, _) = self.embed_texture_size(target);
+        let requested = editor_core::images::ImageDims {
+            width: width.map(|width| width as f32),
+            height: None,
+        };
+        let size = self.image_size(texture_size, self.width(block), requested);
+        (size.x > 0.0 && size.y > 0.0 && !self.disable_images).then_some(size)
     }
 
     /// The color a callout of `family` draws its bar, label and title in.

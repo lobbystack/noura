@@ -49,6 +49,11 @@ pub enum ConstructKind {
     WikiLink,
     /// A GFM table, drawn as a grid while the caret is outside it.
     Table,
+    /// `![alt](path)` or `![[image.png|300]]`, drawn inline as the image,
+    /// `width` points wide when it says.
+    Image {
+        width: Option<u32>,
+    },
     /// `$inline$` or `$$display$$` math, drawn as formatted source.
     Math {
         display: bool,
@@ -134,6 +139,16 @@ impl MdDoc {
                         block: block.is_some(),
                     }
                 }
+                SpanKind::ImageEmbed { target, width } => {
+                    construct.link = Some(ConstructLink {
+                        target: target.clone(),
+                        exists: !matches!(
+                            self.link_state_for_wikilink(target),
+                            LinkState::Broken { .. }
+                        ),
+                    });
+                    ConstructKind::Image { width: *width }
+                }
                 // A callout's construct covers its marker and title.
                 SpanKind::CalloutMarker { .. } | SpanKind::CalloutTitle { .. } => return None,
             };
@@ -188,6 +203,22 @@ impl MdDoc {
             NodeValue::Highlight => (ConstructKind::Highlight, edges(), self.node_revealed(node)),
             NodeValue::Code(_) => (ConstructKind::InlineCode, edges(), self.node_revealed(node)),
             NodeValue::Link(_) => (ConstructKind::Link, edges(), self.node_revealed(node)),
+            NodeValue::Image(image) => {
+                link = Some(ConstructLink {
+                    exists: !matches!(
+                        self.link_state_for_url(&image.url),
+                        LinkState::Broken { .. }
+                    ),
+                    target: image.url.clone(),
+                });
+                (
+                    ConstructKind::Image {
+                        width: self.image_dims(node).width.map(|width| width as u32),
+                    },
+                    edges(),
+                    self.node_revealed(node),
+                )
+            }
             NodeValue::WikiLink(wikilink) => {
                 link = Some(ConstructLink {
                     exists: !matches!(
