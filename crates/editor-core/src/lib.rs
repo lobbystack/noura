@@ -31,6 +31,7 @@ pub mod operation_types;
 pub mod reorder;
 pub mod resolvers;
 pub mod reveal;
+pub mod text_mode;
 pub mod text_units;
 pub mod unicode_segs;
 

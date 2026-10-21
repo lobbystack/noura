@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use plugin_host::process_memory;
 use plugin_host::trial::{Backend, TrialHost};
 
 const COMPILE_RUNS: usize = 5;
@@ -309,36 +310,5 @@ fn load_average() -> Option<f64> {
 
 #[cfg(not(unix))]
 fn load_average() -> Option<f64> {
-    None
-}
-
-/// The process's physical footprint, the number Activity Monitor shows.
-#[cfg(target_os = "macos")]
-fn process_memory() -> Option<u64> {
-    // SAFETY: `rusage_info_v4` is plain data, and `proc_pid_rusage` writes at
-    // most one of them for the `RUSAGE_INFO_V4` flavor.
-    unsafe {
-        let mut info: libc::rusage_info_v4 = std::mem::zeroed();
-        let result = libc::proc_pid_rusage(
-            std::process::id() as libc::c_int,
-            libc::RUSAGE_INFO_V4,
-            (&raw mut info).cast::<libc::rusage_info_t>(),
-        );
-        (result == 0).then_some(info.ri_phys_footprint)
-    }
-}
-
-/// The process's resident set size.
-#[cfg(target_os = "linux")]
-fn process_memory() -> Option<u64> {
-    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
-    let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-    // SAFETY: sysconf has no preconditions.
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    Some(resident_pages * u64::try_from(page_size).ok()?)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_memory() -> Option<u64> {
     None
 }

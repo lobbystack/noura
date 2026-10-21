@@ -21,10 +21,12 @@ serde.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
+[features]
 # On the browser target getrandom reads crypto.getRandomValues through
-# wasm-bindgen, which account-web loads anyway.
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-getrandom = { version = "=0.4.3", default-features = false, features = ["wasm_js"] }
+# wasm-bindgen, which account-web loads anyway. The collaboration sandbox's
+# guest module builds for the same target without it, because that module
+# may import nothing (crates/collab-sandbox-guest/build.sh).
+wasm-js = ["getrandom/wasm_js"]
 
 [dev-dependencies]
 proptest.workspace = true

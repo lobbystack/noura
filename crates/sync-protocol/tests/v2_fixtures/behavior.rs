@@ -927,6 +927,9 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             )),
             expect.clone(),
         ),
+        // The collaboration sandbox's cases need its guest module, so
+        // crates/collab-sandbox runs them.
+        "verdict" | "client_round_trip" | "surrogate" | "allowance" => Ok(()),
         other => Err(format!("unknown case kind {other}")),
     }
 }

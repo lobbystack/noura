@@ -1,0 +1,30 @@
+[package]
+name = "collab-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Runs the sandbox on Wasmtime's Pulley interpreter as well as Cranelift.
+# Verdicts and fuel counts must agree on both.
+pulley = ["plugin-host/pulley"]
+
+[dependencies]
+# Hashes the guest module the sandbox runs, against the pinned hash.
+blake3.workspace = true
+plugin-host = { version = "0.2.0", path = "../plugin-host" }
+# Builds the Wasmtime operator cost table from the costs the fixture records.
+serde_json.workspace = true
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+thiserror.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+wasmtime = { workspace = true, features = ["wat"] }
+# yrs outside the sandbox, to compare what the sandbox does with what yrs
+# does on its own. The workspace's copy has `small-client`, which holds the
+# 32-bit client IDs of the Yjs and yrs interop fixtures.
+yrs.workspace = true

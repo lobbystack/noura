@@ -12,6 +12,7 @@ mod error;
 mod host;
 mod instance;
 mod manifest;
+mod memory;
 mod runtime;
 mod services;
 pub mod trial;
@@ -24,7 +25,8 @@ pub use manifest::{
     Capability, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
     valid_plugin_id,
 };
-pub use runtime::{Backend, Limits};
+pub use memory::process_memory;
+pub use runtime::{Backend, Limits, StoreLimiter, wasmtime_config};
 pub use services::{
     Entry, EntryKind, FileRead, Listed, ObjectRead, ServiceError, WorkspacePath, WorkspaceReads,
 };

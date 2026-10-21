@@ -1290,6 +1290,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "collab-sandbox"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "plugin-host",
+ "proptest",
+ "serde_json",
+ "sync-protocol",
+ "thiserror 2.0.20",
+ "wasmtime",
+ "yrs",
+]
+
+[[package]]
 name = "color"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6101,6 +6115,7 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wat",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
