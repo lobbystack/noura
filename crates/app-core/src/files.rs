@@ -102,13 +102,19 @@ pub enum DropSpot {
     Away,
 }
 
-/// A row being dragged.
+/// A row being dragged, or files from outside Noura.
 #[derive(Clone)]
 struct Drag {
-    node: usize,
+    /// The node a drop would move: the dragged row, or for files dragged in
+    /// from outside, the row Noura dragged out of the window when they are
+    /// it coming back. `None` for other files, which a drop copies.
+    node: Option<usize>,
+    /// Files dragged in from outside the window, rather than a row dragged
+    /// within the tree.
+    from_outside: bool,
     /// The closed folder under the pointer and when the pointer got there.
     resting: Option<(usize, Instant)>,
-    /// The folder a drop would move the row into.
+    /// The folder a drop would move the row or copy the files into.
     target: Option<String>,
     /// Folders this drag opened, which close again unless they hold the
     /// drop.
@@ -428,7 +434,8 @@ impl FileTree {
         self.cancel_drag();
         if let Some(&node) = self.row_nodes.get(row) {
             self.drag = Some(Drag {
-                node,
+                node: Some(node),
+                from_outside: false,
                 resting: None,
                 target: None,
                 opened: Vec::new(),
@@ -440,7 +447,9 @@ impl FileTree {
     pub fn dragging(&self) -> Option<&str> {
         self.drag
             .as_ref()
-            .map(|drag| self.nodes[drag.node].relative_path.as_str())
+            .filter(|drag| !drag.from_outside)
+            .and_then(|drag| drag.node)
+            .map(|node| self.nodes[node].relative_path.as_str())
     }
 
     /// The pointer is at `spot` at time `at` while a row is dragged. Over a
@@ -448,6 +457,64 @@ impl FileTree {
     /// and over the blank part of the tree to the top of the workspace.
     /// Resting on a closed folder for [`SPRING_OPEN_DELAY`] opens it.
     pub fn drag_over(&mut self, spot: DropSpot, at: Instant) {
+        if self.dragging().is_some() {
+            self.hover(spot, at);
+        }
+    }
+
+    /// Files dragged in from the file manager are at `spot` at time `at`.
+    /// They go where a dragged row would: into a folder, into a file's
+    /// folder, or to the top of the workspace over the blank part of the
+    /// tree. Resting on a closed folder for [`SPRING_OPEN_DELAY`] opens it.
+    /// `returning` is the item at that workspace path when the files are
+    /// the row Noura dragged out of the window coming back. A drop moves
+    /// it, so the files light up only the folders the row could move into.
+    pub(crate) fn files_over(&mut self, spot: DropSpot, at: Instant, returning: Option<&str>) {
+        if self.drag.is_none() {
+            self.drag = Some(Drag {
+                node: None,
+                from_outside: true,
+                resting: None,
+                target: None,
+                opened: Vec::new(),
+            });
+        }
+        let returning = returning.and_then(|path| self.by_path.get(path).copied());
+        if let Some(drag) = &mut self.drag
+            && drag.from_outside
+        {
+            drag.node = returning;
+            self.hover(spot, at);
+        }
+    }
+
+    /// Whether files dragged in from outside the window are over the tree.
+    pub(crate) fn takes_files(&self) -> bool {
+        self.drag.as_ref().is_some_and(|drag| drag.from_outside)
+    }
+
+    /// The files dragged in from the file manager left the window, or the
+    /// drag ended without a drop: forget the target and close the folders
+    /// the drag opened.
+    pub(crate) fn files_left(&mut self) {
+        if self.takes_files() {
+            self.cancel_drag();
+        }
+    }
+
+    /// Drop the files dragged in from the file manager. Folders the drag
+    /// opened close again unless they hold the drop. Returns the folder the
+    /// files go into, if the pointer was over the tree.
+    pub(crate) fn drop_files(&mut self) -> Option<String> {
+        if !self.takes_files() {
+            return None;
+        }
+        let drag = self.drag.take()?;
+        self.close_opened(&drag, drag.target.as_deref());
+        drag.target
+    }
+
+    fn hover(&mut self, spot: DropSpot, at: Instant) {
         let Some(drag) = &self.drag else {
             return;
         };
@@ -466,8 +533,9 @@ impl FileTree {
                     .to_owned(),
             }),
         };
-        let target =
-            folder.filter(|folder| can_move_into(&self.nodes[dragged].relative_path, folder));
+        let target = folder.filter(|folder| {
+            dragged.is_none_or(|node| can_move_into(&self.nodes[node].relative_path, folder))
+        });
         let closed_folder = over.filter(|node| {
             self.nodes[*node].kind == EntryKind::Folder && !self.expanded.contains(node)
         });
@@ -490,7 +558,8 @@ impl FileTree {
         }
     }
 
-    /// The folder a drop would move the dragged row into, if any.
+    /// The folder a drop would move the dragged row or copy the dragged
+    /// files into, if any: the folder the tree highlights.
     pub fn drop_target(&self) -> Option<&str> {
         self.drag.as_ref().and_then(|drag| drag.target.as_deref())
     }
@@ -508,11 +577,15 @@ impl FileTree {
     /// they hold the drop. Returns the move to make, if the drop landed
     /// somewhere the row can go.
     pub fn finish_drag(&mut self) -> Option<TreeAction> {
+        if self.takes_files() {
+            return None;
+        }
+        let node = self.drag.as_ref()?.node?;
         let drag = self.drag.take()?;
         let target = drag.target.clone();
         self.close_opened(&drag, target.as_deref());
         target.map(|folder| TreeAction::Move {
-            relative_path: self.nodes[drag.node].relative_path.clone(),
+            relative_path: self.nodes[node].relative_path.clone(),
             folder,
         })
     }

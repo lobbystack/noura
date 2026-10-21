@@ -1,6 +1,12 @@
 //! The Noura desktop app.
 
+mod file_drag;
 mod instance;
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(dead_code, reason = "Linux shows no native menu bar")
+)]
+mod menu;
 mod system;
 mod windows;
 
@@ -22,6 +28,23 @@ impl FolderPicker for SystemFolderPicker {
     fn pick_folder(&mut self, title: &str) -> Option<PathBuf> {
         rfd::FileDialog::new().set_title(title).pick_folder()
     }
+}
+
+/// macOS: no winit default menu, since muda installs the menu bar.
+/// Windows: menu shortcuts go through the accelerator table.
+fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<eframe::UserEvent>) {
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS as _;
+        builder.with_default_menu(false);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use winit::platform::windows::EventLoopBuilderExtWindows as _;
+        builder.with_msg_hook(menu::native::translate_accelerator);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let _ = builder;
 }
 
 fn main() -> eframe::Result {
@@ -46,6 +69,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: windows::builder(None),
+        event_loop_builder: Some(Box::new(configure_event_loop)),
         ..Default::default()
     };
     eframe::run_native(
@@ -60,9 +84,9 @@ fn main() -> eframe::Result {
                 let ctx = creation.egui_ctx.clone();
                 instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
             }
-            Ok(Box::new(Windows::new(app, instance, || {
-                Box::new(SystemFolderPicker)
-            })))
+            let mut windows = Windows::new(app, instance, || Box::new(SystemFolderPicker));
+            windows.install_menu_bar(creation);
+            Ok(Box::new(windows))
         }),
     )
 }

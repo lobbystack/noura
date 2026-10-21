@@ -1,30 +1,31 @@
-//! New window and Close window, through AccessKit.
+//! New Window and Close Window, through AccessKit.
 
 mod support;
 
+use app_core::Platform;
 use app_ui::NouraUi;
 use egui::{Key, Modifiers, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable};
-use support::{FakePicker, create_workspace, harness, settle};
+use support::{FakePicker, create_workspace, harness, harness_for, settle};
 
 #[test]
-fn new_window_in_the_switcher_opens_another_window_on_the_workspace() {
+fn new_window_from_the_palette_opens_another_window_on_the_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Current");
     create_workspace(app_data.path(), "Current", &folder);
     std::fs::write(folder.join("Plan.md"), b"x").unwrap();
-    let mut harness = harness(app_data.path(), FakePicker::default());
+    let mut harness = harness_for(app_data.path(), Platform::current(), |_| {});
     settle(&mut harness);
     assert!(harness.state_mut().take_new_windows().is_empty());
 
-    harness
-        .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Current")
-        .click();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
     harness.run();
     harness
-        .get_by_role_and_label(Role::Button, "New window")
-        .click();
+        .get_by_label("Search commands")
+        .type_text("new window");
+    harness.run();
+    harness.key_press(Key::Enter);
     harness.run();
 
     let mut windows = harness.state_mut().take_new_windows();

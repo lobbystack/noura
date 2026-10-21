@@ -46,6 +46,13 @@ impl Platform {
     pub fn has_terminal(self) -> bool {
         matches!(self, Self::MacOs | Self::Windows)
     }
+
+    /// Whether a tree row dragged out of the window can become a native
+    /// drag that hands the file manager a copy. Linux can't, because the
+    /// window has no GTK side to start one from.
+    pub fn drags_out(self) -> bool {
+        matches!(self, Self::MacOs | Self::Windows)
+    }
 }
 
 /// The operating system services the files service uses.

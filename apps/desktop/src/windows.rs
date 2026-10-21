@@ -4,20 +4,34 @@
 //!
 //! eframe quits when the root viewport closes, so closing the first
 //! window while others stay open hides the root viewport instead, and it
-//! keeps hosting the others. Closing the last window quits.
+//! keeps hosting the others. Closing the last window quits, and so does
+//! Quit, which keeps every window for the next launch.
+//!
+//! The shell around the windows lives here too: the native menu bar,
+//! whose choices go to the window that had focus last, the Edit items'
+//! input, file drags, and a later launch's request to come forward.
 
 use std::{
-    sync::Arc,
+    collections::HashMap,
+    sync::{
+        Arc,
+        mpsc::{Receiver, Sender, channel},
+    },
     time::{Duration, Instant},
 };
 
 use app_core::App;
 use app_ui::{FolderPicker, NouraUi};
 use eframe::egui::{
-    self, Context, Pos2, ViewportBuilder, ViewportCommand, ViewportId, mutex::Mutex, vec2,
+    self, Context, Pos2, ViewportBuilder, ViewportCommand, ViewportId, ViewportInfo, mutex::Mutex,
+    vec2,
 };
 
-use crate::instance::Instance;
+use crate::{
+    file_drag::{DragSource, FileDrag},
+    instance::Instance,
+    menu::{Choice, EditInput},
+};
 
 /// How far each new window sits from the window that opened it.
 const CASCADE: f32 = 28.0;
@@ -27,6 +41,11 @@ const CASCADE: f32 = 28.0;
 /// before it can take focus, and the system may refuse focus at first.
 const FORWARD_PATIENCE: Duration = Duration::from_secs(3);
 const FORWARD_RETRY: Duration = Duration::from_millis(200);
+
+/// How often Noura looks for a new window's native window to give it the
+/// menu bar, on Windows, until it has one.
+#[cfg(target_os = "windows")]
+const MENU_RETRY: Duration = Duration::from_millis(100);
 
 /// A window's frame: its title, size and, for a new window, its place.
 pub fn builder(position: Option<Pos2>) -> ViewportBuilder {
@@ -45,8 +64,13 @@ pub struct Windows {
     /// windows stay open.
     first: Option<NouraUi>,
     others: Vec<Window>,
-    /// The window that had focus last, which a later launch brings
-    /// forward.
+    /// The root viewport hides once the first window closed while others
+    /// stay open.
+    root_hidden: bool,
+    /// Quit ran: the root viewport may close with every window open.
+    quitting: bool,
+    /// The window that had focus last, which menu choices go to and a
+    /// later launch brings forward.
     recent: Arc<Mutex<ViewportId>>,
     instance: Option<Instance>,
     /// A later launch asked for a window to come forward, and it hasn't
@@ -54,6 +78,14 @@ pub struct Windows {
     forward: Option<Forward>,
     picker: Box<dyn Fn() -> Box<dyn FolderPicker>>,
     next_id: u64,
+    /// Menu choices, sent from muda's event handler.
+    choices: Receiver<Choice>,
+    choice_sender: Sender<Choice>,
+    edit: EditInput,
+    /// Each window's file drags.
+    file_drags: Arc<Mutex<HashMap<ViewportId, FileDrag>>>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    native_menu: Option<crate::menu::native::NativeMenu>,
 }
 
 /// When a later launch asked, and when Noura last tried.
@@ -87,43 +119,88 @@ impl Windows {
         instance: Option<Instance>,
         picker: impl Fn() -> Box<dyn FolderPicker> + 'static,
     ) -> Self {
+        let (choice_sender, choices) = channel();
         Self {
             first: Some(NouraUi::new(first, picker())),
             others: Vec::new(),
+            root_hidden: false,
+            quitting: false,
             recent: Arc::new(Mutex::new(ViewportId::ROOT)),
             instance,
             forward: None,
             picker: Box::new(picker),
             next_id: 0,
+            choices,
+            choice_sender,
+            edit: EditInput::default(),
+            file_drags: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            native_menu: None,
+        }
+    }
+
+    /// Send menu choices to the windows, and on macOS and Windows show the
+    /// menu bar.
+    pub fn install_menu_bar(&mut self, cc: &eframe::CreationContext<'_>) {
+        let sender = self.choice_sender.clone();
+        let ctx = cc.egui_ctx.clone();
+        muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
+            if let Some(choice) = crate::menu::choice_for(event.id())
+                && sender.send(choice).is_ok()
+            {
+                ctx.request_repaint_of(ViewportId::ROOT);
+            }
+        }));
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(menus) = self.menu_bar() {
+            self.native_menu = match crate::menu::native::install(cc, &menus) {
+                Ok(native_menu) => Some(native_menu),
+                Err(error) => {
+                    tracing::error!(%error, "the native menu bar failed to install");
+                    None
+                }
+            };
         }
     }
 
     /// Draw the first window in the root viewport, and keep the other
     /// windows on screen.
-    pub fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let mut opened = Vec::new();
         if let Some(first) = &mut self.first {
-            if ui.input(|input| input.viewport().close_requested()) && !self.others.is_empty() {
-                // The other windows stay, so the root viewport hides
-                // instead of quitting.
-                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-                first.close_window();
-            }
             first.ui(ui);
             note_focus(&ctx, ViewportId::ROOT, &self.recent);
-            let origin = ctx.input(|input| input.viewport().outer_rect.map(|rect| rect.min));
-            opened.extend(
-                first
-                    .take_new_windows()
-                    .into_iter()
-                    .map(|app| (app, origin)),
-            );
+            self.file_drags
+                .lock()
+                .entry(ViewportId::ROOT)
+                .or_default()
+                .after_frame(first, &ctx, DragSource::Main(frame));
+        }
+        if !self.settle(&ctx) {
+            return;
+        }
+        for window in &self.others {
+            window.show(&ctx, &self.recent, &self.file_drags);
+        }
+    }
+
+    /// Show the windows the open ones opened, forget the ones that closed,
+    /// and hide the root viewport once the first window closed. Returns
+    /// false once the last window closed: Noura quits, and that window
+    /// comes back at the next launch.
+    fn settle(&mut self, ctx: &Context) -> bool {
+        let mut opened = Vec::new();
+        if let Some(first) = &mut self.first {
+            let new = first.take_new_windows();
+            if !new.is_empty() {
+                let origin = ctx.input_for(ViewportId::ROOT, |input| {
+                    input.viewport().outer_rect.map(|rect| rect.min)
+                });
+                opened.extend(new.into_iter().map(|app| (app, origin)));
+            }
             if first.is_closed() {
                 self.first = None;
-                if !self.others.is_empty() || !opened.is_empty() {
-                    ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-                }
+                self.file_drags.lock().remove(&ViewportId::ROOT);
             }
         }
         for window in &self.others {
@@ -131,7 +208,14 @@ impl Windows {
             let origin = state.origin;
             opened.extend(state.opened.drain(..).map(|app| (app, origin)));
         }
-        self.others.retain(|window| !window.is_closed());
+        let file_drags = &self.file_drags;
+        self.others.retain(|window| {
+            let open = !window.is_closed();
+            if !open {
+                file_drags.lock().remove(&window.id);
+            }
+            open
+        });
         let mut cascade = 0.0;
         for (app, origin) in opened {
             cascade += CASCADE;
@@ -139,14 +223,16 @@ impl Windows {
             self.add(app, position);
         }
         if self.first.is_none() && self.others.is_empty() {
-            // The last window closed: Noura quits, and the window comes
-            // back at the next launch.
-            ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+            return false;
         }
-        for window in &self.others {
-            window.show(&ctx, &self.recent);
+        if self.first.is_none() && !self.root_hidden {
+            // The other windows stay, so the root viewport hides and
+            // keeps hosting them.
+            self.root_hidden = true;
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
         }
+        true
     }
 
     fn add(&mut self, app: App, position: Option<Pos2>) {
@@ -161,6 +247,128 @@ impl Windows {
                 origin: None,
             })),
         });
+    }
+
+    /// Close the windows whose close button was pressed. The root
+    /// viewport's close ends the app unless other windows stay open: then
+    /// only the first window closes. Quit lets it end the app with every
+    /// window open.
+    ///
+    /// This runs in every pass, including the passes where every window
+    /// is minimized or covered and eframe skips the ui, as when the first
+    /// window closes from the taskbar.
+    fn close_requested(&mut self, ctx: &Context) {
+        let requested = |id: ViewportId| {
+            ctx.input(|input| {
+                input
+                    .raw
+                    .viewports
+                    .get(&id)
+                    .is_some_and(ViewportInfo::close_requested)
+            })
+        };
+        if requested(ViewportId::ROOT) && !self.quitting && !self.others.is_empty() {
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::CancelClose);
+            if let Some(first) = &mut self.first {
+                first.close_window();
+            }
+        }
+        for window in &self.others {
+            if requested(window.id)
+                && let Some(ui) = &mut window.state.lock().ui
+            {
+                ui.close_window();
+            }
+        }
+    }
+
+    /// Whether Quit ran in any window.
+    fn quit_requested(&self) -> bool {
+        self.first.as_ref().is_some_and(NouraUi::is_quitting)
+            || self.others.iter().any(|window| {
+                window
+                    .state
+                    .lock()
+                    .ui
+                    .as_ref()
+                    .is_some_and(NouraUi::is_quitting)
+            })
+    }
+
+    /// Run the menu choices made since the last pass: commands in the
+    /// window that had focus last, and the Edit items in the focused text
+    /// field.
+    fn run_menu_choices(&mut self, ctx: &Context) {
+        while let Ok(choice) = self.choices.try_recv() {
+            match choice {
+                Choice::Command(id) => self.in_recent_window(|window| {
+                    window.run_menu_command(&id, Instant::now());
+                    // Quit from the menu works while the windows are
+                    // hidden too.
+                    window.close_requested_windows(ctx);
+                }),
+                Choice::System(item) => self.edit.run(ctx, item),
+            }
+        }
+    }
+
+    /// Run `run` on the window that had focus last, or on another open
+    /// window when that one closed.
+    fn in_recent_window(&mut self, run: impl FnOnce(&mut NouraUi)) {
+        let Some(id) = self.recent_window() else {
+            return;
+        };
+        if id == ViewportId::ROOT {
+            if let Some(first) = &mut self.first {
+                run(first);
+            }
+        } else if let Some(window) = self.others.iter().find(|window| window.id == id)
+            && let Some(ui) = &mut window.state.lock().ui
+        {
+            run(ui);
+        }
+    }
+
+    /// The menu bar of the window that had focus last. Every window lists
+    /// the same commands.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn menu_bar(&self) -> Option<Vec<app_core::Menu>> {
+        let id = self.recent_window()?;
+        if id == ViewportId::ROOT {
+            return self.first.as_ref().map(NouraUi::menu_bar);
+        }
+        let window = self.others.iter().find(|window| window.id == id)?;
+        window.state.lock().ui.as_ref().map(NouraUi::menu_bar)
+    }
+
+    /// Show the menus the registry lists now, as when a command registered
+    /// or a page moved, and on Windows give each new window the menu bar.
+    fn update_menu_bar(&mut self, ctx: &Context) {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let menus = self.menu_bar();
+            let Some(native_menu) = &mut self.native_menu else {
+                return;
+            };
+            if let Some(menus) = menus
+                && let Err(error) = native_menu.update(&menus)
+            {
+                tracing::error!(%error, "the native menu bar failed to update");
+            }
+            #[cfg(target_os = "windows")]
+            match native_menu.cover_windows() {
+                // A new window's native window comes a pass or two after
+                // its viewport.
+                Ok(covered) if covered < self.others.len() => {
+                    ctx.request_repaint_after_for(MENU_RETRY, ViewportId::ROOT);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(%error, "a window's menu bar failed to install");
+                }
+            }
+        }
+        let _ = ctx;
     }
 
     /// Bring the window that had focus last to the front when a later
@@ -185,7 +393,7 @@ impl Windows {
         if self.forward.is_none() {
             return;
         }
-        let Some(id) = self.forward_target() else {
+        let Some(id) = self.recent_window() else {
             self.forward = None;
             return;
         };
@@ -215,7 +423,7 @@ impl Windows {
 
     /// The window that had focus last, or another open window when that
     /// one closed.
-    fn forward_target(&self) -> Option<ViewportId> {
+    fn recent_window(&self) -> Option<ViewportId> {
         let recent = *self.recent.lock();
         let open = |id: ViewportId| {
             (id == ViewportId::ROOT && self.first.is_some())
@@ -247,9 +455,15 @@ impl Window {
         self.state.lock().ui.as_ref().is_none_or(NouraUi::is_closed)
     }
 
-    fn show(&self, ctx: &Context, recent: &Arc<Mutex<ViewportId>>) {
+    fn show(
+        &self,
+        ctx: &Context,
+        recent: &Arc<Mutex<ViewportId>>,
+        file_drags: &Arc<Mutex<HashMap<ViewportId, FileDrag>>>,
+    ) {
         let state = self.state.clone();
         let recent = recent.clone();
+        let file_drags = file_drags.clone();
         let id = self.id;
         ctx.show_viewport_deferred(id, self.builder.clone(), move |ui, _class| {
             let mut state = state.lock();
@@ -263,13 +477,18 @@ impl Window {
             window.ui(ui);
             let ctx = ui.ctx();
             note_focus(ctx, id, &recent);
+            file_drags
+                .lock()
+                .entry(id)
+                .or_default()
+                .after_frame(window, ctx, DragSource::Focused);
             let opened = window.take_new_windows();
             if !opened.is_empty() {
                 state.origin = ctx.input(|input| input.viewport().outer_rect.map(|rect| rect.min));
                 state.opened.extend(opened);
             }
-            if window.is_closed() || !state.opened.is_empty() {
-                // The root viewport opens and closes windows.
+            if window.is_closed() || window.is_quitting() || !state.opened.is_empty() {
+                // The root viewport opens and closes windows, and quits.
                 ctx.request_repaint_of(ViewportId::ROOT);
             }
         });
@@ -288,11 +507,29 @@ impl eframe::App for Windows {
     /// eframe calls this before every `ui`, and also alone while every
     /// window is minimized or covered.
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.run_menu_choices(ctx);
+        if self.quit_requested() {
+            self.quitting = true;
+        }
+        self.close_requested(ctx);
+        if !self.settle(ctx) {
+            return;
+        }
         self.come_forward(ctx);
+        self.update_menu_bar(ctx);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.show(ui);
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.show(ui, frame);
+    }
+
+    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
+        self.file_drags
+            .lock()
+            .entry(raw_input.viewport_id)
+            .or_default()
+            .complete_input(ctx, raw_input);
+        self.edit.inject(raw_input);
     }
 
     fn on_exit(&mut self) {
@@ -311,10 +548,12 @@ impl eframe::App for Windows {
 mod tests {
     use std::{
         path::PathBuf,
+        thread::JoinHandle,
         time::{Duration, Instant},
     };
 
-    use egui::{Key, Modifiers, ViewportIdMap, ViewportInfo, accesskit::Role};
+    use app_core::command_id;
+    use egui::{Key, Modifiers, ViewportEvent, ViewportIdMap, ViewportInfo};
     use egui_kittest::{Harness, kittest::Queryable};
 
     use super::*;
@@ -345,6 +584,9 @@ mod tests {
         let windows = Windows::new(App::launch(app_data), instance, || Box::new(NoFolder));
         let mut harness = Harness::builder()
             .with_size([1400.0, 900.0])
+            // The palette draws ⌘ and ⇧, which egui's bundled fonts lack;
+            // the desktop takes them from the system fonts.
+            .allow_missing_glyphs()
             .build_eframe(|_creation| windows);
         harness.ctx.set_embed_viewports(false);
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -386,14 +628,18 @@ mod tests {
             .count()
     }
 
-    /// Press Cmd-Shift-W (Ctrl-Shift-W off macOS) in the first window, and
-    /// return what the root viewport was told in that frame. kittest runs
-    /// a frame per event, so the key comes down alone.
-    fn close_first_window(harness: &mut Harness<'static, Windows>) -> Vec<ViewportCommand> {
+    /// Press `key` with Cmd (Ctrl off macOS) and `modifiers` in the first
+    /// window, and return what the root viewport was told in that frame.
+    /// kittest runs a frame per event, so the key comes down alone.
+    fn press(
+        harness: &mut Harness<'static, Windows>,
+        modifiers: Modifiers,
+        key: Key,
+    ) -> Vec<ViewportCommand> {
         harness.event(egui::Event::Key {
-            key: Key::W,
+            key,
             pressed: true,
-            modifiers: Modifiers::COMMAND | Modifiers::SHIFT,
+            modifiers: Modifiers::COMMAND | modifiers,
             repeat: false,
             physical_key: None,
         });
@@ -401,19 +647,36 @@ mod tests {
         root_commands(harness)
     }
 
+    /// Press Cmd-Shift-W (Ctrl-Shift-W off macOS) in the first window.
+    fn close_first_window(harness: &mut Harness<'static, Windows>) -> Vec<ViewportCommand> {
+        press(harness, Modifiers::SHIFT, Key::W)
+    }
+
+    /// Run New Window from the first window's command palette.
     fn open_new_window(harness: &mut Harness<'static, Windows>) {
-        harness
-            .get_by_role_and_label(Role::Button, SWITCHER)
-            .click();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
         harness.run();
         harness
-            .get_by_role_and_label(Role::Button, "New window")
-            .click();
+            .get_by_label("Search commands")
+            .type_text("new window");
+        harness.run();
+        harness.key_press(Key::Enter);
         harness.run();
     }
 
+    /// Choose the menu item of the command `id`, as muda reports it.
+    fn choose(harness: &mut Harness<'static, Windows>, id: &str) {
+        let choice = Choice::Command(id.to_owned());
+        harness.state().choice_sender.send(choice).unwrap();
+        harness.run();
+    }
+
+    fn second_window(harness: &Harness<'static, Windows>) -> Arc<Mutex<WindowState>> {
+        harness.state().others[0].state.clone()
+    }
+
     #[test]
-    fn new_window_opens_another_viewport() {
+    fn new_window_from_the_palette_opens_another_viewport() {
         let app_data = workspace();
         let mut harness = harness(app_data.path());
         assert_eq!(other_viewports(&harness), 0);
@@ -422,6 +685,33 @@ mod tests {
 
         assert_eq!(other_viewports(&harness), 1);
         assert_eq!(harness.state().others.len(), 1);
+    }
+
+    #[test]
+    fn new_window_from_the_menu_opens_another_viewport() {
+        let app_data = workspace();
+        let mut harness = harness(app_data.path());
+
+        choose(&mut harness, command_id::NEW_WINDOW);
+
+        assert_eq!(other_viewports(&harness), 1);
+    }
+
+    /// The menu bar is the app's on macOS, so a menu choice goes to the
+    /// window that had focus last.
+    #[test]
+    fn a_menu_choice_runs_in_the_window_that_had_focus_last() {
+        let app_data = workspace();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        *harness.state().recent.lock() = second;
+
+        choose(&mut harness, command_id::CLOSE_WINDOW);
+
+        assert!(harness.state().others.is_empty());
+        assert!(harness.state().first.is_some());
+        assert_eq!(other_viewports(&harness), 0);
     }
 
     #[test]
@@ -437,8 +727,12 @@ mod tests {
         assert_eq!(other_viewports(&harness), 1);
         assert!(harness.state().first.is_none());
 
-        let second = harness.state().others[0].state.clone();
-        second.lock().ui.as_mut().unwrap().close_window();
+        second_window(&harness)
+            .lock()
+            .ui
+            .as_mut()
+            .unwrap()
+            .close_window();
         harness.step();
         assert!(root_commands(&harness).contains(&ViewportCommand::Close));
     }
@@ -482,6 +776,146 @@ mod tests {
         }
     }
 
+    /// A minimized window that its taskbar button or Dock menu asks to
+    /// close.
+    fn closing() -> ViewportInfo {
+        ViewportInfo {
+            events: vec![ViewportEvent::Close],
+            ..window(true, false)
+        }
+    }
+
+    fn cancels_close(commands: &ViewportIdMap<Vec<ViewportCommand>>) -> bool {
+        commands
+            .get(&ViewportId::ROOT)
+            .is_some_and(|commands| commands.contains(&ViewportCommand::CancelClose))
+    }
+
+    /// eframe runs no ui while every window is minimized, so the root
+    /// viewport's close request must be answered in `App::logic`, or the
+    /// whole app quits.
+    #[test]
+    fn closing_the_minimized_first_window_keeps_the_others_with_no_ui_running() {
+        let app_data = workspace();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+
+        let commands = logic_pass(
+            &mut harness,
+            &[(ViewportId::ROOT, closing()), (second, window(true, false))],
+        );
+
+        assert!(cancels_close(&commands), "the app keeps running");
+        assert!(harness.state().first.is_none(), "the first window closed");
+        assert_eq!(harness.state().others.len(), 1);
+        assert!(
+            !second_window(&harness)
+                .lock()
+                .ui
+                .as_ref()
+                .unwrap()
+                .is_closed()
+        );
+    }
+
+    #[test]
+    fn closing_a_minimized_other_window_closes_it_with_no_ui_running() {
+        let app_data = workspace();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+
+        let commands = logic_pass(
+            &mut harness,
+            &[(ViewportId::ROOT, window(true, false)), (second, closing())],
+        );
+
+        assert!(!cancels_close(&commands));
+        assert!(harness.state().others.is_empty());
+        assert!(harness.state().first.is_some());
+    }
+
+    /// Quit closes the root viewport, which ends the app, even with other
+    /// windows open, and every window comes back at the next launch.
+    #[test]
+    fn quitting_with_two_windows_open_ends_the_app_and_keeps_both() {
+        let app_data = workspace();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        *harness.state().recent.lock() = second;
+
+        // Quit from the second window's menu: the root viewport closes.
+        choose(&mut harness, command_id::QUIT);
+        assert!(harness.state().quitting);
+        let commands = logic_pass(
+            &mut harness,
+            &[
+                (
+                    ViewportId::ROOT,
+                    ViewportInfo {
+                        events: vec![ViewportEvent::Close],
+                        ..window(false, false)
+                    },
+                ),
+                (second, window(false, true)),
+            ],
+        );
+        assert!(!cancels_close(&commands), "Quit ends the app");
+        assert!(harness.state().first.is_some(), "no window closed first");
+        assert_eq!(harness.state().others.len(), 1);
+
+        eframe::App::on_exit(harness.state_mut());
+        drop(harness);
+
+        let mut next = App::launch(app_data.path());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while next.workspace().is_none() {
+            assert!(Instant::now() < deadline, "the workspace never reopened");
+            next.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            next.take_opened_windows().len(),
+            1,
+            "both windows came back"
+        );
+    }
+
+    #[test]
+    fn quit_from_the_first_window_s_keys_lets_the_root_viewport_close() {
+        let app_data = workspace();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+
+        let commands = press(&mut harness, Modifiers::NONE, Key::Q);
+        assert!(commands.contains(&ViewportCommand::Close));
+        let commands = logic_pass(
+            &mut harness,
+            &[
+                (
+                    ViewportId::ROOT,
+                    ViewportInfo {
+                        events: vec![ViewportEvent::Close],
+                        ..window(false, true)
+                    },
+                ),
+                (second, window(false, false)),
+            ],
+        );
+
+        assert!(!cancels_close(&commands));
+        assert!(harness.state().first.is_some());
+    }
+
+    /// Launch again on another thread, as a second process would.
+    fn launch(app_data: &std::path::Path) -> JoinHandle<std::io::Result<Claim>> {
+        let app_data = app_data.to_owned();
+        std::thread::spawn(move || crate::instance::claim(&app_data))
+    }
+
     #[test]
     fn a_later_launch_brings_a_minimized_window_back_with_no_ui_running() {
         let app_data = workspace();
@@ -493,18 +927,24 @@ mod tests {
         let second = harness.state().others[0].id;
         *harness.state().recent.lock() = second;
 
-        assert!(matches!(
-            crate::instance::claim(app_data.path()),
-            Ok(Claim::Running)
-        ));
+        let later = launch(app_data.path());
 
         // Both windows are minimized: the window comes back first.
         let root = (ViewportId::ROOT, window(true, false));
-        let commands = logic_pass(&mut harness, &[root.clone(), (second, window(true, false))]);
-        let sent = commands.get(&second).cloned().unwrap_or_default();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let sent = loop {
+            let commands = logic_pass(&mut harness, &[root.clone(), (second, window(true, false))]);
+            assert!(!commands.contains_key(&ViewportId::ROOT));
+            if let Some(sent) = commands.get(&second) {
+                break sent.clone();
+            }
+            assert!(Instant::now() < deadline, "no launch asked to come forward");
+            std::thread::sleep(Duration::from_millis(10));
+        };
         assert!(sent.contains(&ViewportCommand::Minimized(false)));
         assert!(sent.contains(&ViewportCommand::Focus));
-        assert!(!commands.contains_key(&ViewportId::ROOT));
+        // The running copy answered once it took the request.
+        assert!(matches!(later.join().unwrap(), Ok(Claim::Running)));
 
         // It is back but the system didn't focus it yet: Noura asks again.
         std::thread::sleep(FORWARD_RETRY);
@@ -555,10 +995,7 @@ mod tests {
         let second = harness.state().others[0].id;
         *harness.state().recent.lock() = second;
 
-        assert!(matches!(
-            crate::instance::claim(app_data.path()),
-            Ok(Claim::Running)
-        ));
+        let later = launch(app_data.path());
 
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -576,5 +1013,6 @@ mod tests {
             assert!(Instant::now() < deadline, "no window came forward");
             std::thread::sleep(Duration::from_millis(10));
         }
+        assert!(matches!(later.join().unwrap(), Ok(Claim::Running)));
     }
 }

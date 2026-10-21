@@ -8,19 +8,17 @@
 //! copy exits, even when it crashes, so a stale socket never blocks the
 //! next launch.
 //!
-//! A copy that is quitting stops answering first and lets go of the lock
-//! last, once its windows have let go of the workspace. A launch meanwhile
-//! waits for the lock and then runs.
+//! The running copy answers a request only once its UI has taken it, so a
+//! request still waiting when the copy quits goes unanswered. A copy that
+//! is quitting stops answering first and lets go of the lock last, once
+//! its windows have let go of the workspace. A launch meanwhile waits for
+//! the lock and then runs.
 
 use std::{
     fs::{File, OpenOptions, TryLockError},
     io::{self, BufRead, BufReader, Read, Write},
     path::Path,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, MutexGuard, mpsc},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -67,17 +65,43 @@ pub struct Instance {
 
 #[derive(Default)]
 struct Shared {
-    /// A later launch asked to come forward since the last check.
-    asked: AtomicBool,
+    /// One lock covers the waiting requests and the stop, so no request is
+    /// answered once the copy stops listening.
+    requests: Mutex<Requests>,
     /// Wakes the UI when a later launch asks.
     wake: Mutex<Option<Box<dyn Fn() + Send>>>,
+}
+
+#[derive(Default)]
+struct Requests {
+    /// Later launches that asked to come forward and wait for the answer
+    /// until the UI takes their request.
+    waiting: Vec<Stream>,
     /// The instance is going away.
-    stopping: AtomicBool,
+    stopping: bool,
 }
 
 impl Shared {
-    fn ask(&self) {
-        self.asked.store(true, Ordering::SeqCst);
+    fn requests(&self) -> MutexGuard<'_, Requests> {
+        self.requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn is_stopping(&self) -> bool {
+        self.requests().stopping
+    }
+
+    /// Keep a later launch's request for the UI, unless this copy is
+    /// stopping: then the launch gets no answer and waits for the lock.
+    fn ask(&self, stream: Stream) {
+        {
+            let mut requests = self.requests();
+            if requests.stopping {
+                return;
+            }
+            requests.waiting.push(stream);
+        }
         if let Some(wake) = &*self.wake.lock().unwrap_or_else(|error| error.into_inner()) {
             wake();
         }
@@ -88,7 +112,7 @@ impl Instance {
     /// Call `wake` whenever a later launch asks this copy to come forward,
     /// and once now if one asked already.
     pub fn on_activate(&self, wake: impl Fn() + Send + 'static) {
-        if self.shared.asked.load(Ordering::SeqCst) {
+        if !self.shared.requests().waiting.is_empty() {
             wake();
         }
         *self
@@ -99,16 +123,28 @@ impl Instance {
     }
 
     /// Whether a later launch asked this copy to come forward since the
-    /// last call.
+    /// last call. Each launch that asked hears now that its request was
+    /// taken, and exits.
     pub fn take_activation(&self) -> bool {
-        self.shared.asked.swap(false, Ordering::SeqCst)
+        let waiting = std::mem::take(&mut self.shared.requests().waiting);
+        let asked = !waiting.is_empty();
+        for stream in waiting {
+            if let Err(error) = (&stream).write_all(DONE) {
+                tracing::debug!(%error, "a later launch left before the answer");
+            }
+        }
+        asked
     }
 
     /// Stop answering later launches, as this copy quits, but keep the
     /// lock: a launch from now on waits for it, and runs once this copy
-    /// drops the instance.
+    /// drops the instance. Requests the UI hasn't taken go unanswered.
     pub fn stop_listening(&mut self) {
-        self.shared.stopping.store(true, Ordering::SeqCst);
+        {
+            let mut requests = self.shared.requests();
+            requests.stopping = true;
+            requests.waiting.clear();
+        }
         // Wake the listening thread, which then lets go of the socket.
         if let Some(listening) = self.listening.take()
             && Stream::connect(self.name.clone()).is_ok()
@@ -185,7 +221,7 @@ fn listen(lock: File, name: Name<'static>) -> io::Result<Instance> {
         .name("single-instance".into())
         .spawn(move || {
             for stream in listener.incoming() {
-                if heard.stopping.load(Ordering::SeqCst) {
+                if heard.is_stopping() {
                     break;
                 }
                 match stream {
@@ -203,7 +239,7 @@ fn listen(lock: File, name: Name<'static>) -> io::Result<Instance> {
 }
 
 /// Read one request on its own thread, so a launch that never sends one
-/// can't hold up the next.
+/// can't hold up the next. The UI answers it once it takes it.
 fn answer(stream: Stream, shared: Arc<Shared>) {
     let spawned = std::thread::Builder::new()
         .name("single-instance-request".into())
@@ -212,11 +248,8 @@ fn answer(stream: Stream, shared: Arc<Shared>) {
             let read = BufReader::new(&stream)
                 .take(ACTIVATE.len() as u64)
                 .read_until(b'\n', &mut request);
-            // A copy that is quitting hangs up instead, and the later
-            // launch waits for the lock.
-            if read.is_ok() && request == ACTIVATE && !shared.stopping.load(Ordering::SeqCst) {
-                shared.ask();
-                let _ = (&stream).write_all(DONE);
+            if read.is_ok() && request == ACTIVATE {
+                shared.ask(stream);
             }
         });
     if let Err(error) = spawned {
@@ -308,15 +341,29 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::thread::JoinHandle;
+
     use super::*;
 
-    /// Wait until `instance` hears a later launch.
+    /// Wait until `instance` hears a later launch, and answer it.
     fn wait_for_activation(instance: &Instance) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !instance.take_activation() {
             assert!(Instant::now() < deadline, "no launch asked to come forward");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Launch again on another thread, as a second process would. The
+    /// launch waits for the running copy's answer.
+    fn launch(app_data: &Path) -> JoinHandle<io::Result<Claim>> {
+        let app_data = app_data.to_owned();
+        std::thread::spawn(move || claim(&app_data))
+    }
+
+    /// A later launch that the running copy answered.
+    fn answered(launch: JoinHandle<io::Result<Claim>>) -> bool {
+        matches!(launch.join().unwrap(), Ok(Claim::Running))
     }
 
     #[test]
@@ -331,12 +378,53 @@ mod tests {
         });
         assert!(!running.take_activation());
 
-        let later = claim(app_data.path()).unwrap();
+        let later = launch(app_data.path());
 
-        assert!(matches!(later, Claim::Running));
-        wait_for_activation(&running);
         assert!(wakes.recv_timeout(Duration::from_secs(10)).is_ok());
+        wait_for_activation(&running);
+        assert!(answered(later));
         assert!(!running.take_activation(), "one launch asks once");
+    }
+
+    /// The running copy answers once its UI took the request, and the
+    /// later launch waits for that answer.
+    #[test]
+    fn a_request_is_answered_once_the_ui_takes_it() {
+        let app_data = tempfile::tempdir().unwrap();
+        let Claim::First(running) = claim(app_data.path()).unwrap() else {
+            panic!("nothing else runs on this app data folder");
+        };
+        let name = socket_name(app_data.path()).unwrap();
+        let asking = std::thread::spawn(move || ask_to_activate(&name));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!asking.is_finished(), "no answer before the UI takes it");
+
+        wait_for_activation(&running);
+
+        assert!(matches!(asking.join().unwrap(), Asked::CameForward));
+    }
+
+    /// A copy that quits with a request its UI hasn't taken hangs up on
+    /// it, and the launch that sent it waits for the lock instead of
+    /// exiting with nothing running.
+    #[test]
+    fn a_request_still_waiting_when_the_copy_quits_goes_unanswered() {
+        let app_data = tempfile::tempdir().unwrap();
+        let Claim::First(mut quitting) = claim(app_data.path()).unwrap() else {
+            panic!("nothing else runs on this app data folder");
+        };
+        let name = socket_name(app_data.path()).unwrap();
+        let asking = std::thread::spawn(move || ask_to_activate(&name));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while quitting.shared.requests().waiting.is_empty() {
+            assert!(Instant::now() < deadline, "the request never arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        quitting.stop_listening();
+
+        assert!(matches!(asking.join().unwrap(), Asked::Unreachable(_)));
+        assert!(!quitting.take_activation());
     }
 
     #[test]
@@ -350,8 +438,9 @@ mod tests {
             panic!("the earlier copy is gone");
         };
 
-        assert!(matches!(claim(app_data.path()).unwrap(), Claim::Running));
+        let later = launch(app_data.path());
         wait_for_activation(&next);
+        assert!(answered(later));
     }
 
     /// A copy that quits stops answering but holds the lock until its
@@ -365,8 +454,7 @@ mod tests {
         };
         quitting.stop_listening();
 
-        let path = app_data.path().to_owned();
-        let later = std::thread::spawn(move || claim(&path));
+        let later = launch(app_data.path());
         std::thread::sleep(Duration::from_millis(300));
         assert!(!later.is_finished(), "the later launch waits for the lock");
         assert!(
@@ -378,8 +466,9 @@ mod tests {
         let Claim::First(next) = later.join().unwrap().unwrap() else {
             panic!("the quitting copy is gone");
         };
-        assert!(matches!(claim(app_data.path()).unwrap(), Claim::Running));
+        let after = launch(app_data.path());
         wait_for_activation(&next);
+        assert!(answered(after));
     }
 
     /// A process that starts as a copy exits can share its lock for a
@@ -396,8 +485,7 @@ mod tests {
             .unwrap();
         held.try_lock().unwrap();
 
-        let path = app_data.path().to_owned();
-        let later = std::thread::spawn(move || claim(&path));
+        let later = launch(app_data.path());
         std::thread::sleep(Duration::from_millis(300));
         assert!(
             !later.is_finished(),
@@ -421,8 +509,9 @@ mod tests {
             panic!("the crashed copy holds no lock");
         };
 
-        assert!(matches!(claim(app_data.path()).unwrap(), Claim::Running));
+        let later = launch(app_data.path());
         wait_for_activation(&next);
+        assert!(answered(later));
     }
 
     #[test]
@@ -445,7 +534,8 @@ mod tests {
             panic!("nothing else runs on this app data folder");
         };
 
-        assert!(matches!(claim(&app_data).unwrap(), Claim::Running));
+        let later = launch(&app_data);
         wait_for_activation(&running);
+        assert!(answered(later));
     }
 }

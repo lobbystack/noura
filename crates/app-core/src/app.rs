@@ -15,8 +15,9 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, Layout, NoSystem, OpenedFile, RecentWorkspace, System, Tab, Workspace,
-    WorkspaceService,
+    AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
+    RecentWorkspace, System, Tab, Workspace, WorkspaceService,
+    commands::Registry,
     layout::LayoutStore,
     rail::Rail,
     session::{Session, WindowKey},
@@ -24,12 +25,17 @@ use crate::{
     view_state::StoredWindow,
 };
 
+mod commands;
+mod drops;
 mod file_actions;
 mod ignored_files;
+mod palette;
 mod view;
 
+pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
 pub use ignored_files::IgnoredFiles;
+pub use palette::CommandPalette;
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,8 +83,16 @@ pub enum Change {
     Layout,
     Document,
     Notice,
-    /// The Ignored files page changed.
+    /// The Ignored files page or the Keyboard shortcuts page changed.
     Settings,
+    /// A command registered.
+    Commands,
+    /// The command palette opened, closed or changed.
+    Palette,
+    /// The window closed, opened another window, or Quit ran; see
+    /// [`App::is_closed`], [`App::take_opened_windows`] and
+    /// [`App::take_quit`].
+    Window,
     /// Background work finished, or another window changed what this one
     /// shows, such as the files; call [`App::poll`] to apply it.
     WorkFinished,
@@ -167,6 +181,19 @@ pub struct App {
     failed_restore: Option<String>,
     pending: Option<Pending>,
     listeners: Listeners,
+    /// Changes waiting to be saved, which a drag out of the window saves
+    /// first.
+    pending_saves: Arc<dyn PendingSaves>,
+    /// The native drag waiting for the desktop shell to start it.
+    drag_out: Option<DragOut>,
+    /// The item the last native drag carried, so a drop of it back on the
+    /// tree moves it instead of copying it.
+    dragged_out: Option<String>,
+    registry: Registry,
+    palette: Option<CommandPalette>,
+    shortcuts_open: bool,
+    /// Quit ran and the app hasn't closed yet.
+    quit: bool,
 }
 
 impl App {
@@ -185,6 +212,7 @@ impl App {
         let session = Session::new(app_data.as_ref(), system);
         let mut app = Self::join(&session);
         app.recents = app.service.recents();
+        app.register_kernel_commands();
         app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
@@ -224,6 +252,13 @@ impl App {
             failed_restore: None,
             pending: None,
             listeners,
+            pending_saves: Arc::new(NoPendingSaves),
+            drag_out: None,
+            dragged_out: None,
+            registry: Registry::default(),
+            palette: None,
+            shortcuts_open: false,
+            quit: false,
         }
     }
 
@@ -269,6 +304,10 @@ impl App {
         window.tree = current.tree;
         window.rail = self.rail.clone();
         window.layout = self.layout.clone();
+        // The commands registered so far, and what saves pending changes,
+        // serve every window.
+        window.registry = self.registry.copy();
+        window.pending_saves = self.pending_saves.clone();
         window.restore_view(stored);
         window
     }
@@ -284,6 +323,7 @@ impl App {
         self.closed = true;
         self.session.close(self.key);
         self.release();
+        self.listeners.emit(Change::Window);
     }
 
     /// Let go of the workspace once the window closed, so a workspace
@@ -296,6 +336,9 @@ impl App {
         self.renaming = None;
         self.ignored_files = None;
         self.pending_trash = None;
+        self.drag_out = None;
+        self.dragged_out = None;
+        self.palette = None;
         self.listeners.emit(Change::Screen);
     }
 
@@ -494,6 +537,8 @@ impl App {
                 self.renaming = None;
                 self.ignored_files = None;
                 self.pending_trash = None;
+                self.drag_out = None;
+                self.dragged_out = None;
                 self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),
@@ -573,6 +618,8 @@ impl App {
         self.renaming = None;
         self.ignored_files = None;
         self.pending_trash = None;
+        self.drag_out = None;
+        self.dragged_out = None;
         self.listeners.emit(Change::Tree);
         self.listeners.emit(Change::Tabs);
         self.listeners.emit(Change::Document);
