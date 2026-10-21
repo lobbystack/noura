@@ -1162,6 +1162,41 @@
 				}
 			],
 			"text": "xDE"
+		},
+		{
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "trap",
+			"name": "integration_traps_on_a_second_copy_of_an_element",
+			"steps": [
+				{
+					"expect": "merged",
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000001000000150101818080800400040107636f6e74656e74016100"
+					}
+				},
+				{
+					"expect": "stopped",
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000001501018180808004004481808080040104f09f988000"
+					}
+				},
+				{
+					"expect": "skipped",
+					"receive": {
+						"card_count": 2,
+						"card_index": 1,
+						"id": 3,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200840000014200"
+					}
+				}
+			],
+			"text": "xa"
 		}
 	],
 	"description": "Text mode (sync-v2.md §22): the text lineage ID derived from the rid, the base operation's digest and the first document's bytes; yrs client IDs from a card index and a load number; and the collaboration sandbox: the guest module's hash, the verdict budget and the Wasmtime operator costs it assumes, the raw lib0 checks and the verdict on each record's yrs bytes and meta entries, surrogate pairs split into U+FFFD, client IDs past 32 bits, and writer allowances.",

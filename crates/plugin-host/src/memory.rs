@@ -56,3 +56,36 @@ pub fn process_memory() -> Option<u64> {
 pub fn process_memory() -> Option<u64> {
     None
 }
+
+/// Asks the system allocator to hand the memory it keeps for reuse back to
+/// the system, so [`process_memory`] counts only memory in use. The
+/// allocators on macOS, Linux and Windows keep large freed blocks to reuse.
+pub fn release_free_memory() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone asks every zone for relief, and a goal of 0
+        // releases all it can; the call frees only memory not in use.
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: malloc_trim frees only memory not in use.
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapCompact};
+        // SAFETY: the process heap is valid for the process's lifetime, and
+        // compacting it frees only memory not in use.
+        unsafe {
+            HeapCompact(GetProcessHeap(), 0);
+        }
+    }
+}

@@ -1001,6 +1001,38 @@ fn allowances(f: &mut Fixture) {
     }));
 }
 
+/// A record that passes the verdict but makes yrs trap during integration:
+/// it claims clocks its writer already used, with a right origin inside
+/// itself. The trap stops the lineage on the device, which rebuilds the
+/// document from the journal and merges nothing more of the lineage.
+fn traps(f: &mut Fixture) {
+    let base = insert(0, 0, "x");
+    let record = |id: u64, card: u32, yrs: Vec<u8>| {
+        json!({
+            "id": id,
+            "card_index": card,
+            "card_count": 2,
+            "payload": to_hex(&update_payload("", 1, vec![], inline(yrs))),
+        })
+    };
+    let first = insert(OTHER, 0, "a");
+    let overlap = insert_between(OTHER, 0, None, Some((OTHER, 1)), "\u{1F600}");
+    let later = insert_between(ME, 0, Some((0, 0)), None, "B");
+    f.case(json!({
+        "kind": "trap",
+        "name": "integration_traps_on_a_second_copy_of_an_element",
+        "base": to_hex(&base),
+        "steps": [
+            {"receive": record(1, 2, first), "expect": "merged"},
+            {"receive": record(2, 2, overlap), "expect": "stopped"},
+            {"receive": record(3, 1, later), "expect": "skipped"},
+        ],
+        // Root inserts without origins sort by client ID: client 0's "x"
+        // comes first.
+        "text": "xa",
+    }));
+}
+
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-collaboration.json",
@@ -1100,5 +1132,6 @@ pub fn fixture() -> Fixture {
     meta_checks(&mut f);
     surrogates(&mut f);
     allowances(&mut f);
+    traps(&mut f);
     f
 }

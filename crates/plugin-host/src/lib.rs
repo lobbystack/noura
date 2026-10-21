@@ -25,7 +25,7 @@ pub use manifest::{
     Capability, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
     valid_plugin_id,
 };
-pub use memory::process_memory;
+pub use memory::{process_memory, release_free_memory};
 pub use runtime::{Backend, Limits, StoreLimiter, wasmtime_config};
 pub use services::{
     Entry, EntryKind, FileRead, Listed, ObjectRead, ServiceError, WorkspacePath, WorkspaceReads,

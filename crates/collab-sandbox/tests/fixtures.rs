@@ -301,3 +301,51 @@ fn allowance_base_states_defer_an_overdrawn_writer_alone() {
         assert_eq!(note.deferred(), 0, "{name}");
     }
 }
+
+#[test]
+fn a_trap_during_integration_stops_the_lineage_and_rebuilds_the_last_good_state() {
+    let trap_cases = cases("trap");
+    assert_eq!(trap_cases.len(), 1);
+    for case in trap_cases {
+        let name = &case["name"];
+        let mut note = note(vec![hex(&case["base"])]);
+        for step in case["steps"].as_array().unwrap() {
+            let receive = &step["receive"];
+            let id = receive["id"].as_u64().unwrap();
+            let effects = note.receive(
+                RemoteRecord {
+                    id,
+                    writer: receive["card_index"].as_u64().unwrap() as u32,
+                    card_count: receive["card_count"].as_u64().unwrap() as u32,
+                    payload: hex(&receive["payload"]),
+                    blob: None,
+                },
+                Instant::now(),
+            );
+            let events = &effects.events;
+            let outcome = if events
+                .iter()
+                .any(|event| matches!(event, Event::Merged { id: merged, .. } if *merged == id))
+            {
+                "merged"
+            } else if events.contains(&Event::Stopped {
+                id,
+                reason: collab_sandbox::StopReason::Trap,
+            }) {
+                // The device discards the instance and rebuilds it.
+                assert!(events.contains(&Event::Rebuilt), "{name}: {events:?}");
+                assert!(effects.changes.is_empty(), "{name}");
+                "stopped"
+            } else if events.contains(&Event::Skipped { id }) {
+                "skipped"
+            } else {
+                "other"
+            };
+            assert_eq!(outcome, step["expect"], "{name} record {id}: {events:?}");
+        }
+        assert!(note.is_stopped());
+        assert_eq!(note.text().unwrap(), case["text"], "{name}");
+        // Nothing more of the lineage goes out.
+        assert_eq!(note.take_update().unwrap(), None);
+    }
+}

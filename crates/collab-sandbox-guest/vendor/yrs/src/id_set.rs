@@ -85,7 +85,13 @@ impl IdRange {
 
     /// Check if given clock exists within current [IdRange].
     pub fn contains_clock(&self, clock: u32) -> bool {
-        self.0.iter().any(|r| r.contains(&clock))
+        // Noura patch (docs/provenance/yrs.md): the ranges are sorted and
+        // never overlap, so a binary search finds the one range that can
+        // hold `clock`. A linear scan made each lookup cost as much as the
+        // number of ranges, and integrating a record with many deletions
+        // quadratic in fuel.
+        let index = self.0.partition_point(|r| r.end <= clock);
+        self.0.get(index).is_some_and(|r| r.start <= clock)
     }
 
     pub fn insert(&mut self, range: Range<u32>) {

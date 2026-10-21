@@ -929,7 +929,7 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
         ),
         // The collaboration sandbox's cases need its guest module, so
         // crates/collab-sandbox runs them.
-        "verdict" | "client_round_trip" | "surrogate" | "allowance" => Ok(()),
+        "verdict" | "client_round_trip" | "surrogate" | "allowance" | "trap" => Ok(()),
         other => Err(format!("unknown case kind {other}")),
     }
 }
