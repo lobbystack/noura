@@ -9,10 +9,15 @@ rust-version.workspace = true
 app-core = { version = "0.2.0", path = "../../crates/app-core" }
 app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
 eframe.workspace = true
+egui.workspace = true
+# The native menu bar on macOS and Windows. Linux builds muda's no-op
+# backend and shows no menu bar.
+muda.workspace = true
 opener.workspace = true
 rfd.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+winit.workspace = true
 
 # A tree row dragged out of the window becomes a native drag through `drag`.
 # On Linux the crate drags out through GTK, which winit windows don't use.
@@ -27,28 +32,22 @@ objc2-app-kit = { workspace = true, features = ["std", "NSEvent", "NSScreen"] }
 objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSGeometry"] }
 
 # While Explorer drags files over the window, the window asks Windows where
-# the pointer is, since winit doesn't say.
+# the pointer is, since winit doesn't say. Menu shortcuts go through the
+# menu's accelerator table.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
-# The S6 desktop trial lives in examples/desktop_trial. Its native menu crate
-# stays a dev-dependency until the app gets native menus.
+# The S6 desktop trial (ticket 04) lives in examples/desktop_trial.
 [[example]]
 name = "desktop_trial"
 test = true
 
 [dev-dependencies]
-egui.workspace = true
 egui_kittest.workspace = true
-muda.workspace = true
 tempfile.workspace = true
-winit.workspace = true
 
 # The smoke run sends menu shortcuts through AppKit's main menu.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSResponder"] }
 objc2-foundation = { workspace = true, features = ["std", "NSGeometry", "NSString"] }
-
-[target.'cfg(target_os = "windows")'.dev-dependencies]
-windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }

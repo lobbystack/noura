@@ -6,15 +6,22 @@
 mod chooser;
 mod common;
 mod ignored_files;
+mod keys;
+mod palette;
 mod rail;
+mod shortcuts;
 mod tab_bar;
 pub mod theme;
 mod tree;
 mod workspace;
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
-use app_core::{App, DragOut, Screen, TabId};
+use app_core::{App, Area, CommandSource, DragOut, Menu, Screen, TabId};
+use egui::Event;
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -32,6 +39,10 @@ pub struct NouraUi {
     tree: tree::TreeView,
     ignored: ignored_files::IgnoredFilesView,
     tab_bar: tab_bar::TabBarView,
+    palette: palette::PaletteView,
+    /// Keys typed in the same frame as the shortcut that opened the
+    /// palette, for the palette's field on the next frame.
+    type_ahead: Vec<Event>,
     /// The tab the document area showed last frame.
     shown_tab: Option<TabId>,
     started: bool,
@@ -46,6 +57,8 @@ impl NouraUi {
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
             tab_bar: tab_bar::TabBarView::default(),
+            palette: palette::PaletteView::default(),
+            type_ahead: Vec::new(),
             shown_tab: None,
             started: false,
         }
@@ -54,6 +67,27 @@ impl NouraUi {
     /// Whether a workspace is opening in the background.
     pub fn is_busy(&self) -> bool {
         self.app.is_busy()
+    }
+
+    /// The app this window draws.
+    pub fn app(&self) -> &App {
+        &self.app
+    }
+
+    /// The app, to register commands and pages.
+    pub fn app_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+
+    /// The menu bar the native menus show, built from the command
+    /// registry.
+    pub fn menu_bar(&self) -> Vec<Menu> {
+        self.app.menu_bar()
+    }
+
+    /// Run the command a native menu item stands for, chosen at `at`.
+    pub fn run_menu_command(&mut self, id: &str, at: Instant) -> bool {
+        self.app.run_command(id, CommandSource::Menu, at)
     }
 
     /// The native drag of a tree row that left the window, for the desktop
@@ -88,11 +122,95 @@ impl NouraUi {
             // this also keeps the loading spinner turning.
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        match self.app.screen().clone() {
+        let screen = self.app.screen().clone();
+        // Without a workspace, only Quit and Close Window take their keys.
+        self.dispatch_keys(ui);
+        match screen {
             Screen::Loading => common::loading(ui),
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
         }
+        palette::show(ui, &mut self.app, &mut self.palette);
+        self.close_requested_windows(ui.ctx());
+    }
+
+    /// Close what Quit or Close Window asked to close: Quit closes the
+    /// main window, which ends the app, and Close Window this one. Each
+    /// frame does this; the desktop shell also calls it after menu
+    /// choices, which can arrive while the window is hidden and draws no
+    /// frame.
+    pub fn close_requested_windows(&mut self, ctx: &egui::Context) {
+        if self.app.take_quit() {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        }
+        if self.app.take_close_window() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// The part of the window that has the keyboard, as the command
+    /// registry names areas.
+    fn focus_area(&self, ctx: &egui::Context) -> Option<Area> {
+        if ctx.text_edit_focused() {
+            Some(Area::Writing)
+        } else if self.tree.has_focus(ctx) {
+            Some(Area::FileTree)
+        } else if tab_bar::has_focus(ctx, &self.app) {
+            Some(Area::Tabs)
+        } else if rail::has_focus(ctx, &self.app) {
+            Some(Area::Pages)
+        } else {
+            None
+        }
+    }
+
+    /// Run the commands this frame's key presses stand for, before any
+    /// view sees them. Keys the focused view or text field handles stay
+    /// for it. Keys typed after the shortcut that opens the palette wait
+    /// for the palette's field.
+    fn dispatch_keys(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let typed_ahead = std::mem::take(&mut self.type_ahead);
+        let events = ui.input_mut(|input| {
+            let mut events = typed_ahead;
+            events.append(&mut input.events);
+            events
+        });
+        let platform = self.app.platform();
+        let focus = self.focus_area(&ctx);
+        let now = Instant::now();
+        let mut kept = Vec::with_capacity(events.len());
+        let mut palette_opened = false;
+        for event in events {
+            if palette_opened {
+                if matches!(event, Event::Key { .. } | Event::Text(_) | Event::Paste(_)) {
+                    self.type_ahead.push(event);
+                } else {
+                    kept.push(event);
+                }
+                continue;
+            }
+            let press = match &event {
+                Event::Key {
+                    key,
+                    physical_key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                } => keys::press(*key, *physical_key, *modifiers, platform),
+                _ => None,
+            };
+            let was_open = self.app.palette().is_some();
+            if press.is_some_and(|press| self.app.press_key(&press, focus, now)) {
+                palette_opened = !was_open && self.app.palette().is_some();
+            } else {
+                kept.push(event);
+            }
+        }
+        if !self.type_ahead.is_empty() {
+            ctx.request_repaint();
+        }
+        ui.input_mut(|input| input.events = kept);
     }
 
     fn pick_and_open(&mut self) {
