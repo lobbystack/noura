@@ -136,10 +136,11 @@ where
             return Err("encoding from the fields differs".into());
         }
     }
-    if let Some(d) = record.get("digest") {
-        if sync_protocol::crypto::hash(bytes) != digest(d) {
-            return Err("digest differs".into());
-        }
+    if record
+        .get("digest")
+        .is_some_and(|d| sync_protocol::crypto::hash(bytes) != digest(d))
+    {
+        return Err("digest differs".into());
     }
     Ok(Some(value))
 }

@@ -144,7 +144,7 @@ pub fn fixture() -> Fixture {
         "own_device": device(c).to_hex(),
         "expect": [{"device": device(a).to_hex(), "counter": 2}],
     }));
-    let mut covers = vec![(device(b), 1u64), (device(c), 1u64)];
+    let mut covers = [(device(b), 1u64), (device(c), 1u64)];
     covers.sort();
     let covers: Vec<Value> = covers
         .iter()

@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use sync_protocol::codec::{Encode, Nested, Sorted};
+use sync_protocol::codec::{Encode, Sorted};
 use sync_protocol::manifest::{
     Manifest, bucket_hash, bucket_of, descent_path, heads_digest, leaf_hash, node_hash, skip_number,
 };
-use sync_protocol::records::{Checkpoint, CheckpointBundle, Ref, Signed};
+use sync_protocol::records::{Checkpoint, Ref, Signed};
 use sync_protocol::types::{Digest, Id, to_hex};
 
 use super::common::{Actor, Fixture, Shape, id};

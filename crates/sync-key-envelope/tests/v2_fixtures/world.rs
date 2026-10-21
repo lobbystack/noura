@@ -177,7 +177,6 @@ pub struct World {
     pub workspace: Id,
     pub ws_domain: Id,
     pub restricted: Id,
-    pub marker_rid: Id,
     pub policy: Policy,
     pub verified: PolicyChain,
     pub ws_epoch1: Signed<Epoch>,
@@ -195,6 +194,7 @@ pub struct World {
     pub profile: Signed<Profile>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn epoch_record(
     world_policy: &PolicyChain,
     workspace: Id,
@@ -441,7 +441,6 @@ pub fn world() -> World {
         workspace,
         ws_domain,
         restricted,
-        marker_rid,
         policy,
         verified,
         ws_epoch1,

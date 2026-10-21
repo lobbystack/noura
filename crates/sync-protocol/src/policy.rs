@@ -502,18 +502,23 @@ impl PolicyChain {
         for head in body.heads.iter() {
             let reset =
                 matches!(body.kind, PolicyKind::AcceptReset { account } if account == head.account);
-            if let Some(member) = prev.members.get(&head.account) {
-                if head.genesis == member.head.genesis {
-                    if reset || head.seqno < member.head.seqno {
-                        return Err(PolicyError::HeadBehind { revision });
-                    }
-                } else if !reset {
-                    return Err(PolicyError::HeadBehind { revision });
+            let behind = match (
+                prev.members.get(&head.account),
+                prev.former.get(&head.account),
+            ) {
+                // A member's head moves forward on its recorded chain; only
+                // an accept_reset moves it to another chain.
+                (Some(member), _) if head.genesis == member.head.genesis => {
+                    reset || head.seqno < member.head.seqno
                 }
-            } else if let Some(former) = prev.former.get(&head.account) {
-                if head.genesis == former.genesis && head.seqno < former.seqno {
-                    return Err(PolicyError::HeadBehind { revision });
-                }
+                (Some(_), _) => !reset,
+                // A returning member's head doesn't fall behind its last
+                // recorded head on the same chain.
+                (None, Some(former)) => head.genesis == former.genesis && head.seqno < former.seqno,
+                (None, None) => false,
+            };
+            if behind {
+                return Err(PolicyError::HeadBehind { revision });
             }
         }
 

@@ -258,21 +258,28 @@ impl ChainVerifier {
         }
         // Rule 3: first fetch the head's own position for a later attempt.
         // Like every fetched record, it must sit before the record.
-        if head.counter > 0 {
-            if let Fetched::Record(fetched) = fetcher.fetch(&record.device, head.counter) {
-                if fetched.counter == head.counter && fetched.digest != head.digest {
-                    let saved = self.devices.get(&record.device).cloned();
-                    match self.rule_one(&fetched, head, carried) {
-                        Ok(ChainVerdict::Replace { .. }) if fetched.seq < record.seq => {
-                            return self.process(record, carried, fetcher);
-                        }
-                        Ok(ChainVerdict::Replace { .. }) => {
-                            self.restore(record.device, saved);
-                            return Err(ChainError::Reordered);
-                        }
-                        _ => self.restore(record.device, saved),
-                    }
+        let later_attempt = match head.counter {
+            0 => None,
+            counter => match fetcher.fetch(&record.device, counter) {
+                Fetched::Record(fetched)
+                    if fetched.counter == head.counter && fetched.digest != head.digest =>
+                {
+                    Some(fetched)
                 }
+                _ => None,
+            },
+        };
+        if let Some(fetched) = later_attempt {
+            let saved = self.devices.get(&record.device).cloned();
+            match self.rule_one(&fetched, head, carried) {
+                Ok(ChainVerdict::Replace { .. }) if fetched.seq < record.seq => {
+                    return self.process(record, carried, fetcher);
+                }
+                Ok(ChainVerdict::Replace { .. }) => {
+                    self.restore(record.device, saved);
+                    return Err(ChainError::Reordered);
+                }
+                _ => self.restore(record.device, saved),
             }
         }
         // Then the device's next record after its head. The record names a

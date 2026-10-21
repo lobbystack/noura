@@ -293,8 +293,3 @@ impl Fixture {
         String::from_utf8(out).unwrap()
     }
 }
-
-/// Hexadecimal of an encodable value.
-pub fn hex_of<T: Encode>(value: &T) -> String {
-    to_hex(&value.to_bytes())
-}

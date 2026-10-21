@@ -111,6 +111,7 @@ impl Workspace {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn epoch_record(
     policy: &PolicyChain,
     domain: Id,

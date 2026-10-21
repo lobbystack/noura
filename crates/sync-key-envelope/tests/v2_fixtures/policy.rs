@@ -341,7 +341,7 @@ pub fn fixture() -> Fixture {
         accept_reset.changes.last().unwrap(),
         alice.first(),
     );
-    let reset_chains = vec![
+    let reset_chains = [
         alice.chain.clone(),
         bob.chain.clone(),
         bob_reset.chain.clone(),
