@@ -15,13 +15,14 @@ mod layout;
 mod operations;
 mod rail;
 mod recents;
+mod saves;
 mod store;
 mod system;
 mod tabs;
 mod view_state;
 mod workspace;
 
-pub use app::{App, Change, IgnoredFiles, Notice, NoticeKind, Question, Rename, Screen};
+pub use app::{App, Change, DragOut, IgnoredFiles, Notice, NoticeKind, Question, Rename, Screen};
 pub use error::AppError;
 pub use files::{
     DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
@@ -31,6 +32,7 @@ pub use layout::{Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use operations::Imported;
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use saves::{NoPendingSaves, PendingSaves};
 pub use system::{NoSystem, Platform, System, move_to_system_trash};
 pub use tabs::{OpenAs, Tab, TabContent, TabId, TabPlace, ViewPlace};
 pub use workspace::{Workspace, WorkspaceService};

@@ -1,5 +1,6 @@
 //! The Noura desktop app.
 
+mod file_drag;
 mod system;
 
 use std::{path::PathBuf, sync::Arc};
@@ -19,11 +20,18 @@ impl FolderPicker for SystemFolderPicker {
 
 struct Desktop {
     ui: NouraUi,
+    file_drag: file_drag::FileDrag,
 }
 
 impl eframe::App for Desktop {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.ui.ui(ui);
+        let ctx = ui.ctx().clone();
+        self.file_drag.after_frame(&mut self.ui, &ctx, frame);
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.file_drag.complete_input(ctx, raw_input);
     }
 }
 
@@ -54,6 +62,7 @@ fn main() -> eframe::Result {
             let app = App::launch_with(&app_data, Arc::new(system));
             Ok(Box::new(Desktop {
                 ui: NouraUi::new(app, Box::new(SystemFolderPicker)),
+                file_drag: file_drag::FileDrag::default(),
             }))
         }),
     )
