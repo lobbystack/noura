@@ -1,12 +1,13 @@
 //! The decoders behind the images in notes. egui_extras decodes PNG, JPEG,
 //! BMP, GIF and WebP. Noura adds two of its own:
 //!
-//! - SVG through resvg. Text draws in the system's fonts, and images
-//!   embedded as data URLs draw: PNG, JPEG, GIF and WebP up to the `image`
-//!   crate's default size limit, and SVG. A reference to any other file
-//!   draws nothing. egui_extras' SVG loader keeps usvg's default options,
-//!   which read any file an `<image href>` names, inside the workspace or
-//!   not.
+//! - SVG through resvg, on a thread of its own so a costly drawing never
+//!   holds up the UI. Text draws in the system's fonts, and images embedded
+//!   as data URLs draw: PNG, JPEG, GIF and WebP up to the `image` crate's
+//!   default size limit, and SVG. A reference to any other file draws
+//!   nothing, and so does gzip-compressed SVG, which could inflate to any
+//!   size. egui_extras' SVG loader keeps usvg's default options, which read
+//!   any file an `<image href>` names, inside the workspace or not.
 //! - AVIF through avif-decode, which decodes AV1 in Rust with rav1d. The
 //!   `image` crate decodes AVIF only through the dav1d C library, so Noura
 //!   registers avif-decode with `image` as a decoding hook, and
@@ -17,21 +18,28 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::mem::MaybeUninit;
+use std::panic::AssertUnwindSafe;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 
-use egui::load::{BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint};
+use egui::load::{Bytes, BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint};
 use egui::{ColorImage, Context, Vec2};
 use image::error::{DecodingError, ImageFormatHint};
 use image::{ColorType, ImageDecoder, ImageError, ImageFormat, ImageResult};
-use rav1d::include::dav1d::headers::{DAV1D_PIXEL_LAYOUT_I400, Dav1dSequenceHeader};
+use rav1d::include::dav1d::headers::{
+    DAV1D_ADAPTIVE, DAV1D_FRAME_TYPE_INTRA, DAV1D_FRAME_TYPE_KEY, DAV1D_FRAME_TYPE_SWITCH,
+    DAV1D_ON, DAV1D_PIXEL_LAYOUT_I400, Dav1dFrameType, Dav1dSequenceHeader,
+};
 use rav1d::src::lib::dav1d_parse_sequence_header;
 use resvg::tiny_skia;
 use resvg::usvg::{self, ImageKind, fontdb};
 
 /// The widest or tallest an SVG rasterizes, in pixels.
 const MAX_SVG_SIDE: f32 = 4096.0;
+
+/// The first bytes of gzip data, which usvg inflates as compressed SVG
+/// when its `svgz` feature is on, with no limit on the size.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 /// The most bytes an image may decode to: the `image` crate's default
 /// allocation limit, which also bounds the formats it decodes itself.
@@ -56,8 +64,8 @@ pub(crate) fn install(ctx: &Context) {
 static FONTS: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
 
 /// The system's fonts, listed on the first call, which waits for the
-/// listing. Listing reads every font file's header, so the SVG loader asks
-/// for it off the UI thread. A system without a serif font, where usvg
+/// listing. Listing reads every font file's header, so only the threads
+/// that draw SVGs ask for it. A system without a serif font, where usvg
 /// would draw no text at all, draws SVG text in egui's own fonts.
 fn system_fonts() -> Arc<fontdb::Database> {
     Arc::clone(FONTS.get_or_init(|| {
@@ -101,8 +109,8 @@ fn add_egui_fonts(fonts: &mut fontdb::Database) {
 /// usvg's options for note images, drawing text in `fonts`. usvg's default
 /// resolver reads the file that an `<image>` element's `href` names, from
 /// anywhere on disk, so this one refuses every reference that isn't a data
-/// URL. A data URL draws when it holds an SVG, or a PNG, JPEG, GIF or WebP
-/// image that [`fits`].
+/// URL. A data URL draws when it holds an SVG that isn't gzip-compressed,
+/// or a PNG, JPEG, GIF or WebP image that [`fits`].
 fn svg_options(fonts: Arc<fontdb::Database>) -> usvg::Options<'static> {
     let mut options = usvg::Options {
         fontdb: fonts,
@@ -110,8 +118,12 @@ fn svg_options(fonts: Arc<fontdb::Database>) -> usvg::Options<'static> {
     };
     options.image_href_resolver.resolve_string = Box::new(|_, _| None);
     let data_url = usvg::ImageHrefResolver::default_data_resolver();
-    options.image_href_resolver.resolve_data =
-        Box::new(move |mime, bytes, options| data_url(mime, bytes, options).filter(fits));
+    options.image_href_resolver.resolve_data = Box::new(move |mime, bytes, options| {
+        if bytes.starts_with(&GZIP_MAGIC) {
+            return None;
+        }
+        data_url(mime, bytes, options).filter(fits)
+    });
     options
 }
 
@@ -135,12 +147,16 @@ fn fits(kind: &ImageKind) -> bool {
 }
 
 /// Draw the SVG in `bytes` at the size `size_hint` asks for, no larger than
-/// [`MAX_SVG_SIDE`] on either side, with its text in `fonts`.
+/// [`MAX_SVG_SIDE`] on either side, with its text in `fonts`. Gzip data
+/// fails before it inflates, whatever features usvg was built with.
 fn rasterize_svg(
     bytes: &[u8],
     size_hint: SizeHint,
     fonts: Arc<fontdb::Database>,
 ) -> Result<ColorImage, String> {
+    if bytes.starts_with(&GZIP_MAGIC) {
+        return Err("Noura doesn't draw compressed SVG".to_owned());
+    }
     let tree = usvg::Tree::from_data(bytes, &svg_options(fonts)).map_err(|err| err.to_string())?;
     let source = Vec2::new(tree.size().width(), tree.size().height());
     let mut size = match size_hint {
@@ -184,40 +200,42 @@ struct Drawn {
     result: Result<Arc<ColorImage>, String>,
 }
 
+/// The drawings of one SVG address.
+struct Svg {
+    /// Tells these drawings from those of bytes egui held at the same
+    /// address before the address was forgotten.
+    epoch: u64,
+    /// Each size drawn, by the size hint that asked for it.
+    sizes: HashMap<SizeHint, Drawn>,
+    /// The size a thread draws now.
+    drawing: Option<SizeHint>,
+    /// The size to draw next: the newest asked for while another drew.
+    next: Option<SizeHint>,
+    /// egui's texture cache holds another size's drawing in place of one
+    /// still drawing, to replace once that drawing ends.
+    stood_in: bool,
+}
+
 #[derive(Default)]
 struct SvgCache {
     pass: u64,
-    images: HashMap<String, HashMap<SizeHint, Drawn>>,
+    /// The epochs handed out so far.
+    epochs: u64,
+    images: HashMap<String, Svg>,
 }
 
 /// Loads images whose address ends in `.svg` from the bytes egui holds for
-/// them, through [`rasterize_svg`].
+/// them. A thread per address draws one size at a time through
+/// [`rasterize_svg`]. Until a size is drawn, the size of the same SVG used
+/// most recently stands in for it, scaled, so a window that resizes keeps
+/// its SVGs on screen.
 #[derive(Default)]
 struct SvgLoader {
-    cache: Mutex<SvgCache>,
-    /// A thread waits for the system's fonts, to ask for another frame
-    /// once they're listed.
-    awaiting_fonts: AtomicBool,
+    cache: Arc<Mutex<SvgCache>>,
 }
 
 impl SvgLoader {
     const ID: &'static str = egui::generate_loader_id!(SvgLoader);
-
-    /// The fonts SVG text draws in, or `None` while another thread lists
-    /// them. That thread asks `ctx` for another frame when they're ready.
-    fn fonts(&self, ctx: &Context) -> Option<Arc<fontdb::Database>> {
-        if let Some(fonts) = FONTS.get() {
-            return Some(Arc::clone(fonts));
-        }
-        if !self.awaiting_fonts.swap(true, Ordering::SeqCst) {
-            let ctx = ctx.clone();
-            std::thread::spawn(move || {
-                system_fonts();
-                ctx.request_repaint();
-            });
-        }
-        None
-    }
 }
 
 fn poll(result: Result<Arc<ColorImage>, String>) -> ImageLoadResult {
@@ -225,6 +243,60 @@ fn poll(result: Result<Arc<ColorImage>, String>) -> ImageLoadResult {
         Ok(image) => Ok(ImagePoll::Ready { image }),
         Err(err) => Err(LoadError::Loading(err)),
     }
+}
+
+/// Draw the SVG in `bytes` at `size_hint` on another thread, then each
+/// size asked for meanwhile, into the drawings of `uri` from `epoch`.
+fn draw_svg(
+    ctx: Context,
+    cache: Arc<Mutex<SvgCache>>,
+    uri: String,
+    epoch: u64,
+    bytes: Bytes,
+    size_hint: SizeHint,
+) {
+    std::thread::spawn(move || {
+        let mut size_hint = size_hint;
+        loop {
+            // A malformed SVG must not leave its address drawing forever.
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                rasterize_svg(&bytes, size_hint, system_fonts())
+            }))
+            .unwrap_or_else(|_| Err("the SVG renderer failed".to_owned()))
+            .map(Arc::new);
+            let mut cache = cache.lock().unwrap();
+            let pass = cache.pass;
+            // egui forgot the address while this drew, and may hold other
+            // bytes there now.
+            let Some(svg) = cache.images.get_mut(&uri).filter(|svg| svg.epoch == epoch) else {
+                return;
+            };
+            svg.sizes.insert(
+                size_hint,
+                Drawn {
+                    last_used: pass,
+                    result,
+                },
+            );
+            let stood_in = std::mem::take(&mut svg.stood_in);
+            svg.drawing = svg.next.take().filter(|next| !svg.sizes.contains_key(next));
+            let next = svg.drawing;
+            drop(cache);
+            if stood_in {
+                // egui's texture cache keeps whatever drawing it got for a
+                // size, so it forgets the stand-ins to ask again.
+                let loaders = ctx.loaders();
+                for loader in loaders.texture.lock().iter() {
+                    loader.forget(&uri);
+                }
+            }
+            ctx.request_repaint();
+            match next {
+                Some(next) => size_hint = next,
+                None => return,
+            }
+        }
+    });
 }
 
 impl ImageLoader for SvgLoader {
@@ -242,30 +314,59 @@ impl ImageLoader for SvgLoader {
             if let Some(drawn) = cache
                 .images
                 .get_mut(uri)
-                .and_then(|sizes| sizes.get_mut(&size_hint))
+                .and_then(|svg| svg.sizes.get_mut(&size_hint))
             {
                 drawn.last_used = pass;
                 return poll(drawn.result.clone());
             }
         }
-        match ctx.try_load_bytes(uri)? {
-            BytesPoll::Pending { size } => Ok(ImagePoll::Pending { size }),
-            BytesPoll::Ready { bytes, .. } => {
-                let Some(fonts) = self.fonts(ctx) else {
-                    return Ok(ImagePoll::Pending { size: None });
-                };
-                let result = rasterize_svg(&bytes, size_hint, fonts).map(Arc::new);
-                let mut cache = self.cache.lock().unwrap();
-                let last_used = cache.pass;
-                cache.images.entry(uri.to_owned()).or_default().insert(
-                    size_hint,
-                    Drawn {
-                        last_used,
-                        result: result.clone(),
-                    },
-                );
-                poll(result)
+        let bytes = match ctx.try_load_bytes(uri)? {
+            BytesPoll::Pending { size } => return Ok(ImagePoll::Pending { size }),
+            BytesPoll::Ready { bytes, .. } => bytes,
+        };
+        let mut cache = self.cache.lock().unwrap();
+        let SvgCache {
+            pass,
+            epochs,
+            images,
+        } = &mut *cache;
+        let svg = images.entry(uri.to_owned()).or_insert_with(|| {
+            *epochs += 1;
+            Svg {
+                epoch: *epochs,
+                sizes: HashMap::new(),
+                drawing: None,
+                next: None,
+                stood_in: false,
             }
+        });
+        match svg.drawing {
+            None => {
+                svg.drawing = Some(size_hint);
+                draw_svg(
+                    ctx.clone(),
+                    Arc::clone(&self.cache),
+                    uri.to_owned(),
+                    svg.epoch,
+                    bytes,
+                    size_hint,
+                );
+            }
+            Some(drawing) if drawing != size_hint => svg.next = Some(size_hint),
+            Some(_) => {}
+        }
+        let stand_in = svg
+            .sizes
+            .values_mut()
+            .filter(|drawn| drawn.result.is_ok())
+            .max_by_key(|drawn| drawn.last_used);
+        match stand_in {
+            Some(drawn) => {
+                drawn.last_used = *pass;
+                svg.stood_in = true;
+                poll(drawn.result.clone())
+            }
+            None => Ok(ImagePoll::Pending { size: None }),
         }
     }
 
@@ -282,12 +383,15 @@ impl ImageLoader for SvgLoader {
         cache.pass = pass_index;
         // An image drawn at several sizes, as while a window resizes, keeps
         // only the sizes the last two passes used.
-        for sizes in cache.images.values_mut() {
-            if sizes.len() > 1 {
-                sizes.retain(|_, drawn| drawn.last_used + 1 >= pass_index);
+        for svg in cache.images.values_mut() {
+            if svg.sizes.len() > 1 {
+                svg.sizes
+                    .retain(|_, drawn| drawn.last_used + 1 >= pass_index);
             }
         }
-        cache.images.retain(|_, sizes| !sizes.is_empty());
+        cache
+            .images
+            .retain(|_, svg| !svg.sizes.is_empty() || svg.drawing.is_some());
     }
 
     fn byte_size(&self) -> usize {
@@ -296,12 +400,21 @@ impl ImageLoader for SvgLoader {
             .unwrap()
             .images
             .values()
-            .flat_map(HashMap::values)
+            .flat_map(|svg| svg.sizes.values())
             .map(|drawn| match &drawn.result {
                 Ok(image) => image.pixels.len() * size_of::<egui::Color32>(),
                 Err(err) => err.len(),
             })
             .sum()
+    }
+
+    fn has_pending(&self) -> bool {
+        self.cache
+            .lock()
+            .unwrap()
+            .images
+            .values()
+            .any(|svg| svg.drawing.is_some())
     }
 }
 
@@ -375,25 +488,47 @@ fn mark_avif(bytes: &mut [u8]) -> Result<(), String> {
 
 /// The type of the OBU that holds an AV1 sequence header.
 const OBU_SEQUENCE_HEADER: u8 = 1;
+/// The types of the OBUs that start with a frame header.
+const OBU_FRAME_HEADER: u8 = 3;
+const OBU_FRAME: u8 = 6;
+const OBU_REDUNDANT_FRAME_HEADER: u8 = 7;
 
-/// The type of the OBU at the start of the AV1 data `av1` and its length in
-/// bytes, header included, or `None` when the data ends too soon.
-fn next_obu(av1: &[u8]) -> Option<(u8, usize)> {
+/// One OBU of some AV1 data.
+struct Obu<'a> {
+    kind: u8,
+    /// The whole OBU, header included.
+    whole: &'a [u8],
+    /// What follows the OBU's header and size.
+    payload: &'a [u8],
+}
+
+/// The OBU at the start of the AV1 data `av1`, or `None` when the data
+/// ends too soon.
+fn next_obu(av1: &[u8]) -> Option<Obu<'_>> {
     let header = *av1.first()?;
     let kind = (header >> 3) & 0b1111;
-    let mut length = 1 + usize::from(header & 0b100 != 0);
+    let mut start = 1 + usize::from(header & 0b100 != 0);
     // An OBU without a size runs to the end of the data.
     if header & 0b10 == 0 {
-        return Some((kind, av1.len()));
+        return Some(Obu {
+            kind,
+            whole: av1,
+            payload: av1.get(start..)?,
+        });
     }
     let mut size = 0u64;
     for index in 0..8 {
-        let byte = *av1.get(length)?;
-        length += 1;
+        let byte = *av1.get(start)?;
+        start += 1;
         size |= u64::from(byte & 0x7f) << (7 * index);
         if byte & 0x80 == 0 {
-            let length = length.checked_add(usize::try_from(size).ok()?)?;
-            return (length <= av1.len()).then_some((kind, length));
+            let end = start.checked_add(usize::try_from(size).ok()?)?;
+            let whole = av1.get(..end)?;
+            return Some(Obu {
+                kind,
+                whole,
+                payload: &whole[start..],
+            });
         }
     }
     None
@@ -415,8 +550,116 @@ fn sequence_header(obu: &[u8]) -> Option<Dav1dSequenceHeader> {
     (result.0 == 0).then(|| unsafe { header.assume_init() })
 }
 
-/// How large the frames in some AV1 data can be, from its sequence
-/// headers.
+/// Reads the fields of an AV1 header, most significant bit first.
+struct BitReader<'a> {
+    bytes: &'a [u8],
+    read: usize,
+}
+
+impl BitReader<'_> {
+    fn bits(&mut self, count: u8) -> Option<u64> {
+        let mut value = 0;
+        for _ in 0..count {
+            let byte = self.bytes.get(self.read / 8)?;
+            value = value << 1 | u64::from(byte >> (7 - self.read % 8) & 1);
+            self.read += 1;
+        }
+        Some(value)
+    }
+
+    fn bit(&mut self) -> Option<bool> {
+        Some(self.bits(1)? == 1)
+    }
+}
+
+/// How large one frame can be, from its header.
+#[derive(Debug, PartialEq, Eq)]
+enum FrameSize {
+    /// The largest size its sequence header gives.
+    Largest,
+    /// This many pixels.
+    Exact(u64),
+    /// Any size the sequence header's bits can write.
+    Any,
+}
+
+/// How large the frame whose header starts `payload` can be under the
+/// sequence header `sequence`, read as rav1d reads it, or `None` when the
+/// header ends too soon. A frame takes the largest size unless its header
+/// overrides the size. Noura reads the size an intra frame overrides with,
+/// and lets any other frame that overrides take any size, since it may
+/// take a reference frame's. A frame that shows one decoded before
+/// decodes nothing new.
+fn frame_size(sequence: &Dav1dSequenceHeader, payload: &[u8]) -> Option<FrameSize> {
+    if sequence.reduced_still_picture_header != 0 {
+        return Some(FrameSize::Largest);
+    }
+    let mut bits = BitReader {
+        bytes: payload,
+        read: 0,
+    };
+    // show_existing_frame
+    if bits.bit()? {
+        return Some(FrameSize::Exact(0));
+    }
+    let frame_type = bits.bits(2)? as Dav1dFrameType;
+    let show_frame = bits.bit()?;
+    if !show_frame {
+        // showable_frame
+        bits.bit()?;
+    } else if sequence.decoder_model_info_present != 0 && sequence.equal_picture_interval == 0 {
+        // frame_presentation_time
+        bits.bits(sequence.frame_presentation_delay_length)?;
+    }
+    let key = frame_type == DAV1D_FRAME_TYPE_KEY;
+    let intra = key || frame_type == DAV1D_FRAME_TYPE_INTRA;
+    let switch = frame_type == DAV1D_FRAME_TYPE_SWITCH;
+    let error_resilient = (key && show_frame) || switch || bits.bit()?;
+    // disable_cdf_update
+    bits.bit()?;
+    let screen_content = match sequence.screen_content_tools {
+        DAV1D_ADAPTIVE => bits.bit()?,
+        DAV1D_ON => true,
+        _ => false,
+    };
+    if screen_content && sequence.force_integer_mv == DAV1D_ADAPTIVE {
+        // force_integer_mv
+        bits.bit()?;
+    }
+    if sequence.frame_id_numbers_present != 0 {
+        // current_frame_id
+        bits.bits(sequence.frame_id_n_bits)?;
+    }
+    let frame_size_override = switch || bits.bit()?;
+    if !frame_size_override {
+        return Some(FrameSize::Largest);
+    }
+    // Inter frames, and the timing fields of a decoder model, aren't worth
+    // reading for a still image.
+    if !intra || sequence.decoder_model_info_present != 0 {
+        return Some(FrameSize::Any);
+    }
+    if sequence.order_hint != 0 {
+        // order_hint
+        bits.bits(sequence.order_hint_n_bits)?;
+    }
+    let refresh_frame_flags = if key && show_frame {
+        0xff
+    } else {
+        bits.bits(8)?
+    };
+    if refresh_frame_flags != 0xff && error_resilient && sequence.order_hint != 0 {
+        for _ in 0..8 {
+            // ref_order_hint
+            bits.bits(sequence.order_hint_n_bits)?;
+        }
+    }
+    let width = bits.bits(sequence.width_n_bits)? + 1;
+    let height = bits.bits(sequence.height_n_bits)? + 1;
+    Some(FrameSize::Exact(width * height))
+}
+
+/// How large the frames in some AV1 data can be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrameBound {
     pixels: u64,
@@ -427,37 +670,49 @@ struct FrameBound {
 }
 
 /// How large the frames in the AV1 data `av1` can be, or `None` when it
-/// holds no sequence header rav1d reads. A frame under a reduced still
-/// picture header takes the sequence's largest size. Any other frame may
-/// name its own size, in as many bits a side as the sequence header gives,
-/// which rav1d doesn't check against the largest size.
-fn frame_bound(av1: &[u8]) -> Option<FrameBound> {
+/// holds no frame, or data rav1d wouldn't read. `sequence` holds the
+/// sequence header in force, which rav1d keeps from one piece of data to
+/// the next it decodes, and the newest one here once this returns.
+fn frame_bound(av1: &[u8], sequence: &mut Option<Dav1dSequenceHeader>) -> Option<FrameBound> {
     let mut bound: Option<FrameBound> = None;
     let mut rest = av1;
     while !rest.is_empty() {
-        let (kind, length) = next_obu(rest)?;
-        if kind == OBU_SEQUENCE_HEADER {
-            let header = sequence_header(&rest[..length])?;
-            let pixels = if header.reduced_still_picture_header != 0 {
-                u64::try_from(header.max_width).ok()? * u64::try_from(header.max_height).ok()?
-            } else {
-                (1u64 << header.width_n_bits) * (1u64 << header.height_n_bits)
-            };
-            let this = FrameBound {
-                pixels,
-                high_bit_depth: header.hbd != 0,
-                monochrome: header.layout == DAV1D_PIXEL_LAYOUT_I400,
-            };
-            bound = Some(match bound {
-                None => this,
-                Some(bound) => FrameBound {
-                    pixels: bound.pixels.max(this.pixels),
-                    high_bit_depth: bound.high_bit_depth || this.high_bit_depth,
-                    monochrome: bound.monochrome && this.monochrome,
-                },
-            });
+        let obu = next_obu(rest)?;
+        match obu.kind {
+            OBU_SEQUENCE_HEADER => *sequence = Some(sequence_header(obu.whole)?),
+            OBU_FRAME_HEADER | OBU_FRAME | OBU_REDUNDANT_FRAME_HEADER => {
+                // rav1d refuses a frame before any sequence header.
+                let header = sequence.as_ref()?;
+                let largest = || -> Option<u64> {
+                    Some(
+                        u64::try_from(header.max_width).ok()?
+                            * u64::try_from(header.max_height).ok()?,
+                    )
+                };
+                let pixels = match frame_size(header, obu.payload) {
+                    Some(FrameSize::Largest) => largest()?,
+                    Some(FrameSize::Exact(pixels)) => pixels,
+                    Some(FrameSize::Any) | None => {
+                        (1u64 << header.width_n_bits) * (1u64 << header.height_n_bits)
+                    }
+                };
+                let this = FrameBound {
+                    pixels,
+                    high_bit_depth: header.hbd != 0,
+                    monochrome: header.layout == DAV1D_PIXEL_LAYOUT_I400,
+                };
+                bound = Some(match bound {
+                    None => this,
+                    Some(bound) => FrameBound {
+                        pixels: bound.pixels.max(this.pixels),
+                        high_bit_depth: bound.high_bit_depth || this.high_bit_depth,
+                        monochrome: bound.monochrome && this.monochrome,
+                    },
+                });
+            }
+            _ => {}
         }
-        rest = &rest[length..];
+        rest = &rest[obu.whole.len()..];
     }
     bound
 }
@@ -467,10 +722,12 @@ fn frame_bound(av1: &[u8]) -> Option<FrameBound> {
 /// so a small file could otherwise make it allocate gigabytes, which no
 /// panic handler can catch.
 fn check_avif_size(avif: &avif_parse::AvifData) -> Result<(), String> {
-    let no_header = || "the AVIF image has no AV1 sequence header".to_owned();
-    let color = frame_bound(&avif.primary_item).ok_or_else(no_header)?;
+    let unreadable = || "the AVIF image holds no AV1 frame Noura can read".to_owned();
+    // avif-decode decodes the color and alpha images with one decoder.
+    let mut sequence = None;
+    let color = frame_bound(&avif.primary_item, &mut sequence).ok_or_else(unreadable)?;
     let alpha = match &avif.alpha_item {
-        Some(alpha) => Some(frame_bound(alpha).ok_or_else(no_header)?),
+        Some(alpha) => Some(frame_bound(alpha, &mut sequence).ok_or_else(unreadable)?),
         None => None,
     };
     // avif-decode hands over RGB, RGBA or gray pixels, with 8 or 16 bits a
@@ -579,6 +836,11 @@ impl ImageDecoder for AvifImage {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    use egui::TextureOptions;
+    use rav1d::include::dav1d::headers::DAV1D_FRAME_TYPE_INTER;
+
     use super::*;
 
     /// A red square, 8 pixels on a side.
@@ -805,6 +1067,173 @@ mod tests {
         assert_eq!(image.size, [4096, 2048]);
     }
 
+    /// `bytes` in the gzip format, in stored deflate blocks.
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        let blocks: Vec<&[u8]> = bytes.chunks(0xffff).collect();
+        for (index, block) in blocks.iter().enumerate() {
+            // BFINAL on the last block, and BTYPE 00, stored.
+            out.push(u8::from(index + 1 == blocks.len()));
+            let len = block.len() as u16;
+            out.extend(len.to_le_bytes());
+            out.extend((!len).to_le_bytes());
+            out.extend_from_slice(block);
+        }
+        out.extend(crc32(bytes).to_le_bytes());
+        out.extend((bytes.len() as u32).to_le_bytes());
+        out
+    }
+
+    /// Bits written least significant first, as deflate packs them.
+    #[derive(Default)]
+    struct Deflate {
+        bytes: Vec<u8>,
+        pending: u64,
+        count: u32,
+    }
+
+    impl Deflate {
+        fn put(&mut self, value: u64, count: u32) {
+            self.pending |= value << self.count;
+            self.count += count;
+            while self.count >= 8 {
+                self.bytes.push(self.pending as u8);
+                self.pending >>= 8;
+                self.count -= 8;
+            }
+        }
+
+        /// A Huffman code, which deflate packs most significant bit first.
+        fn code(&mut self, code: u32, count: u32) {
+            self.put(u64::from(code.reverse_bits() >> (32 - count)), count);
+        }
+    }
+
+    /// Gzip data that inflates to `size` bytes of `a`, at 258 bytes for
+    /// every 13 bits: one literal `a`, then copies of the longest length
+    /// from one byte back, in deflate's fixed codes. Its checksum is wrong,
+    /// which a decoder finds only after it inflates everything.
+    fn gzip_bomb(size: usize) -> Vec<u8> {
+        let mut deflate = Deflate::default();
+        deflate.put(1, 1); // BFINAL
+        deflate.put(1, 2); // BTYPE 01, fixed codes
+        deflate.code(0x30 + u32::from(b'a'), 8);
+        for _ in 0..(size - 1) / 258 {
+            deflate.code(0b1100_0101, 8); // length 258
+            deflate.code(0, 5); // distance 1
+        }
+        deflate.code(0, 7); // end of block
+        deflate.put(0, 7);
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        out.extend(deflate.bytes);
+        out.extend(0u32.to_le_bytes());
+        out.extend((size as u32).to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn an_svg_draws_nothing_from_gzip_data() {
+        // usvg's svgz feature would draw this red square.
+        let compressed = gzip(RED_SVG.as_bytes());
+        assert!(rasterize_svg(&compressed, SizeHint::default(), Arc::default()).is_err());
+        assert!(try_load(compressed.clone(), "bytes://noura-image/Garden/red.svg").is_err());
+
+        // Embedded in another SVG, it draws nothing either.
+        let svg = svg_showing(&format!(
+            "data:image/svg+xml;base64,{}",
+            base64(&compressed)
+        ));
+        let image = load(svg, "bytes://noura-image/Garden/embeds-gzip.svg");
+        assert_eq!(opaque_pixels(&image), 0);
+    }
+
+    #[test]
+    fn a_gzip_bomb_named_svg_fails_without_inflating() {
+        // 6.5 MB that inflate to 1 GiB.
+        let bomb = gzip_bomb(1 << 30);
+        assert!(bomb.len() < 7_000_000);
+        let started = Instant::now();
+        assert!(rasterize_svg(&bomb, SizeHint::default(), Arc::default()).is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the bomb took {:?} to refuse",
+            started.elapsed()
+        );
+        assert!(try_load(bomb, "bytes://noura-image/Garden/bomb.svg").is_err());
+    }
+
+    /// What egui's image loaders give for `address` at `size_hint`, once
+    /// `done` holds for it.
+    fn wait_for(
+        ctx: &Context,
+        address: &str,
+        size_hint: SizeHint,
+        done: impl Fn(&ColorImage) -> bool,
+    ) -> Arc<ColorImage> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(ImagePoll::Ready { image }) = ctx.try_load_image(address, size_hint)
+                && done(&image)
+            {
+                return image;
+            }
+            assert!(Instant::now() < deadline, "{address} never drew");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn an_svg_draws_on_another_thread_and_its_last_size_stands_in_for_a_new_one() {
+        let ctx = Context::default();
+        install(&ctx);
+        let address = "bytes://noura-image/Garden/red.svg";
+        ctx.include_bytes(address, RED_SVG.as_bytes());
+
+        // The UI thread only starts the drawing.
+        assert!(matches!(
+            ctx.try_load_image(address, SizeHint::default()),
+            Ok(ImagePoll::Pending { .. })
+        ));
+        wait_for(&ctx, address, SizeHint::default(), |_| true);
+
+        // While twice the size draws, the drawing at the first size stands
+        // in for it, and egui's texture holds it.
+        let twice = SizeHint::Scale(2.0.into());
+        let texture_size =
+            |ctx: &Context| match ctx.try_load_texture(address, TextureOptions::LINEAR, twice) {
+                Ok(egui::load::TexturePoll::Ready { texture }) => ctx
+                    .tex_manager()
+                    .read()
+                    .meta(texture.id)
+                    .map(|meta| meta.size),
+                _ => None,
+            };
+        assert_eq!(texture_size(&ctx), Some([8, 8]));
+        let image = wait_for(&ctx, address, twice, |image| image.size != [8, 8]);
+        assert_eq!(image.size, [16, 16]);
+        // Once it's drawn, egui's texture holds the new drawing.
+        assert_eq!(texture_size(&ctx), Some([16, 16]));
+    }
+
+    #[test]
+    fn an_svg_forgotten_while_it_draws_draws_the_bytes_egui_holds_now() {
+        let ctx = Context::default();
+        install(&ctx);
+        let address = "bytes://noura-image/Garden/square.svg";
+        ctx.include_bytes(address, RED_SVG.as_bytes());
+        assert!(matches!(
+            ctx.try_load_image(address, SizeHint::default()),
+            Ok(ImagePoll::Pending { .. })
+        ));
+
+        // The file changed to a blue square while the red one drew.
+        ctx.forget_image(address);
+        ctx.include_bytes(address, RED_SVG.replace("red", "blue").into_bytes());
+        let image = wait_for(&ctx, address, SizeHint::default(), |_| true);
+        assert_eq!(red_pixels(&image), 0);
+        assert!(image.pixels.iter().all(|pixel| pixel.b() > 200));
+    }
+
     /// A 4 by 4 AVIF image, red in its top two rows and blue in the other
     /// two, made with macOS's `sips`. Its major brand is `avif`.
     const AVIF: &[u8] = include_bytes!("../tests/fixtures/pic.avif");
@@ -818,6 +1247,14 @@ mod tests {
     /// FFmpeg and SVT-AV1. Its major brand is `avis`, and its first frame is
     /// also its primary image.
     const AVIS_AVIF: &[u8] = include_bytes!("../tests/fixtures/pic-avis.avif");
+
+    /// A red 16 by 16 AVIF image whose AV1 data libaom's `aomenc` wrote
+    /// with a full sequence header, `--full-still-picture-hdr`, that allows
+    /// frames up to 16,384 pixels a side, `--forced_max_frame_width` and
+    /// `--forced_max_frame_height`, written in 14 bits a side. Its frame
+    /// names its own size. The data stands in for the image in
+    /// `pic-mif1.avif`, whose major brand it keeps.
+    const WIDE_HEADER_AVIF: &[u8] = include_bytes!("../tests/fixtures/pic-wide-header.avif");
 
     #[test]
     fn an_avif_image_decodes() {
@@ -951,31 +1388,133 @@ mod tests {
         obu(OBU_SEQUENCE_HEADER, &header.bytes)
     }
 
+    /// The frame header OBU of a frame of `frame_type` under a full
+    /// sequence header from [`sequence_header_obu`], whose sizes take
+    /// `bits` bits. With `size`, the frame names its own size.
+    fn frame_header_obu(
+        frame_type: Dav1dFrameType,
+        size: Option<(u64, u64)>,
+        bits: u32,
+    ) -> Vec<u8> {
+        let mut header = Bits::default();
+        header.put(0, 1); // show_existing_frame
+        header.put(u64::from(frame_type), 2); // frame_type
+        header.put(1, 1); // show_frame
+        if frame_type != DAV1D_FRAME_TYPE_KEY {
+            header.put(0, 1); // error_resilient_mode
+        }
+        header.put(0, 1); // disable_cdf_update
+        header.put(0, 1); // allow_screen_content_tools
+        header.put(u64::from(size.is_some()), 1); // frame_size_override_flag
+        if let Some((width, height)) = size {
+            if frame_type == DAV1D_FRAME_TYPE_INTRA {
+                header.put(1, 8); // refresh_frame_flags
+            }
+            header.put(width - 1, bits); // frame_width_minus_1
+            header.put(height - 1, bits); // frame_height_minus_1
+        }
+        header.put(1, 1); // the rest of the header, which Noura doesn't read
+        obu(OBU_FRAME_HEADER, &header.bytes)
+    }
+
+    /// The AV1 data of `obus` one after another.
+    fn av1(obus: &[Vec<u8>]) -> Vec<u8> {
+        obus.concat()
+    }
+
     #[test]
-    fn an_av1_frame_is_as_large_as_its_sequence_headers_allow() {
-        let pixels = |av1: &[u8]| frame_bound(av1).map(|bound| bound.pixels);
+    fn an_av1_frame_is_as_large_as_its_headers_allow() {
+        let pixels = |av1: &[u8]| frame_bound(av1, &mut None).map(|bound| bound.pixels);
+        let key = |size| frame_header_obu(DAV1D_FRAME_TYPE_KEY, size, 16);
 
         // A reduced header's frames all take its largest size.
-        assert_eq!(pixels(&sequence_header_obu(true, 16, 1)), Some(1));
-        assert_eq!(pixels(&sequence_header_obu(true, 3, 5)), Some(25));
-        // A full header lets a frame name any size its bits can write.
-        assert_eq!(pixels(&sequence_header_obu(false, 16, 1)), Some(1 << 32));
-        // The largest header counts, and padding counts for nothing.
-        let mut two = sequence_header_obu(true, 3, 5);
-        two.extend(obu(15, &[0; 4]));
-        two.extend(sequence_header_obu(true, 16, 40_000));
+        assert_eq!(
+            pixels(&av1(&[sequence_header_obu(true, 16, 1), key(None)])),
+            Some(1)
+        );
+        assert_eq!(
+            pixels(&av1(&[sequence_header_obu(true, 3, 5), key(None)])),
+            Some(25)
+        );
+        // Under a full header, a frame takes the largest size unless it
+        // names its own. An intra frame's own size counts, however many
+        // bits the header writes sizes in.
+        let full = sequence_header_obu(false, 16, 5);
+        assert_eq!(pixels(&av1(&[full.clone(), key(None)])), Some(25));
+        assert_eq!(
+            pixels(&av1(&[full.clone(), key(Some((40, 30)))])),
+            Some(1200)
+        );
+        let intra = frame_header_obu(DAV1D_FRAME_TYPE_INTRA, Some((40, 30)), 16);
+        assert_eq!(pixels(&av1(&[full.clone(), intra])), Some(1200));
+        // An inter frame that names its size, or a frame header cut short,
+        // may take any size the header's bits can write.
+        let inter = frame_header_obu(DAV1D_FRAME_TYPE_INTER, Some((1, 1)), 16);
+        assert_eq!(
+            pixels(&av1(&[full.clone(), key(None), inter.clone()])),
+            Some(1 << 32)
+        );
+        let cut = obu(OBU_FRAME_HEADER, &key(Some((40, 30)))[2..3]);
+        assert_eq!(pixels(&av1(&[full.clone(), cut])), Some(1 << 32));
+        // The largest frame counts, and padding counts for nothing.
+        let two = av1(&[
+            sequence_header_obu(true, 3, 5),
+            key(None),
+            obu(15, &[0; 4]),
+            sequence_header_obu(true, 16, 40_000),
+            key(None),
+        ]);
         assert_eq!(pixels(&two), Some(40_000 * 40_000));
-        // Data without a sequence header, or one cut short, has no bound.
+        // A frame takes the sequence header the decoder read last, from
+        // data it decoded before.
+        let mut sequence = None;
+        assert!(frame_bound(&av1(&[full.clone(), key(None)]), &mut sequence).is_some());
+        assert_eq!(
+            frame_bound(&inter, &mut sequence).map(|bound| bound.pixels),
+            Some(1 << 32)
+        );
+        // Data without a frame, a frame without a sequence header, and a
+        // sequence header cut short have no bound.
+        assert_eq!(pixels(&full), None);
         assert_eq!(pixels(&obu(15, &[0; 4])), None);
+        assert_eq!(pixels(&key(None)), None);
         let header = sequence_header_obu(true, 3, 5);
-        assert_eq!(pixels(&header[..header.len() - 1]), None);
+        assert_eq!(
+            pixels(&av1(&[header[..header.len() - 1].to_vec(), key(None)])),
+            None
+        );
+    }
+
+    #[test]
+    fn an_avif_image_whose_frame_names_its_size_decodes() {
+        // The sequence header allows 16,384 by 16,384 frames, 768 MB of
+        // pixels once decoded, and lets a frame name any size up to that.
+        // The one frame names 16 by 16.
+        let mut bytes = WIDE_HEADER_AVIF.to_vec();
+        mark_avif(&mut bytes).unwrap();
+        let avif = avif_parse::read_avif(&mut bytes.as_slice()).unwrap();
+        let mut sequence = None;
+        let bound = frame_bound(&avif.primary_item, &mut sequence).unwrap();
+        let sequence = sequence.unwrap();
+        assert_eq!(sequence.reduced_still_picture_header, 0);
+        assert_eq!((sequence.width_n_bits, sequence.height_n_bits), (14, 14));
+        assert_eq!((sequence.max_width, sequence.max_height), (16_384, 16_384));
+        assert_eq!(bound.pixels, 16 * 16);
+
+        let image = load(
+            WIDE_HEADER_AVIF.to_vec(),
+            "bytes://noura-image/Garden/wide.avif",
+        );
+        assert_eq!(image.size, [16, 16]);
+        let red = image.pixels[0];
+        assert!(red.r() > 200 && red.b() < 60, "the image is {red:?}");
     }
 
     #[test]
     fn an_avif_image_too_large_to_decode_fails_before_it_decodes() {
         // The fixture, with its AV1 data swapped for the sequence header of
-        // a 65,536 by 65,536 image, padded to the same length: 12 GB of
-        // pixels once decoded.
+        // a 65,536 by 65,536 image and a frame of that size, padded to the
+        // same length: 12 GB of pixels once decoded.
         let item = avif_parse::read_avif(&mut &AVIF[..])
             .unwrap()
             .primary_item
@@ -984,7 +1523,10 @@ mod tests {
             .windows(item.len())
             .position(|window| window == item.as_slice())
             .unwrap();
-        let mut av1 = sequence_header_obu(true, 16, 65_536);
+        let mut av1 = av1(&[
+            sequence_header_obu(true, 16, 65_536),
+            frame_header_obu(DAV1D_FRAME_TYPE_KEY, None, 16),
+        ]);
         let padding = item.len() - av1.len() - 2;
         assert!(padding < 128, "the padding needs a longer size");
         av1.extend(obu(15, &vec![0; padding]));
