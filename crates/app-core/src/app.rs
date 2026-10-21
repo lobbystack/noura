@@ -10,10 +10,12 @@ use std::{
         Arc, Mutex,
         mpsc::{Receiver, TryRecvError, channel},
     },
+    time::Instant,
 };
 
 use crate::{
-    AppError, FileTree, OpenedFile, RecentWorkspace, Workspace, WorkspaceService, files::shown_name,
+    AppError, FileTree, OpenedFile, PendingWrites, RecentWorkspace, UpdateSource, Updates,
+    Workspace, WorkspaceService, files::shown_name,
 };
 
 /// What the window shows.
@@ -47,6 +49,8 @@ pub enum Change {
     Tree,
     Document,
     Notice,
+    /// The update status changed.
+    Update,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -54,10 +58,10 @@ pub enum Change {
 type Listener = Box<dyn Fn(Change) + Send + Sync>;
 
 #[derive(Clone, Default)]
-struct Listeners(Arc<Mutex<Vec<Listener>>>);
+pub(crate) struct Listeners(Arc<Mutex<Vec<Listener>>>);
 
 impl Listeners {
-    fn emit(&self, change: Change) {
+    pub(crate) fn emit(&self, change: Change) {
         let listeners = self.0.lock().unwrap_or_else(|error| error.into_inner());
         for listener in listeners.iter() {
             listener(change);
@@ -106,6 +110,8 @@ pub struct App {
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
     pending: Option<Pending>,
+    writes: PendingWrites,
+    updates: Updates,
     listeners: Listeners,
 }
 
@@ -116,6 +122,8 @@ impl App {
     pub fn launch(app_data: impl AsRef<Path>) -> Self {
         let service = Arc::new(WorkspaceService::new(app_data.as_ref()));
         let recents = service.recents();
+        let listeners = Listeners::default();
+        let writes = PendingWrites::default();
         let mut app = Self {
             service,
             screen: Screen::Chooser { problem: None },
@@ -126,7 +134,9 @@ impl App {
             notice: None,
             failed_restore: None,
             pending: None,
-            listeners: Listeners::default(),
+            updates: Updates::new(writes.clone(), listeners.clone()),
+            writes,
+            listeners,
         };
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
@@ -270,8 +280,64 @@ impl App {
         }
     }
 
-    /// Apply finished background work. Returns whether anything changed.
+    /// Writes that must reach disk before Noura restarts. Services that
+    /// write files on another thread register each write here.
+    pub fn pending_writes(&self) -> &PendingWrites {
+        &self.writes
+    }
+
+    /// Where updating stands.
+    pub fn updates(&self) -> &Updates {
+        &self.updates
+    }
+
+    /// Check `source` for updates, first [`crate::FIRST_UPDATE_CHECK`]
+    /// after `launched` and then every [`crate::UPDATE_CHECK_INTERVAL`].
+    pub fn enable_updates(
+        &mut self,
+        current_version: &str,
+        source: Arc<dyn UpdateSource>,
+        launched: Instant,
+    ) {
+        self.updates.enable(current_version, source, launched);
+    }
+
+    /// Say that this build doesn't update itself, and why.
+    pub fn disable_updates(&mut self, current_version: &str, reason: &str) {
+        self.updates.disable(current_version, reason);
+    }
+
+    /// Check for updates now, as Settings' Check for updates does.
+    pub fn check_for_updates(&mut self) {
+        self.updates.check();
+    }
+
+    /// Wait for pending writes, then install the downloaded update and
+    /// restart. If a write or the install fails, this version keeps
+    /// running and the update status says why.
+    pub fn restart_to_update(&mut self) {
+        self.updates.restart();
+    }
+
+    /// Stop offering Restart outside Settings until the next update.
+    pub fn hide_update_offer(&mut self) {
+        self.updates.hide_offer();
+    }
+
+    /// Apply finished background work and start an update check that is
+    /// due. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
+        self.poll_at(Instant::now())
+    }
+
+    /// [`App::poll`] with the time given, so tests can step through the
+    /// update schedule.
+    pub fn poll_at(&mut self, now: Instant) -> bool {
+        let updated = self.updates.poll(now);
+        self.poll_workspace() || updated
+    }
+
+    fn poll_workspace(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };
