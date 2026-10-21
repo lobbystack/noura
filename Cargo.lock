@@ -2145,6 +2145,7 @@ name = "editor-core"
 version = "0.2.0"
 dependencies = [
  "comrak",
+ "proptest",
  "ropey",
  "similar",
  "tempfile",
@@ -2172,6 +2173,7 @@ dependencies = [
  "tracing",
  "unicode-linebreak",
  "unicode-segmentation",
+ "workspace-format",
 ]
 
 [[package]]

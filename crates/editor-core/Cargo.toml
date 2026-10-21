@@ -12,4 +12,5 @@ similar.workspace = true
 unicode-segmentation.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile.workspace = true

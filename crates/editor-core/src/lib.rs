@@ -11,6 +11,7 @@
 pub mod blocks;
 pub mod bounds;
 pub mod buffer;
+pub mod constructs;
 pub mod diff;
 pub mod doc;
 pub mod fold;

@@ -5,6 +5,7 @@
 //! document, inside bold text, a heading and a list item.
 
 use editor_core::MdDoc;
+use editor_core::buffer::TextChange;
 use editor_core::offset_types::Grapheme;
 use editor_egui::input::{Event, Location, Region};
 use editor_egui::{Editor, MdConfig};
@@ -13,7 +14,11 @@ use egui_kittest::Harness;
 
 const NOTE: &str = "# Heading\n\nSome **bold** text.\n\n- item one\n- item two\n";
 
-type EditorHarness = Harness<'static, Option<Editor>>;
+/// The editor, once the first frame created it, and the change events its
+/// frames reported.
+type State = (Option<Editor>, Vec<TextChange>);
+
+type EditorHarness = Harness<'static, State>;
 
 fn harness() -> EditorHarness {
     let mut harness = Harness::builder()
@@ -22,12 +27,13 @@ fn harness() -> EditorHarness {
             editor_egui::register_font_system(ctx, editor_egui::fonts::default_font_database());
         })
         .build_ui_state(
-            |ui, editor: &mut Option<Editor>| {
-                editor
+            |ui, (editor, changes): &mut State| {
+                let response = editor
                     .get_or_insert_with(|| Editor::new(ui.ctx(), NOTE, MdConfig::default()))
                     .show(ui);
+                changes.extend(response.changes);
             },
-            None,
+            (None, Vec::new()),
         );
     harness.run_steps(2);
     harness
@@ -37,11 +43,17 @@ fn harness() -> EditorHarness {
 fn doc(harness: &EditorHarness) -> &MdDoc {
     &harness
         .state()
+        .0
         .as_ref()
         .expect("the first frame created the editor")
         .edit
         .renderer
         .doc
+}
+
+/// The change events reported since the last call.
+fn changes(harness: &mut EditorHarness) -> Vec<TextChange> {
+    std::mem::take(&mut harness.state_mut().1)
 }
 
 /// Puts the caret right after the first `before` in the note. The note is
@@ -50,6 +62,7 @@ fn place_caret_after(harness: &mut EditorHarness, before: &str) -> Grapheme {
     let caret = Grapheme(NOTE.find(before).expect("the note holds it") + before.len());
     harness
         .state_mut()
+        .0
         .as_mut()
         .unwrap()
         .push_event(Event::Select {
@@ -120,10 +133,25 @@ fn a_committed_composition_inserts_only_its_text_inside_bold_a_heading_and_a_lis
         let caret = place_caret_after(&mut harness, before);
 
         compose(&mut harness, caret);
+        assert_eq!(
+            changes(&mut harness),
+            [],
+            "the composition after {before:?} made no change event"
+        );
         send(&mut harness, ImeEvent::Commit("日本".into()));
         disable(&mut harness);
 
         assert_eq!(doc(&harness).text(), expected, "committed after {before:?}");
+        let at = NOTE.find(before).unwrap() + before.len();
+        assert_eq!(
+            changes(&mut harness),
+            [TextChange {
+                range: at..at,
+                text: "日本".into(),
+                local: true,
+            }],
+            "the commit after {before:?} is one change event"
+        );
         let after = caret + 2;
         assert_eq!(
             doc(&harness).selection(),
@@ -147,5 +175,10 @@ fn a_cancelled_composition_leaves_the_bytes_unchanged() {
 
         assert_eq!(doc(&harness).text().as_bytes(), NOTE.as_bytes());
         assert_eq!(doc(&harness).selection(), (caret, caret));
+        assert_eq!(
+            changes(&mut harness),
+            [],
+            "a cancelled composition made no change"
+        );
     }
 }

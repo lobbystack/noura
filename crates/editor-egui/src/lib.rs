@@ -56,6 +56,10 @@ pub struct Response {
     /// Links the user opened this frame, resolved through the
     /// [`LinkResolver`]. The editor never opens them itself.
     pub opened_links: Vec<resolvers::OpenedLink>,
+
+    /// The changes made to the note's text since the last frame, one per
+    /// replacement, in order. See [`editor_core::buffer::TextChange`].
+    pub changes: Vec<editor_core::buffer::TextChange>,
 }
 
 /// A span of the note's source and where the last frame drew it.
@@ -771,6 +775,7 @@ impl Editor {
         }
 
         resp.opened_links = mem::take(&mut self.edit.renderer.doc.opened_links);
+        resp.changes = self.edit.renderer.doc.take_changes();
 
         // focus editor when first shown or when nothing else has focus
         if !self.initialized || ui.memory(|m| m.focused().is_none()) {

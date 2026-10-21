@@ -2,8 +2,10 @@
 //! bytes identical. Trial S1 checks generated notes, the workspace format's
 //! conformance fixtures and the Markdown from the legacy editor's tests.
 //!
-//! "Closing" asks the editor for the text a save would write, which must be
-//! the bytes the note was opened from. A note that fails the property and
+//! Opening reads the note's bytes as Noura does: the byte-order mark and
+//! CRLF line endings go into a layout, and the editor gets LF text.
+//! "Closing" asks the editor for the text a save would write and writes it
+//! with that layout, which must give the bytes the note was opened from. A note that fails the property and
 //! has no fix yet stays in [`KNOWN_FAILURES`] with its cause, and the
 //! generators leave out the input class that triggers it.
 
@@ -15,6 +17,8 @@ use egui::{Pos2, RawInput, Rect, Vec2};
 use glyphon::FontSystem;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError};
+use workspace_format::frontmatter_end;
+use workspace_format::raw_text::{compose_raw_bytes, split_raw_bytes};
 
 /// One font system for every editor the tests open: building one per note
 /// would dominate the run time.
@@ -52,23 +56,42 @@ enum Outcome {
     Panicked(String),
 }
 
-/// Opens `note` in an editor, displays it in a window and in a window tall
-/// enough to lay out every block, then closes it.
+/// Shows `text` in a new editor in a window, then in a window tall enough
+/// to lay out every block, and returns the text a save would write.
+fn display(ctx: &egui::Context, text: &str) -> String {
+    let mut editor = Editor::new(ctx, text, MdConfig::default());
+    frame(ctx, &mut editor, Vec2::new(800.0, 600.0));
+    frame(ctx, &mut editor, Vec2::new(800.0, 600.0));
+    let tall = 600.0 + 40.0 * text.lines().count() as f32;
+    frame(ctx, &mut editor, Vec2::new(800.0, tall));
+    let (_, saved) = editor.flush_for_save();
+    saved
+}
+
+/// Opens `note`'s bytes the way Noura opens a note, displays it and closes
+/// it. Opening reads the byte-order mark and CRLF line endings into a
+/// layout and hands the editor LF text; closing writes the editor's text
+/// back with that layout. A note with frontmatter opens a second time the
+/// way a managed note does, with only the text after its frontmatter in
+/// the editor.
 fn open_display_close(note: &str) -> Outcome {
+    let bytes = note.as_bytes();
+    let (text, layout) = split_raw_bytes(bytes).expect("the note is UTF-8");
     let result = catch_unwind(AssertUnwindSafe(|| {
         let ctx = egui::Context::default();
         editor_egui::install_font_system(&ctx, font_system());
-        let mut editor = Editor::new(&ctx, note, MdConfig::default());
-        frame(&ctx, &mut editor, Vec2::new(800.0, 600.0));
-        frame(&ctx, &mut editor, Vec2::new(800.0, 600.0));
-        let tall = 600.0 + 40.0 * note.lines().count() as f32;
-        frame(&ctx, &mut editor, Vec2::new(800.0, tall));
-        let (_, saved) = editor.flush_for_save();
-        saved
+        let written = compose_raw_bytes(&display(&ctx, &text), &layout);
+        match frontmatter_end(&text) {
+            Some(end) if written == bytes => {
+                let body = display(&ctx, &text[end..]);
+                compose_raw_bytes(&format!("{}{body}", &text[..end]), &layout)
+            }
+            _ => written,
+        }
     }));
     match result {
-        Ok(saved) if saved.as_bytes() == note.as_bytes() => Outcome::Identical,
-        Ok(saved) => Outcome::Changed(saved.into_bytes()),
+        Ok(written) if written == bytes => Outcome::Identical,
+        Ok(written) => Outcome::Changed(written),
         Err(panic) => Outcome::Panicked(
             panic
                 .downcast_ref::<String>()
@@ -89,30 +112,18 @@ struct KnownFailure {
     fixed_by: &'static str,
 }
 
-const KNOWN_FAILURES: &[KnownFailure] = &[
-    KnownFailure {
-        name: "a lone carriage return in frontmatter, then a callout",
-        note: "---\na\rb\n---\n> [!note] A\n",
-        cause: "comrak's front matter extension counts the frontmatter's lines by LF alone, \
+const KNOWN_FAILURES: &[KnownFailure] = &[KnownFailure {
+    name: "a lone carriage return in frontmatter, then a callout",
+    note: "---\na\rb\n---\n> [!note] A\n",
+    cause: "comrak's front matter extension counts the frontmatter's lines by LF alone, \
             while the rest of comrak and editor-core's source lines also end a line at a \
             lone CR. Every line number comrak reports after the frontmatter is one short \
             per lone CR inside it, so the editor reads the callout's title from the \
             frontmatter's closing line and panics in `alert_type_title_ranges`. Other \
             constructs after such frontmatter keep their bytes but read the wrong lines.",
-        fixed_by: "ticket 18, which replaces comrak's frontmatter detection with the editor's \
+    fixed_by: "ticket 18, which replaces comrak's frontmatter detection with the editor's \
                own lookahead and rewrites callouts",
-    },
-    KnownFailure {
-        name: "a byte-order mark, then a callout on the first line",
-        note: "\u{feff}> [!note] a\n",
-        cause: "comrak skips a byte-order mark before it parses the first line, so a \
-            first-line callout's source position no longer lines up with editor-core's \
-            offsets, which count the mark. The editor reads the callout's type from the \
-            wrong place and panics in `alert_type_title_ranges`.",
-        fixed_by: "ticket 17, which keeps the byte-order mark through open and save and runs \
-               this property with it",
-    },
-];
+}];
 
 /// Whether `note` belongs to an input class behind a known failure. The
 /// property tests leave these classes out until their fixes land.
@@ -129,8 +140,6 @@ fn known_failure_class(note: &str) -> bool {
     match &first.value {
         // A lone CR in frontmatter.
         NodeValue::FrontMatter(text) => text.replace("\r\n", "\n").contains('\r'),
-        // A byte-order mark, then a callout on the first line.
-        NodeValue::Alert(_) => note.starts_with('\u{feff}') && first.sourcepos.start.line == 1,
         _ => false,
     }
 }
@@ -145,6 +154,9 @@ fn each_known_failure_belongs_to_a_class_the_generators_leave_out() {
         "a\rb\n> [!note] A\n",
         "\u{feff}# Heading\n",
         "\u{feff}\n> [!note] a\n",
+        // Noura reads the byte-order mark off before the editor sees the
+        // text, so a callout on the first line reads its own type.
+        "\u{feff}> [!note] a\n",
     ] {
         assert!(!known_failure_class(passing), "{passing:?}");
         assert_eq!(

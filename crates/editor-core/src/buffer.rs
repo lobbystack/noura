@@ -31,6 +31,15 @@
 //! last text loaded or saved, the buffer's and the file's. Either way, where
 //! an outside edit overlaps a local one, the local edit wins.
 //!
+//! # Change events
+//!
+//! Every replacement that reaches the rope, typed, undone, redone or merged
+//! from the file, also lands in a list of [`TextChange`]s: the bytes it
+//! replaced and the text it inserted. [`Buffer::take_changes`] drains the
+//! list. Replaying the changes on the text the buffer started from gives
+//! its text now. IME composition never reaches the buffer, so marked text
+//! makes no change until the input method commits it.
+//!
 //! # Undo
 //!
 //! Undo and redo step over units. Operations queued together form one unit.
@@ -60,6 +69,20 @@ pub struct Buffer {
     external: External,
     /// File contents passed to [`Self::reload`], merged by the next update.
     disk: Option<String>,
+    /// The changes made to the rope since the last [`Self::take_changes`].
+    changes: Vec<TextChange>,
+}
+
+/// One change to the buffer's text: the bytes in `range` of the text
+/// before it gave way to `text`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextChange {
+    /// Byte offsets into the text as it was just before this change.
+    pub range: std::ops::Range<usize>,
+    pub text: String,
+    /// Whether the change came from the editor: typing, a command, undo or
+    /// redo. A merged outside edit of the file isn't local.
+    pub local: bool,
 }
 
 /// A version of the buffer's text with its selection.
@@ -190,6 +213,8 @@ struct Received {
     op: Operation,
     base: usize,
     at: Instant,
+    /// False for an outside edit of the file.
+    local: bool,
 }
 
 /// An operation as it applied: transformed to the version it applied to,
@@ -359,7 +384,17 @@ impl Buffer {
 
         self.history
             .received
-            .extend(joined.into_iter().map(|op| Received { op, base, at }));
+            .extend(joined.into_iter().map(|op| Received {
+                op,
+                base,
+                at,
+                local: true,
+            }));
+    }
+
+    /// The changes made to the text since the last call, in order.
+    pub fn take_changes(&mut self) -> Vec<TextChange> {
+        std::mem::take(&mut self.changes)
     }
 
     /// Loads new file contents. The next [`Self::update`] merges the edits
@@ -415,17 +450,18 @@ impl Buffer {
                 (self.current.seq, diff(self.current.text(), &merged))
             }
         };
-        self.queue_replacements(ops, base, Instant::now());
+        self.queue_replacements(ops, base, Instant::now(), false);
     }
 
     /// Queues replacements made against version `base`.
-    fn queue_replacements(&mut self, ops: Vec<Replace>, base: usize, at: Instant) {
+    fn queue_replacements(&mut self, ops: Vec<Replace>, base: usize, at: Instant, local: bool) {
         self.history
             .received
             .extend(ops.into_iter().map(|replace| Received {
                 op: Operation::Replace(replace),
                 base,
                 at,
+                local,
             }));
     }
 
@@ -452,10 +488,11 @@ impl Buffer {
         while self.history.applied.len() < self.history.received.len() {
             let index = self.history.applied.len();
             let received = &self.history.received[index];
+            let local = received.local;
             let op = self.transform(received.op.clone(), received.base);
 
             let (inverse, start) = self.current.inverse_before(&op);
-            let (op_response, added) = self.apply(&op);
+            let (op_response, added) = self.apply(&op, local);
             response |= op_response;
 
             let mut inverse = inverse;
@@ -469,11 +506,27 @@ impl Buffer {
         Some(response)
     }
 
-    fn apply(&mut self, op: &Operation) -> (Response, Graphemes) {
+    fn apply(&mut self, op: &Operation, local: bool) -> (Response, Graphemes) {
         match op {
             Operation::Select(range) => (self.current.select(*range), Graphemes(0)),
-            Operation::Replace(replace) => self.current.replace(replace),
+            Operation::Replace(replace) => self.replace(replace, local),
         }
+    }
+
+    /// Applies a replacement to the text and records its change event.
+    fn replace(&mut self, replace: &Replace, local: bool) -> (Response, Graphemes) {
+        let bytes = self.current.segs.range_to_byte(replace.range);
+        let range = bytes.start().0..bytes.end().0;
+        let changed = !range.is_empty() || !replace.text.is_empty();
+        let result = self.current.replace(replace);
+        if changed {
+            self.changes.push(TextChange {
+                range,
+                text: replace.text.clone(),
+                local,
+            });
+        }
+        result
     }
 
     /// Rewrites an operation made against version `base` to apply to the
@@ -532,7 +585,7 @@ impl Buffer {
             self.current.seq -= 1;
             let inverse = self.history.applied[self.current.seq].inverse.clone();
             if let Some(replace) = &inverse.replace {
-                response |= self.current.replace(replace).0;
+                response |= self.replace(replace, true).0;
             }
             response |= self.current.select(inverse.select);
 
@@ -553,7 +606,7 @@ impl Buffer {
         while self.can_redo() {
             let index = self.current.seq;
             let op = self.history.applied[index].op.clone();
-            let (op_response, added) = self.apply(&op);
+            let (op_response, added) = self.apply(&op, true);
             response |= op_response;
             self.history.applied[index].added = added;
             self.current.seq += 1;
@@ -604,6 +657,7 @@ impl From<&str> for Buffer {
                 seq: Some(0),
             },
             disk: None,
+            changes: Vec::new(),
         }
     }
 }
@@ -646,9 +700,9 @@ fn adjust_subsequent_position(
 fn merge(base: &str, local: &str, outside: &str) -> String {
     let mut buffer = Buffer::from(base);
     let at = Instant::now();
-    buffer.queue_replacements(diff(base, local), 0, at);
+    buffer.queue_replacements(diff(base, local), 0, at, true);
     buffer.apply_queued();
-    buffer.queue_replacements(diff(base, outside), 0, at);
+    buffer.queue_replacements(diff(base, outside), 0, at, false);
     buffer.apply_queued();
     buffer.current.rope().to_string()
 }
