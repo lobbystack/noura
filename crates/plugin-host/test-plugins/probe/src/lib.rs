@@ -19,9 +19,9 @@
 //! - anything else: a panel with a line of text and a button.
 //!
 //! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
-//! `markdown:deep`, titled Deep, and `nodes:cycle`, titled Broken. The
-//! first shares the hello plugin's page ID, so a test can swap one build
-//! for the other under an open page.
+//! `markdown:deep`, titled Deep, `nodes:cycle`, titled Broken, and
+//! `events`. The first shares the hello plugin's page ID, so a test can
+//! swap one build for the other under an open page.
 //!
 //! It offers the commands `say-hello`, in the command palette;
 //! `describe`, which other plugins may call and which lists the workspace
@@ -70,6 +70,10 @@ impl Plugin for Probe {
             Page {
                 id: "nodes:cycle".into(),
                 title: "Broken".into(),
+            },
+            Page {
+                id: "events".into(),
+                title: "Events".into(),
             },
         ]
     }

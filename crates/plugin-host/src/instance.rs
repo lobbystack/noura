@@ -247,9 +247,11 @@ impl network::Host for HostState {
                 .collect(),
             body: request.body,
         };
-        let response = self
-            .waiting(|_| requests.send_blocking(request, &hosts))
-            .map_err(network_error)?;
+        let response = self.waiting(|_| {
+            requests
+                .send_blocking(request, &hosts)
+                .map_err(network_error)
+        })?;
         Ok(network::Response {
             status: response.status,
             url: response.url,

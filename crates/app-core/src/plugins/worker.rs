@@ -97,6 +97,17 @@ pub(super) struct Outcome {
     /// Every view the plugin draws, as drawn now.
     pub(super) views: BTreeMap<Surface, PluginView>,
     pub(super) health: Health,
+    /// Why the job's event or command failed: the view the event happened
+    /// in, or none for a command, and the reason in words.
+    pub(super) failed: Option<(Option<Surface>, String)>,
+}
+
+/// What a plugin was doing when it failed.
+#[derive(Clone, Copy)]
+pub(super) enum Doing {
+    Drawing,
+    Handling,
+    Running,
 }
 
 /// The worker's half of a running plugin.
@@ -117,6 +128,7 @@ impl Worker {
         let mut registrations = Registrations::default();
         while let Ok(job) = self.jobs.recv() {
             let mut registered = None;
+            let mut failed = None;
             match job {
                 Job::Refresh => {
                     registrations = register(&self.plugin);
@@ -125,14 +137,19 @@ impl Worker {
                 Job::Event(surface, event) => {
                     if let Err(error) = self.plugin.handle_surface_event(&surface, &event) {
                         tracing::warn!(%error, "a plugin failed to handle an event");
+                        failed = Some((Some(surface), failure_message(&error, Doing::Handling)));
                     }
                 }
                 Job::Command(id) => match self.plugin.run_command(&id, "") {
                     Ok(Ok(_)) => {}
                     Ok(Err(message)) => {
                         tracing::warn!(%message, "a plugin's command failed");
+                        failed = Some((None, format!("Its command failed: {message}")));
                     }
-                    Err(error) => tracing::warn!(%error, "a plugin failed to run a command"),
+                    Err(error) => {
+                        tracing::warn!(%error, "a plugin failed to run a command");
+                        failed = Some((None, failure_message(&error, Doing::Running)));
+                    }
                 },
                 Job::Redraw => self.redraw_queued.store(false, Ordering::Relaxed),
             }
@@ -143,6 +160,7 @@ impl Worker {
                 registrations: registered,
                 views,
                 health: self.plugin.health(),
+                failed,
             };
             if self.outcomes.send(outcome).is_err() {
                 return;
@@ -240,7 +258,7 @@ fn draw(plugin: &RunningPlugin, registrations: &Registrations) -> BTreeMap<Surfa
                 Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
                 Err(error) => {
                     tracing::warn!(%error, "a plugin failed to draw a view");
-                    Err(failure_message(&error))
+                    Err(failure_message(&error, Doing::Drawing))
                 }
             };
             (surface, view)
@@ -249,7 +267,7 @@ fn draw(plugin: &RunningPlugin, registrations: &Registrations) -> BTreeMap<Surfa
 }
 
 /// Why a plugin's call failed, in words for the place its view would be.
-pub(super) fn failure_message(error: &PluginError) -> String {
+pub(super) fn failure_message(error: &PluginError, doing: Doing) -> String {
     match error {
         PluginError::Deadline { deadline } => format!(
             "The plugin took longer than its {} limit, so Noura stopped it.",
@@ -267,17 +285,20 @@ pub(super) fn failure_message(error: &PluginError) -> String {
         PluginError::CapabilityNotDeclared { capability } => {
             format!("The plugin isn't allowed the {capability} capability.")
         }
-        PluginError::NotExported { .. } => "The plugin doesn't draw this view.".to_owned(),
-        PluginError::Instantiate(_) | PluginError::Call(_) => {
-            "The plugin failed while drawing this view.".to_owned()
+        PluginError::NotExported { .. } => "The plugin doesn't offer this.".to_owned(),
+        PluginError::Instantiate(_) | PluginError::Call(_) => match doing {
+            Doing::Drawing => "The plugin failed while drawing this view.",
+            Doing::Handling => "The plugin failed while handling what you did.",
+            Doing::Running => "The plugin failed while running it.",
         }
+        .to_owned(),
     }
 }
 
 /// A duration in words, such as "1 second".
 fn seconds(duration: Duration) -> String {
     let millis = duration.as_millis();
-    if millis % 1000 == 0 {
+    if millis.is_multiple_of(1000) {
         match millis / 1000 {
             1 => "1 second".to_owned(),
             seconds => format!("{seconds} seconds"),

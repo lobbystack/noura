@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AppError, Workspace, store::JsonStore};
 use reload::{Reload, Watcher};
-use worker::{Job, Outcome, Registrations, ToolEntry, Worker};
+use worker::{Doing, Job, Outcome, Registrations, ToolEntry, Worker};
 
 /// Where the plugin host keeps installed plugins and their compiled code,
 /// under the app data folder.
@@ -88,6 +88,16 @@ pub(crate) fn lines(capabilities: &[Capability]) -> Vec<CapabilityLine> {
                     grant,
                 })
         })
+        .collect()
+}
+
+/// The lines of `capabilities` that `known` doesn't grant: whole
+/// capabilities, network hosts and command targets.
+fn lines_beyond(capabilities: &[Capability], known: &[Capability]) -> Vec<CapabilityLine> {
+    let known: Vec<Grant> = lines(known).into_iter().map(|line| line.grant).collect();
+    lines(capabilities)
+        .into_iter()
+        .filter(|line| !known.contains(&line.grant))
         .collect()
 }
 
@@ -245,7 +255,7 @@ impl ToolCall {
                 tracing::warn!(%error, "a plugin tool failed");
                 Err(AppError::new(
                     "plugin_failed",
-                    worker::failure_message(&error),
+                    worker::failure_message(&error, Doing::Running),
                 ))
             }
         }
@@ -429,17 +439,16 @@ impl Plugins {
                 let (approved, revoked) = match (manifest, record) {
                     (Some(manifest), Some(record)) => {
                         let granted = Capability::granted(&manifest.capabilities, &record.approved);
-                        let revoked = Capability::added(&granted, &manifest.capabilities);
-                        (lines(&granted), lines(&revoked))
+                        let revoked = lines_beyond(&manifest.capabilities, &granted);
+                        (lines(&granted), revoked)
                     }
                     (None, Some(record)) => (lines(&record.approved), Vec::new()),
                     _ => (Vec::new(), Vec::new()),
                 };
                 let update = match (self.updates.get(id), manifest) {
-                    (Some(candidate), Some(manifest)) => lines(&Capability::added(
-                        &manifest.capabilities,
-                        &candidate.manifest().capabilities,
-                    )),
+                    (Some(candidate), Some(manifest)) => {
+                        lines_beyond(&candidate.manifest().capabilities, &manifest.capabilities)
+                    }
                     _ => Vec::new(),
                 };
                 let running = self.running.get(id);
@@ -913,6 +922,29 @@ impl Plugins {
             running.registrations = registrations;
         }
         running.views = outcome.views;
+        // A job that started before you revoked a capability may answer
+        // after: what you revoked stays gone.
+        let granted = running.plugin.granted();
+        running
+            .registrations
+            .keep(|name| Capability::holds(&granted, name));
+        let surfaces = running.registrations.surfaces();
+        running
+            .views
+            .retain(|surface, _| surfaces.contains(surface));
+        match outcome.failed {
+            // The view where the event happened says why, until the
+            // plugin draws it again.
+            Some((Some(surface), message)) => {
+                if running.views.contains_key(&surface) {
+                    running.views.insert(surface, Err(message));
+                }
+            }
+            Some((None, message)) => {
+                self.problems.insert(outcome.id.clone(), message);
+            }
+            None => {}
+        }
         if outcome.health.stopped && !running.failed {
             running.failed = true;
             running.registrations = Registrations::default();

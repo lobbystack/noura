@@ -244,7 +244,7 @@ impl HostRequests {
     /// The addresses to connect to for `url`, once each is known to be
     /// public.
     async fn addresses(&self, url: &Url) -> Result<Vec<SocketAddr>> {
-        let port = url.port_or_known_default().ok_or_else(|| invalid_url())?;
+        let port = url.port_or_known_default().ok_or_else(invalid_url)?;
         let addresses = match url.host() {
             Some(Host::Domain(domain)) => self.transport.resolve(domain, port).await?,
             Some(Host::Ipv4(address)) => vec![IpAddr::V4(address)],

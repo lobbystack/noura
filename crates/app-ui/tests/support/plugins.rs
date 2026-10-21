@@ -47,10 +47,21 @@ pub fn folder(parent: &Path, manifest: &str, entry: &str, component: &[u8]) -> P
 
 /// A manifest for the probe test plugin with the capabilities it needs.
 pub fn probe_manifest() -> String {
-    "id = \"probe\"\nname = \"Probe\"\nversion = \"0.1.0\"\ninterface-version = \"0.1.0\"\n\
-     entry = \"plugin.wasm\"\nplatforms = [\"desktop\"]\n\n[[capabilities]]\n\
-     name = \"workspace-read\"\n\n[[capabilities]]\nname = \"views\"\n"
-        .to_owned()
+    probe_manifest_with(&[])
+}
+
+/// [`probe_manifest`] with more capabilities, each as `[[capabilities]]`
+/// writes it, such as `name = "settings"`.
+pub fn probe_manifest_with(more: &[&str]) -> String {
+    let mut manifest =
+        "id = \"probe\"\nname = \"Probe\"\nversion = \"0.1.0\"\ninterface-version = \"0.1.0\"\n\
+         entry = \"plugin.wasm\"\nplatforms = [\"desktop\"]\n\n[[capabilities]]\n\
+         name = \"workspace-read\"\n\n[[capabilities]]\nname = \"views\"\n"
+            .to_owned();
+    for capability in more {
+        manifest.push_str(&format!("\n[[capabilities]]\n{capability}\n"));
+    }
+    manifest
 }
 
 /// Install the plugin in `folder` in the workspace that `app_data` opens
