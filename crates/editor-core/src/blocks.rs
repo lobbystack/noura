@@ -1651,10 +1651,13 @@ impl<'ast> MdDoc {
         // Drop unicode words that fell in a prefix region; the columns
         // replace them. Both sets are non-overlapping and the regions are
         // disjoint from content, so the merged list stays sorted and
-        // non-overlapping as `range_bound` requires.
-        self.bounds
-            .words
-            .retain(|w| !prefix_regions.iter().any(|p| w.intersects(p, false)));
+        // non-overlapping as `range_bound` requires. Both lists are sorted,
+        // so one pass walks them together.
+        let mut regions = prefix_regions.iter().peekable();
+        self.bounds.words.retain(|w| {
+            while regions.next_if(|p| p.end() <= w.start()).is_some() {}
+            !regions.peek().is_some_and(|p| w.intersects(p, false))
+        });
         self.bounds.words.extend(columns);
         self.bounds.words.sort();
     }

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use comrak::nodes::AstNode;
 use comrak::{Arena, Options};
 
+use crate::ast::Ast;
 use crate::bounds::Bounds;
 use crate::buffer::{self, Buffer};
 use crate::input::cursor::CursorState;
@@ -64,6 +65,8 @@ pub struct MdDoc {
     /// Events an edit queued to apply after the current batch, such as the
     /// fold-tag edit a fold command makes.
     pub deferred_events: Vec<crate::input::Event>,
+    /// The parse of the current text, between calls that use it.
+    ast: Option<Ast>,
     /// Marked text an input method is composing at the caret. It never
     /// reaches the buffer; see [`crate::ime`].
     pub(crate) composition: Option<crate::ime::Composition>,
@@ -135,6 +138,7 @@ impl MdDoc {
             opened_links: Vec::new(),
             copied: None,
             deferred_events: Vec::new(),
+            ast: None,
             composition: None,
             debug: false,
         }
@@ -186,22 +190,22 @@ impl MdDoc {
         events: impl IntoIterator<Item = Event>,
         layout: &dyn TextLayout,
     ) -> buffer::Response {
-        let arena = Arena::new();
-        let root = self.reparse(&arena);
         let mut ops = Vec::new();
         let mut response = buffer::Response::default();
         let mut undo_redo = false;
-        for event in events {
-            undo_redo |= matches!(event, Event::Undo | Event::Redo);
-            response |= self.calc_operations(root, event, &mut ops, layout);
-        }
+        self.with_ast(|doc, root| {
+            for event in events {
+                undo_redo |= matches!(event, Event::Undo | Event::Redo);
+                response |= doc.calc_operations(root, event, &mut ops, layout);
+            }
+        });
         self.buffer.queue(ops);
         response |= self.buffer.update();
         if response.text_updated {
             self.bump_text_seq();
         }
         let edited = response.text_updated || response.selection_user_moved;
-        response |= self.unfold_after_edit(&arena, edited, undo_redo);
+        response |= self.unfold_after_edit(edited, undo_redo);
         response
     }
 
@@ -224,14 +228,55 @@ impl MdDoc {
 
     /// Re-parse the buffer into a fresh AST and rebuild all text-derived
     /// bounds (source lines, words, inline paragraphs). The caller owns the
-    /// [`Arena`] — comrak's AST is arena-allocated.
+    /// [`Arena`] — comrak's AST is arena-allocated. [`Self::take_ast`]
+    /// reuses one parse per text version instead.
     pub fn reparse<'a>(&mut self, arena: &'a Arena<'a>) -> &'a AstNode<'a> {
         self.cache.ensure_text_consistent(self.text_seq);
 
         let options = Self::comrak_options();
         let text_with_newline = self.buffer.current.text_with("\n");
         let root = comrak::parse_document(arena, &text_with_newline, &options);
+        self.ensure_bounds(root);
+        root
+    }
 
+    /// The parse of the current text, with its bounds built: the one the
+    /// last call handed back with [`Self::put_ast`], or a new one. Hand it
+    /// back when done so the next call reuses it.
+    pub fn take_ast(&mut self) -> Ast {
+        self.cache.ensure_text_consistent(self.text_seq);
+        let ast = match self.ast.take() {
+            Some(ast) if ast.text_seq() == self.text_seq => ast,
+            _ => Ast::parse(
+                &self.buffer.current.text_with("\n"),
+                &Self::comrak_options(),
+                self.text_seq,
+            ),
+        };
+        ast.with_root(|root| self.ensure_bounds(root));
+        ast
+    }
+
+    /// Keeps `ast` for the next [`Self::take_ast`], unless the text
+    /// changed since it was parsed.
+    pub fn put_ast(&mut self, ast: Ast) {
+        if ast.text_seq() == self.text_seq {
+            self.ast = Some(ast);
+        }
+    }
+
+    /// Runs `work` with this document and the parse of its current text.
+    pub fn with_ast<R>(&mut self, work: impl for<'a> FnOnce(&mut Self, &'a AstNode<'a>) -> R) -> R {
+        let ast = self.take_ast();
+        let result = ast.with_root(|root| work(self, root));
+        self.put_ast(ast);
+        result
+    }
+
+    /// Rebuilds the bounds `root`, a parse of the current text, gives when
+    /// the text changed since they were built, and the fold state when the
+    /// reveal state changed.
+    fn ensure_bounds<'a>(&mut self, root: &'a AstNode<'a>) {
         // Bounds depend only on text. Skip rebuild + bump bounds_seq
         // when text hasn't changed.
         if self.bounds.text_seq != self.text_seq {
@@ -255,8 +300,6 @@ impl MdDoc {
             // changes (text seq same, reveal_seq advanced).
             self.populate_hidden_by_fold(root);
         }
-
-        root
     }
 
     pub fn comrak_options() -> Options<'static> {

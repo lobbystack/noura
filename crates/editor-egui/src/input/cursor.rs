@@ -217,22 +217,23 @@ impl MdEdit {
             self.renderer.layout.row_spacing / 2.0
         };
 
-        let arena = comrak::Arena::new();
-        let root = self.renderer.reparse(&arena);
-        let content = DocScrollContent::for_frame(&self.renderer, root, canvas_rect.height());
-
-        let Some(target_rect) = build_target_reveal(
-            &self.renderer,
-            &content,
-            &self.scroll_area.state,
-            (cursor, cursor),
-            canvas_rect,
-            pad,
-        ) else {
-            return;
-        };
-        self.scroll_area
-            .reveal(&content, target_rect, Align::Nearest);
+        let ast = self.renderer.take_ast();
+        ast.with_root(|root| {
+            let content = DocScrollContent::for_frame(&self.renderer, root, canvas_rect.height());
+            let Some(target_rect) = build_target_reveal(
+                &self.renderer,
+                &content,
+                &self.scroll_area.state,
+                (cursor, cursor),
+                canvas_rect,
+                pad,
+            ) else {
+                return;
+            };
+            self.scroll_area
+                .reveal(&content, target_rect, Align::Nearest);
+        });
+        self.renderer.put_ast(ast);
     }
 
     pub fn cursor_line(&self, offset: Grapheme) -> Option<[Pos2; 2]> {
