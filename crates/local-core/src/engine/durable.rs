@@ -47,8 +47,9 @@ pub(super) fn atomic_write_checked(
         .and_then(|()| file.sync_all())
         .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
     if let Some(expected) = expected_revision {
-        let current = std::fs::read(&destination)
-            .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
+        let shown = relative.to_string_lossy().replace('\\', "/");
+        // The file may have gone online-only since the caller read it.
+        let current = read_downloaded(&destination, &shown, operation)?;
         check_revision(&current, expected, operation)?;
     }
     file.commit()

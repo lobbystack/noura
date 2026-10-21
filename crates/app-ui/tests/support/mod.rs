@@ -78,7 +78,7 @@ pub fn harness_on(
     let mut app = App::launch_with(app_data, system);
     register(&mut app);
     let ui = NouraUi::new(app, Box::new(picker));
-    let mut builder = Harness::builder().with_size([1000.0, 700.0]);
+    let mut builder = builder();
     if mac {
         builder = builder.allow_missing_glyphs();
     }
@@ -97,10 +97,19 @@ pub fn harness_for(
     let mut app = App::launch_with(app_data, FakeSystem::new(platform));
     register(&mut app);
     let ui = NouraUi::new(app, Box::new(FakePicker::default()));
-    Harness::builder()
-        .with_size([1000.0, 700.0])
+    builder()
         .allow_missing_glyphs()
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+}
+
+/// A harness of the window's size. The watch thread announces each change
+/// to the files, Noura's own included, a moment after it lands, and the
+/// window draws once more to show it, so a run may take a few more frames
+/// than kittest's default allows.
+pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
+    Harness::builder()
+        .with_size([1000.0, 700.0])
+        .with_max_steps(12)
 }
 
 /// A system that records what Noura asks of it. Its trash refuses, so

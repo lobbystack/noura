@@ -126,6 +126,65 @@ fn a_file_cloud_storage_has_not_downloaded_says_so_and_does_not_open() {
 }
 
 #[test]
+fn a_file_cloud_storage_has_not_downloaded_offers_no_duplicate() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    std::fs::write(folder.join(".Cloud note.md.icloud"), b"placeholder").unwrap();
+    std::fs::write(folder.join("Local note.md"), b"# Local note\n").unwrap();
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+
+    let items = |harness: &mut Harness<'static, app_ui::NouraUi>, name: &str| -> Vec<String> {
+        row(harness, name).click_secondary();
+        harness.run();
+        let items = harness
+            .get_by_label(&format!("Actions for {name}"))
+            .get_all_by_role(Role::Button)
+            .filter_map(|node| node.accesskit_node().label())
+            .collect();
+        press(harness, Key::Escape);
+        items
+    };
+
+    assert!(items(&mut harness, "Local note").contains(&"Duplicate".to_owned()));
+    let cloud = items(&mut harness, "Cloud note");
+    assert!(cloud.contains(&"Open".to_owned()), "{cloud:?}");
+    assert!(!cloud.contains(&"Duplicate".to_owned()), "{cloud:?}");
+}
+
+#[test]
+fn the_not_downloaded_marker_clears_once_the_cloud_drive_downloads_the_file() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    std::fs::write(folder.join(".Cloud note.md.icloud"), b"placeholder").unwrap();
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+    assert_eq!(
+        description(&harness, "Cloud note").as_deref(),
+        Some("not downloaded")
+    );
+
+    // The download replaces the placeholder with the note, and the tree
+    // follows with no action from you.
+    std::fs::write(folder.join("Cloud note.md"), b"# Cloud note\n").unwrap();
+    std::fs::remove_file(folder.join(".Cloud note.md.icloud")).unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while description(&harness, "Cloud note").is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the marker never cleared"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.run();
+    }
+}
+
+#[test]
 fn arrow_keys_home_end_and_type_ahead_move_through_the_tree() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();

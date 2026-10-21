@@ -24,6 +24,9 @@ pub use plugin::SYNC_PLUGIN_ID;
 // Windows FlushFileBuffers requires a handle opened with GENERIC_WRITE, even
 // when we only read the existing bytes before committing their sync descriptor.
 fn open_for_durable_read(path: &Path) -> std::io::Result<File> {
+    if lives_in_the_cloud(path) {
+        return Err(std::io::Error::other("file_not_downloaded"));
+    }
     std::fs::OpenOptions::new()
         .read(true)
         .write(cfg!(windows))
@@ -344,7 +347,18 @@ impl WorkspaceEngine {
     }
 }
 
+/// Whether the file at `path` exists only in the cloud: dataless, offline
+/// or recall-on-access, or only an iCloud placeholder stands for it. Sync
+/// never reads such a file, which would start a download and block, and
+/// never takes a placeholder for a deletion.
+fn lives_in_the_cloud(path: &Path) -> bool {
+    ensure_downloaded(path, "", "sync").is_err()
+}
+
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
+    if lives_in_the_cloud(path) {
+        return Err(not_downloaded(&path.to_string_lossy(), "sync"));
+    }
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),

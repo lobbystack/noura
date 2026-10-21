@@ -288,6 +288,7 @@ name = "app-core"
 version = "0.2.0"
 dependencies = [
  "aho-corasick",
+ "app-core",
  "atomic-write-file",
  "directories",
  "local-core",
@@ -300,6 +301,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "unicode-normalization",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4535,6 +4537,7 @@ dependencies = [
  "keyring",
  "libc",
  "notify",
+ "parking_lot",
  "pbkdf2",
  "pulldown-cmark",
  "reqwest",

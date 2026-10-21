@@ -180,32 +180,50 @@ impl WorkspaceEngine {
                 continue;
             }
             let path = entry.path();
-            let bytes = std::fs::read(&path)
-                .map_err(|error| CoreError::io(error, "chat_mutation_recover", path.to_str()))?;
-            let intent = serde_json::from_slice::<ChatMutationIntent>(&bytes).map_err(|_| {
-                CoreError::new(
-                    "chat_mutation_recovery_invalid",
-                    ErrorCategory::Parse,
-                    "A pending chat mutation intent is invalid",
-                    "chat_mutation_recover",
-                )
-            })?;
-            self.validate_chat_mutation_intent(&intent, "chat_mutation_recover")?;
-            self.apply_chat_mutation_target(
-                &intent.message,
-                ChatMutationWriteTarget::Message,
-                false,
-                "chat_mutation_recover",
-            )?;
-            self.apply_chat_mutation_target(
-                &intent.chat,
-                ChatMutationWriteTarget::Chat,
-                false,
-                "chat_mutation_recover",
-            )?;
-            let _ = self.clear_chat_mutation_intent(&path, "chat_mutation_recover");
+            let relative = format!(
+                "{CHAT_MUTATION_DIR}/{}",
+                entry.file_name().to_string_lossy()
+            );
+            match self.recover_chat_mutation(&path, &relative) {
+                Ok(()) => {
+                    let _ = self.clear_chat_mutation_intent(&path, "chat_mutation_recover");
+                }
+                // Reading a file that lives only in the cloud would start a
+                // download and block. The intent waits until it downloads.
+                Err(error) if error.code == "file_not_downloaded" => {
+                    tracing::info!(path = ?error.path, "a chat mutation waits for a download");
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
+    }
+
+    /// Replay the intent at `path`, which `relative` names, onto the chat
+    /// and message files it names.
+    fn recover_chat_mutation(&self, path: &Path, relative: &str) -> Result<()> {
+        let bytes = read_downloaded(path, relative, "chat_mutation_recover")?;
+        let intent = serde_json::from_slice::<ChatMutationIntent>(&bytes).map_err(|_| {
+            CoreError::new(
+                "chat_mutation_recovery_invalid",
+                ErrorCategory::Parse,
+                "A pending chat mutation intent is invalid",
+                "chat_mutation_recover",
+            )
+        })?;
+        self.validate_chat_mutation_intent(&intent, "chat_mutation_recover")?;
+        self.apply_chat_mutation_target(
+            &intent.message,
+            ChatMutationWriteTarget::Message,
+            false,
+            "chat_mutation_recover",
+        )?;
+        self.apply_chat_mutation_target(
+            &intent.chat,
+            ChatMutationWriteTarget::Chat,
+            false,
+            "chat_mutation_recover",
+        )
     }
 
     fn validate_chat_mutation_intent(
@@ -268,6 +286,9 @@ impl WorkspaceEngine {
         let relative = crate::path::validate_relative(&target.relative_path, operation)?;
         let destination = resolve_for_write(&self.root, &target.relative_path, operation)?;
         let target_revision = markdown::revision(target.bytes.as_bytes());
+        // A file that lives only in the cloud stays unread, and the intent
+        // waits until it downloads.
+        ensure_downloaded(&destination, &target.relative_path, operation)?;
         match std::fs::read(&destination) {
             Ok(current) if markdown::revision(&current) == target_revision => return Ok(()),
             Ok(current)
@@ -305,16 +326,14 @@ impl WorkspaceEngine {
     }
 
     fn journal_chat_mutation(&self, intent: &ChatMutationIntent) {
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(
-                intent.chat.relative_path.clone(),
-                markdown::revision(intent.chat.bytes.as_bytes()),
-            );
-            journal.insert(
-                intent.message.relative_path.clone(),
-                markdown::revision(intent.message.bytes.as_bytes()),
-            );
-        }
+        self.expect_own_write(
+            &intent.chat.relative_path,
+            Some(&markdown::revision(intent.chat.bytes.as_bytes())),
+        );
+        self.expect_own_write(
+            &intent.message.relative_path,
+            Some(&markdown::revision(intent.message.bytes.as_bytes())),
+        );
     }
 
     fn clear_chat_mutation_intent(&self, path: &Path, operation: &str) -> Result<()> {

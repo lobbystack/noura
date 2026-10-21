@@ -112,7 +112,9 @@ impl WorkspaceEngine {
             }
             None => Vec::new(),
         };
-        let _guard = self.write_lock("manifest_update")?;
+        // Held until the walk below has indexed a new ignore list.
+        let _changes = self.hold_changes();
+        let guard = self.write_lock("manifest_update")?;
         let current_bytes = self.read_manifest_bytes()?;
         let mut manifest = parse_workspace_manifest(&current_bytes, "manifest_update")?;
         let edited = input
@@ -138,26 +140,29 @@ impl WorkspaceEngine {
         if update_enabled {
             manifest.enabled_plugins = std::mem::take(&mut enabled_plugins);
         }
+        let ignore_changed = update_ignore && manifest.ignore != ignore;
         if update_ignore {
             manifest.ignore = ignore;
         }
         manifest.updated = now_rfc3339();
         validate_manifest(&manifest, "manifest_update")?;
         let bytes = serialize_workspace_manifest(&manifest, "manifest_update")?;
-        atomic_write_checked(
+        // Journal like every other write site, before the write, so the
+        // watcher poll does not resurface this engine's own atomic manifest
+        // write as external.
+        self.expect_own_write(
+            WORKSPACE_MANIFEST_PATH,
+            Some(&markdown::revision(bytes.as_bytes())),
+        );
+        if let Err(error) = atomic_write_checked(
             &self.root,
             Path::new(WORKSPACE_MANIFEST_PATH),
             bytes.as_bytes(),
             Some(&markdown::revision(&current_bytes)),
             "manifest_update",
-        )?;
-        // Journal like every other write site so the watcher poll does not
-        // resurface this engine's own atomic manifest write as external.
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(
-                WORKSPACE_MANIFEST_PATH.to_owned(),
-                markdown::revision(bytes.as_bytes()),
-            );
+        ) {
+            self.forget_own_write(WORKSPACE_MANIFEST_PATH);
+            return Err(error);
         }
         *self
             .manifest
@@ -171,6 +176,14 @@ impl WorkspaceEngine {
                 "name": manifest.name,
             }),
         );
+        drop(guard);
+        if ignore_changed {
+            // The ignore list decides what the index holds, so the index
+            // follows it now, as this engine's own change. The change gate
+            // is still held, so no walk can index the new list first and
+            // take the change for another app's.
+            self.reconcile_after_change("manifest_update");
+        }
         Ok(manifest)
     }
 
@@ -261,18 +274,17 @@ impl WorkspaceEngine {
         if !touched {
             return Ok(());
         }
-        let journaled = self
+        let ours = self
             .self_writes
             .lock()
             .map_err(|_| lock_error("watcher_poll"))?
-            .remove(WORKSPACE_MANIFEST_PATH);
-        if let Some(expected) = journaled {
-            let unchanged = std::fs::read(self.root.join(WORKSPACE_MANIFEST_PATH))
-                .ok()
-                .is_some_and(|bytes| markdown::revision(&bytes) == expected);
-            if unchanged {
-                return Ok(());
-            }
+            .reported(
+                WORKSPACE_MANIFEST_PATH,
+                &self.root.join(WORKSPACE_MANIFEST_PATH),
+                std::time::Instant::now(),
+            );
+        if ours {
+            return Ok(());
         }
         self.apply_external_manifest()
     }
@@ -702,6 +714,65 @@ mod tests {
                 .iter()
                 .any(|result| result.relative_path == "scope/note.md")
         );
+    }
+
+    #[test]
+    fn a_new_ignore_list_reindexes_the_workspace_as_this_engine_s_own_change() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Draft".into(),
+                body: "needle-draft".into(),
+                relative_path: Some("drafts/Idea.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        let found = || {
+            engine
+                .search(&SearchInput {
+                    query: "needle-draft".into(),
+                    ..Default::default()
+                })
+                .unwrap()
+                .len()
+        };
+        assert_eq!(found(), 1);
+
+        for (patterns, hits) in [(vec!["drafts/".to_owned()], 0), (Vec::new(), 1)] {
+            let before = engine.change_counts();
+            let mut events = engine.subscribe();
+            engine
+                .manifest_update(ManifestUpdateInput {
+                    ignore: Some(patterns.clone()),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            assert_eq!(found(), hits, "after saving {patterns:?}");
+            let after = engine.change_counts();
+            assert_eq!(after.outside, before.outside, "after saving {patterns:?}");
+            assert!(after.own > before.own, "after saving {patterns:?}");
+            let received = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+            assert!(
+                received
+                    .iter()
+                    .any(|event| event.event_type == "search:index-updated")
+            );
+            assert!(
+                received
+                    .iter()
+                    .all(|event| event.source == EventSource::Application),
+                "{received:?}"
+            );
+            // A walk after the save finds nothing left to index.
+            engine.reconcile().unwrap();
+            assert_eq!(engine.change_counts(), after);
+        }
     }
 
     #[test]

@@ -90,6 +90,7 @@ objc2-foundation = { version = "0.3.2", default-features = false }
 # `reveal` shows an item selected in Finder, Explorer or a Linux file manager.
 opener = { version = "0.9.0", features = ["reveal"] }
 openssl = "0.10"
+parking_lot = "0.12.5"
 pbkdf2 = "=0.12.2"
 # Without default features proptest leaves out its process-forking runner.
 proptest = { version = "1.12", default-features = false, features = ["std"] }

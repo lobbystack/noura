@@ -118,20 +118,7 @@ impl WorkspaceEngine {
     /// is returned as-is; the editor owns complete raw contents.
     pub fn read_raw_markdown(&self, relative_path: &str) -> Result<RawMarkdownRead> {
         let path = validate_raw_markdown_path(&self.root, relative_path)?;
-        let bytes = std::fs::read(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound && icloud_placeholder(&path).exists() {
-                let mut error = CoreError::new(
-                    "file_not_downloaded",
-                    ErrorCategory::Filesystem,
-                    "This file is still in iCloud. Download it in Finder, then open it again.",
-                    "raw_markdown_read",
-                );
-                error.retryable = true;
-                error.path = Some(relative_path.to_owned());
-                return error;
-            }
-            CoreError::io(error, "raw_markdown_read", Some(relative_path))
-        })?;
+        let bytes = read_downloaded(&path, relative_path, "raw_markdown_read")?;
         let (body, layout) = split_raw_bytes(&bytes)?;
         Ok(RawMarkdownRead {
             relative_path: relative_path.to_owned(),
@@ -165,8 +152,7 @@ impl WorkspaceEngine {
             return Ok(MarkdownLinkTarget::Unresolved);
         }
         if relative.to_ascii_lowercase().ends_with(".md") {
-            let bytes = std::fs::read(&path)
-                .map_err(|error| CoreError::io(error, "markdown_link_resolve", Some(&relative)))?;
+            let bytes = read_downloaded(&path, &relative, "markdown_link_resolve")?;
             if let ParsedMarkdown::Managed(object) = markdown::parse_markdown(&relative, &bytes) {
                 return Ok(MarkdownLinkTarget::Managed { object });
             }
@@ -221,9 +207,7 @@ impl WorkspaceEngine {
                 "raw_markdown_reconcile",
             ));
         }
-        let bytes = std::fs::read(&path).map_err(|error| {
-            CoreError::io(error, "raw_markdown_reconcile", Some(&input.relative_path))
-        })?;
+        let bytes = read_downloaded(&path, &input.relative_path, "raw_markdown_reconcile")?;
         let (external_body, layout) = split_raw_bytes(&bytes)?;
         let (uses_crlf, has_bom) = (layout.uses_crlf, layout.has_bom);
         let current = RawMarkdownRead {
@@ -275,8 +259,7 @@ impl WorkspaceEngine {
                 "raw_markdown_save",
             ));
         }
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "raw_markdown_save", Some(&relative)))?;
+        let bytes = read_downloaded(&path, &relative, "raw_markdown_save")?;
         let (external_body, layout) = split_raw_bytes(&bytes)?;
         let (uses_crlf, has_bom) = (layout.uses_crlf, layout.has_bom);
         let current = RawMarkdownRead {
@@ -314,16 +297,15 @@ impl WorkspaceEngine {
         let external_merged = merged_body != input.local_body;
         let next_bytes = compose_raw_bytes(&merged_body, &layout);
         let next_relative = PathBuf::from(&relative);
+        self.expect_own_write(&relative, Some(&markdown::revision(&next_bytes)));
         atomic_write_checked(
             &self.root,
             &next_relative,
             &next_bytes,
             Some(&current.revision),
             "raw_markdown_save",
-        )?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(relative.clone(), markdown::revision(&next_bytes));
-        }
+        )
+        .inspect_err(|_| self.forget_own_write(&relative))?;
         self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_save")?;
         self.emit(
             "file:changed",
@@ -386,8 +368,7 @@ impl WorkspaceEngine {
                 "raw_markdown_resolve",
             ));
         }
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "raw_markdown_resolve", Some(&relative)))?;
+        let bytes = read_downloaded(&path, &relative, "raw_markdown_resolve")?;
         if markdown::revision(&bytes) != input.current_revision {
             let mut error = CoreError::new(
                 "revision_conflict",
@@ -439,16 +420,15 @@ impl WorkspaceEngine {
                 )?;
                 let next_bytes = compose_raw_bytes(&input.local_body, &layout);
                 let next_relative = PathBuf::from(&relative);
+                self.expect_own_write(&relative, Some(&markdown::revision(&next_bytes)));
                 atomic_write_checked(
                     &self.root,
                     &next_relative,
                     &next_bytes,
                     Some(&input.current_revision),
                     "raw_markdown_resolve",
-                )?;
-                if let Ok(mut journal) = self.self_writes.lock() {
-                    journal.insert(relative.clone(), markdown::revision(&next_bytes));
-                }
+                )
+                .inspect_err(|_| self.forget_own_write(&relative))?;
                 self.reindex_raw_markdown(&relative, &next_bytes, "raw_markdown_resolve")?;
                 self.emit(
                     "file:changed",

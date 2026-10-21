@@ -5,7 +5,7 @@ mod support;
 use app_core::Platform;
 use app_ui::NouraUi;
 use egui::{Key, Modifiers, accesskit::Role};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::kittest::Queryable;
 use support::{FakePicker, create_workspace, harness, harness_for, settle};
 
 #[test]
@@ -31,9 +31,8 @@ fn new_window_from_the_palette_opens_another_window_on_the_workspace() {
     let mut windows = harness.state_mut().take_new_windows();
     assert_eq!(windows.len(), 1);
     let window = NouraUi::new(windows.remove(0), Box::new(FakePicker::default()));
-    let mut second = Harness::builder()
-        .with_size([1000.0, 700.0])
-        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), window);
+    let mut second =
+        support::builder().build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), window);
     second.run();
     second.get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Current");
     second.get_by_role_and_label(Role::TreeItem, "Plan");

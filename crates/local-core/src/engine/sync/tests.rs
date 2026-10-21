@@ -503,3 +503,30 @@ fn malformed_journal_is_rejected_instead_of_resetting_sync_state() {
     std::fs::write(engine.root.join(STATE_PATH), b"{broken").unwrap();
     assert!(engine.sync_cursor().is_err());
 }
+
+#[test]
+fn sync_never_reads_a_file_only_an_icloud_placeholder_stands_for_or_takes_it_for_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".Plan.md.icloud"), b"bplist00").unwrap();
+    let evicted = dir.path().join("Plan.md");
+
+    for (read, error) in [
+        ("read", read_optional(&evicted).err()),
+        ("revision", blobs::file_revision(&evicted).err()),
+    ] {
+        let error = error.unwrap_or_else(|| panic!("{read} took the file for deleted"));
+        assert_eq!(error.code, "file_not_downloaded", "{read}");
+    }
+    assert!(open_for_durable_read(&evicted).is_err());
+    // A file that is really gone still reads as gone.
+    assert!(
+        read_optional(&dir.path().join("Gone.md"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        blobs::file_revision(&dir.path().join("Gone.md"))
+            .unwrap()
+            .is_none()
+    );
+}

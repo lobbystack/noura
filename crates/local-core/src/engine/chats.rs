@@ -115,8 +115,7 @@ impl WorkspaceEngine {
         let mut chats = Vec::with_capacity(objects.len());
         for object in objects {
             let path = resolve_for_write(&self.root, &object.relative_path, "chat_list")?;
-            let bytes = std::fs::read(&path)
-                .map_err(|error| CoreError::io(error, "chat_list", Some(&object.relative_path)))?;
+            let bytes = read_downloaded(&path, &object.relative_path, "chat_list")?;
             let chat = parse_chat(&object.relative_path, &bytes)?;
             chats.push((parse_chat_timestamp(&chat.updated, "chat_list")?, chat));
         }
@@ -155,8 +154,7 @@ impl WorkspaceEngine {
         let mut messages = Vec::with_capacity(paths.len());
         for relative in paths {
             let path = resolve_for_write(&self.root, &relative, "chat_read")?;
-            let bytes = std::fs::read(path)
-                .map_err(|error| CoreError::io(error, "chat_read", Some(&relative)))?;
+            let bytes = read_downloaded(&path, &relative, "chat_read")?;
             let message = parse_chat_message(&relative, &bytes)?;
             if message.chat_id != id {
                 continue;
@@ -355,13 +353,7 @@ impl WorkspaceEngine {
                 &message.relative_path,
                 "chat_recover_interrupted",
             )?;
-            let bytes = std::fs::read(&path).map_err(|error| {
-                CoreError::io(
-                    error,
-                    "chat_recover_interrupted",
-                    Some(&message.relative_path),
-                )
-            })?;
+            let bytes = read_downloaded(&path, &message.relative_path, "chat_recover_interrupted")?;
             let current = parse_chat_message(&message.relative_path, &bytes)?;
             if current.status != ChatMessageStatus::InProgress {
                 *message = current;
@@ -727,8 +719,7 @@ impl WorkspaceEngine {
         let relative = crate::path::validate_relative(&chat.relative_path, operation)?;
         let destination = resolve_for_write(&self.root, &chat.relative_path, operation)?;
         if let Some(expected) = expected_revision {
-            let current = std::fs::read(&destination)
-                .map_err(|error| CoreError::io(error, operation, Some(&chat.relative_path)))?;
+            let current = read_downloaded(&destination, &chat.relative_path, operation)?;
             check_revision(&current, expected, operation)?;
         } else if destination.exists() {
             return Err(CoreError::new(
@@ -741,9 +732,7 @@ impl WorkspaceEngine {
         let bytes = serialize_chat(chat)?;
         let revision = markdown::revision(&bytes);
         atomic_write_checked(&self.root, &relative, &bytes, expected_revision, operation)?;
-        if let Ok(mut journal) = self.self_writes.lock() {
-            journal.insert(chat.relative_path.clone(), revision.clone());
-        }
+        self.expect_own_write(&chat.relative_path, Some(&revision));
         chat.revision = revision;
         let parsed = ParsedMarkdown::Managed(chat.workspace_object());
         let result = self
@@ -763,8 +752,7 @@ impl WorkspaceEngine {
         operation: &str,
     ) -> Result<()> {
         let path = resolve_for_write(&self.root, &chat.relative_path, operation)?;
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, operation, Some(&chat.relative_path)))?;
+        let bytes = read_downloaded(&path, &chat.relative_path, operation)?;
         check_revision(&bytes, expected_revision, operation)
     }
 
@@ -775,8 +763,7 @@ impl WorkspaceEngine {
         operation: &str,
     ) -> Result<()> {
         let path = resolve_for_write(&self.root, &message.relative_path, operation)?;
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, operation, Some(&message.relative_path)))?;
+        let bytes = read_downloaded(&path, &message.relative_path, operation)?;
         check_revision(&bytes, expected_revision, operation)
     }
 
@@ -807,7 +794,8 @@ impl WorkspaceEngine {
                 Some(relative) => relative.replace('\\', "/"),
                 None => return Ok(false),
             };
-            let bytes = match std::fs::read(path) {
+            // A file that isn't downloaded keeps the whole chat for now.
+            let bytes = match read_downloaded(path, &relative, "chat_expire") {
                 Ok(bytes) => bytes,
                 Err(_) => return Ok(false),
             };
@@ -856,11 +844,9 @@ impl WorkspaceEngine {
             Err(error) if error.code == "trash_destination_exists" => return Ok(false),
             Err(error) => return Err(error),
         }
-        if let Ok(mut journal) = self.self_writes.lock() {
-            for file in files {
-                if let Some(relative) = file.strip_prefix(&self.root).ok().and_then(Path::to_str) {
-                    journal.insert(relative.replace('\\', "/"), "<deleted>".into());
-                }
+        for file in files {
+            if let Some(relative) = file.strip_prefix(&self.root).ok().and_then(Path::to_str) {
+                self.expect_own_write(&relative.replace('\\', "/"), None);
             }
         }
         Ok(true)
