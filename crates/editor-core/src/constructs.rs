@@ -44,6 +44,8 @@ pub enum ConstructKind {
     Underline,
     /// `[[target#heading|alias]]`, drawn as its alias or its target.
     WikiLink,
+    /// A GFM table, drawn as a grid while the caret is outside it.
+    Table,
     /// `![[target]]`: a block with the note's title and text when it's
     /// alone on its line and names a note, and a link otherwise.
     Embed {
@@ -208,6 +210,11 @@ impl MdDoc {
                 }
                 None => (ConstructKind::BlockQuote, marker(), self.reveal(node)),
             },
+            NodeValue::Table(_) => (
+                ConstructKind::Table,
+                self.table_syntax(node),
+                self.reveal_table(node),
+            ),
             NodeValue::CodeBlock(code_block) if code_block.fenced => {
                 let first = self.node_first_line(node);
                 let last = self.node_last_line(node);

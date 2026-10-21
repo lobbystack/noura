@@ -230,17 +230,49 @@ impl<'ast> MdDoc {
 }
 
 impl<'ast> MdDoc {
-    /// Reveal the whole table as source only when the cursor is on the
-    /// delimiter row — it has no AST node, so per-row reveal can't
-    /// surface it. Cursor inside a cell (boundaries included) and
-    /// cursor in pipe gutters are handled by `reveal_table_row`.
+    /// A table draws as a grid while the caret is outside it and as its
+    /// raw rows while the caret, the selection, a find match or a search
+    /// preview touches it anywhere, as today's editor shows it.
     pub fn reveal_table(&self, node: &'ast AstNode<'ast>) -> bool {
-        let delimiter_row_line_idx = self.node_first_line_idx(node) + 1;
-        let Some(&delimiter_line) = self.bounds.source_lines.get(delimiter_row_line_idx) else {
-            return false;
-        };
-        let node_line = self.node_line(node, delimiter_line);
-        self.range_revealed(node_line, true)
+        self.range_revealed(self.node_range(node), true)
+    }
+
+    /// The syntax a table hides in its grid: each row's pipes and the
+    /// delimiter row under the header.
+    pub fn table_syntax(&self, node: &'ast AstNode<'ast>) -> Vec<(Grapheme, Grapheme)> {
+        let mut syntax = Vec::new();
+        let first_line_idx = self.node_first_line_idx(node);
+        if let Some(&delimiter_line) = self.bounds.source_lines.get(first_line_idx + 1) {
+            syntax.push(self.node_line(node, delimiter_line));
+        }
+        for row in node.children() {
+            let line = self.node_first_line(row);
+            let row_line = self.node_line(row, line);
+            // The text between cells, spaces aside, is the pipes.
+            let mut gaps = Vec::new();
+            let mut from = row_line.start();
+            for cell in row.children() {
+                let content = match self.split_range(cell, row_line) {
+                    Some((_, _, content, _, _)) => content,
+                    None => self.node_range(cell),
+                };
+                gaps.push((from, content.start().max(from)));
+                from = content.end().max(from);
+            }
+            gaps.push((from, row_line.end().max(from)));
+            for gap in gaps {
+                let text = &self.buffer[gap];
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let leading = text.len() - text.trim_start().len();
+                let trailing = text.len() - text.trim_end().len();
+                let (start, end) = self.range_to_byte(gap);
+                syntax.push(self.range_to_char_ceil((start + leading, end - trailing)));
+            }
+        }
+        syntax.sort();
+        syntax
     }
 }
 

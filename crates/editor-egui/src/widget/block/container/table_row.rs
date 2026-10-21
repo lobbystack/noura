@@ -1,11 +1,41 @@
 use comrak::nodes::AstNode;
-use egui::{Pos2, Rangef, Rect, Stroke, Ui, Vec2};
+use egui::accesskit::Role;
+use egui::{Pos2, Rangef, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::MdRender;
 use crate::palette::ThemeExt as _;
 use crate::widget::utils::wrap_layout::Format;
 
 impl<'ast> MdRender {
+    /// Shows a grid cell to screen readers as a cell labeled with its text.
+    /// Clicks pass through to the editor, which puts the caret in the
+    /// cell's source.
+    fn expose_table_cell(
+        &self,
+        ui: &mut Ui,
+        cell: &'ast AstNode<'ast>,
+        rect: Rect,
+        is_header_row: bool,
+    ) {
+        let range = self.node_range(cell);
+        let label = self.buffer[range].trim().to_string();
+        let response = ui.interact(rect, ui.id().with(("md_table_cell", range)), Sense::hover());
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_role(if is_header_row {
+                Role::ColumnHeader
+            } else {
+                Role::Cell
+            });
+            node.set_label(label);
+            node.set_bounds(egui::accesskit::Rect {
+                x0: rect.min.x.into(),
+                y0: rect.min.y.into(),
+                x1: rect.max.x.into(),
+                y1: rect.max.y.into(),
+            });
+        });
+    }
+
     pub fn text_format_table_row(&self, parent: &AstNode<'_>, is_header_row: bool) -> Format {
         let parent_text_format = self.text_format(parent);
         Format {
@@ -99,6 +129,8 @@ impl<'ast> MdRender {
             let mut child_top_left = top_left;
             for table_cell in node.children() {
                 self.show_table_cell(ui, table_cell, child_top_left);
+                let cell_rect = Rect::from_min_size(child_top_left, Vec2::new(child_width, height));
+                self.expose_table_cell(ui, table_cell, cell_rect, is_header_row);
                 child_top_left.x += child_width;
             }
         }
