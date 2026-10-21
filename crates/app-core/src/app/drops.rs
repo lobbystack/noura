@@ -5,10 +5,11 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use super::{App, Change};
-use crate::{AppError, EntryKind, PendingSaves, files::shown_name};
+use crate::{AppError, DropSpot, EntryKind, FileTree, PendingSaves, files::shown_name};
 
 /// A native drag of a file or folder for the desktop shell to start, so
 /// the file manager or another app gets a copy.
@@ -35,13 +36,15 @@ impl App {
         if !self.platform().drags_out() {
             return;
         }
-        let Some(tree) = &mut self.tree else {
+        let Some(relative_path) = self
+            .tree
+            .as_ref()
+            .and_then(FileTree::dragging)
+            .map(str::to_owned)
+        else {
             return;
         };
-        let Some(relative_path) = tree.dragging().map(str::to_owned) else {
-            return;
-        };
-        tree.cancel_drag();
+        self.cancel_tree_drag();
         self.listeners.emit(Change::Tree);
         // A new action replaces the last one's notice.
         self.dismiss_notice();
@@ -94,15 +97,52 @@ impl App {
         self.show_notice(&title, error, None);
     }
 
+    /// The native drag from [`App::take_drag_out`] ended, wherever it
+    /// landed or when it was cancelled. From now on a drop of the same item
+    /// from the file manager copies it, like any other drop.
+    pub fn drag_out_ended(&mut self) {
+        self.dragged_out = None;
+    }
+
+    /// Files dragged in from the file manager, at `paths`, are at `spot`
+    /// at time `at`. The folder a drop would copy them into lights up, and
+    /// a closed folder the pointer rests on for
+    /// [`crate::SPRING_OPEN_DELAY`] opens. When they are the row Noura
+    /// dragged out of the window coming back, only the folders that row
+    /// could move into light up, as in an in-tree drag.
+    pub fn drag_files_over(&mut self, paths: &[PathBuf], spot: DropSpot, at: Instant) {
+        let returning = self
+            .dragged_out
+            .clone()
+            .filter(|relative_path| self.is_only(paths, relative_path));
+        self.change_tree(|tree| {
+            tree.files_over(spot, at, returning.as_deref());
+            Some(())
+        });
+    }
+
+    /// The files dragged in from the file manager left the window, or
+    /// their drag ended without a drop: nothing lights up any more, and
+    /// the folders the drag opened close again.
+    pub fn files_left(&mut self) {
+        if self.tree.as_ref().is_some_and(FileTree::takes_files) {
+            self.change_tree(|tree| {
+                tree.files_left();
+                Some(())
+            });
+        }
+    }
+
     /// Files dragged in from the file manager were dropped on the tree.
     /// Copy them, given by absolute path, into the folder under the pointer
-    /// that [`crate::FileTree::files_over`] last found, then select the
-    /// first copy and say what arrived. The originals stay where they were.
-    /// A row dragged out of the window and dropped back moves instead, as
-    /// an in-tree drag does. A drop outside the tree copies nothing.
+    /// that [`App::drag_files_over`] last found, then select the first copy
+    /// and say what arrived. The originals stay where they were. The row
+    /// Noura dragged out of the window, dropped back before its native drag
+    /// ended, moves instead, as an in-tree drag does. A drop outside the
+    /// tree copies nothing.
     pub fn drop_files(&mut self, paths: &[PathBuf]) {
         let dragged_out = self.dragged_out.take();
-        let Some(folder) = self.tree.as_mut().and_then(|tree| tree.drop_files()) else {
+        let Some(folder) = self.change_tree(FileTree::drop_files) else {
             return;
         };
         if let Some(relative_path) = dragged_out

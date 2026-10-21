@@ -27,7 +27,7 @@ impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.ui.ui(ui);
         let ctx = ui.ctx().clone();
-        self.file_drag.start(&mut self.ui, &ctx, frame);
+        self.file_drag.after_frame(&mut self.ui, &ctx, frame);
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {

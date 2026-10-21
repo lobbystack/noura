@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use app_core::{App, DropSpot, EntryKind, OpenAs, TreeAction, TreeKey, TreeRow};
+use app_core::{App, DropSpot, EntryKind, FileTree, OpenAs, TreeAction, TreeKey, TreeRow};
 use egui::{
     Align, Align2, Event, EventFilter, FontId, Id, Key, LayerId, Layout, Modifiers, Order, Popup,
     PopupKind, Pos2, Rect, Response, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit,
@@ -658,19 +658,27 @@ fn files(ui: &Ui, app: &mut App, rects: &[(usize, Rect)], area: Rect) {
             input.pointer.latest_pos(),
         )
     });
-    let Some(tree) = app.tree_mut() else {
-        return;
-    };
     if !hovering && dropped.is_empty() {
-        tree.files_left();
+        app.files_left();
         return;
     }
     let spot = pointer.map_or(DropSpot::Blank, |pointer| spot_at(pointer, rects, area));
     let now = Instant::now();
-    tree.files_over(spot, now);
     if !dropped.is_empty() {
+        app.drag_files_over(&dropped, spot, now);
         app.drop_files(&dropped);
-    } else if let Some(open_at) = tree.spring_open_at() {
+        return;
+    }
+    let hovered: Vec<_> = ui.input(|input| {
+        input
+            .raw
+            .hovered_files
+            .iter()
+            .filter_map(|file| file.path.clone())
+            .collect()
+    });
+    app.drag_files_over(&hovered, spot, now);
+    if let Some(open_at) = app.tree().and_then(FileTree::spring_open_at) {
         ui.ctx()
             .request_repaint_after(open_at.saturating_duration_since(now));
     }

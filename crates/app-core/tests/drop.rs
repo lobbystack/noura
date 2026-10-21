@@ -16,7 +16,7 @@ fn row_of(app: &App, relative_path: &str) -> usize {
 
 /// Hover `paths` over `spot` and drop them there, as the tree widget does.
 fn drop_on(app: &mut App, paths: &[PathBuf], spot: DropSpot) {
-    app.tree_mut().unwrap().files_over(spot, Instant::now());
+    app.drag_files_over(paths, spot, Instant::now());
     app.drop_files(paths);
 }
 
@@ -68,25 +68,23 @@ fn files_resting_on_a_closed_folder_open_it_and_leaving_the_window_closes_it_aga
     write(&outside, "scan.pdf", b"%PDF");
     let mut app = fixture.app();
     let docs = DropSpot::Row(row_of(&app, "Docs"));
+    let scan = [outside.join("scan.pdf")];
     let start = Instant::now();
 
-    let tree = app.tree_mut().unwrap();
-    tree.files_over(docs, start);
-    assert_eq!(tree.drop_target(), Some("Docs"));
+    app.drag_files_over(&scan, docs, start);
+    assert_eq!(app.tree().unwrap().drop_target(), Some("Docs"));
     assert_eq!(rows(&app), ["Docs", "Readme"]);
-    let tree = app.tree_mut().unwrap();
-    tree.files_over(docs, start + SPRING_OPEN_DELAY);
+    app.drag_files_over(&scan, docs, start + SPRING_OPEN_DELAY);
     assert_eq!(rows(&app), ["Docs", "Guide", "Readme"]);
 
-    app.tree_mut().unwrap().files_left();
+    app.files_left();
     assert_eq!(app.tree().unwrap().drop_target(), None);
     assert_eq!(rows(&app), ["Docs", "Readme"]);
 
     // A folder the drag opened stays open when the drop lands in it.
-    let tree = app.tree_mut().unwrap();
-    tree.files_over(docs, start);
-    tree.files_over(docs, start + SPRING_OPEN_DELAY);
-    app.drop_files(&[outside.join("scan.pdf")]);
+    app.drag_files_over(&scan, docs, start);
+    app.drag_files_over(&scan, docs, start + SPRING_OPEN_DELAY);
+    app.drop_files(&scan);
     assert_eq!(rows(&app), ["Docs", "Guide", "scan.pdf", "Readme"]);
 }
 

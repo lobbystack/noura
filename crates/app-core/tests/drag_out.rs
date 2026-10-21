@@ -4,11 +4,12 @@
 mod support;
 
 use std::{
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-use app_core::{App, AppError, DropSpot, PendingSaves, Platform};
+use app_core::{App, AppError, DropSpot, NoticeKind, PendingSaves, Platform};
 use support::{FakeSystem, Fixture, notice};
 
 fn row_of(app: &App, relative_path: &str) -> usize {
@@ -22,10 +23,23 @@ fn row_of(app: &App, relative_path: &str) -> usize {
 /// window's edge, as the tree widget does.
 fn drag_out(app: &mut App, relative_path: &str) {
     let row = row_of(app, relative_path);
-    let tree = app.tree_mut().unwrap();
-    tree.start_drag(row);
-    tree.drag_over(DropSpot::Away, Instant::now());
+    app.start_tree_drag(row);
+    app.drag_tree_over(DropSpot::Away, Instant::now());
     app.drag_row_out();
+}
+
+/// The system carries `paths` over `spot` and drops them there.
+fn drop_on(app: &mut App, paths: &[PathBuf], spot: DropSpot) {
+    app.drag_files_over(paths, spot, Instant::now());
+    app.drop_files(paths);
+}
+
+/// The folder the tree lights up while the system carries `paths` over
+/// the row at `relative_path`.
+fn target_over(app: &mut App, paths: &[PathBuf], relative_path: &str) -> Option<String> {
+    let spot = DropSpot::Row(row_of(app, relative_path));
+    app.drag_files_over(paths, spot, Instant::now());
+    app.tree().unwrap().drop_target().map(str::to_owned)
 }
 
 /// A save still waiting to reach disk, as the editor keeps one while you
@@ -176,11 +190,100 @@ fn a_row_dragged_out_and_dropped_back_on_the_tree_moves_and_makes_no_copy() {
 
     // The system drags the file back over the tree and drops it on Docs.
     let docs = DropSpot::Row(row_of(&app, "Docs"));
-    app.tree_mut().unwrap().files_over(docs, Instant::now());
-    app.drop_files(&[drag.path]);
+    drop_on(&mut app, &[drag.path], docs);
 
     assert_eq!(fixture.read("Docs/Plan.md"), b"p");
     assert!(!fixture.exists("Plan.md"));
     assert!(!fixture.exists("Docs/Plan 1.md"));
     assert_eq!(support::current(&app).as_deref(), Some("Docs/Plan.md"));
+}
+
+#[test]
+fn a_dragged_out_row_coming_back_lights_up_only_the_folders_it_could_move_into() {
+    let fixture = Fixture::new(&[
+        ("Plan.md", b"p"),
+        ("Docs/Guide.md", b"g"),
+        ("Archive/Old.md", b"o"),
+    ]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+
+    drag_out(&mut app, "Docs");
+    let docs = [app.take_drag_out().unwrap().path];
+    assert_eq!(target_over(&mut app, &docs, "Docs"), None);
+    assert_eq!(target_over(&mut app, &docs, "Plan.md"), None);
+    assert_eq!(
+        target_over(&mut app, &docs, "Archive").as_deref(),
+        Some("Archive")
+    );
+    app.files_left();
+
+    drag_out(&mut app, "Plan.md");
+    let plan = [app.take_drag_out().unwrap().path];
+    assert_eq!(
+        target_over(&mut app, &plan, "Archive").as_deref(),
+        Some("Archive")
+    );
+    assert_eq!(target_over(&mut app, &plan, "Plan.md"), None);
+    app.drag_files_over(&plan, DropSpot::Blank, Instant::now());
+    assert_eq!(app.tree().unwrap().drop_target(), None);
+
+    // Other files light up the folder the row couldn't move into.
+    let other = [fixture.root.join("Archive/Old.md")];
+    assert_eq!(
+        target_over(&mut app, &other, "Plan.md").as_deref(),
+        Some("")
+    );
+}
+
+#[test]
+fn after_the_native_drag_ends_the_same_file_dropped_from_the_file_manager_copies() {
+    let fixture = Fixture::new(&[("Plan.md", b"p"), ("Docs/Guide.md", b"g")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    drag_out(&mut app, "Plan.md");
+    let drag = app.take_drag_out().unwrap();
+    // The file landed on the desktop, or the drag was cancelled.
+    app.drag_out_ended();
+
+    // Later the workspace's own Plan.md comes back from a Finder window.
+    drop_on(&mut app, std::slice::from_ref(&drag.path), DropSpot::Blank);
+    assert_eq!(fixture.read("Plan.md"), b"p");
+    assert_eq!(fixture.read("Plan 1.md"), b"p");
+    assert_eq!(
+        notice(&app),
+        Some((
+            "Copied \u{201c}Plan 1\u{201d} to the top of the workspace".to_owned(),
+            String::new()
+        ))
+    );
+
+    let docs = DropSpot::Row(row_of(&app, "Docs"));
+    drop_on(&mut app, &[drag.path], docs);
+    assert_eq!(fixture.read("Docs/Plan.md"), b"p");
+    assert_eq!(fixture.read("Plan.md"), b"p");
+}
+
+#[test]
+fn after_the_native_drag_ends_a_folder_dropped_on_itself_is_refused() {
+    let fixture = Fixture::new(&[("Docs/Guide.md", b"g"), ("Readme.md", b"r")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::Windows));
+    drag_out(&mut app, "Docs");
+    let docs = [app.take_drag_out().unwrap().path];
+    app.drag_out_ended();
+    let before = fixture.snapshot();
+
+    assert_eq!(
+        target_over(&mut app, &docs, "Docs").as_deref(),
+        Some("Docs")
+    );
+    app.drop_files(&docs);
+
+    assert_eq!(
+        notice(&app),
+        Some((
+            "Couldn't copy the dropped files".to_owned(),
+            "Noura can't copy a folder into itself.".to_owned()
+        ))
+    );
+    assert_eq!(app.notice().unwrap().kind, NoticeKind::Problem);
+    assert_eq!(fixture.snapshot(), before);
 }

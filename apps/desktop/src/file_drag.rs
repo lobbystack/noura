@@ -12,6 +12,11 @@ use std::sync::{
 use app_ui::NouraUi;
 use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
+/// Frames between the end of a native drag and the app hearing of it. The
+/// system may hand over a drop of the row back on the window one frame
+/// after the drag ended, and that drop still moves the row.
+const ENDING_GRACE: u8 = 1;
+
 /// Starts native drags, and adds to egui's input what the system keeps
 /// from winit during a drag.
 #[derive(Default)]
@@ -22,6 +27,8 @@ pub struct FileDrag {
     /// Files hovered the window last frame, and egui got the pointer's
     /// place from the system rather than from winit.
     told: bool,
+    /// Frames left before the app hears that the last native drag ended.
+    ending: Option<u8>,
 }
 
 impl FileDrag {
@@ -40,19 +47,48 @@ impl FileDrag {
             zoom: ctx.zoom_factor(),
             told: self.told,
         };
-        self.told = complete(raw_input, &self.ended, &last, cursor);
+        let released = self.ended.swap(false, Ordering::AcqRel);
+        if released {
+            self.ending = Some(ENDING_GRACE);
+        }
+        self.told = complete(raw_input, released, &last, cursor);
     }
 
-    /// Start the native drag of a tree row that left the window, if one is
-    /// waiting.
-    pub fn start(&self, ui: &mut NouraUi, ctx: &egui::Context, frame: &eframe::Frame) {
-        let Some(request) = ui.take_drag_out() else {
+    /// After the frame's UI ran: start the native drag of a tree row that
+    /// left the window, if one is waiting, or tell the app that the last
+    /// one ended. The app hears of the end after the frames that may still
+    /// carry a drop of the row back on the tree, which moves it.
+    pub fn after_frame(&mut self, ui: &mut NouraUi, ctx: &egui::Context, frame: &eframe::Frame) {
+        if let Some(request) = ui.take_drag_out() {
+            // The new drag takes the place of the one that ended.
+            self.ending = None;
+            if let Err(error) = native::start(frame, request.path, ctx, &self.ended) {
+                tracing::warn!(%error, "could not start dragging a file out");
+                ui.drag_out_failed();
+            }
             return;
-        };
-        if let Err(error) = native::start(frame, request.path, ctx, &self.ended) {
-            tracing::warn!(%error, "could not start dragging a file out");
-            ui.drag_out_failed();
         }
+        if ending_now(&mut self.ending) {
+            ui.drag_out_ended();
+        } else if self.ending.is_some() {
+            ctx.request_repaint();
+        }
+    }
+}
+
+/// Count down the frames until the app hears that a native drag ended.
+/// Returns whether it hears now.
+fn ending_now(ending: &mut Option<u8>) -> bool {
+    match ending {
+        Some(0) => {
+            *ending = None;
+            true
+        }
+        Some(frames) => {
+            *frames -= 1;
+            false
+        }
+        None => false,
     }
 }
 
@@ -64,13 +100,13 @@ struct LastFrame {
     told: bool,
 }
 
-/// Add the release a native drag kept, the pointer leaving with the files
-/// the file manager drags, and `cursor` as a pointer move when the system
-/// reported one, to `raw_input`. Returns whether files hover the window and
-/// egui now has the pointer's place from `cursor`.
+/// Add the release a native drag kept when it `released`, the pointer
+/// leaving with the files the file manager drags, and `cursor` as a pointer
+/// move when the system reported one, to `raw_input`. Returns whether files
+/// hover the window and egui now has the pointer's place from `cursor`.
 fn complete(
     raw_input: &mut RawInput,
-    ended: &AtomicBool,
+    released: bool,
     last: &LastFrame,
     cursor: Option<Pos2>,
 ) -> bool {
@@ -79,7 +115,6 @@ fn complete(
     // These happened before anything winit reports this frame, so a real
     // pointer move still wins.
     let mut before = Vec::new();
-    let released = ended.swap(false, Ordering::AcqRel);
     if released {
         // egui needs a place for the release, and the last one it knew is
         // the best guess.
@@ -265,12 +300,7 @@ mod tests {
     fn the_pointer_follows_a_file_drag_in_window_points() {
         let mut raw_input = hovering();
 
-        let told = complete(
-            &mut raw_input,
-            &AtomicBool::new(false),
-            &unzoomed(),
-            Some(pos2(300.0, 200.0)),
-        );
+        let told = complete(&mut raw_input, false, &unzoomed(), Some(pos2(300.0, 200.0)));
 
         assert_eq!(raw_input.events, [Event::PointerMoved(pos2(50.0, 50.0))]);
         assert!(told);
@@ -281,18 +311,13 @@ mod tests {
         let mut raw_input = hovering();
         raw_input.hovered_files.clear();
 
-        let told = complete(
-            &mut raw_input,
-            &AtomicBool::new(false),
-            &after_hovering(),
-            None,
-        );
+        let told = complete(&mut raw_input, false, &after_hovering(), None);
         assert_eq!(raw_input.events, [Event::PointerGone]);
         assert!(!told);
 
         // Only the frame the files left in.
         let mut next = RawInput::default();
-        complete(&mut next, &AtomicBool::new(false), &unzoomed(), None);
+        complete(&mut next, false, &unzoomed(), None);
         assert!(next.events.is_empty());
     }
 
@@ -303,12 +328,7 @@ mod tests {
             .events
             .push(Event::PointerMoved(pos2(40.0, 120.0)));
 
-        complete(
-            &mut raw_input,
-            &AtomicBool::new(false),
-            &after_hovering(),
-            None,
-        );
+        complete(&mut raw_input, false, &after_hovering(), None);
 
         assert_eq!(
             raw_input.events,
@@ -338,7 +358,7 @@ mod tests {
 
         let told = complete(
             &mut raw_input,
-            &AtomicBool::new(false),
+            false,
             &after_hovering(),
             Some(pos2(300.0, 200.0)),
         );
@@ -350,7 +370,7 @@ mod tests {
             told,
             ..after_hovering()
         };
-        complete(&mut next, &AtomicBool::new(false), &last, None);
+        complete(&mut next, false, &last, None);
         assert!(next.events.is_empty());
     }
 
@@ -358,11 +378,11 @@ mod tests {
     fn where_the_system_cant_say_where_the_pointer_is_files_leaving_dont_move_it() {
         let mut raw_input = hovering();
 
-        let told = complete(&mut raw_input, &AtomicBool::new(false), &unzoomed(), None);
+        let told = complete(&mut raw_input, false, &unzoomed(), None);
         assert!(!told);
 
         let mut next = RawInput::default();
-        complete(&mut next, &AtomicBool::new(false), &unzoomed(), None);
+        complete(&mut next, false, &unzoomed(), None);
         assert!(next.events.is_empty());
     }
 
@@ -375,19 +395,13 @@ mod tests {
             told: false,
         };
 
-        complete(
-            &mut raw_input,
-            &AtomicBool::new(false),
-            &zoomed,
-            Some(pos2(800.0, 400.0)),
-        );
+        complete(&mut raw_input, false, &zoomed, Some(pos2(800.0, 400.0)));
 
         assert_eq!(raw_input.events, [Event::PointerMoved(pos2(100.0, 50.0))]);
     }
 
     #[test]
     fn the_end_of_a_native_drag_releases_the_button_egui_still_holds() {
-        let ended = AtomicBool::new(true);
         let last = LastFrame {
             pointer: Some(pos2(5.0, 300.0)),
             zoom: 1.0,
@@ -395,8 +409,7 @@ mod tests {
         };
         let mut raw_input = RawInput::default();
 
-        complete(&mut raw_input, &ended, &last, None);
-        complete(&mut raw_input, &ended, &last, None);
+        complete(&mut raw_input, true, &last, None);
 
         assert_eq!(
             raw_input.events,
@@ -410,6 +423,46 @@ mod tests {
     }
 
     #[test]
+    fn a_native_drag_ends_once_and_the_app_hears_of_it_after_a_frame_of_grace() {
+        let ctx = egui::Context::default();
+        let mut file_drag = FileDrag::default();
+        file_drag.ended.store(true, Ordering::Release);
+
+        let releases = |raw_input: &RawInput| {
+            raw_input
+                .events
+                .iter()
+                .filter(|event| matches!(event, Event::PointerButton { pressed: false, .. }))
+                .count()
+        };
+        // The frame that sees the end, then one more: a drop of the row back
+        // on the tree in either still moves it.
+        let mut first = RawInput::default();
+        file_drag.complete_input(&ctx, &mut first);
+        assert_eq!(releases(&first), 1);
+        assert!(!ending_now(&mut file_drag.ending));
+
+        let mut second = RawInput::default();
+        file_drag.complete_input(&ctx, &mut second);
+        assert_eq!(releases(&second), 0);
+        assert!(ending_now(&mut file_drag.ending));
+
+        file_drag.complete_input(&ctx, &mut RawInput::default());
+        assert!(!ending_now(&mut file_drag.ending));
+    }
+
+    #[test]
+    fn without_a_native_drag_the_app_hears_of_no_end() {
+        let ctx = egui::Context::default();
+        let mut file_drag = FileDrag::default();
+
+        file_drag.complete_input(&ctx, &mut RawInput::default());
+
+        assert_eq!(file_drag.ending, None);
+        assert!(!ending_now(&mut file_drag.ending));
+    }
+
+    #[test]
     fn a_native_drag_that_ends_where_egui_lost_the_pointer_releases_without_bringing_it_back() {
         let lost = LastFrame {
             pointer: None,
@@ -418,7 +471,7 @@ mod tests {
         };
         let mut raw_input = RawInput::default();
 
-        complete(&mut raw_input, &AtomicBool::new(true), &lost, None);
+        complete(&mut raw_input, true, &lost, None);
 
         let release = |pos| Event::PointerButton {
             pos,
@@ -431,12 +484,7 @@ mod tests {
         // The row came back over the window as files and left again in the
         // frame the drag ended.
         let mut raw_input = RawInput::default();
-        complete(
-            &mut raw_input,
-            &AtomicBool::new(true),
-            &after_hovering(),
-            None,
-        );
+        complete(&mut raw_input, true, &after_hovering(), None);
         assert_eq!(
             raw_input.events,
             [release(pos2(5.0, 300.0)), Event::PointerGone]
@@ -447,7 +495,7 @@ mod tests {
     fn without_a_file_drag_the_pointer_stays_where_winit_put_it() {
         let mut raw_input = RawInput::default();
 
-        complete(&mut raw_input, &AtomicBool::new(false), &unzoomed(), None);
+        complete(&mut raw_input, false, &unzoomed(), None);
 
         assert!(raw_input.events.is_empty());
     }

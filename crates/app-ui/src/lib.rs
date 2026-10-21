@@ -68,6 +68,12 @@ impl NouraUi {
         self.app.drag_out_failed();
     }
 
+    /// The native drag from [`Self::take_drag_out`] ended, wherever it
+    /// landed.
+    pub fn drag_out_ended(&mut self) {
+        self.app.drag_out_ended();
+    }
+
     /// Draw one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         if !self.started {

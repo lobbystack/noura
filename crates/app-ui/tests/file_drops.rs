@@ -245,14 +245,47 @@ fn a_row_dragged_out_and_dropped_back_on_the_tree_moves_and_makes_no_copy() {
         .expect("the row became a native drag");
     assert_eq!(drag.name, "Readme");
 
-    // The system carries the file back over the tree and drops it on Docs.
+    // The system carries the file back over the tree. Like an in-tree
+    // drag, it lights up only the folders the row could move into, then
+    // drops it on Docs.
+    let readme = std::slice::from_ref(&drag.path);
+    let todo = row_center(&harness, "Todo");
+    hover_files(&mut harness, readme, todo);
+    assert!(drop_targets(&harness).is_empty());
     let docs = row_center(&harness, "Docs");
-    hover_files(&mut harness, std::slice::from_ref(&drag.path), docs);
-    drop_files(&mut harness, std::slice::from_ref(&drag.path));
+    hover_files(&mut harness, readme, docs);
+    assert_eq!(drop_targets(&harness), ["Docs"]);
+    drop_files(&mut harness, readme);
 
     assert_eq!(std::fs::read(folder.join("Docs/Readme.md")).unwrap(), b"r");
     assert!(!folder.join("Readme.md").exists());
     assert!(!folder.join("Docs/Readme 1.md").exists());
+}
+
+#[test]
+fn after_a_dragged_out_row_lands_elsewhere_dropping_its_file_back_copies_it() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder, Platform::Windows);
+
+    drag_past_the_edge(&mut harness, "Readme");
+    let drag = harness.state_mut().take_drag_out().unwrap();
+    // The file landed in Explorer, and the desktop app says the drag ended.
+    harness.state_mut().drag_out_ended();
+
+    // Later the workspace's own Readme comes back from an Explorer window.
+    let readme = std::slice::from_ref(&drag.path);
+    let blank = blank(&harness);
+    hover_files(&mut harness, readme, blank);
+    assert_eq!(drop_targets(&harness), ["Files"]);
+    drop_files(&mut harness, readme);
+
+    assert_eq!(std::fs::read(folder.join("Readme.md")).unwrap(), b"r");
+    assert_eq!(std::fs::read(folder.join("Readme 1.md")).unwrap(), b"r");
+    harness
+        .get_by_role(Role::Status)
+        .get_by_label("Copied \u{201c}Readme 1\u{201d} to the top of the workspace");
 }
 
 #[test]
