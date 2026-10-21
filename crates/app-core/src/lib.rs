@@ -17,6 +17,7 @@ mod diagnostics;
 mod error;
 mod files;
 mod ignored;
+mod inbox;
 mod keys;
 mod layout;
 mod login;
@@ -51,6 +52,10 @@ pub use error::AppError;
 pub use files::{
     DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
     TreeKey, TreeRow,
+};
+pub use inbox::{
+    Attention, FileLink, Inbox, InboxSection, InboxSectionProvider, LinkAction, RECENT_NOTES,
+    RecentNote,
 };
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};

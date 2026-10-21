@@ -142,6 +142,9 @@ struct Seen {
     objects: Vec<(String, String, String)>,
     search: Vec<(String, Vec<Hit>)>,
     problems: Vec<Problem>,
+    /// The Inbox's Recent list, which follows the files' modification
+    /// times.
+    recent: Vec<String>,
 }
 
 const QUERIES: [&str; 6] = ["release", "plan", "copy", "loose", "secret", "draft"];
@@ -183,6 +186,12 @@ fn seen(app: &mut App) -> Seen {
         objects,
         search,
         problems: app.problems().to_vec(),
+        recent: app
+            .inbox()
+            .recent
+            .into_iter()
+            .map(|note| note.relative_path)
+            .collect(),
     }
 }
 
@@ -214,7 +223,7 @@ fn deleting_every_index_file_rebuilds_the_same_workspace() {
     let bytes = file_bytes(&device.folder);
     let local = device.local_dir(&app);
     drop(app);
-    assert!(!before.objects.is_empty() && !before.problems.is_empty());
+    assert!(!before.objects.is_empty() && !before.problems.is_empty() && !before.recent.is_empty());
 
     for file in index_files(&local) {
         std::fs::remove_file(file).unwrap();

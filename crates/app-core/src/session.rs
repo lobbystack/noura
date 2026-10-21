@@ -1,7 +1,7 @@
 //! What every window of the app shares: the open workspace, with its one
-//! index and watcher, the newest listing of its files and their problems,
-//! the rail order, this device's preferences, and each window's view
-//! state, which it saves together.
+//! index and watcher, the newest listing of its files, their problems and
+//! the notes changed last, the rail order, this device's preferences, and
+//! each window's view state, which it saves together.
 //!
 //! Each [`App`](crate::App) is one window. A window that changes what
 //! the others show publishes it here and wakes them; each one applies it
@@ -51,6 +51,8 @@ struct State {
     tree: Option<FileTree>,
     /// The open workspace's problems in that listing.
     problems: Vec<Problem>,
+    /// The notes changed last in that listing, newest first.
+    recent: Vec<String>,
     /// The engine's change counts when that listing was made. An older
     /// listing never replaces it.
     counts: ChangeCounts,
@@ -99,6 +101,7 @@ pub(crate) struct Listing {
     pub(crate) version: u64,
     pub(crate) tree: FileTree,
     pub(crate) problems: Vec<Problem>,
+    pub(crate) recent: Vec<String>,
     /// What moved since the window's listing, in order.
     pub(crate) moves: Vec<(String, String)>,
 }
@@ -108,6 +111,7 @@ pub(crate) struct Current {
     pub(crate) listing: u64,
     pub(crate) tree: Option<FileTree>,
     pub(crate) problems: Vec<Problem>,
+    pub(crate) recent: Vec<String>,
     pub(crate) rail: u64,
     pub(crate) recents: u64,
 }
@@ -124,6 +128,7 @@ impl Session {
                 opening: 0,
                 tree: None,
                 problems: Vec::new(),
+                recent: Vec::new(),
                 counts: ChangeCounts::default(),
                 watch: None,
                 listing: 0,
@@ -207,6 +212,7 @@ impl Session {
         state.listing += 1;
         state.tree = Some(tree.clone());
         state.problems.clone_from(&snapshot.problems);
+        state.recent.clone_from(&snapshot.recent);
         state.counts = counts;
         state.moves.clear();
         state.watch = self.watch(&workspace, snapshot, counts, state.opening);
@@ -246,6 +252,7 @@ impl Session {
             listing: state.listing,
             tree: state.tree.clone(),
             problems: state.problems.clone(),
+            recent: state.recent.clone(),
             rail: state.rail,
             recents: state.recents,
         }
@@ -276,6 +283,7 @@ impl Session {
         if newest {
             state.tree = Some(tree.clone());
             state.problems.clone_from(&snapshot.problems);
+            state.recent.clone_from(&snapshot.recent);
             state.counts = counts;
         }
         if let Some(watch) = &state.watch {
@@ -338,6 +346,7 @@ impl Session {
             state.listing += 1;
             state.tree = Some(update.tree);
             state.problems = update.snapshot.problems;
+            state.recent = update.snapshot.recent;
             state.counts = update.counts;
         }
         let windows: Vec<Listeners> = state
@@ -364,6 +373,7 @@ impl Session {
             version: state.listing,
             tree: state.tree.clone()?,
             problems: state.problems.clone(),
+            recent: state.recent.clone(),
             moves: state
                 .moves
                 .iter()

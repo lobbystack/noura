@@ -31,8 +31,12 @@ pub(crate) fn collect(engine: &WorkspaceEngine, root: &str) -> Result<Vec<Proble
         // conflicts below name each file on its own.
         .filter(|diagnostic| diagnostic.code != "identity_conflict")
         .map(|diagnostic| Problem {
+            message: in_plain_words(
+                &diagnostic.code,
+                diagnostic.relative_path.as_deref(),
+                diagnostic.message,
+            ),
             code: diagnostic.code,
-            message: diagnostic.message,
             paths: diagnostic.relative_path.into_iter().collect(),
             object_id: diagnostic.object_id,
         })
@@ -51,6 +55,35 @@ pub(crate) fn collect(engine: &WorkspaceEngine, root: &str) -> Result<Vec<Proble
     problems.sort();
     problems.dedup();
     Ok(problems)
+}
+
+/// The problem `code` that the index or the scan reported at `path`, in
+/// words that name the file and leave out the details the log keeps, such
+/// as the parser's error or the missing ID. A file that links to several
+/// missing objects makes one problem this way.
+fn in_plain_words(code: &str, path: Option<&str>, message: String) -> String {
+    match (code, path) {
+        ("parse_error", Some(path)) => {
+            format!("Noura can't read the properties at the top of {path}.")
+        }
+        ("broken_reference", Some(path)) => {
+            format!("{path} links to an object that no longer exists.")
+        }
+        ("unreadable_file", Some(path)) => {
+            format!("Noura can't open {path}. Check that you have permission to read it.")
+        }
+        ("unsupported_path", folder) => {
+            let place = folder.map_or_else(
+                || "at the top of the workspace".to_owned(),
+                |folder| format!("in {folder}"),
+            );
+            format!(
+                "A name {place} has characters Noura can't represent, so Noura leaves it as \
+                 it is. Rename it in another app to use it in Noura."
+            )
+        }
+        _ => message,
+    }
 }
 
 fn shared_id(paths: &[String]) -> String {

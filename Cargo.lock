@@ -291,6 +291,7 @@ dependencies = [
  "app-core",
  "atomic-write-file",
  "directories",
+ "jiff",
  "local-core",
  "nucleo-matcher",
  "proptest",

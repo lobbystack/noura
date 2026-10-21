@@ -15,6 +15,8 @@ test-hooks = ["local-core/test-hooks"]
 aho-corasick.workspace = true
 atomic-write-file.workspace = true
 directories.workspace = true
+# Reads this computer's clock in its time zone for the Inbox's greeting.
+jiff.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
 nucleo-matcher.workspace = true
 serde.workspace = true

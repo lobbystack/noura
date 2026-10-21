@@ -325,6 +325,8 @@ impl App {
                 );
                 self.show_tree(tree, moved.as_slice());
                 self.set_problems(snapshot.problems);
+                self.set_recent(snapshot.recent);
+                self.reload_inbox_sections();
             }
             Err(error) => self.show_notice("Couldn't read the files", error, None),
         }
@@ -352,6 +354,8 @@ impl App {
             .collect();
         self.show_tree(listing.tree, &moves);
         self.set_problems(listing.problems);
+        self.set_recent(listing.recent);
+        self.reload_inbox_sections();
         // A row being renamed, or a folder waiting for the trash, that
         // another window or app took away stops waiting.
         let tree = self.tree.as_ref();
