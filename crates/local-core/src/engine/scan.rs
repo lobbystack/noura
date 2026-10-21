@@ -200,7 +200,7 @@ pub(super) fn scan_workspace(
 }
 
 fn unreadable_file(relative: &str, reason: &str, scan: &mut WorkspaceScan) {
-    tracing::warn!(path = %relative, reason, "a workspace file could not be read");
+    tracing::warn!(path = ?relative, reason, "a workspace file could not be read");
     scan.diagnostics.push(crate::Diagnostic {
         code: "unreadable_file".into(),
         message: "This file can't be read. Check that you have permission to open it.".into(),

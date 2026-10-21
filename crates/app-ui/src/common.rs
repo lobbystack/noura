@@ -1,6 +1,7 @@
 //! Pieces more than one screen uses: the loading state, notices, buttons
 //! and the New workspace form.
 
+use app_core::NoticeKind;
 use egui::{
     Button, Frame, Key, Margin, Response, RichText, Spinner, Stroke, TextEdit, Ui, UiBuilder,
     Widget, accesskit::Role,
@@ -49,7 +50,13 @@ pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
     };
     let busy = state.app.is_busy();
     let palette = Palette::of(ui.ctx());
-    let builder = UiBuilder::new().accessibility_role(Role::Alert);
+    // A problem interrupts a screen reader; a finished action waits its
+    // turn.
+    let (role, title_color) = match notice.kind {
+        NoticeKind::Problem => (Role::Alert, palette.destructive),
+        NoticeKind::Done => (Role::Status, palette.foreground),
+    };
+    let builder = UiBuilder::new().accessibility_role(role);
     ui.scope_builder(builder, |ui| {
         Frame::new()
             .stroke(Stroke::new(1.0, palette.border))
@@ -57,12 +64,10 @@ pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new(&notice.title)
-                        .strong()
-                        .color(palette.destructive),
-                );
-                ui.label(&notice.message);
+                ui.label(RichText::new(&notice.title).strong().color(title_color));
+                if !notice.message.is_empty() {
+                    ui.label(&notice.message);
+                }
                 ui.horizontal(|ui| {
                     if let Some(workspace_id) = &notice.remove_recent
                         && ui

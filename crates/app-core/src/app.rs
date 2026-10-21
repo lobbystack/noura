@@ -14,9 +14,26 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, OpenedFile, PendingWrites, RecentWorkspace, UpdateSource, Updates,
-    Workspace, WorkspaceService, files::shown_name,
+    AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
+    PendingSaves, PendingWrites, Preferences, RecentWorkspace, Settings, SettingsSection, System,
+    Tab, UpdateSource, Updates, Workspace, WorkspaceService, commands::Registry,
+    layout::LayoutStore, preferences::PreferencesStore, rail::Rail, settings::kernel_sections,
+    tabs::Tabs, view_state::ViewStore,
 };
+
+mod commands;
+mod drops;
+mod file_actions;
+mod ignored_files;
+mod palette;
+mod preferences;
+mod settings;
+mod view;
+
+pub use drops::DragOut;
+pub use file_actions::{Question, Rename};
+pub use ignored_files::IgnoredFiles;
+pub use palette::CommandPalette;
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +46,7 @@ pub enum Screen {
     Workspace,
 }
 
-/// A message about an action that failed.
+/// A message about an action: why it failed, or where its result went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub title: String,
@@ -37,6 +54,15 @@ pub struct Notice {
     /// The recent workspace that failed to open, which the notice offers to
     /// remove from the recent list.
     pub remove_recent: Option<String>,
+    pub kind: NoticeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// The action failed.
+    Problem,
+    /// The action worked, and the notice says where its result went.
+    Done,
 }
 
 /// One part of the view state changed. Listeners hear about changes made
@@ -47,10 +73,27 @@ pub enum Change {
     Screen,
     Recents,
     Tree,
+    /// The open tabs or the active tab changed.
+    Tabs,
+    /// The rail's pages or their order changed.
+    Rail,
+    /// The sidebar showed, hid, resized or folded a section.
+    Layout,
     Document,
     Notice,
     /// The update status changed.
     Update,
+    /// Settings or the Ignored files page changed.
+    Settings,
+    /// The appearance, text size or zoom changed.
+    Preferences,
+    /// A command registered.
+    Commands,
+    /// The command palette opened, closed or changed.
+    Palette,
+    /// Close Window or Quit ran; see [`App::take_close_window`] and
+    /// [`App::take_quit`].
+    Window,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -98,46 +141,118 @@ struct Pending {
 }
 
 /// The state every client draws: which screen shows, the recent list, the
-/// open workspace with its file tree, and the open file.
+/// open workspace with its file tree, and its tabs.
 pub struct App {
     service: Arc<WorkspaceService>,
+    system: Arc<dyn System>,
     screen: Screen,
     recents: Vec<RecentWorkspace>,
     workspace: Option<Workspace>,
     tree: Option<FileTree>,
-    document: Option<OpenedFile>,
+    tabs: Tabs,
+    rail: Rail,
+    /// Each workspace's tabs, kept in this device's app data.
+    views: ViewStore,
+    layout: Layout,
+    layouts: LayoutStore,
+    /// This device's appearance, text size and zoom.
+    preferences: Preferences,
+    preferences_store: PreferencesStore,
     notice: Option<Notice>,
+    /// The tree row being renamed in place.
+    renaming: Option<Rename>,
+    /// The Ignored files page, while it is open.
+    ignored_files: Option<IgnoredFiles>,
+    /// Settings, while it is open.
+    settings: Option<Settings>,
+    /// Settings' sections, in the order they registered.
+    settings_sections: Vec<SettingsSection>,
+    /// The system's apps that open at login.
+    login_item: Arc<dyn LoginItem>,
+    /// Where the local diagnostic log lives.
+    log_folder: PathBuf,
+    /// A folder waiting to go to the trash until you confirm.
+    pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
     failed_restore: Option<String>,
     pending: Option<Pending>,
     writes: PendingWrites,
     updates: Updates,
     listeners: Listeners,
+    /// Changes waiting to be saved, which a drag out of the window saves
+    /// first.
+    pending_saves: Arc<dyn PendingSaves>,
+    /// The native drag waiting for the desktop shell to start it.
+    drag_out: Option<DragOut>,
+    /// The item the last native drag carried, so a drop of it back on the
+    /// tree moves it instead of copying it.
+    dragged_out: Option<String>,
+    registry: Registry,
+    palette: Option<CommandPalette>,
+    /// Close Window ran and the window hasn't closed yet.
+    close_window: bool,
+    /// Quit ran and the app hasn't closed yet.
+    quit: bool,
 }
 
 impl App {
-    /// Start the app with per-device state in `app_data`. When a workspace
-    /// was open last time, it reopens in the background while the screen
-    /// shows [`Screen::Loading`].
+    /// Start the app with per-device state in `app_data` and no operating
+    /// system services: deleted items go to the workspace's trash folder.
+    /// See [`App::launch_with`].
     pub fn launch(app_data: impl AsRef<Path>) -> Self {
-        let service = Arc::new(WorkspaceService::new(app_data.as_ref()));
+        Self::launch_with(app_data, Arc::new(NoSystem))
+    }
+
+    /// Start the app with per-device state in `app_data`, using `system`
+    /// for the trash, the file manager, terminals, the clipboard and the
+    /// browser. When a workspace was open last time, it reopens in the
+    /// background while the screen shows [`Screen::Loading`].
+    pub fn launch_with(app_data: impl AsRef<Path>, system: Arc<dyn System>) -> Self {
+        let service = Arc::new(WorkspaceService::with_system(
+            app_data.as_ref(),
+            system.clone(),
+        ));
         let recents = service.recents();
         let listeners = Listeners::default();
         let writes = PendingWrites::default();
         let mut app = Self {
             service,
+            system,
             screen: Screen::Chooser { problem: None },
             recents,
             workspace: None,
             tree: None,
-            document: None,
+            tabs: Tabs::default(),
+            rail: Rail::default(),
+            views: ViewStore::new(app_data.as_ref()),
+            layout: Layout::default(),
+            layouts: LayoutStore::new(app_data.as_ref()),
+            preferences: Preferences::default(),
+            preferences_store: PreferencesStore::new(app_data.as_ref()),
             notice: None,
+            renaming: None,
+            ignored_files: None,
+            settings: None,
+            settings_sections: kernel_sections(),
+            login_item: Arc::new(NoLoginItem),
+            log_folder: crate::log_folder(app_data.as_ref()),
+            pending_trash: None,
             failed_restore: None,
             pending: None,
             updates: Updates::new(writes.clone(), listeners.clone()),
             writes,
             listeners,
+            pending_saves: Arc::new(NoPendingSaves),
+            drag_out: None,
+            dragged_out: None,
+            registry: Registry::default(),
+            palette: None,
+            close_window: false,
+            quit: false,
         };
+        app.register_kernel_commands();
+        app.layout = app.layouts.load();
+        app.preferences = app.preferences_store.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;
@@ -177,13 +292,27 @@ impl App {
         self.tree.as_ref()
     }
 
+    /// The file tree, to move its focus or type ahead in it. Opening and
+    /// closing folders goes through `App`'s own methods, such as
+    /// [`App::activate_tree_row`] and [`App::collapse_all`], so the
+    /// workspace remembers which folders are open.
     pub fn tree_mut(&mut self) -> Option<&mut FileTree> {
         self.tree.as_mut()
     }
 
-    /// The file shown in the document area.
+    /// The file shown in the document area: the active tab's file.
     pub fn document(&self) -> Option<&OpenedFile> {
-        self.document.as_ref()
+        self.tabs.active().and_then(Tab::file)
+    }
+
+    /// The open tabs, in order.
+    pub fn tabs(&self) -> &[Tab] {
+        self.tabs.list()
+    }
+
+    /// The tab the window shows.
+    pub fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.active()
     }
 
     pub fn notice(&self) -> Option<&Notice> {
@@ -254,29 +383,6 @@ impl App {
                 }
             }
             Err(error) => self.show_notice("Couldn't update the recent list", error, None),
-        }
-    }
-
-    /// Show a file from the tree in the document area.
-    pub fn open_file(&mut self, relative_path: &str) {
-        let Some(workspace) = &self.workspace else {
-            return;
-        };
-        match workspace.open_file(relative_path) {
-            Ok(file) => {
-                self.document = Some(file);
-                self.listeners.emit(Change::Document);
-            }
-            Err(error) => {
-                let title = format!(
-                    "Couldn't open \u{201c}{}\u{201d}",
-                    shown_name(
-                        relative_path.rsplit('/').next().unwrap_or(relative_path),
-                        crate::EntryKind::File
-                    )
-                );
-                self.show_notice(&title, error, None);
-            }
         }
     }
 
@@ -359,7 +465,12 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
-                self.document = None;
+                self.restore_view();
+                self.renaming = None;
+                self.ignored_files = None;
+                self.pending_trash = None;
+                self.drag_out = None;
+                self.dragged_out = None;
                 self.failed_restore = Some(workspace_id);
                 self.set_screen(Screen::Chooser {
                     problem: Some(error.message),
@@ -383,9 +494,15 @@ impl App {
         self.failed_restore = None;
         self.workspace = Some(opened.workspace);
         self.tree = Some(opened.tree);
-        self.document = None;
+        self.restore_view();
         self.notice = None;
+        self.renaming = None;
+        self.ignored_files = None;
+        self.pending_trash = None;
+        self.drag_out = None;
+        self.dragged_out = None;
         self.listeners.emit(Change::Tree);
+        self.listeners.emit(Change::Tabs);
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
         self.set_screen(Screen::Workspace);
@@ -401,6 +518,7 @@ impl App {
             title: title.to_owned(),
             message: error.message,
             remove_recent,
+            kind: NoticeKind::Problem,
         });
         self.listeners.emit(Change::Notice);
         if self.screen == Screen::Loading {

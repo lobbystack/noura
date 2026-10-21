@@ -71,6 +71,26 @@ impl WorkspaceEngine {
         self.reconcile_forced_with_source(&HashSet::new(), EventSource::Application)
     }
 
+    /// Bring the index in line after a file change this app made and
+    /// finished durably. The files are canonical, so an index that can't
+    /// follow doesn't fail the change: the index is marked stale and the
+    /// next read walks the workspace again.
+    pub(super) fn reconcile_after_change(&self, operation: &str) {
+        if let Err(error) = self.reconcile_as_application() {
+            tracing::warn!(
+                code = %error.code,
+                operation,
+                "the index couldn't follow a file change; it will catch up on the next read"
+            );
+            self.dirty.store(true, Ordering::SeqCst);
+            self.emit(
+                "workspace:index-stale",
+                EventSource::Application,
+                serde_json::json!({ "repairScheduled": true }),
+            );
+        }
+    }
+
     /// Whether a read must walk the workspace before trusting the index:
     /// the watcher is down, or it saw a change nobody reconciled yet.
     pub(super) fn needs_reconcile(&self) -> bool {
@@ -157,7 +177,7 @@ impl WorkspaceEngine {
                             changed.push((relative.clone(), bytes, modified_ns(&metadata), parsed));
                         }
                         Err(error) => {
-                            tracing::warn!(path = %relative, %error, "a Markdown file could not be read");
+                            tracing::warn!(path = ?relative, %error, "a Markdown file could not be read");
                         }
                     }
                 }
@@ -168,7 +188,7 @@ impl WorkspaceEngine {
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(path = %relative, %error, "a Markdown file could not be inspected");
+                    tracing::warn!(path = ?relative, %error, "a Markdown file could not be inspected");
                 }
             }
         }

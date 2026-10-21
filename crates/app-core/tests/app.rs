@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Change, OpenedFile, Screen, WorkspaceService};
+use app_core::{App, Change, OpenAs, OpenedFile, Screen, WorkspaceService};
 
 /// Poll until background work finishes.
 fn settle(app: &mut App) {
@@ -215,7 +215,7 @@ fn opening_a_file_shows_its_name_and_workspace_relative_path() {
     app.open_folder(folder.path().to_owned());
     settle(&mut app);
 
-    app.open_file("Docs/Guide.md");
+    app.open_file("Docs/Guide.md", OpenAs::Preview);
 
     assert_eq!(
         app.document(),
@@ -240,7 +240,7 @@ fn opening_a_file_cloud_storage_has_not_downloaded_says_so_and_shows_nothing() {
     settle(&mut app);
     assert!(app.tree().unwrap().rows()[0].not_downloaded);
 
-    app.open_file("Cloud note.md");
+    app.open_file("Cloud note.md", OpenAs::Preview);
 
     assert_eq!(app.document(), None);
     let notice = app.notice().unwrap();

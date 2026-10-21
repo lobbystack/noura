@@ -1,11 +1,14 @@
 //! The workspace service: create, open and reopen workspaces.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use local_core::{WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
+use local_core::{ManifestUpdateInput, WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
 
 use crate::{
-    AppError,
+    AppError, NoSystem, System,
     error::Access,
     recents::{RecentStore, RecentWorkspace},
 };
@@ -13,21 +16,29 @@ use crate::{
 /// An open workspace.
 pub struct Workspace {
     engine: WorkspaceEngine,
+    system: Arc<dyn System>,
     id: String,
     name: String,
     root: String,
 }
 
 impl Workspace {
-    fn new(engine: WorkspaceEngine) -> Result<Self, AppError> {
+    fn new(engine: WorkspaceEngine, system: Arc<dyn System>) -> Result<Self, AppError> {
         let manifest = engine.manifest();
         let root = engine
             .root()
             .to_str()
             .ok_or_else(AppError::unsupported_path)?
             .to_owned();
+        // Deleted items go to the system trash when there is one, and to
+        // the workspace's trash folder when it has none or refuses.
+        if system.has_trash() {
+            let trash = system.clone();
+            engine.set_system_trash(Some(Arc::new(move |path: &Path| trash.trash(path))));
+        }
         Ok(Self {
             engine,
+            system,
             id: manifest.id,
             name: manifest.name,
             root,
@@ -52,6 +63,42 @@ impl Workspace {
         &self.engine
     }
 
+    /// The revision of the manifest on disk, and the name in it.
+    pub(crate) fn manifest_revision(&self) -> Result<(String, String), AppError> {
+        let (manifest, revision) = self
+            .engine
+            .read_manifest_revision()
+            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
+        Ok((revision, manifest.name))
+    }
+
+    /// Give the workspace the display name `name` in its manifest, unless
+    /// the manifest changed on disk since `revision` was read. The folder
+    /// keeps its name. Returns the manifest's new revision once the new
+    /// manifest is on disk.
+    pub(crate) fn save_name(&mut self, name: &str, revision: &str) -> Result<String, AppError> {
+        let manifest = self
+            .engine
+            .manifest_update(ManifestUpdateInput {
+                name: Some(name.to_owned()),
+                expected_revision: Some(revision.to_owned()),
+                ..ManifestUpdateInput::default()
+            })
+            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
+        self.name = manifest.name;
+        let (revision, _) = self.manifest_revision()?;
+        Ok(revision)
+    }
+
+    /// Show the name in the manifest on disk, as after an outside edit.
+    pub(crate) fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    pub(crate) fn system(&self) -> &dyn System {
+        self.system.as_ref()
+    }
+
     fn recent(&self) -> RecentWorkspace {
         RecentWorkspace {
             workspace_id: self.id.clone(),
@@ -67,14 +114,24 @@ impl Workspace {
 pub struct WorkspaceService {
     app_data: PathBuf,
     recents: RecentStore,
+    system: Arc<dyn System>,
 }
 
 impl WorkspaceService {
+    /// A service whose workspaces use no operating system services:
+    /// deleted items go to each workspace's trash folder.
     pub fn new(app_data: impl Into<PathBuf>) -> Self {
+        Self::with_system(app_data, Arc::new(NoSystem))
+    }
+
+    /// A service whose workspaces use `system` for the trash, the file
+    /// manager, terminals and the clipboard.
+    pub fn with_system(app_data: impl Into<PathBuf>, system: Arc<dyn System>) -> Self {
         let app_data = app_data.into();
         Self {
             recents: RecentStore::new(&app_data),
             app_data,
+            system,
         }
     }
 
@@ -172,8 +229,13 @@ impl WorkspaceService {
         self.opened(engine)
     }
 
+    /// Put `workspace` first in the recent list, under its current name.
+    pub(crate) fn remember(&self, workspace: &Workspace) -> Result<Vec<RecentWorkspace>, AppError> {
+        self.recents.record(workspace.recent())
+    }
+
     fn opened(&self, engine: WorkspaceEngine) -> Result<Workspace, AppError> {
-        let workspace = Workspace::new(engine)?;
+        let workspace = Workspace::new(engine, self.system.clone())?;
         // The workspace is open either way; a stale recent list is not
         // worth failing for.
         if let Err(error) = self.recents.record(workspace.recent()) {

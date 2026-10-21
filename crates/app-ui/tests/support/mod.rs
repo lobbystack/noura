@@ -4,12 +4,13 @@
 
 use std::{
     collections::VecDeque,
+    io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use app_core::App;
+use app_core::{App, Platform, System};
 use app_ui::{FolderPicker, NouraUi};
 use egui_kittest::Harness;
 
@@ -38,10 +39,132 @@ impl FolderPicker for FakePicker {
 }
 
 pub fn harness(app_data: &Path, picker: FakePicker) -> Harness<'static, NouraUi> {
-    let ui = NouraUi::new(App::launch(app_data), Box::new(picker));
+    harness_with(app_data, picker, FakeSystem::new(Platform::current()))
+}
+
+pub fn harness_with(
+    app_data: &Path,
+    picker: FakePicker,
+    system: Arc<FakeSystem>,
+) -> Harness<'static, NouraUi> {
+    harness_on(app_data, picker, system, |_| {})
+}
+
+/// A harness whose app runs `register` first, such as to add test pages
+/// to the rail.
+pub fn harness_registering(
+    app_data: &Path,
+    picker: FakePicker,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    harness_on(
+        app_data,
+        picker,
+        FakeSystem::new(Platform::current()),
+        register,
+    )
+}
+
+/// A harness whose app uses `system`, after `register` runs. On macOS,
+/// as for [`harness_for`], shortcut symbols such as ⌘ draw without the
+/// system's fonts.
+pub fn harness_on(
+    app_data: &Path,
+    picker: FakePicker,
+    system: Arc<FakeSystem>,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    let mac = system.platform == Platform::MacOs;
+    let mut app = App::launch_with(app_data, system);
+    register(&mut app);
+    let ui = NouraUi::new(app, Box::new(picker));
+    let mut builder = Harness::builder().with_size([1000.0, 700.0]);
+    if mac {
+        builder = builder.allow_missing_glyphs();
+    }
+    builder.build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+}
+
+/// A harness whose app believes it runs on `platform`, after `register`
+/// adds test commands or pages. macOS draws shortcuts with symbols such
+/// as ⌘, which egui's bundled fonts lack; the desktop app finds them in
+/// the system's fonts, which kittest doesn't load.
+pub fn harness_for(
+    app_data: &Path,
+    platform: Platform,
+    register: impl FnOnce(&mut App),
+) -> Harness<'static, NouraUi> {
+    let mut app = App::launch_with(app_data, FakeSystem::new(platform));
+    register(&mut app);
+    let ui = NouraUi::new(app, Box::new(FakePicker::default()));
     Harness::builder()
         .with_size([1000.0, 700.0])
+        .allow_missing_glyphs()
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
+}
+
+/// A system that records what Noura asks of it. Its trash refuses, so
+/// trashed items land in the workspace's trash folder, where tests can
+/// find them.
+pub struct FakeSystem {
+    platform: Platform,
+    pub calls: Mutex<Vec<String>>,
+}
+
+impl FakeSystem {
+    pub fn new(platform: Platform) -> Arc<Self> {
+        Arc::new(Self {
+            platform,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn record(&self, call: String) {
+        self.calls.lock().unwrap().push(call);
+    }
+}
+
+impl System for FakeSystem {
+    fn platform(&self) -> Platform {
+        self.platform
+    }
+
+    fn has_trash(&self) -> bool {
+        true
+    }
+
+    fn trash(&self, path: &Path) -> io::Result<()> {
+        self.record(format!("trash {}", path.display()));
+        Err(io::Error::other("the fake trash refuses"))
+    }
+
+    fn reveal(&self, path: &Path) -> io::Result<()> {
+        self.record(format!("reveal {}", path.display()));
+        Ok(())
+    }
+
+    fn open_folder(&self, folder: &Path) -> io::Result<()> {
+        self.record(format!("open {}", folder.display()));
+        Ok(())
+    }
+
+    fn open_terminal(&self, folder: &Path) -> io::Result<()> {
+        self.record(format!("terminal {}", folder.display()));
+        Ok(())
+    }
+
+    fn copy_text(&self, text: &str) {
+        self.record(format!("copy {text}"));
+    }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        self.record(format!("browse {url}"));
+        Ok(())
+    }
 }
 
 /// Run frames until the app finishes background work and settles.
