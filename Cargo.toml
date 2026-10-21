@@ -41,7 +41,10 @@ aho-corasick = "1"
 # Run key on Windows and an XDG autostart entry on Linux.
 auto-launch = "0.6.0"
 yrs = { version = "=0.26.0", features = ["small-client", "sync"] }
-age = { version = "=0.12.1", default-features = false }
+# local-core's v1 sync encryption. age 0.12 depends on ml-kem 0.2, whose kem
+# 0.3 pre-release can't share the lockfile with the kem 0.3 that hpke 0.14's
+# X-Wing needs for sync v2 (sync-v2.md §3), so v1 stays on age 0.11.
+age = { version = "=0.11.5", default-features = false }
 aes-gcm = "=0.10.3"
 base64 = "0.22"
 bech32 = "=0.11.1"

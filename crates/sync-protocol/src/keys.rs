@@ -319,12 +319,10 @@ impl EpochChain {
                 if !body.lineage.0.is_empty() || !body.lineage_nonce.is_zero() {
                     return Err(KeyError::Lineage);
                 }
-                let creator = snapshot
-                    .domains
-                    .get(&self.domain)
-                    .map(|d| d.creator)
-                    .ok_or(KeyError::Domain)?;
-                if creator != body.rotating_device {
+                // A restricted domain's epoch 1 comes from the device that
+                // signed its create_domain (§9).
+                let domain = snapshot.domains.get(&self.domain).ok_or(KeyError::Domain)?;
+                if domain.restricted && domain.creator != body.rotating_device {
                     return Err(KeyError::FirstEpochSigner);
                 }
                 EpochAcceptance::Next
