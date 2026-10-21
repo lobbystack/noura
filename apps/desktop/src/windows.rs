@@ -348,6 +348,35 @@ impl Windows {
         }
     }
 
+    /// Start every window's note saves as they come due, including in
+    /// windows that draw no frame, such as minimized, hidden or covered
+    /// ones: eframe runs no ui for them, only this logic.
+    fn keep_saving(&mut self, ctx: &Context) {
+        if let Some(first) = &mut self.first {
+            first.keep_saving(ctx);
+        }
+        for window in &self.others {
+            if let Some(ui) = &mut window.state.lock().ui {
+                ui.keep_saving(ctx);
+            }
+        }
+    }
+
+    /// Save every window's notes and wait for the saves, as Noura ends
+    /// without its own Quit, as when the system quits it at logout. No
+    /// window can ask about a save that fails then.
+    fn save_before_exit(&mut self) {
+        let mut saved = self.first.as_mut().is_none_or(NouraUi::save_before_exit);
+        for window in &self.others {
+            if let Some(ui) = &mut window.state.lock().ui {
+                saved &= ui.save_before_exit();
+            }
+        }
+        if !saved {
+            tracing::error!("Noura ended with a note it couldn't save");
+        }
+    }
+
     /// Whether Quit ran in any window.
     fn quit_requested(&self) -> bool {
         self.first.as_ref().is_some_and(NouraUi::is_quitting)
@@ -586,6 +615,7 @@ impl eframe::App for Windows {
     /// window is minimized or covered.
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.run_menu_choices(ctx);
+        self.keep_saving(ctx);
         self.keep_up_waiting(ctx);
         if self.quit_requested() {
             self.quitting = true;
@@ -613,6 +643,11 @@ impl eframe::App for Windows {
         self.edit.inject(raw_input);
     }
 
+    /// eframe calls this as Noura ends: after Quit, which saved every
+    /// note first, or when the system quits Noura, as at logout, which
+    /// asks nothing first. winit gives Noura no way to stop or delay that
+    /// quit, so the notes save here, and a note that can't save loses the
+    /// edits that aren't on disk.
     fn on_exit(&mut self) {
         // A later launch from now on finds no copy to bring forward. It
         // waits for the lock, which goes once every window has let go of
@@ -620,6 +655,7 @@ impl eframe::App for Windows {
         if let Some(instance) = &mut self.instance {
             instance.stop_listening();
         }
+        self.save_before_exit();
         self.quit();
         self.instance = None;
     }
@@ -1200,8 +1236,14 @@ mod tests {
 
     /// Show Docs/Plan.md in `window` and type in it, without saving yet.
     fn type_in_plan(window: &mut NouraUi) {
+        type_in(window, "Docs/Plan.md");
+    }
+
+    /// Show the note at `relative_path` in `window` and type in it,
+    /// without saving yet.
+    fn type_in(window: &mut NouraUi, relative_path: &str) {
         let app = window.app_mut();
-        app.open_file("Docs/Plan.md", app_core::OpenAs::Kept);
+        app.open_file(relative_path, app_core::OpenAs::Kept);
         let tab = app.active_tab().unwrap().id();
         let text = format!("{}typed\n", app.note(tab).unwrap().text());
         app.edit_note(tab, 1, &text, Instant::now());
@@ -1398,5 +1440,56 @@ mod tests {
 
         std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(plan(app_data.path()), "Plan\n");
+    }
+
+    /// Typing saves after its pause even when every window is minimized
+    /// and eframe runs `App::logic` alone, in the first window and in a
+    /// deferred one.
+    #[test]
+    fn notes_save_after_typing_pauses_with_every_window_minimized() {
+        let app_data = workspace_with_note();
+        std::fs::write(app_data.path().join("Current/Docs/Other.md"), "Other\n").unwrap();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        let second = harness.state().others[0].id;
+        type_in_plan(harness.state_mut().first.as_mut().unwrap());
+        type_in(
+            second_window(&harness).lock().ui.as_mut().unwrap(),
+            "Docs/Other.md",
+        );
+
+        let other = app_data.path().join("Current/Docs/Other.md");
+        let folder = app_data.path().to_owned();
+        pass_until(&mut harness, second, |_| {
+            plan(&folder) == "Plan\ntyped\n"
+                && std::fs::read_to_string(&other).unwrap() == "Other\ntyped\n"
+        });
+
+        assert!(!harness.state().quitting && !harness.state().ending);
+    }
+
+    /// When the system quits Noura, as at logout, eframe calls `on_exit`
+    /// with no Quit before it: every window's notes save then.
+    #[test]
+    fn an_exit_noura_didn_t_ask_for_saves_every_window_s_notes() {
+        let app_data = workspace_with_note();
+        std::fs::write(app_data.path().join("Current/Docs/Other.md"), "Other\n").unwrap();
+        let mut harness = harness(app_data.path());
+        open_new_window(&mut harness);
+        type_in_plan(harness.state_mut().first.as_mut().unwrap());
+        type_in(
+            second_window(&harness).lock().ui.as_mut().unwrap(),
+            "Docs/Other.md",
+        );
+        assert_eq!(plan(app_data.path()), "Plan\n");
+
+        eframe::App::on_exit(harness.state_mut());
+
+        assert_eq!(plan(app_data.path()), "Plan\ntyped\n");
+        assert_eq!(
+            std::fs::read_to_string(app_data.path().join("Current/Docs/Other.md")).unwrap(),
+            "Other\ntyped\n"
+        );
+        assert!(harness.state().first.is_none());
     }
 }

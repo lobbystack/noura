@@ -198,3 +198,31 @@ fn a_merged_outside_edit_comes_out_as_a_change_that_isnt_local() {
         }]
     );
 }
+
+/// An event is one replacement in the rope. A command that makes several,
+/// such as bold over a selection, sends one event for each, in the order
+/// it made them, and replaying them gives the text.
+#[test]
+fn bold_over_a_selection_comes_out_as_one_event_per_replacement() {
+    let mut doc = MdDoc::new("one two\n");
+    doc.apply(
+        [Event::Select {
+            region: (Grapheme(0), Grapheme(3)).into(),
+        }],
+        &NoLayout,
+    );
+    doc.apply(
+        [Event::ToggleStyle {
+            region: Region::Selection,
+            style: editor_core::comrak::nodes::NodeValue::Strong,
+        }],
+        &NoLayout,
+    );
+
+    let changes = doc.take_changes();
+    assert_eq!(doc.text(), "**one** two\n");
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    let mut replayed = "one two\n".to_owned();
+    replay(&mut replayed, &changes);
+    assert_eq!(replayed, doc.text());
+}

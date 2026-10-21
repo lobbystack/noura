@@ -1611,6 +1611,13 @@ fn raw_markdown_rejects_traversal_and_non_markdown_paths() {
 }
 
 #[test]
+fn reading_a_missing_raw_markdown_file_says_it_is_gone() {
+    let (_workspace, _app_data, engine) = engine();
+    let error = engine.read_raw_markdown("gone.md").unwrap_err();
+    assert_eq!(error.code, "raw_markdown_missing");
+}
+
+#[test]
 fn markdown_link_fragments_resolve_as_unresolved() {
     let (workspace, _app_data, engine) = engine();
     std::fs::create_dir_all(workspace.path().join("notes")).unwrap();

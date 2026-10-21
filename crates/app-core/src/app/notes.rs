@@ -2,7 +2,10 @@
 //! bring its edits to disk, its properties and its name, and the guard that
 //! saves notes before a tab, the window, the workspace or the app closes.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use super::{App, Change, Job};
 use crate::{
@@ -11,10 +14,15 @@ use crate::{
     notes::{Finished, NoteSession, NoteSync, PropertyValue, SaveProblem, is_markdown},
 };
 
+/// How long the notes may take to save when the app ends without asking,
+/// as when the system quits Noura at logout.
+const EXIT_SAVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Something that waits for open notes to save before it happens.
 #[derive(Clone)]
 pub(super) enum Leave {
-    CloseTab(TabId),
+    /// Close these tabs. A tab you close while another waits joins it.
+    CloseTabs(Vec<TabId>),
     CloseWindow,
     /// A quit or a switch to another workspace, which closes every
     /// window: each window saves its notes for the departure `round`, and
@@ -160,6 +168,83 @@ impl App {
         self.notes.sessions.values().any(NoteSession::is_unsaved)
     }
 
+    /// Save every open note now and wait for the saves, as the app ends
+    /// without asking, as when the system quits Noura at logout. Nothing
+    /// can ask about a save that fails then: its edits stay off the disk.
+    /// Returns whether every note is on disk.
+    pub fn save_notes_before_exit(&mut self) -> bool {
+        let deadline = Instant::now() + EXIT_SAVE_TIMEOUT;
+        // A note's text, then its property edits: two writes at most, and
+        // a write that failed before gets one more try.
+        let mut started: HashMap<TabId, u8> = HashMap::new();
+        loop {
+            let next: Vec<TabId> = self
+                .notes
+                .sessions
+                .iter()
+                .filter(|(tab, session)| {
+                    session.is_unsaved()
+                        && !session.is_saving()
+                        && started.get(*tab).copied().unwrap_or(0) < 2
+                })
+                .map(|(tab, _)| *tab)
+                .collect();
+            for tab in next {
+                *started.entry(tab).or_default() += 1;
+                if let Some(session) = self.notes.sessions.get_mut(&tab) {
+                    session.save_soon();
+                }
+                self.start_note_write(tab);
+            }
+            if !self.is_saving_notes() {
+                break;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.notes.results.recv_timeout(left) {
+                Ok(result) => self.finish_note_write(result),
+                Err(_) => {
+                    tracing::warn!("a note save didn't finish before the app ended");
+                    break;
+                }
+            }
+        }
+        let saved = !self.has_unsaved_notes();
+        if !saved {
+            tracing::warn!("the app ended with a note that couldn't save");
+        }
+        self.listeners.emit(Change::Note);
+        saved
+    }
+
+    /// Read the Markdown file in the tab `tab` again, after it couldn't
+    /// open, as the tab's Try again does.
+    pub fn retry_note(&mut self, tab: TabId) {
+        if self.notes.unreadable.remove(&tab).is_some() {
+            self.sync_notes();
+            self.listeners.emit(Change::Note);
+        }
+    }
+
+    /// Read the files that couldn't open again, as when the files changed:
+    /// a file that downloaded or became UTF-8 text opens in its tab.
+    pub(super) fn retry_unreadable_notes(&mut self) {
+        if !self.notes.unreadable.is_empty() {
+            self.notes.unreadable.clear();
+            self.sync_notes();
+            self.listeners.emit(Change::Note);
+        }
+    }
+
+    /// The tabs whose note has edits that aren't on disk yet.
+    pub(super) fn unsaved_note_tabs(&self) -> Vec<TabId> {
+        self.notes
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.is_unsaved())
+            .map(|(tab, _)| *tab)
+            .collect()
+    }
+
     /// Set the property `key` of the managed note in the tab `tab`. The
     /// write waits for a running save, and only a file still as Noura read
     /// it takes it.
@@ -303,12 +388,21 @@ impl App {
     }
 
     /// Do `action` once the notes it closes are on disk. Their saves start
-    /// now; a failed one shows [`App::unsaved_prompt`].
+    /// now; a failed one shows [`App::unsaved_prompt`]. While another leave
+    /// waits, `action` joins it: another tab's close adds that tab, and
+    /// closing the window, quitting or switching workspace takes its place.
     pub(super) fn leave(&mut self, action: Leave) {
-        if self.leaving.is_some() {
-            return;
-        }
+        let (action, before) = match &self.leaving {
+            None => (action, Vec::new()),
+            Some(leaving) => match widen(&leaving.action, action) {
+                Some(action) => (action, self.leaving_tabs(&leaving.action)),
+                None => return,
+            },
+        };
         for tab in self.leaving_tabs(&action) {
+            if before.contains(&tab) {
+                continue;
+            }
             if let Some(session) = self.notes.sessions.get_mut(&tab)
                 && session.is_unsaved()
             {
@@ -316,19 +410,31 @@ impl App {
                 self.start_note_write(tab);
             }
         }
-        self.leaving = Some(Leaving {
-            action,
-            prompt: None,
-        });
+        match &mut self.leaving {
+            Some(leaving) => leaving.action = action,
+            None => {
+                self.leaving = Some(Leaving {
+                    action,
+                    prompt: None,
+                });
+            }
+        }
         self.listeners.emit(Change::Note);
         self.advance_leaving();
     }
 
     /// Ask every window to save its notes, and then quit or open another
-    /// workspace as `then` says. Nothing happens while this window waits
-    /// for something else, or while another window's departure waits.
+    /// workspace as `then` says. A tab or this window that waits to close
+    /// gives way to it. Nothing happens while this window already takes
+    /// part in a departure, or while another window's departure waits.
     pub(super) fn depart(&mut self, then: Departure) {
-        if self.leaving.is_some() {
+        if matches!(
+            &self.leaving,
+            Some(Leaving {
+                action: Leave::Depart { .. },
+                ..
+            })
+        ) {
             return;
         }
         let Some(round) = self.session.begin_departure(self.key) else {
@@ -396,7 +502,7 @@ impl App {
     /// The tabs whose notes `action` waits for.
     fn leaving_tabs(&self, action: &Leave) -> Vec<TabId> {
         match action {
-            Leave::CloseTab(tab) => vec![*tab],
+            Leave::CloseTabs(tabs) => tabs.clone(),
             Leave::CloseWindow | Leave::Depart { .. } => {
                 self.notes.sessions.keys().copied().collect()
             }
@@ -484,7 +590,11 @@ impl App {
 
     fn carry_out(&mut self, action: Leave) {
         match action {
-            Leave::CloseTab(tab) => self.close_tab_now(tab),
+            Leave::CloseTabs(tabs) => {
+                for tab in tabs {
+                    self.close_tab_now(tab);
+                }
+            }
             Leave::CloseWindow => self.close_window_now(),
             Leave::Depart { .. } => {}
         }
@@ -684,5 +794,26 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// What waits once `action` joins the leave `pending`, or `None` when
+/// `pending` already covers it: closing the window or a departure closes
+/// every tab, and a departure takes the place of anything else.
+fn widen(pending: &Leave, action: Leave) -> Option<Leave> {
+    match (pending, action) {
+        (Leave::Depart { .. }, _)
+        | (Leave::CloseWindow, Leave::CloseTabs(_) | Leave::CloseWindow) => None,
+        (Leave::CloseTabs(tabs), Leave::CloseTabs(more)) => {
+            let mut tabs = tabs.clone();
+            let before = tabs.len();
+            for tab in more {
+                if !tabs.contains(&tab) {
+                    tabs.push(tab);
+                }
+            }
+            (tabs.len() > before).then_some(Leave::CloseTabs(tabs))
+        }
+        (_, action) => Some(action),
     }
 }

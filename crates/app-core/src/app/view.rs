@@ -178,7 +178,7 @@ impl App {
     /// first, and stays open while the save runs or after it failed, until
     /// [`App::unsaved_prompt`] gets an answer.
     pub fn close_tab(&mut self, id: TabId) {
-        self.leave(super::notes::Leave::CloseTab(id));
+        self.leave(super::notes::Leave::CloseTabs(vec![id]));
     }
 
     /// Close a tab whose note, if any, is on disk.
@@ -419,6 +419,7 @@ impl App {
             self.rank_files();
         }
         self.follow_files();
+        self.retry_unreadable_notes();
         if folders_changed {
             self.save_view();
         }
@@ -427,7 +428,8 @@ impl App {
     /// Close the tabs of the item at `relative_path`, a file or a folder,
     /// and of everything inside it, as when it goes to the trash.
     pub(super) fn close_tabs_inside(&mut self, relative_path: &str) {
-        let (changed, active_changed) = self.tabs.follow_files(|path, id| {
+        let unsaved = self.unsaved_note_tabs();
+        let (changed, active_changed) = self.tabs.follow_files(&unsaved, |path, id| {
             remap(path, relative_path, relative_path)
                 .is_none()
                 .then(|| (path.to_owned(), id.map(str::to_owned)))
@@ -440,7 +442,8 @@ impl App {
     /// The item at `from`, a file or a folder, moved to `to`: point its
     /// tabs, and the tabs of everything inside it, at the new path.
     pub(super) fn move_tabs(&mut self, from: &str, to: &str) {
-        let (changed, active_changed) = self.tabs.follow_files(|path, id| {
+        let unsaved = self.unsaved_note_tabs();
+        let (changed, active_changed) = self.tabs.follow_files(&unsaved, |path, id| {
             let path = remap(path, from, to).unwrap_or_else(|| path.to_owned());
             Some((path, id.map(str::to_owned)))
         });
@@ -453,8 +456,10 @@ impl App {
     /// file by its stable ID, any other file by its path. Tabs whose file
     /// is gone close, except a note with edits that aren't on disk: it
     /// stays open at its path, so its save says the file is gone and
-    /// closing it asks first.
+    /// closing it asks first. Such a note also keeps its tab when another
+    /// tab now shows its file, until its edits are on disk.
     pub(super) fn follow_files(&mut self) {
+        let unsaved_tabs = self.unsaved_note_tabs();
         let Some(tree) = &self.tree else {
             return;
         };
@@ -465,7 +470,7 @@ impl App {
             .filter(|session| session.is_unsaved())
             .map(NoteSession::relative_path)
             .collect();
-        let (changed, active_changed) = self.tabs.follow_files(|path, id| {
+        let (changed, active_changed) = self.tabs.follow_files(&unsaved_tabs, |path, id| {
             let Some(path) = tree.follow(path, id) else {
                 return unsaved
                     .contains(&path)

@@ -26,6 +26,8 @@ const PROPERTIES_WIDTH: f32 = 260.0;
 #[derive(Default)]
 pub(crate) struct NoteView {
     notes: HashMap<TabId, OpenNote>,
+    /// The note this frame drew.
+    drawn: Option<TabId>,
 }
 
 /// One note's editor and the fields around it.
@@ -52,10 +54,75 @@ impl NoteView {
             .is_some_and(|note| note.editor.focused(ctx))
     }
 
-    /// Drop the editors of tabs that closed.
+    /// Drop the editors of tabs that closed, and start a frame that draws
+    /// no note yet.
     pub(crate) fn retain(&mut self, app: &App) {
         self.notes
             .retain(|tab, _| app.tabs().iter().any(|open| open.id() == *tab));
+        self.drawn = None;
+    }
+
+    /// Whether a name or property field holds typing that hasn't gone to
+    /// the note yet.
+    pub(crate) fn has_drafts(&self) -> bool {
+        self.notes
+            .values()
+            .any(|note| note.name.is_some() || !note.drafts.is_empty())
+    }
+
+    /// Hand what the name and property fields hold to their notes, as
+    /// leaving the fields does: the name renames the file, and each
+    /// property's value goes in. A command, closing the window and quitting
+    /// do this first, since they can close a note before its fields lose
+    /// the keyboard.
+    pub(crate) fn commit_drafts(&mut self, app: &mut App) {
+        for (tab, note) in &mut self.notes {
+            commit(app, *tab, note);
+        }
+    }
+
+    /// Hand the typing in the fields of the notes this frame didn't draw
+    /// to their notes, as after a switch to another tab while you typed in
+    /// one: egui reports no lost focus for a field it doesn't draw.
+    pub(crate) fn commit_hidden_drafts(&mut self, app: &mut App) {
+        let drawn = self.drawn;
+        for (tab, note) in &mut self.notes {
+            if Some(*tab) != drawn {
+                commit(app, *tab, note);
+            }
+        }
+    }
+}
+
+/// Hand the typing in the note's name and property fields to the note.
+fn commit(app: &mut App, tab: TabId, note: &mut OpenNote) {
+    if let Some(typed) = note.name.take() {
+        app.rename_note(tab, &typed);
+    }
+    for (key, typed) in std::mem::take(&mut note.drafts) {
+        let property = app
+            .note(tab)
+            .and_then(|session| session.properties())
+            .and_then(|properties| properties.into_iter().find(|property| property.key == key));
+        if let Some(value) = property.and_then(|property| typed_value(&property, &typed)) {
+            app.set_note_property(tab, &key, value);
+        }
+    }
+}
+
+/// The value `typed` gives the property, or `None` when the property
+/// keeps its value: `typed` is the value it has, or no number where the
+/// property holds one.
+fn typed_value(property: &Property, typed: &str) -> Option<PropertyValue> {
+    if property.read_only {
+        return None;
+    }
+    match &property.value {
+        PropertyValue::Text(text) => (typed != text).then(|| PropertyValue::Text(typed.to_owned())),
+        PropertyValue::Number(number) => (typed != number.to_string())
+            .then(|| PropertyValue::number(typed))
+            .flatten(),
+        _ => None,
     }
 }
 
@@ -63,12 +130,25 @@ fn name_field_id(tab: TabId) -> Id {
     Id::unique(("note-name", tab))
 }
 
+fn property_field_id(tab: TabId, key: &str) -> Id {
+    Id::unique(("note-property", tab, key))
+}
+
 /// Draw the note in `tab`, or why it couldn't open. Returns whether the tab
 /// shows a note.
 pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) -> bool {
     if let Some(error) = app.note_unreadable(tab) {
         let message = error.message.clone();
-        ui.centered_and_justified(|ui| muted(ui, &message));
+        let mut retry = false;
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() / 3.0);
+            muted(ui, &message);
+            ui.add_space(8.0);
+            retry = ui.button("Try again").clicked();
+        });
+        if retry {
+            app.retry_note(tab);
+        }
         return true;
     }
     let Some(session) = app.note(tab) else {
@@ -112,6 +192,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
         note.editor.record_disk_save(version, shown);
         note.editor.apply_disk_version(text);
     }
+    view.drawn = Some(tab);
     header(ui, app, note, tab);
     save_notice(ui, app, tab);
     if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
@@ -300,7 +381,7 @@ fn properties_panel(
                     .show(ui, |ui| {
                         for property in properties {
                             muted(ui, &property.key);
-                            if let Some(value) = property_value(ui, note, property) {
+                            if let Some(value) = property_value(ui, note, tab, property) {
                                 app.set_note_property(tab, &property.key, value);
                             }
                             ui.end_row();
@@ -311,7 +392,12 @@ fn properties_panel(
 }
 
 /// Draw one property's value. Returns the new value once an edit is done.
-fn property_value(ui: &mut Ui, note: &mut OpenNote, property: &Property) -> Option<PropertyValue> {
+fn property_value(
+    ui: &mut Ui,
+    note: &mut OpenNote,
+    tab: TabId,
+    property: &Property,
+) -> Option<PropertyValue> {
     let key = &property.key;
     if property.read_only {
         let text = match &property.value {
@@ -348,25 +434,38 @@ fn property_value(ui: &mut Ui, note: &mut OpenNote, property: &Property) -> Opti
             let picked = date.to_string();
             (picked != *text).then_some(PropertyValue::Date(picked))
         }
-        PropertyValue::Text(text) => text_field(ui, note, key, text).map(PropertyValue::Text),
+        PropertyValue::Text(text) => {
+            let typed = text_field(ui, note, tab, key, text)?;
+            typed_value(property, &typed)
+        }
         PropertyValue::Number(number) => {
-            let typed = text_field(ui, note, key, &number.to_string())?;
-            PropertyValue::number(&typed)
+            let typed = text_field(ui, note, tab, key, &number.to_string())?;
+            typed_value(property, &typed)
         }
         PropertyValue::Other(_) => None,
     }
 }
 
 /// A one-line field for a property. Returns what you typed once you press
-/// Enter or leave the field and it differs from `value`.
-fn text_field(ui: &mut Ui, note: &mut OpenNote, key: &str, value: &str) -> Option<String> {
+/// Enter or leave the field, and nothing after Escape.
+fn text_field(
+    ui: &mut Ui,
+    note: &mut OpenNote,
+    tab: TabId,
+    key: &str,
+    value: &str,
+) -> Option<String> {
     let mut draft = note
         .drafts
         .get(key)
         .cloned()
         .unwrap_or_else(|| value.to_owned());
     let response = ui
-        .add(TextEdit::singleline(&mut draft).desired_width(f32::INFINITY))
+        .add(
+            TextEdit::singleline(&mut draft)
+                .id(property_field_id(tab, key))
+                .desired_width(f32::INFINITY),
+        )
         .accessible_name(key.to_owned());
     if response.changed() {
         note.drafts.insert(key.to_owned(), draft);
@@ -376,7 +475,7 @@ fn text_field(ui: &mut Ui, note: &mut OpenNote, key: &str, value: &str) -> Optio
     }
     let escape = ui.input(|input| input.key_pressed(Key::Escape));
     let typed = note.drafts.remove(key)?;
-    (!escape && typed != value).then_some(typed)
+    (!escape).then_some(typed)
 }
 
 /// The prompt when a note couldn't save before something closed: Try

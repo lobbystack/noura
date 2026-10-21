@@ -24,7 +24,11 @@ use std::{
 };
 
 use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Palette, Screen, TabId};
-use egui::{Event, ThemePreference};
+use egui::{Event, ThemePreference, ViewportId};
+
+/// How often a window checks on a running note save while it draws no
+/// frame.
+const SAVE_CHECK: Duration = Duration::from_millis(100);
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -98,8 +102,10 @@ impl NouraUi {
     }
 
     /// Close this window once its notes are saved, as its close button
-    /// does. See [`App::close_window`].
+    /// does. What you typed in a note's name or property field goes in
+    /// first. See [`App::close_window`].
     pub fn close_window(&mut self) {
+        self.notes.commit_drafts(&mut self.app);
         self.app.close_window();
     }
 
@@ -107,7 +113,40 @@ impl NouraUi {
     /// one, before it closes. The desktop keeps the window open
     /// meanwhile.
     pub fn must_save_before_closing(&self) -> bool {
-        self.app.has_unsaved_notes() || self.app.unsaved_prompt().is_some()
+        self.app.has_unsaved_notes()
+            || self.notes.has_drafts()
+            || self.app.unsaved_prompt().is_some()
+    }
+
+    /// Start the note saves that are due, whether or not this window draws
+    /// frames. eframe draws none for a minimized, hidden or covered window,
+    /// so the desktop calls this in every pass for each window with notes
+    /// to save, and the root viewport wakes again when the next save is
+    /// due or to check on a running one.
+    pub fn keep_saving(&mut self, ctx: &egui::Context) {
+        if self.app.is_closed() || !self.app.has_unsaved_notes() {
+            return;
+        }
+        self.app.poll();
+        let now = Instant::now();
+        self.app.save_due_notes(now);
+        if let Some(due) = self.app.next_note_save() {
+            ctx.request_repaint_after_for(due.saturating_duration_since(now), ViewportId::ROOT);
+        } else if self.app.is_saving_notes() {
+            ctx.request_repaint_after_for(SAVE_CHECK, ViewportId::ROOT);
+        }
+    }
+
+    /// Save every note this window shows and wait for the saves, as the
+    /// app ends without asking, as when the system quits Noura at logout.
+    /// What you typed in a note's name or property field goes in first.
+    /// Returns whether every note is on disk.
+    pub fn save_before_exit(&mut self) -> bool {
+        if self.app.is_closed() {
+            return true;
+        }
+        self.notes.commit_drafts(&mut self.app);
+        self.app.save_notes_before_exit()
     }
 
     /// Whether something waits for notes to save: this window closing, or
@@ -155,7 +194,9 @@ impl NouraUi {
     }
 
     /// Run the command a native menu item stands for, chosen at `at`.
+    /// What you typed in a note's name or property field goes in first.
     pub fn run_menu_command(&mut self, id: &str, at: Instant) -> bool {
+        self.notes.commit_drafts(&mut self.app);
         self.app.run_command(id, CommandSource::Menu, at)
     }
 
@@ -229,6 +270,7 @@ impl NouraUi {
         settings::show(ui, &mut self.app, &mut self.settings);
         palette::show(ui, &mut self.app, &mut self.palette);
         note::unsaved_prompt(ui, &mut self.app);
+        self.notes.commit_hidden_drafts(&mut self.app);
         self.close_requested_windows(ui.ctx());
     }
 
@@ -298,6 +340,13 @@ impl NouraUi {
                 _ => None,
             };
             let before = self.app.palette().map(Palette::mode);
+            if let Some(press) = &press
+                && self.app.command_for_key(press, focus).is_some()
+            {
+                // A command can close the note or move the keyboard before
+                // its fields report losing it.
+                self.notes.commit_drafts(&mut self.app);
+            }
             if press.is_some_and(|press| self.app.press_key(&press, focus, now)) {
                 let after = self.app.palette().map(Palette::mode);
                 palette_opened = after.is_some() && after != before;

@@ -724,6 +724,182 @@ fn a_saved_note_deleted_outside_noura_closes_its_tab() {
 }
 
 #[test]
+fn a_property_edit_on_a_file_deleted_outside_noura_says_so() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    std::fs::remove_file(fixture.root.join("Plan.md")).unwrap();
+
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+    settle_saves(&mut app);
+
+    assert_eq!(
+        app.note(tab).unwrap().save_problem().unwrap().reason,
+        "The file was moved or deleted outside Noura."
+    );
+    assert!(!fixture.exists("Plan.md"));
+}
+
+/// A refused property edit holds back only the property: text typed
+/// while it was written saves after its pause, with no further key.
+#[test]
+fn typing_saves_on_schedule_after_a_property_edit_fails() {
+    let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    support::write(&fixture.root, "Plan.md", &red("Body\n"));
+
+    app.set_note_property(tab, "color", PropertyValue::Text("blue".into()));
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}typed\n"));
+    settle_saves(&mut app);
+    assert_eq!(
+        app.note(tab).unwrap().save_problem().unwrap().reason,
+        COLOR_CHANGED
+    );
+    assert_eq!(app.next_note_save(), Some(at + SAVE_PAUSE));
+
+    save_after_pause(&mut app, at);
+
+    assert_eq!(fixture.read("Plan.md"), red("Body\ntyped\n"));
+    let note = app.note(tab).unwrap();
+    assert_eq!(note.save_problem().unwrap().reason, COLOR_CHANGED);
+    assert!(note.is_unsaved(), "the property edit still waits");
+    app.save_due_notes(Instant::now() + Duration::from_secs(10));
+    assert!(!app.is_saving_notes(), "and waits for your next edit");
+}
+
+#[test]
+fn a_file_that_couldn_t_open_opens_once_the_files_change_or_you_try_again() {
+    let fixture = Fixture::new(&[
+        ("Bytes.md", b"\xff\xfe not UTF-8"),
+        ("More.md", b"\xff\xfe not UTF-8"),
+    ]);
+    let mut app = fixture.app();
+    let bytes = open_from_tree(&mut app, "Bytes.md");
+    app.keep_tab(bytes);
+    let more = open_from_tree(&mut app, "More.md");
+    app.keep_tab(more);
+    assert!(app.note_unreadable(bytes).is_some());
+    assert!(app.note_unreadable(more).is_some());
+
+    // A new listing of the files reads them again.
+    support::write(&fixture.root, "Bytes.md", b"Text now\n");
+    app.rescan();
+    assert!(app.note_unreadable(bytes).is_none());
+    assert_eq!(app.note(bytes).unwrap().text(), "Text now\n");
+    assert!(app.note_unreadable(more).is_some());
+
+    // So does the tab's Try again.
+    support::write(&fixture.root, "More.md", b"More text\n");
+    app.retry_note(more);
+    assert_eq!(app.note(more).unwrap().text(), "More text\n");
+}
+
+/// Another program moves a managed note over a Markdown file that's open
+/// too, so two tabs show one file. The note's tab holds typing that isn't
+/// on disk, so it stays open until the typing saves.
+#[test]
+fn a_tab_with_unsaved_typing_stays_when_another_tab_comes_to_show_its_file() {
+    let fixture = Fixture::new(&[
+        ("Plain.md", b"Plain text\n"),
+        ("Plan.md", &managed("\n", "Body\n")),
+    ]);
+    let mut app = fixture.app();
+    let plain = open_from_tree(&mut app, "Plain.md");
+    app.keep_tab(plain);
+    let plan = open_from_tree(&mut app, "Plan.md");
+    app.keep_tab(plan);
+    let at = Instant::now();
+    type_into(&mut app, plan, at, |text| format!("{text}typed\n"));
+
+    std::fs::rename(fixture.root.join("Plan.md"), fixture.root.join("Plain.md")).unwrap();
+    app.rescan();
+
+    assert!(app.tabs().iter().any(|open| open.id() == plan));
+    assert_eq!(app.note(plan).unwrap().relative_path(), "Plain.md");
+    assert_eq!(app.note(plan).unwrap().text(), "Body\ntyped\n");
+    save_after_pause(&mut app, at);
+    assert_eq!(fixture.read("Plain.md"), managed("\n", "Body\ntyped\n"));
+
+    // Once the typing is on disk, the two tabs become one.
+    app.rescan();
+    assert_eq!(app.tabs().len(), 1);
+}
+
+#[test]
+fn closing_another_tab_while_one_waits_for_its_save_closes_both() {
+    let fixture = Fixture::new(&[
+        ("One.md", &managed("\n", "One\n")),
+        ("Two.md", &managed("\n", "Two\n")),
+    ]);
+    let mut app = fixture.app();
+    let one = open_from_tree(&mut app, "One.md");
+    app.keep_tab(one);
+    let two = open_from_tree(&mut app, "Two.md");
+    app.keep_tab(two);
+    type_into(&mut app, one, Instant::now(), |text| {
+        format!("{text}typed\n")
+    });
+    let lock = hold_writes(&fixture, &app);
+
+    app.close_tab(one);
+    app.close_tab(two);
+    assert_eq!(app.tabs().len(), 2, "both wait for the save");
+
+    lock.unlock().unwrap();
+    settle_saves(&mut app);
+    assert!(app.tabs().is_empty());
+    assert_eq!(fixture.read("One.md"), managed("\n", "One\ntyped\n"));
+}
+
+#[test]
+fn closing_the_window_or_quitting_while_a_tab_waits_takes_its_place() {
+    for command in ["close-window", "quit"] {
+        let fixture = Fixture::new(&[("One.md", &managed("\n", "One\n"))]);
+        let mut app = fixture.app();
+        let one = open_from_tree(&mut app, "One.md");
+        type_into(&mut app, one, Instant::now(), |text| {
+            format!("{text}typed\n")
+        });
+        let lock = hold_writes(&fixture, &app);
+
+        app.close_tab(one);
+        assert!(app.run_command(command, CommandSource::Key, Instant::now()));
+        assert!(!app.is_closed() && !app.take_quit(), "{command} waits");
+
+        lock.unlock().unwrap();
+        settle_saves(&mut app);
+        match command {
+            "quit" => assert!(app.take_quit()),
+            _ => assert!(app.is_closed()),
+        }
+        assert_eq!(fixture.read("One.md"), managed("\n", "One\ntyped\n"));
+    }
+}
+
+#[test]
+fn an_exit_noura_didn_t_ask_for_saves_every_note_first() {
+    let fixture = Fixture::new(&[
+        ("One.md", &managed("\n", "One\n")),
+        ("Two.md", &managed("\n", "Two\n")),
+    ]);
+    let mut app = fixture.app();
+    let one = open_from_tree(&mut app, "One.md");
+    app.keep_tab(one);
+    let two = open_from_tree(&mut app, "Two.md");
+    let at = Instant::now();
+    type_into(&mut app, one, at, |text| format!("{text}typed\n"));
+    type_into(&mut app, two, at, |text| format!("{text}typed\n"));
+
+    assert!(app.save_notes_before_exit());
+
+    assert_eq!(fixture.read("One.md"), managed("\n", "One\ntyped\n"));
+    assert_eq!(fixture.read("Two.md"), managed("\n", "Two\ntyped\n"));
+    assert!(!app.has_unsaved_notes());
+}
+
+#[test]
 fn line_width_applies_to_every_note_and_survives_a_restart() {
     let fixture = Fixture::new(&[("Plan.md", &managed("\n", "Body\n"))]);
     let mut app = fixture.app();
@@ -957,6 +1133,19 @@ mod failures {
             "Docs/Other.md"
         };
         assert_eq!(fixture.read(path), managed("\n", &format!("{body}more\n")));
+    }
+
+    #[test]
+    fn an_exit_with_a_note_that_cant_save_leaves_the_file_as_it_is() {
+        let fixture = fixture();
+        let mut app = fixture.app();
+        let tab = failing(&fixture, &mut app);
+
+        assert!(!app.save_notes_before_exit());
+
+        assert!(app.note(tab).unwrap().is_unsaved());
+        read_only(&fixture, "Docs", false);
+        assert_eq!(fixture.read("Docs/Plan.md"), managed("\n", "Body\n"));
     }
 
     #[test]

@@ -190,8 +190,12 @@ pub struct NoteSession {
     /// Property edits waiting to be written, in order.
     property_edits: Vec<PropertyEdit>,
     problem: Option<SaveProblem>,
-    /// After a failure, saves wait for the next edit or Try again.
+    /// After a text save failed, saves wait for the next edit or Try
+    /// again.
     waiting_for_edit: bool,
+    /// After a property write failed, property writes wait for the next
+    /// edit or Try again. Text typed meanwhile saves on its own schedule.
+    properties_held: bool,
     /// The next save starts at once, as Mod-S or leaving the note asks.
     forced: bool,
     sync: Option<NoteSync>,
@@ -223,6 +227,7 @@ impl NoteSession {
             property_edits: Vec::new(),
             problem: None,
             waiting_for_edit: false,
+            properties_held: false,
             forced: false,
             sync: None,
             reset: None,
@@ -369,6 +374,7 @@ impl NoteSession {
         self.first_unsaved.get_or_insert(at);
         self.last_edit = Some(at);
         self.waiting_for_edit = false;
+        self.properties_held = false;
         true
     }
 
@@ -376,13 +382,13 @@ impl NoteSession {
     /// [`SAVE_PAUSE`], or [`SAVE_AT_LEAST_EVERY`] after the oldest unsaved
     /// edit, or at once for property edits, Mod-S and leaving the note.
     /// Never while a save runs, or while a failed save waits for the next
-    /// edit.
+    /// edit. A failed property write holds back only the property edits.
     pub(crate) fn is_due(&self, now: Instant) -> bool {
         if self.writing.is_some() || self.waiting_for_edit {
             return false;
         }
         if self.text == self.body() {
-            return !self.property_edits.is_empty();
+            return !self.property_edits.is_empty() && !self.properties_held;
         }
         self.forced || self.next_due().is_some_and(|due| due <= now)
     }
@@ -400,6 +406,7 @@ impl NoteSession {
     /// Make the next save start at once.
     pub(crate) fn save_soon(&mut self) {
         self.waiting_for_edit = false;
+        self.properties_held = false;
         self.forced = true;
     }
 
@@ -509,14 +516,15 @@ impl NoteSession {
             }
             Written::PropertyChanged(key) => {
                 tracing::warn!("a property edit met an outside edit of the same property");
-                self.failed(
-                    format!(
-                        "Another program changed \u{201c}{key}\u{201d} while you were editing it."
-                    ),
-                    now,
-                );
+                self.property_failed(format!(
+                    "Another program changed \u{201c}{key}\u{201d} while you were editing it."
+                ));
             }
-            Written::Text(Err(error)) | Written::Properties(Err(error)) => {
+            Written::Properties(Err(error)) => {
+                tracing::warn!(code = %error.code, operation = %error.operation, "a property edit didn't save");
+                self.property_failed(save_reason(&error));
+            }
+            Written::Text(Err(error)) => {
                 tracing::warn!(code = %error.code, operation = %error.operation, "a note didn't save");
                 self.failed(save_reason(&error), now);
             }
@@ -547,6 +555,13 @@ impl NoteSession {
         self.first_unsaved.get_or_insert(now);
     }
 
+    /// A property write failed: the property edits wait for the next edit
+    /// or Try again, and text typed meanwhile keeps its schedule.
+    fn property_failed(&mut self, reason: String) {
+        self.problem = Some(SaveProblem { reason });
+        self.properties_held = true;
+    }
+
     /// Drop the edits that aren't on disk, leaving the file as it is. The
     /// editor drops them too, as [`Self::take_reset`] tells it, in case the
     /// note stays open.
@@ -559,6 +574,7 @@ impl NoteSession {
         self.property_edits.clear();
         self.problem = None;
         self.waiting_for_edit = false;
+        self.properties_held = false;
         self.forced = false;
         self.first_unsaved = None;
         self.last_edit = None;
@@ -589,6 +605,7 @@ impl NoteSession {
         };
         self.property_edits.push(PropertyEdit { key, value, base });
         self.waiting_for_edit = false;
+        self.properties_held = false;
     }
 
     /// Whether the panel edits the property `key` in place.
@@ -777,6 +794,9 @@ pub(crate) fn save_reason(error: &CoreError) -> String {
         "raw_markdown_missing" | "object_not_found" | "file_not_found" => {
             "The file was moved or deleted outside Noura.".to_owned()
         }
+        "file_not_downloaded" => {
+            "The file is online-only now. Download it, then try again.".to_owned()
+        }
         "invalid_utf8" => "The file on disk isn't UTF-8 text Noura can read anymore.".to_owned(),
         "object_parse_failed" => "Noura can't read the file's properties anymore.".to_owned(),
         "revision_conflict" => "The file changed outside Noura while it was saving.".to_owned(),
@@ -828,6 +848,10 @@ mod tests {
             (
                 error("raw_markdown_missing", ErrorCategory::Validation),
                 "The file was moved or deleted outside Noura.",
+            ),
+            (
+                error("file_not_downloaded", ErrorCategory::Filesystem),
+                "The file is online-only now. Download it, then try again.",
             ),
             (
                 error("invalid_utf8", ErrorCategory::Parse),

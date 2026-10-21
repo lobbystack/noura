@@ -236,6 +236,119 @@ fn typing_in_the_note_saves_it_after_a_pause() {
     assert_eq!(written.replace("Typed. ", ""), NOTE);
 }
 
+/// Click the property field `key` and type `typed` at its end.
+fn type_in_property(harness: &mut Ui, key: &str, typed: &str) {
+    harness
+        .get_by_role_and_label(Role::Group, "Properties")
+        .get_by_role_and_label(Role::TextInput, key)
+        .click();
+    harness.run_steps(4);
+    harness.key_press(Key::End);
+    harness.event(Event::Text(typed.into()));
+    harness.run_steps(4);
+}
+
+/// Close Tab runs before a field could report losing the keyboard, so
+/// what the field holds goes in first: a property's value, then the name.
+#[test]
+fn closing_the_tab_from_a_field_keeps_what_you_typed_in_it() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder);
+    open_plan(&mut harness);
+    type_in_property(&mut harness, "color", "ish");
+    let path = folder.join("Docs/Plan.md");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), NOTE);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    harness.run_steps(4);
+
+    wait_until(&mut harness, |harness| {
+        harness.state().app().tabs().is_empty()
+    });
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("\ncolor: greenish\n"), "{written:?}");
+
+    // Docs stays open in the tree.
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Plan")
+        .click();
+    harness.run_steps(4);
+    harness.key_press(Key::F2);
+    harness.run_steps(4);
+    harness.event(Event::Text("Roadmap".into()));
+    harness.run_steps(4);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    harness.run_steps(4);
+
+    wait_until(&mut harness, |harness| {
+        harness.state().app().tabs().is_empty()
+    });
+    assert!(!path.exists());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("Docs/Roadmap.md")).unwrap(),
+        written
+    );
+}
+
+/// A click on another tab hides the field without it reporting the lost
+/// keyboard: the value goes in anyway, and shows when you come back.
+#[test]
+fn a_property_typed_before_switching_tabs_goes_in() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder);
+    std::fs::write(folder.join("Docs/Other.md"), "Other text\n").unwrap();
+    let app = harness.state_mut().app_mut();
+    app.open_file("Docs/Other.md", app_core::OpenAs::Kept);
+    app.open_file("Docs/Plan.md", app_core::OpenAs::Kept);
+    harness.run_steps(4);
+    type_in_property(&mut harness, "color", "ish");
+
+    harness.get_by_role_and_label(Role::Tab, "Other").click();
+    harness.run_steps(4);
+
+    let path = folder.join("Docs/Plan.md");
+    wait_until(&mut harness, |_| {
+        std::fs::read_to_string(&path).unwrap() != NOTE
+    });
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("\ncolor: greenish\n"), "{written:?}");
+    harness.get_by_role_and_label(Role::Tab, "Plan").click();
+    harness.run_steps(4);
+    let color = harness
+        .get_by_role_and_label(Role::Group, "Properties")
+        .get_by_role_and_label(Role::TextInput, "color");
+    assert_eq!(color.accesskit_node().value().as_deref(), Some("greenish"));
+}
+
+/// A file that isn't UTF-8 text says so, and Try again reads it again.
+#[test]
+fn try_again_opens_a_file_that_couldn_t_open_before() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    std::fs::write(folder.join("Bytes.md"), b"\xff\xfe not UTF-8").unwrap();
+    let mut harness = harness(app_data.path(), FakePicker::default());
+    settle(&mut harness);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Bytes")
+        .click();
+    harness.run_steps(4);
+    harness.get_by_label("This file isn't UTF-8 text, so the editor can't open it.");
+
+    std::fs::write(folder.join("Bytes.md"), "Text now\n").unwrap();
+    harness
+        .get_by_role_and_label(Role::Button, "Try again")
+        .click();
+    harness.run_steps(4);
+
+    harness.get_by_role_and_label(Role::Document, "Note text");
+}
+
 #[cfg(unix)]
 mod failed_saves {
     use std::os::unix::fs::PermissionsExt;

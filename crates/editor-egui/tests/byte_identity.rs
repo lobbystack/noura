@@ -618,7 +618,6 @@ fn note() -> impl Strategy<Value = String> {
         .prop_map(
             |(bom, frontmatter, blocks, endings, mixed, final_newline)| {
                 let mut lines: Vec<String> = frontmatter.unwrap_or_default();
-                let frontmatter_lines = lines.len();
                 for block in blocks {
                     lines.extend(block);
                     lines.push(String::new());
@@ -636,10 +635,6 @@ fn note() -> impl Strategy<Value = String> {
                     note.push_str(match endings {
                         LineEndings::Lf => "\n",
                         LineEndings::Crlf => "\r\n",
-                        // A lone CR in frontmatter is a known failure.
-                        LineEndings::Mixed if index < frontmatter_lines => {
-                            ["\n", "\r\n"][mixed[index % mixed.len()] % 2]
-                        }
                         LineEndings::Mixed => ["\n", "\r\n", "\r"][mixed[index % mixed.len()]],
                     });
                 }

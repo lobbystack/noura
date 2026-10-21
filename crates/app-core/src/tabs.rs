@@ -420,10 +420,12 @@ impl Tabs {
     /// Point each file tab at where its file is now, or close it.
     /// `follow` gets a file tab's path and stable ID and answers with the
     /// file's path and stable ID now, or `None` when the file is gone.
-    /// Returns whether any tab changed, and whether the active tab's file
-    /// did.
+    /// Two tabs that now show one file become one, unless the later one is
+    /// in `keep`, as a note with edits that aren't on disk is. Returns
+    /// whether any tab changed, and whether the active tab's file did.
     pub(crate) fn follow_files(
         &mut self,
+        keep: &[TabId],
         mut follow: impl FnMut(&str, Option<&str>) -> Option<(String, Option<String>)>,
     ) -> (bool, bool) {
         let active = self.active;
@@ -455,7 +457,7 @@ impl Tabs {
                 .iter()
                 .position(|earlier| !gone.contains(&earlier.id) && earlier.shows(&tab.content));
             match survivor {
-                Some(survivor) if !gone.contains(&tab.id) => {
+                Some(survivor) if !gone.contains(&tab.id) && !keep.contains(&tab.id) => {
                     changed = true;
                     active_changed |= self.active == Some(tab.id);
                     let merged = self.tabs.remove(index);
