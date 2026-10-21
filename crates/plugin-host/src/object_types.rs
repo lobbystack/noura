@@ -12,7 +12,9 @@ use std::{
     },
 };
 
-use workspace_format::{ObjectTypeRegistry, PropertySchema, RegistrationError};
+use workspace_format::{ObjectTypeRegistry, PropertySchema, RegistrationError, WorkspaceObject};
+
+use crate::PropertyProblem;
 
 /// The types the kernel keeps for itself. No plugin may register them.
 /// Chats and chat messages move to the AI plugin with ticket 36.
@@ -201,6 +203,19 @@ impl ObjectTypes {
     /// The registered schemas, for checking a write.
     pub fn schemas(&self) -> ObjectTypeRegistry {
         self.read().schemas.clone()
+    }
+
+    /// The first property of `object`, in its schema's order, that doesn't
+    /// fit its type's schema. `None` when they all fit, or when no running
+    /// plugin registered the type.
+    pub fn problem(&self, object: &WorkspaceObject) -> Option<PropertyProblem> {
+        let mut checked = object.clone();
+        let error = self.read().schemas.normalize(&mut checked).err()?;
+        let details = serde_json::to_value(&error).unwrap_or_default();
+        Some(PropertyProblem {
+            property: details["property"].as_str().unwrap_or_default().to_owned(),
+            code: details["code"].as_str().unwrap_or_default().to_owned(),
+        })
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Table> {

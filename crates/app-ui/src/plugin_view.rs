@@ -1,8 +1,8 @@
-//! A plugin page: the view its plugin drew, with the kit's widgets and the
-//! theme's tokens, or the reason it can't be drawn in its place. Presses go
-//! back to the plugin by node ID.
+//! A plugin page or properties panel: the view its plugin drew, with the
+//! kit's widgets and the theme's tokens, or the reason it can't be drawn
+//! in its place. Presses go back to the plugin by node ID.
 
-use app_core::{App, ViewKind, ViewNode};
+use app_core::{App, PluginView, TabId, ViewKind, ViewNode};
 use egui::{Frame, Margin, RichText, Stroke, Ui, UiBuilder, accesskit::Role};
 
 use crate::{
@@ -21,24 +21,43 @@ struct Asked {
 }
 
 pub(crate) fn show(ui: &mut Ui, app: &mut App, page_id: &str) {
-    match app.plugin_view(page_id) {
-        None => {
-            muted(ui, "The plugin that adds this page isn't running.");
-        }
-        Some(Err(reason)) => problem(ui, &reason),
-        Some(Ok(view)) => {
-            let mut asked = Asked::default();
-            ui.push_id(("plugin-view", page_id), |ui| {
-                node(ui, view.root(), &mut asked);
-            });
-            if let Some(node) = asked.pressed {
-                app.press_plugin_button(page_id, &node);
-            }
-            if let Some(url) = asked.link {
-                app.open_link(&url);
-            }
-        }
+    let Some(view) = app.plugin_view(page_id) else {
+        muted(ui, "The plugin that adds this page isn't running.");
+        return;
+    };
+    let asked = ui
+        .push_id(("plugin-view", page_id), |ui| draw(ui, &view))
+        .inner;
+    if let Some(node) = asked.pressed {
+        app.press_plugin_button(page_id, &node);
     }
+    if let Some(url) = asked.link {
+        app.open_link(&url);
+    }
+}
+
+/// The properties panel a plugin draws beside the body of an object of its
+/// own type, in the note screen's panel slot. Presses go back to the
+/// plugin by node ID.
+pub(crate) fn show_panel(ui: &mut Ui, app: &mut App, tab: TabId, view: &PluginView) {
+    let asked = ui.push_id(("plugin-panel", tab), |ui| draw(ui, view)).inner;
+    if let Some(node) = asked.pressed {
+        app.press_panel_button(tab, &node);
+    }
+    if let Some(url) = asked.link {
+        app.open_link(&url);
+    }
+}
+
+/// Draw `view`, or the reason it can't be drawn, and say what a press or
+/// a click asked for.
+fn draw(ui: &mut Ui, view: &PluginView) -> Asked {
+    let mut asked = Asked::default();
+    match view {
+        Err(reason) => problem(ui, reason),
+        Ok(view) => node(ui, view.root(), &mut asked),
+    }
+    asked
 }
 
 /// The reason a view can't be drawn, where the view would be.

@@ -1,12 +1,13 @@
 //! The note screen: the note's name, a notice when a save failed or the
 //! properties at the top don't parse, the editor, and the properties panel
-//! beside it for Noura's own notes. The editor shows notes in the live
+//! beside it: the kernel's for Noura's own notes, or the one a plugin draws
+//! for an object of its own type. The editor shows notes in the live
 //! preview, and plain-text and code files and notes with broken properties
 //! as source.
 
 use std::{collections::HashMap, time::Instant};
 
-use app_core::{App, ConflictChoice, Property, PropertyValue, TabId};
+use app_core::{App, ConflictChoice, PluginView, Property, PropertyValue, TabId};
 use editor_egui::{Editor, MdConfig};
 use egui::{
     Button, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
@@ -271,18 +272,22 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut NoteView, tab: TabId) 
     header(ui, app, note, tab);
     properties_notice(ui, app, tab);
     file_notice(ui, app, tab);
-    if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
-        let palette = Palette::of(ui.ctx());
-        Panel::right(("note-properties", tab))
-            .resizable(true)
-            .default_size(PROPERTIES_WIDTH)
-            .frame(
-                Frame::new()
-                    .fill(palette.background)
-                    .stroke(Stroke::new(1.0, palette.border))
-                    .inner_margin(Margin::same(12)),
-            )
-            .show(ui, |ui| properties_panel(ui, app, note, tab, &properties));
+    let palette = Palette::of(ui.ctx());
+    let panel = Panel::right(("note-properties", tab))
+        .resizable(true)
+        .default_size(PROPERTIES_WIDTH)
+        .frame(
+            Frame::new()
+                .fill(palette.background)
+                .stroke(Stroke::new(1.0, palette.border))
+                .inner_margin(Margin::same(12)),
+        );
+    // An object of a running plugin's type shows the plugin's panel in
+    // place of the kernel's.
+    if let Some(view) = app.plugin_panel(tab) {
+        panel.show(ui, |ui| plugin_panel(ui, app, tab, &view));
+    } else if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
+        panel.show(ui, |ui| properties_panel(ui, app, note, tab, &properties));
     }
     body(ui, app, note, tab);
     // The prompt before leaving the note asks first.
@@ -682,6 +687,18 @@ fn body(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
             Instant::now(),
         );
     }
+}
+
+/// The properties panel the plugin that holds the object's type draws.
+fn plugin_panel(ui: &mut Ui, app: &mut App, tab: TabId, view: &PluginView) {
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Group)
+        .accessibility_label("Properties");
+    ui.scope_builder(builder, |ui| {
+        ScrollArea::vertical()
+            .id_salt(("note-plugin-panel-scroll", tab))
+            .show(ui, |ui| crate::plugin_view::show_panel(ui, app, tab, view));
+    });
 }
 
 /// The note's frontmatter: ID, type, created and updated read-only, and

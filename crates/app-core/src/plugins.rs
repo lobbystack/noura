@@ -25,12 +25,12 @@ use std::{
 use local_core::{CoreError, WatchCoordinator, WorkspaceEntryKind};
 use plugin_host::{
     Candidate, Capability, Entry, EntryKind, Event, FileRead, InstallError, Listed, ObjectRead,
-    Page, PluginHost, PluginInstance, PluginManifest, ServiceError, View, WorkspacePath,
-    WorkspaceReads,
+    ObjectTypes, Page, PluginHost, PluginInstance, PluginManifest, ServiceError, Services, View,
+    WorkspaceObjects, WorkspacePath, WorkspaceReads,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AppError, Workspace, store::JsonStore};
+use crate::{AppError, Workspace, plugin_objects::ObjectStore, store::JsonStore};
 
 /// Where the plugin host keeps installed plugins and their compiled code,
 /// under the app data folder.
@@ -146,6 +146,9 @@ struct Running {
     instance: PluginInstance,
     pages: Vec<Page>,
     views: BTreeMap<String, PluginView>,
+    /// The properties panels it last drew, by object ID, each with the
+    /// revision of the file it drew from.
+    panels: BTreeMap<String, (String, PluginView)>,
 }
 
 /// A new build a watcher found in a plugin's folder, or why it can't load.
@@ -185,6 +188,8 @@ pub(crate) struct Plugins {
     manifests: BTreeMap<String, PluginManifest>,
     /// The workspace the running plugins read.
     workspace: Option<Arc<Workspace>>,
+    /// The object types the running plugins registered.
+    types: ObjectTypes,
     running: BTreeMap<String, Running>,
     problems: BTreeMap<String, String>,
     /// New builds whose capabilities wait for your approval.
@@ -212,6 +217,7 @@ impl Plugins {
             host: None,
             manifests: BTreeMap::new(),
             workspace: None,
+            types: ObjectTypes::new(),
             running: BTreeMap::new(),
             problems: BTreeMap::new(),
             updates: BTreeMap::new(),
@@ -397,13 +403,44 @@ impl Plugins {
                     ),
                 ));
             }
-            let reader: Arc<dyn WorkspaceReads> = Arc::new(WorkspaceReader(workspace));
+            let reader: Arc<dyn WorkspaceReads> = Arc::new(WorkspaceReader(workspace.clone()));
+            let objects: Arc<dyn WorkspaceObjects> =
+                Arc::new(ObjectStore::new(workspace, self.types.clone()));
+            let services = Services {
+                workspace: Some(reader),
+                objects: Some(objects),
+                types: self.types.clone(),
+            };
             let mut instance = host
-                .start(&loaded, &record.approved, Some(reader))
+                .start_with(&loaded, &record.approved, services)
                 .map_err(|error| {
                     tracing::warn!(%error, "a plugin didn't start");
                     AppError::new("plugin_start_failed", "It failed to start.")
                 })?;
+            let refused = if loaded
+                .manifest()
+                .capabilities
+                .contains(&Capability::ObjectTypes)
+            {
+                let registered = instance.register_object_types().map_err(|error| {
+                    tracing::warn!(%error, "a plugin didn't list its object types");
+                    AppError::new(
+                        "plugin_types_failed",
+                        "It failed while listing its object types.",
+                    )
+                })?;
+                registered
+                    .into_iter()
+                    .filter_map(|(object_type, result)| {
+                        result.err().map(|error| {
+                            tracing::warn!(code = error.code(), "a plugin's type wasn't added");
+                            format!("Noura didn't add the type {object_type}: {error}")
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let declares_views = loaded.manifest().capabilities.contains(&Capability::Views);
             let pages = if declares_views {
                 instance.pages().map_err(|error| {
@@ -413,18 +450,22 @@ impl Plugins {
             } else {
                 Vec::new()
             };
-            Ok((instance, pages))
+            Ok((instance, pages, refused))
         });
         match started {
-            Ok((instance, pages)) => {
+            Ok((instance, pages, refused)) => {
                 let pages = pages.into_iter().filter(valid_page).collect();
                 let mut running = Running {
                     instance,
                     pages,
                     views: BTreeMap::new(),
+                    panels: BTreeMap::new(),
                 };
                 running.render_all();
                 self.running.insert(id.to_owned(), running);
+                if !refused.is_empty() {
+                    self.problems.insert(id.to_owned(), refused.join(" "));
+                }
             }
             Err(error) => {
                 self.problems.insert(id.to_owned(), error.message);
@@ -710,6 +751,57 @@ impl Plugins {
         {
             tracing::warn!(%error, "a plugin failed to handle a press");
         }
+        running.render_all();
+        self.changed();
+    }
+
+    /// The properties panel of the object `object_id` of type
+    /// `object_type`, whose file has the revision `revision`, as the
+    /// running plugin that holds the type draws it. `None` when no running
+    /// plugin holds the type, so the kernel's panel shows.
+    pub(crate) fn panel(
+        &mut self,
+        object_type: &str,
+        object_id: &str,
+        revision: &str,
+    ) -> Option<PluginView> {
+        let owner = self.types.owner(object_type)?;
+        let running = self.running.get_mut(&owner)?;
+        if let Some((drawn, view)) = running.panels.get(object_id)
+            && drawn == revision
+        {
+            return Some(view.clone());
+        }
+        let view = match running.instance.render_panel(object_id) {
+            Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+            Err(error) => {
+                tracing::warn!(%error, "a plugin failed to draw a properties panel");
+                Err("The plugin failed while drawing this panel.".to_owned())
+            }
+        };
+        running
+            .panels
+            .insert(object_id.to_owned(), (revision.to_owned(), view.clone()));
+        Some(view)
+    }
+
+    /// Tell the plugin that holds `object_type` that the button `node` was
+    /// pressed in the properties panel of the object `object_id`, and draw
+    /// its panels and pages again.
+    pub(crate) fn press_panel(&mut self, object_type: &str, object_id: &str, node: &str) {
+        let Some(owner) = self.types.owner(object_type) else {
+            return;
+        };
+        let Some(running) = self.running.get_mut(&owner) else {
+            return;
+        };
+        if let Err(error) = running
+            .instance
+            .handle_panel_event(object_id, &Event::Pressed(node.to_owned()))
+        {
+            tracing::warn!(%error, "a plugin failed to handle a press in a panel");
+        }
+        running.panels.clear();
         running.render_all();
         self.changed();
     }

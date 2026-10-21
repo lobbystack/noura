@@ -1,13 +1,14 @@
 //! The Plugins page and plugin pages: installing a plugin from a folder,
 //! turning it on or off in the open workspace, uninstalling it, approving
-//! a new build, and drawing and pressing a plugin page's view. Every
+//! a new build, drawing and pressing a plugin page's view, and the
+//! properties panel a plugin draws beside an object of its own type. Every
 //! window shares the session's plugins service and shows the pages of the
 //! plugins it runs.
 
 use std::path::PathBuf;
 
 use super::{App, Change};
-use crate::{NoticeKind, PluginInstall, PluginRow, PluginView, plugins::is_plugin_page};
+use crate::{NoticeKind, PluginInstall, PluginRow, PluginView, TabId, plugins::is_plugin_page};
 
 impl App {
     /// The Plugins page's rows: every plugin installed on this device or
@@ -142,10 +143,47 @@ impl App {
     }
 
     /// Press the button `node_id` in the plugin page `page_id`. The plugin
-    /// hears of it and draws its pages again.
+    /// hears of it and draws its pages again, and open notes take what it
+    /// wrote.
     pub fn press_plugin_button(&mut self, page_id: &str, node_id: &str) {
         self.session.plugins().press(page_id, node_id);
+        self.check_notes_on_disk();
         self.plugins_changed();
+    }
+
+    /// The properties panel the plugin that holds the type of the object
+    /// open in `tab` draws beside its body, or why it can't be drawn.
+    /// `None` when the tab shows no object of a running plugin's type, so
+    /// the kernel's panel shows.
+    pub fn plugin_panel(&self, tab: TabId) -> Option<PluginView> {
+        let session = self.notes.sessions.get(&tab)?;
+        let object_type = session.object_type()?;
+        let object_id = session.object_id()?;
+        self.session
+            .plugins()
+            .panel(object_type, object_id, session.revision())
+    }
+
+    /// Press the button `node_id` in the plugin's properties panel of the
+    /// object open in `tab`. The plugin hears of it, its panel draws
+    /// again, and the note takes what the plugin wrote: at once when it
+    /// has nothing unsaved, and merged with your typing at its next save
+    /// when it has.
+    pub fn press_panel_button(&mut self, tab: TabId, node_id: &str) {
+        let Some(session) = self.notes.sessions.get(&tab) else {
+            return;
+        };
+        let (Some(object_type), Some(object_id)) = (session.object_type(), session.object_id())
+        else {
+            return;
+        };
+        let (object_type, object_id) = (object_type.to_owned(), object_id.to_owned());
+        self.session
+            .plugins()
+            .press_panel(&object_type, &object_id, node_id);
+        self.check_notes_on_disk();
+        self.plugins_changed();
+        self.listeners.emit(Change::Note);
     }
 
     /// Show what changed in the plugins service now, and wake the other

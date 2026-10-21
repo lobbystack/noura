@@ -29,8 +29,8 @@ use plugin_sdk::{
     objects::{self, Changes, NewObject, Object},
 };
 
-/// What the last call on the `recipes` page answered.
-static ANSWER: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// What the last call on the `recipes` page answered, once one ran.
+static ANSWER: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 const RECIPE_SCHEMA: &str = r#"{"properties":[
   {"name":"course","kind":{"enum":["starter","main","dessert"]},"default":"main"},
@@ -53,9 +53,10 @@ impl Plugin for Recipes {
     fn render(_page: String) -> Vec<Node> {
         let mut view = View::panel("root", Some("Recipes"));
         let answer = ANSWER.lock().unwrap();
-        if answer.is_empty() {
+        let Some(answer) = answer.as_ref() else {
             view.text(View::ROOT, "line-0", "No calls yet.");
-        }
+            return view.into_nodes();
+        };
         for (index, line) in answer.iter().enumerate() {
             view.text(View::ROOT, &format!("line-{index}"), line);
         }
@@ -64,7 +65,7 @@ impl Plugin for Recipes {
 
     fn handle_event(_page: String, event: Event) {
         let Event::Pressed(call) = event;
-        *ANSWER.lock().unwrap() = run(&call);
+        *ANSWER.lock().unwrap() = Some(run(&call));
     }
 
     fn object_types() -> Vec<ObjectType> {
@@ -140,7 +141,7 @@ impl Plugin for Recipes {
                 },
             )
         });
-        *ANSWER.lock().unwrap() = vec![answered(answer)];
+        *ANSWER.lock().unwrap() = Some(vec![answered(answer)]);
     }
 }
 

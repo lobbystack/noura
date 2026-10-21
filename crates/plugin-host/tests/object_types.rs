@@ -205,9 +205,9 @@ fn a_plugin_writes_only_objects_of_its_own_types() {
 
     let refused = "error\tcapability-not-declared\tobject-types";
     for attempt in [
-        format!("create|note|Plan|-|{{}}|Body"),
+        "create|note|Plan|-|{}|Body".to_owned(),
         format!("get|{NOTE_ID}"),
-        format!("list|note"),
+        "list|note".to_owned(),
         format!("update|{NOTE_ID}|rev-1|{{}}"),
         format!("move|{NOTE_ID}|rev-1|Elsewhere.md"),
         format!("delete|{NOTE_ID}|rev-1"),
@@ -217,9 +217,9 @@ fn a_plugin_writes_only_objects_of_its_own_types() {
     // The second plugin's registration of recipe was refused, so recipes
     // stay the first plugin's.
     for attempt in [
-        format!("create|recipe|Soup|-|{{}}|Body"),
+        "create|recipe|Soup|-|{}|Body".to_owned(),
         format!("get|{RECIPE_ID}"),
-        format!("list|recipe"),
+        "list|recipe".to_owned(),
         format!("update|{RECIPE_ID}|rev-1|{{}}"),
         format!("move|{RECIPE_ID}|rev-1|recipes/Stew.md"),
         format!("delete|{RECIPE_ID}|rev-1"),
@@ -247,7 +247,7 @@ fn object_calls_cross_with_their_revision_and_schema_problem() {
 
     assert_eq!(
         call(&mut instance, &format!("get|{RECIPE_ID}")),
-        [line.clone()]
+        std::slice::from_ref(&line)
     );
     assert_eq!(call(&mut instance, "list|recipe"), [line]);
     assert_eq!(
