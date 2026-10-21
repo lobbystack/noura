@@ -9978,6 +9978,7 @@ dependencies = [
  "blake3",
  "diffy",
  "jiff",
+ "proptest",
  "serde",
  "serde_json",
  "serde_yaml_ng",
