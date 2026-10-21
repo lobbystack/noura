@@ -13,7 +13,7 @@ use crate::{
     files::remap,
     notes::{
         ConflictChoice, FileCheck, Finished, NoteSession, NoteSync, PropertyValue, Restored,
-        SaveProblem, is_markdown,
+        SaveProblem, opens_in_editor,
     },
 };
 
@@ -444,7 +444,8 @@ impl App {
     /// Rename the note in the tab `tab` from its name field to `typed`. The
     /// name loses what a file name can't hold; an empty or unchanged name
     /// keeps the old one, and so does a taken one, which the note's
-    /// [`NoteSession::name_problem`] then explains. The note keeps its ID.
+    /// [`NoteSession::name_problem`] then explains. The note keeps its ID,
+    /// and a plain-text or code file keeps its extension.
     pub fn rename_note(&mut self, tab: TabId, typed: &str) {
         let Some(session) = self.notes.sessions.get_mut(&tab) else {
             return;
@@ -456,6 +457,7 @@ impl App {
             self.listeners.emit(Change::Note);
             return;
         }
+        let name = session.renamed_file_name(&name);
         if let Err((_, problem)) = self.flush_notes_inside(&from) {
             self.set_name_problem(
                 tab,
@@ -951,9 +953,9 @@ impl App {
         }
     }
 
-    /// Bring the note sessions in line with the tabs: open each Markdown
-    /// file a tab shows, follow tabs whose file moved, and drop the
-    /// sessions of closed tabs.
+    /// Bring the note sessions in line with the tabs: open each Markdown,
+    /// plain-text or code file a tab shows, follow tabs whose file moved,
+    /// and drop the sessions of closed tabs.
     pub(super) fn sync_notes(&mut self) {
         self.open_notes();
         self.session
@@ -971,7 +973,7 @@ impl App {
             .list()
             .iter()
             .filter_map(|tab| Some((tab.id(), tab.file()?.relative_path.clone())))
-            .filter(|(_, path)| is_markdown(path))
+            .filter(|(_, path)| opens_in_editor(path))
             .collect();
         let open = |tab: &TabId| files.iter().any(|(id, _)| id == tab);
         self.notes.sessions.retain(|tab, _| open(tab));

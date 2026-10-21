@@ -88,6 +88,11 @@ jobs:
       - name: Report the file tree's frame times
         if: matrix.os == 'macos-latest'
         run: cargo test -p app-ui --release --locked --test tree_scale -- --ignored --nocapture
+      # Also a report: the 95th-percentile keystroke-to-frame time of typing
+      # in the 1 MB note, against the 16 ms budget.
+      - name: Report the editor's typing time on a 1 MB note
+        if: matrix.os == 'macos-latest'
+        run: cargo bench -p editor-egui --locked --bench typing
 
   # Release checks: build each desktop package with cargo-packager, sign it
   # with a throwaway updater key, install or mount it, and launch the app to
@@ -191,6 +196,24 @@ jobs:
       # Lockbook's crates, a git source, a mobile host library or an HTTP
       # client; the build holds one wgpu version.
       - run: scripts/check-editor-deps.sh
+
+  sync-protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: wasm }
+      # sync-protocol holds no filesystem, socket or database crate and builds
+      # for account-web's WebAssembly target (sync-v2.md §4). Its published
+      # test vectors and fixtures run with the workspace tests.
+      - run: scripts/check-sync-protocol.sh
 
   dependency-audit:
     runs-on: ubuntu-latest

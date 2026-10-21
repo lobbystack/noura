@@ -718,6 +718,30 @@ impl<'ast> MdDoc {
         result
     }
 
+    /// The 1-based line `offset` is on, as comrak numbers lines.
+    pub(crate) fn offset_line_number(&self, offset: Grapheme) -> usize {
+        self.bounds
+            .source_lines
+            .find_containing(offset, true, true)
+            .start()
+            + 1
+    }
+
+    /// Whether `node`'s source lines end before `line` (1-based), start
+    /// after it, or reach it. A node's lines as the editor counts them lie
+    /// within the lines comrak gives it, so this skips the nodes that
+    /// can't hold an offset on `line` without working out their ranges.
+    fn lines_reach(node: &'ast AstNode<'ast>, line: usize) -> std::cmp::Ordering {
+        let pos = node.data.borrow().sourcepos;
+        if pos.end.line != 0 && pos.end.line < line {
+            std::cmp::Ordering::Less
+        } else if pos.start.line > line {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }
+
     pub fn selection_offset(&self) -> Option<Grapheme> {
         if self.buffer.current.selection.is_empty() {
             Some(self.buffer.current.selection.0)
@@ -732,7 +756,13 @@ impl<'ast> MdDoc {
         node: &'ast AstNode<'ast>,
         offset: Grapheme,
     ) -> &'ast AstNode<'ast> {
+        let line = self.offset_line_number(offset);
         for child in node.children() {
+            match Self::lines_reach(child, line) {
+                std::cmp::Ordering::Less => continue,
+                std::cmp::Ordering::Greater => break,
+                std::cmp::Ordering::Equal => {}
+            }
             if !child.data.borrow().value.is_container_block() {
                 continue;
             }
@@ -753,7 +783,13 @@ impl<'ast> MdDoc {
         node: &'ast AstNode<'ast>,
         offset: Grapheme,
     ) -> &'ast AstNode<'ast> {
+        let line = self.offset_line_number(offset);
         for child in node.children() {
+            match Self::lines_reach(child, line) {
+                std::cmp::Ordering::Less => continue,
+                std::cmp::Ordering::Greater => break,
+                std::cmp::Ordering::Equal => {}
+            }
             for line_idx in self.node_lines(child).iter() {
                 let line = self.bounds.source_lines[line_idx];
                 let node_line = self.node_line(child, line);

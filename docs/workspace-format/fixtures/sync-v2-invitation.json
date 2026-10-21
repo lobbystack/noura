@@ -1,0 +1,140 @@
+{
+	"cases": [
+		{
+			"expect": "096c8491c5e9177a05e92abc7a655287537404f94535d0cce61afce06182a870",
+			"input": "176e6f7572612e73796e632e696e766974652e746f6b656e000241414141414141414141414141414141",
+			"kind": "token_hash",
+			"name": "token_hash",
+			"token": "41414141414141414141414141414141"
+		},
+		{
+			"context": "noura.sync.v2 invitation key",
+			"expect": "c0499c378111e052ca463f2cebf6ebea22c7af70cd1d9b3d29ccf4dc0df615c4",
+			"input": "5730cf0615885a558c85101626003a5dbee3f4e9067d8cd34cd5a50b05e0e34f",
+			"kind": "derive_key",
+			"name": "invitation_key"
+		},
+		{
+			"context": "196e6f7572612e73796e632e696e766974652e636f6e7465787400028129c2cd914f86f1bc05f6ccb45aa9e6677c2d923014319bf7321f4551ed02b40386b55494aad60fa4622f492379ace3de4aa9fc9b51982b3a00000110768d8b10c58385a302500cb18b369439bd2aa77b661d03ff7ae50c50f33ed65028764641abbcab4f86241901681220ac765c6c2b6a4e1498d672bc907f418fea93d8eb4713b59edd6825da9a9dd3941e96f6ba995666db7d6c61b1203786b1e1c24b04c638f5414d3db91834252e450ce4755b65949742ab8e415c0613d53b5041a3525a5072ad8e254b94c838df8349d2b2bc78bc02f6133ce6a1f19fa9909572cbb6d9ce8055d8c2aca72b216242700700884ba6b58e757f4fbd3fa0cddb8f186ce9345790d638d83e3b0bfa9116e9098d5b8bb0ff0d3699062222c69e1bca7cfa5b8c617a2e89520e80231b708ce344cfc23fa4f9281320099d78eeaf8a802fd7025b75ca7c5ab345a18e4592b812",
+			"expect": "196e6f7572612e73796e632e696e766974652e7061796c6f61640002000c47617264656e20706c616e730005416c696365fca4c4ce44f87436703f6267b020f83a8d3011db0436763786fdbeca61f9d82f",
+			"kind": "context_open",
+			"name": "open_with_the_secret",
+			"secret": "5730cf0615885a558c85101626003a5dbee3f4e9067d8cd34cd5a50b05e0e34f"
+		},
+		{
+			"context": "196e6f7572612e73796e632e696e766974652e636f6e7465787400028129c2cd914f86f1bc05f6ccb45aa9e6677c2d923014319bf7321f4551ed02b40386b55494aad60fa4622f492379ace3de4aa9fc9b51982b3a00000110768d8b10c58385a302500cb18b369439bd2aa77b661d03ff7ae50c50f33ed65028764641abbcab4f86241901681220ac765c6c2b6a4e1498d672bc907f418fea93d8eb4713b59edd6825da9a9dd3941e96f6ba995666db7d6c61b1203786b1e1c24b04c638f5414d3db91834252e450ce4755b65949742ab8e415c0613d53b5041a3525a5072ad8e254b94c838df8349d2b2bc78bc02f6133ce6a1f19fa9909572cbb6d9ce8055d8c2aca72b216242700700884ba6b58e757f4fbd3fa0cddb8f186ce9345790d638d83e3b0bfa9116e9098d5b8bb0ff0d3699062222c69e1bca7cfa5b8c617a2e89520e80231b708ce344cfc23fa4f9281320099d78eeaf8a802fd7025b75ca7c5ab345a18e4592b812",
+			"expect": "invalid",
+			"kind": "context_open",
+			"name": "wrong_secret",
+			"secret": "5a6c3018f7ae9ed9bb74a9eef0fa0bd4ceb364b69aab0a8f37179650abda7141"
+		},
+		{
+			"context": "196e6f7572612e73796e632e696e766974652e636f6e7465787400028129c2cd914f86f1bc05f6ccb45aa9e6677c2d923014319bf7321f4551ed02b40286b55494aad60fa4622f492379ace3de4aa9fc9b51982b3a00000110768d8b10c58385a302500cb18b369439bd2aa77b661d03ff7ae50c50f33ed65028764641abbcab4f86241901681220ac765c6c2b6a4e1498d672bc907f418fea93d8eb4713b59edd6825da9a9dd3941e96f6ba995666db7d6c61b1203786b1e1c24b04c638f5414d3db91834252e450ce4755b65949742ab8e415c0613d53b5041a3525a5072ad8e254b94c838df8349d2b2bc78bc02f6133ce6a1f19fa9909572cbb6d9ce8055d8c2aca72b216242700700884ba6b58e757f4fbd3fa0cddb8f186ce9345790d638d83e3b0bfa9116e9098d5b8bb0ff0d3699062222c69e1bca7cfa5b8c617a2e89520e80231b708ce344cfc23fa4f9281320099d78eeaf8a802fd7025b75ca7c5ab345a18e4592b812",
+			"expect": "invalid",
+			"kind": "context_open",
+			"name": "tampered_role",
+			"secret": "5730cf0615885a558c85101626003a5dbee3f4e9067d8cd34cd5a50b05e0e34f"
+		}
+	],
+	"description": "Invitations (sync-v2.md §11): the token hash the server stores, the encrypted context and its padded payload, and the invitation key.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {},
+	"link": {
+		"example": "https://sync.noura.app/invite/QUFBQUFBQUFBQUFBQUFBQQ#VzDPBhWIWlWMhRAWJgA6Xb7j9OkGfYzTTNWlCwXg408",
+		"format": "{origin}/invite/{base64url(token)}#{base64url(secret)}"
+	},
+	"records": [
+		{
+			"digest": "a7629af7446b4679073dc904d4b741ad5a52305287c2c05cb77a2222331d3a52",
+			"expect": "ok",
+			"hex": "196e6f7572612e73796e632e696e766974652e7061796c6f61640002000c47617264656e20706c616e730005416c696365fca4c4ce44f87436703f6267b020f83a8d3011db0436763786fdbeca61f9d82f",
+			"name": "invite_payload",
+			"type": "invite_payload",
+			"value": {
+				"inviter_fingerprint": "fca4c4ce44f87436703f6267b020f83a8d3011db0436763786fdbeca61f9d82f",
+				"inviter_name": "Alice",
+				"workspace_name": "Garden plans"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "invite_payload",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "invite_payload_truncated",
+			"type": "invite_payload"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "invite_payload",
+			"mutation": {
+				"retag": "106e6f7572612e73796e632e73686172650002"
+			},
+			"name": "invite_payload_wrong_tag",
+			"type": "invite_payload"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "invite_payload",
+			"mutation": {
+				"version": 3
+			},
+			"name": "invite_payload_wrong_version",
+			"type": "invite_payload"
+		},
+		{
+			"digest": "1f776acc54581d27ed63598da2c9aa447515dc632bb5572872a845a238155ba7",
+			"expect": "ok",
+			"hex": "196e6f7572612e73796e632e696e766974652e636f6e7465787400028129c2cd914f86f1bc05f6ccb45aa9e6677c2d923014319bf7321f4551ed02b40386b55494aad60fa4622f492379ace3de4aa9fc9b51982b3a00000110768d8b10c58385a302500cb18b369439bd2aa77b661d03ff7ae50c50f33ed65028764641abbcab4f86241901681220ac765c6c2b6a4e1498d672bc907f418fea93d8eb4713b59edd6825da9a9dd3941e96f6ba995666db7d6c61b1203786b1e1c24b04c638f5414d3db91834252e450ce4755b65949742ab8e415c0613d53b5041a3525a5072ad8e254b94c838df8349d2b2bc78bc02f6133ce6a1f19fa9909572cbb6d9ce8055d8c2aca72b216242700700884ba6b58e757f4fbd3fa0cddb8f186ce9345790d638d83e3b0bfa9116e9098d5b8bb0ff0d3699062222c69e1bca7cfa5b8c617a2e89520e80231b708ce344cfc23fa4f9281320099d78eeaf8a802fd7025b75ca7c5ab345a18e4592b812",
+			"name": "invite_context",
+			"type": "invite_context",
+			"value": {
+				"ciphertext": "768d8b10c58385a302500cb18b369439bd2aa77b661d03ff7ae50c50f33ed65028764641abbcab4f86241901681220ac765c6c2b6a4e1498d672bc907f418fea93d8eb4713b59edd6825da9a9dd3941e96f6ba995666db7d6c61b1203786b1e1c24b04c638f5414d3db91834252e450ce4755b65949742ab8e415c0613d53b5041a3525a5072ad8e254b94c838df8349d2b2bc78bc02f6133ce6a1f19fa9909572cbb6d9ce8055d8c2aca72b216242700700884ba6b58e757f4fbd3fa0cddb8f186ce9345790d638d83e3b0bfa9116e9098d5b8bb0ff0d3699062222c69e1bca7cfa5b8c617a2e89520e80231b708ce344cfc23fa4f9281320099d78eeaf8a802fd7025b75ca7c5ab345a18e4592b812",
+				"invitation": "677c2d923014319bf7321f4551ed02b4",
+				"nonce": "86b55494aad60fa4622f492379ace3de4aa9fc9b51982b3a",
+				"role": "editor",
+				"workspace": "8129c2cd914f86f1bc05f6ccb45aa9e6"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "invite_context",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "invite_context_truncated",
+			"type": "invite_context"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "invite_context",
+			"mutation": {
+				"retag": "106e6f7572612e73796e632e73686172650002"
+			},
+			"name": "invite_context_wrong_tag",
+			"type": "invite_context"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "invite_context",
+			"mutation": {
+				"version": 3
+			},
+			"name": "invite_context_wrong_version",
+			"type": "invite_context"
+		}
+	]
+}

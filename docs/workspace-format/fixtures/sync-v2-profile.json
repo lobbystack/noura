@@ -1,0 +1,153 @@
+{
+	"cases": [
+		{
+			"context": "noura.sync.v2 profile key",
+			"expect": "13669ebce1781e088cbdcbd28c96714c05be0504365bdc29dabd3beffc931c25",
+			"input": "4fb59fd49b4fdb134d366d47c67d5cc21f4a685545009222fa6dd1c21de92124",
+			"kind": "derive_key",
+			"name": "profile_key"
+		},
+		{
+			"epoch_key": "4fb59fd49b4fdb134d366d47c67d5cc21f4a685545009222fa6dd1c21de92124",
+			"epoch_record": "ac97f97498c3dd926814a87f543bdf291899ae11ab70476715525282e23201f3",
+			"expect": "1a6e6f7572612e73796e632e70726f66696c652e7061796c6f61640002000c47617264656e20706c616e73",
+			"kind": "profile_open",
+			"name": "open_under_its_epoch",
+			"profile": "126e6f7572612e73796e632e70726f66696c6500028129c2cd914f86f1bc05f6ccb45aa9e6000000000000000100000000000000020000000000000003213b69b69aebb26a021eb0854f156d4ede2c5365ab9abd1f21aaaec3b7615d9c98a2225467402ba93826b8c0cf7d6ea215a66224cda2324e1fef6d367e5c915f0d1999347227741200000110ca960dbd67c9f698b85d3fe9c0e5bc6e2a7f8e1f8e2f67084ba6f1988a8299c0c4df7e3d23f8f9615bd4b0b21a2ca9e68e10a3a61b455b6a1aff8c289ec326b7933af4e3b4b23a360733685ffa2aa1b86d04e016ed0b5c529038a055a044aca51c8929503f2f8c648dd0f99f71f972bbf9771f47ed8bc763328dbc668506f63ca559b6ca2d667cc7e811512781880ee0e8270a27240643f8d265284dc5cb16d0372c451c6feaa3d95195ae6a856f5908992f6fa5880e862b9c645a0997f6afb983de0396b7f7b60756f376f620bf058cd9c755af6002ce6c471050ae5c3c89d241b1e2cbfe3b69c785b0fdf9765953456cea4d5e01d7723ceaa15a90a5c7041aa5454ede1e801c854414d6314cff09663cb4f90bf348f27402916d0ef17686573dc64a0a18dbfb21dab083718a4f6e417400810373cd602c9b5d28ca53a97a65c0b921a9e06b966720140b47ad7ff806"
+		},
+		{
+			"epoch_key": "1e0e13ec7d3b8fee32b1a0980b242fdb9fdacebe371e39414d798d73a1c3ec1a",
+			"epoch_record": "ac97f97498c3dd926814a87f543bdf291899ae11ab70476715525282e23201f3",
+			"expect": "invalid",
+			"kind": "profile_open",
+			"name": "another_epoch_key_fails",
+			"profile": "126e6f7572612e73796e632e70726f66696c6500028129c2cd914f86f1bc05f6ccb45aa9e6000000000000000100000000000000020000000000000003213b69b69aebb26a021eb0854f156d4ede2c5365ab9abd1f21aaaec3b7615d9c98a2225467402ba93826b8c0cf7d6ea215a66224cda2324e1fef6d367e5c915f0d1999347227741200000110ca960dbd67c9f698b85d3fe9c0e5bc6e2a7f8e1f8e2f67084ba6f1988a8299c0c4df7e3d23f8f9615bd4b0b21a2ca9e68e10a3a61b455b6a1aff8c289ec326b7933af4e3b4b23a360733685ffa2aa1b86d04e016ed0b5c529038a055a044aca51c8929503f2f8c648dd0f99f71f972bbf9771f47ed8bc763328dbc668506f63ca559b6ca2d667cc7e811512781880ee0e8270a27240643f8d265284dc5cb16d0372c451c6feaa3d95195ae6a856f5908992f6fa5880e862b9c645a0997f6afb983de0396b7f7b60756f376f620bf058cd9c755af6002ce6c471050ae5c3c89d241b1e2cbfe3b69c785b0fdf9765953456cea4d5e01d7723ceaa15a90a5c7041aa5454ede1e801c854414d6314cff09663cb4f90bf348f27402916d0ef17686573dc64a0a18dbfb21dab083718a4f6e417400810373cd602c9b5d28ca53a97a65c0b921a9e06b966720140b47ad7ff806"
+		}
+	],
+	"description": "The workspace profile (sync-v2.md §25): the signed record and its padded payload under the profile subkey of the workspace domain's epoch key, with the epoch record's digest in its associated data.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {
+		"alice laptop": {
+			"account": "388c232914e7019eae9893223c868ce2",
+			"card_digest": "fca4c4ce44f87436703f6267b020f83a8d3011db0436763786fdbeca61f9d82f",
+			"device": "98a2225467402ba93826b8c0cf7d6ea2",
+			"hpke_seed": "d0e480f81779809de8048f6d36a019d81ce35bd164a68e0391399c14e7432ed4",
+			"signing_public": "6b7448b5645b8c7e3db2a29f39c710438fa58fbcc1de76c4ae00569cabe726d9",
+			"signing_seed": "87359218d2b1a9be0c9ff1b5b3f60be7b288219bb6c81d360d3b7cd9dac3c984"
+		}
+	},
+	"records": [
+		{
+			"digest": "9ab1ec64ba5249968ea5c0ae4092119069cabdef7e26b9790c2d29da0e8a312b",
+			"expect": "ok",
+			"hex": "1a6e6f7572612e73796e632e70726f66696c652e7061796c6f61640002000c47617264656e20706c616e73",
+			"name": "profile_payload",
+			"type": "profile_payload",
+			"value": {
+				"name": "Garden plans"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "profile_payload",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "profile_payload_truncated",
+			"type": "profile_payload"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "profile_payload",
+			"mutation": {
+				"retag": "106e6f7572612e73796e632e73686172650002"
+			},
+			"name": "profile_payload_wrong_tag",
+			"type": "profile_payload"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "profile_payload",
+			"mutation": {
+				"version": 3
+			},
+			"name": "profile_payload_wrong_version",
+			"type": "profile_payload"
+		},
+		{
+			"digest": "cd9ce9f6891d59e26f9fc8fea215ee72472a87949976f87796c376e3c6119701",
+			"expect": "ok",
+			"hex": "126e6f7572612e73796e632e70726f66696c6500028129c2cd914f86f1bc05f6ccb45aa9e6000000000000000100000000000000020000000000000003213b69b69aebb26a021eb0854f156d4ede2c5365ab9abd1f21aaaec3b7615d9c98a2225467402ba93826b8c0cf7d6ea215a66224cda2324e1fef6d367e5c915f0d1999347227741200000110ca960dbd67c9f698b85d3fe9c0e5bc6e2a7f8e1f8e2f67084ba6f1988a8299c0c4df7e3d23f8f9615bd4b0b21a2ca9e68e10a3a61b455b6a1aff8c289ec326b7933af4e3b4b23a360733685ffa2aa1b86d04e016ed0b5c529038a055a044aca51c8929503f2f8c648dd0f99f71f972bbf9771f47ed8bc763328dbc668506f63ca559b6ca2d667cc7e811512781880ee0e8270a27240643f8d265284dc5cb16d0372c451c6feaa3d95195ae6a856f5908992f6fa5880e862b9c645a0997f6afb983de0396b7f7b60756f376f620bf058cd9c755af6002ce6c471050ae5c3c89d241b1e2cbfe3b69c785b0fdf9765953456cea4d5e01d7723ceaa15a90a5c7041aa5454ede1e801c854414d6314cff09663cb4f90bf348f27402916d0ef17686573dc64a0a18dbfb21dab083718a4f6e417400810373cd602c9b5d28ca53a97a65c0b921a9e06b966720140b47ad7ff806",
+			"name": "profile",
+			"signer": "alice laptop",
+			"type": "profile",
+			"value": {
+				"body": {
+					"ciphertext": "ca960dbd67c9f698b85d3fe9c0e5bc6e2a7f8e1f8e2f67084ba6f1988a8299c0c4df7e3d23f8f9615bd4b0b21a2ca9e68e10a3a61b455b6a1aff8c289ec326b7933af4e3b4b23a360733685ffa2aa1b86d04e016ed0b5c529038a055a044aca51c8929503f2f8c648dd0f99f71f972bbf9771f47ed8bc763328dbc668506f63ca559b6ca2d667cc7e811512781880ee0e8270a27240643f8d265284dc5cb16d0372c451c6feaa3d95195ae6a856f5908992f6fa5880e862b9c645a0997f6afb983de0396b7f7b60756f376f620bf058cd9c755af6002ce6c471050ae5c3c89d241b1e2cbfe3b69c785b0fdf9765953456cea4d5e01d7723ceaa15a90a5c7041aa5454ede1e801c854414d6314cff0966",
+					"epoch": 2,
+					"nonce": "15a66224cda2324e1fef6d367e5c915f0d19993472277412",
+					"policy_head": "213b69b69aebb26a021eb0854f156d4ede2c5365ab9abd1f21aaaec3b7615d9c",
+					"policy_revision": 3,
+					"profile_revision": 1,
+					"signer": "98a2225467402ba93826b8c0cf7d6ea2",
+					"workspace": "8129c2cd914f86f1bc05f6ccb45aa9e6"
+				},
+				"sig": "3cb4f90bf348f27402916d0ef17686573dc64a0a18dbfb21dab083718a4f6e417400810373cd602c9b5d28ca53a97a65c0b921a9e06b966720140b47ad7ff806"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "profile",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "profile_truncated",
+			"signer": "alice laptop",
+			"type": "profile"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "profile",
+			"mutation": {
+				"retag": "106e6f7572612e73796e632e73686172650002"
+			},
+			"name": "profile_wrong_tag",
+			"signer": "alice laptop",
+			"type": "profile"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "profile",
+			"mutation": {
+				"version": 3
+			},
+			"name": "profile_wrong_version",
+			"signer": "alice laptop",
+			"type": "profile"
+		},
+		{
+			"expect": {
+				"verify": "signature"
+			},
+			"from": "profile",
+			"mutation": {
+				"flip_last_byte": true
+			},
+			"name": "profile_bad_signature",
+			"signer": "alice laptop",
+			"type": "profile"
+		}
+	]
+}

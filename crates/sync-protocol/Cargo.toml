@@ -4,3 +4,30 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+# The primitives of docs/workspace-format/sync-v2.md §3, pinned exactly. The
+# workspace still pins older ed25519-dalek and chacha20poly1305 releases for
+# the legacy v1 code in local-core, so these are declared here, not in
+# [workspace.dependencies]. This crate holds no filesystem, socket or database
+# code and builds for wasm32-unknown-unknown (scripts/check-sync-protocol.sh).
+[dependencies]
+aead-stream = { version = "=0.6.0", default-features = false, features = ["alloc"] }
+base64.workspace = true
+blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast", "zeroize"] }
+getrandom = { version = "=0.4.3", default-features = false }
+serde.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+# On the browser target getrandom reads crypto.getRandomValues through
+# wasm-bindgen, which account-web loads anyway.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "=0.4.3", default-features = false, features = ["wasm_js"] }
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+# Published test vectors: Wycheproof's XChaCha20-Poly1305 and Ed25519 cases.
+wycheproof = { version = "=0.7.0", default-features = false, features = ["aead", "eddsa"] }

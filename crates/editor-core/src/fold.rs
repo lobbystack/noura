@@ -10,7 +10,6 @@
 //! it, you replace/delete/copy the content. This is accomplished in the logic
 //! that handles those operations.
 
-use comrak::Arena;
 use comrak::nodes::{AstNode, NodeHeading, NodeValue};
 
 use crate::bounds::FoldBounds;
@@ -38,6 +37,12 @@ impl<'ast> MdDoc {
     /// only.
     pub fn calc_fold_bounds(&mut self, root: &'ast AstNode<'ast>) {
         let mut folds = Vec::new();
+        // A plain-text file folds nothing: it shows every line of its
+        // source.
+        if self.plaintext {
+            self.bounds.folds = folds;
+            return;
+        }
         for node in root.descendants() {
             if let Some(fold) = self.fold(node)
                 && let Some(contents) = self.fold_contents(node)
@@ -231,22 +236,19 @@ impl<'ast> MdDoc {
     /// Selections are snapped out of fold sections, but an edit can still
     /// leave one inside, e.g. indenting an item into a folded item; after
     /// an edit or a user move, unfold around it.
-    pub fn unfold_after_edit<'a>(
-        &mut self,
-        arena: &'a Arena<'a>,
-        edited: bool,
-        undo_redo: bool,
-    ) -> buffer::Response {
+    pub fn unfold_after_edit(&mut self, edited: bool, undo_redo: bool) -> buffer::Response {
         if edited && !undo_redo && !self.readonly && !self.plaintext {
-            self.unfold_at_selection(arena)
+            self.unfold_at_selection()
         } else {
             buffer::Response::default()
         }
     }
 
-    /// Apply [`MdDoc::unfold_ops_for_selection`], reparsing on
-    /// change so this frame renders the unfolded state.
-    pub fn unfold_at_selection<'a>(&mut self, arena: &'a Arena<'a>) -> buffer::Response {
+    /// Apply [`MdDoc::unfold_ops_for_selection`] against the folds of the
+    /// current text.
+    pub fn unfold_at_selection(&mut self) -> buffer::Response {
+        let ast = self.take_ast();
+        self.put_ast(ast);
         let ops = self.unfold_ops_for_selection();
         if ops.is_empty() {
             return buffer::Response::default();
@@ -254,7 +256,6 @@ impl<'ast> MdDoc {
         self.buffer.queue(ops);
         let response = self.buffer.update();
         self.bump_text_seq();
-        self.reparse(arena);
         response
     }
 

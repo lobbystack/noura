@@ -724,9 +724,13 @@ impl MdDoc {
     }
 
     /// Whether Tab and Shift-Tab restructure the list the selection is in.
-    /// Outside a list they change no text, and the window can move the
-    /// keyboard to the next control instead.
+    /// Outside a list, and anywhere in a plain-text file, they change no
+    /// text, and the window can move the keyboard to the next control
+    /// instead.
     pub fn tab_indents(&self) -> bool {
+        if self.plaintext {
+            return false;
+        }
         let (from, to) = self.selection_span();
         let text = self.text();
         list_lines(text, &all_lines(text), from, to).is_some()

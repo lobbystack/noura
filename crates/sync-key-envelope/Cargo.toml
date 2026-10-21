@@ -13,9 +13,22 @@ base64.workspace = true
 blake3.workspace = true
 ed25519-dalek.workspace = true
 hkdf.workspace = true
+# X-Wing HPKE for v2 envelopes (sync-v2.md §3): base mode, X-Wing 0x647a,
+# HKDF-SHA256, ChaCha20Poly1305. hpke exports `XWing` only with both `mlkem`
+# and `x25519`, and `mlkem` doesn't enable `hkdfsha2`, so the build names all
+# three.
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "chacha", "getrandom", "hkdfsha2", "mlkem", "x25519"] }
+rand_core = { version = "0.10.1", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
 thiserror.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+# Published test vectors: Wycheproof's X25519 cases, low-order points
+# included, against the x25519-dalek release that X-Wing uses.
+wycheproof = { version = "=0.7.0", default-features = false, features = ["xdh"] }
+x25519-dalek-v3 = { package = "x25519-dalek", version = "=3.0.0", default-features = false, features = ["static_secrets"] }
