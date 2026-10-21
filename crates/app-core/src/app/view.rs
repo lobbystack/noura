@@ -18,6 +18,10 @@ impl App {
     /// Show a file in a tab: its own tab when it has one, otherwise as
     /// `how` says.
     pub fn open_file(&mut self, relative_path: &str, how: OpenAs) {
+        if self.workspace.is_none() {
+            return;
+        }
+        self.save_leaving_note();
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -80,6 +84,7 @@ impl App {
             page_id: page.id.clone(),
             title: page.title.clone(),
         };
+        self.save_leaving_note();
         self.tabs.open(content, how);
         self.tabs_changed(true);
     }
@@ -124,6 +129,9 @@ impl App {
 
     /// Show the tab `id`.
     pub fn activate_tab(&mut self, id: TabId) {
+        if self.tabs.active().map(Tab::id) != Some(id) {
+            self.save_leaving_note();
+        }
         if self.tabs.activate(id) {
             self.tabs_changed(true);
         }
@@ -153,8 +161,15 @@ impl App {
     }
 
     /// Close a tab. Closing the active tab shows the tab that takes its
-    /// place; closing the last one leaves nothing open.
+    /// place; closing the last one leaves nothing open. A note's tab saves
+    /// first, and stays open while the save runs or after it failed, until
+    /// [`App::unsaved_prompt`] gets an answer.
     pub fn close_tab(&mut self, id: TabId) {
+        self.leave(super::notes::Leave::CloseTab(id));
+    }
+
+    /// Close a tab whose note, if any, is on disk.
+    pub(super) fn close_tab_now(&mut self, id: TabId) {
         let was_active = self.tabs.active().map(Tab::id) == Some(id);
         if self.tabs.close(id) {
             self.tabs_changed(was_active);
@@ -203,7 +218,7 @@ impl App {
         self.layout_changed();
     }
 
-    fn layout_changed(&mut self) {
+    pub(super) fn layout_changed(&mut self) {
         self.listeners.emit(Change::Layout);
         self.layouts.save(&self.layout);
     }
@@ -350,6 +365,7 @@ impl App {
     /// Announce a change to the tabs and save them. `document` says
     /// whether what the window shows changed too.
     pub(super) fn tabs_changed(&mut self, document: bool) {
+        self.sync_notes();
         self.listeners.emit(Change::Tabs);
         if document {
             self.listeners.emit(Change::Document);
@@ -385,6 +401,7 @@ impl App {
         let Some(workspace) = &self.workspace else {
             self.tabs.restore(Vec::new(), None);
             self.rail.set_saved_order(Vec::new());
+            self.sync_notes();
             return;
         };
         let stored = self.views.load(workspace.id());
@@ -429,5 +446,6 @@ impl App {
             })
             .collect();
         self.tabs.restore(restored, stored.active);
+        self.sync_notes();
     }
 }

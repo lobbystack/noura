@@ -28,6 +28,8 @@ pub struct Layout {
     pub sidebar_width: f32,
     /// The sidebar sections you folded, by section key.
     pub collapsed_sections: Vec<String>,
+    /// How wide every open note's lines run.
+    pub line_width: crate::LineWidth,
 }
 
 impl Default for Layout {
@@ -36,6 +38,7 @@ impl Default for Layout {
             sidebar_shown: true,
             sidebar_width: SIDEBAR_MIN_WIDTH,
             collapsed_sections: Vec::new(),
+            line_width: crate::LineWidth::default(),
         }
     }
 }

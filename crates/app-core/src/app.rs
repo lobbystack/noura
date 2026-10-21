@@ -22,12 +22,14 @@ mod commands;
 mod drops;
 mod file_actions;
 mod ignored_files;
+mod notes;
 mod palette;
 mod view;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
 pub use ignored_files::IgnoredFiles;
+pub use notes::UnsavedPrompt;
 pub use palette::CommandPalette;
 
 /// What the window shows.
@@ -85,6 +87,9 @@ pub enum Change {
     /// Close Window or Quit ran; see [`App::take_close_window`] and
     /// [`App::take_quit`].
     Window,
+    /// An open note changed: its text, a save, its properties or its name,
+    /// or the prompt about a note that couldn't save.
+    Note,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -172,6 +177,10 @@ pub struct App {
     close_window: bool,
     /// Quit ran and the app hasn't closed yet.
     quit: bool,
+    /// The Markdown files open in tabs, and their saves.
+    notes: crate::notes::Notes,
+    /// What waits for notes to save before it happens.
+    leaving: Option<notes::Leaving>,
 }
 
 impl App {
@@ -219,6 +228,8 @@ impl App {
             shortcuts_open: false,
             close_window: false,
             quit: false,
+            notes: crate::notes::Notes::default(),
+            leaving: None,
         };
         app.register_kernel_commands();
         app.layout = app.layouts.load();
@@ -294,17 +305,19 @@ impl App {
         }
     }
 
-    /// Open the workspace in `folder`, or make one of a plain folder.
+    /// Open the workspace in `folder`, or make one of a plain folder. Open
+    /// notes save first.
     pub fn open_folder(&mut self, folder: PathBuf) {
-        self.start(Job::OpenFolder(folder));
+        self.leave(notes::Leave::Open(Job::OpenFolder(folder)));
     }
 
-    /// Create a workspace named `name` in `folder` and open it.
+    /// Create a workspace named `name` in `folder` and open it. Open notes
+    /// save first.
     pub fn create_workspace(&mut self, name: &str, folder: PathBuf) {
-        self.start(Job::Create {
+        self.leave(notes::Leave::Open(Job::Create {
             name: name.to_owned(),
             folder,
-        });
+        }));
     }
 
     /// Open a workspace from the recent list.
@@ -314,10 +327,10 @@ impl App {
             .iter()
             .find(|recent| recent.workspace_id == workspace_id)
             .map_or_else(String::new, |recent| recent.name.clone());
-        self.start(Job::OpenRecent {
+        self.leave(notes::Leave::Open(Job::OpenRecent {
             workspace_id: workspace_id.to_owned(),
             name,
-        });
+        }));
     }
 
     /// Retry the workspace the launch couldn't reopen. Never opens another
@@ -355,8 +368,14 @@ impl App {
         }
     }
 
-    /// Apply finished background work. Returns whether anything changed.
+    /// Apply finished background work: note saves and a workspace that
+    /// opened. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
+        let saved = self.collect_note_writes();
+        self.poll_workspace() || saved
+    }
+
+    fn poll_workspace(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };

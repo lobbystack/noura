@@ -24,7 +24,7 @@ impl App {
             Platform::Windows => "Exit",
             Platform::Linux => "Quit",
         };
-        let kernel: [(&str, &str, Run); 11] = [
+        let kernel: [(&str, &str, Run); 12] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -41,14 +41,12 @@ impl App {
                 Arc::new(App::toggle_palette),
             ),
             (RENAME_FILE, "Rename File", Arc::new(App::rename_open_file)),
+            (SAVE, "Save", Arc::new(App::save_active_note)),
             (CLOSE_TAB, "Close Tab", Arc::new(App::close_active_tab)),
             (
                 CLOSE_WINDOW,
                 "Close Window",
-                Arc::new(|app| {
-                    app.close_window = true;
-                    app.listeners.emit(Change::Window);
-                }),
+                Arc::new(App::request_close_window),
             ),
             (NEXT_TAB, "Next Tab", Arc::new(|app| app.cycle_tab(1))),
             (
@@ -66,14 +64,7 @@ impl App {
                 "Keyboard Shortcuts",
                 Arc::new(App::open_shortcuts),
             ),
-            (
-                QUIT,
-                quit,
-                Arc::new(|app| {
-                    app.quit = true;
-                    app.listeners.emit(Change::Window);
-                }),
-            ),
+            (QUIT, quit, Arc::new(App::request_quit)),
         ];
         for (id, label, run) in kernel {
             let command = Command::new(id, label, Area::Anywhere);
@@ -195,6 +186,17 @@ impl App {
             self.shortcuts_open = false;
             self.listeners.emit(Change::Settings);
         }
+    }
+
+    /// Close this window once its notes are saved, as Close Window and
+    /// the window's close button do.
+    pub fn request_close_window(&mut self) {
+        self.leave(super::notes::Leave::CloseWindow);
+    }
+
+    /// Quit once every note is saved, as Quit does.
+    pub fn request_quit(&mut self) {
+        self.leave(super::notes::Leave::Quit);
     }
 
     /// Whether Close Window ran since the last call. The window that ran

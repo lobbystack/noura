@@ -25,6 +25,8 @@ pub mod command_id {
     pub const SEARCH: &str = "search";
     pub const COMMAND_PALETTE: &str = "command-palette";
     pub const RENAME_FILE: &str = "rename-file";
+    /// Save the open note now.
+    pub const SAVE: &str = "save";
     pub const CLOSE_TAB: &str = "close-tab";
     pub const CLOSE_WINDOW: &str = "close-window";
     pub const NEXT_TAB: &str = "next-tab";
@@ -135,6 +137,7 @@ pub fn default_shortcuts(id: &str) -> Vec<Shortcut> {
         SEARCH => vec![command(Key::F).with_shift()],
         COMMAND_PALETTE => vec![command(Key::K)],
         RENAME_FILE => vec![Shortcut::new(Key::F2)],
+        SAVE => vec![command(Key::S)],
         CLOSE_TAB => vec![command(Key::W)],
         CLOSE_WINDOW => vec![command(Key::W).with_shift()],
         NEXT_TAB => vec![
@@ -157,13 +160,14 @@ pub fn default_shortcuts(id: &str) -> Vec<Shortcut> {
 
 /// The kernel commands the default keymap names, in the order lists show
 /// them.
-const KEYMAP_ORDER: [&str; 16] = [
+const KEYMAP_ORDER: [&str; 17] = [
     command_id::NEW_NOTE,
     command_id::NEW_FOLDER,
     command_id::QUICK_OPEN,
     command_id::SEARCH,
     command_id::COMMAND_PALETTE,
     command_id::RENAME_FILE,
+    command_id::SAVE,
     command_id::CLOSE_TAB,
     command_id::CLOSE_WINDOW,
     command_id::NEXT_TAB,
@@ -464,6 +468,8 @@ pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shor
             vec![key(ArrowUp).with_alt(), key(ArrowDown).with_alt()],
         ),
     ];
+    // In a note's text, F2 moves to the note's name field.
+    keys.push((Area::Writing, "Rename the note", vec![key(F2)]));
     // A text field answers to the Edit menu's keys, and to Ctrl-Y for
     // Redo outside macOS.
     for item in SystemItem::EDIT {

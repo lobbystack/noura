@@ -15,7 +15,8 @@ use crate::{
 
 /// An open workspace.
 pub struct Workspace {
-    engine: WorkspaceEngine,
+    /// Shared with the threads that save notes.
+    engine: Arc<WorkspaceEngine>,
     system: Arc<dyn System>,
     id: String,
     name: String,
@@ -37,7 +38,7 @@ impl Workspace {
             engine.set_system_trash(Some(Arc::new(move |path: &Path| trash.trash(path))));
         }
         Ok(Self {
-            engine,
+            engine: Arc::new(engine),
             system,
             id: manifest.id,
             name: manifest.name,
@@ -61,6 +62,11 @@ impl Workspace {
 
     pub(crate) fn engine(&self) -> &WorkspaceEngine {
         &self.engine
+    }
+
+    /// The engine, for a thread that writes in the background.
+    pub(crate) fn shared_engine(&self) -> Arc<WorkspaceEngine> {
+        Arc::clone(&self.engine)
     }
 
     pub(crate) fn system(&self) -> &dyn System {
