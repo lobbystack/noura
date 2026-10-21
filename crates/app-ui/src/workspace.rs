@@ -10,6 +10,7 @@ use egui::{
 use crate::{
     NouraUi,
     common::{self, NewWorkspace, muted},
+    finder,
     rail::{self, RAIL_WIDTH},
     tab_bar::{self, BAR_HEIGHT},
     theme::{Palette, TITLE_SIZE},
@@ -21,6 +22,8 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     if ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Backslash)) {
         state.app.toggle_sidebar();
     }
+    // Ticket 12's keymap takes these over when it lands.
+    finder::shortcuts(ui, &mut state.app);
     let palette = Palette::of(ui.ctx());
     Panel::left("rail")
         .resizable(false)
@@ -61,6 +64,7 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     new_workspace_dialog(state, ui);
     trash_dialog(state, ui);
     ignored_files_dialog(state, ui);
+    finder::show(ui, &mut state.app, &mut state.finder);
 }
 
 /// Ask before a folder goes to the trash, and say where it goes.

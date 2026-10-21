@@ -308,6 +308,7 @@ dependencies = [
  "app-core",
  "egui",
  "egui_kittest",
+ "rusqlite",
  "tempfile",
 ]
 

@@ -231,8 +231,8 @@ fn search_error(error: CoreError) -> AppError {
     match error.code.as_str() {
         "absolute_path" | "unsafe_path" | "reserved_path" => AppError::new(
             &error.code,
-            "Search looks only in folders inside this workspace. Enter a folder as the \
-             file tree shows it, such as Notes or Notes/Ideas.",
+            "Enter a folder inside this workspace as the file tree shows it, such as Notes \
+             or Notes/Ideas.",
         ),
         _ => AppError::new("search_unavailable", "Search isn't available right now."),
     }

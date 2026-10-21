@@ -5,6 +5,7 @@
 
 mod chooser;
 mod common;
+mod finder;
 mod ignored_files;
 mod rail;
 mod tab_bar;
@@ -32,6 +33,7 @@ pub struct NouraUi {
     tree: tree::TreeView,
     ignored: ignored_files::IgnoredFilesView,
     tab_bar: tab_bar::TabBarView,
+    finder: finder::FinderView,
     /// The tab the document area showed last frame.
     shown_tab: Option<TabId>,
     started: bool,
@@ -46,6 +48,7 @@ impl NouraUi {
             tree: tree::TreeView::default(),
             ignored: ignored_files::IgnoredFilesView::default(),
             tab_bar: tab_bar::TabBarView::default(),
+            finder: finder::FinderView::default(),
             shown_tab: None,
             started: false,
         }
