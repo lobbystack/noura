@@ -374,25 +374,27 @@ mod tests {
     }
 
     #[test]
-    fn cmd_shift_s_reaches_the_editor_and_only_cmd_s_saves() {
-        use egui::{Key, Modifiers};
+    fn only_cmd_s_saves() {
+        use egui::{Event, Key, Modifiers};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note.md");
         std::fs::write(&path, "note\n").unwrap();
         let mut harness = app_harness(&path);
+        // The caret sits at the start.
+        harness.event(Event::Text("a ".into()));
+        harness.run_steps(1);
 
+        // Cmd+Shift+S saves nothing, and the editor binds nothing to it.
         harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
         harness.run_steps(1);
-        // The caret sits at the start, so the editor writes an empty
-        // subscript there.
-        assert_eq!(app(&harness).editor.text(), "~~note\n");
+        assert_eq!(app(&harness).editor.text(), "a note\n");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "note\n");
         assert_eq!(app(&harness).status, "");
 
         harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
         harness.run_steps(1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "~~note\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a note\n");
         assert!(app(&harness).status.starts_with("Saved"));
     }
 
