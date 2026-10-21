@@ -1,8 +1,10 @@
-//! The app's view state and its change stream.
+//! A window's view state and its change stream.
 //!
 //! Opening a workspace walks its folder, which can take a while, so it runs
 //! on a background thread. A client calls [`App::poll`] on its own thread to
-//! take the result, and [`App::subscribe`] tells it when to.
+//! take the result, and [`App::subscribe`] tells it when to. The windows of
+//! one app share a session: the open workspace, its files and the rail
+//! order.
 
 use std::{
     path::{Path, PathBuf},
@@ -14,7 +16,12 @@ use std::{
 
 use crate::{
     AppError, FileTree, Layout, NoSystem, OpenedFile, RecentWorkspace, System, Tab, Workspace,
-    WorkspaceService, layout::LayoutStore, rail::Rail, tabs::Tabs, view_state::ViewStore,
+    WorkspaceService,
+    layout::LayoutStore,
+    rail::Rail,
+    session::{Session, WindowKey},
+    tabs::Tabs,
+    view_state::StoredWindow,
 };
 
 mod file_actions;
@@ -72,17 +79,18 @@ pub enum Change {
     Notice,
     /// The Ignored files page changed.
     Settings,
-    /// Background work finished; call [`App::poll`] to apply it.
+    /// Background work finished, or another window changed what this one
+    /// shows, such as the files; call [`App::poll`] to apply it.
     WorkFinished,
 }
 
 type Listener = Box<dyn Fn(Change) + Send + Sync>;
 
 #[derive(Clone, Default)]
-struct Listeners(Arc<Mutex<Vec<Listener>>>);
+pub(crate) struct Listeners(Arc<Mutex<Vec<Listener>>>);
 
 impl Listeners {
-    fn emit(&self, change: Change) {
+    pub(crate) fn emit(&self, change: Change) {
         let listeners = self.0.lock().unwrap_or_else(|error| error.into_inner());
         for listener in listeners.iter() {
             listener(change);
@@ -118,19 +126,33 @@ struct Pending {
     result: Receiver<Result<Opened, AppError>>,
 }
 
-/// The state every client draws: which screen shows, the recent list, the
-/// open workspace with its file tree, and its tabs.
+/// One window's state, which a client draws: which screen shows, the
+/// recent list, the open workspace with its file tree, and the window's
+/// tabs. Every window of the app shares one open workspace, with one index
+/// and one watcher; [`App::new_window`] opens another.
 pub struct App {
+    session: Arc<Session>,
+    key: WindowKey,
+    /// Which workspace opening this window shows. Once another window
+    /// opens a different workspace, this one has closed.
+    opening: u64,
+    /// The versions of the shared listing, rail order and recent list this
+    /// window shows.
+    listing_seen: u64,
+    rail_seen: u64,
+    recents_seen: u64,
+    closed: bool,
+    /// Windows this one opened for its workspace's other saved windows,
+    /// until the client takes them.
+    opened_windows: Vec<App>,
     service: Arc<WorkspaceService>,
     system: Arc<dyn System>,
     screen: Screen,
     recents: Vec<RecentWorkspace>,
-    workspace: Option<Workspace>,
+    workspace: Option<Arc<Workspace>>,
     tree: Option<FileTree>,
     tabs: Tabs,
     rail: Rail,
-    /// Each workspace's tabs, kept in this device's app data.
-    views: ViewStore,
     layout: Layout,
     layouts: LayoutStore,
     notice: Option<Notice>,
@@ -159,31 +181,9 @@ impl App {
     /// workspace was open last time, it reopens in the background while
     /// the screen shows [`Screen::Loading`].
     pub fn launch_with(app_data: impl AsRef<Path>, system: Arc<dyn System>) -> Self {
-        let service = Arc::new(WorkspaceService::with_system(
-            app_data.as_ref(),
-            system.clone(),
-        ));
-        let recents = service.recents();
-        let mut app = Self {
-            service,
-            system,
-            screen: Screen::Chooser { problem: None },
-            recents,
-            workspace: None,
-            tree: None,
-            tabs: Tabs::default(),
-            rail: Rail::default(),
-            views: ViewStore::new(app_data.as_ref()),
-            layout: Layout::default(),
-            layouts: LayoutStore::new(app_data.as_ref()),
-            notice: None,
-            renaming: None,
-            ignored_files: None,
-            pending_trash: None,
-            failed_restore: None,
-            pending: None,
-            listeners: Listeners::default(),
-        };
+        let session = Session::new(app_data.as_ref(), system);
+        let mut app = Self::join(&session);
+        app.recents = app.service.recents();
         app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
@@ -191,6 +191,106 @@ impl App {
             app.start(Job::Restore { workspace_id });
         }
         app
+    }
+
+    /// A window on `session` showing the chooser.
+    fn join(session: &Arc<Session>) -> Self {
+        let listeners = Listeners::default();
+        let key = session.join(listeners.clone());
+        Self {
+            session: session.clone(),
+            key,
+            opening: session.opening(),
+            listing_seen: 0,
+            rail_seen: 0,
+            recents_seen: 0,
+            closed: false,
+            opened_windows: Vec::new(),
+            service: session.service.clone(),
+            system: session.system.clone(),
+            screen: Screen::Chooser { problem: None },
+            recents: Vec::new(),
+            workspace: None,
+            tree: None,
+            tabs: Tabs::default(),
+            rail: Rail::default(),
+            layout: Layout::default(),
+            layouts: LayoutStore::new(&session.app_data),
+            notice: None,
+            renaming: None,
+            ignored_files: None,
+            pending_trash: None,
+            failed_restore: None,
+            pending: None,
+            listeners,
+        }
+    }
+
+    /// Open another window on the open workspace, with no tabs and the
+    /// file tree's folders open as here. The new window shares this
+    /// one's workspace, index and watcher, and joins the windows that
+    /// come back at the next launch. Returns `None` when no workspace is
+    /// open, or while one is opening.
+    pub fn new_window(&mut self) -> Option<App> {
+        if self.is_closed() || self.workspace.is_none() || self.pending.is_some() {
+            return None;
+        }
+        let expanded_folders = self
+            .tree
+            .as_ref()
+            .map(FileTree::expanded_folders)
+            .unwrap_or_default();
+        let mut window = self.spawn_window(StoredWindow {
+            expanded_folders,
+            ..StoredWindow::default()
+        });
+        window.save_view();
+        Some(window)
+    }
+
+    /// The windows this one opened for its workspace's other saved
+    /// windows, such as at launch. The client shows each one.
+    pub fn take_opened_windows(&mut self) -> Vec<App> {
+        std::mem::take(&mut self.opened_windows)
+    }
+
+    /// A window on this one's workspace showing `stored`.
+    fn spawn_window(&self, stored: StoredWindow) -> App {
+        let mut window = Self::join(&self.session);
+        let current = self.session.current();
+        window.opening = self.opening;
+        window.listing_seen = current.listing;
+        window.rail_seen = current.rail;
+        window.recents_seen = current.recents;
+        window.screen = Screen::Workspace;
+        window.recents = self.recents.clone();
+        window.workspace = self.workspace.clone();
+        window.tree = current.tree;
+        window.rail = self.rail.clone();
+        window.layout = self.layout.clone();
+        window.restore_view(stored);
+        window
+    }
+
+    /// Close this window. The other windows keep their tabs, and this
+    /// one's tabs leave the windows that come back at the next launch,
+    /// unless it was the last window open: then it comes back, as when
+    /// Noura quits.
+    pub fn close_window(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        self.pending = None;
+        self.session.close(self.key);
+        self.listeners.emit(Change::Screen);
+    }
+
+    /// Whether this window has closed: with [`App::close_window`], or
+    /// because another window opened a different workspace. A client
+    /// stops drawing a closed window.
+    pub fn is_closed(&self) -> bool {
+        self.closed || self.opening != self.session.opening()
     }
 
     /// Call `listener` after each change, from whichever thread made it.
@@ -217,7 +317,7 @@ impl App {
     }
 
     pub fn workspace(&self) -> Option<&Workspace> {
-        self.workspace.as_ref()
+        self.workspace.as_deref()
     }
 
     pub fn tree(&self) -> Option<&FileTree> {
@@ -272,6 +372,14 @@ impl App {
 
     /// Open a workspace from the recent list.
     pub fn open_recent(&mut self, workspace_id: &str) {
+        // It's open already, in every window.
+        if self
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.id() == workspace_id)
+        {
+            return;
+        }
         let name = self
             .recents
             .iter()
@@ -297,6 +405,7 @@ impl App {
         match self.service.remove_recent(workspace_id) {
             Ok(recents) => {
                 self.recents = recents;
+                self.recents_seen = self.session.recents_changed(self.key);
                 self.listeners.emit(Change::Recents);
                 // The problem described a workspace that is no longer listed,
                 // so there is nothing left to try again.
@@ -318,8 +427,24 @@ impl App {
         }
     }
 
-    /// Apply finished background work. Returns whether anything changed.
+    /// Apply finished background work and what other windows changed,
+    /// such as the files. Returns whether anything changed.
     pub fn poll(&mut self) -> bool {
+        if self.closed {
+            return false;
+        }
+        if self.is_closed() {
+            self.closed_by_another_window();
+            return true;
+        }
+        let opened = self.poll_job();
+        let listed = self.poll_listing();
+        let rail = self.poll_rail();
+        let recents = self.poll_recents();
+        opened || listed || rail || recents
+    }
+
+    fn poll_job(&mut self) -> bool {
         let Some(pending) = &self.pending else {
             return false;
         };
@@ -341,7 +466,8 @@ impl App {
             (Err(error), Job::Restore { workspace_id }) => {
                 self.workspace = None;
                 self.tree = None;
-                self.restore_view();
+                self.rail.set_saved_order(Vec::new());
+                self.restore_view(StoredWindow::default());
                 self.renaming = None;
                 self.ignored_files = None;
                 self.pending_trash = None;
@@ -364,11 +490,63 @@ impl App {
         true
     }
 
+    /// Show the rail order another window gave the workspace.
+    fn poll_rail(&mut self) -> bool {
+        let Some((version, order)) = self.session.rail_since(self.rail_seen) else {
+            return false;
+        };
+        self.rail_seen = version;
+        self.rail.set_saved_order(order);
+        self.listeners.emit(Change::Rail);
+        true
+    }
+
+    /// Read the recent list again after another window changed it.
+    fn poll_recents(&mut self) -> bool {
+        let Some(version) = self.session.recents_since(self.recents_seen) else {
+            return false;
+        };
+        self.recents_seen = version;
+        self.recents = self.service.recents();
+        self.listeners.emit(Change::Recents);
+        true
+    }
+
+    /// Another window opened a different workspace, so this one closed.
+    /// Its tabs stay saved with the workspace it showed.
+    fn closed_by_another_window(&mut self) {
+        self.closed = true;
+        self.pending = None;
+        self.listeners.emit(Change::Screen);
+    }
+
     fn adopt(&mut self, opened: Opened) {
+        // The workspace was open already: every window keeps sharing the
+        // one that is open, with its index.
+        if self
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.id() == opened.workspace.id())
+        {
+            drop(opened);
+            self.refresh_tree(None);
+            return;
+        }
+        let workspace = Arc::new(opened.workspace);
+        let adopted = self
+            .session
+            .adopt(self.key, workspace.clone(), &opened.tree);
+        self.opening = adopted.opening;
+        self.listing_seen = adopted.listing;
+        self.rail_seen = adopted.rail;
+        self.recents_seen = adopted.recents;
         self.failed_restore = None;
-        self.workspace = Some(opened.workspace);
+        self.workspace = Some(workspace);
         self.tree = Some(opened.tree);
-        self.restore_view();
+        self.rail.set_saved_order(adopted.view.rail_order);
+        self.listeners.emit(Change::Rail);
+        let mut windows = adopted.view.windows.into_iter();
+        self.restore_view(windows.next().unwrap_or_default());
         self.notice = None;
         self.renaming = None;
         self.ignored_files = None;
@@ -378,6 +556,11 @@ impl App {
         self.listeners.emit(Change::Document);
         self.listeners.emit(Change::Notice);
         self.set_screen(Screen::Workspace);
+        // The workspace's other saved windows come back too.
+        for stored in windows {
+            let window = self.spawn_window(stored);
+            self.opened_windows.push(window);
+        }
     }
 
     fn set_screen(&mut self, screen: Screen) {
@@ -445,4 +628,12 @@ fn run(service: &WorkspaceService, job: &Job) -> Result<Opened, AppError> {
     };
     let tree = workspace.file_tree()?;
     Ok(Opened { workspace, tree })
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Quitting drops every window without closing it, so each one's
+        // tabs stay saved for the next launch.
+        self.session.leave(self.key);
+    }
 }

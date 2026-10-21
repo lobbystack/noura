@@ -15,6 +15,7 @@ mod layout;
 mod operations;
 mod rail;
 mod recents;
+mod session;
 mod store;
 mod system;
 mod tabs;

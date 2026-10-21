@@ -103,6 +103,7 @@ pub enum DropSpot {
 }
 
 /// A row being dragged.
+#[derive(Clone)]
 struct Drag {
     node: usize,
     /// The closed folder under the pointer and when the pointer got there.
@@ -142,6 +143,7 @@ pub(crate) struct TreeEntry {
     pub(crate) object_id: Option<String>,
 }
 
+#[derive(Clone)]
 struct Node {
     file_name: String,
     /// The file name folded for sorting: lowercase, without accents.
@@ -156,6 +158,7 @@ struct Node {
 
 /// The file tree of one workspace: its folders and files, which folders are
 /// open, the visible rows and the keyboard focus.
+#[derive(Clone)]
 pub struct FileTree {
     nodes: Vec<Node>,
     top: Vec<usize>,
@@ -543,13 +546,14 @@ impl FileTree {
             .is_some_and(|node| self.nodes[*node].kind == EntryKind::Folder)
     }
 
-    /// Take over `old`'s open folders and current row. When an item moved
-    /// from `moved.0` to `moved.1`, its open folders and the current row
-    /// follow it.
-    pub(crate) fn carry_over(&mut self, old: &FileTree, moved: Option<(&str, &str)>) {
-        let follow = |path: &str| match moved {
-            Some((from, to)) => remap(path, from, to).unwrap_or_else(|| path.to_owned()),
-            None => path.to_owned(),
+    /// Take over `old`'s open folders and current row. When items moved,
+    /// each from `from` to `to` in the order of `moves`, their open
+    /// folders and the current row follow them.
+    pub(crate) fn carry_over(&mut self, old: &FileTree, moves: &[(&str, &str)]) {
+        let follow = |path: &str| {
+            moves.iter().fold(path.to_owned(), |path, (from, to)| {
+                remap(&path, from, to).unwrap_or(path)
+            })
         };
         for node in &old.expanded {
             let path = follow(&old.nodes[*node].relative_path);
