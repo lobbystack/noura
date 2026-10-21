@@ -136,6 +136,11 @@ impl System for FakeSystem {
     fn copy_text(&self, text: &str) {
         self.record(format!("copy {text}"));
     }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        self.record(format!("browse {url}"));
+        Ok(())
+    }
 }
 
 /// Run frames until the app finishes background work and settles.

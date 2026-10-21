@@ -1,5 +1,5 @@
 //! What Noura asks of the operating system: its trash, its file manager,
-//! a terminal and the clipboard. The desktop app passes the real system;
+//! a terminal, the clipboard and the web browser. The desktop app passes the real system;
 //! tests pass a fake that records each request.
 
 use std::{io, path::Path};
@@ -81,10 +81,15 @@ pub trait System: Send + Sync {
 
     /// Put `text` on the clipboard.
     fn copy_text(&self, text: &str);
+
+    /// Open the web page at `url` in the default browser. Noura checks
+    /// that `url` is an `http` or `https` link first.
+    fn open_url(&self, url: &str) -> io::Result<()>;
 }
 
 /// No operating system services: deleted items go to the workspace's trash
-/// folder, and showing files, terminals and the clipboard are unavailable.
+/// folder, and showing files, terminals, the clipboard and the browser are
+/// unavailable.
 pub struct NoSystem;
 
 impl System for NoSystem {
@@ -109,6 +114,10 @@ impl System for NoSystem {
     }
 
     fn copy_text(&self, _text: &str) {}
+
+    fn open_url(&self, _url: &str) -> io::Result<()> {
+        Err(unavailable())
+    }
 }
 
 fn unavailable() -> io::Error {

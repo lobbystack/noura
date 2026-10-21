@@ -13,14 +13,17 @@ use std::{
 };
 
 use crate::{
-    AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
-    RecentWorkspace, System, Tab, Workspace, WorkspaceService, layout::LayoutStore, rail::Rail,
-    tabs::Tabs, view_state::ViewStore,
+    AppError, FileTree, Layout, LoginItem, NoLoginItem, NoPendingSaves, NoSystem, OpenedFile,
+    PendingSaves, Preferences, RecentWorkspace, Settings, SettingsSection, System, Tab, Workspace,
+    WorkspaceService, layout::LayoutStore, preferences::PreferencesStore, rail::Rail,
+    settings::kernel_sections, tabs::Tabs, view_state::ViewStore,
 };
 
 mod drops;
 mod file_actions;
 mod ignored_files;
+mod preferences;
+mod settings;
 mod view;
 
 pub use drops::DragOut;
@@ -73,8 +76,10 @@ pub enum Change {
     Layout,
     Document,
     Notice,
-    /// The Ignored files page changed.
+    /// Settings or the Ignored files page changed.
     Settings,
+    /// The appearance, text size or zoom changed.
+    Preferences,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -136,11 +141,22 @@ pub struct App {
     views: ViewStore,
     layout: Layout,
     layouts: LayoutStore,
+    /// This device's appearance, text size and zoom.
+    preferences: Preferences,
+    preferences_store: PreferencesStore,
     notice: Option<Notice>,
     /// The tree row being renamed in place.
     renaming: Option<Rename>,
     /// The Ignored files page, while it is open.
     ignored_files: Option<IgnoredFiles>,
+    /// Settings, while it is open.
+    settings: Option<Settings>,
+    /// Settings' sections, in the order they registered.
+    settings_sections: Vec<SettingsSection>,
+    /// The system's apps that open at login.
+    login_item: Arc<dyn LoginItem>,
+    /// Where the local diagnostic log lives.
+    log_folder: PathBuf,
     /// A folder waiting to go to the trash until you confirm.
     pending_trash: Option<(String, Question)>,
     /// The workspace the launch couldn't reopen, which Try again retries.
@@ -187,9 +203,15 @@ impl App {
             views: ViewStore::new(app_data.as_ref()),
             layout: Layout::default(),
             layouts: LayoutStore::new(app_data.as_ref()),
+            preferences: Preferences::default(),
+            preferences_store: PreferencesStore::new(app_data.as_ref()),
             notice: None,
             renaming: None,
             ignored_files: None,
+            settings: None,
+            settings_sections: kernel_sections(),
+            login_item: Arc::new(NoLoginItem),
+            log_folder: crate::log_folder(app_data.as_ref()),
             pending_trash: None,
             failed_restore: None,
             pending: None,
@@ -199,6 +221,7 @@ impl App {
             dragged_out: None,
         };
         app.layout = app.layouts.load();
+        app.preferences = app.preferences_store.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();
             app.screen = Screen::Loading;

@@ -6,6 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Finds the workspace's names in log lines for Copy diagnostics.
+aho-corasick.workspace = true
 atomic-write-file.workspace = true
 directories.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }

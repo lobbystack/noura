@@ -19,6 +19,7 @@ pub enum Call {
     OpenFolder(PathBuf),
     OpenTerminal(PathBuf),
     Copy(String),
+    OpenUrl(String),
 }
 
 /// A system that records every request. Its trash moves items to a folder
@@ -110,6 +111,11 @@ impl System for FakeSystem {
 
     fn copy_text(&self, text: &str) {
         self.record(Call::Copy(text.to_owned()));
+    }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        self.record(Call::OpenUrl(url.to_owned()));
+        Ok(())
     }
 }
 

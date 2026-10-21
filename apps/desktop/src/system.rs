@@ -1,5 +1,5 @@
-//! The operating system services the files service uses: the system
-//! trash, the file manager, a terminal and the clipboard.
+//! The operating system services `app-core` uses: the system trash, the
+//! file manager, a terminal, the clipboard and the web browser.
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::{Child, Command};
@@ -45,6 +45,10 @@ impl System for DesktopSystem {
 
     fn copy_text(&self, text: &str) {
         self.ctx.copy_text(text.to_owned());
+    }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        opener::open_browser(url).map_err(io::Error::other)
     }
 }
 
