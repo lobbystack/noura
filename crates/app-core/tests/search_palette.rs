@@ -248,7 +248,7 @@ fn enter_opens_the_highlighted_hit_and_closes_search() {
     app.open_search();
     app.set_palette_query("black");
     settle(&mut app, "");
-    assert!(app.open_palette_selection());
+    assert!(app.run_palette_selection(Instant::now()));
 
     assert!(app.palette().is_none());
     assert_eq!(document(&app).as_deref(), Some("Spices/Pepper.md"));

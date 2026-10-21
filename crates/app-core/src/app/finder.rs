@@ -1,8 +1,9 @@
 //! The palette's quick open and search modes: what you typed, the
-//! highlighted row, and the files that match.
+//! highlighted row, and the files that match. Quick Open (Mod-O) and
+//! Search Files (Mod-Shift-F) are commands that open them.
 
-use super::{App, Change};
-use crate::{OpenAs, QuickOpenMatch, SearchQuery, SearchState, quick_open};
+use super::{App, Change, Palette};
+use crate::{QuickOpenMatch, SearchQuery, SearchState, quick_open};
 
 /// Quick open, as the palette shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,60 +29,7 @@ pub struct Search {
     pub state: SearchState,
 }
 
-/// What the palette shows while it's open.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Palette {
-    QuickOpen(QuickOpen),
-    Search(Search),
-}
-
-impl Palette {
-    /// What the palette's field holds.
-    pub fn query(&self) -> &str {
-        match self {
-            Self::QuickOpen(quick_open) => &quick_open.query,
-            Self::Search(search) => &search.query.text,
-        }
-    }
-
-    /// The highlighted row.
-    pub fn selected(&self) -> usize {
-        match self {
-            Self::QuickOpen(quick_open) => quick_open.selected,
-            Self::Search(search) => search.selected,
-        }
-    }
-
-    fn selected_mut(&mut self) -> &mut usize {
-        match self {
-            Self::QuickOpen(quick_open) => &mut quick_open.selected,
-            Self::Search(search) => &mut search.selected,
-        }
-    }
-
-    /// The workspace paths of the files the palette lists, in order.
-    pub fn paths(&self) -> Vec<&str> {
-        match self {
-            Self::QuickOpen(quick_open) => quick_open
-                .matches
-                .iter()
-                .map(|found| found.relative_path.as_str())
-                .collect(),
-            Self::Search(Search {
-                state: SearchState::Done(hits),
-                ..
-            }) => hits.iter().map(|hit| hit.relative_path.as_str()).collect(),
-            Self::Search(_) => Vec::new(),
-        }
-    }
-}
-
 impl App {
-    /// The palette, while it's open.
-    pub fn palette(&self) -> Option<&Palette> {
-        self.palette.as_ref()
-    }
-
     /// Open quick open with an empty field, as Mod-O does. Quick open
     /// replaces what the palette showed.
     pub fn open_quick_open(&mut self) {
@@ -113,32 +61,6 @@ impl App {
             state: SearchState::Idle,
         }));
         self.listeners.emit(Change::Palette);
-    }
-
-    /// Close the palette, as Escape does. A search still running is
-    /// forgotten.
-    pub fn close_palette(&mut self) {
-        self.searcher.cancel();
-        if self.palette.take().is_some() {
-            self.listeners.emit(Change::Palette);
-        }
-    }
-
-    /// Change what the palette's field holds. Quick open ranks the files
-    /// again; search starts again in the background, and clearing the
-    /// field clears the results.
-    pub fn set_palette_query(&mut self, text: &str) {
-        match &mut self.palette {
-            Some(Palette::QuickOpen(quick_open)) if quick_open.query != text => {
-                text.clone_into(&mut quick_open.query);
-                self.rank_files();
-            }
-            Some(Palette::Search(search)) if search.query.text != text => {
-                text.clone_into(&mut search.query.text);
-                self.search_again();
-            }
-            _ => {}
-        }
     }
 
     /// Rank the tree's files for quick open's query, and highlight the
@@ -189,7 +111,7 @@ impl App {
 
     /// Run the search for the current query and filters in place of the
     /// one before, whose answer no longer applies.
-    fn search_again(&mut self) {
+    pub(super) fn search_again(&mut self) {
         let (Some(Palette::Search(search)), Some(workspace)) = (&mut self.palette, &self.workspace)
         else {
             return;
@@ -231,52 +153,5 @@ impl App {
         }
         self.listeners.emit(Change::Palette);
         true
-    }
-
-    /// Highlight the row `offset` rows below the highlighted one, or above
-    /// it when `offset` is negative, stopping at the first and last rows.
-    pub fn move_palette_selection(&mut self, offset: isize) {
-        let Some(palette) = &mut self.palette else {
-            return;
-        };
-        let last = palette.paths().len().saturating_sub(1);
-        let selected = palette.selected_mut();
-        let moved = selected.saturating_add_signed(offset).min(last);
-        if moved != *selected {
-            *selected = moved;
-            self.listeners.emit(Change::Palette);
-        }
-    }
-
-    /// Highlight the palette's row `row`.
-    pub fn select_palette_row(&mut self, row: usize) {
-        let Some(palette) = &mut self.palette else {
-            return;
-        };
-        let count = palette.paths().len();
-        let selected = palette.selected_mut();
-        if row < count && *selected != row {
-            *selected = row;
-            self.listeners.emit(Change::Palette);
-        }
-    }
-
-    /// Close the palette and open the highlighted file the way the file
-    /// tree opens a file, as Enter does. Returns whether the file opened.
-    pub fn open_palette_selection(&mut self) -> bool {
-        let Some(palette) = &self.palette else {
-            return false;
-        };
-        let Some(path) = palette
-            .paths()
-            .get(palette.selected())
-            .map(|path| (*path).to_owned())
-        else {
-            return false;
-        };
-        self.close_palette();
-        self.open_file(&path, OpenAs::Preview);
-        self.document()
-            .is_some_and(|file| file.relative_path == path)
     }
 }

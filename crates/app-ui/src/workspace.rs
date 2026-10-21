@@ -3,14 +3,13 @@
 
 use app_core::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
-    Button, CentralPanel, Frame, Id, Key, Margin, Modal, Modifiers, Panel, RichText, ScrollArea,
-    Ui, UiBuilder, accesskit::Role, containers::menu::MenuButton, vec2,
+    Button, CentralPanel, Frame, Id, Margin, Modal, Panel, RichText, ScrollArea, Ui, UiBuilder,
+    accesskit::Role, containers::menu::MenuButton, vec2,
 };
 
 use crate::{
     NouraUi,
     common::{self, NewWorkspace, muted},
-    finder,
     rail::{self, RAIL_WIDTH},
     tab_bar::{self, BAR_HEIGHT},
     theme::{Palette, TITLE_SIZE},
@@ -18,12 +17,6 @@ use crate::{
 };
 
 pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
-    // Cmd-\ on macOS and Ctrl-\ elsewhere shows or hides the sidebar.
-    if ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Backslash)) {
-        state.app.toggle_sidebar();
-    }
-    // Ticket 12's keymap takes these over when it lands.
-    finder::shortcuts(ui, &mut state.app);
     let palette = Palette::of(ui.ctx());
     Panel::left("rail")
         .resizable(false)
@@ -64,7 +57,29 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     new_workspace_dialog(state, ui);
     trash_dialog(state, ui);
     ignored_files_dialog(state, ui);
-    finder::show(ui, &mut state.app, &mut state.finder);
+    shortcuts_dialog(state, ui);
+}
+
+/// The Keyboard shortcuts page, in a dialog until Settings exists.
+fn shortcuts_dialog(state: &mut NouraUi, ui: &mut Ui) {
+    if !state.app.shortcuts_open() {
+        return;
+    }
+    let mut done = false;
+    let modal = Modal::new(Id::unique("keyboard-shortcuts")).show(ui.ctx(), |ui| {
+        ui.set_width(420.0);
+        ui.label(
+            RichText::new("Keyboard shortcuts")
+                .size(TITLE_SIZE)
+                .strong(),
+        );
+        crate::shortcuts::page(ui, &state.app);
+        ui.add_space(8.0);
+        done = common::primary_button(ui, "Done", true).clicked();
+    });
+    if done || modal.should_close() {
+        state.app.close_shortcuts();
+    }
 }
 
 /// Ask before a folder goes to the trash, and say where it goes.

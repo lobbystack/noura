@@ -5,8 +5,12 @@
 
 mod support;
 
-use app_core::{App, Palette};
-use support::{Fixture, document};
+use std::time::Instant;
+
+use app_core::{
+    App, Area, CommandSource, Key, KeyPress, Palette, PaletteMode, Platform, command_id,
+};
+use support::{FakeSystem, Fixture, document};
 
 const FILES: [&str; 16] = [
     "Groceries.md",
@@ -139,7 +143,7 @@ fn enter_opens_the_best_match_as_the_file_tree_does_and_quick_open_opens_again()
     ] {
         app.open_quick_open();
         app.set_palette_query(query);
-        assert!(app.open_palette_selection());
+        assert!(app.run_palette_selection(Instant::now()));
         assert!(app.palette().is_none());
         assert_eq!(document(&app).as_deref(), Some(path));
         // A preview tab, which the next file replaces.
@@ -160,7 +164,7 @@ fn the_arrow_keys_pick_another_match() {
     app.move_palette_selection(-1);
     app.move_palette_selection(-1);
     app.move_palette_selection(1);
-    assert!(app.open_palette_selection());
+    assert!(app.run_palette_selection(Instant::now()));
 
     assert_eq!(document(&app).as_deref(), Some(listed[1].as_str()));
 }
@@ -179,4 +183,72 @@ fn quick_open_follows_files_added_outside_noura() {
         panic!("quick open isn't open");
     };
     assert_eq!(quick_open.matches[0].relative_path, "Budget.md");
+}
+
+fn mode(app: &App) -> Option<PaletteMode> {
+    app.palette().map(Palette::mode)
+}
+
+#[test]
+fn quick_open_and_search_are_commands_with_the_default_keys() {
+    let fixture = fixture();
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    let commands = app.commands();
+    let label = |id: &str| {
+        commands
+            .iter()
+            .find(|command| command.id == id)
+            .map(|command| command.label.as_str())
+    };
+    assert_eq!(label(command_id::QUICK_OPEN), Some("Quick Open…"));
+    assert_eq!(label(command_id::SEARCH), Some("Search Files…"));
+
+    let mod_o = KeyPress::new(Key::O).with_cmd();
+    let mod_shift_f = KeyPress::new(Key::F).with_cmd().with_shift();
+    let mod_k = KeyPress::new(Key::K).with_cmd();
+    let now = Instant::now();
+    assert!(app.press_key(&mod_o, None, now));
+    assert_eq!(mode(&app), Some(PaletteMode::QuickOpen));
+    app.set_palette_query("groc");
+
+    // One overlay: from its field, Mod-Shift-F switches it to search with
+    // an empty field, and Mod-O back to quick open.
+    assert!(app.press_key(&mod_shift_f, Some(Area::Writing), now));
+    assert_eq!(mode(&app), Some(PaletteMode::Search));
+    assert_eq!(app.palette().unwrap().query(), "");
+    assert!(app.press_key(&mod_o, Some(Area::Writing), now));
+    assert_eq!(mode(&app), Some(PaletteMode::QuickOpen));
+
+    // Mod-K closes the palette whatever it shows, then opens commands.
+    assert!(app.press_key(&mod_k, Some(Area::Writing), now));
+    assert_eq!(mode(&app), None);
+    assert!(app.press_key(&mod_k, None, now));
+    assert_eq!(mode(&app), Some(PaletteMode::Commands));
+
+    // The command palette runs Quick Open like any other command.
+    app.set_palette_query("quick open");
+    assert!(app.run_palette_selection(now));
+    assert_eq!(mode(&app), Some(PaletteMode::QuickOpen));
+    app.set_palette_query("groc");
+    assert!(app.run_palette_selection(now));
+    assert_eq!(document(&app).as_deref(), Some("Groceries.md"));
+
+    // So does the File menu, a moment after the last key press.
+    let later = now + std::time::Duration::from_secs(1);
+    assert!(app.run_command(command_id::SEARCH, CommandSource::Menu, later));
+    assert_eq!(mode(&app), Some(PaletteMode::Search));
+}
+
+#[test]
+fn without_a_workspace_quick_open_and_search_stay_closed() {
+    let app_data = tempfile::tempdir().unwrap();
+    let mut app = App::launch_with(app_data.path(), FakeSystem::on(Platform::MacOs));
+    support::settle(&mut app);
+    assert!(app.workspace().is_none());
+
+    let now = Instant::now();
+    assert!(!app.press_key(&KeyPress::new(Key::O).with_cmd(), None, now));
+    app.run_command(command_id::QUICK_OPEN, CommandSource::Menu, now);
+    app.run_command(command_id::SEARCH, CommandSource::Menu, now);
+    assert_eq!(mode(&app), None);
 }

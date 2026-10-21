@@ -14,20 +14,23 @@ use std::{
 
 use crate::{
     AppError, FileTree, Layout, NoPendingSaves, NoSystem, OpenedFile, PendingSaves,
-    RecentWorkspace, System, Tab, Workspace, WorkspaceService, layout::LayoutStore, rail::Rail,
-    search::Searcher, tabs::Tabs, view_state::ViewStore,
+    RecentWorkspace, System, Tab, Workspace, WorkspaceService, commands::Registry,
+    layout::LayoutStore, rail::Rail, search::Searcher, tabs::Tabs, view_state::ViewStore,
 };
 
+mod commands;
 mod drops;
 mod file_actions;
 mod finder;
 mod ignored_files;
+mod palette;
 mod view;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
-pub use finder::{Palette, QuickOpen, Search};
+pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
+pub use palette::{CommandPalette, Palette, PaletteMode};
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,10 +78,15 @@ pub enum Change {
     Layout,
     Document,
     Notice,
-    /// The Ignored files page changed.
+    /// The Ignored files page or the Keyboard shortcuts page changed.
     Settings,
+    /// A command registered.
+    Commands,
     /// The palette opened, closed, or changed what it shows.
     Palette,
+    /// Close Window or Quit ran; see [`App::take_close_window`] and
+    /// [`App::take_quit`].
+    Window,
     /// Background work finished; call [`App::poll`] to apply it.
     WorkFinished,
 }
@@ -160,9 +168,15 @@ pub struct App {
     /// The item the last native drag carried, so a drop of it back on the
     /// tree moves it instead of copying it.
     dragged_out: Option<String>,
-    /// Quick open or search, while the palette is open.
+    registry: Registry,
+    /// Commands, quick open or search, while the palette is open.
     palette: Option<Palette>,
     searcher: Searcher,
+    shortcuts_open: bool,
+    /// Close Window ran and the window hasn't closed yet.
+    close_window: bool,
+    /// Quit ran and the app hasn't closed yet.
+    quit: bool,
 }
 
 impl App {
@@ -207,9 +221,14 @@ impl App {
             pending_saves: Arc::new(NoPendingSaves),
             drag_out: None,
             dragged_out: None,
+            registry: Registry::default(),
             palette: None,
             searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
+            shortcuts_open: false,
+            close_window: false,
+            quit: false,
         };
+        app.register_kernel_commands();
         app.layout = app.layouts.load();
         if let Some(last) = app.recents.first() {
             let workspace_id = last.workspace_id.clone();

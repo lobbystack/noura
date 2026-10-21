@@ -5,13 +5,17 @@
 //! workspace service opens workspaces and keeps the recent list, and the
 //! files service builds the file tree. The app keeps each workspace's tabs,
 //! open folders and rail order, and the sidebar's layout, in this device's
-//! app data.
+//! app data. One command registry feeds the key handling, the command
+//! palette, the native menus and the shortcuts list.
 
 mod app;
+mod commands;
 mod error;
 mod files;
 mod ignored;
+mod keys;
 mod layout;
+mod menus;
 mod operations;
 mod quick_open;
 mod rail;
@@ -25,15 +29,20 @@ mod view_state;
 mod workspace;
 
 pub use app::{
-    App, Change, DragOut, IgnoredFiles, Notice, NoticeKind, Palette, Question, QuickOpen, Rename,
-    Screen, Search,
+    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Palette, PaletteMode,
+    Question, QuickOpen, Rename, Screen, Search,
+};
+pub use commands::{
+    Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
 };
 pub use error::AppError;
 pub use files::{
     DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
     TreeKey, TreeRow,
 };
-pub use layout::{Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+pub use keys::{Key, KeyPress, Shortcut};
+pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use operations::Imported;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};

@@ -14,6 +14,9 @@ pub const SIDEBAR_MIN_WIDTH: f32 = 224.0;
 /// The sidebar's widest width in points.
 pub const SIDEBAR_MAX_WIDTH: f32 = 480.0;
 
+/// The key of the sidebar section that holds the file tree.
+pub const FILES_SECTION: &str = "files";
+
 /// The layout this device remembers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]

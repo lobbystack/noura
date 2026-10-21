@@ -1,6 +1,7 @@
 //! Quick open and search in the palette overlay, through AccessKit. These
 //! translate the legacy app's quick-open checks and its "content search
-//! finds text inside notes" check.
+//! finds text inside notes" check. The overlay is the command palette's:
+//! Mod-K, Mod-O and Mod-Shift-F switch one dialog between its modes.
 
 mod support;
 
@@ -11,7 +12,7 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use support::{FakePicker, create_workspace, harness, settle};
+use support::{FakePicker, create_workspace, harness, harness_for, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -58,14 +59,24 @@ fn dialog<'a>(harness: &'a Ui, name: &'a str) -> Option<egui_kittest::Node<'a>> 
     harness.query_by_role_and_label(Role::Dialog, name)
 }
 
+/// Run frames until the window settles. Search answers arrive from
+/// another thread and each asks for frames of its own, so this allows more
+/// frames than `Harness::run` does.
+fn run(harness: &mut Ui) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while harness.try_run().is_err() {
+        assert!(Instant::now() < deadline, "the window never settled");
+    }
+}
+
 fn shortcut(harness: &mut Ui, modifiers: Modifiers, key: Key) {
     harness.key_press_modifiers(modifiers, key);
-    harness.run();
+    run(harness);
 }
 
 fn press(harness: &mut Ui, key: Key) {
     harness.key_press(key);
-    harness.run();
+    run(harness);
 }
 
 fn type_text(harness: &mut Ui, text: &str) {
@@ -73,7 +84,7 @@ fn type_text(harness: &mut Ui, text: &str) {
         .input_mut()
         .events
         .push(egui::Event::Text(text.to_owned()));
-    harness.run();
+    run(harness);
 }
 
 /// The selected tab's label: the open file's name, and whether the tab
@@ -103,7 +114,7 @@ fn wait_until(harness: &mut Ui, ready: impl Fn(&Ui) -> bool) {
     loop {
         harness.step();
         if ready(harness) {
-            harness.run();
+            run(harness);
             return;
         }
         assert!(Instant::now() < deadline, "the palette never showed it");
@@ -149,7 +160,7 @@ fn quick_open_finds_a_note_by_name_and_enter_opens_the_best_match() {
     harness
         .get_by_role_and_label(Role::TreeItem, "Groceries")
         .click();
-    harness.run();
+    run(&mut harness);
     shortcut(&mut harness, Modifiers::COMMAND, Key::O);
     type_text(&mut harness, "meeting n");
     press(&mut harness, Key::Enter);
@@ -199,22 +210,24 @@ fn keys_typed_right_after_mod_o_land_in_quick_open_and_escape_gives_the_keyboard
     harness
         .get_by_role_and_label(Role::TreeItem, "Quiet")
         .click();
-    harness.run();
+    run(&mut harness);
     assert_eq!(focused_label(&harness).as_deref(), Some("Quiet"));
 
+    let mod_o = |pressed| egui::Event::Key {
+        key: Key::O,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    };
     for _ in 0..3 {
         // The shortcut and the typing arrive in one frame.
         harness.input_mut().events.extend([
-            egui::Event::Key {
-                key: Key::O,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: Modifiers::COMMAND,
-            },
+            mod_o(true),
+            mod_o(false),
             egui::Event::Text("zeb".to_owned()),
         ]);
-        harness.run();
+        run(&mut harness);
         let field = harness.get_by_role_and_label(Role::TextInput, "Find a file by name");
         assert_eq!(field.value().as_deref(), Some("zeb"));
         assert!(field.is_focused());
@@ -256,7 +269,7 @@ fn content_search_finds_text_inside_notes() {
         result.accesskit_node().description()
     );
     result.click();
-    harness.run();
+    run(&mut harness);
 
     assert!(dialog(&harness, "Search").is_none());
     assert_eq!(open_file(&harness), preview("Recipe"));
@@ -368,6 +381,84 @@ fn search_says_when_it_isnt_available() {
 fn press_shift_tab(harness: &mut Ui, times: usize) {
     for _ in 0..times {
         harness.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
-        harness.run();
+        run(harness);
     }
+}
+
+fn key(key: Key, modifiers: Modifiers, pressed: bool) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn shortcut_of(harness: &Ui, label: &str) -> Option<String> {
+    harness
+        .get_by_role_and_label(Role::ListBoxOption, label)
+        .accesskit_node()
+        .data()
+        .keyboard_shortcut()
+        .map(str::to_owned)
+}
+
+#[test]
+fn quick_open_and_search_are_modes_of_the_command_palette() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    std::fs::write(folder.join("Groceries.md"), "milk").unwrap();
+    // Mod is Ctrl on Windows.
+    let mut harness = harness_for(app_data.path(), app_core::Platform::Windows, |_| {});
+    settle(&mut harness);
+    let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+
+    shortcut(&mut harness, ctrl, Key::K);
+    assert!(dialog(&harness, "Command palette").is_some());
+    assert_eq!(
+        shortcut_of(&harness, "Quick Open…").as_deref(),
+        Some("Ctrl+O")
+    );
+    assert_eq!(
+        shortcut_of(&harness, "Search Files…").as_deref(),
+        Some("Ctrl+Shift+F")
+    );
+
+    // Ctrl+O from the command palette's field turns the dialog into quick
+    // open, and keys typed in the same frame land in its field.
+    harness.input_mut().events.extend([
+        key(Key::O, ctrl, true),
+        key(Key::O, ctrl, false),
+        egui::Event::Text("groc".to_owned()),
+    ]);
+    run(&mut harness);
+    assert!(dialog(&harness, "Command palette").is_none());
+    assert!(dialog(&harness, "Quick open").is_some());
+    let field = harness.get_by_role_and_label(Role::TextInput, "Find a file by name");
+    assert_eq!(field.value().as_deref(), Some("groc"));
+    assert!(field.is_focused());
+    assert_eq!(options(&harness), ["Groceries"]);
+
+    // Ctrl+Shift+F turns it into search, and Ctrl+K closes it.
+    shortcut(&mut harness, ctrl | Modifiers::SHIFT, Key::F);
+    assert!(dialog(&harness, "Quick open").is_none());
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search the workspace");
+    assert!(field.is_focused());
+    shortcut(&mut harness, ctrl, Key::K);
+    assert!(dialog(&harness, "Search").is_none());
+
+    // The command palette runs Search Files as its shortcut would.
+    shortcut(&mut harness, ctrl, Key::K);
+    harness
+        .get_by_label("Search commands")
+        .type_text("search files");
+    run(&mut harness);
+    press(&mut harness, Key::Enter);
+    assert!(dialog(&harness, "Command palette").is_none());
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search the workspace");
+    assert!(field.is_focused());
+    assert!(harness.unnamed_widgets().is_empty());
 }
