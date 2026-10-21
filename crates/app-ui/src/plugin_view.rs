@@ -1,9 +1,10 @@
-//! Plugin views: a plugin page, an Inbox section or a plugin's page in
-//! Settings, drawn from the nodes the plugin returned with the kit's
-//! widgets and the theme's tokens, or the reason it can't be drawn in its
-//! place. Presses go back to the plugin by node ID.
+//! Plugin views: a plugin page, an Inbox section, a plugin's page in
+//! Settings or a properties panel, drawn from the nodes the plugin
+//! returned with the kit's widgets and the theme's tokens, or the reason
+//! it can't be drawn in its place. Presses go back to the plugin by node
+//! ID.
 
-use app_core::{App, PluginView, ViewKind, ViewNode};
+use app_core::{App, PluginView, TabId, ViewKind, ViewNode};
 use egui::{Frame, Margin, RichText, Stroke, Ui, UiBuilder, accesskit::Role};
 
 use crate::{
@@ -30,6 +31,19 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, page_id: &str) {
     let asked = draw(ui, ("plugin-view", page_id), &view);
     if let Some(node) = asked.pressed {
         app.press_plugin_button(page_id, &node);
+    }
+    if let Some(url) = asked.link {
+        app.open_link(&url);
+    }
+}
+
+/// The properties panel a plugin draws beside the body of an object of its
+/// own type, in the note screen's panel slot. Presses go back to the
+/// plugin by node ID.
+pub(crate) fn show_panel(ui: &mut Ui, app: &mut App, tab: TabId, view: &PluginView) {
+    let asked = draw(ui, ("plugin-panel", tab), view);
+    if let Some(node) = asked.pressed {
+        app.press_panel_button(tab, &node);
     }
     if let Some(url) = asked.link {
         app.open_link(&url);

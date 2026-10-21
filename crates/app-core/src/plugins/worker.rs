@@ -30,6 +30,21 @@ pub(super) enum Job {
     Command(String),
     /// Draw the plugin's views again.
     Redraw,
+    /// Draw the properties panel of the object with this ID, whose file
+    /// has this revision.
+    Panel(String, String),
+    /// Tell the plugin about `event` in the properties panel of the object
+    /// with this ID, then draw that panel and its views again.
+    PanelEvent(String, Event),
+}
+
+/// A properties panel the plugin drew.
+pub(super) struct PanelDrawn {
+    pub(super) object: String,
+    /// The revision of the object's file it was asked to draw, or none
+    /// when it drew the panel right after a press there.
+    pub(super) revision: Option<String>,
+    pub(super) view: PluginView,
 }
 
 /// A tool a plugin offers, with its schema compiled.
@@ -94,8 +109,17 @@ pub(super) struct Outcome {
     pub(super) generation: u64,
     /// New registrations, after [`Job::Refresh`].
     pub(super) registrations: Option<Registrations>,
-    /// Every view the plugin draws, as drawn now.
-    pub(super) views: BTreeMap<Surface, PluginView>,
+    /// Why Noura didn't add some of the object types the plugin
+    /// registered, after [`Job::Refresh`].
+    pub(super) refused_types: Option<Vec<String>>,
+    /// Every view the plugin draws, as drawn now, or none when the job
+    /// only drew a panel.
+    pub(super) views: Option<BTreeMap<Surface, PluginView>>,
+    /// The properties panel the job drew.
+    pub(super) panel: Option<PanelDrawn>,
+    /// The plugin ran code that may have written files: it handled an
+    /// event or ran a command.
+    pub(super) acted: bool,
     pub(super) health: Health,
     /// Why the job's event or command failed: the view the event happened
     /// in, or none for a command, and the reason in words.
@@ -128,11 +152,40 @@ impl Worker {
         let mut registrations = Registrations::default();
         while let Ok(job) = self.jobs.recv() {
             let mut registered = None;
+            let mut refused_types = None;
             let mut failed = None;
+            let mut panel = None;
+            let mut acted = true;
+            let mut draws = true;
             match job {
                 Job::Refresh => {
+                    acted = false;
+                    refused_types = Some(register_object_types(&self.plugin));
                     registrations = register(&self.plugin);
                     registered = Some(registrations.clone());
+                }
+                Job::Panel(object, revision) => {
+                    acted = false;
+                    draws = false;
+                    panel = Some(PanelDrawn {
+                        view: draw_panel(&self.plugin, &object),
+                        object,
+                        revision: Some(revision),
+                    });
+                }
+                Job::PanelEvent(object, event) => {
+                    let view = match self.plugin.handle_panel_event(&object, &event) {
+                        Ok(()) => draw_panel(&self.plugin, &object),
+                        Err(error) => {
+                            tracing::warn!(%error, "a plugin failed to handle a press in a panel");
+                            Err(failure_message(&error, Doing::Handling))
+                        }
+                    };
+                    panel = Some(PanelDrawn {
+                        object,
+                        revision: None,
+                        view,
+                    });
                 }
                 Job::Event(surface, event) => {
                     if let Err(error) = self.plugin.handle_surface_event(&surface, &event) {
@@ -151,14 +204,20 @@ impl Worker {
                         failed = Some((None, failure_message(&error, Doing::Running)));
                     }
                 },
-                Job::Redraw => self.redraw_queued.store(false, Ordering::Relaxed),
+                Job::Redraw => {
+                    acted = false;
+                    self.redraw_queued.store(false, Ordering::Relaxed);
+                }
             }
-            let views = draw(&self.plugin, &registrations);
+            let views = draws.then(|| draw(&self.plugin, &registrations));
             let outcome = Outcome {
                 id: self.id.clone(),
                 generation: self.generation,
                 registrations: registered,
+                refused_types,
                 views,
+                panel,
+                acted,
                 health: self.plugin.health(),
                 failed,
             };
@@ -168,6 +227,41 @@ impl Worker {
             if let Some(wake) = &self.wake {
                 wake();
             }
+        }
+    }
+}
+
+/// Register the object types the plugin adds, when it holds
+/// `object-types`, and say why Noura didn't add any it refused.
+fn register_object_types(plugin: &RunningPlugin) -> Vec<String> {
+    let registered = match plugin.register_object_types() {
+        Ok(registered) => registered,
+        Err(PluginError::CapabilityNotDeclared { .. } | PluginError::NotExported { .. }) => {
+            return Vec::new();
+        }
+        Err(error) => {
+            tracing::warn!(%error, "a plugin didn't list its object types");
+            return vec!["It failed while listing its object types.".to_owned()];
+        }
+    };
+    registered
+        .into_iter()
+        .filter_map(|(object_type, result)| {
+            result.err().map(|error| {
+                tracing::warn!(code = error.code(), "a plugin's type wasn't added");
+                format!("Noura didn't add the type {object_type}: {error}")
+            })
+        })
+        .collect()
+}
+
+/// The properties panel of the object `object`, as the plugin draws it.
+fn draw_panel(plugin: &RunningPlugin, object: &str) -> PluginView {
+    match plugin.render_panel(object) {
+        Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+        Err(error) => {
+            tracing::warn!(%error, "a plugin failed to draw a properties panel");
+            Err(failure_message(&error, Doing::Drawing))
         }
     }
 }

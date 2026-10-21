@@ -8,7 +8,7 @@
 //! manifest declares:
 //!
 //! ```
-//! use plugin_sdk::{Event, Node, Page, Plugin, View};
+//! use plugin_sdk::{Node, Page, Plugin, View};
 //!
 //! struct Hello;
 //!
@@ -28,8 +28,8 @@
 //! ```
 //!
 //! Each capability interface the plugin calls sits in its own module, such
-//! as [`workspace`] and [`network`], and works only when the plugin holds
-//! its capability.
+//! as [`workspace`], [`objects`] and [`network`], and works only when the
+//! plugin holds its capability.
 
 // The generated bindings and their `export!` macro name this crate as
 // `plugin_sdk`, so plugin crates need no dependency on `wit-bindgen`.
@@ -47,23 +47,32 @@ wit_bindgen::generate!({
 #[doc(hidden)]
 pub mod __private {
     pub use crate::exports::noura::plugin::{
-        commands::Guest as Commands, inbox::Guest as Inbox, settings::Guest as Settings,
-        tools::Guest as Tools, view::Guest as View,
+        commands::Guest as Commands, inbox::Guest as Inbox, object_types::Guest as ObjectTypes,
+        settings::Guest as Settings, tools::Guest as Tools, view::Guest as View,
     };
     pub use wit_bindgen::rt;
 }
 
 pub use exports::noura::plugin::commands::Command;
 pub use exports::noura::plugin::inbox::Section as InboxSection;
+pub use exports::noura::plugin::object_types::ObjectType;
 pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
-pub use noura::plugin::types::Error;
+pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{Event, Node, NodeKind};
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
 pub mod workspace {
     pub use crate::noura::plugin::workspace::{
         Entry, EntryKind, File, Object, list_entries, read_file, read_object,
+    };
+}
+
+/// Creating, reading, changing, moving and deleting objects of the types
+/// the plugin registered. Needs the `object-types` capability.
+pub mod objects {
+    pub use crate::noura::plugin::objects::{
+        Changes, NewObject, Object, create, delete, get, list, move_to, update,
     };
 }
 
@@ -93,6 +102,23 @@ pub trait Plugin {
 
     /// Something happened in a page's view. Needs `views`.
     fn handle_event(_page: String, _event: Event) {}
+
+    /// The object types the plugin registers when it starts, each with
+    /// its schema. Needs `object-types`.
+    fn object_types() -> Vec<ObjectType> {
+        Vec::new()
+    }
+
+    /// The nodes of the properties panel Noura shows beside the body of
+    /// the object `object`, one of the plugin's types. Needs
+    /// `object-types`.
+    fn render_panel(_object: String) -> Vec<Node> {
+        Vec::new()
+    }
+
+    /// Something happened in the properties panel of the object `object`.
+    /// Needs `object-types`.
+    fn handle_panel_event(_object: String, _event: Event) {}
 
     /// The commands the plugin offers to the command palette and to other
     /// plugins. Needs `commands`.
@@ -214,6 +240,18 @@ macro_rules! export {
                     arguments: ::std::string::String,
                 ) -> ::std::result::Result<::std::string::String, ::std::string::String> {
                     <$ty as $crate::Plugin>::call_tool(name, arguments)
+                }
+            }
+
+            impl $crate::__private::ObjectTypes for __NouraExports {
+                fn types() -> ::std::vec::Vec<$crate::ObjectType> {
+                    <$ty as $crate::Plugin>::object_types()
+                }
+                fn render_panel(object: ::std::string::String) -> ::std::vec::Vec<$crate::Node> {
+                    <$ty as $crate::Plugin>::render_panel(object)
+                }
+                fn handle_panel_event(object: ::std::string::String, event: $crate::Event) {
+                    <$ty as $crate::Plugin>::handle_panel_event(object, event)
                 }
             }
 

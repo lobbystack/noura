@@ -33,12 +33,13 @@ use std::{
 
 use local_core::HostRequests;
 use plugin_host::{
-    Candidate, Capability, Event, Grant, InstallError, PluginHost, PluginManifest, Router,
-    RunningPlugin, Services, Surface, View, WorkspaceReads,
+    Candidate, Capability, Event, Grant, InstallError, Node, NodeKind, ObjectTypes, PluginHost,
+    PluginManifest, Router, RunningPlugin, Services, Surface, View, WorkspaceObjects,
+    WorkspaceReads,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AppError, Workspace, store::JsonStore};
+use crate::{AppError, Workspace, plugin_objects::ObjectStore, store::JsonStore};
 use reload::{Reload, Watcher};
 use worker::{Doing, Job, Outcome, Registrations, ToolEntry, Worker};
 
@@ -219,6 +220,52 @@ struct Records {
     shipped_reviewed: BTreeSet<String>,
 }
 
+/// A properties panel a running plugin drew for one object.
+struct Panel {
+    view: PluginView,
+    drawn: Drawn,
+    /// The file revision a draw was asked for that hasn't answered yet.
+    requested: Option<String>,
+}
+
+/// Which revision of an object's file a panel shows.
+enum Drawn {
+    /// None yet, or the plugin did something since that may change it.
+    Nothing,
+    Revision(String),
+    /// The plugin drew it right after handling a press in it, so it shows
+    /// the file as the plugin left it: the revision the note reads next.
+    AfterPress,
+}
+
+impl Panel {
+    /// A panel the plugin hasn't drawn yet, which shows nothing.
+    fn empty() -> Self {
+        let root = Node {
+            id: "panel".to_owned(),
+            kind: NodeKind::Panel(None),
+            children: Vec::new(),
+        };
+        Self {
+            view: View::from_nodes(vec![root]).map_err(|error| error.to_string()),
+            drawn: Drawn::Nothing,
+            requested: None,
+        }
+    }
+
+    /// Whether the panel shows the object's file at `revision`.
+    fn current_for(&mut self, revision: &str) -> bool {
+        match &self.drawn {
+            Drawn::Nothing => false,
+            Drawn::Revision(drawn) => drawn == revision,
+            Drawn::AfterPress => {
+                self.drawn = Drawn::Revision(revision.to_owned());
+                true
+            }
+        }
+    }
+}
+
 /// A running plugin, the thread its calls run on, and what it registered
 /// and drew last.
 struct Running {
@@ -233,6 +280,8 @@ struct Running {
     views: BTreeMap<Surface, PluginView>,
     /// It failed too often and stopped for this session.
     failed: bool,
+    /// The properties panels it drew, by object ID.
+    panels: BTreeMap<String, Panel>,
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -283,6 +332,10 @@ pub(crate) struct Plugins {
     called: Receiver<String>,
     /// Sends plugins' requests to their declared hosts.
     network: Arc<HostRequests>,
+    /// The object types the running plugins registered.
+    types: ObjectTypes,
+    /// See [`Plugins::acts`].
+    acts: u64,
     running: BTreeMap<String, Running>,
     generations: u64,
     outcomes: (Sender<Outcome>, Receiver<Outcome>),
@@ -327,6 +380,8 @@ impl Plugins {
             router,
             called,
             network: Arc::new(HostRequests::https()),
+            types: ObjectTypes::new(),
+            acts: 0,
             running: BTreeMap::new(),
             generations: 0,
             outcomes: channel(),
@@ -509,7 +564,9 @@ impl Plugins {
     /// Stop the plugin `id`: its thread ends, other plugins can no longer
     /// call its commands, and what it registered goes.
     fn stop(&mut self, id: &str) {
-        self.running.remove(id);
+        if let Some(running) = self.running.remove(id) {
+            running.plugin.release_object_types();
+        }
         self.router.remove(id);
     }
 
@@ -544,9 +601,13 @@ impl Plugins {
             }
         };
         let (host, loaded) = loaded;
-        let reader: Arc<dyn WorkspaceReads> = Arc::new(reader::WorkspaceReader(workspace));
+        let reader: Arc<dyn WorkspaceReads> = Arc::new(reader::WorkspaceReader(workspace.clone()));
+        let objects: Arc<dyn WorkspaceObjects> =
+            Arc::new(ObjectStore::new(workspace, self.types.clone()));
         let services = Services {
             workspace: Some(reader),
+            objects: Some(objects),
+            types: self.types.clone(),
             network: Some(self.network.clone()),
             router: Arc::downgrade(&self.router),
         };
@@ -588,6 +649,7 @@ impl Plugins {
                 registrations,
                 views,
                 failed: false,
+                panels: BTreeMap::new(),
             },
         );
         self.send(id, Job::Refresh);
@@ -909,6 +971,7 @@ impl Plugins {
         }
         let called: Vec<String> = self.called.try_iter().collect();
         for id in called {
+            self.acts += 1;
             self.send(&id, Job::Redraw);
         }
     }
@@ -926,7 +989,32 @@ impl Plugins {
         if let Some(registrations) = outcome.registrations {
             running.registrations = registrations;
         }
-        running.views = outcome.views;
+        if let Some(views) = outcome.views {
+            running.views = views;
+        }
+        if outcome.acted {
+            self.acts += 1;
+            // What it did may change any of its panels.
+            for panel in running.panels.values_mut() {
+                panel.drawn = Drawn::Nothing;
+            }
+        }
+        if let Some(drawn) = outcome.panel {
+            let panel = running
+                .panels
+                .entry(drawn.object)
+                .or_insert_with(Panel::empty);
+            if panel.requested.is_some() && panel.requested == drawn.revision {
+                panel.requested = None;
+            }
+            panel.view = drawn.view;
+            panel.drawn = drawn.revision.map_or(Drawn::AfterPress, Drawn::Revision);
+        }
+        if let Some(refused) = outcome.refused_types
+            && !refused.is_empty()
+        {
+            self.problems.insert(outcome.id.clone(), refused.join(" "));
+        }
         // A job that started before you revoked a capability may answer
         // after: what you revoked stays gone.
         let granted = running.plugin.granted();
@@ -1265,6 +1353,7 @@ impl Plugins {
 
     /// Draw the plugin `id`'s views again, as after another caller ran it.
     pub(crate) fn redraw(&mut self, id: &str) {
+        self.acts += 1;
         self.send(id, Job::Redraw);
     }
 
@@ -1274,6 +1363,60 @@ impl Plugins {
         self.shipped = Some(folder);
         self.shipped_pending = self.shipped_folders();
         self.changed();
+    }
+
+    /// The properties panel of the object `object_id` of type
+    /// `object_type`, whose file has the revision `revision`, as the
+    /// running plugin that holds the type draws it. `None` when no running
+    /// plugin holds the type, so the kernel's panel shows. The plugin draws
+    /// on its own thread: until it answers, the panel it drew last shows,
+    /// or an empty one.
+    pub(crate) fn panel(
+        &mut self,
+        object_type: &str,
+        object_id: &str,
+        revision: &str,
+    ) -> Option<PluginView> {
+        let owner = self.types.owner(object_type)?;
+        let running = self
+            .running
+            .get_mut(&owner)
+            .filter(|running| !running.failed)?;
+        let panel = running
+            .panels
+            .entry(object_id.to_owned())
+            .or_insert_with(Panel::empty);
+        if panel.current_for(revision) {
+            return Some(panel.view.clone());
+        }
+        let view = panel.view.clone();
+        if panel.requested.as_deref() != Some(revision) {
+            panel.requested = Some(revision.to_owned());
+            let job = Job::Panel(object_id.to_owned(), revision.to_owned());
+            self.send(&owner, job);
+        }
+        Some(view)
+    }
+
+    /// Tell the plugin that holds `object_type` that the button `node` was
+    /// pressed in the properties panel of the object `object_id`. It draws
+    /// the panel and its views again once it has heard.
+    pub(crate) fn press_panel(&mut self, object_type: &str, object_id: &str, node: &str) {
+        let Some(owner) = self.types.owner(object_type) else {
+            return;
+        };
+        if self.running.contains_key(&owner) {
+            let event = Event::Pressed(node.to_owned());
+            self.send(&owner, Job::PanelEvent(object_id.to_owned(), event));
+        }
+    }
+
+    /// How many times a running plugin ran code that may have written
+    /// files: it handled an event, or ran a command for the palette,
+    /// another plugin or a tool. Each window's open notes look at their
+    /// files when this changes.
+    pub(crate) fn acts(&self) -> u64 {
+        self.acts
     }
 
     /// The plugins shipping with Noura that this device hasn't shown you

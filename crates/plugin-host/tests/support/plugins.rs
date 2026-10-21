@@ -12,8 +12,9 @@ use std::{
 };
 
 use plugin_host::{
-    Backend, FileRead, Limits, Listed, Node, NodeKind, ObjectRead, PluginHost, RunningPlugin,
-    ServiceError, Services, WorkspacePath, WorkspaceReads,
+    Backend, FileRead, Limits, Listed, NewObject, Node, NodeKind, ObjectChanges, ObjectRead,
+    ObjectRecord, PluginHost, RunningPlugin, ServiceError, Services, WorkspaceObjects,
+    WorkspacePath, WorkspaceReads,
 };
 
 /// The code generator the tests run plugins on: Wasmtime's Pulley
@@ -107,6 +108,16 @@ pub fn running(
     )
 }
 
+/// [`running`], as the plugin `id`, with `services`.
+pub fn running_as(
+    id: &str,
+    component: &[u8],
+    capabilities: &[&str],
+    services: Services,
+) -> (Arc<RunningPlugin>, [tempfile::TempDir; 2]) {
+    start(id, component, capabilities, services, Limits::default())
+}
+
 /// A plugin with the ID `id` installed from `component` and started with
 /// every capability its manifest declares, using `services`, under
 /// `limits`. Its folders last as long as the returned guard.
@@ -181,5 +192,101 @@ impl WorkspaceReads for FakeWorkspace {
             .find(|object| object.id == id)
             .cloned()
             .ok_or_else(|| ServiceError::NotFound(id.to_owned()))
+    }
+}
+
+/// An object service that keeps objects in memory, answers every write
+/// with `refuse` when it is set, and counts the calls that reach it.
+#[derive(Default)]
+pub struct FakeObjects {
+    pub objects: Mutex<Vec<ObjectRecord>>,
+    pub refuse: Option<ServiceError>,
+    pub calls: Mutex<Vec<String>>,
+}
+
+impl FakeObjects {
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn call(&self, call: String) -> Result<(), ServiceError> {
+        self.calls.lock().unwrap().push(call);
+        self.refuse.clone().map_or(Ok(()), Err)
+    }
+
+    fn find(&self, id: &str) -> Result<ObjectRecord, ServiceError> {
+        self.objects
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|object| object.id == id)
+            .cloned()
+            .ok_or_else(|| ServiceError::NotFound(id.to_owned()))
+    }
+}
+
+impl WorkspaceObjects for FakeObjects {
+    fn create(&self, object: NewObject) -> Result<ObjectRecord, ServiceError> {
+        self.call(format!("create {} {}", object.object_type, object.title))?;
+        let record = ObjectRecord {
+            id: format!("{}_01jbcdefghjkmnpqrstvwxyz0a", object.object_type),
+            object_type: object.object_type.clone(),
+            title: object.title.clone(),
+            path: object.path.clone().unwrap_or_else(|| {
+                WorkspacePath::new(&format!("{}s/{}.md", object.object_type, object.title)).unwrap()
+            }),
+            body: object.body,
+            properties: serde_json::Value::Object(object.properties).to_string(),
+            revision: "rev-1".into(),
+            problem: None,
+        };
+        self.objects.lock().unwrap().push(record.clone());
+        Ok(record)
+    }
+
+    fn get(&self, id: &str) -> Result<ObjectRecord, ServiceError> {
+        self.call(format!("get {id}"))?;
+        self.find(id)
+    }
+
+    fn list(&self, object_type: &str) -> Result<Vec<ObjectRecord>, ServiceError> {
+        self.call(format!("list {object_type}"))?;
+        Ok(self
+            .objects
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|object| object.object_type == object_type)
+            .cloned()
+            .collect())
+    }
+
+    fn update(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        changes: ObjectChanges,
+    ) -> Result<ObjectRecord, ServiceError> {
+        self.call(format!(
+            "update {id} {expected_revision} {}",
+            serde_json::Value::Object(changes.properties)
+        ))?;
+        self.find(id)
+    }
+
+    fn move_to(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        path: &WorkspacePath,
+    ) -> Result<ObjectRecord, ServiceError> {
+        self.call(format!("move {id} {expected_revision} {path}"))?;
+        let mut object = self.find(id)?;
+        object.path = path.clone();
+        Ok(object)
+    }
+
+    fn delete(&self, id: &str, expected_revision: &str) -> Result<(), ServiceError> {
+        self.call(format!("delete {id} {expected_revision}"))
     }
 }

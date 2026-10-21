@@ -2,16 +2,17 @@
 //! folder, the first-run screen for the plugins that ship with Noura,
 //! turning a plugin on or off in the open workspace, revoking and allowing
 //! what it may use, approving or declining a new build, starting a plugin
-//! that failed, and the pages, commands, Inbox sections, Settings pages and
-//! tools running plugins add. Every window shares the session's plugins
-//! service and shows what the plugins it runs add.
+//! that failed, the pages, commands, Inbox sections, Settings pages and
+//! tools running plugins add, and the properties panel a plugin draws
+//! beside an object of its own type. Every window shares the session's
+//! plugins service and shows what the plugins it runs add.
 
 use std::path::PathBuf;
 
 use super::{App, Change};
 use crate::{
     AppError, Grant, NoticeKind, PluginInstall, PluginRow, PluginTool, PluginView, SettingsGroup,
-    ShippedPlugin,
+    ShippedPlugin, TabId,
     plugins::{SETTINGS_PREFIX, is_plugin_page},
     settings::settings_section,
 };
@@ -196,7 +197,7 @@ impl App {
 
     /// Press the button `node_id` in the plugin page `page_id`. The plugin
     /// hears of it on its own thread and draws its views again; the window
-    /// shows them once they arrive.
+    /// shows them, and open notes take what it wrote, once they arrive.
     pub fn press_plugin_button(&mut self, page_id: &str, node_id: &str) {
         self.session.plugins().press(page_id, node_id);
         self.plugins_changed();
@@ -256,6 +257,40 @@ impl App {
         answer
     }
 
+    /// The properties panel the plugin that holds the type of the object
+    /// open in `tab` draws beside its body, or why it can't be drawn.
+    /// `None` when the tab shows no object of a running plugin's type, so
+    /// the kernel's panel shows. The plugin draws on its own thread, so the
+    /// panel it drew last shows until its new one arrives.
+    pub fn plugin_panel(&self, tab: TabId) -> Option<PluginView> {
+        let session = self.notes.sessions.get(&tab)?;
+        let object_type = session.object_type()?;
+        let object_id = session.object_id()?;
+        self.session
+            .plugins()
+            .panel(object_type, object_id, session.revision())
+    }
+
+    /// Press the button `node_id` in the plugin's properties panel of the
+    /// object open in `tab`. The plugin hears of it on its own thread and
+    /// draws its panel again, and the note takes what the plugin wrote once
+    /// the answer arrives: at once when it has nothing unsaved, and merged
+    /// with your typing at its next save when it has.
+    pub fn press_panel_button(&mut self, tab: TabId, node_id: &str) {
+        let Some(session) = self.notes.sessions.get(&tab) else {
+            return;
+        };
+        let (Some(object_type), Some(object_id)) = (session.object_type(), session.object_id())
+        else {
+            return;
+        };
+        let (object_type, object_id) = (object_type.to_owned(), object_id.to_owned());
+        self.session
+            .plugins()
+            .press_panel(&object_type, &object_id, node_id);
+        self.plugins_changed();
+    }
+
     /// Show what changed in the plugins service now, and wake the other
     /// windows to show it too.
     fn plugins_changed(&mut self) {
@@ -266,13 +301,24 @@ impl App {
     /// Take new plugin builds and the running plugins' answers, and show
     /// what the plugins add when it changed. Returns whether anything did.
     pub(super) fn poll_plugins(&mut self) -> bool {
-        let (version, pages, settings) = {
+        let (version, pages, settings, acts) = {
             let mut plugins = self.session.plugins();
             plugins.poll();
-            (plugins.version(), plugins.pages(), plugins.settings_pages())
+            (
+                plugins.version(),
+                plugins.pages(),
+                plugins.settings_pages(),
+                plugins.acts(),
+            )
         };
+        let acted = acts != self.plugin_acts_seen;
+        if acted {
+            // Open notes take what the plugins wrote.
+            self.plugin_acts_seen = acts;
+            self.check_notes_on_disk();
+        }
         if version == self.plugins_seen {
-            return false;
+            return acted;
         }
         self.plugins_seen = version;
         self.show_plugin_pages(&pages);

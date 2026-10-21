@@ -4,7 +4,7 @@
 
 mod support;
 
-use plugin_host::{Event, PluginError, View, ViewKind, ViewNode};
+use plugin_host::{Event, PluginError, Services, View, ViewKind, ViewNode};
 use support::plugins;
 
 const VIEWS: [&str; 1] = ["name = \"views\""];
@@ -121,6 +121,63 @@ fn a_component_that_exports_only_its_view_registers_nothing_else() {
     );
     assert_eq!(plugin.health().recent_failures, 0);
 }
+
+#[test]
+fn a_component_that_exports_the_view_interface_without_its_functions_or_types_fails_to_start() {
+    for (case, component) in [
+        ("missing functions", MISSING_FUNCTIONS),
+        ("wrong types", WRONG_TYPES),
+    ] {
+        let folder = tempfile::tempdir().unwrap();
+        let library = tempfile::tempdir().unwrap();
+        plugins::write_folder(
+            folder.path(),
+            &plugins::manifest("probe", "plugin.wasm", &VIEWS),
+            "plugin.wasm",
+            &wat::parse_str(component).unwrap(),
+        );
+        let host = plugins::host(library.path());
+        host.install(&host.inspect(folder.path()).unwrap()).unwrap();
+        let loaded = host.load("probe").unwrap();
+        let plugin = host.start(
+            &loaded,
+            &loaded.manifest().capabilities,
+            Services::default(),
+        );
+
+        let Err(error) = plugin.pages() else {
+            panic!("{case}: the plugin started");
+        };
+        assert!(
+            matches!(error, PluginError::Instantiate(_)),
+            "{case}: {error:?}"
+        );
+    }
+}
+
+/// A component exporting `noura:plugin/view@0.1.0` with `pages` alone.
+const MISSING_FUNCTIONS: &str = r#"
+(component
+  (core module $m (func (export "pages")))
+  (core instance $i (instantiate $m))
+  (func $pages (canon lift (core func $i "pages")))
+  (instance $view (export "pages" (func $pages)))
+  (export "noura:plugin/view@0.1.0" (instance $view)))
+"#;
+
+/// A component exporting `noura:plugin/view@0.1.0` whose functions take
+/// and return nothing.
+const WRONG_TYPES: &str = r#"
+(component
+  (core module $m (func (export "f")))
+  (core instance $i (instantiate $m))
+  (func $f (canon lift (core func $i "f")))
+  (instance $view
+    (export "pages" (func $f))
+    (export "render" (func $f))
+    (export "handle-event" (func $f)))
+  (export "noura:plugin/view@0.1.0" (instance $view)))
+"#;
 
 /// A component exporting `noura:plugin/view@0.1.0` whose `render` returns
 /// one node with kind number 9, which `node-kind` doesn't have.

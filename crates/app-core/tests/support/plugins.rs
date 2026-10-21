@@ -64,6 +64,22 @@ impl PluginFolder {
         built("hello_plugin").map(|hello| Self::new(HELLO_MANIFEST, "hello_plugin.wasm", &hello))
     }
 
+    /// The recipes test plugin as the plugin `id`, holding `object-types`
+    /// and `views`, or `None` when it isn't built.
+    pub fn recipes(id: &str) -> Option<Self> {
+        built("recipes_plugin").map(|recipes| {
+            Self::new(
+                &manifest(
+                    id,
+                    "plugin.wasm",
+                    &["name = \"object-types\"", "name = \"views\""],
+                ),
+                "plugin.wasm",
+                &recipes,
+            )
+        })
+    }
+
     pub fn path(&self) -> &Path {
         self.dir.path()
     }

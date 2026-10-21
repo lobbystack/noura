@@ -20,7 +20,8 @@ use wasmtime::component::Component;
 use crate::{
     Capability, Command, Event, InboxSection, Limits, Node, Page, PluginError, PluginManifest,
     Services, Tool,
-    instance::{CallError, Grants, PluginInstance},
+    instance::{CallError, Grants, PluginInstance, Registration},
+    object_types::next_instance,
     runtime::EpochTicker,
 };
 
@@ -73,9 +74,13 @@ struct Slot {
 }
 
 /// A started plugin. Each call runs its code in the plugin's own store,
-/// with only the capabilities the plugin declares and you approved.
+/// with only the capabilities the plugin declares and you approved. The
+/// object types it registers stay its own across new stores until it is
+/// dropped or loses the `object-types` capability.
 pub struct RunningPlugin {
     manifest: PluginManifest,
+    /// Holds the object types the plugin registers.
+    token: u64,
     component: Component,
     engine: Engine,
     epochs: Arc<EpochTicker>,
@@ -101,6 +106,7 @@ impl RunningPlugin {
         )));
         Self {
             manifest,
+            token: next_instance(),
             component,
             engine,
             epochs,
@@ -125,9 +131,14 @@ impl RunningPlugin {
     }
 
     /// Use `approved` from the plugin's next call on, as after you revoke
-    /// a capability.
+    /// a capability. Without `object-types`, the plugin's types are no
+    /// longer its own.
     pub fn set_approved(&self, approved: &[Capability]) {
-        *self.grants.write() = Capability::granted(&self.manifest.capabilities, approved);
+        let granted = Capability::granted(&self.manifest.capabilities, approved);
+        if !Capability::holds(&granted, "object-types") {
+            self.services.types.release(self.token);
+        }
+        *self.grants.write() = granted;
     }
 
     pub fn health(&self) -> Health {
@@ -192,6 +203,44 @@ impl RunningPlugin {
         arguments: &str,
     ) -> Result<Result<String, String>, PluginError> {
         self.call(|instance| instance.call_tool(name, arguments))
+    }
+
+    /// Ask the plugin for its object types and register each one in the
+    /// workspace's registry. Needs the `object-types` capability. Each type
+    /// comes back with whether it registered: the kernel's own types, a
+    /// type another plugin holds and an invalid schema each fail with a
+    /// structured error, and the other types register all the same. Types
+    /// it registered before and no longer lists stay its own.
+    pub fn register_object_types(&self) -> Result<Vec<Registration>, PluginError> {
+        self.call(PluginInstance::register_object_types)
+    }
+
+    /// Give up the object types the plugin holds, as when it turns off.
+    /// Another start of it registers them again.
+    pub fn release_object_types(&self) {
+        self.services.types.release(self.token);
+    }
+
+    /// The types the plugin holds, sorted.
+    pub fn object_types(&self) -> Vec<String> {
+        let types = &self.services.types;
+        types
+            .types_of(&self.manifest.id)
+            .into_iter()
+            .filter(|object_type| types.held_by(object_type, self.token))
+            .collect()
+    }
+
+    /// The nodes of the properties panel of the object `object`, one of
+    /// the plugin's types. Needs the `object-types` capability.
+    pub fn render_panel(&self, object: &str) -> Result<Vec<Node>, PluginError> {
+        self.call(|instance| instance.render_panel(object))
+    }
+
+    /// Tell the plugin about `event` in the properties panel of the object
+    /// `object`.
+    pub fn handle_panel_event(&self, object: &str, event: &Event) -> Result<(), PluginError> {
+        self.call(|instance| instance.handle_panel_event(object, event))
     }
 
     /// The nodes of the view at `surface`.
@@ -259,6 +308,8 @@ impl RunningPlugin {
                 &self.epochs,
                 self.limits,
                 &self.component,
+                &self.manifest.id,
+                self.token,
                 self.grants.clone(),
                 self.services.clone(),
             ) {
@@ -279,6 +330,12 @@ impl RunningPlugin {
             failed(slot, &self.manifest.id, error);
         }
         result
+    }
+}
+
+impl Drop for RunningPlugin {
+    fn drop(&mut self) {
+        self.services.types.release(self.token);
     }
 }
 

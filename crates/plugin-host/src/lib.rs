@@ -9,11 +9,14 @@
 //! The services behind the capability interfaces, such as
 //! [`WorkspaceReads`] and `local-core`'s web access boundary, come from the
 //! app, and a [`Router`] carries one plugin's command calls to another.
+//! Object types that plugins register go in one [`ObjectTypes`] registry
+//! per workspace.
 
 mod error;
 mod host;
 mod instance;
 mod manifest;
+mod object_types;
 mod running;
 mod runtime;
 mod services;
@@ -23,17 +26,20 @@ mod view;
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::{
-    Command, Event, InboxSection, Node, NodeKind, Page, PluginError, Services, Tool,
+    Command, Event, InboxSection, Node, NodeKind, ObjectType, Page, PluginError, Registration,
+    Services, Tool,
 };
 pub use manifest::{
     Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
     valid_command_id, valid_plugin_id,
 };
+pub use object_types::{KERNEL_TYPES, ObjectTypes, TypeError};
 pub use running::{
     CalledListener, FAILURE_WINDOW, Health, MAX_FAILURES, Router, RunningPlugin, Surface,
 };
 pub use runtime::{Backend, Limits};
 pub use services::{
-    Entry, EntryKind, FileRead, Listed, ObjectRead, ServiceError, WorkspacePath, WorkspaceReads,
+    Entry, EntryKind, FileRead, Listed, NewObject, ObjectChanges, ObjectRead, ObjectRecord,
+    PropertyProblem, ServiceError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
 };
 pub use view::{MAX_DEPTH, MAX_NODES, View, ViewError, ViewKind, ViewNode};

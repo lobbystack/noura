@@ -364,6 +364,7 @@ fn describe(error: &Error) -> String {
         Error::TargetNotDeclared(target) => format!("error target-not-declared {target}"),
         Error::TargetUnavailable(target) => format!("error target-unavailable {target}"),
         Error::Busy(plugin) => format!("error busy {plugin}"),
+        other => format!("error {other:?}"),
     }
 }
 

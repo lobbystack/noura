@@ -6215,6 +6215,7 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wat",
+ "workspace-format",
 ]
 
 [[package]]
@@ -6779,6 +6780,14 @@ dependencies = [
  "bytemuck",
  "font-types 0.12.7",
  "once_cell",
+]
+
+[[package]]
+name = "recipes-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+ "serde_json",
 ]
 
 [[package]]

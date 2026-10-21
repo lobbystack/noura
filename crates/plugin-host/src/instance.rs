@@ -11,7 +11,10 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
-    Capability, EntryKind, Limits, Listed, Router, ServiceError, WorkspacePath, WorkspaceReads,
+    Capability, EntryKind, Limits, Listed, NewObject, ObjectChanges, ObjectRecord, ObjectTypes,
+    PropertyProblem, Router, ServiceError, TypeError, WorkspaceObjects, WorkspacePath,
+    WorkspaceReads,
+    object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
 
@@ -26,15 +29,19 @@ mod bindings {
 use bindings::Plugin;
 pub use bindings::exports::noura::plugin::commands::Command;
 pub use bindings::exports::noura::plugin::inbox::Section as InboxSection;
+pub use bindings::exports::noura::plugin::object_types::ObjectType;
 pub use bindings::exports::noura::plugin::tools::Tool;
 pub use bindings::exports::noura::plugin::view::Page;
 use bindings::exports::noura::plugin::{
-    commands as commands_export, inbox as inbox_export, settings as settings_export,
-    tools as tools_export, view as view_export,
+    commands as commands_export, inbox as inbox_export, object_types as types_export,
+    settings as settings_export, tools as tools_export, view as view_export,
 };
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{Event, Node, NodeKind};
-use bindings::noura::plugin::{command_calls, network, types, workspace};
+use bindings::noura::plugin::{command_calls, network, objects, types, workspace};
+
+/// The capability behind object types, their panels and object writes.
+const OBJECT_TYPES: &str = "object-types";
 
 /// The longest one call may take in all, time spent waiting for the
 /// network or for another plugin included. The call deadline counts only
@@ -92,6 +99,10 @@ impl PluginError {
 pub struct Services {
     /// Reads the open workspace, for `workspace-read`.
     pub workspace: Option<Arc<dyn WorkspaceReads>>,
+    /// Writes objects of the plugin's own types, for `object-types`.
+    pub objects: Option<Arc<dyn WorkspaceObjects>>,
+    /// The object types the workspace's running plugins hold.
+    pub types: ObjectTypes,
     /// Sends requests through `local-core`'s web access boundary, for
     /// `network`.
     pub network: Option<Arc<HostRequests>>,
@@ -134,6 +145,10 @@ pub(crate) struct HostState {
     /// The plugins whose calls wait for this one, this plugin last.
     chain: Vec<String>,
     clock: Clock,
+    /// The plugin's ID, which owns the types it registers.
+    plugin: String,
+    /// The running plugin's token, which holds its types until it stops.
+    instance: u64,
 }
 
 impl HostState {
@@ -161,6 +176,28 @@ impl HostState {
         let result = wait(self);
         self.clock.waited += started.elapsed();
         result
+    }
+
+    /// The object service, when the plugin holds `object-types` and
+    /// registered `object_type`. A type the plugin doesn't hold, a note
+    /// for one, gets the capability error: the capability covers the
+    /// plugin's own types only.
+    fn objects(&self, object_type: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
+        let refused = || types::Error::CapabilityNotDeclared(OBJECT_TYPES.to_owned());
+        if !self.holds(OBJECT_TYPES) || !self.services.types.held_by(object_type, self.instance) {
+            return Err(refused());
+        }
+        self.services
+            .objects
+            .as_deref()
+            .ok_or_else(|| types::Error::Failed("No workspace is open.".to_owned()))
+    }
+
+    /// The object service for the object with the stable ID `id`, whose
+    /// type is its prefix.
+    fn objects_for(&self, id: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
+        let object_type = type_of_id(id).unwrap_or_default();
+        self.objects(object_type)
     }
 }
 
@@ -293,12 +330,124 @@ impl command_calls::Host for HostState {
     }
 }
 
+impl objects::Host for HostState {
+    fn create(&mut self, object: objects::NewObject) -> Result<objects::Object, types::Error> {
+        let service = self.objects(&object.object_type)?;
+        let path = object
+            .path
+            .as_deref()
+            .map(WorkspacePath::new)
+            .transpose()
+            .map_err(wit_error)?;
+        let new = NewObject {
+            object_type: object.object_type,
+            title: object.title,
+            path,
+            body: object.body,
+            properties: json_object(&object.properties)?,
+        };
+        service.create(new).map(wit_object).map_err(wit_error)
+    }
+
+    fn get(&mut self, id: String) -> Result<objects::Object, types::Error> {
+        self.objects_for(&id)?
+            .get(&id)
+            .map(wit_object)
+            .map_err(wit_error)
+    }
+
+    fn list(&mut self, object_type: String) -> Result<Vec<objects::Object>, types::Error> {
+        let listed = self
+            .objects(&object_type)?
+            .list(&object_type)
+            .map_err(wit_error)?;
+        Ok(listed.into_iter().map(wit_object).collect())
+    }
+
+    fn update(
+        &mut self,
+        id: String,
+        expected_revision: String,
+        changes: objects::Changes,
+    ) -> Result<objects::Object, types::Error> {
+        let service = self.objects_for(&id)?;
+        let changes = ObjectChanges {
+            body: changes.body,
+            properties: json_object(&changes.properties)?,
+            remove: changes.remove,
+        };
+        service
+            .update(&id, &expected_revision, changes)
+            .map(wit_object)
+            .map_err(wit_error)
+    }
+
+    fn move_to(
+        &mut self,
+        id: String,
+        expected_revision: String,
+        path: String,
+    ) -> Result<objects::Object, types::Error> {
+        let service = self.objects_for(&id)?;
+        let path = WorkspacePath::new(&path).map_err(wit_error)?;
+        service
+            .move_to(&id, &expected_revision, &path)
+            .map(wit_object)
+            .map_err(wit_error)
+    }
+
+    fn delete(&mut self, id: String, expected_revision: String) -> Result<(), types::Error> {
+        self.objects_for(&id)?
+            .delete(&id, &expected_revision)
+            .map_err(wit_error)
+    }
+}
+
+/// The JSON object `text` holds, or why it isn't one.
+fn json_object(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, types::Error> {
+    if text.trim().is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    match serde_json::from_str(text) {
+        Ok(serde_json::Value::Object(map)) => Ok(map),
+        _ => Err(types::Error::Failed(
+            "Properties must be a JSON object.".to_owned(),
+        )),
+    }
+}
+
+fn wit_object(object: ObjectRecord) -> objects::Object {
+    objects::Object {
+        id: object.id,
+        object_type: object.object_type,
+        title: object.title,
+        path: object.path.as_str().to_owned(),
+        body: object.body,
+        properties: object.properties,
+        revision: object.revision,
+        problem: object.problem.map(wit_problem),
+    }
+}
+
+fn wit_problem(problem: PropertyProblem) -> types::PropertyError {
+    types::PropertyError {
+        property: problem.property,
+        code: problem.code,
+    }
+}
+
 fn wit_error(error: ServiceError) -> types::Error {
     match error {
         ServiceError::UnsupportedPath => types::Error::UnsupportedPath,
         ServiceError::InvalidPath(path) => types::Error::InvalidPath(path),
         ServiceError::NotFound(what) => types::Error::NotFound(what),
         ServiceError::Failed(message) => types::Error::Failed(message),
+        ServiceError::RevisionConflict(id) => types::Error::RevisionConflict(id),
+        ServiceError::IdentityConflict(id) => types::Error::IdentityConflict(id),
+        ServiceError::InvalidProperty(problem) => {
+            types::Error::InvalidProperty(wit_problem(problem))
+        }
+        ServiceError::AlreadyExists(path) => types::Error::AlreadyExists(path),
     }
 }
 
@@ -321,11 +470,30 @@ fn network_error(error: CoreError) -> types::Error {
 /// that doesn't export one registers nothing under it.
 struct Exports {
     view: Option<view_export::Guest>,
+    object_types: Option<types_export::Guest>,
     commands: Option<commands_export::Guest>,
     inbox: Option<inbox_export::Guest>,
     settings: Option<settings_export::Guest>,
     tools: Option<tools_export::Guest>,
 }
+
+/// Loads the exported interface `$name`, whose indices `$module` looks
+/// up: `None` when the component doesn't export it, and an error that
+/// stops the start when it exports it without one of its functions or
+/// with the wrong types.
+macro_rules! export {
+    ($module:ident, $name:literal, $pre:expr, $store:expr, $instance:expr) => {
+        if $pre.component().get_export_index(None, $name).is_some() {
+            Some($module::GuestIndices::new($pre)?.load(&mut *$store, $instance)?)
+        } else {
+            None
+        }
+    };
+}
+
+/// What registering one of a plugin's types gave: the type's name and
+/// whether it is the plugin's now.
+pub type Registration = (String, Result<(), TypeError>);
 
 /// One store of a running plugin. It keeps the host's epoch ticker
 /// running, so its call deadline holds after the host is dropped.
@@ -336,25 +504,16 @@ pub(crate) struct PluginInstance {
     _epochs: Arc<EpochTicker>,
 }
 
-/// Loads the exported interface whose indices `new` looks up: `None` when
-/// the component doesn't export it, an error when it exports it with the
-/// wrong types.
-macro_rules! export {
-    ($module:ident, $pre:expr, $store:expr, $instance:expr) => {
-        match $module::GuestIndices::new($pre) {
-            Ok(indices) => Some(indices.load(&mut *$store, $instance)?),
-            Err(_) => None,
-        }
-    };
-}
-
 impl PluginInstance {
-    /// Start `component` in a new store that may use what `grants` holds.
+    /// Start `component` in a new store that may use what `grants` holds,
+    /// as the plugin `plugin`, whose types the token `instance` holds.
     pub(crate) fn start(
         engine: &Engine,
         epochs: &Arc<EpochTicker>,
         limits: Limits,
         component: &Component,
+        plugin: &str,
+        instance: u64,
         grants: Grants,
         services: Services,
     ) -> Result<Self, PluginError> {
@@ -365,6 +524,8 @@ impl PluginInstance {
             services,
             chain: Vec::new(),
             clock: Clock::start(call_deadline),
+            plugin: plugin.to_owned(),
+            instance,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limiter);
@@ -395,11 +556,48 @@ impl PluginInstance {
             let instance = pre.instantiate(&mut store)?;
             let store = &mut store;
             Ok(Exports {
-                view: export!(view_export, &pre, store, &instance),
-                commands: export!(commands_export, &pre, store, &instance),
-                inbox: export!(inbox_export, &pre, store, &instance),
-                settings: export!(settings_export, &pre, store, &instance),
-                tools: export!(tools_export, &pre, store, &instance),
+                view: export!(
+                    view_export,
+                    "noura:plugin/view@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                object_types: export!(
+                    types_export,
+                    "noura:plugin/object-types@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                commands: export!(
+                    commands_export,
+                    "noura:plugin/commands@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                inbox: export!(
+                    inbox_export,
+                    "noura:plugin/inbox@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                settings: export!(
+                    settings_export,
+                    "noura:plugin/settings@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                tools: export!(
+                    tools_export,
+                    "noura:plugin/tools@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
             })
         })()
         .map_err(|error| failure(&store, &error, call_deadline, PluginError::Instantiate))?;
@@ -575,6 +773,59 @@ impl PluginInstance {
         tools
             .call_call_tool(&mut self.store, name, arguments)
             .map_err(|error| self.failed(&error))
+    }
+
+    /// Ask the plugin for its object types and register each one in the
+    /// workspace's registry for its running plugin. Each type comes back
+    /// with whether it registered: the kernel's own types, a type another
+    /// plugin holds and an invalid schema each fail with a structured
+    /// error, and the other types register all the same.
+    pub(crate) fn register_object_types(&mut self) -> Result<Vec<Registration>, PluginError> {
+        let export = self.object_types_export()?;
+        let declared = export
+            .call_types(&mut self.store)
+            .map_err(|error| self.failed(&error))?;
+        let state = self.store.data();
+        Ok(declared
+            .into_iter()
+            .map(|declared| {
+                let registered = state.services.types.register(
+                    &state.plugin,
+                    state.instance,
+                    &declared.name,
+                    &declared.schema,
+                );
+                (declared.name, registered)
+            })
+            .collect())
+    }
+
+    pub(crate) fn render_panel(&mut self, object: &str) -> Result<Vec<Node>, PluginError> {
+        let export = self.object_types_export()?;
+        export
+            .call_render_panel(&mut self.store, object)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn handle_panel_event(
+        &mut self,
+        object: &str,
+        event: &Event,
+    ) -> Result<(), PluginError> {
+        let export = self.object_types_export()?;
+        export
+            .call_handle_panel_event(&mut self.store, object, event)
+            .map_err(|error| self.failed(&error))
+    }
+
+    fn object_types_export(&self) -> Result<types_export::Guest, PluginError> {
+        self.needs(OBJECT_TYPES)?;
+        self.exports
+            .object_types
+            .clone()
+            .ok_or(PluginError::NotExported {
+                interface: "noura:plugin/object-types",
+            })
     }
 }
 
