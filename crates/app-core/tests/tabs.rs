@@ -543,6 +543,54 @@ fn two_tabs_that_end_up_on_one_file_become_one() {
 }
 
 #[test]
+fn a_moved_note_whose_id_two_files_share_closes_its_tab() {
+    let (_app_data, folder, mut app) = opened(&["A.md"]);
+    let note = managed_note("note_01k00000000000000000000024");
+    write(folder.path(), "Plan.md", &note);
+    app.rescan();
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("Plan.md", OpenAs::Kept);
+
+    // Another app copies the note, then moves it: Noura can't tell which
+    // file the tab showed.
+    write(folder.path(), "Plan copy.md", &note);
+    rename(folder.path(), "Plan.md", "Moved.md");
+    app.rescan();
+
+    assert_eq!(paths(&app), ["A.md"]);
+}
+
+#[test]
+fn tabs_come_back_after_the_index_is_deleted() {
+    let (app_data, folder, mut app) = opened(&["A.md"]);
+    write(
+        folder.path(),
+        "Plan.md",
+        &managed_note("note_01k00000000000000000000025"),
+    );
+    app.rescan();
+    app.open_file("Plan.md", OpenAs::Kept);
+    app.open_file("A.md", OpenAs::Preview);
+    drop(app);
+    let indexes: Vec<_> = snapshot(app_data.path())
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("index.sqlite"))
+        })
+        .collect();
+    assert!(!indexes.is_empty());
+    for index in indexes {
+        std::fs::remove_file(index).unwrap();
+    }
+
+    let app = launch(app_data.path());
+
+    assert_eq!(shown(&app), ["Plan", "A (preview)"]);
+}
+
+#[test]
 fn a_file_without_an_id_that_another_app_moves_closes_its_tab() {
     let (_app_data, folder, mut app) = opened(&["A.md", "Loose.md"]);
     app.open_file("A.md", OpenAs::Kept);
