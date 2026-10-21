@@ -307,7 +307,9 @@ impl NouraUi {
     /// registry names areas.
     fn focus_area(&self, ctx: &egui::Context) -> Option<Area> {
         let active = self.app.active_tab().map(app_core::Tab::id);
-        if ctx.text_edit_focused() || self.notes.editor_focused(ctx, active) {
+        if self.notes.editor_focused(ctx, active) {
+            Some(Area::Note)
+        } else if ctx.text_edit_focused() {
             Some(Area::Writing)
         } else if self.tree.has_focus(ctx) {
             Some(Area::FileTree)

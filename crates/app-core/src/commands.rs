@@ -59,18 +59,22 @@ pub enum Area {
     Tabs,
     /// The rail's pages.
     Pages,
-    /// Text fields, and the note editor once it lands.
+    /// Text fields.
     Writing,
+    /// A note's text in the editor, which formats with its own keys and
+    /// types and edits like a text field.
+    Note,
 }
 
 impl Area {
     /// Every area, in the order the shortcuts page lists them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Anywhere,
         Self::FileTree,
         Self::Tabs,
         Self::Pages,
         Self::Writing,
+        Self::Note,
     ];
 
     /// The area's heading on the shortcuts page.
@@ -81,6 +85,7 @@ impl Area {
             Self::Tabs => "Tabs",
             Self::Pages => "Pages",
             Self::Writing => "Writing",
+            Self::Note => "Notes",
         }
     }
 }
@@ -322,7 +327,7 @@ impl Registry {
         focus: Option<Area>,
         pages: &[&Page],
     ) -> Option<String> {
-        if focus == Some(Area::Writing) && press.edits_text(platform) {
+        if matches!(focus, Some(Area::Writing | Area::Note)) && press.edits_text(platform) {
             return None;
         }
         let handled_by_focus = area_keys(platform).iter().any(|(area, _, shortcuts)| {
@@ -414,6 +419,48 @@ pub struct ShortcutGroup {
     pub entries: Vec<ShortcutEntry>,
 }
 
+/// The keys the note editor handles in a note's text: the formatting
+/// toolbar's commands, tasks, lists, undo, redo and find. They follow
+/// `editor-core`'s keymap, and `app-ui`'s tests check that they match.
+fn note_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
+    use Key::*;
+    let command = Shortcut::command;
+    let mut redo = vec![command(Z).with_shift()];
+    if platform != Platform::MacOs {
+        redo.push(command(Y));
+    }
+    [
+        ("Bold", vec![command(B)]),
+        ("Italic", vec![command(I)]),
+        ("Underline", vec![command(U)]),
+        ("Strikethrough", vec![command(X).with_shift()]),
+        ("Link", vec![command(K)]),
+        ("Inline code", vec![command(C).with_shift()]),
+        ("Text", vec![command(Num0).with_alt()]),
+        ("Heading 1", vec![command(Num1).with_alt()]),
+        ("Heading 2", vec![command(Num2).with_alt()]),
+        ("Heading 3", vec![command(Num3).with_alt()]),
+        ("Quote", vec![command(Q).with_alt()]),
+        ("Bulleted list", vec![command(Num8).with_shift()]),
+        ("Numbered list", vec![command(Num7).with_shift()]),
+        ("Checklist", vec![command(Num9).with_shift()]),
+        ("Check or uncheck a task", vec![command(Enter)]),
+        ("Nest a list item", vec![Shortcut::new(Tab)]),
+        (
+            "Lift a list item out",
+            vec![Shortcut::new(Tab).with_shift()],
+        ),
+        ("Undo", vec![command(Z)]),
+        ("Redo", redo),
+        ("Find in the note", vec![command(F)]),
+        // F2 moves from the text to the note's name field.
+        ("Rename the note", vec![Shortcut::new(F2)]),
+    ]
+    .into_iter()
+    .map(|(label, shortcuts)| (Area::Note, label, shortcuts))
+    .collect()
+}
+
 /// Keys the kernel's views handle themselves on `platform` while they
 /// have the keyboard, for the shortcuts list.
 pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
@@ -480,8 +527,7 @@ pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shor
             vec![key(ArrowUp).with_alt(), key(ArrowDown).with_alt()],
         ),
     ];
-    // In a note's text, F2 moves to the note's name field.
-    keys.push((Area::Writing, "Rename the note", vec![key(F2)]));
+    keys.extend(note_keys(platform));
     // A text field answers to the Edit menu's keys, and to Ctrl-Y for
     // Redo outside macOS.
     for item in SystemItem::EDIT {

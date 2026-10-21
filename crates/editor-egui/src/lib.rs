@@ -18,7 +18,7 @@ use egui::{Context, EventFilter, Frame, Id, Margin, Pos2, Rect, Stroke, Ui, UiBu
 use input::mutation::EventState;
 use widget::block::LayoutCache;
 
-pub use editor_core::bounds;
+pub use editor_core::{bounds, commands, keymap};
 mod chrome;
 pub mod fold;
 pub mod fonts;
