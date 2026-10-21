@@ -175,8 +175,8 @@ impl View {
         self.add(parent, id, NodeKind::List(label.to_owned()))
     }
 
-    /// Add an item to the list at `list`, with an optional quieter line
-    /// under its label.
+    /// Add an item to the list at `list`, with an optional quieter detail
+    /// after its label, on the same line.
     pub fn item(&mut self, list: u32, id: &str, label: &str, detail: Option<&str>) -> u32 {
         let item = Item {
             label: label.to_owned(),
@@ -185,8 +185,8 @@ impl View {
         self.add(list, id, NodeKind::Item(item))
     }
 
-    /// Add a list of `rows` rows that Noura asks [`Plugin::rows`] for as
-    /// they scroll into view.
+    /// Add a list of `rows` rows, at most 1,000,000, that Noura asks
+    /// [`Plugin::rows`] for as they scroll into view.
     pub fn virtual_list(&mut self, parent: u32, id: &str, label: &str, rows: u32) -> u32 {
         let list = VirtualList {
             label: label.to_owned(),
@@ -205,7 +205,9 @@ impl View {
         self.add(parent, id, NodeKind::Table(table))
     }
 
-    /// Add a row to the table at `table`, with one cell per column.
+    /// Add a row to the table at `table`, with one cell per column. At
+    /// least one cell needs text: screen readers name the row by the first
+    /// cell that has some.
     pub fn row(&mut self, table: u32, id: &str, cells: &[&str]) -> u32 {
         let cells = cells.iter().map(|cell| (*cell).to_owned()).collect();
         self.add(table, id, NodeKind::Row(cells))

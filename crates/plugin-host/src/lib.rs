@@ -32,4 +32,4 @@ pub use runtime::{Backend, Limits};
 pub use services::{
     Entry, EntryKind, FileRead, Listed, ObjectRead, ServiceError, WorkspacePath, WorkspaceReads,
 };
-pub use view::{MAX_DEPTH, MAX_NODES, View, ViewError, ViewKind, ViewNode, check_rows};
+pub use view::{MAX_DEPTH, MAX_NODES, MAX_ROWS, View, ViewError, ViewKind, ViewNode, check_rows};

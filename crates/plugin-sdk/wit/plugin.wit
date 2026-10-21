@@ -86,7 +86,8 @@ interface workspace {
 //
 // Every label must hold more than spaces: Noura reads it to screen readers.
 interface ui {
-  // A line in a list: a label and an optional quieter line under it.
+  // A line in a list: a label and an optional quieter detail after it, on
+  // the same line.
   record item {
     label: string,
     detail: option<string>,
@@ -97,7 +98,7 @@ interface ui {
   record virtual-list {
     // Names the list for screen readers.
     label: string,
-    // How many rows the list holds.
+    // How many rows the list holds, at most 1,000,000.
     rows: u32,
   }
 
@@ -194,7 +195,9 @@ interface ui {
     virtual-list(virtual-list),
     // A table. Its children are its rows.
     table(table),
-    // A table row: one cell per column. Its only child may be a menu.
+    // A table row: one cell per column, at least one of them with text.
+    // Screen readers name the row by its first cell with text. Its only
+    // child may be a menu.
     row(list<string>),
     // Lays out its children like a panel, with a submit button after them.
     // Submitting sends the value of every input inside it.

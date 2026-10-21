@@ -5,8 +5,9 @@
 //! a tree, or says which rule it breaks: an index out of range, a node
 //! reached twice or from itself, a node where its kind can't go, a repeated
 //! node ID, an unlabeled control, a table row whose cells don't match the
-//! columns, an empty menu, an input value of the wrong form, or a view too
-//! large or deep to draw. [`check_rows`] does the same for the rows of a
+//! columns or hold no text, an empty menu, an input value of the wrong
+//! form, a virtual list too long to draw, or a view too large or deep to
+//! draw. [`check_rows`] does the same for the rows of a
 //! virtual list.
 
 use std::collections::HashSet;
@@ -18,6 +19,11 @@ pub const MAX_NODES: usize = 10_000;
 
 /// The deepest a view's panels may nest.
 pub const MAX_DEPTH: usize = 64;
+
+/// The most rows a virtual list may hold. Noura places rows in `f32`
+/// points, 28 apart, which stay within a point of where they belong up to
+/// here.
+pub const MAX_ROWS: u32 = 1_000_000;
 
 /// A checked view: its root and everything under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +152,8 @@ pub enum ViewError {
     TooManyRows { returned: usize, asked: u32 },
     #[error("A row has no ID.")]
     RowWithoutId,
+    #[error("The virtual list {node} holds {rows} rows; a virtual list holds at most {MAX_ROWS}.")]
+    TooLong { node: String, rows: u32 },
     #[error("Two rows have the ID {id}. Each row needs its own ID.")]
     DuplicateRowId { id: String },
 }
@@ -243,8 +251,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
     }
 }
 
-/// The rules a node keeps on its own: labels, a table's columns and an
-/// input's value and options.
+/// The rules a node keeps on its own: labels, a row's text, a virtual
+/// list's length, a table's columns and an input's value and options.
 fn check_node(node: &Node) -> Result<(), ViewError> {
     let unlabeled = || ViewError::Unlabeled {
         kind: kind_name(&node.kind),
@@ -253,11 +261,14 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
     let invalid = |message: String| Err(ViewError::Invalid(message));
     let id = &node.id;
     match &node.kind {
-        NodeKind::Panel(_)
-        | NodeKind::Text(_)
-        | NodeKind::Markdown(_)
-        | NodeKind::Row(_)
-        | NodeKind::Separator => Ok(()),
+        NodeKind::Panel(_) | NodeKind::Text(_) | NodeKind::Markdown(_) | NodeKind::Separator => {
+            Ok(())
+        }
+        // Screen readers name a row by its first cell with text.
+        NodeKind::Row(cells) if cells.iter().all(|cell| blank(cell)) => {
+            invalid(format!("The row {id} has no cell with text."))
+        }
+        NodeKind::Row(_) => Ok(()),
         NodeKind::Button(label) | NodeKind::List(label) | NodeKind::Menu(label) => {
             if blank(label) {
                 Err(unlabeled())
@@ -267,6 +278,10 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         }
         NodeKind::Item(item) if blank(&item.label) => Err(unlabeled()),
         NodeKind::VirtualList(list) if blank(&list.label) => Err(unlabeled()),
+        NodeKind::VirtualList(list) if list.rows > MAX_ROWS => Err(ViewError::TooLong {
+            node: id.clone(),
+            rows: list.rows,
+        }),
         NodeKind::MenuItem(item) if blank(&item.label) => Err(unlabeled()),
         NodeKind::Item(_) | NodeKind::VirtualList(_) | NodeKind::MenuItem(_) => Ok(()),
         NodeKind::Form(form) if blank(&form.label) => Err(unlabeled()),

@@ -24,7 +24,7 @@ use std::sync::Mutex;
 
 use plugin_sdk::{
     Choice, Column, Error, Event, Input, Item, MenuItem, Node, NodeKind, Page, Plugin, Table,
-    Value, View, VirtualRow, workspace,
+    Value, View, VirtualList, VirtualRow, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -333,6 +333,22 @@ fn broken(case: &str) -> Vec<Node> {
             node("inner", form("Inner"), &[]),
         ],
         "no-columns" => vec![root(&[1]), node("plants", table(&[]), &[])],
+        "blank-row" => vec![
+            root(&[1]),
+            node("plants", table(&["Plant", "Bed"]), &[2]),
+            node("gap", NodeKind::Row(cells(&["", "  "])), &[]),
+        ],
+        "long-virtual-list" => vec![
+            root(&[1]),
+            node(
+                "seeds",
+                NodeKind::VirtualList(VirtualList {
+                    label: "Seeds".into(),
+                    rows: 1_000_001,
+                }),
+                &[],
+            ),
+        ],
         _ => vec![root(&[])],
     }
 }

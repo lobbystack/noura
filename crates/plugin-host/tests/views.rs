@@ -130,6 +130,11 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
         ),
         ("form-in-form", "The form inner sits inside another form."),
         ("no-columns", "The table plants has no columns."),
+        ("blank-row", "The row gap has no cell with text."),
+        (
+            "long-virtual-list",
+            "The virtual list seeds holds 1000001 rows; a virtual list holds at most 1000000.",
+        ),
     ] {
         let nodes = instance.render(&format!("nodes:{case}")).unwrap();
         let error = View::from_nodes(nodes).expect_err(case);
