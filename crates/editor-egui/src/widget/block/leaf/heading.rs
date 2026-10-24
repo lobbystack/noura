@@ -263,6 +263,7 @@ impl<'ast> MdRender {
                 );
                 let h = underline.height;
                 self.show_wrap_layout(ui, top_left, &underline);
+                self.show_block_line_prefixes(ui, node, line, top_left, row_height);
                 top_left.y += h;
                 top_left.y += self.layout.row_spacing;
             }

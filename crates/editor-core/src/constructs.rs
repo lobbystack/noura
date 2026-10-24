@@ -8,11 +8,13 @@ use comrak::nodes::{AstNode, NodeValue};
 
 use crate::doc::MdDoc;
 use crate::offset_types::{Grapheme, RangeExt as _};
+use crate::resolvers::LinkState;
+use crate::spans::SpanKind;
 
 /// A kind of construct the editor draws in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConstructKind {
-    /// An ATX heading, such as `## Title`.
+    /// A heading: `## Title`, or a line with `===` or `---` under it.
     Heading {
         level: u8,
     },
@@ -26,8 +28,50 @@ pub enum ConstructKind {
         checked: bool,
     },
     BlockQuote,
+    /// A quote that starts with `[!type]`, drawn labeled with its type.
+    Callout,
     /// A fenced code block.
     CodeBlock,
+    /// Frontmatter at the start of a note shown whole, drawn as literal
+    /// text.
+    Frontmatter,
+    /// `==text==`, drawn highlighted.
+    Highlight,
+    /// `%%text%%`, hidden away from the caret.
+    Comment,
+    /// `#tag`, drawn styled.
+    Tag,
+    /// `^block-id` at the end of a line, drawn styled.
+    BlockId,
+    /// `<u>text</u>`, drawn underlined.
+    Underline,
+    /// `[[target#heading|alias]]`, drawn as its alias or its target.
+    WikiLink,
+    /// A GFM table, drawn as a grid while the caret is outside it.
+    Table,
+    /// `![alt](path)` or `![[image.png|300]]`, drawn inline as the image,
+    /// `width` points wide when it says.
+    Image {
+        width: Option<u32>,
+    },
+    /// `$inline$` or `$$display$$` math, drawn as formatted source.
+    Math {
+        display: bool,
+    },
+    /// `![[target]]`: a block with the note's title and text when it's
+    /// alone on its line and names a note, and a link otherwise.
+    Embed {
+        block: bool,
+    },
+}
+
+/// Where a construct leads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstructLink {
+    /// The target as written, heading included, alias left out.
+    pub target: String,
+    /// Whether the embedding app found what the target names.
+    pub exists: bool,
 }
 
 /// One construct in the note.
@@ -38,8 +82,16 @@ pub struct Construct {
     pub range: (Grapheme, Grapheme),
     /// The syntax the editor hides while the construct isn't revealed: a
     /// heading's `# `, emphasis markers, a link's brackets and destination,
-    /// a list or task marker, a quote's `> `, or a code block's fences.
+    /// a list or task marker, a quote's `> `, a callout's `>` markers and
+    /// `[!type]`, or a code block's fences.
     pub syntax: Vec<(Grapheme, Grapheme)>,
+    /// What the editor draws in place of the hidden syntax, such as a
+    /// callout's type.
+    pub label: Option<String>,
+    /// The text a note embed shows under its title.
+    pub preview: Option<String>,
+    /// Where a wikilink or an embed leads, as the embedding app answers.
+    pub link: Option<ConstructLink>,
     /// Whether the syntax shows, because the caret, the selection, a find
     /// match or a search preview reaches into the construct.
     pub revealed: bool,
@@ -54,9 +106,61 @@ impl MdDoc {
         }
         let arena = Arena::new();
         let root = self.reparse(&arena);
-        root.descendants()
+        let mut constructs: Vec<Construct> = root
+            .descendants()
             .filter_map(|node| self.construct(node))
-            .collect()
+            .collect();
+        constructs.extend(self.bounds.spans.iter().filter_map(|span| {
+            let mut construct = Construct {
+                kind: ConstructKind::Comment,
+                range: span.range,
+                syntax: span.syntax.clone(),
+                label: None,
+                preview: None,
+                link: None,
+                revealed: self.span_revealed(span),
+            };
+            construct.kind = match &span.kind {
+                SpanKind::Comment => ConstructKind::Comment,
+                SpanKind::Tag => ConstructKind::Tag,
+                SpanKind::BlockId => ConstructKind::BlockId,
+                SpanKind::Underline => ConstructKind::Underline,
+                SpanKind::Embed { target, alias, .. } => {
+                    let block = self.embedded_note(span);
+                    construct.label = Some(match &block {
+                        Some(note) => note.title.clone(),
+                        None => alias.clone().unwrap_or_else(|| target.clone()),
+                    });
+                    construct.link = Some(ConstructLink {
+                        target: target.clone(),
+                        exists: !matches!(
+                            self.link_state_for_wikilink(target),
+                            LinkState::Broken { .. }
+                        ),
+                    });
+                    construct.preview = block.as_ref().map(|note| note.text.clone());
+                    ConstructKind::Embed {
+                        block: block.is_some(),
+                    }
+                }
+                SpanKind::ImageEmbed { target, width } => {
+                    construct.link = Some(ConstructLink {
+                        target: target.clone(),
+                        exists: !matches!(
+                            self.link_state_for_wikilink(target),
+                            LinkState::Broken { .. }
+                        ),
+                    });
+                    ConstructKind::Image { width: *width }
+                }
+                // A callout's construct covers its marker and title.
+                SpanKind::CalloutMarker { .. } | SpanKind::CalloutTitle { .. } => return None,
+            };
+            Some(construct)
+        }));
+        // Stable, so a construct and one nested at its start keep their order.
+        constructs.sort_by_key(|construct| construct.range.start());
+        constructs
     }
 
     fn construct<'a>(&self, node: &'a AstNode<'a>) -> Option<Construct> {
@@ -70,6 +174,8 @@ impl MdDoc {
                 .collect::<Vec<_>>()
         };
         let marker = || self.prefix_range(node).into_iter().collect::<Vec<_>>();
+        let mut label = None;
+        let mut link = None;
         let (kind, syntax, revealed) = match value {
             NodeValue::Heading(heading) if !heading.setext => (
                 ConstructKind::Heading {
@@ -83,15 +189,50 @@ impl MdDoc {
                     .collect(),
                 self.range_revealed(self.node_first_line(node), true),
             ),
+            // A setext heading's syntax is the `===` or `---` line under it.
+            NodeValue::Heading(heading) => (
+                ConstructKind::Heading {
+                    level: heading.level,
+                },
+                vec![self.node_line(node, self.node_last_line(node))],
+                self.reveal_setext_syntax(node),
+            ),
             NodeValue::Emph => (ConstructKind::Emphasis, edges(), self.node_revealed(node)),
             NodeValue::Strong => (ConstructKind::Strong, edges(), self.node_revealed(node)),
-            NodeValue::Strikethrough => (
+            NodeValue::Strikethrough if !crate::nodes::is_single_tilde_strikethrough(node) => (
                 ConstructKind::Strikethrough,
                 edges(),
                 self.node_revealed(node),
             ),
+            NodeValue::Highlight => (ConstructKind::Highlight, edges(), self.node_revealed(node)),
             NodeValue::Code(_) => (ConstructKind::InlineCode, edges(), self.node_revealed(node)),
             NodeValue::Link(_) => (ConstructKind::Link, edges(), self.node_revealed(node)),
+            NodeValue::Image(image) => {
+                link = Some(ConstructLink {
+                    exists: !matches!(
+                        self.link_state_for_url(&image.url),
+                        LinkState::Broken { .. }
+                    ),
+                    target: image.url.clone(),
+                });
+                (
+                    ConstructKind::Image {
+                        width: self.image_dims(node).width.map(|width| width as u32),
+                    },
+                    edges(),
+                    self.node_revealed(node),
+                )
+            }
+            NodeValue::WikiLink(wikilink) => {
+                link = Some(ConstructLink {
+                    exists: !matches!(
+                        self.link_state_for_wikilink(&wikilink.url),
+                        LinkState::Broken { .. }
+                    ),
+                    target: wikilink.url.clone(),
+                });
+                (ConstructKind::WikiLink, edges(), self.node_revealed(node))
+            }
             NodeValue::Item(_) => (ConstructKind::ListItem, marker(), self.reveal(node)),
             NodeValue::TaskItem(task) => (
                 ConstructKind::TaskItem {
@@ -100,7 +241,40 @@ impl MdDoc {
                 marker(),
                 self.reveal(node),
             ),
-            NodeValue::BlockQuote => (ConstructKind::BlockQuote, marker(), self.reveal(node)),
+            NodeValue::BlockQuote => match self.callout(node) {
+                Some(callout) => {
+                    label = Some(callout.label());
+                    (
+                        ConstructKind::Callout,
+                        self.callout_syntax(node, &callout),
+                        self.callout_revealed(node),
+                    )
+                }
+                None => (ConstructKind::BlockQuote, marker(), self.reveal(node)),
+            },
+            NodeValue::Math(math) => (
+                ConstructKind::Math {
+                    display: math.display_math,
+                },
+                self.math_delimiters(node).into_iter().collect(),
+                self.node_revealed(node),
+            ),
+            NodeValue::Table(_) => (
+                ConstructKind::Table,
+                self.table_syntax(node),
+                self.reveal_table(node),
+            ),
+            // Frontmatter shown in the text parses as a fenced code block
+            // (see `crate::lookahead`); its syntax is its delimiters.
+            NodeValue::CodeBlock(code_block)
+                if code_block.fenced && self.bounds.frontmatter == Some(range) =>
+            {
+                (
+                    ConstructKind::Frontmatter,
+                    vec![self.node_first_line(node), self.node_last_line(node)],
+                    self.reveal_fenced_code_block(node, &code_block),
+                )
+            }
             NodeValue::CodeBlock(code_block) if code_block.fenced => {
                 let first = self.node_first_line(node);
                 let last = self.node_last_line(node);
@@ -120,6 +294,9 @@ impl MdDoc {
             kind,
             range,
             syntax,
+            label,
+            preview: None,
+            link,
             revealed,
         })
     }

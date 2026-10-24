@@ -2265,6 +2265,24 @@ impl MdRender {
                             &self.ctx.get_lb_theme(),
                         ),
                     }
+                    // Screen readers find the image by what it names.
+                    let label = match kind {
+                        EmbedKind::Image => url.clone(),
+                        EmbedKind::Missing => format!("Image not found: {url}"),
+                    };
+                    ui.ctx().accesskit_node_builder(
+                        ui.scope_id().with(("md_embed", frag.source_range)),
+                        |node| {
+                            node.set_role(egui::accesskit::Role::Image);
+                            node.set_label(label);
+                            node.set_bounds(egui::accesskit::Rect {
+                                x0: screen_rect.min.x.into(),
+                                y0: screen_rect.min.y.into(),
+                                x1: screen_rect.max.x.into(),
+                                y1: screen_rect.max.y.into(),
+                            });
+                        },
+                    );
 
                     // The embed's opaque fill hides the selection slot behind it,
                     // so tint it when the selection covers it (a partial overlap
