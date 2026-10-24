@@ -68,7 +68,7 @@ To the workspace crate's editor:
 - Ticket 19 adapted Lockbook's find widget. Matching, the current match, stepping and replacing moved to `editor-core`, which matches literal text ignoring case through `regex`. The bar uses egui's own text fields and buttons. Lockbook's case, whole-word and regex modes stayed behind.
 - Replaced `lb-rs` link and image lookups with the `LinkResolver` and `EmbedResolver` interfaces the embedding app implements. Opening a link reports an `OpenedLink` to the app instead of opening it. A wikilink to a missing note reports not found and creates nothing. `EmbedResolver` answers with an `EmbedState` that can say not found, and the editor draws a broken-image marker for it. The `()` resolver finds nothing. Both traits require `Send`, so an editor can sit in a window that egui draws as a deferred viewport.
 - Removed every network request: link cards, link metadata fetching, and Lockbook's image cache, which read files through `lb-rs` and fetched remote images.
-- Removed code-block and plain-text syntax highlighting with its syntect and syntect-assets dependencies. Code draws as plain monospace until ticket 18 picks a highlighter and checks its grammar licenses.
+- Removed code-block and plain-text syntax highlighting with its syntect and syntect-assets dependencies. Ticket 18 highlights fenced code with arborium instead, in new code.
 - Removed Lockbook's fonts. `register_font_system` takes a font database from the embedding app, and `fonts::default_font_database` offers egui's bundled fonts. Phosphor and Nerd Font icon glyphs became painted shapes (the heading fold caret, the alert dot) or text (the `…` fold chip), and emoji no longer route to Twemoji.
 - Removed the editor's chrome: the toolbar, find bar, emoji and link completions, context menus, link hover cards and link sheets. Removed the mobile host command surface, `MdLabel`, and the workspace persistence of scroll position and selection.
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
@@ -95,7 +95,23 @@ To the `lb-rs` text model:
 - Uses `std::time` in place of `web_time`, and renamed identifiers throughout.
 - Ticket 22 updates the contiguous copy and the grapheme index around each replacement instead of rebuilding them from the rope. A cluster never crosses a line ending, so the buffer segments only the lines next to the edit again.
 
-Lockbook's editing behaviors stay as they were, including the ones that write files: fold tags, setext headings turned off, `__` drawn as underline, and soft breaks drawn as hard breaks. Ticket 18 removes those. Ticket 19 removed Lockbook's Tab handling and the flattening of non-breaking spaces on paste.
+Ticket 18 changed the fork so notes from Obsidian-style workspaces read as they do in today's editor:
+
+- Nothing folds. `foldable` answers `None`, so `ToggleFold` and `Unfold` change no text, and a fold marker already in a file shows as written. The code that reads fold markers stays, inert.
+- A paste keeps its non-breaking spaces.
+- comrak reads setext headings, and reads `__text__` as strong. Its alerts, spoilers, emoji shortcodes, superscript, subscript, code math and front matter extension are off, so their text shows as written. comrak reads `~x~` as strikethrough and has no option to stop, so the editor draws single-tilde strikethrough as written.
+- HTML the editor doesn't draw shows as written. Lockbook hid it away from the caret.
+- A soft line break keeps its own row, as Lockbook drew it.
+- `lookahead.rs` reads frontmatter and `$$` math within a 256 KiB lookahead. comrak parses a copy of the note in which the frontmatter's delimiter lines read as code fences, byte for byte, so source positions after frontmatter that holds a lone carriage return line up again. In that copy, a line inside a `$$` block that looks like block syntax starts with a stand-in byte, so the block stays one piece of math. Ticket 22's in-place reparse parses the same copy and rebuilds the spans of the blocks it reparsed. An edit to blocks that hold `$$` math past the lookahead parses the whole note instead.
+- The `ToggleStyle` event for underline wraps the selection in `<u>` and `</u>`, or takes them off, as ticket 19's Mod-U command does. It used to write `__`, which now draws as strong.
+- New code reads callouts of any type (`callouts.rs`), and comments, tags, block IDs, `<u>`, embeds and image embeds (`spans.rs`). The alert widget no longer draws anything, because comrak's alerts are off.
+- A table shows its raw rows while the caret is anywhere in it, and each grid cell is a cell in the accessibility tree.
+- Display math hides its `$$` instead of one `$`, and math draws in a format of its own.
+- Remote images draw a Load image button, and a drawn image is an image in the accessibility tree.
+- A setext heading's underline line draws its quote or list prefix while it shows. Lockbook drew none, which the `cursor_renders` property found once setext headings came on.
+- `PaintedSpan` reports the text a fragment drew and whether it drew its source as written.
+
+Ticket 19 removed Lockbook's Tab handling and the flattening of non-breaking spaces on paste.
 
 ## Left behind
 
@@ -144,6 +160,16 @@ These 52 didn't come along:
 | `style/chrome.rs`: `fit_outside_stroke_pulls_fill_off_clip_edges` | `fit_outside_stroke_fill` stayed behind with the chrome |
 | `style/color.rs`: `hue_wash_differs_from_poles` | `hue_wash` stayed behind with the chrome |
 
+Ticket 18 removed 28 more ported tests, because they test folding, which Noura no longer does:
+
+| Test | Reason |
+|---|---|
+| `tests/folding.rs`: all 25 tests (`fold_tag_never_renders_as_source`, `find_match_reveals_folded_contents_without_unfolding`, `newline_right_of_chip_creates_heading_after_folded_content`, `newline_right_of_chip_creates_item_after_folded_subtree`, `arrow_right_skips_chip_then_skips_section`, `arrow_right_at_doc_end_section_stays_put`, `arrow_left_skips_section_then_chip`, `blank_line_after_folded_section_is_walkable`, `blank_line_after_folded_item_is_walkable`, `trailing_blank_line_after_doc_end_fold_is_reachable`, `backspace_after_folded_section_unfolds_instead_of_joining`, `deleting_selection_of_folded_items_deletes_their_contents`, `cut_selection_with_capsule_takes_contents`, `typing_over_selection_replaces_folded_contents`, `deleting_selection_covering_contents_takes_tag_too`, `backspace_empty_line_after_folded_section_deletes_line`, `forward_delete_right_of_chip_unfolds_instead_of_deleting`, `backspace_right_of_chip_removes_whole_tag`, `click_chip_unfolds`, `selection_into_contents_unfolds_but_select_all_does_not`, `cursor_into_nested_folds_unfolds_all`, `cursor_beside_chip_renders_outside_capsule`, `toggle_fold_round_trip`, `fold_with_selection_into_contents_stays_folded`, `word_select_inside_tag_snaps_to_whole_tag`) | Folding wrote markers into notes |
+| `tests/ios_host.rs`: `platform_typing_inside_a_fold_unfolds_it`, `tap_right_of_a_fold_chip_lands_after_it` | The same |
+| `tests/regressions.rs`: `down_arrow_into_folded_tail_stops_at_visible_end` | The same |
+
+`render_props::drag_never_reveals` now leaves callouts out along with tables: a click anywhere in a callout shows its source. `editor-core`'s `commands.rs` lost `pasting_flattens_non_breaking_spaces` and `unfolding_removes_the_fold_tag`, which pinned the behaviors ticket 18 removed.
+
 ### lb-rs tests
 
 The five `lb-rs` files hold 32 tests, and 30 came along:
@@ -178,4 +204,4 @@ BSD-3-Clause requires binary distributions to reproduce the copyright notice, th
 ## Review
 
 - Reviewer: Claude (author review). Owner review pending.
-- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 19's find adaptation and removals, ticket 23's plain-text mode, and ticket 22's input method, parsing and performance changes.
+- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 18's changes, which copy no new source, ticket 19's find adaptation and removals, ticket 23's plain-text mode, and ticket 22's input method, parsing and performance changes.

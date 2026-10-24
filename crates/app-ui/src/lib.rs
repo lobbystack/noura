@@ -8,10 +8,13 @@ mod common;
 mod dates;
 mod finder;
 mod ignored_files;
+mod image_decoders;
 mod inbox;
 mod keys;
 mod markdown;
 mod note;
+mod note_images;
+mod note_links;
 mod palette;
 mod plugin_view;
 mod plugins;
@@ -66,6 +69,7 @@ pub struct NouraUi {
     ignored: ignored_files::IgnoredFilesView,
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
+    shipped_plugins: plugins::ShippedView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
@@ -92,6 +96,7 @@ impl NouraUi {
             ignored: ignored_files::IgnoredFilesView::default(),
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
+            shipped_plugins: plugins::ShippedView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
@@ -109,9 +114,10 @@ impl NouraUi {
         self.notes.spell_checker = checker;
     }
 
-    /// Whether a workspace is opening in the background.
+    /// Whether work runs in the background: a workspace opening, or
+    /// plugin calls whose answers the window hasn't shown yet.
     pub fn is_busy(&self) -> bool {
-        self.app.is_busy()
+        self.app.is_busy() || self.app.is_plugin_work_pending()
     }
 
     /// The app this window draws.
@@ -280,7 +286,7 @@ impl NouraUi {
                 .request_repaint_after(due.saturating_duration_since(now));
         }
         self.notes.retain(&self.app);
-        if self.app.is_busy() {
+        if self.app.is_busy() || self.app.is_plugin_work_pending() {
             // The change stream wakes the window when the work finishes;
             // this also keeps the loading spinner turning.
             ui.ctx().request_repaint_after(Duration::from_millis(100));
@@ -309,11 +315,13 @@ impl NouraUi {
         settings::show(
             ui,
             &mut self.app,
+            self.window,
             &mut self.settings,
             &mut *self.picker,
             self.notes.spell_checker.is_some(),
         );
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
+        plugins::shipped_dialog(ui, &mut self.app, &mut self.shipped_plugins);
         palette::show(ui, &mut self.app, &mut self.palette);
         note::unsaved_prompt(ui, &mut self.app);
         self.notes.commit_hidden_drafts(&mut self.app);

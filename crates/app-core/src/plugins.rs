@@ -9,30 +9,40 @@
 //! each build into the plugin host's library, which compiles it on this
 //! device. Approvals never come from workspace files, so a workspace that
 //! lists a plugin as enabled runs none of its code on a device where you
-//! haven't installed and approved it.
+//! haven't installed and approved it. The plugins that ship with Noura
+//! wait for one approval on this device's first-run screen.
+//!
+//! Each running plugin's calls run on a thread of its own, so a plugin that
+//! loops, allocates past its memory cap or crashes never holds up a
+//! window: its views, commands, Inbox sections, Settings page and tools
+//! update when its answers arrive, through [`Plugins::poll`].
+
+mod reader;
+mod reload;
+mod worker;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
-    time::Duration,
 };
 
-use local_core::{CoreError, WatchCoordinator, WorkspaceEntryKind};
+use local_core::HostRequests;
 use plugin_host::{
-    Candidate, Capability, Entry, EntryKind, Event, FileRead, InstallError, Listed, ObjectRead,
-    ObjectTypes, Page, PluginHost, PluginInstance, PluginManifest, ServiceError, Services, Value,
-    View, ViewError, ViewKind, ViewNode, VirtualRow, WorkspaceObjects, WorkspacePath,
-    WorkspaceReads, check_rows,
+    Candidate, Capability, Event, Grant, InstallError, Node, NodeKind, ObjectTypes, PluginHost,
+    PluginManifest, Router, RunningPlugin, Services, Surface, Value, View, ViewError, ViewKind,
+    ViewNode, VirtualRow, WorkspaceObjects, WorkspaceReads, check_rows,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{AppError, Workspace, plugin_objects::ObjectStore, store::JsonStore};
+use reload::{Reload, Watcher};
+use worker::{Doing, Job, Outcome, Registrations, RowsFetched, ToolEntry, Worker};
 
 /// Where the plugin host keeps installed plugins and their compiled code,
 /// under the app data folder.
@@ -45,37 +55,56 @@ const RECORDS: &str = "plugins/installed.json";
 /// plugin's ID and the page's own ID.
 const PAGE_PREFIX: &str = "plugin:";
 
-/// How long a plugin folder must stay quiet after a change before a reload
-/// reads it, so a build tool can finish writing.
-const QUIET: Duration = Duration::from_millis(200);
+/// The IDs of plugins' pages in Settings start with this, then the
+/// plugin's ID.
+pub(crate) const SETTINGS_PREFIX: &str = "plugin-settings:";
 
-/// How long a reload watcher waits for changes before it checks whether it
-/// should stop.
-const WATCH_WAIT: Duration = Duration::from_millis(500);
-
-/// The largest file a plugin may read.
-const MAX_READ_BYTES: u64 = 16 << 20;
+/// The IDs of plugins' commands in the command palette start with this,
+/// then the plugin's ID and the command's own ID.
+pub(crate) const COMMAND_PREFIX: &str = "plugin-command:";
 
 /// How many rows of a virtual list Noura asks a plugin for at once. Each
 /// batch starts at a multiple of this.
 const ROW_BATCH: u32 = 64;
 
-/// A capability as Settings and the install dialog show it.
+/// A capability, or one host or target of one, as Settings, the install
+/// dialog and the first-run screen show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityLine {
     /// The name the manifest uses, such as `workspace-read`.
     pub name: String,
     /// What approving it lets the plugin do.
     pub description: String,
+    /// What revoking or allowing this line changes.
+    pub grant: Grant,
 }
 
-impl CapabilityLine {
-    fn of(capability: &Capability) -> Self {
-        Self {
-            name: capability.name().to_owned(),
-            description: capability.description(),
-        }
-    }
+/// The lines for `capabilities`: one per capability, and one per network
+/// host and command target.
+pub(crate) fn lines(capabilities: &[Capability]) -> Vec<CapabilityLine> {
+    capabilities
+        .iter()
+        .flat_map(|capability| {
+            capability
+                .grants()
+                .into_iter()
+                .map(|(grant, description)| CapabilityLine {
+                    name: capability.name().to_owned(),
+                    description,
+                    grant,
+                })
+        })
+        .collect()
+}
+
+/// The lines of `capabilities` that `known` doesn't grant: whole
+/// capabilities, network hosts and command targets.
+fn lines_beyond(capabilities: &[Capability], known: &[Capability]) -> Vec<CapabilityLine> {
+    let known: Vec<Grant> = lines(known).into_iter().map(|line| line.grant).collect();
+    lines(capabilities)
+        .into_iter()
+        .filter(|line| !known.contains(&line.grant))
+        .collect()
 }
 
 /// A plugin as the Plugins page lists it: installed on this device,
@@ -88,17 +117,25 @@ pub struct PluginRow {
     pub version: Option<String>,
     /// The folder it was installed from.
     pub folder: Option<String>,
-    /// The capabilities you approved on this device.
+    /// What it may use on this device: each capability, network host and
+    /// command target it declares that you approved.
     pub approved: Vec<CapabilityLine>,
+    /// What it declares that you revoked, which you can allow again.
+    pub revoked: Vec<CapabilityLine>,
     /// Whether it is installed on this device.
     pub installed: bool,
+    /// Whether it ships with Noura.
+    pub shipped: bool,
     /// Whether the open workspace's manifest lists it as enabled.
     pub enabled: bool,
     pub running: bool,
+    /// It failed too often and stopped for this session. Starting it
+    /// again leaves the workspace's enabled plugins list as it is.
+    pub failed: bool,
     /// Why it isn't running or its last reload failed.
     pub problem: Option<String>,
-    /// The capabilities a new build in its folder adds, which wait for
-    /// your approval before the build runs. Empty when no build waits.
+    /// What a new build in its folder adds, which waits for your approval
+    /// before the build runs. Empty when no build waits.
     pub update: Vec<CapabilityLine>,
 }
 
@@ -111,7 +148,8 @@ pub struct PluginInstall {
     pub id: String,
     pub name: String,
     pub version: String,
-    /// Every capability the manifest declares, in its order.
+    /// Every capability, network host and command target the manifest
+    /// declares, in its order.
     pub capabilities: Vec<CapabilityLine>,
     /// Why the folder can't be installed. Nothing installs while it is
     /// set.
@@ -131,72 +169,197 @@ impl std::fmt::Debug for PluginInstall {
     }
 }
 
-/// What a plugin page shows: its view, or why it can't be drawn.
+/// A plugin that ships with Noura, as the first-run screen lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShippedPlugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// Every capability, network host and command target it declares.
+    pub capabilities: Vec<CapabilityLine>,
+}
+
+/// A tool a running plugin offers to AI assistants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginTool {
+    pub plugin_id: String,
+    pub name: String,
+    pub description: String,
+    /// The JSON Schema, as JSON text, that the tool's arguments match.
+    pub input_schema: String,
+}
+
+/// What a plugin view shows: the view, or why it can't be drawn.
 pub type PluginView = Result<View, String>;
+
+/// A running plugin's Inbox section.
+pub(crate) struct PluginSection {
+    pub(crate) plugin_id: String,
+    pub(crate) section_id: String,
+    pub(crate) title: String,
+    /// The plugin's first rail page, whose place the section takes among
+    /// the Inbox's sections.
+    pub(crate) page_id: Option<String>,
+    pub(crate) content: PluginView,
+}
 
 /// This device's record of an installed plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Record {
     folder: String,
+    /// What you approved. A plugin may use what it declares and this
+    /// holds.
     approved: Vec<Capability>,
+    /// It ships with Noura, and you approved it on the first-run screen.
+    #[serde(default)]
+    shipped: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Records {
     #[serde(default)]
     plugins: BTreeMap<String, Record>,
+    /// The plugins shipping with Noura that this device's first-run screen
+    /// showed you.
+    #[serde(default)]
+    shipped_reviewed: BTreeSet<String>,
 }
 
-/// A running plugin, its pages and the views it last drew.
+/// A properties panel a running plugin drew for one object.
+struct Panel {
+    view: PluginView,
+    drawn: Drawn,
+    /// The file revision a draw was asked for that hasn't answered yet.
+    requested: Option<String>,
+}
+
+/// Which revision of an object's file a panel shows.
+enum Drawn {
+    /// None yet, or the plugin did something since that may change it.
+    Nothing,
+    Revision(String),
+    /// The plugin drew it right after handling a press in it, so it shows
+    /// the file as the plugin left it: the revision the note reads next.
+    AfterPress,
+}
+
+impl Panel {
+    /// A panel the plugin hasn't drawn yet, which shows nothing.
+    fn empty() -> Self {
+        let root = Node {
+            id: "panel".to_owned(),
+            kind: NodeKind::Panel(None),
+            children: Vec::new(),
+        };
+        Self {
+            view: View::from_nodes(vec![root]).map_err(|error| error.to_string()),
+            drawn: Drawn::Nothing,
+            requested: None,
+        }
+    }
+
+    /// Whether the panel shows the object's file at `revision`.
+    fn current_for(&mut self, revision: &str) -> bool {
+        match &self.drawn {
+            Drawn::Nothing => false,
+            Drawn::Revision(drawn) => drawn == revision,
+            Drawn::AfterPress => {
+                self.drawn = Drawn::Revision(revision.to_owned());
+                true
+            }
+        }
+    }
+}
+
+/// A running plugin, the thread its calls run on, and what it registered
+/// and drew last.
 struct Running {
-    instance: PluginInstance,
-    pages: Vec<Page>,
-    views: BTreeMap<String, PluginView>,
-    /// The properties panels it last drew, by object ID, each with the
-    /// revision of the file it drew from.
-    panels: BTreeMap<String, (String, PluginView)>,
+    plugin: Arc<RunningPlugin>,
+    /// Which start this is, so an answer from an earlier one is ignored.
+    generation: u64,
+    jobs: Sender<Job>,
+    /// Jobs sent whose answers the service hasn't taken yet.
+    outstanding: usize,
+    redraw_queued: Arc<AtomicBool>,
+    registrations: Registrations,
+    views: BTreeMap<Surface, PluginView>,
+    /// It failed too often and stopped for this session.
+    failed: bool,
+    /// The properties panels it drew, by object ID.
+    panels: BTreeMap<String, Panel>,
     /// The rows of each virtual list fetched since the views were drawn,
     /// by page and node ID.
     rows: HashMap<(String, String), Rows>,
+    /// Counts the times its views were drawn, so rows fetched for views
+    /// drawn before are dropped.
+    drawn: u64,
 }
 
 /// The rows of one virtual list fetched so far.
 #[derive(Default)]
 struct Rows {
     /// The start of each batch asked for, whatever came back.
-    asked: std::collections::HashSet<u32>,
+    asked: HashSet<u32>,
     rows: HashMap<u32, VirtualRow>,
+    /// The rows fetched before the views were last drawn, which show until
+    /// the plugin returns the rows at their places again, so the list
+    /// doesn't empty while it does.
+    earlier: HashMap<u32, VirtualRow>,
     /// The ID of every row fetched, which no other row may repeat.
-    ids: std::collections::HashSet<String>,
+    ids: HashSet<String>,
     /// Why the plugin's rows can't be shown.
     problem: Option<String>,
 }
 
-/// A new build a watcher found in a plugin's folder, or why it can't load.
-struct Reload {
-    id: String,
-    result: Result<Candidate, InstallError>,
-}
+impl Rows {
+    /// Ask for every row again, as after the views were drawn again.
+    fn again(&mut self) {
+        let fetched = std::mem::take(&mut self.rows);
+        self.earlier.extend(fetched);
+        self.asked.clear();
+        self.ids.clear();
+        self.problem = None;
+    }
 
-/// Stops its reload watcher when dropped.
-struct Watcher {
-    stop: Arc<AtomicBool>,
-    /// The digest of the build the watcher offered last, shared with it.
-    offered: Offered,
-}
-
-/// The digest of the build a reload watcher offered last. The watcher
-/// skips a build with this digest; clearing it makes the next change in
-/// the folder offer the build again.
-type Offered = Arc<Mutex<String>>;
-
-impl Drop for Watcher {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+    /// The row at `index`, fetched since the views were drawn or before.
+    fn get(&self, index: u32) -> Option<VirtualRow> {
+        self.rows
+            .get(&index)
+            .or_else(|| self.earlier.get(&index))
+            .cloned()
     }
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// A tool call checked against the tool's schema, ready to run off the
+/// service's lock.
+pub(crate) struct ToolCall {
+    plugin: Arc<RunningPlugin>,
+    name: String,
+    arguments: String,
+}
+
+impl ToolCall {
+    /// Run the tool in its plugin and wait for its answer.
+    pub(crate) fn run(&self) -> Result<String, AppError> {
+        match self.plugin.call_tool(&self.name, &self.arguments) {
+            Ok(Ok(answer)) => Ok(answer),
+            Ok(Err(message)) => Err(AppError::new("plugin_tool_failed", message)),
+            Err(error) => {
+                tracing::warn!(%error, "a plugin tool failed");
+                Err(AppError::new(
+                    "plugin_failed",
+                    worker::failure_message(&error, Doing::Running),
+                ))
+            }
+        }
+    }
+
+    pub(crate) fn plugin_id(&self) -> &str {
+        self.plugin.id()
+    }
+}
 
 pub(crate) struct Plugins {
     app_data: PathBuf,
@@ -209,15 +372,32 @@ pub(crate) struct Plugins {
     manifests: BTreeMap<String, PluginManifest>,
     /// The workspace the running plugins read.
     workspace: Option<Arc<Workspace>>,
+    /// Carries one running plugin's command calls to another.
+    router: Arc<Router>,
+    /// The plugins whose commands another plugin called, to draw again.
+    called: Receiver<String>,
+    /// Sends plugins' requests to their declared hosts.
+    network: Arc<HostRequests>,
     /// The object types the running plugins registered.
     types: ObjectTypes,
+    /// See [`Plugins::acts`].
+    acts: u64,
     running: BTreeMap<String, Running>,
+    generations: u64,
+    outcomes: (Sender<Outcome>, Receiver<Outcome>),
     problems: BTreeMap<String, String>,
-    /// New builds whose capabilities wait for your approval.
+    /// New builds that wait for your approval of what they add.
     updates: BTreeMap<String, Candidate>,
     watchers: BTreeMap<String, Watcher>,
     reload_sender: Sender<Reload>,
     reloads: Receiver<Reload>,
+    /// The folder holding the plugins that ship with Noura.
+    shipped: Option<PathBuf>,
+    /// The manifest and folder of each plugin shipping with Noura that
+    /// this device hasn't shown you yet, read once rather than per frame.
+    shipped_pending: Vec<(PluginManifest, PathBuf)>,
+    /// The listing whose file changes the running plugins drew last.
+    listing_drawn: u64,
     /// Wakes every window, as a reload watcher does once it read a build.
     wake: Option<Wake>,
     /// Counts the changes the windows show: plugins, pages and views.
@@ -231,6 +411,11 @@ impl Plugins {
         // runs until you install it again.
         let store = JsonStore::new(app_data.join(RECORDS), "plugin approvals");
         let records = store.load();
+        let router = Arc::new(Router::default());
+        let (called_sender, called) = channel();
+        router.on_called(Arc::new(move |id: &str| {
+            let _ = called_sender.send(id.to_owned());
+        }));
         Self {
             app_data: app_data.to_owned(),
             store,
@@ -238,13 +423,22 @@ impl Plugins {
             host: None,
             manifests: BTreeMap::new(),
             workspace: None,
+            router,
+            called,
+            network: Arc::new(HostRequests::https()),
             types: ObjectTypes::new(),
+            acts: 0,
             running: BTreeMap::new(),
+            generations: 0,
+            outcomes: channel(),
             problems: BTreeMap::new(),
             updates: BTreeMap::new(),
             watchers: BTreeMap::new(),
             reload_sender,
             reloads,
+            shipped: None,
+            shipped_pending: Vec::new(),
+            listing_drawn: 0,
             wake: None,
             version: 0,
         }
@@ -262,11 +456,18 @@ impl Plugins {
         self.version += 1;
     }
 
+    /// Whether a running plugin has calls whose answers haven't been
+    /// taken yet.
+    pub(crate) fn is_working(&self) -> bool {
+        self.running.values().any(|running| running.outstanding > 0)
+    }
+
     /// Change the records and save them. Returns the error to show when
     /// they couldn't be saved; the records then stay as they were.
     fn save_records(&mut self, change: impl FnOnce(&mut Records)) -> Result<(), AppError> {
         let mut records = Records {
             plugins: self.records.plugins.clone(),
+            shipped_reviewed: self.records.shipped_reviewed.clone(),
         };
         change(&mut records);
         self.store.save(&records).map_err(|error| {
@@ -340,27 +541,34 @@ impl Plugins {
             .map(|id| {
                 let record = records.get(id);
                 let manifest = self.manifests.get(id).filter(|_| record.is_some());
-                let update = match (self.updates.get(id), record) {
-                    (Some(candidate), Some(record)) => candidate
-                        .manifest()
-                        .capabilities
-                        .iter()
-                        .filter(|capability| !record.approved.contains(capability))
-                        .map(CapabilityLine::of)
-                        .collect(),
+                let (approved, revoked) = match (manifest, record) {
+                    (Some(manifest), Some(record)) => {
+                        let granted = Capability::granted(&manifest.capabilities, &record.approved);
+                        let revoked = lines_beyond(&manifest.capabilities, &granted);
+                        (lines(&granted), revoked)
+                    }
+                    (None, Some(record)) => (lines(&record.approved), Vec::new()),
+                    _ => (Vec::new(), Vec::new()),
+                };
+                let update = match (self.updates.get(id), manifest) {
+                    (Some(candidate), Some(manifest)) => {
+                        lines_beyond(&candidate.manifest().capabilities, &manifest.capabilities)
+                    }
                     _ => Vec::new(),
                 };
+                let running = self.running.get(id);
                 PluginRow {
                     id: id.clone(),
                     name: manifest.map_or_else(|| id.clone(), |manifest| manifest.name.clone()),
                     version: manifest.map(|manifest| manifest.version.to_string()),
                     folder: record.map(|record| record.folder.clone()),
-                    approved: record
-                        .map(|record| record.approved.iter().map(CapabilityLine::of).collect())
-                        .unwrap_or_default(),
+                    approved,
+                    revoked,
                     installed: record.is_some(),
+                    shipped: record.is_some_and(|record| record.shipped),
                     enabled: enabled.contains(id),
-                    running: self.running.contains_key(id),
+                    running: running.is_some_and(|running| !running.failed),
+                    failed: running.is_some_and(|running| running.failed),
                     problem: self.problems.get(id).cloned(),
                     update,
                 }
@@ -379,8 +587,12 @@ impl Plugins {
     /// Run the plugins `workspace` enables that this device installed and
     /// approved, after stopping the ones another workspace ran.
     pub(crate) fn open_workspace(&mut self, workspace: Option<Arc<Workspace>>) {
-        self.running.clear();
+        let ids: Vec<String> = self.running.keys().cloned().collect();
+        for id in ids {
+            self.stop(&id);
+        }
         self.workspace = workspace;
+        self.listing_drawn = 0;
         self.changed();
         if self.workspace.is_none() || self.records.plugins.is_empty() {
             return;
@@ -395,10 +607,27 @@ impl Plugins {
         self.changed();
     }
 
-    /// Start the installed plugin `id` when every capability its manifest
-    /// declares is approved, and draw its pages.
+    /// Stop the plugin `id`: its thread ends, other plugins can no longer
+    /// call its commands, and what it registered goes.
+    fn stop(&mut self, id: &str) {
+        if let Some(running) = self.running.remove(id) {
+            running.plugin.release_object_types();
+        }
+        self.router.remove(id);
+    }
+
+    /// Start the installed plugin `id` with what you approved, and ask it
+    /// what it registers. Its code runs on its own thread. A plugin that
+    /// was running, as before a reload, keeps showing what it registered
+    /// and drew until the new start answers, so its open pages stay.
     fn start(&mut self, id: &str) {
-        self.running.remove(id);
+        let (registrations, views) = self
+            .running
+            .get(id)
+            .filter(|running| !running.failed)
+            .map(|running| (running.registrations.clone(), running.views.clone()))
+            .unwrap_or_default();
+        self.stop(id);
         self.problems.remove(id);
         let Some(record) = self.records.plugins.get(id).cloned() else {
             return;
@@ -406,94 +635,89 @@ impl Plugins {
         let Some(workspace) = self.workspace.clone() else {
             return;
         };
-        let started = self.host().and_then(|host| {
+        let loaded = match self.host().and_then(|host| {
             let loaded = host.load(id).map_err(|error| from_install(&error))?;
-            let unapproved: Vec<&str> = loaded
-                .manifest()
-                .capabilities
-                .iter()
-                .filter(|capability| !record.approved.contains(capability))
-                .map(Capability::name)
-                .collect();
-            if !unapproved.is_empty() {
-                return Err(AppError::new(
-                    "plugin_not_approved",
-                    format!(
-                        "It asks for capabilities you haven't approved: {}.",
-                        unapproved.join(", ")
-                    ),
-                ));
-            }
-            let reader: Arc<dyn WorkspaceReads> = Arc::new(WorkspaceReader(workspace.clone()));
-            let objects: Arc<dyn WorkspaceObjects> =
-                Arc::new(ObjectStore::new(workspace, self.types.clone()));
-            let services = Services {
-                workspace: Some(reader),
-                objects: Some(objects),
-                types: self.types.clone(),
-            };
-            let mut instance = host
-                .start_with(&loaded, &record.approved, services)
-                .map_err(|error| {
-                    tracing::warn!(%error, "a plugin didn't start");
-                    AppError::new("plugin_start_failed", "It failed to start.")
-                })?;
-            let refused = if loaded
-                .manifest()
-                .capabilities
-                .contains(&Capability::ObjectTypes)
-            {
-                let registered = instance.register_object_types().map_err(|error| {
-                    tracing::warn!(%error, "a plugin didn't list its object types");
-                    AppError::new(
-                        "plugin_types_failed",
-                        "It failed while listing its object types.",
-                    )
-                })?;
-                registered
-                    .into_iter()
-                    .filter_map(|(object_type, result)| {
-                        result.err().map(|error| {
-                            tracing::warn!(code = error.code(), "a plugin's type wasn't added");
-                            format!("Noura didn't add the type {object_type}: {error}")
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let declares_views = loaded.manifest().capabilities.contains(&Capability::Views);
-            let pages = if declares_views {
-                instance.pages().map_err(|error| {
-                    tracing::warn!(%error, "a plugin didn't list its pages");
-                    AppError::new("plugin_pages_failed", "It failed while listing its pages.")
-                })?
-            } else {
-                Vec::new()
-            };
-            Ok((instance, pages, refused))
-        });
-        match started {
-            Ok((instance, pages, refused)) => {
-                let pages = pages.into_iter().filter(valid_page).collect();
-                let mut running = Running {
-                    instance,
-                    pages,
-                    views: BTreeMap::new(),
-                    panels: BTreeMap::new(),
-                    rows: HashMap::new(),
-                };
-                running.render_all();
-                self.running.insert(id.to_owned(), running);
-                if !refused.is_empty() {
-                    self.problems.insert(id.to_owned(), refused.join(" "));
-                }
-            }
+            Ok((host, loaded))
+        }) {
+            Ok(loaded) => loaded,
             Err(error) => {
                 self.problems.insert(id.to_owned(), error.message);
+                self.changed();
+                return;
             }
+        };
+        let (host, loaded) = loaded;
+        let reader: Arc<dyn WorkspaceReads> = Arc::new(reader::WorkspaceReader(workspace.clone()));
+        let objects: Arc<dyn WorkspaceObjects> =
+            Arc::new(ObjectStore::new(workspace, self.types.clone()));
+        let services = Services {
+            workspace: Some(reader),
+            objects: Some(objects),
+            types: self.types.clone(),
+            network: Some(self.network.clone()),
+            router: Arc::downgrade(&self.router),
+        };
+        let plugin = host.start(&loaded, &record.approved, services);
+        self.manifests
+            .insert(id.to_owned(), loaded.manifest().clone());
+        self.router.insert(plugin.clone());
+        self.generations += 1;
+        let (jobs, received) = channel();
+        let redraw_queued = Arc::new(AtomicBool::new(false));
+        let worker = Worker {
+            id: id.to_owned(),
+            generation: self.generations,
+            plugin: plugin.clone(),
+            jobs: received,
+            outcomes: self.outcomes.0.clone(),
+            wake: self.wake.clone(),
+            redraw_queued: redraw_queued.clone(),
+        };
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("plugin-{id}"))
+            .spawn(move || worker.run())
+        {
+            tracing::warn!(%error, "a plugin's thread didn't start");
+            self.router.remove(id);
+            self.problems
+                .insert(id.to_owned(), "It failed to start.".to_owned());
+            self.changed();
+            return;
         }
+        self.running.insert(
+            id.to_owned(),
+            Running {
+                plugin,
+                generation: self.generations,
+                jobs,
+                outstanding: 0,
+                redraw_queued,
+                registrations,
+                views,
+                failed: false,
+                panels: BTreeMap::new(),
+                rows: HashMap::new(),
+                drawn: 0,
+            },
+        );
+        self.send(id, Job::Refresh);
         self.changed();
+    }
+
+    /// Send `job` to the running plugin `id`.
+    fn send(&mut self, id: &str, job: Job) {
+        let Some(running) = self.running.get_mut(id) else {
+            return;
+        };
+        if running.failed {
+            return;
+        }
+        if matches!(job, Job::Redraw) && running.redraw_queued.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if running.jobs.send(job).is_ok() {
+            running.outstanding += 1;
+        }
     }
 
     /// Read the plugin folder `folder` for the install dialog, without
@@ -524,11 +748,7 @@ impl Plugins {
                     id: manifest.id.clone(),
                     name: manifest.name.clone(),
                     version: manifest.version.to_string(),
-                    capabilities: manifest
-                        .capabilities
-                        .iter()
-                        .map(CapabilityLine::of)
-                        .collect(),
+                    capabilities: lines(&manifest.capabilities),
                     problem: None,
                     candidate: Some(candidate),
                 }
@@ -546,23 +766,36 @@ impl Plugins {
                 install.problem.clone().unwrap_or_default(),
             ));
         };
+        self.install_candidate(candidate, &install.folder, false)
+    }
+
+    fn install_candidate(
+        &mut self,
+        candidate: &Candidate,
+        folder: &str,
+        shipped: bool,
+    ) -> Result<(), AppError> {
         let host = self.host()?;
         host.install(candidate)
             .map_err(|error| from_install(&error))?;
         let id = candidate.manifest().id.clone();
         let record = Record {
-            folder: install.folder.clone(),
+            folder: folder.to_owned(),
             approved: candidate.manifest().capabilities.clone(),
+            shipped,
         };
         if let Err(error) = self.save_records(|records| {
             records.plugins.insert(id.clone(), record);
+            if shipped {
+                records.shipped_reviewed.insert(id.clone());
+            }
         }) {
             let _ = host.uninstall(&id);
             return Err(error);
         }
         self.manifests
             .insert(id.clone(), candidate.manifest().clone());
-        self.watch(&id, &install.folder, candidate.digest());
+        self.watch(&id, folder, candidate.digest());
         if self.enabled().contains(&id) {
             self.start(&id);
         }
@@ -585,7 +818,7 @@ impl Plugins {
                 self.start(id);
             }
         } else {
-            self.running.remove(id);
+            self.stop(id);
             self.problems.remove(id);
         }
         self.changed();
@@ -597,7 +830,7 @@ impl Plugins {
     /// your other devices.
     pub(crate) fn uninstall(&mut self, id: &str) -> Result<(), AppError> {
         let host = self.host()?;
-        self.running.remove(id);
+        self.stop(id);
         self.watchers.remove(id);
         self.updates.remove(id);
         self.problems.remove(id);
@@ -610,13 +843,10 @@ impl Plugins {
         removed
     }
 
-    /// Approve the capabilities a waiting build adds, and run it.
+    /// Approve what a waiting build adds, and run it.
     pub(crate) fn approve_update(&mut self, id: &str) -> Result<(), AppError> {
         let Some(candidate) = self.updates.remove(id) else {
-            return Err(AppError::new(
-                "no_plugin_update",
-                "No new build of this plugin is waiting.",
-            ));
+            return Err(no_update());
         };
         if !self.records.plugins.contains_key(id) {
             return Err(AppError::new(
@@ -624,14 +854,10 @@ impl Plugins {
                 "This plugin isn't installed on this device.",
             ));
         }
-        let approved = candidate.manifest().capabilities.clone();
+        let added = self.added(id, &candidate);
         self.save_records(|records| {
             if let Some(record) = records.plugins.get_mut(id) {
-                for capability in approved {
-                    if !record.approved.contains(&capability) {
-                        record.approved.push(capability);
-                    }
-                }
+                Capability::approve(&mut record.approved, &added);
             }
         })?;
         self.apply(id, &candidate).inspect_err(|error| {
@@ -639,22 +865,138 @@ impl Plugins {
         })
     }
 
-    /// Take the builds the reload watchers found. A build that asks for no
-    /// capability beyond your approvals replaces the running one; any
-    /// other waits for approval while the old build keeps running.
+    /// Keep the installed build of the plugin `id` and drop the waiting
+    /// one. Its folder offers a build again once it changes.
+    pub(crate) fn decline_update(&mut self, id: &str) -> Result<(), AppError> {
+        if self.updates.remove(id).is_none() {
+            return Err(no_update());
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// What `candidate` declares that the installed build of `id` doesn't.
+    fn added(&self, id: &str, candidate: &Candidate) -> Vec<Capability> {
+        let installed = self
+            .manifests
+            .get(id)
+            .map(|manifest| manifest.capabilities.as_slice())
+            .unwrap_or_default();
+        Capability::added(installed, &candidate.manifest().capabilities)
+    }
+
+    /// Take `grant` away from the plugin `id`. Its next call sees the
+    /// change, and what it registered under a revoked capability goes.
+    pub(crate) fn revoke(&mut self, id: &str, grant: &Grant) -> Result<(), AppError> {
+        self.change_approval(id, |approved, _| Capability::revoke(approved, grant))
+    }
+
+    /// Give the plugin `id` back something it declares that you revoked.
+    pub(crate) fn allow(&mut self, id: &str, grant: &Grant) -> Result<(), AppError> {
+        self.change_approval(id, |approved, declared| {
+            let wanted = declared
+                .iter()
+                .find_map(|capability| match (capability, grant) {
+                    (Capability::Network { hosts }, Grant::Host(host)) if hosts.contains(host) => {
+                        Some(Capability::Network {
+                            hosts: vec![host.clone()],
+                        })
+                    }
+                    (Capability::Commands { targets }, Grant::Target(target))
+                        if targets.contains(target) =>
+                    {
+                        Some(Capability::Commands {
+                            targets: vec![target.clone()],
+                        })
+                    }
+                    (Capability::Commands { .. }, Grant::Capability(name))
+                        if name == "commands" =>
+                    {
+                        Some(Capability::Commands {
+                            targets: Vec::new(),
+                        })
+                    }
+                    (capability, Grant::Capability(name)) if capability.name() == name => {
+                        Some(capability.clone())
+                    }
+                    _ => None,
+                });
+            if let Some(wanted) = wanted {
+                Capability::approve(approved, &[wanted]);
+            }
+        })
+    }
+
+    fn change_approval(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut Vec<Capability>, &[Capability]),
+    ) -> Result<(), AppError> {
+        let Some(record) = self.records.plugins.get(id) else {
+            return Err(AppError::new(
+                "plugin_not_installed",
+                "This plugin isn't installed on this device.",
+            ));
+        };
+        let declared = self
+            .manifests
+            .get(id)
+            .map(|manifest| manifest.capabilities.clone())
+            .unwrap_or_default();
+        let mut approved = record.approved.clone();
+        change(&mut approved, &declared);
+        let saved = approved.clone();
+        self.save_records(|records| {
+            if let Some(record) = records.plugins.get_mut(id) {
+                record.approved = saved;
+            }
+        })?;
+        if let Some(running) = self.running.get_mut(id) {
+            running.plugin.set_approved(&approved);
+            let granted = running.plugin.granted();
+            running
+                .registrations
+                .keep(|name| Capability::holds(&granted, name));
+            let surfaces = running.registrations.surfaces();
+            running
+                .views
+                .retain(|surface, _| surfaces.contains(surface));
+        }
+        self.send(id, Job::Refresh);
+        self.changed();
+        Ok(())
+    }
+
+    /// Start the plugin `id` again after it failed too often, for this
+    /// session.
+    pub(crate) fn restart(&mut self, id: &str) -> Result<(), AppError> {
+        let Some(running) = self.running.get_mut(id) else {
+            return Err(AppError::new(
+                "plugin_not_running",
+                "This plugin isn't on in this workspace.",
+            ));
+        };
+        running.plugin.restart();
+        running.failed = false;
+        self.router.insert(running.plugin.clone());
+        self.problems.remove(id);
+        self.send(id, Job::Refresh);
+        self.changed();
+        Ok(())
+    }
+
+    /// Take the builds the reload watchers found and the answers the
+    /// running plugins sent. A build that adds nothing to what the
+    /// installed build declares replaces it at once; any other waits for
+    /// your approval while the old build keeps running.
     pub(crate) fn poll(&mut self) {
         while let Ok(reload) = self.reloads.try_recv() {
-            let Some(record) = self.records.plugins.get(&reload.id).cloned() else {
+            if !self.records.plugins.contains_key(&reload.id) {
                 continue;
-            };
+            }
             match reload.result {
                 Ok(candidate) => {
-                    let approved = candidate
-                        .manifest()
-                        .capabilities
-                        .iter()
-                        .all(|capability| record.approved.contains(capability));
-                    if approved {
+                    if self.added(&reload.id, &candidate).is_empty() {
                         self.updates.remove(&reload.id);
                         if let Err(error) = self.apply(&reload.id, &candidate) {
                             self.failed_update(&reload.id, &error);
@@ -672,17 +1014,106 @@ impl Plugins {
             }
             self.changed();
         }
+        while let Ok(outcome) = self.outcomes.1.try_recv() {
+            self.take(outcome);
+        }
+        let called: Vec<String> = self.called.try_iter().collect();
+        for id in called {
+            self.acts += 1;
+            self.send(&id, Job::Redraw);
+        }
+    }
+
+    /// Show what a running plugin's job changed.
+    fn take(&mut self, outcome: Outcome) {
+        let Some(running) = self
+            .running
+            .get_mut(&outcome.id)
+            .filter(|running| running.generation == outcome.generation)
+        else {
+            return;
+        };
+        running.outstanding = running.outstanding.saturating_sub(1);
+        if let Some(registrations) = outcome.registrations {
+            running.registrations = registrations;
+        }
+        if let Some(views) = outcome.views {
+            running.views = views;
+            // Virtual lists ask for their rows again.
+            for rows in running.rows.values_mut() {
+                rows.again();
+            }
+            running.drawn += 1;
+        }
+        if let Some(fetched) = outcome.rows {
+            running.take_rows(fetched);
+        }
+        if outcome.acted {
+            self.acts += 1;
+            // What it did may change any of its panels.
+            for panel in running.panels.values_mut() {
+                panel.drawn = Drawn::Nothing;
+            }
+        }
+        if let Some(drawn) = outcome.panel {
+            let panel = running
+                .panels
+                .entry(drawn.object)
+                .or_insert_with(Panel::empty);
+            if panel.requested.is_some() && panel.requested == drawn.revision {
+                panel.requested = None;
+            }
+            panel.view = drawn.view;
+            panel.drawn = drawn.revision.map_or(Drawn::AfterPress, Drawn::Revision);
+        }
+        if let Some(refused) = outcome.refused_types
+            && !refused.is_empty()
+        {
+            self.problems.insert(outcome.id.clone(), refused.join(" "));
+        }
+        // A job that started before you revoked a capability may answer
+        // after: what you revoked stays gone.
+        let granted = running.plugin.granted();
+        running
+            .registrations
+            .keep(|name| Capability::holds(&granted, name));
+        let surfaces = running.registrations.surfaces();
+        running
+            .views
+            .retain(|surface, _| surfaces.contains(surface));
+        match outcome.failed {
+            // The view where the event happened says why, until the
+            // plugin draws it again.
+            Some((Some(surface), message)) => {
+                if running.views.contains_key(&surface) {
+                    running.views.insert(surface, Err(message));
+                }
+            }
+            Some((None, message)) => {
+                self.problems.insert(outcome.id.clone(), message);
+            }
+            None => {}
+        }
+        // The plugin's health now, not as the job saw it: an answer from
+        // before you started it again doesn't stop it a second time.
+        if outcome.health.stopped && !running.failed && running.plugin.health().stopped {
+            running.failed = true;
+            running.registrations = Registrations::default();
+            running.views.clear();
+            self.router.remove(&outcome.id);
+            self.problems.insert(
+                outcome.id.clone(),
+                "It failed too often and stopped for this session.".to_owned(),
+            );
+        }
+        self.changed();
     }
 
     /// Show why a new build of the plugin `id` didn't install, and let its
     /// watcher offer that build again when the folder next changes.
     fn failed_update(&mut self, id: &str, error: &AppError) {
         if let Some(watcher) = self.watchers.get(id) {
-            watcher
-                .offered
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clear();
+            watcher.forget_offered();
         }
         self.problems.insert(
             id.to_owned(),
@@ -692,11 +1123,21 @@ impl Plugins {
     }
 
     /// Install `candidate` over the plugin `id`, and run it in place of the
-    /// old build when the plugin is running.
+    /// old build when the plugin is running. What you approved for
+    /// capabilities the new build no longer declares goes.
     fn apply(&mut self, id: &str, candidate: &Candidate) -> Result<(), AppError> {
         let host = self.host()?;
         host.update(candidate)
             .map_err(|error| from_install(&error))?;
+        let declared = candidate.manifest().capabilities.clone();
+        let pruned = self.save_records(|records| {
+            if let Some(record) = records.plugins.get_mut(id) {
+                record.approved = Capability::granted(&declared, &record.approved);
+            }
+        });
+        if let Err(error) = pruned {
+            tracing::warn!(code = %error.code, "approvals for removed capabilities stayed");
+        }
         self.manifests
             .insert(id.to_owned(), candidate.manifest().clone());
         self.problems.remove(id);
@@ -712,36 +1153,30 @@ impl Plugins {
         let Some(host) = self.host.clone() else {
             return;
         };
-        let stop = Arc::new(AtomicBool::new(false));
-        let offered = Arc::new(Mutex::new(installed));
-        let watcher = ReloadWatcher {
-            id: id.to_owned(),
-            folder: PathBuf::from(folder),
+        if let Some(watcher) = reload::watch(
+            id,
+            folder,
+            installed,
             host,
-            offered: offered.clone(),
-            sender: self.reload_sender.clone(),
-            wake: self.wake.clone(),
-            stop: stop.clone(),
-        };
-        let spawned = std::thread::Builder::new()
-            .name("plugin-reload".into())
-            .spawn(move || watcher.run());
-        match spawned {
-            Ok(_) => {
-                self.watchers
-                    .insert(id.to_owned(), Watcher { stop, offered });
-            }
-            Err(error) => tracing::warn!(%error, "a plugin's folder isn't watched for new builds"),
+            self.reload_sender.clone(),
+            self.wake.clone(),
+        ) {
+            self.watchers.insert(id.to_owned(), watcher);
         }
+    }
+
+    /// The running plugins that draw, in order.
+    fn drawing(&self) -> impl Iterator<Item = (&String, &Running)> {
+        self.running.iter().filter(|(_, running)| !running.failed)
     }
 
     /// Every page the running plugins add to the rail, as (rail page ID,
     /// title), by plugin.
     pub(crate) fn pages(&self) -> Vec<(String, String)> {
-        self.running
-            .iter()
+        self.drawing()
             .flat_map(|(id, running)| {
                 running
+                    .registrations
                     .pages
                     .iter()
                     .map(move |page| (page_id(id, &page.id), page.title.clone()))
@@ -752,97 +1187,43 @@ impl Plugins {
     /// The view of the rail page `page_id`, when a running plugin adds it.
     pub(crate) fn view(&self, page_id: &str) -> Option<PluginView> {
         let (plugin, page) = split_page_id(page_id)?;
-        self.running.get(plugin)?.views.get(page).cloned()
+        self.view_at(plugin, &Surface::Page(page.to_owned()))
     }
 
-    /// Tell the plugin behind `page_id` about `event` in the page's view,
-    /// and draw its pages again. An input value of the wrong form, such as
-    /// a date that isn't `YYYY-MM-DD`, never reaches the plugin.
-    pub(crate) fn send(&mut self, page_id: &str, event: &Event) {
-        let Some((plugin, page)) = split_page_id(page_id) else {
-            return;
-        };
-        let Some(running) = self.running.get_mut(plugin) else {
-            return;
-        };
-        if !running.pages.iter().any(|known| known.id == page) {
-            return;
-        }
-        if !well_formed_event(event) {
-            return;
-        }
-        if let Err(error) = running.instance.handle_event(page, event) {
-            tracing::warn!(%error, "a plugin failed to handle an event");
-        }
-        // The event may have written objects whose panels show.
-        running.panels.clear();
-        running.render_all();
-        self.changed();
+    fn view_at(&self, plugin: &str, surface: &Surface) -> Option<PluginView> {
+        self.running
+            .get(plugin)
+            .filter(|running| !running.failed)?
+            .views
+            .get(surface)
+            .cloned()
     }
 
-    /// The properties panel of the object `object_id` of type
-    /// `object_type`, whose file has the revision `revision`, as the
-    /// running plugin that holds the type draws it. `None` when no running
-    /// plugin holds the type, so the kernel's panel shows.
-    pub(crate) fn panel(
-        &mut self,
-        object_type: &str,
-        object_id: &str,
-        revision: &str,
-    ) -> Option<PluginView> {
-        let owner = self.types.owner(object_type)?;
-        let running = self.running.get_mut(&owner)?;
-        if let Some((drawn, view)) = running.panels.get(object_id)
-            && drawn == revision
-        {
-            return Some(view.clone());
+    /// Tell the plugin `plugin` about `event` in the view at `surface`,
+    /// and draw its views again once it has heard. An input value of the
+    /// wrong form, such as a date that isn't `YYYY-MM-DD`, never reaches
+    /// the plugin.
+    fn event_at(&mut self, plugin: &str, surface: Surface, event: &Event) {
+        let shown = self
+            .running
+            .get(plugin)
+            .is_some_and(|running| running.views.contains_key(&surface));
+        if shown && well_formed_event(event) {
+            self.send(plugin, Job::Event(surface, event.clone()));
         }
-        let view = match running.instance.render_panel(object_id) {
-            Ok(nodes) => View::from_nodes(nodes)
-                .map_err(|error| error.to_string())
-                .and_then(|view| match virtual_list_in(view.root()) {
-                    // A panel has no `rows` to fetch a virtual list's rows.
-                    Some(list) => Err(format!(
-                        "The virtual list {list} can't show in a properties panel."
-                    )),
-                    None => Ok(view),
-                }),
-            Err(error) => {
-                tracing::warn!(%error, "a plugin failed to draw a properties panel");
-                Err("The plugin failed while drawing this panel.".to_owned())
-            }
-        };
-        running
-            .panels
-            .insert(object_id.to_owned(), (revision.to_owned(), view.clone()));
-        Some(view)
     }
 
-    /// Tell the plugin that holds `object_type` about `event` in the
-    /// properties panel of the object `object_id`, and draw its panels and
-    /// pages again. An input value of the wrong form never reaches the
-    /// plugin.
-    pub(crate) fn send_panel(&mut self, object_type: &str, object_id: &str, event: &Event) {
-        let Some(owner) = self.types.owner(object_type) else {
-            return;
-        };
-        let Some(running) = self.running.get_mut(&owner) else {
-            return;
-        };
-        if !well_formed_event(event) {
-            return;
+    /// Tell the plugin behind the rail page `page_id` about `event` there.
+    pub(crate) fn send_event(&mut self, page_id: &str, event: &Event) {
+        if let Some((plugin, page)) = split_page_id(page_id) {
+            let (plugin, page) = (plugin.to_owned(), page.to_owned());
+            self.event_at(&plugin, Surface::Page(page), event);
         }
-        if let Err(error) = running.instance.handle_panel_event(object_id, event) {
-            tracing::warn!(%error, "a plugin failed to handle an event in a panel");
-        }
-        running.panels.clear();
-        running.render_all();
-        self.changed();
     }
 
     /// The rows in `range` of the virtual list `node` in the plugin page
-    /// `page_id`, each `None` until the plugin returns it. Rows the
-    /// plugin hasn't returned yet are asked for in batches of
+    /// `page_id`, each `None` until the plugin returns it. The plugin
+    /// fetches rows it hasn't returned yet on its own thread, in batches of
     /// [`ROW_BATCH`], once each until the page draws again. A row whose ID
     /// repeats one fetched before breaks the list's rules.
     pub(crate) fn virtual_rows(
@@ -853,13 +1234,18 @@ impl Plugins {
     ) -> Result<Vec<Option<VirtualRow>>, String> {
         let gone = || "The plugin that adds this page isn't running.".to_owned();
         let (plugin, page) = split_page_id(page_id).ok_or_else(gone)?;
-        let running = self.running.get_mut(plugin).ok_or_else(gone)?;
-        let total = match running.views.get(page) {
+        let running = self
+            .running
+            .get_mut(plugin)
+            .filter(|running| !running.failed)
+            .ok_or_else(gone)?;
+        let total = match running.views.get(&Surface::Page(page.to_owned())) {
             Some(Ok(view)) => virtual_list_rows(view.root(), node),
             _ => None,
         }
         .ok_or_else(|| format!("The page has no virtual list {node}."))?;
         let range = range.start.min(total)..range.end.min(total);
+        let drawn = running.drawn;
         let rows = running
             .rows
             .entry((page.to_owned(), node.to_owned()))
@@ -868,41 +1254,393 @@ impl Plugins {
             return Err(problem.clone());
         }
         let first = range.start / ROW_BATCH * ROW_BATCH;
+        let mut wanted = Vec::new();
         for start in (first..range.end).step_by(ROW_BATCH as usize) {
-            if !rows.asked.insert(start) {
-                continue;
-            }
-            let count = ROW_BATCH.min(total - start);
-            let fetched = running
-                .instance
-                .rows(page, node, start, count)
-                .map_err(|error| {
-                    tracing::warn!(%error, "a plugin failed to list rows");
-                    "The plugin failed while listing these rows.".to_owned()
-                })
-                .and_then(|fetched| check_rows(fetched, count).map_err(|error| error.to_string()))
-                .and_then(|fetched| {
-                    // `check_rows` checks one batch; a row may not repeat
-                    // the ID of a row in another.
-                    match fetched.iter().find(|row| rows.ids.contains(&row.id)) {
-                        Some(row) => {
-                            Err(ViewError::DuplicateRowId { id: row.id.clone() }.to_string())
-                        }
-                        None => Ok(fetched),
-                    }
+            if rows.asked.insert(start) {
+                let count = ROW_BATCH.min(total - start);
+                wanted.push(Job::Rows {
+                    page: page.to_owned(),
+                    node: node.to_owned(),
+                    start,
+                    count,
+                    drawn,
                 });
-            match fetched {
-                Ok(fetched) => {
-                    rows.ids.extend(fetched.iter().map(|row| row.id.clone()));
-                    rows.rows.extend((start..).zip(fetched));
+            }
+        }
+        let shown = range.map(|index| rows.get(index)).collect();
+        let plugin = plugin.to_owned();
+        for job in wanted {
+            self.send(&plugin, job);
+        }
+        Ok(shown)
+    }
+
+    /// The commands the running plugins add to the command palette, as
+    /// (command ID, title).
+    pub(crate) fn commands(&self) -> Vec<(String, String)> {
+        self.drawing()
+            .flat_map(|(id, running)| {
+                running.registrations.commands.iter().map(move |command| {
+                    (
+                        format!("{COMMAND_PREFIX}{id}:{}", command.id),
+                        command.title.clone(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Run the palette command `command_id`. Returns whether a running
+    /// plugin offers it.
+    pub(crate) fn run_command(&mut self, command_id: &str) -> bool {
+        let Some((plugin, command)) = command_id
+            .strip_prefix(COMMAND_PREFIX)
+            .and_then(|rest| rest.split_once(':'))
+        else {
+            return false;
+        };
+        let offered = self.drawing().any(|(id, running)| {
+            id == plugin
+                && running
+                    .registrations
+                    .commands
+                    .iter()
+                    .any(|known| known.id == command)
+        });
+        if offered {
+            let (plugin, command) = (plugin.to_owned(), command.to_owned());
+            self.send(&plugin, Job::Command(command));
+        }
+        offered
+    }
+
+    /// The running plugins' Inbox sections, by plugin.
+    pub(crate) fn inbox_sections(&self) -> Vec<PluginSection> {
+        self.drawing()
+            .flat_map(|(id, running)| {
+                let page_id = running
+                    .registrations
+                    .pages
+                    .first()
+                    .map(|page| page_id(id, &page.id));
+                running
+                    .registrations
+                    .sections
+                    .iter()
+                    .filter_map(move |section| {
+                        let content = running
+                            .views
+                            .get(&Surface::InboxSection(section.id.clone()))?
+                            .clone();
+                        Some(PluginSection {
+                            plugin_id: id.clone(),
+                            section_id: section.id.clone(),
+                            title: section.title.clone(),
+                            page_id: page_id.clone(),
+                            content,
+                        })
+                    })
+            })
+            .collect()
+    }
+
+    /// Tell the plugin `plugin` about `event` in its Inbox section
+    /// `section`.
+    pub(crate) fn send_inbox(&mut self, plugin: &str, section: &str, event: &Event) {
+        self.event_at(plugin, Surface::InboxSection(section.to_owned()), event);
+    }
+
+    /// The files changed, as the listing `listing` shows: each running
+    /// plugin draws its views again, once per listing.
+    pub(crate) fn files_changed(&mut self, listing: u64) {
+        if listing <= self.listing_drawn {
+            return;
+        }
+        self.listing_drawn = listing;
+        let ids: Vec<String> = self.running.keys().cloned().collect();
+        for id in ids {
+            self.send(&id, Job::Redraw);
+        }
+    }
+
+    /// The running plugins' pages in Settings, as (section ID, title).
+    pub(crate) fn settings_pages(&self) -> Vec<(String, String)> {
+        self.drawing()
+            .filter_map(|(id, running)| {
+                let title = running.registrations.settings.clone()?;
+                running
+                    .views
+                    .contains_key(&Surface::Settings)
+                    .then(|| (format!("{SETTINGS_PREFIX}{id}"), title))
+            })
+            .collect()
+    }
+
+    /// The view of a plugin's page in Settings.
+    pub(crate) fn settings_view(&self, section_id: &str) -> Option<PluginView> {
+        let plugin = section_id.strip_prefix(SETTINGS_PREFIX)?;
+        self.view_at(plugin, &Surface::Settings)
+    }
+
+    /// Tell the plugin behind its page `section_id` in Settings about
+    /// `event` there.
+    pub(crate) fn send_settings(&mut self, section_id: &str, event: &Event) {
+        if let Some(plugin) = section_id.strip_prefix(SETTINGS_PREFIX) {
+            let plugin = plugin.to_owned();
+            self.event_at(&plugin, Surface::Settings, event);
+        }
+    }
+
+    /// The tools the running plugins offer.
+    pub(crate) fn tools(&self) -> Vec<PluginTool> {
+        self.drawing()
+            .flat_map(|(id, running)| {
+                running
+                    .registrations
+                    .tools
+                    .iter()
+                    .map(move |tool| PluginTool {
+                        plugin_id: id.clone(),
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        input_schema: tool.input_schema.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    /// A call to the tool `name` of the plugin `plugin`, once `arguments`
+    /// match its schema. A call that doesn't match never reaches the
+    /// plugin.
+    pub(crate) fn tool_call(
+        &self,
+        plugin: &str,
+        name: &str,
+        arguments: &str,
+    ) -> Result<ToolCall, AppError> {
+        let found = self.drawing().find_map(|(id, running)| {
+            (id == plugin).then_some(running).and_then(|running| {
+                let tool: &ToolEntry = running
+                    .registrations
+                    .tools
+                    .iter()
+                    .find(|tool| tool.name == name)?;
+                Some((running.plugin.clone(), tool.validator.clone()))
+            })
+        });
+        let Some((running, validator)) = found else {
+            return Err(AppError::new(
+                "plugin_tool_unknown",
+                format!("No running plugin offers the tool {plugin}/{name}."),
+            ));
+        };
+        let value: serde_json::Value = serde_json::from_str(arguments).map_err(|_| {
+            AppError::new(
+                "plugin_tool_arguments_invalid",
+                "The tool's arguments aren't JSON.",
+            )
+        })?;
+        let problems: Vec<String> = validator
+            .iter_errors(&value)
+            .map(|error| {
+                let at = error.instance_path().to_string();
+                let at = if at.is_empty() { "/".to_owned() } else { at };
+                format!("{at}: {}", error.masked())
+            })
+            .collect();
+        if !problems.is_empty() {
+            return Err(AppError::new(
+                "plugin_tool_arguments_invalid",
+                format!(
+                    "The tool's arguments don't match its schema: {}.",
+                    problems.join("; ")
+                ),
+            ));
+        }
+        Ok(ToolCall {
+            plugin: running,
+            name: name.to_owned(),
+            arguments: arguments.to_owned(),
+        })
+    }
+
+    /// Draw the plugin `id`'s views again, as after another caller ran it.
+    pub(crate) fn redraw(&mut self, id: &str) {
+        self.acts += 1;
+        self.send(id, Job::Redraw);
+    }
+
+    /// Use the plugins in `folder` as the ones that ship with Noura: each
+    /// subfolder that holds a plugin.
+    pub(crate) fn set_shipped(&mut self, folder: PathBuf) {
+        self.shipped = Some(folder);
+        self.shipped_pending = self.shipped_folders();
+        self.changed();
+    }
+
+    /// The properties panel of the object `object_id` of type
+    /// `object_type`, whose file has the revision `revision`, as the
+    /// running plugin that holds the type draws it. `None` when no running
+    /// plugin holds the type, so the kernel's panel shows. The plugin draws
+    /// on its own thread: until it answers, the panel it drew last shows,
+    /// or an empty one.
+    pub(crate) fn panel(
+        &mut self,
+        object_type: &str,
+        object_id: &str,
+        revision: &str,
+    ) -> Option<PluginView> {
+        let owner = self.types.owner(object_type)?;
+        let running = self
+            .running
+            .get_mut(&owner)
+            .filter(|running| !running.failed)?;
+        let panel = running
+            .panels
+            .entry(object_id.to_owned())
+            .or_insert_with(Panel::empty);
+        if panel.current_for(revision) {
+            return Some(panel.view.clone());
+        }
+        let view = panel.view.clone();
+        if panel.requested.as_deref() != Some(revision) {
+            panel.requested = Some(revision.to_owned());
+            let job = Job::Panel(object_id.to_owned(), revision.to_owned());
+            self.send(&owner, job);
+        }
+        Some(view)
+    }
+
+    /// Tell the plugin that holds `object_type` about `event` in the
+    /// properties panel of the object `object_id`. It draws the panel and
+    /// its views again once it has heard. An input value of the wrong form
+    /// never reaches the plugin.
+    pub(crate) fn send_panel(&mut self, object_type: &str, object_id: &str, event: &Event) {
+        let Some(owner) = self.types.owner(object_type) else {
+            return;
+        };
+        if self.running.contains_key(&owner) && well_formed_event(event) {
+            self.send(&owner, Job::PanelEvent(object_id.to_owned(), event.clone()));
+        }
+    }
+
+    /// How many times a running plugin ran code that may have written
+    /// files: it handled an event, or ran a command for the palette,
+    /// another plugin or a tool. Each window's open notes look at their
+    /// files when this changes.
+    pub(crate) fn acts(&self) -> u64 {
+        self.acts
+    }
+
+    /// The plugins shipping with Noura that this device hasn't shown you
+    /// yet, each read from its manifest. None of their code has run.
+    pub(crate) fn shipped_review(&self) -> Vec<ShippedPlugin> {
+        self.shipped_pending
+            .iter()
+            .map(|(manifest, _)| ShippedPlugin {
+                id: manifest.id.clone(),
+                name: manifest.name.clone(),
+                version: manifest.version.to_string(),
+                capabilities: lines(&manifest.capabilities),
+            })
+            .collect()
+    }
+
+    /// The manifest and folder of each shipping plugin this device hasn't
+    /// reviewed, by ID.
+    fn shipped_folders(&self) -> Vec<(PluginManifest, PathBuf)> {
+        let Some(folder) = &self.shipped else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            return Vec::new();
+        };
+        let mut found: Vec<(PluginManifest, PathBuf)> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.join(plugin_host::MANIFEST_FILE).is_file())
+            .filter_map(|path| match plugin_host::read_manifest(&path) {
+                Ok(manifest) => Some((manifest, path)),
+                Err(error) => {
+                    tracing::warn!(
+                        code = error.code.as_str(),
+                        "a plugin shipping with Noura can't be read"
+                    );
+                    None
                 }
-                Err(problem) => {
-                    rows.problem = Some(problem.clone());
-                    return Err(problem);
+            })
+            .filter(|(manifest, _)| !self.records.shipped_reviewed.contains(&manifest.id))
+            .collect();
+        found.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
+        found
+    }
+
+    /// Approve every plugin the first-run screen lists, for this device,
+    /// and install each one. One that can't install is noted on the
+    /// Plugins page and not offered again.
+    pub(crate) fn approve_shipped(&mut self) -> Result<(), AppError> {
+        let host = self.host()?;
+        for (manifest, folder) in std::mem::take(&mut self.shipped_pending) {
+            let id = manifest.id.clone();
+            let installed = folder
+                .to_str()
+                .ok_or_else(AppError::unsupported_path)
+                .and_then(|path| {
+                    let candidate = host
+                        .inspect(&folder)
+                        .map_err(|error| from_install(&error))?;
+                    self.install_candidate(&candidate, path, true)
+                });
+            if let Err(error) = installed {
+                tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
+                self.problems.insert(id.clone(), error.message);
+                let reviewed = self.save_records(|records| {
+                    records.shipped_reviewed.insert(id);
+                });
+                if let Err(error) = reviewed {
+                    self.shipped_pending = self.shipped_folders();
+                    return Err(error);
                 }
             }
         }
-        Ok(range.map(|index| rows.rows.get(&index).cloned()).collect())
+        self.shipped_pending = self.shipped_folders();
+        self.changed();
+        Ok(())
+    }
+}
+
+impl Running {
+    /// Keep the rows a plugin fetched for a virtual list, unless its views
+    /// were drawn again since it was asked. A batch that breaks the list's
+    /// rules stops the list.
+    fn take_rows(&mut self, fetched: RowsFetched) {
+        if fetched.drawn != self.drawn {
+            return;
+        }
+        let Some(rows) = self.rows.get_mut(&(fetched.page, fetched.node)) else {
+            return;
+        };
+        let checked = fetched
+            .rows
+            .and_then(|batch| check_rows(batch, fetched.count).map_err(|error| error.to_string()))
+            .and_then(|batch| {
+                // `check_rows` checks one batch; a row may not repeat the
+                // ID of a row in another.
+                match batch.iter().find(|row| rows.ids.contains(&row.id)) {
+                    Some(row) => Err(ViewError::DuplicateRowId { id: row.id.clone() }.to_string()),
+                    None => Ok(batch),
+                }
+            });
+        match checked {
+            Ok(batch) => {
+                rows.ids.extend(batch.iter().map(|row| row.id.clone()));
+                let end = fetched.start + fetched.count;
+                rows.earlier
+                    .retain(|index, _| !(fetched.start..end).contains(index));
+                rows.rows.extend((fetched.start..).zip(batch));
+            }
+            Err(problem) => rows.problem = Some(problem),
+        }
     }
 }
 
@@ -918,7 +1656,7 @@ fn virtual_list_rows(node: &ViewNode, id: &str) -> Option<u32> {
 }
 
 /// The ID of the first virtual list under `node`, if any.
-fn virtual_list_in(node: &ViewNode) -> Option<&str> {
+pub(super) fn virtual_list_in(node: &ViewNode) -> Option<&str> {
     match &node.kind {
         ViewKind::VirtualList { .. } => Some(&node.id),
         _ => node.children.iter().find_map(virtual_list_in),
@@ -952,36 +1690,11 @@ fn well_formed(value: &Value) -> bool {
     }
 }
 
-impl Running {
-    /// Ask the plugin for each page's view and check it. Virtual lists ask
-    /// for their rows again.
-    fn render_all(&mut self) {
-        self.rows.clear();
-        for page in &self.pages {
-            let view = match self.instance.render(&page.id) {
-                Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
-                Err(error) => {
-                    tracing::warn!(%error, "a plugin failed to draw a page");
-                    Err("The plugin failed while drawing this page.".to_owned())
-                }
-            };
-            self.views.insert(page.id.clone(), view);
-        }
-    }
-}
-
-/// Whether a plugin's page has an ID and a title the rail can show.
-fn valid_page(page: &Page) -> bool {
-    let id_ok = !page.id.is_empty()
-        && page.id.len() <= 64
-        && !page.id.chars().any(|c| c.is_control() || c.is_whitespace());
-    let title = page.title.trim();
-    let title_ok =
-        !title.is_empty() && title.chars().count() <= 80 && !title.chars().any(char::is_control);
-    if !(id_ok && title_ok) {
-        tracing::warn!("a plugin page without a usable ID or title was left out");
-    }
-    id_ok && title_ok
+fn no_update() -> AppError {
+    AppError::new(
+        "no_plugin_update",
+        "No new build of this plugin is waiting.",
+    )
 }
 
 /// The rail page ID of a plugin's page.
@@ -1004,169 +1717,6 @@ fn from_install(error: &InstallError) -> AppError {
         "a plugin couldn't be installed or loaded"
     );
     AppError::new(error.code.as_str(), error.message.clone())
-}
-
-/// Watches a plugin's folder and reads each new build there.
-struct ReloadWatcher {
-    id: String,
-    folder: PathBuf,
-    host: Arc<PluginHost>,
-    /// The digest of the build offered last, which a change must differ
-    /// from. It starts as the installed build's.
-    offered: Offered,
-    sender: Sender<Reload>,
-    wake: Option<Wake>,
-    stop: Arc<AtomicBool>,
-}
-
-impl ReloadWatcher {
-    fn offered(&self) -> std::sync::MutexGuard<'_, String> {
-        self.offered.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn run(self) {
-        let watcher = WatchCoordinator::new(&self.folder, |_| {});
-        let mut last_problem: Option<String> = None;
-        // The folder may have changed while Noura wasn't running.
-        let mut look = true;
-        while !self.stop.load(Ordering::Relaxed) {
-            if !look {
-                let changed = !watcher
-                    .drain_coalesced(WATCH_WAIT)
-                    .unwrap_or_default()
-                    .is_empty()
-                    || watcher.take_overflow()
-                    || !watcher.is_available();
-                if !changed {
-                    continue;
-                }
-                // Let the build tool finish writing.
-                while !self.stop.load(Ordering::Relaxed)
-                    && !watcher
-                        .drain_coalesced(QUIET)
-                        .unwrap_or_default()
-                        .is_empty()
-                {}
-            }
-            look = false;
-            if self.stop.load(Ordering::Relaxed) {
-                return;
-            }
-            let result = match self.host.folder_digest(&self.folder) {
-                Ok(digest) if digest == *self.offered() => continue,
-                Ok(_) => self.host.inspect_update(&self.id, &self.folder),
-                Err(error) => Err(error),
-            };
-            match &result {
-                Ok(candidate) => {
-                    *self.offered() = candidate.digest();
-                    last_problem = None;
-                }
-                Err(error) if last_problem.as_ref() == Some(&error.message) => continue,
-                Err(error) => last_problem = Some(error.message.clone()),
-            }
-            let reload = Reload {
-                id: self.id.clone(),
-                result,
-            };
-            if self.sender.send(reload).is_err() {
-                return;
-            }
-            if let Some(wake) = &self.wake {
-                wake();
-            }
-        }
-    }
-}
-
-/// Reads the open workspace for plugins through `local-core`, which keeps
-/// every path inside the workspace.
-struct WorkspaceReader(Arc<Workspace>);
-
-impl WorkspaceReads for WorkspaceReader {
-    fn list_entries(&self) -> Result<Vec<Listed>, ServiceError> {
-        let (entries, unsupported) = self
-            .0
-            .engine()
-            .list_workspace_entries_counting_unsupported()
-            .map_err(|error| service_error(&error, ""))?;
-        let mut listed = Vec::with_capacity(entries.len() + unsupported);
-        for entry in entries {
-            let Ok(path) = WorkspacePath::new(&entry.relative_path) else {
-                listed.push(Listed::Unsupported);
-                continue;
-            };
-            listed.push(Listed::Entry(Entry {
-                path,
-                kind: match entry.kind {
-                    WorkspaceEntryKind::Folder => EntryKind::Folder,
-                    _ => EntryKind::File,
-                },
-                object_id: entry.object_id,
-                object_type: entry.object_type,
-                revision: entry.revision,
-            }));
-        }
-        listed.extend(std::iter::repeat_n(Listed::Unsupported, unsupported));
-        Ok(listed)
-    }
-
-    fn read_file(&self, path: &WorkspacePath) -> Result<FileRead, ServiceError> {
-        let (bytes, revision) = self
-            .0
-            .engine()
-            .read_file(path.as_str(), MAX_READ_BYTES)
-            .map_err(|error| service_error(&error, path.as_str()))?;
-        Ok(FileRead {
-            path: path.clone(),
-            bytes,
-            revision,
-        })
-    }
-
-    fn read_object(&self, id: &str) -> Result<ObjectRead, ServiceError> {
-        let object = self
-            .0
-            .engine()
-            .get_object(id)
-            .map_err(|error| service_error(&error, id))?
-            .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
-        let path =
-            WorkspacePath::new(&object.relative_path).map_err(|_| ServiceError::UnsupportedPath)?;
-        // An object's title is its file name without the extension.
-        let title = Path::new(&object.relative_path)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default()
-            .to_owned();
-        Ok(ObjectRead {
-            id: object.id,
-            object_type: object.object_type,
-            title,
-            path,
-            body: object.body,
-            properties: serde_json::to_string(&object.properties)
-                .unwrap_or_else(|_| "{}".to_owned()),
-            revision: object.revision,
-        })
-    }
-}
-
-/// A `local-core` error as a plugin sees it, with the details logged.
-fn service_error(error: &CoreError, what: &str) -> ServiceError {
-    match error.code.as_str() {
-        "empty_path" | "absolute_path" | "unsafe_path" | "reserved_path" | "symlink_escape" => {
-            ServiceError::InvalidPath(what.to_owned())
-        }
-        "unsupported_path" | "non_utf8_path" => ServiceError::UnsupportedPath,
-        "file_not_found" | "object_not_found" => ServiceError::NotFound(what.to_owned()),
-        "file_too_large" => ServiceError::Failed("The file is larger than 16 MB.".to_owned()),
-        "file_not_downloaded" => ServiceError::Failed(error.message.clone()),
-        code => {
-            tracing::warn!(code, operation = %error.operation, "a plugin's workspace read failed");
-            ServiceError::Failed("Noura couldn't read the workspace.".to_owned())
-        }
-    }
 }
 
 #[cfg(test)]

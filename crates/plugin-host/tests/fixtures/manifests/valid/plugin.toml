@@ -17,4 +17,13 @@ hosts = ["api.weather.example", "tiles.weather.example"]
 
 [[capabilities]]
 name = "commands"
-targets = ["tasks/create-task"]
+targets = ["tasks/create-task", "calendar"]
+
+[[capabilities]]
+name = "inbox-sections"
+
+[[capabilities]]
+name = "settings"
+
+[[capabilities]]
+name = "tools"

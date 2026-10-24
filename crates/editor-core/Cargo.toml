@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+arborium.workspace = true
 comrak.workspace = true
 # Finds line endings in a note's text when an edit reparses part of it.
 memchr.workspace = true

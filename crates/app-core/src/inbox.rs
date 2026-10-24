@@ -4,7 +4,11 @@
 
 use std::sync::Arc;
 
-use crate::{AppError, EntryKind, Page, Platform, Problem, files::shown_name};
+use plugin_host::{Node, NodeKind, View};
+
+use crate::{
+    AppError, EntryKind, Page, Platform, Problem, files::shown_name, plugins::PluginSection,
+};
 
 /// How many notes Recent lists.
 pub const RECENT_NOTES: usize = 5;
@@ -34,8 +38,10 @@ pub(crate) fn greeting(hour: u8) -> &'static str {
     }
 }
 
-/// What fills a plugin's Inbox section. Ticket 28's Inbox-section
-/// capability calls the plugin through this; tests pass a closure.
+/// What fills an Inbox section that lines of text fill, such as one a
+/// client adds with [`App::add_inbox_section`](crate::App::add_inbox_section).
+/// Running plugins fill theirs with views they draw, through the
+/// `inbox-sections` capability.
 pub trait InboxSectionProvider: Send + Sync {
     /// The section's lines, top to bottom, or why they couldn't load.
     fn load(&self) -> Result<Vec<String>, AppError>;
@@ -55,13 +61,16 @@ where
 pub struct InboxSection {
     /// The plugin the section belongs to.
     pub plugin_id: String,
+    /// The section's ID within its plugin, which a press in it names.
+    pub section_id: String,
     /// The section's heading, such as "Due today".
     pub title: String,
-    /// The section's lines, or why they couldn't load, in words.
-    pub content: Result<Vec<String>, String>,
+    /// What the section shows, or why it couldn't load or draw, in words.
+    pub content: Result<View, String>,
 }
 
-/// A plugin's section and what fills it, while the plugin is on.
+/// A section filled by a provider and what it holds, while its plugin is
+/// on.
 #[derive(Clone)]
 pub(crate) struct Slot {
     plugin_id: String,
@@ -70,6 +79,26 @@ pub(crate) struct Slot {
     title: String,
     provider: Arc<dyn InboxSectionProvider>,
     content: Result<Vec<String>, String>,
+}
+
+/// A view of one text node per line.
+fn lines_view(lines: &[String]) -> Result<View, String> {
+    let mut nodes = vec![Node {
+        id: "section".to_owned(),
+        kind: NodeKind::Panel(None),
+        children: Vec::new(),
+    }];
+    for (index, line) in lines.iter().enumerate() {
+        nodes[0]
+            .children
+            .push(u32::try_from(index + 1).unwrap_or(u32::MAX));
+        nodes.push(Node {
+            id: format!("line-{index}"),
+            kind: NodeKind::Text(line.clone()),
+            children: Vec::new(),
+        });
+    }
+    View::from_nodes(nodes).map_err(|error| error.to_string())
 }
 
 /// The sections enabled plugins add, in the order they arrived.
@@ -120,26 +149,41 @@ impl Sections {
         changed
     }
 
-    /// The sections in their plugins' rail order, given as `rail`. A
-    /// section whose plugin has no page in the rail comes after the
-    /// others, in the order it arrived.
-    pub(crate) fn ordered(&self, rail: &[&Page]) -> Vec<InboxSection> {
-        let place = |slot: &Slot| {
-            slot.page_id
-                .as_deref()
+    /// These sections and the running plugins' `plugins`, in their
+    /// plugins' rail order, given as `rail`. A section whose plugin has no
+    /// page in the rail comes after the others: these in the order they
+    /// arrived, then the plugins' by plugin.
+    pub(crate) fn ordered(&self, rail: &[&Page], plugins: Vec<PluginSection>) -> Vec<InboxSection> {
+        let place = |page_id: Option<&str>| {
+            page_id
                 .and_then(|page_id| rail.iter().position(|page| page.id == page_id))
                 .unwrap_or(usize::MAX)
         };
-        let mut slots: Vec<&Slot> = self.0.iter().collect();
-        slots.sort_by_key(|slot| place(slot));
-        slots
-            .into_iter()
-            .map(|slot| InboxSection {
-                plugin_id: slot.plugin_id.clone(),
-                title: slot.title.clone(),
-                content: slot.content.clone(),
+        let mut sections: Vec<(usize, InboxSection)> = self
+            .0
+            .iter()
+            .map(|slot| {
+                let section = InboxSection {
+                    plugin_id: slot.plugin_id.clone(),
+                    section_id: slot.plugin_id.clone(),
+                    title: slot.title.clone(),
+                    content: slot.content.clone().and_then(|lines| lines_view(&lines)),
+                };
+                (place(slot.page_id.as_deref()), section)
             })
-            .collect()
+            .collect();
+        sections.extend(plugins.into_iter().map(|section| {
+            let place = place(section.page_id.as_deref());
+            let section = InboxSection {
+                plugin_id: section.plugin_id,
+                section_id: section.section_id,
+                title: section.title,
+                content: section.content,
+            };
+            (place, section)
+        }));
+        sections.sort_by_key(|(place, _)| *place);
+        sections.into_iter().map(|(_, section)| section).collect()
     }
 }
 

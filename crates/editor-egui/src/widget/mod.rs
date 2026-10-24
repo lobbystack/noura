@@ -76,6 +76,9 @@ impl<'ast> MdRender {
             NodeValue::ShortCode(_) => self.text_format_short_code(parent()),
             NodeValue::SoftBreak => parent_text_format(),
             NodeValue::SpoileredText => self.text_format_spoilered_text(node, parent()),
+            NodeValue::Strikethrough if editor_core::nodes::is_single_tilde_strikethrough(node) => {
+                parent_text_format()
+            }
             NodeValue::Strikethrough => self.text_format_strikethrough(parent()),
             NodeValue::Strong => self.text_format_strong(parent()),
             NodeValue::Subscript => self.text_format_subscript(parent()),

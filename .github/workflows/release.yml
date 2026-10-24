@@ -135,6 +135,19 @@ jobs:
           for target in $RUST_TARGETS; do rustup target add "$target"; done
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: release }
+      # rav1d, which decodes AVIF images in notes, assembles its x86 code
+      # with NASM. The universal macOS build compiles for Intel too.
+      - name: Install NASM
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows)
+              choco install nasm --no-progress -y
+              echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+              ;;
+            macOS) brew install nasm ;;
+            *) sudo apt-get update && sudo apt-get install -y nasm ;;
+          esac
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with: { tool: 'cargo-packager@0.11.8,cargo-about@0.9.2' }
       - name: Install the Linux packaging tools

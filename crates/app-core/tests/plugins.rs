@@ -5,7 +5,7 @@
 
 mod support;
 
-use app_core::{App, CapabilityLine, OpenAs, PluginRow, settings_section};
+use app_core::{App, CapabilityLine, Grant, OpenAs, PluginRow, settings_section};
 use support::{
     Fixture,
     plugins::{self, HELLO_PAGE, PluginFolder},
@@ -18,6 +18,15 @@ fn line(name: &str, description: &str) -> CapabilityLine {
     CapabilityLine {
         name: name.into(),
         description: description.into(),
+        grant: Grant::Capability(name.into()),
+    }
+}
+
+fn host_line(host: &str) -> CapabilityLine {
+    CapabilityLine {
+        name: "network".into(),
+        description: format!("Connect to {host}."),
+        grant: Grant::Host(host.into()),
     }
 }
 
@@ -184,9 +193,12 @@ fn approving_installs_the_plugin_on_this_device_and_changes_no_workspace_file() 
             version: Some("0.1.0".into()),
             folder: Some(folder.path().to_str().unwrap().to_owned()),
             approved: hello_capabilities(),
+            revoked: Vec::new(),
             installed: true,
+            shipped: false,
             enabled: false,
             running: false,
+            failed: false,
             problem: None,
             update: Vec::new(),
         }]
@@ -220,6 +232,7 @@ fn turning_a_plugin_on_writes_the_enabled_list_durably_and_adds_its_page() {
 
     let (turned_on, synced) =
         local_core::durability_probe::record(|| app.set_plugin_enabled("hello", true));
+    settle(&mut app);
 
     assert!(turned_on);
     assert!(enabled(&fixture, "hello"));
@@ -255,9 +268,11 @@ fn a_button_press_reaches_the_plugin_and_its_page_redraws() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
 
     app.press_plugin_button(HELLO_PAGE, "add-one");
     app.press_plugin_button(HELLO_PAGE, "add-one");
+    settle(&mut app);
 
     assert_eq!(
         plugins::texts(&app, HELLO_PAGE),
@@ -277,6 +292,7 @@ fn turning_a_plugin_off_stops_it_and_removes_its_page_leaving_every_other_file_a
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     app.open_page(HELLO_PAGE, OpenAs::Kept);
     assert_eq!(app.current_page(), HELLO_PAGE);
     let files = fixture.snapshot();
@@ -309,6 +325,7 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let root = app.workspace().unwrap().root().to_owned();
     drop(app);
     // Approval-shaped data and the plugin's code planted in the workspace.
@@ -336,9 +353,12 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
             version: None,
             folder: None,
             approved: Vec::new(),
+            revoked: Vec::new(),
             installed: false,
+            shipped: false,
             enabled: true,
             running: false,
+            failed: false,
             problem: None,
             update: Vec::new(),
         }
@@ -360,6 +380,7 @@ fn uninstalling_removes_code_cache_and_approvals_and_leaves_the_workspace_byte_i
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let before = everything(&fixture);
 
     assert!(app.uninstall_plugin("hello"));
@@ -397,6 +418,7 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     app.open_page(HELLO_PAGE, OpenAs::Kept);
 
     folder.write("hello_plugin.wasm", &probe);
@@ -414,7 +436,8 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
             "Workspace",
             "Markdown",
             "Deep",
-            "Broken"
+            "Broken",
+            "Events"
         ]
     );
     assert_eq!(app.active_tab().unwrap().title(), "Probe");
@@ -430,6 +453,7 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let wider = format!(
         "{}\n[[capabilities]]\nname = \"network\"\nhosts = [\"api.example.com\"]\n",
         plugins::HELLO_MANIFEST
@@ -438,7 +462,7 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     folder.write("hello_plugin.wasm", &probe);
     folder.write("plugin.toml", wider.as_bytes());
 
-    let network = line("network", "Connect to api.example.com.");
+    let network = host_line("api.example.com");
     plugins::wait_until(&mut app, "the update asks for approval", |app| {
         row(&app.plugins(), "hello").update == [network.clone()]
     });
@@ -452,6 +476,7 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     );
 
     assert!(app.approve_plugin_update("hello"));
+    settle(&mut app);
 
     assert_eq!(
         plugins::texts(&app, HELLO_PAGE),
@@ -461,6 +486,170 @@ fn a_reload_that_declares_a_capability_you_havent_approved_waits_for_approval() 
     let hello = row(&rows, "hello");
     assert!(hello.update.is_empty());
     assert!(hello.approved.contains(&network));
+}
+
+#[test]
+fn declining_an_update_keeps_the_installed_build_and_its_approvals() {
+    let (Some(folder), Some(probe)) = (PluginFolder::hello(), plugins::built("probe_plugin"))
+    else {
+        return;
+    };
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    plugins::install(&mut app, folder.path());
+    assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
+    let wider = format!(
+        "{}\n[[capabilities]]\nname = \"tools\"\n",
+        plugins::HELLO_MANIFEST
+    );
+    folder.write("hello_plugin.wasm", &probe);
+    folder.write("plugin.toml", wider.as_bytes());
+    plugins::wait_until(&mut app, "the update asks for approval", |app| {
+        !row(&app.plugins(), "hello").update.is_empty()
+    });
+
+    assert!(app.decline_plugin_update("hello"));
+    settle(&mut app);
+
+    let rows = app.plugins();
+    let hello = row(&rows, "hello");
+    assert!(hello.update.is_empty());
+    assert_eq!(hello.approved, hello_capabilities());
+    assert_eq!(hello.version.as_deref(), Some("0.1.0"));
+    assert_eq!(
+        plugins::texts(&app, HELLO_PAGE),
+        Ok(vec![
+            "This workspace has 0 files.".to_owned(),
+            "Count: 0".to_owned()
+        ])
+    );
+    assert!(!app.decline_plugin_update("hello"));
+}
+
+/// The probe's manifest with `views`, the network hosts `hosts` and the
+/// command targets `targets`.
+fn probe_manifest(hosts: &str, targets: &str) -> String {
+    plugins::manifest(
+        "probe",
+        "plugin.wasm",
+        &[
+            "name = \"views\"",
+            &format!("name = \"network\"\nhosts = {hosts}"),
+            &format!("name = \"commands\"\ntargets = {targets}"),
+        ],
+    )
+}
+
+#[test]
+fn an_update_that_adds_a_network_host_or_a_command_target_waits_for_approval() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let folder = PluginFolder::new(
+        &probe_manifest("[\"api.example.com\"]", "[\"tasks\"]"),
+        "plugin.wasm",
+        &probe,
+    );
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    plugins::install(&mut app, folder.path());
+    assert!(app.set_plugin_enabled("probe", true));
+    settle(&mut app);
+
+    folder.write(
+        "plugin.toml",
+        probe_manifest(
+            "[\"api.example.com\", \"tiles.example.com\"]",
+            "[\"tasks\"]",
+        )
+        .as_bytes(),
+    );
+
+    let tiles = host_line("tiles.example.com");
+    plugins::wait_until(&mut app, "the new host waits for approval", |app| {
+        row(&app.plugins(), "probe").update == [tiles.clone()]
+    });
+    assert!(!row(&app.plugins(), "probe").approved.contains(&tiles));
+    assert!(app.approve_plugin_update("probe"));
+    settle(&mut app);
+    assert!(row(&app.plugins(), "probe").approved.contains(&tiles));
+
+    folder.write(
+        "plugin.toml",
+        probe_manifest(
+            "[\"api.example.com\", \"tiles.example.com\"]",
+            "[\"projects/create\", \"tasks\"]",
+        )
+        .as_bytes(),
+    );
+
+    let create = CapabilityLine {
+        name: "commands".into(),
+        description: "Run the create command of the projects plugin.".into(),
+        grant: Grant::Target("projects/create".into()),
+    };
+    plugins::wait_until(&mut app, "the new target waits for approval", |app| {
+        row(&app.plugins(), "probe").update == [create.clone()]
+    });
+    assert!(app.approve_plugin_update("probe"));
+    settle(&mut app);
+    assert!(row(&app.plugins(), "probe").approved.contains(&create));
+}
+
+#[test]
+fn an_update_that_only_removes_capabilities_runs_without_approval() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let folder = PluginFolder::new(
+        &plugins::manifest(
+            "probe",
+            "plugin.wasm",
+            &[
+                "name = \"workspace-read\"",
+                "name = \"views\"",
+                "name = \"network\"\nhosts = [\"api.example.com\", \"tiles.example.com\"]",
+            ],
+        ),
+        "plugin.wasm",
+        &probe,
+    );
+    let fixture = Fixture::new(&[("Plan.md", b"plan")]);
+    let mut app = fixture.app();
+    plugins::install(&mut app, folder.path());
+    assert!(app.set_plugin_enabled("probe", true));
+    settle(&mut app);
+    let workspace = |app: &App| plugins::texts(app, "plugin:probe:workspace").unwrap();
+    assert!(workspace(&app)[0].starts_with("file Plan.md"));
+
+    folder.write(
+        "plugin.toml",
+        plugins::manifest(
+            "probe",
+            "plugin.wasm",
+            &[
+                "name = \"views\"",
+                "name = \"network\"\nhosts = [\"api.example.com\"]",
+            ],
+        )
+        .as_bytes(),
+    );
+
+    plugins::wait_until(&mut app, "the narrower build runs", |app| {
+        workspace(app)[0] == "error capability-not-declared workspace-read"
+    });
+    let rows = app.plugins();
+    let probe = row(&rows, "probe");
+    assert!(probe.update.is_empty());
+    assert_eq!(
+        probe.approved,
+        [
+            line("views", "Add pages to the rail and show panels in them."),
+            host_line("api.example.com"),
+        ]
+    );
+    assert!(probe.revoked.is_empty());
 }
 
 #[cfg(unix)]
@@ -476,6 +665,7 @@ fn a_new_build_that_fails_to_install_installs_once_you_save_it_again() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     let library = fixture.app_data.path().join("plugins").join("library");
     let set_mode = |mode| {
         std::fs::set_permissions(&library, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -521,6 +711,7 @@ fn an_unreadable_approvals_file_runs_no_plugin_and_the_plugin_installs_again() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
     drop(app);
     let records = fixture
         .app_data
@@ -561,6 +752,7 @@ fn plugins_read_entries_files_and_objects_of_the_real_workspace() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("probe", true));
+    settle(&mut app);
 
     let lines = plugins::texts(&app, "plugin:probe:workspace").unwrap();
 
@@ -640,6 +832,7 @@ fn a_name_a_wit_string_cant_hold_lists_as_the_unsupported_path_error() {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("probe", true));
+    settle(&mut app);
 
     let lines = plugins::texts(&app, "plugin:probe:workspace").unwrap();
 

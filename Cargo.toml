@@ -12,6 +12,7 @@ members = [
     "crates/plugin-host",
     "crates/plugin-host/trial/rust-hello",
     "crates/plugin-host/test-plugins/kit",
+    "crates/plugin-host/test-plugins/misbehave",
     "crates/plugin-host/test-plugins/probe",
     "crates/plugin-host/test-plugins/recipes",
     "crates/plugin-host/test-plugins/uses-files",
@@ -41,6 +42,36 @@ rust-version = "1.99"
 
 [workspace.dependencies]
 aho-corasick = "1"
+# Highlights fenced code in notes with tree-sitter grammars. MIT OR
+# Apache-2.0; each grammar keeps its own license, all MIT or Apache-2.0 in
+# this set. Default features are empty, so only these grammars build.
+arborium = { version = "=2.18.2", default-features = false, features = [
+    "lang-bash",
+    "lang-c",
+    "lang-c-sharp",
+    "lang-cpp",
+    "lang-css",
+    "lang-diff",
+    "lang-go",
+    "lang-html",
+    "lang-java",
+    "lang-javascript",
+    "lang-json",
+    "lang-kotlin",
+    "lang-lua",
+    "lang-markdown",
+    "lang-php",
+    "lang-python",
+    "lang-ruby",
+    "lang-rust",
+    "lang-sql",
+    "lang-swift",
+    "lang-toml",
+    "lang-tsx",
+    "lang-typescript",
+    "lang-xml",
+    "lang-yaml",
+] }
 # The sync server's HTTP layer, on hyper's HTTP/1 server. MIT.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "matched-path", "tokio"] }
 # Adds Noura to the apps that open at login: a launch agent on macOS, the
@@ -101,6 +132,10 @@ ignore = "0.4"
 # and Linux, named pipes on Windows.
 interprocess = "2.4.6"
 jiff = { version = "0.2", features = ["serde"] }
+# Checks the arguments of plugin tools against each tool's JSON Schema.
+# Without default features it resolves no `$ref` over the network or from
+# files.
+jsonschema = { version = "0.59.0", default-features = false }
 keyring = "4"
 # Rotates the local diagnostic log at 1 MB and keeps three old files.
 logroller = "0.1.12"

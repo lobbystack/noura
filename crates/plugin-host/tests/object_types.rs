@@ -10,8 +10,8 @@ mod support;
 use std::sync::Arc;
 
 use plugin_host::{
-    Event, ObjectRecord, ObjectTypes, PluginError, PluginInstance, PropertyProblem, ServiceError,
-    Services, TypeError, WorkspacePath,
+    Capability, Event, ObjectRecord, ObjectTypes, PluginError, PropertyProblem, RunningPlugin,
+    ServiceError, Services, TypeError, WorkspacePath,
 };
 use support::plugins::{self, FakeObjects};
 
@@ -27,7 +27,7 @@ fn recipes(
     capabilities: &[&str],
     types: &ObjectTypes,
     objects: &Arc<FakeObjects>,
-) -> Option<(PluginInstance, [tempfile::TempDir; 2])> {
+) -> Option<(Arc<RunningPlugin>, [tempfile::TempDir; 2])> {
     let component = plugins::built("recipes_plugin")?;
     Some(plugins::running_as(
         id,
@@ -42,7 +42,7 @@ fn recipes(
 }
 
 /// Run `call` on the recipes page and return the answer's lines.
-fn call(instance: &mut PluginInstance, call: &str) -> Vec<String> {
+fn call(instance: &RunningPlugin, call: &str) -> Vec<String> {
     instance
         .handle_event("recipes", &Event::Pressed(call.to_owned()))
         .expect("the plugin takes the call");
@@ -69,8 +69,7 @@ fn recipe() -> ObjectRecord {
 fn registering_types_needs_the_object_types_capability() {
     let types = ObjectTypes::new();
     let objects = Arc::new(FakeObjects::default());
-    let Some((mut instance, _folders)) =
-        recipes("recipes", &["name = \"views\""], &types, &objects)
+    let Some((instance, _folders)) = recipes("recipes", &["name = \"views\""], &types, &objects)
     else {
         return;
     };
@@ -89,7 +88,7 @@ fn registering_types_needs_the_object_types_capability() {
         })
     );
     assert_eq!(
-        call(&mut instance, "list|recipe"),
+        call(&instance, "list|recipe"),
         ["error\tcapability-not-declared\tobject-types"]
     );
     assert!(objects.calls().is_empty(), "{:?}", objects.calls());
@@ -99,8 +98,7 @@ fn registering_types_needs_the_object_types_capability() {
 fn a_plugin_registers_its_types_and_the_kernels_note_is_refused() {
     let types = ObjectTypes::new();
     let objects = Arc::new(FakeObjects::default());
-    let Some((mut instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
-    else {
+    let Some((instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects) else {
         return;
     };
 
@@ -128,11 +126,11 @@ fn a_plugin_registers_its_types_and_the_kernels_note_is_refused() {
 fn a_type_another_running_plugin_holds_is_refused_until_that_plugin_stops() {
     let types = ObjectTypes::new();
     let objects = Arc::new(FakeObjects::default());
-    let Some((mut first, _first_folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
+    let Some((first, _first_folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
     else {
         return;
     };
-    let (mut second, _second_folders) =
+    let (second, _second_folders) =
         recipes("recipes-two", &TYPES_AND_VIEWS, &types, &objects).unwrap();
     first.register_object_types().unwrap();
 
@@ -156,6 +154,68 @@ fn a_type_another_running_plugin_holds_is_refused_until_that_plugin_stops() {
     let registered = second.register_object_types().unwrap();
     assert_eq!(registered[0], ("recipe".to_owned(), Ok(())));
     assert_eq!(types.owner("recipe").as_deref(), Some("recipes-two"));
+}
+
+#[test]
+fn a_plugin_keeps_its_types_in_a_new_store_and_a_new_start_of_it_takes_them_over() {
+    let types = ObjectTypes::new();
+    let objects = Arc::new(FakeObjects::default());
+    let Some((first, _first_folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
+    else {
+        return;
+    };
+    first.register_object_types().unwrap();
+
+    // A new store, as after a call that failed, registers them again.
+    first.restart();
+    assert_eq!(
+        first.register_object_types().unwrap()[0],
+        ("recipe".to_owned(), Ok(()))
+    );
+    assert_eq!(first.object_types(), ["recipe"]);
+
+    // A new start of the plugin, as after a reload, takes them over, and
+    // the old start ending leaves them with the new one.
+    let (second, _second_folders) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects).unwrap();
+    assert_eq!(
+        second.register_object_types().unwrap()[0],
+        ("recipe".to_owned(), Ok(()))
+    );
+    assert!(first.object_types().is_empty());
+    assert_eq!(
+        call(&first, "list|recipe"),
+        ["error\tcapability-not-declared\tobject-types"]
+    );
+    drop(first);
+    assert_eq!(types.owner("recipe").as_deref(), Some("recipes"));
+    assert_eq!(second.object_types(), ["recipe"]);
+    assert!(types.schemas().contains("recipe"));
+}
+
+#[test]
+fn revoking_object_types_or_turning_the_plugin_off_gives_its_types_up() {
+    let types = ObjectTypes::new();
+    let objects = Arc::new(FakeObjects::default());
+    let Some((plugin, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects) else {
+        return;
+    };
+    plugin.register_object_types().unwrap();
+
+    plugin.set_approved(&[Capability::Views]);
+
+    assert_eq!(types.owner("recipe"), None);
+    assert!(!types.schemas().contains("recipe"));
+    assert_eq!(
+        call(&plugin, "list|recipe"),
+        ["error\tcapability-not-declared\tobject-types"]
+    );
+    assert!(objects.calls().is_empty(), "{:?}", objects.calls());
+
+    plugin.set_approved(&[Capability::ObjectTypes, Capability::Views]);
+    plugin.register_object_types().unwrap();
+    assert_eq!(types.owner("recipe").as_deref(), Some("recipes"));
+    plugin.release_object_types();
+    assert_eq!(types.owner("recipe"), None);
 }
 
 #[test]
@@ -196,11 +256,11 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
 fn a_plugin_writes_only_objects_of_its_own_types() {
     let types = ObjectTypes::new();
     let objects = Arc::new(FakeObjects::default());
-    let Some((mut owner, _owner_folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
+    let Some((owner, _owner_folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
     else {
         return;
     };
-    let (mut other, _other_folders) =
+    let (other, _other_folders) =
         recipes("recipes-two", &TYPES_AND_VIEWS, &types, &objects).unwrap();
     owner.register_object_types().unwrap();
     other.register_object_types().unwrap();
@@ -214,7 +274,7 @@ fn a_plugin_writes_only_objects_of_its_own_types() {
         format!("move|{NOTE_ID}|rev-1|Elsewhere.md"),
         format!("delete|{NOTE_ID}|rev-1"),
     ] {
-        assert_eq!(call(&mut owner, &attempt), [refused], "{attempt}");
+        assert_eq!(call(&owner, &attempt), [refused], "{attempt}");
     }
     // The second plugin's registration of recipe was refused, so recipes
     // stay the first plugin's.
@@ -228,7 +288,7 @@ fn a_plugin_writes_only_objects_of_its_own_types() {
         // An ID with no type in it.
         "delete|soup|rev-1".to_owned(),
     ] {
-        assert_eq!(call(&mut other, &attempt), [refused], "{attempt}");
+        assert_eq!(call(&other, &attempt), [refused], "{attempt}");
     }
     assert!(objects.calls().is_empty(), "{:?}", objects.calls());
 }
@@ -238,8 +298,7 @@ fn object_calls_cross_with_their_revision_and_schema_problem() {
     let types = ObjectTypes::new();
     let objects = Arc::new(FakeObjects::default());
     objects.objects.lock().unwrap().push(recipe());
-    let Some((mut instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
-    else {
+    let Some((instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects) else {
         return;
     };
     instance.register_object_types().unwrap();
@@ -248,13 +307,13 @@ fn object_calls_cross_with_their_revision_and_schema_problem() {
     );
 
     assert_eq!(
-        call(&mut instance, &format!("get|{RECIPE_ID}")),
+        call(&instance, &format!("get|{RECIPE_ID}")),
         std::slice::from_ref(&line)
     );
-    assert_eq!(call(&mut instance, "list|recipe"), [line]);
+    assert_eq!(call(&instance, "list|recipe"), [line]);
     assert_eq!(
         call(
-            &mut instance,
+            &instance,
             r#"create|recipe|Stew|recipes/Winter/Stew.md|{"servings":4}|Hot."#
         ),
         [format!(
@@ -262,15 +321,15 @@ fn object_calls_cross_with_their_revision_and_schema_problem() {
         )]
     );
     call(
-        &mut instance,
+        &instance,
         &format!(r#"update|{RECIPE_ID}|rev-1|{{"servings":3}}"#),
     );
     call(
-        &mut instance,
+        &instance,
         &format!("move|{RECIPE_ID}|rev-1|recipes/Stew.md"),
     );
     assert_eq!(
-        call(&mut instance, &format!("delete|{RECIPE_ID}|rev-1")),
+        call(&instance, &format!("delete|{RECIPE_ID}|rev-1")),
         [format!("deleted\t{RECIPE_ID}")]
     );
     assert_eq!(
@@ -290,8 +349,7 @@ fn object_calls_cross_with_their_revision_and_schema_problem() {
 fn paths_that_arent_workspace_relative_never_reach_the_service() {
     let types = ObjectTypes::new();
     let objects = Arc::new(FakeObjects::default());
-    let Some((mut instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
-    else {
+    let Some((instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects) else {
         return;
     };
     instance.register_object_types().unwrap();
@@ -303,19 +361,16 @@ fn paths_that_arent_workspace_relative_never_reach_the_service() {
         "recipes/../../x.md",
     ] {
         assert_eq!(
-            call(
-                &mut instance,
-                &format!("create|recipe|Soup|{bad}|{{}}|Body")
-            ),
+            call(&instance, &format!("create|recipe|Soup|{bad}|{{}}|Body")),
             [format!("error\tinvalid-path\t{bad}")]
         );
         assert_eq!(
-            call(&mut instance, &format!("move|{RECIPE_ID}|rev-1|{bad}")),
+            call(&instance, &format!("move|{RECIPE_ID}|rev-1|{bad}")),
             [format!("error\tinvalid-path\t{bad}")]
         );
     }
     assert_eq!(
-        call(&mut instance, "create|recipe|Soup|-|[1, 2]|Body"),
+        call(&instance, "create|recipe|Soup|-|[1, 2]|Body"),
         ["error\tfailed\tProperties must be a JSON object."]
     );
     assert!(objects.calls().is_empty(), "{:?}", objects.calls());
@@ -350,7 +405,7 @@ fn write_errors_reach_the_plugin_as_structured_errors() {
             refuse: Some(refusal),
             ..FakeObjects::default()
         });
-        let Some((mut instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
+        let Some((instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
         else {
             return;
         };
@@ -358,7 +413,7 @@ fn write_errors_reach_the_plugin_as_structured_errors() {
 
         assert_eq!(
             call(
-                &mut instance,
+                &instance,
                 &format!(r#"update|{RECIPE_ID}|rev-1|{{"course":"x"}}"#)
             ),
             [expected]
@@ -371,8 +426,7 @@ fn the_properties_panel_draws_from_the_objects_file_and_its_button_writes_with_t
     let types = ObjectTypes::new();
     let objects = Arc::new(FakeObjects::default());
     objects.objects.lock().unwrap().push(recipe());
-    let Some((mut instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects)
-    else {
+    let Some((instance, _folders)) = recipes("recipes", &TYPES_AND_VIEWS, &types, &objects) else {
         return;
     };
     instance.register_object_types().unwrap();

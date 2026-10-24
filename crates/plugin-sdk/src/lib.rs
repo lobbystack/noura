@@ -28,8 +28,8 @@
 //! ```
 //!
 //! Each capability interface the plugin calls sits in its own module, such
-//! as [`workspace`] and [`objects`], and works only when the plugin holds
-//! its capability.
+//! as [`workspace`], [`objects`] and [`network`], and works only when the
+//! plugin holds its capability.
 
 // The generated bindings and their `export!` macro name this crate as
 // `plugin_sdk`, so plugin crates need no dependency on `wit-bindgen`.
@@ -47,12 +47,16 @@ wit_bindgen::generate!({
 #[doc(hidden)]
 pub mod __private {
     pub use crate::exports::noura::plugin::{
-        object_types::Guest as ObjectTypes, view::Guest as View,
+        commands::Guest as Commands, inbox::Guest as Inbox, object_types::Guest as ObjectTypes,
+        settings::Guest as Settings, tools::Guest as Tools, view::Guest as View,
     };
     pub use wit_bindgen::rt;
 }
 
+pub use exports::noura::plugin::commands::Command;
+pub use exports::noura::plugin::inbox::Section as InboxSection;
 pub use exports::noura::plugin::object_types::ObjectType;
+pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
@@ -74,6 +78,17 @@ pub mod objects {
     pub use crate::noura::plugin::objects::{
         Changes, NewObject, Object, create, delete, get, list, move_to, update,
     };
+}
+
+/// Requests to the HTTPS hosts the manifest's `network` capability lists.
+pub mod network {
+    pub use crate::noura::plugin::network::{Header, Method, Request, Response, fetch};
+}
+
+/// Running commands that other plugins offer. Needs the `commands`
+/// capability with each command, or its plugin, among its `targets`.
+pub mod command_calls {
+    pub use crate::noura::plugin::command_calls::call;
 }
 
 /// What a plugin adds to Noura. Noura calls each method only when the
@@ -115,6 +130,57 @@ pub trait Plugin {
     /// Something happened in the properties panel of the object `object`.
     /// Needs `object-types`.
     fn handle_panel_event(_object: String, _event: Event) {}
+
+    /// The commands the plugin offers to the command palette and to other
+    /// plugins. Needs `commands`.
+    fn commands() -> Vec<Command> {
+        Vec::new()
+    }
+
+    /// Run the command `id` with `input`, which is empty from the command
+    /// palette. Needs `commands`.
+    fn run_command(id: String, _input: String) -> Result<String, String> {
+        Err(format!("This plugin has no command {id}."))
+    }
+
+    /// The sections the plugin adds to the Inbox. Needs `inbox-sections`.
+    fn inbox_sections() -> Vec<InboxSection> {
+        Vec::new()
+    }
+
+    /// The nodes of an Inbox section. Needs `inbox-sections`.
+    fn render_inbox_section(_section: String) -> Vec<Node> {
+        Vec::new()
+    }
+
+    /// Something happened in an Inbox section. Needs `inbox-sections`.
+    fn handle_inbox_event(_section: String, _event: Event) {}
+
+    /// The title of the plugin's page in Settings, if it has one. Needs
+    /// `settings`.
+    fn settings_page() -> Option<String> {
+        None
+    }
+
+    /// The nodes of the plugin's page in Settings. Needs `settings`.
+    fn render_settings() -> Vec<Node> {
+        Vec::new()
+    }
+
+    /// Something happened on the plugin's page in Settings. Needs
+    /// `settings`.
+    fn handle_settings_event(_event: Event) {}
+
+    /// The tools the plugin offers to AI assistants. Needs `tools`.
+    fn tools() -> Vec<Tool> {
+        Vec::new()
+    }
+
+    /// Run the tool `name` with JSON `arguments` that matched its schema.
+    /// Needs `tools`.
+    fn call_tool(name: String, _arguments: String) -> Result<String, String> {
+        Err(format!("This plugin has no tool {name}."))
+    }
 }
 
 /// Exports a type that implements [`Plugin`] as the plugin's component.
@@ -145,6 +211,54 @@ macro_rules! export {
                 }
                 fn handle_event(page: ::std::string::String, event: $crate::Event) {
                     <$ty as $crate::Plugin>::handle_event(page, event)
+                }
+            }
+
+            impl $crate::__private::Commands for __NouraExports {
+                fn commands() -> ::std::vec::Vec<$crate::Command> {
+                    <$ty as $crate::Plugin>::commands()
+                }
+                fn run(
+                    id: ::std::string::String,
+                    input: ::std::string::String,
+                ) -> ::std::result::Result<::std::string::String, ::std::string::String> {
+                    <$ty as $crate::Plugin>::run_command(id, input)
+                }
+            }
+
+            impl $crate::__private::Inbox for __NouraExports {
+                fn sections() -> ::std::vec::Vec<$crate::InboxSection> {
+                    <$ty as $crate::Plugin>::inbox_sections()
+                }
+                fn render_section(section: ::std::string::String) -> ::std::vec::Vec<$crate::Node> {
+                    <$ty as $crate::Plugin>::render_inbox_section(section)
+                }
+                fn handle_section_event(section: ::std::string::String, event: $crate::Event) {
+                    <$ty as $crate::Plugin>::handle_inbox_event(section, event)
+                }
+            }
+
+            impl $crate::__private::Settings for __NouraExports {
+                fn page() -> ::std::option::Option<::std::string::String> {
+                    <$ty as $crate::Plugin>::settings_page()
+                }
+                fn render_settings() -> ::std::vec::Vec<$crate::Node> {
+                    <$ty as $crate::Plugin>::render_settings()
+                }
+                fn handle_settings_event(event: $crate::Event) {
+                    <$ty as $crate::Plugin>::handle_settings_event(event)
+                }
+            }
+
+            impl $crate::__private::Tools for __NouraExports {
+                fn tools() -> ::std::vec::Vec<$crate::Tool> {
+                    <$ty as $crate::Plugin>::tools()
+                }
+                fn call_tool(
+                    name: ::std::string::String,
+                    arguments: ::std::string::String,
+                ) -> ::std::result::Result<::std::string::String, ::std::string::String> {
+                    <$ty as $crate::Plugin>::call_tool(name, arguments)
                 }
             }
 

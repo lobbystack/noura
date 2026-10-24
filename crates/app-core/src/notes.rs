@@ -354,7 +354,7 @@ impl NoteSession {
         self.read(base, revision);
         self.text = self.body().to_owned();
         self.broken_layout = self.broken.is_some();
-        self.source_only = self.text_file || self.broken_layout || misread_frontmatter(&self.text);
+        self.source_only = self.text_file || self.broken_layout;
     }
 
     /// Take `read` as what the file holds now, as [`Self::read`] says.
@@ -408,7 +408,7 @@ impl NoteSession {
         if let Some(frontmatter) = &lost {
             self.text.insert_str(0, frontmatter);
             self.broken_layout = self.broken.is_some();
-            self.source_only = self.broken_layout || misread_frontmatter(&self.base);
+            self.source_only = self.broken_layout;
             if let Some(conflict) = &mut self.conflict {
                 conflict.shown.clone_from(&conflict.file);
             }
@@ -466,11 +466,8 @@ impl NoteSession {
     }
 
     /// Whether the editor shows the text as source, without the live
-    /// preview: a plain-text or code file, or a note the preview would
-    /// misread. The preview misreads a file shown whole whose frontmatter
-    /// holds a lone carriage return: it reads the wrong lines after it,
-    /// and a callout there crashes it. Ticket 18 replaces the frontmatter
-    /// detection behind this; until then such a file shows as source.
+    /// preview: a plain-text or code file, or a Markdown file shown whole
+    /// whose properties don't parse.
     pub fn shows_source(&self) -> bool {
         self.source_only
     }
@@ -1394,15 +1391,6 @@ fn properties_problem(error: &str) -> &'static str {
     }
 }
 
-/// Whether the editor's live preview would misread `text`: it starts with
-/// frontmatter and holds a carriage return that ends no line break.
-fn misread_frontmatter(text: &str) -> bool {
-    text.starts_with("---")
-        && text
-            .match_indices('\r')
-            .any(|(index, _)| !text[index + 1..].starts_with('\n'))
-}
-
 /// `text`, which follows the frontmatter of a managed note, as the whole
 /// file's text once [`NoteSession::read`] returned that `frontmatter`.
 fn in_whole_file(frontmatter: Option<String>, text: String) -> String {
@@ -1485,14 +1473,6 @@ mod tests {
         for (error, reason) in cases {
             assert_eq!(save_reason(&error), reason, "{}", error.code);
         }
-    }
-
-    #[test]
-    fn frontmatter_with_a_lone_carriage_return_shows_as_source() {
-        assert!(misread_frontmatter("---\na\rb\n---\n> [!note] A\n"));
-        assert!(!misread_frontmatter("---\na: b\r\n---\nText\r\n"));
-        assert!(!misread_frontmatter("Text\rmore\n"));
-        assert!(!misread_frontmatter("---\na: b\n---\nText\n"));
     }
 
     #[test]

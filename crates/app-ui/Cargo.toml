@@ -10,7 +10,21 @@ app-core = { version = "0.2.0", path = "../app-core" }
 # Parses the Markdown that plugins hand Noura, as the editor does.
 comrak.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
-egui_extras.workspace = true
+# The date picker, and the decoders that draw images in notes: PNG, JPEG
+# and BMP through `image`, GIF and WebP through their loaders. No loader
+# reads files or the network itself. egui_extras' `svg` feature stays off,
+# because its SVG loader lets an SVG read any image file it names.
+egui_extras = { workspace = true, features = ["image", "gif", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Draws SVG images in notes, with references to other files refused: text
+# in the system's fonts, and PNG, JPEG, GIF and WebP images embedded as data
+# URLs. The `svgz` feature stays off: it inflates gzip data with no limit.
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
+# Decodes AVIF images in notes in Rust, through rav1d. avif-parse and rav1d
+# read an image's size before it decodes.
+avif-decode = { version = "3.0.0", default-features = false }
+avif-parse = "2.1.0"
+rav1d = { version = "1.1.0", default-features = false }
 # Draws and edits the open note.
 editor-egui = { version = "0.2.0", path = "../editor-egui" }
 # Month, weekday and time names on calendar grids, in the computer's

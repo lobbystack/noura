@@ -1,16 +1,20 @@
-//! A running plugin: its own store, the capability interfaces linked into
-//! it, and calls into its exports.
+//! One store of a running plugin: the capability interfaces linked into
+//! it, the deadline and memory cap of each call, and calls into its
+//! exports. [`crate::RunningPlugin`] starts a new store after a call fails.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
+use local_core::{CoreError, HostRequest, HostRequests, WebMethod};
+use parking_lot::RwLock;
 use wasmtime::component::{Component, HasSelf, Linker};
-use wasmtime::{Engine, Store};
+use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
     Capability, EntryKind, Limits, Listed, NewObject, ObjectChanges, ObjectRecord, ObjectTypes,
-    PropertyProblem, ServiceError, TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
-    object_types::{next_instance, type_of_id},
+    PropertyProblem, Router, ServiceError, TypeError, WorkspaceObjects, WorkspacePath,
+    WorkspaceReads,
+    object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
 
@@ -23,37 +27,71 @@ mod bindings {
 }
 
 use bindings::Plugin;
+pub use bindings::exports::noura::plugin::commands::Command;
+pub use bindings::exports::noura::plugin::inbox::Section as InboxSection;
 pub use bindings::exports::noura::plugin::object_types::ObjectType;
+pub use bindings::exports::noura::plugin::tools::Tool;
 pub use bindings::exports::noura::plugin::view::Page;
-use bindings::exports::noura::plugin::{object_types as types_export, view as view_export};
+use bindings::exports::noura::plugin::{
+    commands as commands_export, inbox as inbox_export, object_types as types_export,
+    settings as settings_export, tools as tools_export, view as view_export,
+};
+pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{
     Calendar, CalendarEntry, CalendarMode, Choice, Column, ColumnPress, Event, Field, Form, Input,
     Item, ItemList, MenuItem, Move, Node, NodeKind, SortOrder, Submission, Table, Target, Value,
     VirtualList, VirtualRow,
 };
-use bindings::noura::plugin::{objects, types, workspace};
+use bindings::noura::plugin::{command_calls, network, objects, types, workspace};
 
 /// The capability behind object types, their panels and object writes.
 const OBJECT_TYPES: &str = "object-types";
 
+/// The capabilities a running plugin may use now. Revoking one changes
+/// this, and the plugin's next call sees the change.
+pub(crate) type Grants = Arc<RwLock<Vec<Capability>>>;
+
 /// Why a call into a running plugin failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PluginError {
-    /// The manifest doesn't declare the capability the call needs, so the
-    /// host made no call.
-    #[error("the plugin's manifest doesn't declare the {capability} capability")]
+    /// The plugin doesn't hold the capability the call needs: its
+    /// manifest doesn't declare it, or you revoked it. The host made no
+    /// call.
+    #[error("the plugin doesn't hold the {capability} capability")]
     CapabilityNotDeclared { capability: &'static str },
     #[error("the plugin failed to start: {0}")]
     Instantiate(String),
     #[error("the plugin needs more than its {cap_bytes}-byte memory cap")]
     MemoryCap { cap_bytes: usize },
+    /// The call ran past one of its time limits: the plugin's own work
+    /// past [`Limits::call_deadline`], or the whole call, waits included,
+    /// past [`Limits::max_call_time`]. `deadline` is the limit it passed.
     #[error("the plugin ran past its {deadline:?} deadline")]
     Deadline { deadline: Duration },
     #[error("the plugin failed: {0}")]
     Call(String),
+    /// Another call into the plugin was running and didn't finish in
+    /// time, or the call came back into a plugin waiting for it.
+    #[error("the plugin {plugin} is busy")]
+    Busy { plugin: String },
+    /// The plugin failed too often and stopped for this session.
+    #[error("the plugin failed too often and stopped")]
+    Stopped,
     /// The plugin's component doesn't export the interface the call needs.
     #[error("the plugin doesn't export {interface}")]
     NotExported { interface: &'static str },
+}
+
+impl PluginError {
+    /// Whether the plugin itself failed: it trapped, ran past its deadline
+    /// or outgrew its memory cap. The host then starts a new store for its
+    /// next call, and counts the failure.
+    pub fn is_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Instantiate(_) | Self::MemoryCap { .. } | Self::Deadline { .. } | Self::Call(_)
+        )
+    }
 }
 
 /// The services a plugin's capability interfaces call. The app provides
@@ -67,25 +105,76 @@ pub struct Services {
     pub objects: Option<Arc<dyn WorkspaceObjects>>,
     /// The object types the workspace's running plugins hold.
     pub types: ObjectTypes,
+    /// Sends requests through `local-core`'s web access boundary, for
+    /// `network`.
+    pub network: Option<Arc<HostRequests>>,
+    /// Finds the plugins whose commands a plugin calls, for the targets of
+    /// `commands`.
+    pub router: Weak<Router>,
+}
+
+/// How long the current call has run.
+#[derive(Clone, Copy)]
+struct Clock {
+    started: Instant,
+    /// Time spent waiting for the network or another plugin, which the
+    /// deadline doesn't count.
+    waited: Duration,
+    /// How long the plugin's own work may take.
+    deadline: Duration,
+    /// How long the whole call may take, waits included.
+    max_time: Duration,
+    /// The limit that interrupted the call, once one did.
+    passed: Option<Duration>,
+}
+
+impl Clock {
+    fn start(limits: Limits) -> Self {
+        Self {
+            started: Instant::now(),
+            waited: Duration::ZERO,
+            deadline: limits.call_deadline,
+            max_time: limits.max_call_time,
+            passed: None,
+        }
+    }
+
+    /// The limit the call has passed, if any: its own work's deadline
+    /// first, then the whole call's.
+    fn passed(&self) -> Option<Duration> {
+        if self.used() >= self.deadline {
+            Some(self.deadline)
+        } else if self.started.elapsed() >= self.max_time {
+            Some(self.max_time)
+        } else {
+            None
+        }
+    }
+
+    /// The plugin's own time in the call so far.
+    fn used(&self) -> Duration {
+        self.started.elapsed().saturating_sub(self.waited)
+    }
 }
 
 /// What a plugin's store holds: its memory cap, the capabilities it may
-/// use and the services they call.
+/// use, the services they call, and the call in progress.
 pub(crate) struct HostState {
     limiter: StoreLimiter,
-    granted: Vec<Capability>,
+    grants: Grants,
     services: Services,
+    /// The plugins whose calls wait for this one, this plugin last.
+    chain: Vec<String>,
+    clock: Clock,
     /// The plugin's ID, which owns the types it registers.
     plugin: String,
-    /// This running instance, whose stop releases its types.
+    /// The running plugin's token, which holds its types until it stops.
     instance: u64,
 }
 
 impl HostState {
     fn holds(&self, name: &str) -> bool {
-        self.granted
-            .iter()
-            .any(|capability| capability.name() == name)
+        Capability::holds(&self.grants.read(), name)
     }
 
     /// The workspace service, when the plugin holds `workspace-read`.
@@ -99,6 +188,15 @@ impl HostState {
             .workspace
             .as_deref()
             .ok_or_else(|| types::Error::Failed("No workspace is open.".to_owned()))
+    }
+
+    /// Run `wait`, which waits for something outside the plugin, without
+    /// counting the time toward the call's deadline.
+    fn waiting<R>(&mut self, wait: impl FnOnce(&mut Self) -> R) -> R {
+        let started = Instant::now();
+        let result = wait(self);
+        self.clock.waited += started.elapsed();
+        result
     }
 
     /// The object service, when the plugin holds `object-types` and
@@ -173,6 +271,83 @@ impl workspace::Host for HostState {
             properties: object.properties,
             revision: object.revision,
         })
+    }
+}
+
+impl network::Host for HostState {
+    fn fetch(&mut self, request: network::Request) -> Result<network::Response, types::Error> {
+        let hosts = {
+            let grants = self.grants.read();
+            if !Capability::holds(&grants, "network") {
+                return Err(types::Error::CapabilityNotDeclared("network".to_owned()));
+            }
+            Capability::hosts(&grants)
+        };
+        let Some(requests) = self.services.network.clone() else {
+            return Err(types::Error::Failed(
+                "Noura can't send network requests here.".to_owned(),
+            ));
+        };
+        let request = HostRequest {
+            method: match request.method {
+                network::Method::Get => WebMethod::Get,
+                network::Method::Head => WebMethod::Head,
+                network::Method::Post => WebMethod::Post,
+                network::Method::Put => WebMethod::Put,
+                network::Method::Patch => WebMethod::Patch,
+                network::Method::Delete => WebMethod::Delete,
+            },
+            url: request.url,
+            headers: request
+                .headers
+                .into_iter()
+                .map(|header| (header.name, header.value))
+                .collect(),
+            body: request.body,
+        };
+        let response = self.waiting(|_| {
+            requests
+                .send_blocking(request, &hosts)
+                .map_err(network_error)
+        })?;
+        Ok(network::Response {
+            status: response.status,
+            url: response.url,
+            headers: response
+                .headers
+                .into_iter()
+                .map(|(name, value)| network::Header { name, value })
+                .collect(),
+            body: response.body,
+        })
+    }
+}
+
+impl command_calls::Host for HostState {
+    fn call(
+        &mut self,
+        plugin: String,
+        command: String,
+        input: String,
+    ) -> Result<String, types::Error> {
+        {
+            let grants = self.grants.read();
+            if !Capability::holds(&grants, "commands") {
+                return Err(types::Error::CapabilityNotDeclared("commands".to_owned()));
+            }
+            if !Capability::allows_target(&grants, &plugin, &command) {
+                return Err(types::Error::TargetNotDeclared(format!(
+                    "{plugin}/{command}"
+                )));
+            }
+        }
+        let Some(router) = self.services.router.upgrade() else {
+            return Err(types::Error::TargetUnavailable(format!(
+                "{plugin}/{command}"
+            )));
+        };
+        let chain = self.chain.clone();
+        self.waiting(|_| router.call(&chain, &plugin, &command, &input))
     }
 }
 
@@ -297,11 +472,30 @@ fn wit_error(error: ServiceError) -> types::Error {
     }
 }
 
-/// The interfaces a plugin's component exports. Each is optional: a
-/// plugin that doesn't export one adds nothing under it.
+/// A refused or failed network request as the plugin sees it. The web
+/// access boundary's messages hold no raw system details.
+fn network_error(error: CoreError) -> types::Error {
+    match error.code.as_str() {
+        "web_url_not_https"
+        | "web_url_invalid"
+        | "web_url_unsafe_host"
+        | "web_host_not_allowed"
+        | "web_redirect_limit_exceeded"
+        | "web_redirect_invalid"
+        | "web_header_invalid" => types::Error::NetworkRefused(error.message),
+        _ => types::Error::Failed(error.message),
+    }
+}
+
+/// The interfaces a plugin's component exports. Each is optional: a plugin
+/// that doesn't export one registers nothing under it.
 struct Exports {
     view: Option<view_export::Guest>,
     object_types: Option<types_export::Guest>,
+    commands: Option<commands_export::Guest>,
+    inbox: Option<inbox_export::Guest>,
+    settings: Option<settings_export::Guest>,
+    tools: Option<tools_export::Guest>,
 }
 
 /// Loads the exported interface `$name`, whose indices `$module` looks
@@ -322,39 +516,60 @@ macro_rules! export {
 /// whether it is the plugin's now.
 pub type Registration = (String, Result<(), TypeError>);
 
-/// One running plugin with its own store. It keeps the host's epoch ticker
-/// running, so its call deadline holds after the host is dropped. Dropping
-/// it releases the object types it registered.
-pub struct PluginInstance {
+/// One store of a running plugin. It keeps the host's epoch ticker
+/// running, so its call deadline holds after the host is dropped.
+pub(crate) struct PluginInstance {
     store: Store<HostState>,
     exports: Exports,
-    call_deadline: Duration,
+    limits: Limits,
     _epochs: Arc<EpochTicker>,
 }
 
+/// The running plugin a store belongs to: its ID, and the token that
+/// holds the object types it registers.
+pub(crate) struct Owner<'a> {
+    pub(crate) plugin: &'a str,
+    pub(crate) token: u64,
+}
+
 impl PluginInstance {
-    /// Start `component` in a new store that may use `granted`, as the
-    /// plugin `plugin`.
+    /// Start `component` in a new store for `owner` that may use what
+    /// `grants` holds.
     pub(crate) fn start(
         engine: &Engine,
         epochs: &Arc<EpochTicker>,
         limits: Limits,
         component: &Component,
-        plugin: &str,
-        granted: Vec<Capability>,
+        owner: Owner,
+        grants: Grants,
         services: Services,
     ) -> Result<Self, PluginError> {
         let state = HostState {
             limiter: StoreLimiter::new(limits.memory_bytes),
-            granted,
+            grants,
             services,
-            plugin: plugin.to_owned(),
-            instance: next_instance(),
+            chain: Vec::new(),
+            clock: Clock::start(limits),
+            plugin: owner.plugin.to_owned(),
+            instance: owner.token,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limiter);
-        let call_deadline = limits.call_deadline;
-        store.set_epoch_deadline(deadline_ticks(call_deadline));
+        store.set_epoch_deadline(deadline_ticks(limits.call_deadline));
+        // The deadline counts the plugin's own work: when it passes, time
+        // spent waiting for the network or another plugin buys more ticks.
+        store.epoch_deadline_callback(|mut store| {
+            let clock = &mut store.data_mut().clock;
+            match clock.passed() {
+                Some(limit) => {
+                    clock.passed = Some(limit);
+                    Ok(UpdateDeadline::Interrupt)
+                }
+                None => Ok(UpdateDeadline::Continue(deadline_ticks(
+                    clock.deadline - clock.used(),
+                ))),
+            }
+        });
         let mut linker = Linker::new(engine);
         Plugin::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |state| state)
             .map_err(|error| PluginError::Instantiate(format!("{error:?}")))?;
@@ -382,39 +597,126 @@ impl PluginInstance {
                     store,
                     &instance
                 ),
+                commands: export!(
+                    commands_export,
+                    "noura:plugin/commands@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                inbox: export!(
+                    inbox_export,
+                    "noura:plugin/inbox@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                settings: export!(
+                    settings_export,
+                    "noura:plugin/settings@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
+                tools: export!(
+                    tools_export,
+                    "noura:plugin/tools@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
             })
         })()
-        .map_err(|error| failure(&store, &error, call_deadline, PluginError::Instantiate))?;
+        .map_err(|error| failure(&store, &error, PluginError::Instantiate))?;
         Ok(Self {
             store,
             exports,
-            call_deadline,
+            limits,
             _epochs: Arc::clone(epochs),
         })
     }
 
-    /// The pages the plugin adds to the rail. Needs the `views`
-    /// capability.
-    pub fn pages(&mut self) -> Result<Vec<Page>, PluginError> {
-        let view = self.view()?;
-        self.start_call();
-        view.call_pages(&mut self.store)
-            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
+    /// Start a call made on behalf of `chain`, the plugins waiting for it:
+    /// a fresh deadline, and no memory-cap refusal left from an earlier
+    /// call, so a failure reports its own cause.
+    pub(crate) fn begin(&mut self, chain: Vec<String>) {
+        let state = self.store.data_mut();
+        state.chain = chain;
+        state.clock = Clock::start(self.limits);
+        state.limiter.cap_hit = false;
+        self.store
+            .set_epoch_deadline(deadline_ticks(self.limits.call_deadline));
     }
 
-    /// The nodes of a page's view, as the plugin returned them. See
-    /// [`crate::View::from_nodes`] for the checks before drawing them.
-    pub fn render(&mut self, page: &str) -> Result<Vec<Node>, PluginError> {
+    /// Fails unless the plugin holds `capability`.
+    fn needs(&self, capability: &'static str) -> Result<(), PluginError> {
+        if self.store.data().holds(capability) {
+            Ok(())
+        } else {
+            Err(PluginError::CapabilityNotDeclared { capability })
+        }
+    }
+
+    fn failed(&self, error: &wasmtime::Error) -> PluginError {
+        failure(&self.store, error, PluginError::Call)
+    }
+
+    fn view(&self) -> Result<view_export::Guest, PluginError> {
+        self.needs("views")?;
+        self.exports.view.clone().ok_or(PluginError::NotExported {
+            interface: "noura:plugin/view",
+        })
+    }
+
+    fn commands_export(&self) -> Result<commands_export::Guest, PluginError> {
+        self.needs("commands")?;
+        self.exports
+            .commands
+            .clone()
+            .ok_or(PluginError::NotExported {
+                interface: "noura:plugin/commands",
+            })
+    }
+
+    fn inbox(&self) -> Result<inbox_export::Guest, PluginError> {
+        self.needs("inbox-sections")?;
+        self.exports.inbox.clone().ok_or(PluginError::NotExported {
+            interface: "noura:plugin/inbox",
+        })
+    }
+
+    fn settings(&self) -> Result<settings_export::Guest, PluginError> {
+        self.needs("settings")?;
+        self.exports
+            .settings
+            .clone()
+            .ok_or(PluginError::NotExported {
+                interface: "noura:plugin/settings",
+            })
+    }
+
+    fn tools_export(&self) -> Result<tools_export::Guest, PluginError> {
+        self.needs("tools")?;
+        self.exports.tools.clone().ok_or(PluginError::NotExported {
+            interface: "noura:plugin/tools",
+        })
+    }
+
+    pub(crate) fn pages(&mut self) -> Result<Vec<Page>, PluginError> {
         let view = self.view()?;
-        self.start_call();
+        view.call_pages(&mut self.store)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn render(&mut self, page: &str) -> Result<Vec<Node>, PluginError> {
+        let view = self.view()?;
         view.call_render(&mut self.store, page)
-            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
+            .map_err(|error| self.failed(&error))
     }
 
     /// Rows `start` up to `start + count` of the virtual list `node` in a
-    /// page's view, as the plugin returned them. See [`crate::check_rows`]
-    /// for the checks before drawing them.
-    pub fn rows(
+    /// page's view, as the plugin returned them.
+    pub(crate) fn rows(
         &mut self,
         page: &str,
         node: &str,
@@ -422,31 +724,108 @@ impl PluginInstance {
         count: u32,
     ) -> Result<Vec<VirtualRow>, PluginError> {
         let view = self.view()?;
-        self.start_call();
         view.call_rows(&mut self.store, page, node, start, count)
-            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
+            .map_err(|error| self.failed(&error))
     }
 
-    /// Tell the plugin about `event` in a page's view.
-    pub fn handle_event(&mut self, page: &str, event: &Event) -> Result<(), PluginError> {
+    pub(crate) fn handle_event(&mut self, page: &str, event: &Event) -> Result<(), PluginError> {
         let view = self.view()?;
-        self.start_call();
         view.call_handle_event(&mut self.store, page, event)
-            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn commands(&mut self) -> Result<Vec<Command>, PluginError> {
+        let commands = self.commands_export()?;
+        commands
+            .call_commands(&mut self.store)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn run_command(
+        &mut self,
+        id: &str,
+        input: &str,
+    ) -> Result<Result<String, String>, PluginError> {
+        let commands = self.commands_export()?;
+        commands
+            .call_run(&mut self.store, id, input)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn inbox_sections(&mut self) -> Result<Vec<InboxSection>, PluginError> {
+        let inbox = self.inbox()?;
+        inbox
+            .call_sections(&mut self.store)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn render_inbox_section(&mut self, section: &str) -> Result<Vec<Node>, PluginError> {
+        let inbox = self.inbox()?;
+        inbox
+            .call_render_section(&mut self.store, section)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn handle_inbox_event(
+        &mut self,
+        section: &str,
+        event: &Event,
+    ) -> Result<(), PluginError> {
+        let inbox = self.inbox()?;
+        inbox
+            .call_handle_section_event(&mut self.store, section, event)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn settings_page(&mut self) -> Result<Option<String>, PluginError> {
+        let settings = self.settings()?;
+        settings
+            .call_page(&mut self.store)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn render_settings(&mut self) -> Result<Vec<Node>, PluginError> {
+        let settings = self.settings()?;
+        settings
+            .call_render_settings(&mut self.store)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn handle_settings_event(&mut self, event: &Event) -> Result<(), PluginError> {
+        let settings = self.settings()?;
+        settings
+            .call_handle_settings_event(&mut self.store, event)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn tools(&mut self) -> Result<Vec<Tool>, PluginError> {
+        let tools = self.tools_export()?;
+        tools
+            .call_tools(&mut self.store)
+            .map_err(|error| self.failed(&error))
+    }
+
+    pub(crate) fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: &str,
+    ) -> Result<Result<String, String>, PluginError> {
+        let tools = self.tools_export()?;
+        tools
+            .call_call_tool(&mut self.store, name, arguments)
+            .map_err(|error| self.failed(&error))
     }
 
     /// Ask the plugin for its object types and register each one in the
-    /// workspace's registry for this instance. Needs the `object-types`
-    /// capability. Each type comes back with whether it registered: the
-    /// kernel's own types, a type another running plugin holds and an
-    /// invalid schema each fail with a structured error, and the other
-    /// types register all the same.
-    pub fn register_object_types(&mut self) -> Result<Vec<Registration>, PluginError> {
+    /// workspace's registry for its running plugin. Each type comes back
+    /// with whether it registered: the kernel's own types, a type another
+    /// plugin holds and an invalid schema each fail with a structured
+    /// error, and the other types register all the same.
+    pub(crate) fn register_object_types(&mut self) -> Result<Vec<Registration>, PluginError> {
         let export = self.object_types_export()?;
-        self.start_call();
         let declared = export
             .call_types(&mut self.store)
-            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))?;
+            .map_err(|error| self.failed(&error))?;
         let state = self.store.data();
         Ok(declared
             .into_iter()
@@ -462,51 +841,22 @@ impl PluginInstance {
             .collect())
     }
 
-    /// The types this instance registered, sorted.
-    pub fn object_types(&self) -> Vec<String> {
-        let state = self.store.data();
-        state
-            .services
-            .types
-            .types_of(&state.plugin)
-            .into_iter()
-            .filter(|object_type| state.services.types.held_by(object_type, state.instance))
-            .collect()
-    }
-
-    /// The nodes of the properties panel of the object `object`, as the
-    /// plugin returned them. Needs the `object-types` capability.
-    pub fn render_panel(&mut self, object: &str) -> Result<Vec<Node>, PluginError> {
+    pub(crate) fn render_panel(&mut self, object: &str) -> Result<Vec<Node>, PluginError> {
         let export = self.object_types_export()?;
-        self.start_call();
         export
             .call_render_panel(&mut self.store, object)
-            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
+            .map_err(|error| self.failed(&error))
     }
 
-    /// Tell the plugin about `event` in the properties panel of the object
-    /// `object`.
-    pub fn handle_panel_event(&mut self, object: &str, event: &Event) -> Result<(), PluginError> {
+    pub(crate) fn handle_panel_event(
+        &mut self,
+        object: &str,
+        event: &Event,
+    ) -> Result<(), PluginError> {
         let export = self.object_types_export()?;
-        self.start_call();
         export
             .call_handle_panel_event(&mut self.store, object, event)
-            .map_err(|error| failure(&self.store, &error, self.call_deadline, PluginError::Call))
-    }
-
-    fn needs(&self, capability: &'static str) -> Result<(), PluginError> {
-        if self.store.data().holds(capability) {
-            Ok(())
-        } else {
-            Err(PluginError::CapabilityNotDeclared { capability })
-        }
-    }
-
-    fn view(&self) -> Result<view_export::Guest, PluginError> {
-        self.needs("views")?;
-        self.exports.view.clone().ok_or(PluginError::NotExported {
-            interface: "noura:plugin/view",
-        })
+            .map_err(|error| self.failed(&error))
     }
 
     fn object_types_export(&self) -> Result<types_export::Guest, PluginError> {
@@ -518,32 +868,17 @@ impl PluginInstance {
                 interface: "noura:plugin/object-types",
             })
     }
-
-    /// Gives the next call a fresh deadline, and forgets a growth the cap
-    /// refused in an earlier call, so a later failure reports its own cause.
-    fn start_call(&mut self) {
-        self.store
-            .set_epoch_deadline(deadline_ticks(self.call_deadline));
-        self.store.data_mut().limiter.cap_hit = false;
-    }
-}
-
-impl Drop for PluginInstance {
-    fn drop(&mut self) {
-        let state = self.store.data();
-        state.services.types.release(state.instance);
-    }
 }
 
 fn failure(
     store: &Store<HostState>,
     error: &wasmtime::Error,
-    call_deadline: Duration,
     other: fn(String) -> PluginError,
 ) -> PluginError {
+    let clock = store.data().clock;
     match Failure::of(&store.data().limiter, error) {
         Failure::Deadline => PluginError::Deadline {
-            deadline: call_deadline,
+            deadline: clock.passed.unwrap_or(clock.deadline),
         },
         Failure::MemoryCap { cap_bytes } => PluginError::MemoryCap { cap_bytes },
         Failure::Other(message) => other(message),
