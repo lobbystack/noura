@@ -3,8 +3,8 @@
 //! or Close closes it.
 
 use app_core::{
-    ABOUT_LINKS, ACTUAL_SIZE, App, Appearance, LICENSE, LineWidth, NoticeKind, Settings, TextSize,
-    VERSION, ZOOM_LEVELS, settings_section,
+    ABOUT_LINKS, ACTUAL_SIZE, App, Appearance, LICENSE, LineWidth, McpTest, NoticeKind, Settings,
+    TextSize, VERSION, ZOOM_LEVELS, settings_section,
 };
 use egui::{
     Button, Frame, Id, Key, Margin, Modal, RichText, ScrollArea, Stroke, TextEdit, Ui, UiBuilder,
@@ -161,6 +161,7 @@ fn content(
         }
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
+        settings_section::AI_TOOLS => ai_tools(ui, app),
         id if app.is_plugin_settings(id) => crate::plugin_view::show_settings(ui, app, window, id),
         // Sections that later areas register draw themselves later.
         _ => {}
@@ -368,6 +369,96 @@ fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
     }
     if reveal {
         app.reveal_workspace();
+    }
+}
+
+/// The AI tools section: the MCP configuration for the open workspace,
+/// Copy, a warning, and Test connection with its result.
+fn ai_tools(ui: &mut Ui, app: &mut App) {
+    let Some(setup) = app.mcp_setup() else {
+        muted(ui, "Open a workspace to connect an AI tool to it.");
+        return;
+    };
+    let palette = Palette::of(ui.ctx());
+    muted(
+        ui,
+        "Connect Claude Desktop, Cursor or another AI tool that supports MCP to this \
+         workspace. Paste this configuration into the tool's MCP settings.",
+    );
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "The AI tool reads and changes the files in this workspace without asking you \
+             first. Connect only tools you trust.",
+        )
+        .color(palette.destructive),
+    );
+    let mut copy = false;
+    let mut test = false;
+    field(ui, "Configuration", Role::Group, |ui| {
+        match &setup.configuration {
+            Ok(configuration) => {
+                Frame::new()
+                    .stroke(Stroke::new(1.0, palette.border))
+                    .corner_radius(radius(1.0))
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(RichText::new(configuration).monospace())
+                                .selectable(true)
+                                .wrap(),
+                        );
+                    });
+                copy = ui.button("Copy").clicked();
+            }
+            Err(problem) => {
+                let builder = UiBuilder::new().accessibility_role(Role::Alert);
+                ui.scope_builder(builder, |ui| {
+                    ui.label(RichText::new(problem).color(palette.destructive));
+                });
+            }
+        }
+    });
+    field(ui, "Test connection", Role::Group, |ui| {
+        muted(
+            ui,
+            "Noura starts the command as your AI tool would and waits up to 10 seconds for \
+             it to answer.",
+        );
+        let testing = setup.test == McpTest::Testing;
+        let configured = setup.configuration.is_ok();
+        test = ui
+            .add_enabled(configured && !testing, Button::new("Test connection"))
+            .clicked();
+        let (role, text, color) = match &setup.test {
+            McpTest::NotRun => return,
+            McpTest::Testing => (
+                Role::Status,
+                "Testing\u{2026}".to_owned(),
+                palette.foreground,
+            ),
+            McpTest::Works(server) => (
+                Role::Status,
+                format!("It works. {server} answered."),
+                palette.foreground,
+            ),
+            McpTest::Failed(reason) => (
+                Role::Alert,
+                format!("It doesn't work. {reason}"),
+                palette.destructive,
+            ),
+        };
+        let builder = UiBuilder::new().accessibility_role(role);
+        ui.scope_builder(builder, |ui| {
+            ui.label(RichText::new(text).color(color));
+        });
+    });
+    if copy {
+        app.copy_mcp_configuration();
+    }
+    if test {
+        app.test_mcp_connection();
     }
 }
 

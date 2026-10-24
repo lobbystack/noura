@@ -17,6 +17,7 @@ mod file_drag;
 mod instance;
 mod licenses;
 mod login;
+mod mcp;
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows")),
     allow(dead_code, reason = "Linux shows no native menu bar")
@@ -210,6 +211,7 @@ fn run_app() -> eframe::Result {
                 if let Some(plugins) = licenses::bundled_plugins() {
                     app.set_shipped_plugins(plugins);
                 }
+                mcp::offer(&mut app);
                 let quit = QuitRequest::default();
                 let updates = set_up_updates(
                     &mut app,

@@ -46,6 +46,9 @@ pub mod settings_section {
     pub const ABOUT: &str = "about";
     /// Check for updates, and where updating stands.
     pub const UPDATES: &str = "updates";
+    /// The MCP configuration that connects AI tools outside Noura, which
+    /// shows once a client offers the MCP server.
+    pub const AI_TOOLS: &str = "ai-tools";
 }
 
 /// One section of Settings.

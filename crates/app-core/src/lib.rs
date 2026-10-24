@@ -31,6 +31,7 @@ mod keys;
 mod layout;
 mod links;
 mod login;
+mod mcp_setup;
 mod menus;
 mod notes;
 mod objects;
@@ -90,6 +91,7 @@ pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
+pub use mcp_setup::{MCP_TEST_WAIT, McpProbe, McpSetup, McpTest};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use notes::{
     ConflictChoice, NoteConflict, NoteSession, NoteSync, Property, PropertyValue,

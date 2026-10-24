@@ -47,7 +47,10 @@ fn mcp_mode_answers_on_stdout_alone_while_the_app_has_the_workspace_open() {
     let deadline = Instant::now() + PATIENCE;
     while app.workspace().is_none() || app.is_busy() {
         app.poll();
-        assert!(Instant::now() < deadline, "the app didn't open the workspace");
+        assert!(
+            Instant::now() < deadline,
+            "the app didn't open the workspace"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     let lock = std::fs::OpenOptions::new()

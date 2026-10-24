@@ -43,6 +43,7 @@ mod finder;
 mod ignored_files;
 mod inbox;
 mod links;
+mod mcp;
 mod notes;
 mod palette;
 mod plugins;
@@ -314,6 +315,12 @@ pub struct App {
     inbox_sections: Sections,
     /// What you typed in plugins' name fields that hasn't reached them.
     name_drafts: Vec<NameDraft>,
+    /// The MCP server AI tools start, once a client offers it.
+    mcp: Option<crate::mcp_setup::McpServer>,
+    /// Where Test connection stands.
+    mcp_test: crate::mcp_setup::McpTest,
+    /// Brings Test connection's answer.
+    mcp_answer: Option<Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -413,6 +420,9 @@ impl App {
             recent: Vec::new(),
             inbox_sections: Sections::default(),
             name_drafts: Vec::new(),
+            mcp: None,
+            mcp_test: crate::mcp_setup::McpTest::default(),
+            mcp_answer: None,
         }
     }
 
@@ -472,6 +482,7 @@ impl App {
         window.inbox_sections = self.inbox_sections.clone();
         window.pending_saves = self.pending_saves.clone();
         window.login_item = self.login_item.clone();
+        window.mcp.clone_from(&self.mcp);
         window
             .third_party_licenses
             .clone_from(&self.third_party_licenses);
@@ -763,6 +774,7 @@ impl App {
         let departing = self.poll_departure();
         let plugins = self.poll_plugins();
         let viewed = self.poll_viewers();
+        let tested = self.poll_mcp_test();
         saved
             | updated
             | searched
@@ -774,6 +786,7 @@ impl App {
             | departing
             | plugins
             | viewed
+            | tested
     }
 
     /// Take the workspace a background job opened, or why it couldn't.
