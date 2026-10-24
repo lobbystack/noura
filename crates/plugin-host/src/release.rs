@@ -17,7 +17,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::{ARCHIVE_SUFFIX, InstallError, InstallErrorCode, archive::MAX_COMPONENT_BYTES};
+use crate::{ARCHIVE_SUFFIX, InstallError, InstallErrorCode};
 
 /// The host of GitHub's REST API, where release details come from.
 const API_HOST: &str = "api.github.com";
@@ -259,7 +259,7 @@ impl Releases {
                 ));
             }
         };
-        if asset.size > MAX_ARCHIVE_BYTES as u64 || asset.size > MAX_COMPONENT_BYTES {
+        if asset.size > MAX_ARCHIVE_BYTES as u64 {
             return Err(InstallError::new(
                 InstallErrorCode::InvalidArchive,
                 format!(
