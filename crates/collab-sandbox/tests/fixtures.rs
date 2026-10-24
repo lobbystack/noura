@@ -224,7 +224,11 @@ fn a_document_writes_under_the_largest_client_id() {
     )
     .unwrap();
     writer.local(&op, true, 0).unwrap();
-    let [update] = writer.take_updates().unwrap().try_into().expect("one update");
+    let [update] = writer
+        .take_updates()
+        .unwrap()
+        .try_into()
+        .expect("one update");
     assert_eq!(update.load, 536_870_911);
     let payload = support::update_payload(update.load, &update.bytes);
     let verdict = sandbox().verdict(&Record {

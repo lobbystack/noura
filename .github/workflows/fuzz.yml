@@ -1,0 +1,79 @@
+name: Fuzz
+
+# Runs the collaboration sandbox's fuzz targets (crates/collab-sandbox/fuzz)
+# for a fixed time each night. A crash fails the run, which keeps every
+# crashing input as a regression case: it copies the inputs into
+# crates/collab-sandbox/fuzz/regressions, where
+# crates/collab-sandbox/tests/fuzz.rs replays them on every test run, and
+# opens a pull request that adds them.
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      SECONDS_PER_TARGET: '600'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      # Without a sanitizer, cargo-fuzz builds on the stable toolchain.
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Run each target
+        id: run
+        shell: bash
+        run: |
+          cd crates/collab-sandbox
+          found=0
+          for target in verdict record writer_record guest_record guest_writer_record; do
+            if ! cargo fuzz run --sanitizer none "$target" -- \
+              -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=4096 -timeout=60; then
+              found=1
+            fi
+            # The guest targets build the sandbox's own records, so their
+            # crashes replay through the sandbox's targets.
+            folder="${target#guest_}"
+            mkdir -p "fuzz/regressions/$folder"
+            for input in fuzz/artifacts/"$target"/*; do
+              if [ -f "$input" ]; then
+                cp "$input" "fuzz/regressions/$folder/"
+              fi
+            done
+          done
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+      - name: Keep the crashing inputs as regression cases
+        if: steps.run.outputs.found == '1'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="fuzz/regressions-$GITHUB_RUN_ID"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add crates/collab-sandbox/fuzz/regressions
+          git commit -m "Keep the inputs fuzz run $GITHUB_RUN_ID crashed on as regression cases"
+          git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "Fuzz regressions from run $GITHUB_RUN_ID" \
+            --body "The nightly fuzz run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID crashed the collaboration sandbox. This adds the inputs to crates/collab-sandbox/fuzz/regressions, so crates/collab-sandbox/tests/fuzz.rs fails on them until the sandbox handles them."
+      - name: Fail on a crash
+        if: steps.run.outputs.found == '1'
+        run: exit 1

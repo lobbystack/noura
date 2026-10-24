@@ -1158,15 +1158,69 @@ fn verdict_traps(f: &mut Fixture) {
 /// 1,000.
 const MEASURED: [(&str, u64, u64, u64, f64); 10] = [
     ("typing one character", 85, 73_962, 1_179_648, 0.0001),
-    ("pasting 200,000 ASCII characters", 200_091, 8_275_346, 1_900_544, 0.0003),
-    ("pasting 60,000 CJK characters", 180_091, 14_205_195, 1_703_936, 0.0004),
-    ("pasting 50,000 emoji", 200_091, 14_875_195, 1_900_544, 0.0004),
-    ("a snapshot after 20,000 scattered keystrokes", 145_316, 18_447_385, 2_818_048, 0.0010),
-    ("a snapshot after 20,000 keystrokes and deletions", 232_643, 30_744_974, 3_735_552, 0.0017),
-    ("a snapshot of 64 writers", 37_986, 5_588_268, 1_703_936, 0.0004),
-    ("deleting every other character of 40,000", 71_819, 7_344_297, 1_572_864, 0.0003),
-    ("a managed note with a large frontmatter", 137_131, 9_791_593, 1_441_792, 0.0004),
-    ("a 16 MiB snapshot of scattered typing", 18_837_030, 2_822_065_529, 248_774_656, 0.1631),
+    (
+        "pasting 200,000 ASCII characters",
+        200_091,
+        8_275_346,
+        1_900_544,
+        0.0003,
+    ),
+    (
+        "pasting 60,000 CJK characters",
+        180_091,
+        14_205_195,
+        1_703_936,
+        0.0004,
+    ),
+    (
+        "pasting 50,000 emoji",
+        200_091,
+        14_875_195,
+        1_900_544,
+        0.0004,
+    ),
+    (
+        "a snapshot after 20,000 scattered keystrokes",
+        145_316,
+        18_447_385,
+        2_818_048,
+        0.0010,
+    ),
+    (
+        "a snapshot after 20,000 keystrokes and deletions",
+        232_643,
+        30_744_974,
+        3_735_552,
+        0.0017,
+    ),
+    (
+        "a snapshot of 64 writers",
+        37_986,
+        5_588_268,
+        1_703_936,
+        0.0004,
+    ),
+    (
+        "deleting every other character of 40,000",
+        71_819,
+        7_344_297,
+        1_572_864,
+        0.0003,
+    ),
+    (
+        "a managed note with a large frontmatter",
+        137_131,
+        9_791_593,
+        1_441_792,
+        0.0004,
+    ),
+    (
+        "a 16 MiB snapshot of scattered typing",
+        18_837_030,
+        2_822_065_529,
+        248_774_656,
+        0.1631,
+    ),
 ];
 
 /// The machine the seconds in [`MEASURED`] come from.
@@ -1222,18 +1276,19 @@ fn repeated_blob(prefix: &[u8], unit: u8, count: u64, suffix: &[u8]) -> (Content
 /// whose canonical form the guest checks in full. The memory limit holds
 /// the record's input and what yrs decodes from it.
 fn limits(f: &mut Fixture) {
-    let mut case = |name: &str, payload: Value, blob: Option<Value>, expect: Option<&str>, fuel: u64| {
-        f.case(json!({
-            "kind": "verdict_limit",
-            "name": name,
-            "card_index": 1,
-            "card_count": 1,
-            "payload": payload,
-            "blob": blob,
-            "expect": expect,
-            "fuel": fuel,
-        }));
-    };
+    let mut case =
+        |name: &str, payload: Value, blob: Option<Value>, expect: Option<&str>, fuel: u64| {
+            f.case(json!({
+                "kind": "verdict_limit",
+                "name": name,
+                "card_index": 1,
+                "card_count": 1,
+                "payload": payload,
+                "blob": blob,
+                "expect": expect,
+                "fuel": fuel,
+            }));
+        };
 
     let count = 10_000;
     let list = format!("[{}]", vec!["5e-324"; count].join(","));
@@ -1256,18 +1311,34 @@ fn limits(f: &mut Fixture) {
     let gc = Lib0::default().var(1).run(1, ME, 0).raw(&[GC]).done();
     let largest = 535_625_676u64;
     for (name, length, expect, fuel) in [
-        ("memory_near_limit_input", largest, "gc_struct", 535_696_910u64),
+        (
+            "memory_near_limit_input",
+            largest,
+            "gc_struct",
+            535_696_910u64,
+        ),
         ("memory_over_limit_input", largest + 1, "memory", 66_435),
     ] {
         let (content, blob) = repeated_blob(&gc, 0, length - gc.len() as u64, &[]);
         let payload = update_payload("", 1, vec![], content);
-        case(name, repeated(&payload, &[0xff]), Some(blob), Some(expect), fuel);
+        case(
+            name,
+            repeated(&payload, &[0xff]),
+            Some(blob),
+            Some(expect),
+            fuel,
+        );
     }
 
     // One string item: yrs holds a copy of the string beside the input.
     for (name, mib, expect, fuel) in [
         ("memory_near_limit_decoded", 250u64, None, 10_485_836_141u64),
-        ("memory_over_limit_decoded", 260, Some("memory"), 5_861_613_861),
+        (
+            "memory_over_limit_decoded",
+            260,
+            Some("memory"),
+            5_861_613_861,
+        ),
     ] {
         let length = mib << 20;
         let prefix = Lib0::default()

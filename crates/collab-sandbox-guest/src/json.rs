@@ -520,7 +520,14 @@ mod tests {
     fn the_short_number_check_agrees_with_the_full_one() {
         let mut tokens: Vec<String> = Vec::new();
         for sign in ["", "-"] {
-            for whole in ["0", "1", "10", "120", "999999999999999", "100000000000000000000"] {
+            for whole in [
+                "0",
+                "1",
+                "10",
+                "120",
+                "999999999999999",
+                "100000000000000000000",
+            ] {
                 for fraction in ["", ".5", ".05", ".50", ".0", ".000001", ".0000001", ".25"] {
                     for exponent in [
                         "", "e1", "e+1", "e-1", "e+20", "e+21", "e-6", "e-7", "e+300", "e-300",

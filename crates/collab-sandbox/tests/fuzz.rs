@@ -116,7 +116,10 @@ fn update() -> impl Strategy<Value = Vec<u8>> {
             0..3,
         ),
         prop::collection::vec(
-            (client_id(), prop::collection::vec((number(), number()), 0..4)),
+            (
+                client_id(),
+                prop::collection::vec((number(), number()), 0..4),
+            ),
             0..3,
         ),
         prop::collection::vec(any::<u8>(), 0..3),
@@ -145,10 +148,7 @@ fn update() -> impl Strategy<Value = Vec<u8>> {
 /// of the run, and a delete set over both. Most reach integration, where
 /// their origins, overlaps and deletes stress yrs.
 fn plausible_update() -> impl Strategy<Value = Vec<u8>> {
-    let element = prop_oneof![
-        (Just(0u64), 0u64..14),
-        (Just(client(1, 1)), 0u64..12),
-    ];
+    let element = prop_oneof![(Just(0u64), 0u64..14), (Just(client(1, 1)), 0u64..12),];
     let item = (
         prop_oneof![
             Just(0x84u8),
@@ -419,9 +419,13 @@ fn fuzzed_records_hit_the_limits_without_crashing_and_memory_returns() {
     eprintln!("{} hostile records merged", merged.get());
     assert!(merged.get() > 100, "{} merged", merged.get());
     let merged = Cell::new(0);
-    run("mutated honest updates", baseline, 128, mutated(), |bytes| {
-        merged.set(merged.get() + fuzzing::record(sandbox, &bytes))
-    });
+    run(
+        "mutated honest updates",
+        baseline,
+        128,
+        mutated(),
+        |bytes| merged.set(merged.get() + fuzzing::record(sandbox, &bytes)),
+    );
     eprintln!("{} mutated records merged", merged.get());
     assert!(merged.get() > 10, "{} merged", merged.get());
     run("nested meta values", baseline, 64, nested_meta(), |data| {

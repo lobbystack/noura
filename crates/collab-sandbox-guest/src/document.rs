@@ -282,6 +282,11 @@ impl Note {
         self.text.len(&self.doc.transact())
     }
 
+    /// Whether `content` is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Encodes a relative position for the UTF-16 offset `index`, which
     /// sticks to the character after it when `after` is set.
     pub fn encode_position(&self, index: u32, after: bool) -> Result<Vec<u8>, DocError> {

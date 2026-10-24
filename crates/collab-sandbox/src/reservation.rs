@@ -51,7 +51,10 @@ pub struct MemoryReservation {
 impl MemoryReservation {
     /// The highest load number reserved so far.
     pub fn mark(&self) -> u32 {
-        *self.mark.lock().unwrap_or_else(|poison| poison.into_inner())
+        *self
+            .mark
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 }
 
@@ -61,7 +64,10 @@ impl ReservationStore for MemoryReservation {
     }
 
     fn reserve(&mut self, through: u32) -> Result<(), ReservationError> {
-        *self.mark.lock().unwrap_or_else(|poison| poison.into_inner()) = through;
+        *self
+            .mark
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = through;
         Ok(())
     }
 }

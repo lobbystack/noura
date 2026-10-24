@@ -173,7 +173,10 @@ fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event]) {
         "the note's length matches its text: {events:?}"
     );
     if let LineageStatus::Stopped(_) = note.status() {
-        assert_eq!(text, "fuzz 😀 base\n", "a stopped note keeps its last good state");
+        assert_eq!(
+            text, "fuzz 😀 base\n",
+            "a stopped note keeps its last good state"
+        );
         return;
     }
     let state = note.state().expect("the note's state encodes");

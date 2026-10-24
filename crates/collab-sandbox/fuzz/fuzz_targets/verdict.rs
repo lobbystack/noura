@@ -15,5 +15,5 @@ fn sandbox() -> &'static Sandbox {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let _ = collab_sandbox::fuzzing::verdict(sandbox(), data);
+    collab_sandbox::fuzzing::verdict(sandbox(), data);
 });

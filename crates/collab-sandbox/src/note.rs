@@ -584,10 +584,7 @@ impl Note {
         let mut updates = Vec::new();
         let mut rest = unsent.as_slice();
         while let Some((client, _)) = rest.first() {
-            let run = rest
-                .iter()
-                .take_while(|(other, _)| other == client)
-                .count();
+            let run = rest.iter().take_while(|(other, _)| other == client).count();
             let (group, tail) = rest.split_at(run);
             rest = tail;
             let bytes = match group {
@@ -722,8 +719,8 @@ fn load(
     let mut len = 0;
     let mut pending = false;
     for bytes in journal {
-        let (op, status, _) =
-            integrate(&mut guest, bytes, len, false).map_err(|(failure, _)| sandbox_error(failure))?;
+        let (op, status, _) = integrate(&mut guest, bytes, len, false)
+            .map_err(|(failure, _)| sandbox_error(failure))?;
         len = op.target_len();
         pending = status & PENDING != 0;
     }
@@ -811,8 +808,7 @@ mod tests {
     fn a_trap_in_the_verdict_makes_one_record_unreadable_and_the_next_applies() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/workspace-format/fixtures/sync-v2-collaboration.json");
-        let fixture: Value =
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let cases: Vec<&Value> = fixture["cases"]
             .as_array()
             .unwrap()

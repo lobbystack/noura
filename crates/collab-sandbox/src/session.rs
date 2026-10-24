@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::Sandbox;
 use crate::note::{
-    ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, RemoteRecord, StopReason,
+    ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, RemoteRecord,
 };
 use crate::op::{Mismatch, Op, transform};
 
@@ -86,6 +86,8 @@ enum Reply {
     Position(Result<Vec<u8>, DocumentError>),
     Offset(Result<u32, DocumentError>),
     Flushed,
+    /// The lineage's status changed.
+    Status(LineageStatus),
 }
 
 /// Why a call on a [`NoteHandle`] failed.
@@ -303,30 +305,9 @@ impl NoteHandle {
                 self.len = op.target_len();
                 changes.push(op);
             }
-            Reply::Event(event) => {
-                match event {
-                    Event::Stopped { reason, .. } => self.status = LineageStatus::Stopped(reason),
-                    Event::Pending(pending) => {
-                        if !matches!(self.status, LineageStatus::Stopped(_)) {
-                            self.status = if pending {
-                                LineageStatus::Pending
-                            } else {
-                                LineageStatus::Merging
-                            };
-                        }
-                    }
-                    _ => {}
-                }
-                self.events.push(event);
-            }
-            Reply::Failed(error) => {
-                if let DocumentError::Sandbox(_) = error
-                    && !matches!(self.status, LineageStatus::Stopped(_))
-                {
-                    self.status = LineageStatus::Stopped(StopReason::Trap);
-                }
-                return Err(error.into());
-            }
+            Reply::Event(event) => self.events.push(event),
+            Reply::Status(status) => self.status = status,
+            Reply::Failed(error) => return Err(error.into()),
             _ => {}
         }
         Ok(())
@@ -517,15 +498,18 @@ impl Server {
 
 fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, hold: &Hold) {
     let mut server = Server::default();
+    let mut status = note.status();
     // How far tests moved the clock forward.
     let mut skew = Duration::ZERO;
     loop {
         let request = match note.next_wake() {
-            Some(at) => match inbox.recv_timeout(at.saturating_duration_since(Instant::now() + skew)) {
-                Ok(request) => Some(request),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => return,
-            },
+            Some(at) => {
+                match inbox.recv_timeout(at.saturating_duration_since(Instant::now() + skew)) {
+                    Ok(request) => Some(request),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
             None => match inbox.recv() {
                 Ok(request) => Some(request),
                 Err(_) => return,
@@ -594,6 +578,14 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, hold
         }
         for event in effects.events {
             if outbox.send(Reply::Event(event)).is_err() {
+                return;
+            }
+        }
+        // The status goes before the reply, so a caller that waits for its
+        // reply sees the status the call left.
+        if note.status() != status {
+            status = note.status();
+            if outbox.send(Reply::Status(status)).is_err() {
                 return;
             }
         }

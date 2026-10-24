@@ -273,7 +273,13 @@ pub fn remap_clients(update: &[u8], map: impl Fn(u64) -> u64) -> Vec<u8> {
 }
 
 /// A `text_update` by `load` of an unmanaged note at `Notes/Plan.md`.
-pub fn update_record(id: u64, card: u32, card_count: u32, load: u32, yrs: &[u8]) -> collab_sandbox::RemoteRecord {
+pub fn update_record(
+    id: u64,
+    card: u32,
+    card_count: u32,
+    load: u32,
+    yrs: &[u8],
+) -> collab_sandbox::RemoteRecord {
     collab_sandbox::RemoteRecord {
         id,
         writer: card,
@@ -284,7 +290,12 @@ pub fn update_record(id: u64, card: u32, card_count: u32, load: u32, yrs: &[u8])
 }
 
 /// A `text_snapshot` of an unmanaged note at `Notes/Plan.md`.
-pub fn snapshot_record(id: u64, card: u32, card_count: u32, yrs: &[u8]) -> collab_sandbox::RemoteRecord {
+pub fn snapshot_record(
+    id: u64,
+    card: u32,
+    card_count: u32,
+    yrs: &[u8],
+) -> collab_sandbox::RemoteRecord {
     collab_sandbox::RemoteRecord {
         id,
         writer: card,
@@ -330,7 +341,12 @@ pub fn insert_between(
     if right.is_some() {
         info |= 0x40;
     }
-    let mut w = Lib0::default().var(1).var(1).var(client).var(clock).raw(&[info]);
+    let mut w = Lib0::default()
+        .var(1)
+        .var(1)
+        .var(client)
+        .var(clock)
+        .raw(&[info]);
     for (client, clock) in [origin, right].into_iter().flatten() {
         w = w.var(client).var(clock);
     }

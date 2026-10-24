@@ -111,11 +111,7 @@ impl CollabDocument for SandboxDocument {
     fn poll(&mut self) -> Vec<Utf16Splice> {
         let result = lock(&self.handle).poll();
         match result {
-            Ok(ops) => ops
-                .iter()
-                .flat_map(Op::splices)
-                .map(from_splice)
-                .collect(),
+            Ok(ops) => ops.iter().flat_map(Op::splices).map(from_splice).collect(),
             Err(error) => {
                 lock(&self.errors).push(error);
                 Vec::new()

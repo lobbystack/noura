@@ -18,12 +18,14 @@ static ALLOCATOR: direct::Direct = direct::Direct;
 
 use std::time::Instant;
 
-use collab_sandbox::{Event, Note, Record, RemoteRecord, StopReason, Unreadable, VERDICT_MEMORY_BYTES};
+use collab_sandbox::{
+    Event, Note, Record, RemoteRecord, StopReason, Unreadable, VERDICT_MEMORY_BYTES,
+};
 use plugin_host::{process_memory, release_free_memory};
+use support::{Lib0, client, client_ids, insert, path_meta, sandbox, update_payload};
 use sync_protocol::codec::{Bytes, Encode, Sorted, Text};
 use sync_protocol::records::{BlobRef, Content, Meta, Payload, PayloadKind};
 use sync_protocol::types::{Digest, Id, SecretKey};
-use support::{Lib0, client, client_ids, insert, path_meta, sandbox, update_payload};
 
 const ME: u64 = (1 << 29) + 1;
 
@@ -101,7 +103,6 @@ fn stopped(events: &[Event]) -> Option<StopReason> {
         _ => None,
     })
 }
-
 
 /// The process's memory in use: the system allocator first hands back the
 /// large blocks it keeps for reuse.

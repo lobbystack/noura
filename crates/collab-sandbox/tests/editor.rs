@@ -150,7 +150,11 @@ fn verdict_ok(card: u32, card_count: u32, update: &LocalUpdate) -> Vec<u8> {
         card_index: card,
         card_count,
     });
-    assert_eq!(verdict.outcome, Ok(()), "the device's own update is readable");
+    assert_eq!(
+        verdict.outcome,
+        Ok(()),
+        "the device's own update is readable"
+    );
     payload
 }
 
@@ -187,12 +191,7 @@ fn yjs_updates_change_the_buffer_as_yrs_applies_them_outside_the_sandbox() {
 
     // The note starts empty; the base arrives as a snapshot of card 1.
     let mut editor = open(vec![]);
-    editor.receive(snapshot_record(
-        1,
-        1,
-        1,
-        &remap_clients(&base, yjs_client),
-    ));
+    editor.receive(snapshot_record(1, 1, 1, &remap_clients(&base, yjs_client)));
     editor.settle();
     assert_eq!(editor.doc.text(), expected[0]);
     // The caret sits at the end of "remove", which no update touches.
@@ -213,7 +212,11 @@ fn yjs_updates_change_the_buffer_as_yrs_applies_them_outside_the_sandbox() {
         assert_eq!(editor.doc.text(), state, "update {index}");
         // Each update replaced one character before the caret with another,
         // or added text after it, so the caret keeps its place.
-        assert_eq!(editor.doc.selection(), (g(caret), g(caret)), "update {index}");
+        assert_eq!(
+            editor.doc.selection(),
+            (g(caret), g(caret)),
+            "update {index}"
+        );
     }
     assert_eq!(editor.doc.text(), fixture["text"].as_str().unwrap());
     assert_eq!(editor.merged(), editor.doc.text());
@@ -294,7 +297,11 @@ fn composed_text_reaches_the_document_only_once_committed() {
             }],
             &NoLayout,
         );
-        assert_eq!(editor.merged(), "note", "{step:?} stays out of the document");
+        assert_eq!(
+            editor.merged(),
+            "note",
+            "{step:?} stays out of the document"
+        );
         assert_eq!(editor.updates(), []);
     }
     editor.doc.apply(
@@ -336,7 +343,13 @@ fn undo_and_redo_take_back_only_your_own_edits() {
     editor.settle();
 
     // A collaborator writes after the "b" while you type.
-    let theirs = insert_between(support::client(2, 1), 0, Some((0, 0)), Some((0, 1)), "theirs ");
+    let theirs = insert_between(
+        support::client(2, 1),
+        0,
+        Some((0, 0)),
+        Some((0, 1)),
+        "theirs ",
+    );
     editor.receive(update_record(1, 2, 3, 1, &theirs));
     editor.settle();
     assert_eq!(editor.doc.text(), "btheirs ase mine");
@@ -368,7 +381,11 @@ fn remote_text_never_goes_back_to_the_sandbox_as_a_local_edit() {
         let yrs = insert_after(
             support::client(2, 1),
             id,
-            if id == 0 { (0, 0) } else { (support::client(2, 1), id - 1) },
+            if id == 0 {
+                (0, 0)
+            } else {
+                (support::client(2, 1), id - 1)
+            },
             "r",
         );
         editor.receive(update_record(id, 2, 3, 1, &yrs));
@@ -388,7 +405,9 @@ fn remote_text_never_goes_back_to_the_sandbox_as_a_local_edit() {
 #[test]
 fn each_load_takes_a_new_load_number_and_its_updates_name_it() {
     let reservation = MemoryReservation::default();
-    let shared = Arc::new(Mutex::new(LoadReservation::start(reservation.clone()).unwrap()));
+    let shared = Arc::new(Mutex::new(
+        LoadReservation::start(reservation.clone()).unwrap(),
+    ));
     let first = sandbox().first_document("a").unwrap();
     let mut one = open_on(
         vec![first.clone()],

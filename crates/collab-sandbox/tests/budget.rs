@@ -21,10 +21,10 @@ use std::time::Instant;
 use collab_sandbox::op::{Op, Splice};
 use collab_sandbox::{Note, Record, RemoteRecord, VERDICT_MEMORY_BYTES, verdict_budget};
 use serde_json::Value;
+use support::{Lib0, client, fixture, sandbox};
 use sync_protocol::codec::{Bytes, Encode, Sorted, Text};
 use sync_protocol::records::{BlobRef, Content, Meta, Payload, PayloadKind};
 use sync_protocol::types::{Digest, Id, SecretKey};
-use support::{Lib0, client, fixture, sandbox};
 
 /// A legitimate record and the card numbers the verdict takes with it.
 struct Sample {
@@ -163,7 +163,10 @@ fn legitimate() -> Vec<Sample> {
         1,
         typist.take_updates().unwrap().remove(0).bytes,
     ));
-    samples.push(paste("pasting 200,000 ASCII characters", &"a".repeat(200_000)));
+    samples.push(paste(
+        "pasting 200,000 ASCII characters",
+        &"a".repeat(200_000),
+    ));
     samples.push(paste("pasting 60,000 CJK characters", &"中".repeat(60_000)));
     samples.push(paste("pasting 50,000 emoji", &"😀".repeat(50_000)));
 
@@ -212,7 +215,10 @@ fn legitimate() -> Vec<Sample> {
 
     // Deleting every other character of a pasted text leaves a delete set
     // of one range per deleted character.
-    let mut deleter = note(1, vec![sandbox().first_document(&"ab".repeat(20_000)).unwrap()]);
+    let mut deleter = note(
+        1,
+        vec![sandbox().first_document(&"ab".repeat(20_000)).unwrap()],
+    );
     for i in 0..20_000u32 {
         splice(&mut deleter, i, 1, "");
     }
@@ -249,7 +255,10 @@ fn legitimate() -> Vec<Sample> {
     let nested = format!(
         "{{{}}}",
         (0..500)
-            .map(|i| format!("\"k{i:04}\":{{\"done\":true,\"due\":\"2026-10-{:02}\"}}", i % 28 + 1))
+            .map(|i| format!(
+                "\"k{i:04}\":{{\"done\":true,\"due\":\"2026-10-{:02}\"}}",
+                i % 28 + 1
+            ))
             .collect::<Vec<_>>()
             .join(",")
     );

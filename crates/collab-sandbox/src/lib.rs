@@ -38,10 +38,10 @@ pub use note::{
     ClientIds, DocumentError, Effects, Event, INTEGRATION_FUEL_LIMIT, INTEGRATION_MEMORY_BYTES,
     LineageStatus, LocalUpdate, Note, RemoteRecord, StopReason,
 };
+pub use plugin_host::Backend;
 pub use reservation::{
     LOAD_BLOCK, LoadReservation, MemoryReservation, ReservationError, ReservationStore,
 };
-pub use plugin_host::Backend;
 pub use session::{HandleError, NoteHandle};
 pub use verdict::{
     Record, Unreadable, VERDICT_BASE_FUEL, VERDICT_FUEL_PER_BYTE, VERDICT_MEMORY_BYTES, Verdict,
@@ -56,7 +56,7 @@ pub static GUEST_MODULE: &[u8] = include_bytes!("../guest/collab_sandbox_guest.w
 /// The BLAKE3 hash of [`GUEST_MODULE`], as `sync-v2-collaboration.json`
 /// records it. The sandbox refuses to run any other module.
 pub const GUEST_MODULE_HASH: &str =
-    "9b13d65cbb478bc7d2201db08a2573ca3588e0f3bbf07ffabec1d2cb6d17dd33";
+    "63fb156ebb56211e6c180b807c5fe0ea1f345d4b9cd6484c844e0421230a6006";
 
 /// The operators that cost no fuel. Every other operator costs one unit,
 /// as `sync-v2-collaboration.json` records.
