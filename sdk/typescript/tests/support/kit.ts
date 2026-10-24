@@ -32,6 +32,55 @@ export function run(tool: keyof typeof TOOLS, args: string[], cwd: string): Prom
 	});
 }
 
+/** A tool that keeps running, such as dev mode. */
+export interface Running {
+	/** Everything it printed so far. */
+	output(): string;
+	/** Wait until it printed `count` lines that match `pattern`. */
+	waitFor(pattern: RegExp, count?: number): Promise<void>;
+	stop(): Promise<void>;
+}
+
+/** Start one of the kit's tools in `cwd`, leaving it running. */
+export function start(tool: keyof typeof TOOLS, args: string[], cwd: string): Running {
+	const child = spawn(process.execPath, [TOOLS[tool], ...args], { cwd });
+	let output = '';
+	const listeners = new Set<() => void>();
+	const heard = (chunk: Buffer) => {
+		output += chunk.toString();
+		listeners.forEach((listener) => listener());
+	};
+	child.stdout.on('data', heard);
+	child.stderr.on('data', heard);
+	const exited = new Promise<void>((stopped) => child.once('exit', () => stopped()));
+	return {
+		output: () => output,
+		waitFor(pattern, count = 1) {
+			const matches = () => output.split('\n').filter((line) => pattern.test(line)).length >= count;
+			return new Promise((done, fail) => {
+				const check = () => {
+					if (matches()) {
+						listeners.delete(check);
+						done();
+					} else if (child.exitCode !== null) {
+						listeners.delete(check);
+						fail(new Error(`${tool} stopped with ${child.exitCode}:\n${output}`));
+					}
+				};
+				listeners.add(check);
+				child.once('exit', check);
+				check();
+			});
+		},
+		async stop() {
+			if (child.exitCode === null) {
+				child.kill();
+			}
+			await exited;
+		},
+	};
+}
+
 /** Run a tool and fail with its output unless it succeeds. */
 export async function succeed(tool: keyof typeof TOOLS, args: string[], cwd: string): Promise<string> {
 	const ran = await run(tool, args, cwd);

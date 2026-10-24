@@ -32,48 +32,51 @@ export class BuildError extends Error {
 
 /**
  * The functions each exported interface needs, with what a plugin that
- * leaves one out gets: nothing to show, and no event handled.
+ * leaves one out gets: nothing to show, and no event handled. The
+ * plugin's exports are looked up by name, so the bundler doesn't warn
+ * about the interfaces a plugin leaves out.
  */
 const DEFAULTS = `
 const nothing = () => [];
 const ignore = () => {};
 const none = () => undefined;
-const part = (exported, defaults) =>
+const exported = (name) => plugin[name];
+const part = (offered, defaults) =>
 	Object.fromEntries(
 		Object.entries(defaults).map(([name, fallback]) => [
 			name,
-			typeof exported?.[name] === 'function' ? exported[name].bind(exported) : fallback,
+			typeof offered?.[name] === 'function' ? offered[name].bind(offered) : fallback,
 		]),
 	);
-export const view = part(plugin.view, {
+export const view = part(exported('view'), {
 	pages: nothing,
 	render: nothing,
 	sidebar: nothing,
 	rows: nothing,
 	handleEvent: ignore,
 });
-export const objectTypes = part(plugin.objectTypes, {
+export const objectTypes = part(exported('objectTypes'), {
 	types: nothing,
 	renderPanel: nothing,
 	handlePanelEvent: ignore,
 });
-export const commands = part(plugin.commands, {
+export const commands = part(exported('commands'), {
 	commands: nothing,
 	run: (id) => {
 		throw \`The plugin has no command \${id}.\`;
 	},
 });
-export const inbox = part(plugin.inbox, {
+export const inbox = part(exported('inbox'), {
 	sections: nothing,
 	renderSection: nothing,
 	handleSectionEvent: ignore,
 });
-export const settings = part(plugin.settings, {
+export const settings = part(exported('settings'), {
 	page: none,
 	renderSettings: nothing,
 	handleSettingsEvent: ignore,
 });
-export const tools = part(plugin.tools, {
+export const tools = part(exported('tools'), {
 	tools: nothing,
 	callTool: (name) => {
 		throw \`The plugin has no tool \${name}.\`;
@@ -104,12 +107,9 @@ export async function build(folder: string): Promise<Built> {
 	try {
 		const entry = join(work, 'entry.ts');
 		const imported = source.split(sep).join('/');
-		await writeFile(
-			entry,
-			`// @ts-nocheck\nimport * as plugin from ${JSON.stringify(imported)};\n${DEFAULTS}`,
-		);
+		await writeFile(entry, `// @ts-nocheck\nimport * as plugin from ${JSON.stringify(imported)};\n${DEFAULTS}`);
 		const out = join(work, 'plugin.wasm');
-		await componentize(entry, wit, out, folder);
+		await componentize(entry, wit, out, { work, folder });
 		await mkdir(dirname(component), { recursive: true });
 		// A rename within the folder, so a host watching it never reads half
 		// a component.
@@ -138,8 +138,16 @@ async function exists(path: string): Promise<boolean> {
 	}
 }
 
-/** Turn the module `entry` into a component for the `plugin` world. */
-function componentize(entry: string, wit: string, out: string, cwd: string): Promise<void> {
+/**
+ * Turn the module `entry` into a component for the `plugin` world. `work`
+ * is the folder that holds `entry`, and `folder` the plugin's.
+ */
+function componentize(
+	entry: string,
+	wit: string,
+	out: string,
+	{ work, folder }: { work: string; folder: string },
+): Promise<void> {
 	const jco = join(dirname(createRequire(import.meta.url).resolve('@bytecodealliance/jco')), 'jco.js');
 	const args = [
 		jco,
@@ -158,7 +166,7 @@ function componentize(entry: string, wit: string, out: string, cwd: string): Pro
 	];
 	return new Promise((done, fail) => {
 		const child = spawn(process.execPath, args, {
-			cwd,
+			cwd: folder,
 			stdio: ['ignore', 'pipe', 'pipe'],
 			env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
 		});
@@ -170,8 +178,41 @@ function componentize(entry: string, wit: string, out: string, cwd: string): Pro
 			if (code === 0) {
 				done();
 			} else {
-				fail(new BuildError(`The build failed.\n${plain(output.trim())}`));
+				fail(new BuildError(`The build failed.\n${failure(output, work, folder)}`));
 			}
 		});
 	});
+}
+
+/** Warnings the bundler gives for every plugin, which say nothing about a failure. */
+const NOISE = ['[UNRESOLVED_IMPORT]', '[IMPORT_IS_UNDEFINED]'];
+
+/** The escape sequences that color terminal output. */
+const COLORS = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+/**
+ * What a failed build printed, for the plugin's author: without colors,
+ * stack traces and the warnings every build gives, with paths relative to
+ * the plugin's folder, and without the engine's name.
+ */
+function failure(output: string, work: string, folder: string): string {
+	const text = output
+		.replace(COLORS, '')
+		.replace(/\(jco componentize\) /g, '')
+		.replace(/(?:\.\.\/)+[^\s:\]]+/g, (path) => {
+			const inFolder = relative(folder, resolve(work, path)).split(sep).join('/');
+			return inFolder.startsWith('..') ? path : inFolder;
+		});
+	const blocks = text
+		.split(/\n\s*\n/)
+		.filter((block) => !NOISE.some((noise) => block.includes(noise)))
+		.map((block) =>
+			block
+				.split('\n')
+				.filter((line) => !/^\s+at |^\s*errors: \[Getter\/Setter\]|^\s*}$/.test(line))
+				.join('\n')
+				.trimEnd(),
+		)
+		.filter((block) => block.trim() !== '');
+	return plain(blocks.join('\n\n'));
 }
