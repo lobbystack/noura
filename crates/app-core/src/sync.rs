@@ -317,6 +317,18 @@ fn verify_served(
     Ok(chain)
 }
 
+/// The chains a workspace's log records, as [`SyncService::recorded_chains`]
+/// judged them.
+struct RecordedChains {
+    /// Every chain, the device's own included.
+    chains: AccountChains,
+    /// The chains under geneses the device didn't keep, which enter only
+    /// through the verified policy.
+    fresh: Vec<AccountChain>,
+    /// The chains taken short of their kept heads, as (account, genesis).
+    short: Vec<(Id, Digest)>,
+}
+
 /// A remote workspace this device created or verified, with its verified
 /// policy, the workspace domain's current key and the domain's log state.
 pub struct RemoteWorkspace {
@@ -477,18 +489,25 @@ impl SyncService {
     /// Verifies the chains a workspace's policy records, other than the
     /// device's own: each chain under a kept genesis must extend the kept
     /// head, and the others enter only when the verified policy names them
-    /// where a new chain may enter (§7).
+    /// where a new chain may enter (§7). Another account's chain that the
+    /// server serves only up to a head the log records, below the kept
+    /// head, is taken short; the returned list names those chains, which
+    /// [`SyncService::check_short`] judges once the policy verifies.
     async fn recorded_chains(
         &mut self,
         own: &AccountChain,
         changes: &[Signed<PolicyChange>],
-    ) -> Result<(AccountChains, Vec<AccountChain>), SyncError> {
+    ) -> Result<RecordedChains, SyncError> {
         let mut chains = AccountChains::new();
         chains.insert(own.clone());
-        let recorded: BTreeSet<(Id, Digest)> = changes
-            .iter()
-            .flat_map(|c| c.body.heads.iter())
-            .map(|h| (h.account, h.genesis))
+        let mut reach: BTreeMap<(Id, Digest), u64> = BTreeMap::new();
+        for head in changes.iter().flat_map(|c| c.body.heads.iter()) {
+            let highest = reach.entry((head.account, head.genesis)).or_default();
+            *highest = (*highest).max(head.seqno);
+        }
+        let recorded: BTreeSet<(Id, Digest)> = reach
+            .keys()
+            .copied()
             .filter(|(account, genesis)| !(*account == own.account() && *genesis == own.genesis()))
             .collect();
         let mut served: BTreeMap<Id, BTreeMap<Digest, Vec<Signed<AccountLink>>>> = BTreeMap::new();
@@ -497,22 +516,76 @@ impl SyncService {
             served.entry(*account).or_default().insert(*genesis, links);
         }
         let mut fresh = Vec::new();
+        let mut short = Vec::new();
         let secrets = self.secrets.clone();
         for (account, genesis) in recorded {
             let of_account = &served[&account];
             let listed = self.listed_elsewhere(account, genesis, of_account).await?;
             let links = &of_account[&genesis];
-            let chain = if self.heads.kept(&account, &genesis).is_some() {
-                self.heads
-                    .accept(account, genesis, links, &listed, &*secrets)?
-            } else {
-                let chain = verify_served(account, genesis, links, &listed)?;
-                fresh.push(chain.clone());
-                chain
+            let chain = match self.heads.kept(&account, &genesis) {
+                Some(kept) if account != own.account() && (links.len() as u64) < kept.seqno => {
+                    let chain = self.heads.accept_short(
+                        account,
+                        genesis,
+                        links,
+                        &listed,
+                        reach[&(account, genesis)],
+                        &*secrets,
+                    )?;
+                    short.push((account, genesis));
+                    chain
+                }
+                Some(_) => self
+                    .heads
+                    .accept(account, genesis, links, &listed, &*secrets)?,
+                None => {
+                    let chain = verify_served(account, genesis, links, &listed)?;
+                    fresh.push(chain.clone());
+                    chain
+                }
             };
             chains.insert(chain);
         }
-        Ok((chains, fresh))
+        Ok(RecordedChains {
+            chains,
+            fresh,
+            short,
+        })
+    }
+
+    /// Judges the chains [`SyncService::recorded_chains`] took short
+    /// against the workspace's verified `policy` (§7): the server serves in
+    /// full, to the workspace's devices, the chain the policy names for a
+    /// current member, so such a chain served short was cut back below the
+    /// kept head, `sync_account_forked`. A policy that moved on while the
+    /// device read the chains may have removed that member, so the device
+    /// then asks again before it refuses.
+    async fn check_short(
+        &mut self,
+        policy: &PolicyChain,
+        short: &[(Id, Digest)],
+    ) -> Result<(), SyncError> {
+        let snapshot = policy.head_snapshot();
+        if !snapshot.is_device(&self.credentials.keys.device()) {
+            return Ok(());
+        }
+        let Some((account, _)) = short.iter().find(|(account, genesis)| {
+            snapshot
+                .members
+                .get(account)
+                .is_some_and(|member| member.head.genesis == *genesis)
+        }) else {
+            return Ok(());
+        };
+        let (revision, _) = policy.head();
+        let now = self.client.policy(policy.workspace(), revision).await?;
+        if now.head_revision > revision {
+            return Err(SyncError::Network(
+                "the workspace's policy changed while it opened; open it again".into(),
+            ));
+        }
+        let secrets = self.secrets.clone();
+        Err(self.heads.refuse_short(*account, &*secrets))
     }
 
     /// Keeps the heads a verified policy brings in, checks the heads it
@@ -532,13 +605,22 @@ impl SyncService {
         let revision = policy.head().0;
         for head in policy.recorded_heads(revision) {
             if let Some(chain) = chains.get(&head.account, &head.genesis) {
-                self.heads.check_recorded(chain, head)?;
+                self.heads.check_recorded(chain, head, &*secrets)?;
             }
         }
+        // The chains the workspace names for its members now; a workspace
+        // the device's account left names none it keeps watch on.
         let snapshot = policy.head_snapshot();
-        for (account, member) in &snapshot.members {
-            self.heads
-                .name(policy.workspace(), *account, member.head.genesis)?;
+        if snapshot.members.contains_key(&self.credentials.account) {
+            self.heads.name_members(
+                policy.workspace(),
+                snapshot
+                    .members
+                    .iter()
+                    .map(|(account, member)| (*account, member.head.genesis)),
+            )?;
+        } else {
+            self.heads.forget_workspace(policy.workspace())?;
         }
         self.check_stops(policy)
     }
@@ -668,7 +750,9 @@ impl SyncService {
 
     /// Opens a remote workspace from the server: fetches its policy chain
     /// and every account chain the policy records, judges each chain the
-    /// device keeps a head of against that head, verifies the policy, which
+    /// device keeps a head of against that head, or, when the policy no
+    /// longer names it for a current member, against the links it kept up
+    /// to the head the log records (§7), verifies the policy, which
     /// must record this account's head in a change that a device of the
     /// account, active at the head the device keeps, signed (§8), then
     /// fetches the workspace domain's epoch records and this device's
@@ -681,7 +765,11 @@ impl SyncService {
         if changes.len() as u64 != response.head_revision {
             return Err(SyncError::Check("sync_policy_rollback"));
         }
-        let (chains, fresh) = self.recorded_chains(&own, &changes).await?;
+        let RecordedChains {
+            chains,
+            fresh,
+            short,
+        } = self.recorded_chains(&own, &changes).await?;
         let policy = PolicyChain::verify(&changes, &chains)
             .map_err(|e| SyncError::Check(e.client_code()))?;
         if policy.workspace() != workspace {
@@ -690,6 +778,7 @@ impl SyncService {
         policy
             .anchored_by(&own, &self.credentials.reference_head)
             .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        self.check_short(&policy, &short).await?;
         self.take_policy(&policy, &chains, fresh)?;
         let domain = policy.head_snapshot().workspace_domain;
 

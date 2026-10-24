@@ -418,6 +418,21 @@ async fn assert(passkey: &mut Passkey, origin: &str, options: &Value) -> Value {
 /// Signs up `email` with a passkey and confirms the emailed link. Returns
 /// the web session cookie.
 async fn passkey_sign_up(site: &Site, outbox: &Outbox, key: &mut Passkey, email: &str) -> String {
+    let link = held_passkey_link(site, outbox, key, email).await;
+    let confirmed = site.follow(&link).await;
+    assert_eq!(
+        confirmed.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        confirmed.body
+    );
+    assert_eq!(confirmed.headers["location"], "/account");
+    confirmed.session_cookie().expect("a session cookie")
+}
+
+/// Registers `key` to sign up with `email` and returns the confirmation
+/// link the server mailed, which the test hasn't followed.
+async fn held_passkey_link(site: &Site, outbox: &Outbox, key: &mut Passkey, email: &str) -> String {
     let started = site
         .json(
             "/account/passkeys/sign-up/start",
@@ -439,15 +454,7 @@ async fn passkey_sign_up(site: &Site, outbox: &Outbox, key: &mut Passkey, email:
     assert_eq!(finished.json()["status"], "check_email");
     let mail = outbox.take().pop().expect("a confirmation mail");
     assert_eq!(mail.to, email.to_ascii_lowercase());
-    let confirmed = site.follow(&link_in(&mail)).await;
-    assert_eq!(
-        confirmed.status,
-        StatusCode::SEE_OTHER,
-        "{}",
-        confirmed.body
-    );
-    assert_eq!(confirmed.headers["location"], "/account");
-    confirmed.session_cookie().expect("a session cookie")
+    link_in(&mail)
 }
 
 /// Signs in to `email` with `key`, returning the reply of the finish step.
@@ -831,6 +838,41 @@ async fn a_passkey_sign_up_for_an_existing_account_adds_no_passkey() {
     assert_eq!(refused.json()["error"], "no_passkey");
 }
 
+/// A passkey's user handle derives from the server secret, so the sign-up
+/// ceremony that anyone can start with an email shows no account ID, and
+/// every passkey of the account carries the same handle (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn passkeys_carry_a_user_handle_and_no_account_id() {
+    let outbox = Outbox::default();
+    let site = site("dana@example.com", Box::new(outbox.clone())).await;
+    let account = site.store.account_id("dana@example.com").unwrap();
+    let handle = json!(sync_protocol::types::to_base64url(
+        &site.store.passkey_user_handle(account).unwrap()
+    ));
+    let started = site
+        .json(
+            "/account/passkeys/sign-up/start",
+            json!({ "email": "dana@example.com" }),
+            None,
+        )
+        .await
+        .json();
+    let user = &started["options"]["publicKey"]["user"]["id"];
+    assert_eq!(user, &handle);
+    assert_ne!(
+        user,
+        &json!(sync_protocol::types::to_base64url(&account.0)),
+        "the ceremony shows no account ID"
+    );
+    let mut key = passkey();
+    let cookie = passkey_sign_up(&site, &outbox, &mut key, "dana@example.com").await;
+    let added = site
+        .json("/account/passkeys/add/start", json!({}), Some(&cookie))
+        .await
+        .json();
+    assert_eq!(added["options"]["publicKey"]["user"]["id"], handle);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_passkey_signs_in_like_the_first() {
     let outbox = Outbox::default();
@@ -981,9 +1023,15 @@ fn serve_refuses_a_plain_http_origin_away_from_loopback() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_database_holds_tokens_only_as_hashes_and_no_session_expiry() {
     let outbox = Outbox::default();
-    let site = site("erin@example.com", Box::new(outbox.clone())).await;
+    let site = site(
+        "erin@example.com,gale@example.com",
+        Box::new(outbox.clone()),
+    )
+    .await;
     let mut key = passkey();
     let passkey_cookie = passkey_sign_up(&site, &outbox, &mut key, "erin@example.com").await;
+    // A passkey sign-up whose confirmation link waits in the mail.
+    let held = held_passkey_link(&site, &outbox, &mut passkey(), "gale@example.com").await;
     let link_cookie = {
         site.form(
             "/account/email-link",
@@ -1018,11 +1066,10 @@ async fn the_database_holds_tokens_only_as_hashes_and_no_session_expiry() {
     let tokens: Vec<Vec<u8>> = [&passkey_cookie, &link_cookie]
         .iter()
         .map(|c| c.trim_start_matches("noura_session=").to_owned())
-        .chain([pending_link
-            .split("token=")
-            .nth(1)
-            .expect("a token")
-            .to_owned()])
+        .chain(
+            [&pending_link, &held]
+                .map(|link| link.split("token=").nth(1).expect("a token").to_owned()),
+        )
         .map(|text| {
             sync_protocol::types::from_base64url::<32>(&text)
                 .expect("a 32-byte token")

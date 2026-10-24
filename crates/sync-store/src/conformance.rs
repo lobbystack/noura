@@ -63,6 +63,7 @@ macro_rules! conformance_tests {
             enrolled_cards_bind_again_but_never_a_removed_id,
             sign_in_rows_work_once_and_expire,
             chain_reads_follow_the_policy,
+            a_retired_chain_the_workspace_names_reads_in_full,
             recovery_proofs_consume_their_challenge,
             approval_requests_open_the_invitees_chain,
         );
@@ -90,6 +91,7 @@ macro_rules! instance_tests {
             pushes_into_several_domains_race_policy_changes,
             limits_hold_across_instances,
             geneses_at_once_start_one_chain,
+            enrollments_at_once_take_one_card,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -2802,12 +2804,16 @@ pub async fn sign_in_rows_work_once_and_expire<B: Backend>(store: Store<B>) {
     assert_eq!(confirmed, store.account_id(carol).expect("an ID"));
     assert_eq!(store.passkeys(confirmed).await.expect("read").len(), 1);
     assert_eq!(store.confirm_passkey(&held).await.expect("used"), None);
-    // A credential ID that another passkey holds doesn't confirm.
+    // A credential ID that another passkey holds doesn't confirm, and
+    // leaves no account behind.
+    let bob = "bob@example.com";
     let taken = store
-        .hold_passkey("bob@example.com", vec![1, 2, 3], b"{}".to_vec())
+        .hold_passkey(bob, vec![1, 2, 3], b"{}".to_vec())
         .await
         .expect("held");
     assert_eq!(store.confirm_passkey(&taken).await.expect("refused"), None);
+    let bob_account = store.account_id(bob).expect("an ID");
+    assert_eq!(store.account_email(bob_account).await.expect("read"), None);
 
     let ceremony = store
         .begin_ceremony(
@@ -2954,6 +2960,83 @@ pub async fn chain_reads_follow_the_policy<B: Backend>(store: Store<B>) {
         1
     );
     assert_eq!(read(owner, world.account).await.expect("its own"), 2);
+}
+
+/// A chain that a reset retired while a workspace still names it for a
+/// current member reaches that workspace's devices in full, as it did while
+/// it was current, until the workspace accepts the reset (§7). The new
+/// chain, which the workspace doesn't record yet, reads not at all through
+/// it.
+pub async fn a_retired_chain_the_workspace_names_reads_in_full<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let (member, _, member_links) = account(2);
+    world
+        .store
+        .append_account_links(member_links.clone())
+        .await
+        .expect("chain");
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), head_of(&member_links[..1])],
+        PolicyKind::AddMember {
+            account: member,
+            role: sync_protocol::records::Role::Editor,
+            invitation: Id::random().expect("random"),
+        },
+    );
+    world.inject_policy(add, vec![world.domain], None).await;
+    let owner = world.devices[0].session;
+    let shared = world.store.clone();
+    let read = |genesis: Digest| {
+        let store = shared.clone();
+        async move {
+            store
+                .read_chains(
+                    owner,
+                    sync_protocol::messages::ChainsRequest {
+                        cursors: List(vec![sync_protocol::messages::ChainCursor {
+                            account: member,
+                            genesis: Some(genesis),
+                            after: 0,
+                        }]),
+                    },
+                )
+                .await
+                .map(|r| (r.pages.0[0].status, r.pages.0[0].head_seqno))
+        }
+    };
+    let old = member_links[0].digest();
+    assert_eq!(
+        read(old).await.expect("in full"),
+        (sync_protocol::messages::ChainStatus::Current, 2)
+    );
+
+    // A reset: a new genesis becomes the member's current chain.
+    let reset = genesis_link(&DeviceKeys::generate().expect("random"), member);
+    let row = crate::LinkRow {
+        genesis: reset.digest(),
+        seqno: 1,
+        link: reset.to_bytes(),
+    };
+    let new = reset.digest();
+    world
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                txn.insert_account_link(member, &row, new).await?;
+                txn.set_current_genesis(member, new).await
+            })
+        }))
+        .await
+        .expect("reset");
+    assert_eq!(
+        read(old)
+            .await
+            .expect("in full while the workspace names it"),
+        (sync_protocol::messages::ChainStatus::Retired, 2)
+    );
+    assert_eq!(refusal(read(new).await).code, "not_found");
 }
 
 /// `POST /v2/recovery` (§12): a proof from the active recovery identity for
@@ -3192,6 +3275,52 @@ pub async fn geneses_at_once_start_one_chain<B: Backend>(
             "not_found",
             "the store kept no link of the later genesis"
         );
+    }
+}
+
+/// Enrollments of one device ID at once, through two instances, for
+/// accounts without a chain (§7): the same card enrolls on both, and of two
+/// accounts' cards one enrolls and the other gets `id_conflict`, never
+/// `internal`.
+pub async fn enrollments_at_once_take_one_card<B: Backend>(
+    first: Arc<Store<B>>,
+    second: Arc<Store<B>>,
+) {
+    for _ in 0..8 {
+        let keys = DeviceKeys::generate().expect("random");
+        let account = Id::random().expect("random");
+        let card = keys.card(account);
+        let tasks: Vec<_> = [first.clone(), second.clone()]
+            .into_iter()
+            .map(|store| {
+                let card = card.clone();
+                tokio::spawn(async move { store.enroll_card(card).await })
+            })
+            .collect();
+        for task in tasks {
+            task.await
+                .expect("the enrollment ends")
+                .expect("the same card enrolls twice");
+        }
+
+        let keys = DeviceKeys::generate().expect("random");
+        let cards = [
+            keys.card(Id::random().expect("random")),
+            keys.card(Id::random().expect("random")),
+        ];
+        let tasks: Vec<_> = [first.clone(), second.clone()]
+            .into_iter()
+            .zip(cards)
+            .map(|(store, card)| tokio::spawn(async move { store.enroll_card(card).await }))
+            .collect();
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("the enrollment ends"));
+        }
+        let enrolled = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(enrolled, 1, "one card takes the device ID");
+        let loser = results.into_iter().find(|r| r.is_err()).expect("a refusal");
+        assert_eq!(refusal(loser).code, "id_conflict");
     }
 }
 

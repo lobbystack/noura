@@ -1394,11 +1394,11 @@ impl WriteTxn for PgTxn {
         Ok(())
     }
 
-    async fn insert_enrolled_card(&mut self, device: Id, account: Id, card: &[u8]) -> Result<()> {
+    async fn insert_enrolled_card(&mut self, device: Id, account: Id, card: &[u8]) -> Result<bool> {
         let device = &device.0[..];
         let account = &account.0[..];
-        sqlx::query!(
-            "INSERT INTO cards (device, account, card) VALUES ($1, $2, $3)",
+        let done = sqlx::query!(
+            "INSERT INTO cards (device, account, card) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
             device,
             account,
             card
@@ -1406,7 +1406,7 @@ impl WriteTxn for PgTxn {
         .execute(self.c())
         .await
         .map_err(db)?;
-        Ok(())
+        Ok(done.rows_affected() == 1)
     }
 
     async fn record_accounts(&mut self, workspace: Id, accounts: &[Id]) -> Result<()> {

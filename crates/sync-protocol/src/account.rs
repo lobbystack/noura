@@ -421,6 +421,11 @@ impl AccountChain {
         *self.digests.last().expect("a chain has a genesis")
     }
 
+    /// The digest of each link, in seqno order from the genesis.
+    pub fn link_digests(&self) -> &[Digest] {
+        &self.digests
+    }
+
     /// The current head.
     pub fn head(&self) -> AccountHead {
         self.head_at(self.head_seqno()).expect("the head exists")

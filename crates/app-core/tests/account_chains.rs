@@ -84,7 +84,7 @@ fn kept_heads_reach_each_fixture_cases_outcome() {
         if let (Ok(chain), Some(_)) = (&outcome, case["recorded"].as_object()) {
             let recorded: AccountHead = serde_json::from_value(case["recorded"].clone()).unwrap();
             outcome = heads
-                .check_recorded(chain, &recorded)
+                .check_recorded(chain, &recorded, &secrets)
                 .map(|()| chain.clone());
         }
         let expect = match kind {
@@ -921,7 +921,7 @@ async fn a_refused_chain_stays_refused_after_a_restart() {
     drop(restarted);
 
     let mut heads = owner.heads().unwrap();
-    heads.clear_refusal(&s.member.id).unwrap();
+    heads.clear_refusal(&s.member.id, &*owner.secrets).unwrap();
     drop(heads);
     let mut cleared = owner.connect(&s.proxy.base, s.owner.reference()).await;
     cleared
@@ -1016,4 +1016,271 @@ async fn a_device_id_another_chain_of_the_account_listed_is_refused() {
         refused.as_ref().err()
     );
     assert_eq!(service.kept_heads().kept_of(&account.id)[1].seqno, 1);
+}
+
+/// Removes the member from the shared workspace, as an owner device's
+/// `remove_member` push will.
+async fn remove_member(s: &Shared) {
+    let changes = policy_changes(&s.server, &s.owner.devices[0], s.workspace).await;
+    let remove = change(
+        &s.owner.devices[0].keys,
+        changes.last().unwrap(),
+        vec![s.owner.head()],
+        PolicyKind::RemoveMember {
+            account: s.member.id,
+        },
+    );
+    inject(&s.server, s.domain, remove).await;
+}
+
+/// Review of the read bounds (§7): the owner's device kept the member's
+/// chain past the head the workspace recorded, because a current member's
+/// chain reaches the workspace's devices in full. Once `remove_member`
+/// commits, the server serves that chain only up to the recorded head,
+/// and the device takes it, across restarts, keeping its higher head. A
+/// chain cut below the recorded head, or one whose links differ from those
+/// the device kept, is still caught.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removed_members_chain_served_up_to_its_recorded_head_is_taken() {
+    let mut s = shared().await;
+    s.member.add_device(&s.server).await;
+    let owner = &s.owner.devices[0];
+    s.proxy.honest();
+    let mut device = owner.connect(&s.proxy.base, s.owner.reference()).await;
+    device
+        .open_workspace(s.workspace)
+        .await
+        .expect("a current member's chain in full");
+    assert_eq!(device.kept_heads().kept_of(&s.member.id)[0].seqno, 3);
+
+    remove_member(&s).await;
+    let mut client = app_core::sync::SyncClient::connect(&s.server.base, &owner.token)
+        .await
+        .unwrap();
+    let (served, _) = client
+        .whole_chain(s.member.id, Some(s.member.links[0].digest()))
+        .await
+        .unwrap();
+    assert_eq!(served.len(), 2, "the server serves the recorded head");
+    device
+        .open_workspace(s.workspace)
+        .await
+        .expect("the chain up to its recorded head");
+    assert_eq!(device.kept_heads().kept_of(&s.member.id)[0].seqno, 3);
+    drop(device);
+    let mut restarted = owner.connect(&s.proxy.base, s.owner.reference()).await;
+    restarted
+        .open_workspace(s.workspace)
+        .await
+        .expect("again after a restart");
+    assert_eq!(restarted.kept_heads().stopped([s.member.id]), None);
+
+    // Below the head the workspace records, the chain was cut back.
+    s.proxy
+        .tamper(rewrite_chain(s.member.id, |links| links.truncate(1)));
+    let refused = restarted.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_forked"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+}
+
+/// The links of a chain served short must be the ones the device kept: a
+/// removed member's chain whose recorded head the proxy replaces with a
+/// fork, recorded by a change the member's device signed, is caught.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_short_chain_off_the_kept_links_is_caught() {
+    let mut s = shared().await;
+    s.member.add_device(&s.server).await;
+    let owner = &s.owner.devices[0];
+    s.proxy.honest();
+    let mut device = owner.connect(&s.proxy.base, s.owner.reference()).await;
+    device.open_workspace(s.workspace).await.unwrap();
+    remove_member(&s).await;
+
+    // A fork at seqno 2 that the member's first device signed, and a
+    // policy whose add_member records it, as a server that showed other
+    // devices that branch would serve.
+    let other = DeviceKeys::generate().unwrap();
+    let fork = next_link(
+        &s.member.devices[0].keys,
+        &head_of(&s.member.links[..1]),
+        LinkKind::AddDevice {
+            card: Nested(other.card(s.member.id)),
+            offer: Digest([9; 32]),
+        },
+    );
+    let forked_head = head_of(&[s.member.links[0].clone(), fork.clone()]);
+    let real_head = head_of(&s.member.links[..2]);
+    let changes = policy_changes(&s.server, owner, s.workspace).await;
+    let mut forged = vec![changes[0].clone()];
+    for original in &changes[1..] {
+        let heads: Vec<AccountHead> = original
+            .body
+            .heads
+            .iter()
+            .map(|h| {
+                if *h == real_head {
+                    forked_head.clone()
+                } else {
+                    h.clone()
+                }
+            })
+            .collect();
+        forged.push(change(
+            &s.owner.devices[0].keys,
+            forged.last().unwrap(),
+            heads,
+            original.body.kind.clone(),
+        ));
+    }
+    s.proxy.tamper(Box::new(move |path, body| {
+        if path.ends_with("/policy") {
+            let mut response = PolicyResponse::from_bytes(&body).unwrap();
+            response.changes = List(forged.iter().cloned().map(Nested).collect());
+            return response.to_bytes();
+        }
+        if path != "/v2/accounts/chains" {
+            return body;
+        }
+        let mut response = ChainsResponse::from_bytes(&body).unwrap();
+        for page in response.pages.0.iter_mut() {
+            if page.account == forked_head.account {
+                page.links = List(vec![
+                    Nested(page.links.0[0].0.clone()),
+                    Nested(fork.clone()),
+                ]);
+                page.head_seqno = 2;
+            }
+        }
+        response.to_bytes()
+    }));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_forked"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+}
+
+/// While the workspace names a member's chain and counts the device among
+/// its devices, the server serves that chain in full, so one stopped at
+/// its recorded head, below the kept head, was cut back (§7).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_current_members_chain_cut_back_to_its_recorded_head_is_caught() {
+    let mut s = shared().await;
+    s.member.add_device(&s.server).await;
+    let owner = &s.owner.devices[0];
+    s.proxy.honest();
+    let mut device = owner.connect(&s.proxy.base, s.owner.reference()).await;
+    device.open_workspace(s.workspace).await.unwrap();
+    assert_eq!(device.kept_heads().kept_of(&s.member.id)[0].seqno, 3);
+    s.proxy
+        .tamper(rewrite_chain(s.member.id, |links| links.truncate(2)));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_forked"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+    s.proxy.honest();
+    assert!(matches!(
+        device.open_workspace(s.workspace).await,
+        Err(SyncError::Check("sync_account_forked"))
+    ));
+}
+
+/// Refusals live in the credential store, so a rebuild after
+/// `sync_journal_rollback` keeps every stop until you clear it.
+#[test]
+fn a_rebuild_keeps_the_refusals() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = MemorySecrets::default();
+    let keys = DeviceKeys::generate().unwrap();
+    let account = Id::random().unwrap();
+    let genesis = sync_key_envelope::v2::genesis_link(&keys, account);
+    let kept = head_of(std::slice::from_ref(&genesis));
+    let own = Id::random().unwrap();
+    let device = Id::random().unwrap();
+    let mut heads =
+        KeptHeads::rebuild(dir.path(), own, device, [kept.clone()], [], &secrets).unwrap();
+    let stranger = DeviceKeys::generate().unwrap();
+    let other = sync_key_envelope::v2::genesis_link(&stranger, account);
+    assert!(
+        heads
+            .accept(account, kept.genesis, &[other], &BTreeSet::new(), &secrets)
+            .is_err()
+    );
+    assert_eq!(heads.stopped([account]), Some("sync_account_forked"));
+    drop(heads);
+
+    let file = dir
+        .path()
+        .join(app_core::sync::account_heads::KEPT_HEADS_FILE);
+    std::fs::write(&file, b"rolled back").unwrap();
+    assert!(matches!(
+        KeptHeads::open(dir.path(), own, device, &secrets),
+        Err(SyncError::Check("sync_journal_rollback"))
+    ));
+    let mut rebuilt =
+        KeptHeads::rebuild(dir.path(), own, device, [kept.clone()], [], &secrets).unwrap();
+    assert_eq!(rebuilt.stopped([account]), Some("sync_account_forked"));
+    rebuilt.clear_refusal(&account, &secrets).unwrap();
+    drop(rebuilt);
+    let rebuilt = KeptHeads::rebuild(dir.path(), own, device, [kept], [], &secrets).unwrap();
+    assert_eq!(rebuilt.stopped([account]), None);
+
+    // Two recorded heads at one seqno of one chain are a fork.
+    let forked = KeptHeads::rebuild(
+        dir.path(),
+        own,
+        device,
+        [
+            head_of(std::slice::from_ref(&genesis)),
+            AccountHead {
+                head: Digest([3; 32]),
+                ..head_of(std::slice::from_ref(&genesis))
+            },
+        ],
+        [],
+        &secrets,
+    )
+    .unwrap();
+    assert_eq!(forked.stopped([account]), Some("sync_account_forked"));
+}
+
+/// A workspace's names follow its verified members, so a member it removed,
+/// or a workspace the device left, raises no two-current-chains alert.
+#[test]
+fn a_workspaces_names_follow_its_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = MemorySecrets::default();
+    let mut heads = KeptHeads::open(
+        dir.path(),
+        Id::random().unwrap(),
+        Id::random().unwrap(),
+        &secrets,
+    )
+    .unwrap();
+    let member = Id::random().unwrap();
+    let (first, second) = (Id::random().unwrap(), Id::random().unwrap());
+    heads
+        .name_members(first, [(member, Digest([1; 32]))])
+        .unwrap();
+    heads
+        .name_members(second, [(member, Digest([2; 32]))])
+        .unwrap();
+    assert_eq!(heads.two_current_chains(), vec![member]);
+    // The second workspace removes the member.
+    heads.name_members(second, []).unwrap();
+    assert!(heads.two_current_chains().is_empty());
+    // The member joins the second workspace again under another chain, and
+    // the device then leaves the first.
+    heads
+        .name_members(second, [(member, Digest([2; 32]))])
+        .unwrap();
+    assert_eq!(heads.two_current_chains(), vec![member]);
+    heads.forget_workspace(first).unwrap();
+    assert!(heads.two_current_chains().is_empty());
 }

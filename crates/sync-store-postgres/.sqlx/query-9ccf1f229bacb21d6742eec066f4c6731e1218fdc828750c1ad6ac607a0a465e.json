@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO cards (device, account, card) VALUES ($1, $2, $3)",
+  "query": "INSERT INTO cards (device, account, card) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
   "describe": {
     "columns": [],
     "parameters": {
@@ -12,5 +12,5 @@
     },
     "nullable": []
   },
-  "hash": "abcb4d9802f97ea20c4220798b130f137b9e5a00f214c32c859d0294d7f747a2"
+  "hash": "9ccf1f229bacb21d6742eec066f4c6731e1218fdc828750c1ad6ac607a0a465e"
 }

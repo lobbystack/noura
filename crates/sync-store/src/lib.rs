@@ -726,13 +726,14 @@ pub trait WriteTxn: ReadTxn {
         token_hash: Digest,
         recovery: Id,
     ) -> impl Future<Output = Result<()>> + Send;
-    /// Stores an enrolled card.
+    /// Stores an enrolled card; returns false when the device ID is
+    /// taken, such as by an enrollment that committed meanwhile.
     fn insert_enrolled_card(
         &mut self,
         device: Id,
         account: Id,
         card: &[u8],
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> impl Future<Output = Result<bool>> + Send;
     /// Records that the workspace's policy records heads of these accounts.
     fn record_accounts(
         &mut self,
@@ -1114,6 +1115,16 @@ impl<B: Backend> Store<B> {
             .as_ref()
             .ok_or_else(|| Error::internal("the store has no server secret"))?;
         Ok(sync_protocol::ids::account_id(secret, email))
+    }
+
+    /// The user handle of `account`'s passkeys, derived from the server
+    /// secret (§14), or an internal error when the store has no secret.
+    pub fn passkey_user_handle(&self, account: Id) -> Result<[u8; 16]> {
+        let secret = self
+            .secret
+            .as_ref()
+            .ok_or_else(|| Error::internal("the store has no server secret"))?;
+        Ok(sync_protocol::ids::passkey_user_handle(secret, &account))
     }
 
     /// Stores a session for `token`, the 32 random bytes a sign-in returns,

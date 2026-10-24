@@ -149,7 +149,8 @@ impl<B: Backend> Store<B> {
                     if txn.account_email(account).await?.is_some() {
                         return Ok(None);
                     }
-                    txn.insert_account(account, &normalized(&row.email)).await?;
+                    // The passkey goes in first: a credential ID that
+                    // another passkey holds leaves no account behind.
                     let added = txn
                         .insert_passkey(&PasskeyRow {
                             credential_id: row.credential_id,
@@ -160,6 +161,7 @@ impl<B: Backend> Store<B> {
                     if !added {
                         return Ok(None);
                     }
+                    txn.insert_account(account, &normalized(&row.email)).await?;
                     txn.insert_web_session(session_hash, account).await?;
                     Ok(Some(account))
                 })

@@ -136,9 +136,10 @@ pub(crate) async fn append(
 /// at `now`, names an invitation to a workspace the session's account
 /// belongs to; and, in each workspace whose policy the session reads,
 /// every chain of an account that the policy records, up to the latest
-/// head recorded on it, and a current member's current chain in full to
-/// the workspace's devices. A device whose account `remove_member` removed
-/// reads the policy, and so these chains, up to its removal.
+/// head recorded on it, and the chain the policy names for a current
+/// member in full to the workspace's devices. A device whose account
+/// `remove_member` removed reads the policy, and so these chains, up to its
+/// removal.
 #[allow(clippy::too_many_arguments)]
 async fn readable_seqno(
     txn: &mut impl ReadTxn,
@@ -188,7 +189,7 @@ async fn readable_seqno(
             &session.account,
             &account,
             &genesis,
-            current.then(|| chain.head_seqno()),
+            chain.head_seqno(),
         ) else {
             continue;
         };
@@ -294,17 +295,27 @@ pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
             ));
         }
     }
-    if let Some((account, held)) = txn.enrolled_card(card.device).await? {
-        if account == card.account && held == bytes {
-            return Ok(());
-        }
-        return Err(refuse(
+    let same = |held: Option<(Id, Vec<u8>)>| match held {
+        Some((account, held)) if account == card.account && held == bytes => Ok(()),
+        _ => Err(refuse(
             "id_conflict",
             "the device ID is enrolled with other bytes",
-        ));
+        )),
+    };
+    if let Some(held) = txn.enrolled_card(card.device).await? {
+        return same(Some(held));
     }
-    txn.insert_enrolled_card(card.device, card.account, &bytes)
-        .await
+    // An enrollment of the same device ID under another account, or one of
+    // an account without a chain row to lock, can commit meanwhile: the
+    // insert then waits for it and takes nothing, and the stored card
+    // decides as above.
+    if txn
+        .insert_enrolled_card(card.device, card.account, &bytes)
+        .await?
+    {
+        return Ok(());
+    }
+    same(txn.enrolled_card(card.device).await?)
 }
 
 /// `POST /v2/devices/challenge`: a fresh 32-byte challenge for the

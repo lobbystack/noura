@@ -392,7 +392,7 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 &reader_account,
                 &id_of(&case["account"]),
                 &digest_of(&case["genesis"]),
-                Some(current),
+                current,
             );
             // A waiting approval request that names an invitation to the
             // workspace serves the current chain in full to its members.

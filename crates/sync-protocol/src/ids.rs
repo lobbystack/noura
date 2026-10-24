@@ -1,5 +1,6 @@
 //! The identifiers of §5 that derive instead of being drawn: device IDs,
-//! text lineage IDs and account IDs, plus the server secret's key check.
+//! text lineage IDs and account IDs, plus the server secret's key check
+//! and the passkey user handle that the server derives from its secret.
 //! Random IDs come from [`Id::random`](crate::types::Id::random).
 
 use crate::crypto::{context, derive_key, hash_parts, keyed_hash};
@@ -58,6 +59,16 @@ pub fn account_id(server_secret: &SecretKey, email: &str) -> Id {
         &key,
         normalize_email(email).as_bytes(),
     )))
+}
+
+/// The user handle that an account's passkeys carry (§14): the first 16
+/// bytes of `BLAKE3.keyed_hash(derive_key("noura.sync.v2 passkey user",
+/// secret), account)`. It stays the same for every passkey of the account
+/// and across a restore, and a sign-up ceremony that shows it to anyone
+/// who asks with an email doesn't show the account ID.
+pub fn passkey_user_handle(server_secret: &SecretKey, account: &Id) -> [u8; 16] {
+    let key = derive_key(context::PASSKEY_USER, server_secret.expose());
+    first_16(&keyed_hash(&key, &account.0))
 }
 
 /// The yrs client ID of a document load (§22): `card_index × 2^29 + load`,

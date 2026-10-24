@@ -808,21 +808,22 @@ impl PolicyChain {
     /// The highest seqno of `account`'s chain under `genesis` that a
     /// session reads through this workspace (§7), or none. `reader` holds
     /// the session's device and any recovery identity it proved, of the
-    /// account `reader_account`; `current_seqno` is the chain's head when
-    /// `genesis` names the account's current chain.
+    /// account `reader_account`; `head_seqno` is the chain's head.
     ///
     /// The workspace's devices read every chain the policy records in its
-    /// heads, up to the latest head recorded on it, and a current member's
-    /// current chain in full. A device whose account `remove_member`
-    /// removed reads the policy up to that change, and these chains up to
-    /// the heads recorded by then.
+    /// heads, up to the latest head recorded on it, and in full the chain
+    /// the policy names for a current member, whether it's the account's
+    /// current chain or one a reset retired before the workspace accepted
+    /// it. A device whose account `remove_member` removed reads the policy
+    /// up to that change, and these chains up to the heads recorded by
+    /// then.
     pub fn chain_read_bound(
         &self,
         reader: &[Id],
         reader_account: &Id,
         account: &Id,
         genesis: &Digest,
-        current_seqno: Option<u64>,
+        head_seqno: u64,
     ) -> Option<u64> {
         let head = self.head_snapshot();
         let active = reader.iter().any(|device| head.is_device(device));
@@ -844,10 +845,15 @@ impl PolicyChain {
             .filter(|h| h.account == *account && h.genesis == *genesis)
             .map(|h| h.seqno)
             .max()?;
-        match current_seqno {
-            Some(current) if active && head.members.contains_key(account) => Some(current),
-            _ => Some(recorded),
-        }
+        let named = head
+            .members
+            .get(account)
+            .is_some_and(|member| member.head.genesis == *genesis);
+        Some(if active && named {
+            head_seqno
+        } else {
+            recorded
+        })
     }
 }
 

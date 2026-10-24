@@ -1043,12 +1043,14 @@ async fn a_recovery_proof_lets_the_session_act_for_the_recovery_identity() {
     );
 }
 
-/// Review of `0eef7d5`, with the recovery of `sync-v2-recovery.json`: its
-/// `remove` link commits before the recovered device enters any of the
-/// account's two workspaces, and the proven session still reads the
-/// recovery identity's envelopes in both (§7, §12).
+/// Review of `0eef7d5`, with the recovery of `sync-v2-recovery.json`, in
+/// step 5's order (§12): the recovered device records the head after
+/// `recover_device` in the first of the account's two workspaces, which it
+/// enters, then its `remove` link commits before it enters the last one,
+/// and the proven session still reads the recovery identity's envelopes
+/// there (§7).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_recovery_fixtures_removal_commits_before_the_device_enters_its_workspaces() {
+async fn the_recovery_fixtures_removal_commits_before_the_device_enters_its_last_workspace() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/workspace-format/fixtures/sync-v2-recovery.json"
@@ -1103,7 +1105,7 @@ async fn the_recovery_fixtures_removal_commits_before_the_device_enters_its_work
             .create_workspace(Session::new(account, laptop.device()), body)
             .await
             .unwrap();
-        workspaces.push(genesis.body.workspace);
+        workspaces.push(genesis);
     }
 
     let (phone_token, phone_session) = {
@@ -1131,16 +1133,56 @@ async fn the_recovery_fixtures_removal_commits_before_the_device_enters_its_work
         .await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(append(&phone_session, &links[2..3]).await, Ok(3));
-    assert_eq!(append(&phone_session, &links[3..4]).await, Ok(4));
-    for workspace in workspaces {
-        let path = format!(
+    // The phone records the head after recover_device in the first
+    // workspace, as its account_heads push will, and so enters it.
+    let first = &workspaces[0];
+    let PolicyKind::Genesis { workspace_domain } = first.body.kind else {
+        unreachable!("a workspace genesis");
+    };
+    let heads = Signed::sign(
+        sync_protocol::records::PolicyChange {
+            workspace: first.body.workspace,
+            revision: 2,
+            previous: first.digest(),
+            signer: phone.device(),
+            heads: Sorted::new(vec![head_of(&links[..3])]).unwrap(),
+            kind: PolicyKind::AccountHeads,
+        },
+        phone.signing(),
+    );
+    sync_store::conformance::inject_change(&store, heads, vec![workspace_domain], None)
+        .await
+        .unwrap();
+    let path = |workspace: &Signed<sync_protocol::records::PolicyChange>, recipient: Id| {
+        format!(
             "/v2/workspaces/{}/keys?after=0&recipient={}",
-            workspace.to_base64url(),
-            kit.device().to_base64url()
-        );
-        let keys: KeysResponse = phone_session.get(&path).await.decode();
-        assert!(!keys.entries.0.is_empty());
-    }
+            workspace.body.workspace.to_base64url(),
+            recipient.to_base64url()
+        )
+    };
+    let policy: sync_protocol::messages::PolicyResponse = phone_session
+        .get(&format!(
+            "/v2/workspaces/{}/policy?after=0",
+            first.body.workspace.to_base64url()
+        ))
+        .await
+        .decode();
+    let changes: Vec<_> = policy.changes.0.into_iter().map(|c| c.0).collect();
+    let mut chains = sync_protocol::policy::AccountChains::new();
+    chains.insert(AccountChain::verify(&links[..3], &Default::default()).unwrap());
+    let verified = sync_protocol::policy::PolicyChain::verify(&changes, &chains).unwrap();
+    assert!(
+        verified.head_snapshot().is_device(&phone.device()),
+        "the phone is active in the first workspace"
+    );
+    // The remove links commit before the phone enters the last workspace.
+    assert_eq!(append(&phone_session, &links[3..4]).await, Ok(4));
+    let last = &workspaces[1];
+    let keys: KeysResponse = phone_session.get(&path(last, kit.device())).await.decode();
+    assert!(
+        !keys.entries.0.is_empty(),
+        "the proven session reads the kit's envelopes in the last workspace"
+    );
     assert_eq!(
         case["expect"]["proven_session_reads_the_identitys_envelopes_until_the_recovered_card_joins"],
         true

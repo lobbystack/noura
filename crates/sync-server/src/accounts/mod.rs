@@ -403,8 +403,11 @@ fn token_of(text: Option<String>) -> Option<SignInToken> {
     text.and_then(|t| from_base64url::<32>(&t).ok())
 }
 
-fn user_handle(account: Id) -> Uuid {
-    Uuid::from_bytes(account.0)
+/// The user handle of `account`'s passkeys: derived from the server secret,
+/// so a sign-up ceremony, which anyone can start with an email, doesn't
+/// show the account ID that email gets (§14).
+fn user_handle<B: Backend>(store: &Store<B>, account: Id) -> sync_store::Result<Uuid> {
+    store.passkey_user_handle(account).map(Uuid::from_bytes)
 }
 
 async fn sign_in_page() -> Response {
@@ -696,13 +699,17 @@ async fn sign_up_start<B: Backend>(
         Ok(email) => email,
         Err(response) => return *response,
     };
-    let account = match state.store.account_id(&email) {
-        Ok(account) => account,
+    let (account, handle) = match state
+        .store
+        .account_id(&email)
+        .and_then(|account| Ok((account, user_handle(&state.store, account)?)))
+    {
+        Ok(found) => found,
         Err(error) => return json_failure(error),
     };
     let webauthn = accounts.webauthn.as_ref().expect("checked in json_body");
     let (options, registration) =
-        match webauthn.start_passkey_registration(user_handle(account), &email, &email, None) {
+        match webauthn.start_passkey_registration(handle, &email, &email, None) {
             Ok(started) => started,
             Err(error) => return json_failure(error),
         };
@@ -991,16 +998,16 @@ async fn add_start<B: Backend>(
         Ok(passkeys) => passkeys.iter().map(|p| p.cred_id().clone()).collect(),
         Err(response) => return *response,
     };
-    let webauthn = accounts.webauthn.as_ref().expect("checked in json_body");
-    let (options, registration) = match webauthn.start_passkey_registration(
-        user_handle(account),
-        &email,
-        &email,
-        Some(existing),
-    ) {
-        Ok(started) => started,
+    let handle = match user_handle(&state.store, account) {
+        Ok(handle) => handle,
         Err(error) => return json_failure(error),
     };
+    let webauthn = accounts.webauthn.as_ref().expect("checked in json_body");
+    let (options, registration) =
+        match webauthn.start_passkey_registration(handle, &email, &email, Some(existing)) {
+            Ok(started) => started,
+            Err(error) => return json_failure(error),
+        };
     let state_bytes = match serde_json::to_vec(&registration) {
         Ok(bytes) => bytes,
         Err(error) => return json_failure(error),
