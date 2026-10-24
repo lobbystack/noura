@@ -90,10 +90,10 @@ fn a_text_file_that_looks_like_a_note_still_opens_whole_as_source() {
 
 #[test]
 fn other_files_stay_out_of_the_editor() {
-    let fixture = Fixture::new(&[("photo.png", b"\x89PNG\r\n"), ("archive.zip", b"PK")]);
+    let fixture = Fixture::new(&[("photo.png", b"\x89PNG\r\n"), ("scan.pdf", b"%PDF-1.7\n")]);
     let mut app = fixture.app();
 
-    for name in ["photo.png", "archive.zip"] {
+    for name in ["photo.png", "scan.pdf"] {
         let tab = open_from_tree(&mut app, name);
         assert!(app.note(tab).is_none(), "{name}");
         assert!(app.note_unreadable(tab).is_none(), "{name}");

@@ -446,7 +446,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
             };
             clicked = Some((index, how));
         }
-        // A double-click keeps the preview tab the first click opened.
+        // A double-click keeps the preview tab the first click opened. A
+        // file that opens in no tab goes to its default app here, once: its
+        // clicks only make it the current row.
         if row.kind == EntryKind::File && response.double_clicked() {
             kept = Some(row.relative_path.clone());
         }
@@ -566,7 +568,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         if let Some(path) = tree.rows().get(row).map(|row| row.relative_path.clone()) {
             ui.memory_mut(|memory| memory.request_focus(row_id(&path)));
         }
-        app.activate_tree_row(row, how);
+        app.click_tree_row(row, how);
     }
     if let Some(path) = kept {
         app.open_file(&path, OpenAs::Kept);

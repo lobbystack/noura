@@ -5,15 +5,19 @@ use super::App;
 use crate::{
     AppError, OpenAs, TabId,
     links::{is_external_link, link_path, web_address},
+    pdf::{is_pdf, page_in_link},
 };
 
 impl App {
     /// Follow the link to `target` in the note in `tab`, as a click on it
     /// does. A workspace file opens the way the file tree opens it, as
-    /// `how` says. An `http`, `https` or `www.` address opens in the
+    /// `how` says, and a PDF opens at the page its `#page=` fragment
+    /// names: page 1 for none or an invalid page, the last page for one
+    /// past the end. An `http`, `https` or `www.` address opens in the
     /// browser, and an address with any other scheme does nothing. A link
     /// to a file the workspace doesn't hold says so and creates nothing,
-    /// and a `#heading` or `#^block` part is ignored.
+    /// and a `#heading` or `#^block` part is ignored. Following a link
+    /// writes nothing.
     pub fn follow_note_link(&mut self, tab: TabId, target: &str, how: OpenAs) {
         let target = target.trim();
         if let Some(url) = web_address(target) {
@@ -33,6 +37,7 @@ impl App {
             return;
         }
         match links.resolve(target) {
+            Some(found) if is_pdf(&found) => self.open_pdf_page(&found, page_in_link(target), how),
             Some(found) => self.open_file(&found, how),
             None => {
                 let message = format!("\u{201c}{path}\u{201d} isn't in this workspace yet.");

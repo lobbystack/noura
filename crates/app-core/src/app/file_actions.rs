@@ -94,7 +94,8 @@ impl App {
     }
 
     /// Copy the file at `relative_path` next to itself, then select the
-    /// copy and open it in a kept tab.
+    /// copy and open it in a kept tab. A copy that opens in no tab, such as
+    /// an archive, stays selected in the tree, and no other app opens it.
     pub fn duplicate(&mut self, relative_path: &str) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
@@ -108,7 +109,9 @@ impl App {
             Ok(copy) => {
                 self.refresh_tree(None);
                 self.select(&copy);
-                self.open_file(&copy, OpenAs::Kept);
+                if crate::viewers::opens_in_tab(&copy) {
+                    self.open_file(&copy, OpenAs::Kept);
+                }
             }
             Err(error) => {
                 let title = format!("Couldn't duplicate {}", self.quoted(relative_path));
