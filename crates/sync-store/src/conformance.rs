@@ -64,6 +64,7 @@ macro_rules! conformance_tests {
             sign_in_rows_work_once_and_expire,
             chain_reads_follow_the_policy,
             recovery_proofs_consume_their_challenge,
+            approval_requests_open_the_invitees_chain,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -88,6 +89,7 @@ macro_rules! instance_tests {
             removal_races_pushes,
             pushes_into_several_domains_race_policy_changes,
             limits_hold_across_instances,
+            geneses_at_once_start_one_chain,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -2780,8 +2782,19 @@ pub async fn sign_in_rows_work_once_and_expire<B: Backend>(store: Store<B>) {
         None
     );
 
+    // A held passkey confirms only for an email without an account.
+    let existing = store
+        .hold_passkey(email, vec![9], b"{}".to_vec())
+        .await
+        .expect("held");
+    assert_eq!(
+        store.confirm_passkey(&existing).await.expect("refused"),
+        None
+    );
+    assert!(store.passkeys(account).await.expect("read").is_empty());
+    let carol = "carol@example.com";
     let held = store
-        .hold_passkey(email, vec![1, 2, 3], b"{}".to_vec())
+        .hold_passkey(carol, vec![1, 2, 3], b"{}".to_vec())
         .await
         .expect("held");
     let (confirmed, _) = store
@@ -2789,8 +2802,8 @@ pub async fn sign_in_rows_work_once_and_expire<B: Backend>(store: Store<B>) {
         .await
         .expect("confirmed")
         .expect("a current confirmation");
-    assert_eq!(confirmed, account);
-    assert_eq!(store.passkeys(account).await.expect("read").len(), 1);
+    assert_eq!(confirmed, store.account_id(carol).expect("an ID"));
+    assert_eq!(store.passkeys(confirmed).await.expect("read").len(), 1);
     assert_eq!(store.confirm_passkey(&held).await.expect("used"), None);
     // A credential ID that another passkey holds doesn't confirm.
     let taken = store
@@ -3007,6 +3020,176 @@ pub async fn recovery_proofs_consume_their_challenge<B: Backend>(store: Store<B>
         .await
         .expect("the session");
     assert_eq!(proven.recovery, Some(kit.device()));
+}
+
+/// Reads the current chain of `account` as `session` and returns the
+/// served head seqno.
+async fn served_seqno<B: Backend>(
+    store: &Store<B>,
+    session: Session,
+    account: Id,
+) -> crate::Result<u64> {
+    store
+        .read_chains(
+            session,
+            sync_protocol::messages::ChainsRequest {
+                cursors: List(vec![sync_protocol::messages::ChainCursor {
+                    account,
+                    genesis: None,
+                    after: 0,
+                }]),
+            },
+        )
+        .await
+        .map(|r| r.pages.0[0].head_seqno)
+}
+
+/// Approval requests (§7, §10): while an account's approval request that
+/// names an invitation to a workspace waits, the sessions of that
+/// workspace's member accounts read the account's current chain in full,
+/// and nobody else reads it through the request. A request that names no
+/// invitation, or an invitation to another workspace, opens nothing, and
+/// neither does an expired one, which the store deletes.
+pub async fn approval_requests_open_the_invitees_chain<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let (invitee, invitee_keys, invitee_links) = account(2);
+    world
+        .store
+        .append_account_links(invitee_links)
+        .await
+        .expect("chain");
+    let (outsider, outsider_keys, outsider_links) = account(1);
+    world
+        .store
+        .append_account_links(outsider_links)
+        .await
+        .expect("chain");
+    let store = &world.store;
+    let owner = world.devices[0].session;
+    let outsider = Session::new(outsider, outsider_keys[0].device());
+    let request = Session::new(invitee, invitee_keys[1].device());
+    assert_eq!(
+        refusal(served_seqno(store, owner, invitee).await).code,
+        "not_found"
+    );
+    store
+        .store_approval_request(request, Digest([1; 32]), None)
+        .await
+        .expect("stored");
+    let elsewhere = (Id::random().expect("random"), Id::random().expect("random"));
+    store
+        .store_approval_request(request, Digest([2; 32]), Some(elsewhere))
+        .await
+        .expect("stored");
+    assert_eq!(
+        refusal(served_seqno(store, owner, invitee).await).code,
+        "not_found",
+        "no request names an invitation to the owner's workspace"
+    );
+    let invitation = Id::random().expect("random");
+    store
+        .store_approval_request(request, Digest([3; 32]), Some((invitation, world.workspace)))
+        .await
+        .expect("stored");
+    assert_eq!(
+        served_seqno(store, owner, invitee).await.expect("in full"),
+        2
+    );
+    assert_eq!(
+        refusal(served_seqno(store, outsider, invitee).await).code,
+        "not_found",
+        "the outsider's account doesn't belong to the workspace"
+    );
+    store.clock().advance(Duration::from_secs(crate::SIGN_IN_TTL));
+    assert_eq!(
+        refusal(served_seqno(store, owner, invitee).await).code,
+        "not_found",
+        "the request expired"
+    );
+    assert_eq!(store.delete_expired().await.expect("deleted"), 3);
+}
+
+/// Two geneses for one new account at once, through two instances (§7,
+/// §15): one starts the account's chain, and the other gets `forbidden`,
+/// as it would after the first committed.
+pub async fn geneses_at_once_start_one_chain<B: Backend>(
+    first: Arc<Store<B>>,
+    second: Arc<Store<B>>,
+) {
+    for _ in 0..8 {
+        let account = Id::random().expect("random");
+        let keys = [
+            DeviceKeys::generate().expect("random"),
+            DeviceKeys::generate().expect("random"),
+        ];
+        for key in &keys {
+            first
+                .enroll_card(key.card(account))
+                .await
+                .expect("enrolled");
+        }
+        let geneses: Vec<Signed<AccountLink>> =
+            keys.iter().map(|k| genesis_link(k, account)).collect();
+        let tasks: Vec<_> = [first.clone(), second.clone()]
+            .into_iter()
+            .zip(keys.iter().zip(&geneses))
+            .map(|(store, (key, genesis))| {
+                let session = Session::new(account, key.device());
+                let genesis = genesis.clone();
+                tokio::spawn(async move { store.append_chain(session, vec![genesis]).await })
+            })
+            .collect();
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("the append ends"));
+        }
+        let winner = results
+            .iter()
+            .position(|r| r.is_ok())
+            .expect("one genesis starts the chain");
+        let loser = 1 - winner;
+        assert_eq!(
+            refusal(results.swap_remove(loser)).code,
+            "forbidden",
+            "the later genesis"
+        );
+        let session = Session::new(account, keys[winner].device());
+        let page = first
+            .read_chains(
+                session,
+                sync_protocol::messages::ChainsRequest {
+                    cursors: List(vec![sync_protocol::messages::ChainCursor {
+                        account,
+                        genesis: None,
+                        after: 0,
+                    }]),
+                },
+            )
+            .await
+            .expect("its own chain");
+        let page = &page.pages.0[0];
+        assert_eq!(page.genesis, geneses[winner].digest());
+        assert_eq!(page.head_seqno, 1);
+        assert_eq!(
+            refusal(
+                second
+                    .read_chains(
+                        session,
+                        sync_protocol::messages::ChainsRequest {
+                            cursors: List(vec![sync_protocol::messages::ChainCursor {
+                                account,
+                                genesis: Some(geneses[loser].digest()),
+                                after: 0,
+                            }]),
+                        },
+                    )
+                    .await
+            )
+            .code,
+            "not_found",
+            "the store kept no link of the later genesis"
+        );
+    }
 }
 
 /// The access list naming `account` as a manager.

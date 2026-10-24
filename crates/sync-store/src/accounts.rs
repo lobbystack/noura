@@ -123,10 +123,12 @@ impl<B: Backend> Store<B> {
             .await
     }
 
-    /// Confirms a held passkey once: deletes it and, while it's current,
-    /// signs up its email when no account has it yet, adds the passkey to
-    /// that account and starts a web session. Returns none for an unknown,
-    /// used or expired confirmation, or a passkey another account holds.
+    /// Confirms a held passkey once: deletes it and, while it's current and
+    /// no account has its email yet, signs up the email, adds the passkey
+    /// to the new account and starts a web session. Returns none for an
+    /// unknown, used or expired confirmation, a passkey another account
+    /// holds, or an email that got its account since the passkey was held:
+    /// only a signed-in session adds a passkey to an account.
     pub async fn confirm_passkey(&self, token: &SignInToken) -> Result<Option<(Id, SignInToken)>> {
         let hash = token_hash(token);
         let now = self.clock().now();
@@ -144,6 +146,9 @@ impl<B: Backend> Store<B> {
                         return Ok(None);
                     }
                     let account = sync_protocol::ids::account_id(&secret, &row.email);
+                    if txn.account_email(account).await?.is_some() {
+                        return Ok(None);
+                    }
                     txn.insert_account(account, &normalized(&row.email)).await?;
                     let added = txn
                         .insert_passkey(&PasskeyRow {

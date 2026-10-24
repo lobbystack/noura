@@ -14,7 +14,7 @@ use sync_protocol::records::{AccountLink, Card, LinkKind, RecoveryProof, Signed}
 use sync_protocol::types::{Digest, Id, Key};
 
 use crate::policy::{self, PolicyCache};
-use crate::{Error, LinkRow, ReadTxn, Result, Session, WriteTxn, refuse};
+use crate::{ApprovalRequestRow, Error, LinkRow, ReadTxn, Result, Session, WriteTxn, refuse};
 
 /// How long an enrollment challenge, a magic link, a passkey ceremony or a
 /// sign-up waiting for its email stays usable (§27).
@@ -42,6 +42,11 @@ fn listed_elsewhere(
 /// `recover_device`, from a session that proved that recovery identity, and
 /// a genesis, `add_device` or `recover_device` must add a card that a
 /// session of the account enrolled. Returns the new head's seqno.
+///
+/// The append takes only the account's chain row, before it reads the
+/// chain (§15), so appends to one account commit one at a time. Two
+/// geneses for an account without a chain race on its chain row, and the
+/// later one gets `forbidden`, as it would after the first committed.
 pub(crate) async fn append(
     txn: &mut impl WriteTxn,
     session: Session,
@@ -51,6 +56,7 @@ pub(crate) async fn append(
         return Err(refuse("bad_request", "no links"));
     }
     let account = session.account;
+    txn.lock_account(account).await?;
     let chains = policy::chains_of(txn, account).await?;
     let current = txn.current_genesis(account).await?;
     let listed = listed_elsewhere(&chains, current);
@@ -103,6 +109,12 @@ pub(crate) async fn append(
         }
     }
     let chain = chain.expect("at least one link");
+    if current.is_none() && !txn.start_chain(account, chain.genesis()).await? {
+        return Err(refuse(
+            "forbidden",
+            "the account already has a chain; a reset starts another",
+        ));
+    }
     for link in links.iter().filter(|l| l.body.seqno >= start) {
         txn.insert_account_link(
             account,
@@ -115,19 +127,19 @@ pub(crate) async fn append(
         )
         .await?;
     }
-    if current.is_none() {
-        txn.set_current_genesis(account, chain.genesis()).await?;
-    }
     Ok(chain.head_seqno())
 }
 
 /// The highest seqno of `account`'s chain under `genesis` that `session`
-/// may read, or none (§7): every chain of its own account in full; and, in
-/// each workspace whose policy the session reads, every chain of an account
-/// that the policy records, up to the latest head recorded on it, and a
-/// current member's current chain in full to the workspace's devices. A
-/// device whose account `remove_member` removed reads the policy, and so
-/// these chains, up to its removal.
+/// may read, or none (§7): every chain of its own account in full; the
+/// current chain in full of an account whose approval request, unexpired
+/// at `now`, names an invitation to a workspace the session's account
+/// belongs to; and, in each workspace whose policy the session reads,
+/// every chain of an account that the policy records, up to the latest
+/// head recorded on it, and a current member's current chain in full to
+/// the workspace's devices. A device whose account `remove_member` removed
+/// reads the policy, and so these chains, up to its removal.
+#[allow(clippy::too_many_arguments)]
 async fn readable_seqno(
     txn: &mut impl ReadTxn,
     cache: &PolicyCache,
@@ -136,9 +148,23 @@ async fn readable_seqno(
     genesis: Digest,
     chain: &AccountChain,
     current: bool,
+    now: u64,
 ) -> Result<Option<u64>> {
     if account == session.account {
         return Ok(Some(chain.head_seqno()));
+    }
+    if current {
+        for (workspace, expires_at) in txn.invitation_requests(account).await? {
+            if expires_at <= now {
+                continue;
+            }
+            let Some((_, policy)) = policy::load(txn, cache, workspace).await? else {
+                continue;
+            };
+            if policy.reads_invitees(&session.account) {
+                return Ok(Some(chain.head_seqno()));
+            }
+        }
     }
     let own: BTreeSet<Id> = txn
         .workspaces_recording(session.account)
@@ -175,12 +201,13 @@ async fn readable_seqno(
 /// `POST /v2/accounts/chains`: one page per cursor, in request order, with
 /// the links after each cursor's seqno that the session may read, at most
 /// 1 MiB in all. A cursor naming a chain the store doesn't hold, or one the
-/// session may not read, gets `not_found`.
+/// session may not read at `now`, gets `not_found`.
 pub(crate) async fn read(
     txn: &mut impl ReadTxn,
     cache: &PolicyCache,
     session: Session,
     cursors: &[ChainCursor],
+    now: u64,
 ) -> Result<ChainsResponse> {
     // Each page's fixed fields take 16 + 32 + 1 + 8 + 4 bytes, and every
     // cursor gets a page, so the pages' fixed fields must fit 1 MiB.
@@ -213,6 +240,7 @@ pub(crate) async fn read(
             genesis,
             chain,
             is_current,
+            now,
         )
         .await?
         .ok_or_else(|| refuse("not_found", "no such account chain for this session"))?;
@@ -250,6 +278,9 @@ pub(crate) async fn read(
 /// other bytes, gets `id_conflict` (§7). Ticket 47's enrollment route calls
 /// this after it verifies the proof.
 pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
+    // The chain row orders an enrollment with the appends that read the
+    // card or remove its device ID.
+    txn.lock_account(card.account).await?;
     let bytes = card.to_bytes();
     let current = txn.current_genesis(card.account).await?;
     for (genesis, chain) in policy::chains_of(txn, card.account).await? {
@@ -277,12 +308,37 @@ pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
 }
 
 /// `POST /v2/devices/challenge`: a fresh 32-byte challenge for the
-/// session's account, valid for 10 minutes and usable once.
+/// session's account, valid for 10 minutes and usable once. The store
+/// keeps only its BLAKE3 hash (§29).
 pub(crate) async fn challenge(txn: &mut impl WriteTxn, session: Session, now: u64) -> Result<Key> {
     let challenge = Key(sync_protocol::crypto::random_array().map_err(Error::internal)?);
-    txn.insert_challenge(challenge, session.account, now + SIGN_IN_TTL)
-        .await?;
+    txn.insert_challenge(
+        sync_protocol::crypto::hash(&challenge.0),
+        session.account,
+        now + SIGN_IN_TTL,
+    )
+    .await?;
     Ok(challenge)
+}
+
+/// Stores an approval request that a session of `session`'s account
+/// posted, expiring 10 minutes after `now` (§10, §27).
+pub(crate) async fn store_approval_request(
+    txn: &mut impl WriteTxn,
+    session: Session,
+    commit: Digest,
+    invitation: Option<(Id, Id)>,
+    now: u64,
+) -> Result<()> {
+    txn.insert_approval_request(&ApprovalRequestRow {
+        commit,
+        account: session.account,
+        device: session.device,
+        invitation: invitation.map(|(invitation, _)| invitation),
+        workspace: invitation.map(|(_, workspace)| workspace),
+        expires_at: now + SIGN_IN_TTL,
+    })
+    .await
 }
 
 /// `POST /v2/recovery`: checks the proof under the recovery identity's
@@ -298,6 +354,7 @@ pub(crate) async fn prove_recovery(
     proof: &Signed<RecoveryProof>,
     now: u64,
 ) -> Result<()> {
+    txn.lock_account(session.account).await?;
     let chain = policy::current_chain(txn, session.account)
         .await?
         .ok_or_else(|| refuse("forbidden", "the account has no chain"))?;
@@ -316,7 +373,8 @@ pub(crate) async fn prove_recovery(
         },
     )
     .map_err(|e| refuse(e.server_code(), e.to_string()))?;
-    match txn.take_challenge(challenge, session.account).await? {
+    let challenge_hash = sync_protocol::crypto::hash(&challenge.0);
+    match txn.take_challenge(challenge_hash, session.account).await? {
         Some(expires_at) if expires_at > now => {}
         _ => {
             return Err(refuse(

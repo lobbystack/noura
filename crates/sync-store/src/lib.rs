@@ -52,7 +52,7 @@ use sync_protocol::records::{
 
 pub use accounts::{SIGN_IN_TOKEN_LEN, SignInToken};
 pub use chains::SIGN_IN_TTL;
-use sync_protocol::types::{Digest, Id, Key, SecretKey};
+use sync_protocol::types::{Digest, Id, SecretKey};
 
 pub use hub::EventHub;
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
@@ -226,6 +226,25 @@ pub struct PasskeyRow {
     pub account: Id,
     /// The passkey, serialized.
     pub passkey: Vec<u8>,
+}
+
+/// A stored approval request (§10): what the chain read route needs of it
+/// (§7). Tickets 47 and 50 add the rest of a request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalRequestRow {
+    /// The request's commitment, which identifies it.
+    pub commit: Digest,
+    /// The account that posted it.
+    pub account: Id,
+    /// The card that posted it.
+    pub device: Id,
+    /// The invitation it names, if any.
+    pub invitation: Option<Id>,
+    /// The workspace that invitation invites to, or that a reset asks to be
+    /// accepted in.
+    pub workspace: Option<Id>,
+    /// When it expires, in Unix seconds.
+    pub expires_at: u64,
 }
 
 /// A workspace's row.
@@ -532,6 +551,12 @@ pub trait ReadTxn: Send {
     /// The email a signed-up account names.
     fn account_email(&mut self, account: Id)
     -> impl Future<Output = Result<Option<String>>> + Send;
+    /// The workspaces that the account's stored approval requests name
+    /// through an invitation, each with the request's expiry.
+    fn invitation_requests(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Vec<(Id, u64)>>> + Send;
     /// The account's passkeys, by credential ID.
     fn passkeys(&mut self, account: Id) -> impl Future<Output = Result<Vec<PasskeyRow>>> + Send;
     /// The passkey with this credential ID.
@@ -578,6 +603,14 @@ pub trait WriteTxn: ReadTxn {
         link: &LinkRow,
         digest: Digest,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Makes `genesis` the current chain of an account that has none.
+    /// Returns false, and changes nothing, when the account has a chain,
+    /// such as one a racing genesis named first.
+    fn start_chain(
+        &mut self,
+        account: Id,
+        genesis: Digest,
+    ) -> impl Future<Output = Result<bool>> + Send;
     /// Makes `genesis` the account's current chain.
     fn set_current_genesis(
         &mut self,
@@ -704,20 +737,25 @@ pub trait WriteTxn: ReadTxn {
         workspace: Id,
         accounts: &[Id],
     ) -> impl Future<Output = Result<()>> + Send;
-    /// Stores an enrollment challenge.
+    /// Stores an enrollment challenge by its BLAKE3 hash.
     fn insert_challenge(
         &mut self,
-        challenge: Key,
+        challenge_hash: Digest,
         account: Id,
         expires_at: u64,
     ) -> impl Future<Output = Result<()>> + Send;
-    /// Deletes the account's challenge and returns its expiry, if it was
-    /// stored.
+    /// Deletes the account's challenge with this hash and returns its
+    /// expiry, if it was stored.
     fn take_challenge(
         &mut self,
-        challenge: Key,
+        challenge_hash: Digest,
         account: Id,
     ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    /// Stores an approval request.
+    fn insert_approval_request(
+        &mut self,
+        row: &ApprovalRequestRow,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Stores a signed-up account, unless it exists.
     fn insert_account(
         &mut self,
@@ -769,8 +807,9 @@ pub trait WriteTxn: ReadTxn {
         &mut self,
         token_hash: Digest,
     ) -> impl Future<Output = Result<Option<PendingPasskeyRow>>> + Send;
-    /// Deletes every magic link, waiting passkey, ceremony and challenge
-    /// that expires at or before `now`, and returns how many it deleted.
+    /// Deletes every magic link, waiting passkey, ceremony, challenge and
+    /// approval request that expires at or before `now`, and returns how
+    /// many it deleted.
     fn delete_expired(&mut self, now: u64) -> impl Future<Output = Result<u64>> + Send;
 }
 
@@ -985,11 +1024,34 @@ impl<B: Backend> Store<B> {
         request: ChainsRequest,
     ) -> Result<ChainsResponse> {
         let cache = self.policies.clone();
+        let now = self.clock.now();
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
-                Box::pin(
-                    async move { chains::read(txn, &cache, session, &request.cursors.0).await },
-                )
+                Box::pin(async move {
+                    chains::read(txn, &cache, session, &request.cursors.0, now).await
+                })
+            }))
+            .await
+    }
+
+    /// Stores an approval request that `session` posted with the
+    /// commitment `commit`, naming `invitation` to `workspace` when it names
+    /// one, for 10 minutes (§10). While it waits, the members of that
+    /// workspace read the account's current chain (§7). Tickets 47 and 50
+    /// build `POST /v2/approval-requests`, which checks a request before it
+    /// stores it; until then tests store requests this way.
+    pub async fn store_approval_request(
+        &self,
+        session: Session,
+        commit: Digest,
+        invitation: Option<(Id, Id)>,
+    ) -> Result<()> {
+        let now = self.clock.now();
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    chains::store_approval_request(txn, session, commit, invitation, now).await
+                })
             }))
             .await
     }

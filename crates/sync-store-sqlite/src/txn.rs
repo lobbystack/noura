@@ -3,9 +3,9 @@
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use sync_protocol::live::LiveOp;
 use sync_protocol::records::{AccountHead, OpClass, Ref};
-use sync_protocol::types::{Digest, Id, Key};
+use sync_protocol::types::{Digest, Id};
 use sync_store::{
-    CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DomainRow, EpochRow, Error, KeyRow,
+    ApprovalRequestRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DomainRow, EpochRow, Error, KeyRow,
     LinkRow, LockPlan, PasskeyRow, PendingPasskeyRow, RawEntry, ReadTxn, Result, Session,
     WorkspaceRow, WriteTxn,
 };
@@ -761,6 +761,22 @@ impl ReadTxn for SqliteTxn {
         Ok(row.map(|r| r.email))
     }
 
+    async fn invitation_requests(&mut self, account: Id) -> Result<Vec<(Id, u64)>> {
+        let account = &account.0[..];
+        let rows = sqlx::query!(
+            r#"SELECT workspace AS "workspace!", expires_at FROM approval_requests
+               WHERE account = ?1 AND invitation IS NOT NULL AND workspace IS NOT NULL
+               ORDER BY commit_digest"#,
+            account
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| Ok((id(r.workspace)?, uint(r.expires_at)?)))
+            .collect()
+    }
+
     async fn passkeys(&mut self, account: Id) -> Result<Vec<PasskeyRow>> {
         let bytes = &account.0[..];
         let rows = sqlx::query!(
@@ -882,6 +898,20 @@ impl WriteTxn for SqliteTxn {
         .await
         .map_err(db)?;
         Ok(())
+    }
+
+    async fn start_chain(&mut self, account: Id, genesis: Digest) -> Result<bool> {
+        let account = &account.0[..];
+        let genesis = &genesis.0[..];
+        let done = sqlx::query!(
+            "INSERT INTO accounts (account, genesis) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+            account,
+            genesis
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() == 1)
     }
 
     async fn set_current_genesis(&mut self, account: Id, genesis: Digest) -> Result<()> {
@@ -1302,16 +1332,16 @@ impl WriteTxn for SqliteTxn {
 
     async fn insert_challenge(
         &mut self,
-        challenge: Key,
+        challenge_hash: Digest,
         account: Id,
         expires_at: u64,
     ) -> Result<()> {
-        let challenge = &challenge.0[..];
+        let hash = &challenge_hash.0[..];
         let account = &account.0[..];
         let expires_at = int(expires_at)?;
         sqlx::query!(
-            "INSERT INTO challenges (challenge, account, expires_at) VALUES (?1, ?2, ?3)",
-            challenge,
+            "INSERT INTO challenges (challenge_hash, account, expires_at) VALUES (?1, ?2, ?3)",
+            hash,
             account,
             expires_at
         )
@@ -1321,18 +1351,43 @@ impl WriteTxn for SqliteTxn {
         Ok(())
     }
 
-    async fn take_challenge(&mut self, challenge: Key, account: Id) -> Result<Option<u64>> {
-        let challenge = &challenge.0[..];
+    async fn take_challenge(&mut self, challenge_hash: Digest, account: Id) -> Result<Option<u64>> {
+        let hash = &challenge_hash.0[..];
         let account = &account.0[..];
         let row = sqlx::query!(
-            "DELETE FROM challenges WHERE challenge = ?1 AND account = ?2 RETURNING expires_at",
-            challenge,
+            "DELETE FROM challenges WHERE challenge_hash = ?1 AND account = ?2
+             RETURNING expires_at",
+            hash,
             account
         )
         .fetch_optional(self.c())
         .await
         .map_err(db)?;
         row.map(|r| uint(r.expires_at)).transpose()
+    }
+
+    async fn insert_approval_request(&mut self, row: &ApprovalRequestRow) -> Result<()> {
+        let commit = &row.commit.0[..];
+        let account = &row.account.0[..];
+        let device = &row.device.0[..];
+        let invitation = row.invitation.as_ref().map(|i| i.0.to_vec());
+        let workspace = row.workspace.as_ref().map(|w| w.0.to_vec());
+        let expires_at = int(row.expires_at)?;
+        sqlx::query!(
+            "INSERT INTO approval_requests
+                 (commit_digest, account, device, invitation, workspace, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            commit,
+            account,
+            device,
+            invitation,
+            workspace,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
     }
 
     async fn insert_account(&mut self, account: Id, email: &str) -> Result<()> {
@@ -1545,6 +1600,11 @@ impl WriteTxn for SqliteTxn {
             .map_err(db)?
             .rows_affected();
         deleted += sqlx::query!("DELETE FROM challenges WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        deleted += sqlx::query!("DELETE FROM approval_requests WHERE expires_at <= ?1", now)
             .execute(self.c())
             .await
             .map_err(db)?

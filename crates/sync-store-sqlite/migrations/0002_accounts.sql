@@ -1,8 +1,9 @@
 -- Accounts, sign-in and enrolled cards (docs/workspace-format/sync-v2.md §7,
--- §14, §29). Tokens are stored only as their BLAKE3 hashes. Sessions carry
--- no expiry; magic links, passkey sign-ups awaiting their email, passkey
--- ceremonies and enrollment challenges carry the expiry §29 allows, and the
--- server deletes each when it's used or 10 minutes after it issued it.
+-- §14, §29). Tokens and challenges are stored only as their BLAKE3 hashes.
+-- Sessions carry no expiry; magic links, passkey sign-ups awaiting their
+-- email, passkey ceremonies, enrollment challenges and approval requests
+-- carry the expiry §29 allows, and the server deletes each when it's used
+-- or 10 minutes after it issued it.
 
 -- A signed-up account: its ID derives from this email under the server's
 -- secret (§14), and no route changes the email.
@@ -52,12 +53,29 @@ CREATE TABLE ceremonies (
     expires_at INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
--- Enrollment challenges (§7), which recovery proofs answer too (§12).
+-- Enrollment challenges (§7), which recovery proofs answer too (§12), by
+-- their BLAKE3 hash (§29).
 CREATE TABLE challenges (
-    challenge BLOB PRIMARY KEY,
+    challenge_hash BLOB PRIMARY KEY,
     account BLOB NOT NULL,
     expires_at INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- Approval requests (§10) until they expire: the account and card that
+-- posted each, and, for one that names an invitation, the invitation and
+-- the workspace it invites to, so the chain read route serves that
+-- account's current chain to the workspace's members (§7). Tickets 47 and
+-- 50 add the rest of a request.
+CREATE TABLE approval_requests (
+    commit_digest BLOB PRIMARY KEY,
+    account BLOB NOT NULL,
+    device BLOB NOT NULL,
+    invitation BLOB,
+    workspace BLOB,
+    expires_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX approval_requests_by_account ON approval_requests (account, commit_digest);
 
 -- Cards that sessions of an account enrolled (§7). Whether a card is active
 -- comes from the account chain.

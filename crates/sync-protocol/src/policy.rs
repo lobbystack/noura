@@ -798,6 +798,13 @@ impl PolicyChain {
             .flat_map(|c| c.body.heads.iter())
     }
 
+    /// Whether the sessions of `reader_account` read, in full, the current
+    /// chain of an account whose approval request names an invitation to
+    /// this workspace (§7): whether that account belongs to the workspace.
+    pub fn reads_invitees(&self, reader_account: &Id) -> bool {
+        self.head_snapshot().role(reader_account).is_some()
+    }
+
     /// The highest seqno of `account`'s chain under `genesis` that a
     /// session reads through this workspace (§7), or none. `reader` holds
     /// the session's device and any recovery identity it proved, of the
