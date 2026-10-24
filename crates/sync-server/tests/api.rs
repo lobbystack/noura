@@ -41,15 +41,17 @@ fn client(world: &World<SqliteBackend>, base: &str, device: usize) -> Client {
     Client::new(base.to_owned(), Some(world.devices[device].bearer()))
 }
 
-/// The HTTP status `sync-v2-encoding.json` gives each server error code.
-fn fixture_statuses() -> BTreeMap<String, u16> {
+fn encoding_fixture() -> serde_json::Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/workspace-format/fixtures/sync-v2-encoding.json"
     );
-    let doc: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("JSON");
-    doc["server_errors"]
+    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("JSON")
+}
+
+/// The HTTP status `sync-v2-encoding.json` gives each server error code.
+fn fixture_statuses() -> BTreeMap<String, u16> {
+    encoding_fixture()["server_errors"]
         .as_array()
         .expect("server errors")
         .iter()
@@ -128,6 +130,134 @@ async fn limits_report_protocol_2_and_every_response_carries_the_generation() {
         (StatusCode::PAYLOAD_TOO_LARGE, "too_large")
     );
     assert_eq!(reply.generation(), Some("1"));
+}
+
+/// A fixture record's bytes: its own hex, or another record's with the
+/// mutation applied.
+fn fixture_bytes(records: &[serde_json::Value], record: &serde_json::Value) -> Vec<u8> {
+    let hex = |text: &serde_json::Value| {
+        sync_protocol::types::from_hex(text.as_str().expect("hex")).expect("hex bytes")
+    };
+    if let Some(text) = record.get("hex") {
+        return hex(text);
+    }
+    let from = record["from"].as_str().expect("a source record");
+    let source = records
+        .iter()
+        .find(|r| r["name"] == from)
+        .expect("the source record");
+    let mut bytes = hex(&source["hex"]);
+    let mutation = &record["mutation"];
+    if let Some(count) = mutation.get("truncate") {
+        let count = count.as_u64().expect("a count") as usize;
+        bytes.truncate(bytes.len() - count);
+    }
+    if let Some(tail) = mutation.get("append") {
+        bytes.extend(hex(tail));
+    }
+    bytes
+}
+
+/// A `list` of one element.
+fn list_of_one(element: &[u8]) -> Vec<u8> {
+    let mut bytes = 1u32.to_be_bytes().to_vec();
+    bytes.extend_from_slice(element);
+    bytes
+}
+
+/// The code §26 gives a body that fails to decode this way.
+fn decode_code(kind: &str) -> &'static str {
+    match kind {
+        "too_long" => "too_large",
+        "unsupported_version" => "version_unsupported",
+        _ => "bad_request",
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn malformed_bodies_get_the_codes_of_their_decode_errors() {
+    let statuses = fixture_statuses();
+    let doc = encoding_fixture();
+    let records = doc["records"].as_array().expect("records");
+    let (world, base, _dir) = world(1).await;
+    let owner = client(&world, &base, 0);
+    let w = world.workspace.to_base64url();
+    let ops = format!("/v2/workspaces/{w}/ops");
+    let pull = format!("/v2/workspaces/{w}/pull");
+    let create = "/v2/workspaces".to_owned();
+    let mut sent = 0;
+    for record in records {
+        let Some(kind) = record["expect"]["decode"].as_str() else {
+            continue;
+        };
+        let name = record["name"].as_str().expect("a name");
+        let bytes = fixture_bytes(records, record);
+        let requests: Vec<(&String, Vec<u8>)> = match record["type"].as_str() {
+            Some("operation") => {
+                // A push of one operation record.
+                let mut record_ref = vec![1];
+                record_ref.extend((bytes.len() as u32).to_be_bytes());
+                record_ref.extend(&bytes);
+                vec![(&ops, list_of_one(&record_ref))]
+            }
+            Some("record_ref") => vec![(&ops, list_of_one(&bytes)), (&create, list_of_one(&bytes))],
+            Some("push_request") => vec![(&ops, bytes.clone()), (&create, bytes)],
+            Some("pull_request") => vec![(&pull, bytes)],
+            _ => continue,
+        };
+        let code = decode_code(kind);
+        for (route, body) in requests {
+            let reply = owner.post(route, body).await;
+            assert_eq!(
+                (reply.status.as_u16(), reply.error().code.as_str()),
+                (statuses[code], code),
+                "{name} at {route}"
+            );
+            assert_eq!(reply.generation(), Some("1"), "{name} at {route}");
+            sent += 1;
+        }
+    }
+    assert!(sent >= 13, "the fixture's push and pull cases: {sent}");
+
+    // A version 1 body, such as a v1 JSON tuple, decodes as nothing v2
+    // defines.
+    let v1 = records
+        .iter()
+        .find(|r| r["name"] == "v1_json_tuple")
+        .expect("the v1 case");
+    for route in [&ops, &create, &pull] {
+        let reply = owner.post(route, fixture_bytes(records, v1)).await;
+        assert_eq!(
+            (reply.status.as_u16(), reply.error().code.as_str()),
+            (statuses["bad_request"], "bad_request"),
+            "a v1 body at {route}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_path_that_isnt_utf8_gets_an_error_body() {
+    let (world, base, _dir) = world(1).await;
+    let owner = client(&world, &base, 0);
+    let w = world.workspace.to_base64url();
+    let d = world.domain.to_base64url();
+    let device = world.devices[0].id().to_base64url();
+    for path in [
+        "/v2/workspaces/%FF/policy".to_owned(),
+        format!("/v2/workspaces/{w}/domains/{d}/heads/%C3%28"),
+        format!("/v2/workspaces/{w}/domains/{d}/chain/{device}/%FF"),
+        format!("/v2/workspaces/{w}/domains/%FF/epochs/1"),
+    ] {
+        let reply = owner.get(&path).await;
+        assert_eq!(
+            (reply.status, reply.error().code.as_str()),
+            (StatusCode::BAD_REQUEST, "bad_request"),
+            "{path}"
+        );
+        assert_eq!(reply.generation(), Some("1"));
+    }
+    let reply = owner.post("/v2/workspaces/%FF/ops", Vec::new()).await;
+    assert_eq!(reply.error().code.as_str(), "bad_request");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

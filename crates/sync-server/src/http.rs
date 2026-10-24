@@ -74,6 +74,26 @@ fn ok(value: &impl Encode) -> Response {
     encoded(StatusCode::OK, value.to_bytes())
 }
 
+/// A route's path segments. A segment that doesn't percent-decode to
+/// UTF-8 gets `bad_request` with the error body of §26, like any other
+/// malformed segment.
+pub struct Segments<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for Segments<T>
+where
+    Path<T>: FromRequestParts<S>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Path(segments)| Segments(segments))
+            .map_err(|_| refused("bad_request", "a path segment isn't UTF-8"))
+    }
+}
+
 /// The signed-in device a bearer token names.
 pub struct Auth(pub Session);
 
@@ -156,7 +176,7 @@ async fn create_workspace<B: Backend>(
 async fn policy<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
-    Path(workspace): Path<String>,
+    Segments(workspace): Segments<String>,
     RawQuery(raw): RawQuery,
 ) -> Result<Response, ApiError> {
     let parameters = query(raw.as_deref())?;
@@ -167,7 +187,7 @@ async fn policy<B: Backend>(
 async fn keys<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
-    Path(workspace): Path<String>,
+    Segments(workspace): Segments<String>,
     RawQuery(raw): RawQuery,
 ) -> Result<Response, ApiError> {
     let parameters = query(raw.as_deref())?;
@@ -183,7 +203,7 @@ async fn keys<B: Backend>(
 async fn epochs<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
-    Path((workspace, domain, epoch)): Path<(String, String, String)>,
+    Segments((workspace, domain, epoch)): Segments<(String, String, String)>,
 ) -> Result<Response, ApiError> {
     Ok(ok(&store
         .epochs(session, id(&workspace)?, id(&domain)?, number(&epoch)?)
@@ -193,7 +213,7 @@ async fn epochs<B: Backend>(
 async fn push<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
-    Path(workspace): Path<String>,
+    Segments(workspace): Segments<String>,
     request: Body,
 ) -> Result<Response, ApiError> {
     let workspace = id(&workspace)?;
@@ -204,7 +224,7 @@ async fn push<B: Backend>(
 async fn pull<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
-    Path(workspace): Path<String>,
+    Segments(workspace): Segments<String>,
     request: Body,
 ) -> Result<Response, ApiError> {
     let workspace = id(&workspace)?;
@@ -215,7 +235,7 @@ async fn pull<B: Backend>(
 async fn chain<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
-    Path((workspace, domain, device, counter)): Path<(String, String, String, String)>,
+    Segments((workspace, domain, device, counter)): Segments<(String, String, String, String)>,
 ) -> Result<Response, ApiError> {
     Ok(ok(&store
         .chain_record(
@@ -231,7 +251,7 @@ async fn chain<B: Backend>(
 async fn heads<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
-    Path((workspace, domain, device)): Path<(String, String, String)>,
+    Segments((workspace, domain, device)): Segments<(String, String, String)>,
 ) -> Result<Response, ApiError> {
     Ok(ok(&store
         .chain_head(session, id(&workspace)?, id(&domain)?, id(&device)?)

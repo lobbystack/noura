@@ -414,6 +414,49 @@ impl<B: Backend> World<B> {
         self.head = (revision, digest);
     }
 
+    /// Commits a rotation's epoch straight into the store: its log entry,
+    /// its bundle and its key stream row, as a push of that epoch bundle
+    /// will once ticket 47 adds it.
+    pub async fn inject_epoch(
+        &self,
+        epoch: Signed<sync_protocol::records::Epoch>,
+        recipients: BTreeSet<Id>,
+    ) {
+        let workspace = self.workspace;
+        let domain = epoch.body.domain;
+        let policy_revision = self.head.0;
+        self.store
+            .backend()
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    let record = epoch.to_bytes();
+                    let bundle = EpochBundle {
+                        epoch: Nested(epoch.clone()),
+                        recipients: Sorted::new(recipients.into_iter().collect()).expect("sorted"),
+                    };
+                    txn.append_entry(workspace, domain, 8, &record).await?;
+                    txn.insert_epoch(
+                        workspace,
+                        domain,
+                        &crate::EpochRow {
+                            epoch: epoch.body.epoch,
+                            digest: epoch.digest(),
+                            previous: epoch.body.previous,
+                            record: record.clone(),
+                        },
+                        policy_revision,
+                        &bundle.to_bytes(),
+                    )
+                    .await?;
+                    txn.append_key_entry(workspace, 3, domain, None, &record)
+                        .await?;
+                    Ok(())
+                })
+            }))
+            .await
+            .expect("epoch injected");
+    }
+
     /// Appends a link that `signer` signs to the account chain.
     pub async fn append_link(&mut self, signer: usize, kind: LinkKind) -> AccountHead {
         let link = next_link(&self.devices[signer].keys, &head_of(&self.links), kind);
@@ -1545,6 +1588,47 @@ pub async fn pull_stays_within_one_mebibyte<B: Backend>(store: Store<B>) {
     }
     assert_eq!(ops, 12);
     assert!(pages >= 4, "12 operations of 270 KB take at least 4 pulls");
+
+    // A pull lists at most one cursor per domain a workspace can hold, so
+    // 256 pages fit 1 MiB with the entries, and more cursors get
+    // `too_large`.
+    let request = |count: usize| PullRequest {
+        cursors: List(
+            (0..count)
+                .map(|i| PullCursor {
+                    domain: if i == 0 {
+                        world.domain
+                    } else {
+                        Id::random().expect("random")
+                    },
+                    after: 0,
+                })
+                .collect(),
+        ),
+        wait_seconds: 0,
+    };
+    let session = world.devices[0].session;
+    let response = world
+        .store
+        .pull(session, world.workspace, request(256))
+        .await
+        .expect("256 cursors");
+    assert_eq!(response.pages.len(), 256);
+    assert!(!response.pages[0].entries.is_empty());
+    assert!(
+        response.to_bytes().len() <= MAX_BODY,
+        "256 pages stay within 1 MiB"
+    );
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .pull(session, world.workspace, request(257))
+                .await
+        )
+        .code,
+        "too_large"
+    );
 }
 
 /// A pull that waits wakes when another device's push commits.
@@ -1691,6 +1775,45 @@ pub async fn keys_and_epochs_serve_records_without_recipients<B: Backend>(store:
         .epochs(device.session, world.workspace, world.domain, 2)
         .await;
     assert_eq!(refusal(missing).code, "not_found");
+
+    // Each rotation's record names the one before; the route walks those
+    // links back from the epoch asked for, newest first.
+    let readers: BTreeSet<Id> = world.devices.iter().map(Device::id).collect();
+    let mut chain = vec![epoch.clone()];
+    for number in 2..=3 {
+        let next = Signed::sign(
+            build_epoch(
+                &EpochParams {
+                    workspace: world.workspace,
+                    domain: world.domain,
+                    epoch: number,
+                    previous: chain.last().expect("an epoch").digest(),
+                    policy_revision: world.head.0,
+                    policy_head: world.head.1,
+                    rotating_device: world.devices[0].id(),
+                    recipients: readers.clone(),
+                },
+                &SecretKey::random().expect("random"),
+                None,
+                Nonce::ZERO,
+            ),
+            world.devices[0].keys.signing(),
+        );
+        world.inject_epoch(next.clone(), readers.clone()).await;
+        chain.push(next);
+    }
+    for (asked, expected) in [(3, vec![3, 2, 1]), (2, vec![2, 1]), (1, vec![1])] {
+        let epochs = world
+            .store
+            .epochs(device.session, world.workspace, world.domain, asked)
+            .await
+            .expect("epochs");
+        let numbers: Vec<u64> = epochs.epochs.iter().map(|e| e.0.body.epoch).collect();
+        assert_eq!(numbers, expected, "epochs/{asked}");
+        for walked in epochs.epochs.iter() {
+            assert_eq!(walked.0, chain[walked.0.body.epoch as usize - 1]);
+        }
+    }
 }
 
 /// The access list naming `account` as a manager.

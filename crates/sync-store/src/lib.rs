@@ -771,6 +771,11 @@ impl<B: Backend> Store<B> {
         workspace: Id,
         request: PullRequest,
     ) -> Result<PullResponse> {
+        // One cursor per domain a workspace can hold keeps the pages within
+        // 1 MiB.
+        if request.cursors.len() > sync_protocol::policy::MAX_DOMAINS {
+            return Err(refuse("too_large", "a pull lists at most 256 domains"));
+        }
         let wait = Duration::from_secs(u64::from(request.wait_seconds.min(MAX_WAIT_SECONDS)));
         let deadline = tokio::time::Instant::now() + wait;
         let mut changes = self.hub.subscribe(workspace);

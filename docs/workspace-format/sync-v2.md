@@ -898,7 +898,7 @@ Both stores commit a push the same way, so no record lands after a change that f
 
 ### Pull
 
-`POST /v2/workspaces/{w}/pull` takes `list<pull_cursor>`, each `id domain | u64 after`, and a wait of up to 25 seconds, and returns a page for each domain with records after its cursor, at most 1 MiB in all. It waits while none has any. A client pulls every domain it reads through this one request, so a device makes one pull per round however many domains exist.
+`POST /v2/workspaces/{w}/pull` takes `list<pull_cursor>`, each `id domain | u64 after`, and a wait of up to 25 seconds, and returns a page for each domain with records after its cursor, at most 1 MiB in all. It waits while none has any. A pull lists at most 256 cursors, the most domains a workspace holds ([§27](#27-limits)), so its pages fit that limit; the server answers more with `too_large`. A client pulls every domain it reads through this one request, so a device makes one pull per round however many domains exist.
 
 A page:
 
