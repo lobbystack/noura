@@ -458,10 +458,18 @@ async fn a_browser_approves_a_device_code_sign_in() {
         "document.querySelector('form[action=\"/account/email-link\"]').requestSubmit(), true",
     )
     .await;
-    until(&page, "document.body.innerText.includes('Check your email')").await;
+    until(
+        &page,
+        "document.body.innerText.includes('Check your email')",
+    )
+    .await;
     let link = mailed_link(&site).await;
     open(&page, &link).await;
-    let _: bool = eval(&page, "document.querySelector('form').requestSubmit(), true").await;
+    let _: bool = eval(
+        &page,
+        "document.querySelector('form').requestSubmit(), true",
+    )
+    .await;
     until(&page, "location.pathname === '/account'").await;
 
     // Until you approve, the app's poll waits.
@@ -479,7 +487,11 @@ async fn a_browser_approves_a_device_code_sign_in() {
         &format!("document.querySelector('input[name=user_code]').value = '{typed}', true"),
     )
     .await;
-    let _: bool = eval(&page, "document.querySelector('form').requestSubmit(), true").await;
+    let _: bool = eval(
+        &page,
+        "document.querySelector('form').requestSubmit(), true",
+    )
+    .await;
     until(
         &page,
         &format!("document.body.innerText.includes('{user_code}')"),
@@ -490,8 +502,14 @@ async fn a_browser_approves_a_device_code_sign_in() {
         "document.querySelector('button[value=approve]').click(), true",
     )
     .await;
-    until(&page, "document.body.innerText.includes('Device signed in')").await;
-    site.store.clock().advance(std::time::Duration::from_secs(10));
+    until(
+        &page,
+        "document.body.innerText.includes('Device signed in')",
+    )
+    .await;
+    site.store
+        .clock()
+        .advance(std::time::Duration::from_secs(10));
     let signed_in = site
         .store
         .poll_device_token(&device_code)
