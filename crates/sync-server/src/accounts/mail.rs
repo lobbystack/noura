@@ -1,6 +1,7 @@
 //! Sending sign-in mail: SMTP through lettre, or Resend's HTTPS API, as
-//! configuration picks. A transport reports failure without the provider's
-//! detail, which stays in the server's local log.
+//! configuration picks. A transport reports only the kind of a failure:
+//! providers' error texts often repeat the recipient, and the server's logs
+//! hold no identifying data (§29).
 
 use std::future::Future;
 use std::pin::Pin;
@@ -18,10 +19,29 @@ pub struct Mail {
     pub text: String,
 }
 
-/// A failed send. Its text belongs in the local log.
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct MailError(pub String);
+/// The kind of a failed send, which the server logs without the
+/// provider's text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum MailError {
+    /// The server has no mail transport.
+    #[error("no mail transport is configured")]
+    NotConfigured,
+    /// The SMTP URL doesn't parse.
+    #[error("the SMTP URL doesn't parse")]
+    Configuration,
+    /// The sender or the recipient isn't an address the transport takes.
+    #[error("an address doesn't parse")]
+    Address,
+    /// The transport couldn't reach the mail server, or lost it.
+    #[error("the mail server can't be reached")]
+    Unreachable,
+    /// The SMTP server refused the message.
+    #[error("the mail server refused the message")]
+    Refused,
+    /// Resend answered with this HTTP status.
+    #[error("the mail service answered with status {0}")]
+    Status(u16),
+}
 
 /// A boxed send future.
 pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), MailError>> + Send + 'a>>;
@@ -43,7 +63,7 @@ impl Smtp {
     /// A transport for `url`.
     pub fn from_url(url: &str) -> Result<Self, MailError> {
         let transport = lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::from_url(url)
-            .map_err(|e| MailError(format!("the SMTP URL doesn't parse: {e}")))?
+            .map_err(|_| MailError::Configuration)?
             .build();
         Ok(Self { transport })
     }
@@ -54,24 +74,19 @@ impl MailTransport for Smtp {
         Box::pin(async move {
             use lettre::AsyncTransport;
             let message = lettre::Message::builder()
-                .from(
-                    mail.from
-                        .parse()
-                        .map_err(|e| MailError(format!("the sender doesn't parse: {e}")))?,
-                )
-                .to(mail
-                    .to
-                    .parse()
-                    .map_err(|e| MailError(format!("the recipient doesn't parse: {e}")))?)
+                .from(mail.from.parse().map_err(|_| MailError::Address)?)
+                .to(mail.to.parse().map_err(|_| MailError::Address)?)
                 .subject(&mail.subject)
                 .header(lettre::message::header::ContentType::TEXT_PLAIN)
                 .body(mail.text.clone())
-                .map_err(|e| MailError(format!("the message doesn't build: {e}")))?;
-            self.transport
-                .send(message)
-                .await
-                .map(|_| ())
-                .map_err(|e| MailError(format!("SMTP delivery failed: {e}")))
+                .map_err(|_| MailError::Address)?;
+            self.transport.send(message).await.map(|_| ()).map_err(|e| {
+                if e.is_permanent() || e.is_transient() {
+                    MailError::Refused
+                } else {
+                    MailError::Unreachable
+                }
+            })
         })
     }
 }
@@ -114,21 +129,11 @@ impl MailTransport for Resend {
                 .body(body.to_string())
                 .send()
                 .await
-                .map_err(|e| MailError(format!("Resend can't be reached: {e}")))?;
+                .map_err(|_| MailError::Unreachable)?;
             if response.status().is_success() {
                 return Ok(());
             }
-            let status = response.status();
-            let detail: String = response
-                .text()
-                .await
-                .unwrap_or_default()
-                .chars()
-                .take(500)
-                .collect();
-            Err(MailError(format!(
-                "Resend refused the message ({status}): {detail}"
-            )))
+            Err(MailError::Status(response.status().as_u16()))
         })
     }
 }
@@ -139,6 +144,6 @@ pub struct NoMail;
 
 impl MailTransport for NoMail {
     fn send<'a>(&'a self, _mail: &'a Mail) -> SendFuture<'a> {
-        Box::pin(async { Err(MailError("no mail transport is configured".into())) })
+        Box::pin(async { Err(MailError::NotConfigured) })
     }
 }

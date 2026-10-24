@@ -17,6 +17,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{Value, json};
 use sqlx::{Connection, Row, SqliteConnection};
 use sync_server::accounts::mail::{Mail, MailError, MailTransport, Resend, SendFuture, Smtp};
+use sync_server::accounts::Deliveries;
 use sync_server::{Accounts, Allowlist, PublicOrigin};
 use sync_store::Store;
 use sync_store_sqlite::{DATABASE_FILE, SqliteBackend};
@@ -33,12 +34,39 @@ impl MailTransport for Outbox {
     }
 }
 
-/// Fails every send, as a provider outage would.
-struct Broken;
+/// Fails every send, as a provider outage would, and counts the tries.
+#[derive(Clone, Default)]
+struct Broken(Arc<Mutex<usize>>);
 
 impl MailTransport for Broken {
     fn send<'a>(&'a self, _mail: &'a Mail) -> SendFuture<'a> {
-        Box::pin(async { Err(MailError("the provider is down".into())) })
+        *self.0.lock().unwrap() += 1;
+        Box::pin(async { Err(MailError::Unreachable) })
+    }
+}
+
+/// Holds every send until the test releases it, as a slow provider would.
+#[derive(Clone)]
+struct Stalled {
+    release: Arc<tokio::sync::Semaphore>,
+    sent: Outbox,
+}
+
+impl Stalled {
+    fn new() -> Self {
+        Self {
+            release: Arc::new(tokio::sync::Semaphore::new(0)),
+            sent: Outbox::default(),
+        }
+    }
+}
+
+impl MailTransport for Stalled {
+    fn send<'a>(&'a self, mail: &'a Mail) -> SendFuture<'a> {
+        Box::pin(async move {
+            let _released = self.release.acquire().await;
+            self.sent.send(mail).await
+        })
     }
 }
 
@@ -50,13 +78,15 @@ impl Outbox {
 
 /// A server with account pages, its data directory and an HTTP client
 /// that behaves like a browser on those pages: it sends the page origin
-/// with every post and follows no redirect.
+/// with every post and follows no redirect. The server mails after it
+/// answers, so each request also waits for the mail it started.
 struct Site {
     base: String,
     origin: String,
     store: Arc<Store<SqliteBackend>>,
     http: reqwest::Client,
     data: PathBuf,
+    deliveries: Deliveries,
     _dir: tempfile::TempDir,
 }
 
@@ -104,6 +134,8 @@ async fn site_in(
         .expect("the store opens"),
     );
     let allowlist = Allowlist::parse(allowed);
+    let deliveries = Deliveries::default();
+    let counted = deliveries.clone();
     let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", |origin| {
         Accounts::new(
             origin,
@@ -112,6 +144,7 @@ async fn site_in(
             mailer,
             None,
         )
+        .with_deliveries(counted)
     })
     .await
     .expect("serving");
@@ -125,12 +158,20 @@ async fn site_in(
             .build()
             .unwrap(),
         data,
+        deliveries,
         _dir: dir,
     }
 }
 
 impl Site {
     async fn send(&self, request: reqwest::RequestBuilder) -> Reply {
+        let reply = self.answer(request).await;
+        self.deliveries.idle().await;
+        reply
+    }
+
+    /// The server's answer, without waiting for the mail it sends.
+    async fn answer(&self, request: reqwest::RequestBuilder) -> Reply {
         let response = request.send().await.expect("the server answers");
         Reply {
             status: response.status(),
@@ -579,6 +620,30 @@ async fn the_allowlist_admits_only_its_emails_and_answers_every_email_alike() {
     );
     assert_eq!(count(&site.database(), "account_emails").await, 0);
 
+    // The server answers before it mails, so an allowed email's answer
+    // takes no longer than a refused one's while its mail is still out.
+    let stalled = Stalled::new();
+    let slow = self::site("alice@example.com", Box::new(stalled.clone())).await;
+    let form = |email: &str| {
+        let body = format!("email={email}");
+        slow.http
+            .post(format!("{}/account/email-link", slow.base))
+            .header("origin", &slow.origin)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+    };
+    let answered = tokio::time::timeout(
+        Duration::from_secs(5),
+        slow.answer(form("alice@example.com")),
+    )
+    .await
+    .expect("the answer doesn't wait for the mail");
+    assert_eq!(answered.status, StatusCode::OK);
+    assert!(stalled.sent.take().is_empty(), "the mail is still out");
+    stalled.release.add_permits(1);
+    slow.deliveries.idle().await;
+    assert_eq!(stalled.sent.take().len(), 1);
+
     // An empty allowlist admits nobody.
     let outbox = Outbox::default();
     let closed = self::site("", Box::new(outbox.clone())).await;
@@ -660,6 +725,98 @@ async fn a_passkey_signs_up_after_its_email_confirms_and_signs_in_again() {
         .json("/account/passkeys/sign-in/finish", body, None)
         .await;
     assert_eq!(replay.json()["error"], "ceremony_expired");
+}
+
+/// Starts a passkey sign-up for `email` with `key` and returns the
+/// finish step's reply.
+async fn start_passkey_sign_up(site: &Site, key: &mut Passkey, email: &str) -> Reply {
+    let started = site
+        .json(
+            "/account/passkeys/sign-up/start",
+            json!({ "email": email }),
+            None,
+        )
+        .await
+        .json();
+    let credential = create(key, &site.origin, &started["options"]).await;
+    site.json(
+        "/account/passkeys/sign-up/finish",
+        json!({ "ceremony": started["ceremony"], "credential": credential }),
+        None,
+    )
+    .await
+}
+
+/// Anyone can start a passkey sign-up for any address with their own
+/// authenticator. For an address that already has an account, the server
+/// answers as for any other, adds no passkey and mails that address a
+/// sign-in link, so one click on the mail can't hand the account to a
+/// stranger's passkey. A passkey held before the address got its account
+/// doesn't confirm afterwards either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_passkey_sign_up_for_an_existing_account_adds_no_passkey() {
+    let outbox = Outbox::default();
+    let site = site("alice@example.com, bob@example.com", Box::new(outbox.clone())).await;
+    site.form(
+        "/account/email-link",
+        &[("email", "alice@example.com")],
+        None,
+    )
+    .await;
+    let alice = site
+        .follow(&link_in(&outbox.take().pop().unwrap()))
+        .await
+        .session_cookie()
+        .expect("signed up");
+
+    // A stranger signs up with Alice's address and their own passkey.
+    let mut stranger = passkey();
+    let finished = start_passkey_sign_up(&site, &mut stranger, "alice@example.com").await;
+    assert_eq!(
+        (finished.status, finished.json()),
+        (StatusCode::OK, json!({ "status": "check_email" }))
+    );
+    assert_eq!(count(&site.database(), "pending_passkeys").await, 0);
+    let mail = outbox.take().pop().expect("a mail to Alice");
+    assert_eq!(mail.to, "alice@example.com");
+    assert_eq!(mail.subject, "Sign in to Noura");
+    assert!(mail.text.contains("didn't add their passkey"), "{}", mail.text);
+    let link = link_in(&mail);
+    assert!(link.starts_with(&format!("{}/account/email-link?token=", site.base)));
+
+    // The stranger's passkey signs in to nothing, before or after Alice
+    // follows the link, which signs her in.
+    let refused = passkey_sign_in(&site, &mut stranger, "alice@example.com").await;
+    assert_eq!(refused.json()["error"], "no_passkey");
+    let signed_in = site.follow(&link).await.session_cookie().expect("signed in");
+    for cookie in [&alice, &signed_in] {
+        let page = account_page(&site, cookie).await;
+        assert!(page.body.contains("alice@example.com"));
+        assert!(page.body.contains("You have 0 passkeys."), "{}", page.body);
+    }
+    let refused = passkey_sign_in(&site, &mut stranger, "alice@example.com").await;
+    assert_eq!(refused.json()["error"], "no_passkey");
+    assert_eq!(count(&site.database(), "passkeys").await, 0);
+
+    // A stranger's passkey held for Bob's address before Bob signs up with
+    // a link doesn't confirm once his account exists.
+    let finished = start_passkey_sign_up(&site, &mut stranger, "bob@example.com").await;
+    assert_eq!(finished.status, StatusCode::OK);
+    let confirmation = outbox.take().pop().expect("a confirmation");
+    assert_eq!(confirmation.subject, "Confirm your Noura account");
+    site.form("/account/email-link", &[("email", "bob@example.com")], None)
+        .await;
+    site.follow(&link_in(&outbox.take().pop().unwrap()))
+        .await
+        .session_cookie()
+        .expect("Bob signed up");
+    let late = site.follow(&link_in(&confirmation)).await;
+    assert_eq!(late.status, StatusCode::BAD_REQUEST);
+    assert!(late.session_cookie().is_none());
+    assert_eq!(count(&site.database(), "passkeys").await, 0);
+    assert_eq!(count(&site.database(), "pending_passkeys").await, 0);
+    let refused = passkey_sign_in(&site, &mut stranger, "bob@example.com").await;
+    assert_eq!(refused.json()["error"], "no_passkey");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -861,7 +1018,27 @@ async fn the_database_holds_tokens_only_as_hashes_and_no_session_expiry() {
         })
         .chain([device_token.to_vec()])
         .collect();
+    // An enrollment challenge, which a recovery proof answers.
+    let challenge = site
+        .store
+        .challenge(sync_store::Session::new(
+            account,
+            sync_protocol::types::Id([7; 16]),
+        ))
+        .await
+        .unwrap()
+        .challenge;
     let values = every_value(&site.database()).await;
+    let challenge_hash = sync_protocol::crypto::hash(&challenge.0);
+    for (table, column, value) in &values {
+        assert!(!contains(value, &challenge.0), "{table}.{column} holds a challenge");
+    }
+    assert!(
+        values
+            .iter()
+            .any(|(_, column, value)| column == "challenge_hash" && value == &challenge_hash.0),
+        "the challenge's hash is stored"
+    );
     for token in &tokens {
         let text = sync_protocol::types::to_base64url(token);
         let hash = sync_protocol::crypto::hash(token);
@@ -1027,7 +1204,8 @@ async fn only_ascii_letters_lowercase_before_the_account_id_derives() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_send_leaves_no_usable_link() {
-    let site = site("gina@example.com", Box::new(Broken)).await;
+    let broken = Broken::default();
+    let site = site("gina@example.com", Box::new(broken.clone())).await;
     let reply = site
         .form(
             "/account/email-link",
@@ -1057,6 +1235,7 @@ async fn a_failed_send_leaves_no_usable_link() {
         .await;
     assert_eq!(finished.status, StatusCode::OK);
     assert_eq!(count(&site.database(), "pending_passkeys").await, 0);
+    assert_eq!(*broken.0.lock().unwrap(), 2, "both mails were tried");
 }
 
 /// A fake SMTP server that takes messages over plain SMTP and keeps their
@@ -1115,7 +1294,8 @@ async fn fake_smtp() -> (u16, Arc<Mutex<Vec<String>>>) {
 }
 
 /// A fake Resend endpoint that keeps each request's JSON and answers 200,
-/// or 500 when `fail` is set.
+/// or, when `fail` is set, 500 with a detail that names the recipient, as
+/// providers' errors do.
 async fn fake_resend(fail: bool) -> (String, Arc<Mutex<Vec<(String, Value)>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/emails", listener.local_addr().unwrap());
@@ -1127,13 +1307,13 @@ async fn fake_resend(fail: bool) -> (String, Arc<Mutex<Vec<(String, Value)>>>) {
             let kept = kept.clone();
             async move {
                 let auth = headers["authorization"].to_str().unwrap().to_owned();
-                kept.lock()
-                    .unwrap()
-                    .push((auth, serde_json::from_str(&body).unwrap()));
+                let body: Value = serde_json::from_str(&body).unwrap();
+                let detail = format!("can't deliver to {}", body["to"][0]);
+                kept.lock().unwrap().push((auth, body));
                 if fail {
-                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "down")
+                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, detail)
                 } else {
-                    (axum::http::StatusCode::OK, "{\"id\":\"1\"}")
+                    (axum::http::StatusCode::OK, "{\"id\":\"1\"}".to_owned())
                 }
             }
         }),
@@ -1199,8 +1379,21 @@ async fn configuration_picks_smtp_or_resend_and_a_failed_send_leaves_no_link() {
         .unwrap();
     assert_eq!(site.follow(link).await.status, StatusCode::SEE_OTHER);
 
-    // A send that fails leaves no link behind, with either transport.
+    // A send that fails leaves no link behind, with either transport, and
+    // reports only the failure's kind, never the provider's text.
     let (endpoint, _) = fake_resend(true).await;
+    let mail = Mail {
+        from: "Noura <noura@example.com>".into(),
+        to: "hana@example.com".into(),
+        subject: "Sign in to Noura".into(),
+        text: "a link".into(),
+    };
+    let failed = Resend::new("re_test_key".into(), Some(endpoint.clone()))
+        .send(&mail)
+        .await
+        .unwrap_err();
+    assert_eq!(failed, MailError::Status(500));
+    assert!(!failed.to_string().contains("hana"), "{failed}");
     let site = self::site(
         "hana@example.com",
         Box::new(Resend::new("re_test_key".into(), Some(endpoint))),
@@ -1216,6 +1409,11 @@ async fn configuration_picks_smtp_or_resend_and_a_failed_send_leaves_no_link() {
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = closed.local_addr().unwrap().port();
     drop(closed);
+    let unreachable = Smtp::from_url(&format!("smtp://127.0.0.1:{port}")).unwrap();
+    assert_eq!(
+        unreachable.send(&mail).await.unwrap_err(),
+        MailError::Unreachable
+    );
     let site = self::site(
         "hana@example.com",
         Box::new(Smtp::from_url(&format!("smtp://127.0.0.1:{port}")).unwrap()),

@@ -26,6 +26,7 @@ use chromiumoxide::cdp::browser_protocol::web_authn::{
 };
 use chromiumoxide::page::Page;
 use futures_util::StreamExt;
+use sync_server::accounts::Deliveries;
 use sync_server::accounts::mail::{Mail, MailTransport, SendFuture};
 use sync_server::{Accounts, Allowlist};
 
@@ -165,6 +166,9 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
     );
     let outbox = Outbox::default();
     let mailer = outbox.clone();
+    // The server mails after it answers; the test waits for the sends.
+    let deliveries = Deliveries::default();
+    let counted = deliveries.clone();
     let address = sync_server::spawn_with(store, "127.0.0.1:0", move |origin| {
         Accounts::new(
             origin,
@@ -173,6 +177,7 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
             Box::new(mailer),
             Some(assets),
         )
+        .with_deliveries(counted)
     })
     .await
     .unwrap();
@@ -243,6 +248,7 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
         "document.querySelector('form[data-passkey=sign-up] [data-status]').innerText.includes('Check your email')",
     )
     .await;
+    deliveries.idle().await;
     let mail = outbox.0.lock().unwrap().pop().expect("a confirmation mail");
     let link = mail
         .text

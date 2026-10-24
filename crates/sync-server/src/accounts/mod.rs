@@ -7,18 +7,24 @@
 //!
 //! Sign-up accepts only allowlisted emails, and the server answers an
 //! allowed and a refused email the same way: it mails a link only to an
-//! allowed one. An account works only once its email confirms it: a magic
-//! link signs up the email that opens it, and a passkey created at sign-up
-//! waits for the link mailed to its email. Every page response carries a
-//! content security policy that blocks inline scripts, and every form post
-//! must come from the server's own origin.
+//! allowed one, after it answered, so the answer takes no longer for an
+//! allowed email. An account works only once its email confirms it: a
+//! magic link signs up the email that opens it, and a passkey created at
+//! sign-up waits for the link mailed to its email. A passkey sign-up for an
+//! email that already has an account adds no passkey: the server mails that
+//! email a sign-in link instead, and only a signed-in session adds a
+//! passkey. Every page response carries a content security policy that
+//! blocks inline scripts, and every form post must come from the server's
+//! own origin.
 
 pub mod config;
 pub mod mail;
 mod pages;
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use askama::Template;
 use axum::Router;
@@ -67,6 +73,42 @@ const BUILT_ASSETS: &[(&str, &str)] = &[
     ("THIRD_PARTY_NOTICES.txt", "text/plain; charset=utf-8"),
 ];
 
+/// The mail the account pages send after they answered, so an answer takes
+/// as long for an email the server mails as for one it doesn't. Tests wait
+/// for the sends to end with [`Deliveries::idle`].
+#[derive(Clone, Default)]
+pub struct Deliveries(Arc<Running>);
+
+#[derive(Default)]
+struct Running {
+    count: AtomicUsize,
+    idle: tokio::sync::Notify,
+}
+
+impl Deliveries {
+    fn spawn(&self, delivery: impl Future<Output = ()> + Send + 'static) {
+        let running = self.0.clone();
+        running.count.fetch_add(1, Ordering::SeqCst);
+        tokio::spawn(async move {
+            delivery.await;
+            if running.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+                running.idle.notify_waiters();
+            }
+        });
+    }
+
+    /// Waits until every delivery that started has ended.
+    pub async fn idle(&self) {
+        loop {
+            let idle = self.0.idle.notified();
+            if self.0.count.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            idle.await;
+        }
+    }
+}
+
 /// The account pages' settings: the public origin, the allowlist, the
 /// mail transport, the passkey relying party and the account-web build.
 pub struct Accounts {
@@ -76,6 +118,7 @@ pub struct Accounts {
     mailer: Box<dyn MailTransport>,
     webauthn: Option<Webauthn>,
     assets: Option<PathBuf>,
+    deliveries: Deliveries,
 }
 
 impl Accounts {
@@ -99,7 +142,14 @@ impl Accounts {
             mailer,
             webauthn,
             assets,
+            deliveries: Deliveries::default(),
         }
+    }
+
+    /// These account pages, counting their deliveries in `deliveries`.
+    pub fn with_deliveries(mut self, deliveries: Deliveries) -> Self {
+        self.deliveries = deliveries;
+        self
     }
 
     /// Account pages for tests and local servers: no allowlist and no mail.
@@ -419,23 +469,43 @@ async fn email_link<B: Backend>(
         );
     };
     if accounts.allowlist.admits(&email) {
-        let token = match state.store.issue_magic_link(&email).await {
-            Ok(token) => token,
-            Err(error) => return failure(error),
-        };
-        let text = format!(
-            "Use this link to sign in to Noura. It works once, within 10 minutes.\n\n{}\n\nIf you didn't ask to sign in, ignore this email.\n",
-            accounts.link("/account/email-link", &token)
-        );
-        if let Err(error) = accounts.send(&email, "Sign in to Noura", text).await {
-            // A link that never reached its email leaves nothing usable.
-            if let Err(revoke) = state.store.revoke_magic_link(&token).await {
-                return failure(revoke);
-            }
-            tracing::error!(cause = %error, "a sign-in email failed to send");
-        }
+        let (store, accounts) = (state.store.clone(), state.accounts.clone());
+        let to = email.clone();
+        state.accounts.deliveries.spawn(async move {
+            let text = |link: &str| {
+                format!(
+                    "Use this link to sign in to Noura. It works once, within 10 minutes.\n\n{link}\n\nIf you didn't ask to sign in, ignore this email.\n"
+                )
+            };
+            mail_sign_in_link(&store, &accounts, &to, text).await;
+        });
     }
     html(StatusCode::OK, &pages::CheckEmail { email: &email })
+}
+
+/// Issues a magic link for `email` and mails it in the message `text`
+/// writes around it. A link whose mail fails to send leaves nothing
+/// usable behind. The log names only the failure's kind.
+async fn mail_sign_in_link<B: Backend>(
+    store: &Store<B>,
+    accounts: &Accounts,
+    email: &str,
+    text: impl FnOnce(&str) -> String,
+) {
+    let token = match store.issue_magic_link(email).await {
+        Ok(token) => token,
+        Err(error) => {
+            tracing::error!(cause = %error, "a sign-in link couldn't be stored");
+            return;
+        }
+    };
+    let text = text(&accounts.link("/account/email-link", &token));
+    if let Err(error) = accounts.send(email, "Sign in to Noura", text).await {
+        if let Err(revoke) = store.revoke_magic_link(&token).await {
+            tracing::error!(cause = %revoke, "an unsent sign-in link couldn't be deleted");
+        }
+        tracing::error!(cause = %error, "a sign-in email failed to send");
+    }
 }
 
 async fn email_link_page(RawQuery(query): RawQuery) -> Response {
@@ -659,8 +729,10 @@ async fn sign_up_start<B: Backend>(
 }
 
 /// `POST /account/passkeys/sign-up/finish`: checks the new passkey and, for
-/// an allowed email, holds it and mails the link that confirms the email.
-/// Every email gets the same answer.
+/// an allowed email without an account, holds it and mails the link that
+/// confirms the email. An allowed email that has an account gets a sign-in
+/// link instead, and the server drops the passkey: whoever made it may not
+/// hold that email. Every email gets the same answer, before any mail.
 async fn sign_up_finish<B: Backend>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
@@ -697,29 +769,65 @@ async fn sign_up_finish<B: Backend>(
             Ok(bytes) => bytes,
             Err(error) => return json_failure(error),
         };
-        let token = match state
-            .store
-            .hold_passkey(&email, passkey.cred_id().to_vec(), bytes)
-            .await
-        {
-            Ok(token) => token,
-            Err(error) => return json_failure(error),
-        };
-        let text = format!(
-            "Confirm your email to finish signing up for Noura with your new passkey. The link works once, within 10 minutes.\n\n{}\n\nIf you didn't sign up, ignore this email.\n",
-            accounts.link("/account/confirm", &token)
-        );
-        if let Err(error) = accounts
-            .send(&email, "Confirm your Noura account", text)
-            .await
-        {
-            if let Err(drop) = state.store.drop_held_passkey(&token).await {
-                return json_failure(drop);
-            }
-            tracing::error!(cause = %error, "a sign-up email failed to send");
-        }
+        let (store, accounts) = (state.store.clone(), state.accounts.clone());
+        let credential_id = passkey.cred_id().to_vec();
+        state.accounts.deliveries.spawn(async move {
+            mail_sign_up(&store, &accounts, &email, credential_id, bytes).await;
+        });
     }
     json_reply(StatusCode::OK, json!({ "status": "check_email" }))
+}
+
+/// Holds a passkey that `email` registered at sign-up and mails the link
+/// that confirms it, or, when `email` already has an account, mails a
+/// sign-in link and drops the passkey.
+async fn mail_sign_up<B: Backend>(
+    store: &Store<B>,
+    accounts: &Accounts,
+    email: &str,
+    credential_id: Vec<u8>,
+    passkey: Vec<u8>,
+) {
+    let existing = match store.account_id(email) {
+        Ok(account) => store.account_email(account).await,
+        Err(error) => Err(error),
+    };
+    match existing {
+        Ok(Some(_)) => {
+            let text = |link: &str| {
+                format!(
+                    "Someone tried to sign up for Noura with this address. You already have an account, so Noura didn't add their passkey. To sign in, use this link. It works once, within 10 minutes.\n\n{link}\n\nTo add a passkey, sign in and add it on your account page. If you didn't try to sign up, ignore this email.\n"
+                )
+            };
+            mail_sign_in_link(store, accounts, email, text).await;
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::error!(cause = %error, "a sign-up couldn't read its account");
+            return;
+        }
+    }
+    let token = match store.hold_passkey(email, credential_id, passkey).await {
+        Ok(token) => token,
+        Err(error) => {
+            tracing::error!(cause = %error, "a sign-up passkey couldn't be stored");
+            return;
+        }
+    };
+    let text = format!(
+        "Confirm your email to finish signing up for Noura with your new passkey. The link works once, within 10 minutes.\n\n{}\n\nIf you didn't sign up, ignore this email.\n",
+        accounts.link("/account/confirm", &token)
+    );
+    if let Err(error) = accounts
+        .send(email, "Confirm your Noura account", text)
+        .await
+    {
+        if let Err(drop) = store.drop_held_passkey(&token).await {
+            tracing::error!(cause = %drop, "an unsent sign-up passkey couldn't be deleted");
+        }
+        tracing::error!(cause = %error, "a sign-up email failed to send");
+    }
 }
 
 /// The passkeys of an account, as webauthn-rs reads them.
