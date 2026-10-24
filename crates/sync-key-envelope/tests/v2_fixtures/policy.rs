@@ -873,9 +873,132 @@ pub fn fixture() -> Fixture {
         "reference_seqno": 1,
         "expect": null,
     }));
+    // Review of 0eef7d5: a reset device trusts a workspace its own request
+    // didn't name through an account_heads change that its sibling, a
+    // device it approved into the new chain, signed there once that
+    // workspace accepted the reset.
+    let ivan = Person::new("ivan");
+    let mut ivan_reset = {
+        let first = Actor::new("ivan", "ivan reset laptop");
+        Person {
+            chain: Chain::genesis(&first),
+            devices: vec![first],
+        }
+    };
+    let sibling = Actor::new("ivan", "ivan reset phone");
+    let reset_laptop = ivan_reset.first().clone();
+    ivan_reset.chain.add_device(&reset_laptop, &sibling);
+    ivan_reset.devices.push(sibling.clone());
+    f.actor(ivan.first());
+    f.actor(ivan_reset.first());
+    f.actor(&sibling);
+    let mut second = Policy::new(id("policy second workspace"));
+    second.push(
+        alice.first(),
+        vec![alice.head()],
+        PolicyKind::Genesis {
+            workspace_domain: id("policy second workspace domain"),
+        },
+    );
+    add_member(&mut second, &alice, &ivan, Role::Editor);
+    second.push(
+        alice.first(),
+        vec![alice.head(), ivan_reset.chain.head_at(1)],
+        PolicyKind::AcceptReset {
+            account: ivan.account(),
+        },
+    );
+    second.push(&sibling, vec![ivan_reset.head()], PolicyKind::AccountHeads);
+    f.case(json!({
+        "kind": "anchored_by",
+        "name": "a_reset_device_trusts_a_second_workspace_through_its_siblings_change",
+        "account_chains": chains(&[&alice.chain, &ivan.chain, &ivan_reset.chain]),
+        "changes": changes(&second),
+        "own_chain": ivan_reset.chain.links.iter().map(|l| to_hex(&l.to_bytes())).collect::<Vec<_>>(),
+        "reference_seqno": 1,
+        "expect": 4,
+    }));
+    chain_reads(&mut f);
     f.set(
         "limits",
         json!({"readers_per_domain": 512, "card_indices": 16_777_215, "domains": 256}),
     );
     f
+}
+
+/// The chains a session reads through a workspace (§7): every chain the
+/// policy records, up to the latest head recorded on it, a current
+/// member's current chain in full to the workspace's devices, and, for a
+/// device whose account `remove_member` removed, the chains up to the
+/// heads recorded by its removal.
+fn chain_reads(f: &mut Fixture) {
+    let mut kim = Person::new("kim");
+    let mut lee = Person::new("lee");
+    let max = Person::new("max");
+    let ned = Person::new("ned");
+    for person in [&kim, &lee, &max, &ned] {
+        f.actor(person.first());
+    }
+    let mut policy = genesis(&kim);
+    add_member(&mut policy, &kim, &lee, Role::Editor);
+    // An early change that the member signed.
+    policy.push(lee.first(), vec![lee.head()], PolicyKind::AccountHeads);
+    policy.push(
+        kim.first(),
+        vec![kim.head()],
+        PolicyKind::RemoveMember {
+            account: lee.account(),
+        },
+    );
+    add_member(&mut policy, &kim, &max, Role::Viewer);
+    // Both chains grow after the removal, and the workspace records only
+    // the owner's new head.
+    let kim_phone = kim.add("kim phone");
+    let lee_phone = lee.add("lee phone");
+    f.actor(&kim_phone);
+    f.actor(&lee_phone);
+    policy.push(kim.first(), vec![kim.head()], PolicyKind::AccountHeads);
+    let read =
+        |f: &mut Fixture, name: &str, reader: &Person, target: &Person, expect: Option<u64>| {
+            f.case(json!({
+                "kind": "chain_read",
+                "name": name,
+                "account_chains": chains(&[&kim.chain, &lee.chain, &max.chain]),
+                "changes": changes(&policy),
+                "reader": reader.first().device().to_hex(),
+                "reader_account": reader.account().to_hex(),
+                "account": target.account().to_hex(),
+                "genesis": target.chain.links[0].digest().to_hex(),
+                "current_seqno": target.chain.links.len(),
+                "expect": expect,
+            }));
+        };
+    read(
+        f,
+        "a_joining_device_reads_a_since_removed_members_chain_up_to_its_last_recorded_head",
+        &max,
+        &lee,
+        Some(1),
+    );
+    read(
+        f,
+        "a_member_removed_with_remove_member_reads_the_removers_chain_up_to_its_removal",
+        &lee,
+        &kim,
+        Some(1),
+    );
+    read(
+        f,
+        "a_current_members_current_chain_reaches_the_workspaces_devices_in_full",
+        &max,
+        &kim,
+        Some(2),
+    );
+    read(
+        f,
+        "a_device_outside_the_workspace_reads_no_chain_through_it",
+        &ned,
+        &kim,
+        None,
+    );
 }

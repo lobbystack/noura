@@ -973,6 +973,58 @@ async fn an_account_id_derives_from_its_email_under_the_server_secret() {
     }
 }
 
+/// Review of `0eef7d5`: the server lowercases only an email's ASCII letters
+/// before it derives the account ID (§14), as `sync-v2-ids.json` pins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_ascii_letters_lowercase_before_the_account_id_derives() {
+    let outbox = Outbox::default();
+    let site = site("Åsa@example.se", Box::new(outbox.clone())).await;
+    site.form("/account/email-link", &[("email", "ÅSA@Example.SE")], None)
+        .await;
+    let mail = outbox.take().pop().expect("the address is allowed");
+    assert_eq!(mail.to, "Åsa@example.se");
+    site.follow(&link_in(&mail)).await;
+    // `åsa@example.se` is another address: the allowlist doesn't hold it.
+    site.form("/account/email-link", &[("email", "åsa@example.se")], None)
+        .await;
+    assert!(outbox.take().is_empty());
+
+    let ids: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/workspace-format/fixtures/sync-v2-ids.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let fixture_id = |email: &str| {
+        ids["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["kind"] == "account_id" && c["email"] == email)
+            .map(|c| c["expect"].as_str().unwrap().to_owned())
+            .unwrap()
+    };
+    assert_eq!(fixture_id("ÅSA@Example.se"), fixture_id("Åsa@example.se"));
+    assert_ne!(fixture_id("Åsa@example.se"), fixture_id("åsa@example.se"));
+    let secret: [u8; 32] = std::fs::read(site.data.join(sync_server::data::SECRET_FILE))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let stored = every_value(&site.database())
+        .await
+        .into_iter()
+        .find(|(table, column, _)| table == "account_emails" && column == "account")
+        .map(|(_, _, value)| value)
+        .unwrap();
+    assert_eq!(
+        stored,
+        sync_protocol::ids::account_id(&sync_protocol::types::SecretKey(secret), "ÅSA@Example.se")
+            .0
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_send_leaves_no_usable_link() {
     let site = site("gina@example.com", Box::new(Broken)).await;

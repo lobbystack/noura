@@ -1,14 +1,17 @@
-//! The fixture cases that need X-Wing keys or the enrollment verifier:
-//! `sync-v2-device.json` and the envelope cases of `sync-v2-keys.json`.
+//! The fixture cases that need X-Wing keys, the enrollment verifier or the
+//! recovery-proof verifier: `sync-v2-device.json`, the envelope cases of
+//! `sync-v2-keys.json` and the proof checks of `sync-v2-recovery.json`.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
 use sync_key_envelope::v2::{
-    DeviceKeys, EnrollmentContext, EnvelopeError, unwrap, verify_enrollment,
+    DeviceKeys, EnrollmentContext, EnvelopeError, RecoveryContext, unwrap, verify_enrollment,
+    verify_recovery_proof,
 };
+use sync_protocol::account::AccountChain;
 use sync_protocol::codec::Decode;
-use sync_protocol::records::{Card, Envelope, KitPayload, Signed};
+use sync_protocol::records::{AccountLink, Card, Envelope, KitPayload, RecoveryProof, Signed};
 use sync_protocol::types::{Id, Key, SecretKey, from_hex, to_hex};
 
 fn load(file: &str) -> Value {
@@ -68,6 +71,38 @@ fn the_enrollment_verifier_reaches_each_cases_outcome() {
         };
         let ours = match verify_enrollment(&hex(&case["proof"]), &context) {
             Ok(_) => "ok",
+            Err(e) => e.server_code(),
+        };
+        assert_eq!(ours, case["expect"].as_str().unwrap(), "{}", case["name"]);
+        checked += 1;
+    }
+    assert!(checked >= 6);
+}
+
+#[test]
+fn the_recovery_proof_verifier_reaches_each_cases_outcome() {
+    let doc = load("sync-v2-recovery.json");
+    let mut checked = 0;
+    for case in cases(&doc, "recovery_proof_check") {
+        let links: Vec<Signed<AccountLink>> = case["chain"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| Signed::<AccountLink>::from_bytes(&hex(l)).unwrap())
+            .collect();
+        let chain = AccountChain::verify(&links, &Default::default()).unwrap();
+        let session_card = Card::from_bytes(&hex(&case["session_card"])).unwrap();
+        let proof = Signed::<RecoveryProof>::from_bytes(&hex(&case["proof"])).unwrap();
+        let context = RecoveryContext {
+            origin: case["origin"].as_str().unwrap(),
+            chain: &chain,
+            session_card: &session_card,
+        };
+        let ours = match verify_recovery_proof(&proof, &context) {
+            Ok(challenge) => {
+                assert_eq!(challenge, proof.body.challenge);
+                "ok"
+            }
             Err(e) => e.server_code(),
         };
         assert_eq!(ours, case["expect"].as_str().unwrap(), "{}", case["name"]);

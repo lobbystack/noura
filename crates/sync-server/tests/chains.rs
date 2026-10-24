@@ -642,6 +642,111 @@ async fn each_session_reads_the_chains_it_may_read() {
     assert_eq!(both.pages.0[1].links.0.len(), 3);
 }
 
+/// The `chain_read` cases of `sync-v2-policy.json`, served by the store:
+/// its account chains and its workspace's policy go into the store, and
+/// each case's reader device reads the target chain to the bound the
+/// fixture pins, or gets `not_found`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_server_serves_the_chain_reads_of_the_policy_fixture() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/workspace-format/fixtures/sync-v2-policy.json"
+    );
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let cases: Vec<&Value> = doc["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["kind"] == "chain_read")
+        .collect();
+    assert!(cases.len() >= 4);
+    let first = cases[0];
+    let (store, _dir) = store().await;
+    let store = Arc::new(store);
+    let base = serve(store.clone()).await;
+    for chain in first["account_chains"].as_array().unwrap() {
+        let links: Vec<Signed<AccountLink>> = doc["chains"][chain.as_str().unwrap()]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                let hex = doc["links"][d.as_str().unwrap()].as_str().unwrap();
+                Signed::<AccountLink>::from_bytes(&from_hex(hex).unwrap()).unwrap()
+            })
+            .collect();
+        store.append_account_links(links).await.unwrap();
+    }
+    let changes: Vec<Signed<sync_protocol::records::PolicyChange>> = first["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| Signed::from_bytes(&from_hex(c.as_str().unwrap()).unwrap()).unwrap())
+        .collect();
+    store
+        .backend()
+        .write(Box::new(move |txn: &mut sync_store_sqlite::SqliteTxn| {
+            Box::pin(async move {
+                let workspace = changes[0].body.workspace;
+                let last = changes.last().unwrap();
+                txn.insert_workspace(
+                    workspace,
+                    &sync_store::WorkspaceRow {
+                        owner: changes[0].body.heads.iter().next().unwrap().account,
+                        creation_digest: Digest::ZERO,
+                        creation_response: Vec::new(),
+                        policy_revision: last.body.revision,
+                        policy_head: last.digest(),
+                    },
+                )
+                .await?;
+                for change in &changes {
+                    txn.insert_policy_change(
+                        workspace,
+                        change.body.revision,
+                        change.digest(),
+                        &change.to_bytes(),
+                    )
+                    .await?;
+                    let accounts: Vec<Id> = change.body.heads.iter().map(|h| h.account).collect();
+                    txn.record_accounts(workspace, &accounts).await?;
+                }
+                Ok(())
+            })
+        }))
+        .await
+        .unwrap();
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let reader = session(
+            &store,
+            &base,
+            Session::new(
+                Id::from_hex(case["reader_account"].as_str().unwrap()).unwrap(),
+                Id::from_hex(case["reader"].as_str().unwrap()).unwrap(),
+            ),
+        )
+        .await;
+        let cursor = ChainCursor {
+            account: Id::from_hex(case["account"].as_str().unwrap()).unwrap(),
+            genesis: Some(Digest::from_hex(case["genesis"].as_str().unwrap()).unwrap()),
+            after: 0,
+        };
+        let served = read(&reader, vec![cursor]).await;
+        match case["expect"].as_u64() {
+            Some(bound) => {
+                let page = &served.unwrap_or_else(|e| panic!("{name}: {e:?}")).pages.0[0];
+                assert_eq!(page.head_seqno, bound, "{name}");
+                assert_eq!(page.links.0.len() as u64, bound, "{name}");
+            }
+            None => assert_eq!(
+                served.map(|_| ()),
+                Err((StatusCode::NOT_FOUND, "not_found".into())),
+                "{name}"
+            ),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chain_bodies_decode_as_the_encoding_fixture_pins() {
     let path = concat!(
@@ -853,6 +958,110 @@ async fn a_recovery_proof_lets_the_session_act_for_the_recovery_identity() {
     assert_eq!(
         append(r.client(), std::slice::from_ref(&recover)).await,
         Ok(3)
+    );
+}
+
+/// Review of `0eef7d5`, with the recovery of `sync-v2-recovery.json`: its
+/// `remove` link commits before the recovered device enters any of the
+/// account's two workspaces, and the proven session still reads the
+/// recovery identity's envelopes in both (§7, §12).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_recovery_fixtures_removal_commits_before_the_device_enters_its_workspaces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/workspace-format/fixtures/sync-v2-recovery.json"
+    );
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let keys = |name: &str| {
+        let entry = &doc["keys"][name];
+        let seed = |field: &str| {
+            SecretKey(
+                from_hex(entry[field].as_str().unwrap())
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        DeviceKeys::from_seeds(&seed("signing_seed"), seed("hpke_seed"))
+    };
+    let (laptop, kit, phone) = (
+        keys("dora laptop"),
+        keys("dora recovery kit"),
+        keys("dora phone"),
+    );
+    let case = doc["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "recovery_order")
+        .unwrap();
+    let links: Vec<Signed<AccountLink>> = case["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            let hex = doc["links"][d.as_str().unwrap()].as_str().unwrap();
+            Signed::<AccountLink>::from_bytes(&from_hex(hex).unwrap()).unwrap()
+        })
+        .collect();
+    let account = links[0].body.account;
+
+    let (store, _dir) = store().await;
+    let store = Arc::new(store);
+    let base = serve(store.clone()).await;
+    store.enroll_card(laptop.card(account)).await.unwrap();
+    store.enroll_card(phone.card(account)).await.unwrap();
+    let laptop_client = session(&store, &base, Session::new(account, laptop.device())).await;
+    assert_eq!(append(&laptop_client, &links[..2]).await, Ok(2));
+    let cards = vec![laptop.card(account), kit.card(account)];
+    let mut workspaces = Vec::new();
+    for _ in 0..2 {
+        let (body, genesis, _) = creation(&laptop, &links[..2], &cards);
+        store
+            .create_workspace(Session::new(account, laptop.device()), body)
+            .await
+            .unwrap();
+        workspaces.push(genesis.body.workspace);
+    }
+
+    let (phone_token, phone_session) = {
+        let token: [u8; 32] = sync_protocol::crypto::random_array().unwrap();
+        store
+            .create_session(token, Session::new(account, phone.device()))
+            .await
+            .unwrap();
+        (token, Client::new(base.clone(), Some(to_base64url(&token))))
+    };
+    let _ = phone_token;
+    let challenge: ChallengeResponse = phone_session
+        .post("/v2/devices/challenge", Vec::new())
+        .await
+        .decode();
+    let proof = recovery_proof(&kit, &base, &phone.card(account), challenge.challenge);
+    let reply = phone_session
+        .post(
+            "/v2/recovery",
+            RecoveryRequest {
+                recovery_proof: Nested(proof),
+            }
+            .to_bytes(),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(append(&phone_session, &links[2..3]).await, Ok(3));
+    assert_eq!(append(&phone_session, &links[3..4]).await, Ok(4));
+    for workspace in workspaces {
+        let path = format!(
+            "/v2/workspaces/{}/keys?after=0&recipient={}",
+            workspace.to_base64url(),
+            kit.device().to_base64url()
+        );
+        let keys: KeysResponse = phone_session.get(&path).await.decode();
+        assert!(!keys.entries.0.is_empty());
+    }
+    assert_eq!(
+        case["expect"]["proven_session_reads_the_identitys_envelopes_until_the_recovered_card_joins"],
+        true
     );
 }
 

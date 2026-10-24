@@ -10,7 +10,7 @@ use sync_protocol::codec::{Decode, Encode, List, Nested};
 use sync_protocol::messages::{
     ChainCursor, ChainPage, ChainStatus, ChainsResponse, LinkBytes, MAX_BODY,
 };
-use sync_protocol::records::{AccountLink, Card, LinkKind, PolicyKind, RecoveryProof, Signed};
+use sync_protocol::records::{AccountLink, Card, LinkKind, RecoveryProof, Signed};
 use sync_protocol::types::{Digest, Id, Key};
 
 use crate::policy::{self, PolicyCache};
@@ -153,45 +153,20 @@ async fn readable_seqno(
         let Some((_, policy)) = policy::load(txn, cache, workspace).await? else {
             continue;
         };
-        let head = policy.head_snapshot();
-        let reader = [Some(session.device), session.recovery]
+        let reader: Vec<Id> = [Some(session.device), session.recovery]
             .into_iter()
             .flatten()
-            .any(|device| head.is_device(&device));
-        let limit = if reader {
-            head.revision
-        } else {
-            // A device whose account remove_member removed reads the policy
-            // up to that change.
-            let removal = (2..=head.revision).rev().find(|&revision| {
-                let removes = policy.change(revision).is_some_and(|c| {
-                    matches!(c.body.kind, PolicyKind::RemoveMember { account: removed } if removed == session.account)
-                });
-                removes
-                    && policy
-                        .at(revision - 1)
-                        .is_some_and(|before| before.is_device(&session.device))
-            });
-            match removal {
-                Some(revision) => revision,
-                None => continue,
-            }
-        };
-        let recorded = (1..=limit)
-            .filter_map(|revision| policy.change(revision))
-            .flat_map(|change| change.body.heads.iter())
-            .filter(|h| h.account == account && h.genesis == genesis)
-            .map(|h| h.seqno)
-            .max();
-        let Some(recorded) = recorded else {
+            .collect();
+        let Some(bound) = policy.chain_read_bound(
+            &reader,
+            &session.account,
+            &account,
+            &genesis,
+            current.then(|| chain.head_seqno()),
+        ) else {
             continue;
         };
-        let full = reader && current && head.members.contains_key(&account);
-        let bound = if full {
-            chain.head_seqno()
-        } else {
-            recorded.min(chain.head_seqno())
-        };
+        let bound = bound.min(chain.head_seqno());
         best = Some(best.map_or(bound, |b| b.max(bound)));
     }
     Ok(best)

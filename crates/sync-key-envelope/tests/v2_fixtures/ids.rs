@@ -110,7 +110,16 @@ pub fn fixture() -> Fixture {
         "secret": to_hex(server_secret.expose()),
         "expect": to_hex(secret_check(&server_secret).expose()),
     }));
-    for email in ["Alice.Example@Example.COM", "alice.example@example.com"] {
+    // Only ASCII letters lowercase: `ÅSA@Example.se` and `Åsa@example.se`
+    // share an ID, and `åsa@example.se` gets another, whatever Unicode's
+    // case mappings say.
+    for email in [
+        "Alice.Example@Example.COM",
+        "alice.example@example.com",
+        "ÅSA@Example.se",
+        "Åsa@example.se",
+        "åsa@example.se",
+    ] {
         f.case(json!({
             "kind": "account_id",
             "name": format!("account_id_of_{email}"),
@@ -119,6 +128,14 @@ pub fn fixture() -> Fixture {
             "expect": account_id(&server_secret, email).to_hex(),
         }));
     }
+    assert_eq!(
+        account_id(&server_secret, "ÅSA@Example.se"),
+        account_id(&server_secret, "Åsa@example.se")
+    );
+    assert_ne!(
+        account_id(&server_secret, "Åsa@example.se"),
+        account_id(&server_secret, "åsa@example.se")
+    );
     f.set(
         "random_ids",
         json!({

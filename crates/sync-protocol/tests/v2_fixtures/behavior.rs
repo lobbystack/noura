@@ -259,8 +259,30 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 case["text"].as_str().unwrap().to_owned(),
             )
         }
-        // X-Wing and the enrollment verifier run in sync-key-envelope.
-        "hpke_card" | "enrollment" | "envelope_unwrap" => Ok(()),
+        // X-Wing and the enrollment and recovery-proof verifiers run in
+        // sync-key-envelope.
+        "hpke_card" | "enrollment" | "envelope_unwrap" | "recovery_proof_check" => Ok(()),
+        "recovery_order" => {
+            let chain = AccountChain::verify(&links(&case["links"]), &BTreeSet::new()).unwrap();
+            let active = |seqno: u64| -> BTreeSet<Id> {
+                chain
+                    .active_at(seqno)
+                    .iter()
+                    .map(|s| s.card.device)
+                    .collect()
+            };
+            let mut before = active(u64_of(&case["kit_seqno"]));
+            for step in ["after_recover", "after_removes"] {
+                let want = &expect[step];
+                let now = active(u64_of(&want["seqno"]));
+                let adds: Vec<Id> = now.difference(&before).copied().collect();
+                let removes: Vec<Id> = before.difference(&now).copied().collect();
+                same(adds, ids(&want["adds"]))?;
+                same(removes, ids(&want["removes"]))?;
+                before = now;
+            }
+            Ok(())
+        }
 
         // Account chains.
         "account_chain" => {
@@ -323,6 +345,28 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             )
         }
 
+        "kept_head_extend" => {
+            let kept = KeptHead {
+                genesis: digest_of(&case["kept"]["genesis"]),
+                seqno: u64_of(&case["kept"]["seqno"]),
+                head: digest_of(&case["kept"]["head"]),
+            };
+            let own = case["own_account"].as_bool().unwrap();
+            match kept.judge(&links(&case["links"]), &BTreeSet::new()) {
+                Ok(chain) => {
+                    same("ok", expect["outcome"].as_str().unwrap())?;
+                    same(chain.head_seqno(), u64_of(&expect["head_seqno"]))
+                }
+                Err(refusal) => {
+                    same(refusal.client_code(), expect["outcome"].as_str().unwrap())?;
+                    same(
+                        serde_json::to_value(refusal.stops(own)).unwrap(),
+                        expect["stops"].clone(),
+                    )
+                }
+            }
+        }
+
         // Policy.
         "policy_chain" => {
             let result = PolicyChain::verify(
@@ -338,6 +382,19 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 (Ok(chain), None) => check_policy(&chain, &expect["ok"]),
                 (other, _) => Err(format!("{:?}", other.map(|c| c.head()))),
             }
+        }
+        "chain_read" => {
+            let verified = policy(case);
+            same(
+                json!(verified.chain_read_bound(
+                    &[id_of(&case["reader"])],
+                    &id_of(&case["reader_account"]),
+                    &id_of(&case["account"]),
+                    &digest_of(&case["genesis"]),
+                    Some(u64_of(&case["current_seqno"])),
+                )),
+                expect.clone(),
+            )
         }
         "anchored_by" => {
             let verified = policy(case);

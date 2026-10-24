@@ -174,6 +174,27 @@
 			"kind": "account_id",
 			"name": "account_id_of_alice.example@example.com",
 			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+		},
+		{
+			"email": "ÅSA@Example.se",
+			"expect": "6392a445c0f3425228c5164fdd12699f",
+			"kind": "account_id",
+			"name": "account_id_of_ÅSA@Example.se",
+			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+		},
+		{
+			"email": "Åsa@example.se",
+			"expect": "6392a445c0f3425228c5164fdd12699f",
+			"kind": "account_id",
+			"name": "account_id_of_Åsa@example.se",
+			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+		},
+		{
+			"email": "åsa@example.se",
+			"expect": "b8f1bcb613c1f31b51d6eebfca93d475",
+			"kind": "account_id",
+			"name": "account_id_of_åsa@example.se",
+			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
 		}
 	],
 	"chains": {
