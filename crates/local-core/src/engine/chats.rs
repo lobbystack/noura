@@ -116,8 +116,20 @@ impl WorkspaceEngine {
         for object in objects {
             let path = resolve_for_write(&self.root, &object.relative_path, "chat_list")?;
             let bytes = read_downloaded(&path, &object.relative_path, "chat_list")?;
-            let chat = parse_chat(&object.relative_path, &bytes)?;
-            chats.push((parse_chat_timestamp(&chat.updated, "chat_list")?, chat));
+            // A chat file that breaks the chat rules stays as it is and out
+            // of the list, so one file edited by hand hides no other chat.
+            let chat = match parse_chat(&object.relative_path, &bytes) {
+                Ok(chat) => chat,
+                Err(error) if error.code == "invalid_chat_markdown" => {
+                    tracing::warn!(message = %error.message, "a chat file breaks the chat rules");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let Ok(updated) = parse_chat_timestamp(&chat.updated, "chat_list") else {
+                continue;
+            };
+            chats.push((updated, chat));
         }
         chats.sort_by(|left, right| {
             right
@@ -155,7 +167,16 @@ impl WorkspaceEngine {
         for relative in paths {
             let path = resolve_for_write(&self.root, &relative, "chat_read")?;
             let bytes = read_downloaded(&path, &relative, "chat_read")?;
-            let message = parse_chat_message(&relative, &bytes)?;
+            // A message file that breaks the chat rules stays as it is and
+            // out of the chat, which still reads.
+            let message = match parse_chat_message(&relative, &bytes) {
+                Ok(message) => message,
+                Err(error) if error.code == "invalid_chat_markdown" => {
+                    tracing::warn!(message = %error.message, "a chat message file breaks the chat rules");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if message.chat_id != id {
                 continue;
             }

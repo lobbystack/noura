@@ -23,7 +23,7 @@ use ts_rs::TS;
 
 use crate::{
     AiConsentDataCategory, AiConsentGrant, AiConsentGrantInput, AiConsentReadInput,
-    AiConsentRevokeInput, AiConsentRevokeOutcome,
+    AiConsentRevokeInput, AiConsentRevokeOutcome, CredentialStore, SystemCredentials,
     consent::{AiConsentKey, AiConsentStore, consent_key},
 };
 use crate::{CoreError, ErrorCategory, Result};
@@ -38,6 +38,7 @@ use providers::*;
 use validation::*;
 
 pub use genai_streamer::GenAiStreamer;
+pub use providers::AI_PROVIDER_KINDS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
@@ -228,12 +229,25 @@ pub struct AiFoundation {
     config_path: PathBuf,
     providers: Mutex<Vec<AiProviderConfig>>,
     consents: AiConsentStore,
+    credentials: Arc<dyn CredentialStore>,
     stream_gate: Mutex<()>,
     operations: Arc<AiOperationRegistry>,
 }
 
 impl AiFoundation {
+    /// Open the provider settings at `config_path` and the consents at
+    /// `consent_path`, both on this device, with keys in the operating
+    /// system's credential store.
     pub fn open(config_path: impl AsRef<Path>, consent_path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with(config_path, consent_path, Arc::new(SystemCredentials))
+    }
+
+    /// [`AiFoundation::open`] with keys in `credentials`.
+    pub fn open_with(
+        config_path: impl AsRef<Path>,
+        consent_path: impl AsRef<Path>,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> Result<Self> {
         let config_path = config_path.as_ref().to_owned();
         let providers: Vec<AiProviderConfig> = if config_path.exists() {
             let bytes = std::fs::read(&config_path)
@@ -254,6 +268,7 @@ impl AiFoundation {
             config_path,
             providers: Mutex::new(providers),
             consents: AiConsentStore::open(consent_path)?,
+            credentials,
             stream_gate: Mutex::new(()),
             operations: Arc::new(AiOperationRegistry {
                 operations: Mutex::new(HashMap::new()),
@@ -291,6 +306,9 @@ impl AiFoundation {
         Ok(())
     }
 
+    /// Keep `secret` as the key of the provider `provider_id`, in the
+    /// credential store. The settings keep only a new reference to it, and
+    /// the key it replaces leaves the store.
     pub fn set_credential(&self, provider_id: &str, secret: &str) -> Result<String> {
         if secret.is_empty() {
             return Err(CoreError::validation(
@@ -315,31 +333,75 @@ impl AiFoundation {
             })?;
         let previous = values[position].credential_ref.clone();
         let reference = format!("credential_{}", uuid::Uuid::new_v4());
-        let entry = keyring::Entry::new("org.noura.ai", &reference)
-            .map_err(|_| credential_error("ai_credential_set"))?;
-        entry
-            .set_password(secret)
-            .map_err(|_| credential_error("ai_credential_set"))?;
+        self.credentials.set(&reference, secret)?;
         let mut next = values.clone();
         next[position].credential_ref = Some(reference.clone());
         if let Err(error) = write_json(&self.config_path, &next) {
-            let _ = entry.delete_credential();
+            let _ = self.credentials.delete(&reference);
             return Err(error);
         }
         *values = next;
         if let Some(previous) = previous {
-            let _ = keyring::Entry::new("org.noura.ai", &previous)
-                .and_then(|old| old.delete_credential());
+            let _ = self.credentials.delete(&previous);
         }
         Ok(reference)
     }
 
-    pub fn delete_credential(&self, reference: &str) -> Result<()> {
-        let entry = keyring::Entry::new("org.noura.ai", reference)
+    /// Forget the key of the provider `provider_id`: its reference leaves
+    /// the settings and the key leaves the credential store.
+    pub fn clear_credential(&self, provider_id: &str) -> Result<()> {
+        let mut values = self
+            .providers
+            .lock()
             .map_err(|_| credential_error("ai_credential_delete"))?;
-        entry
-            .delete_credential()
-            .map_err(|_| credential_error("ai_credential_delete"))
+        let Some(position) = values.iter().position(|value| value.id == provider_id) else {
+            return Err(CoreError::validation(
+                "provider_not_found",
+                "The AI provider does not exist",
+                "ai_credential_delete",
+            ));
+        };
+        let Some(reference) = values[position].credential_ref.clone() else {
+            return Ok(());
+        };
+        let mut next = values.clone();
+        next[position].credential_ref = None;
+        write_json(&self.config_path, &next)?;
+        *values = next;
+        self.credentials.delete(&reference)
+    }
+
+    pub fn delete_credential(&self, reference: &str) -> Result<()> {
+        self.credentials.delete(reference)
+    }
+
+    /// Remove the provider `provider_id` from the settings, with its key.
+    /// Its running requests stop, and its consents lapse.
+    pub fn remove_provider(&self, provider_id: &str) -> Result<()> {
+        let _gate = self
+            .stream_gate
+            .lock()
+            .map_err(|_| operation_lock_error("ai_provider_remove"))?;
+        let mut values = self
+            .providers
+            .lock()
+            .map_err(|_| provider_lock_error("ai_provider_remove"))?;
+        let Some(removed) = values.iter().find(|value| value.id == provider_id).cloned() else {
+            return Ok(());
+        };
+        let next: Vec<AiProviderConfig> = values
+            .iter()
+            .filter(|value| value.id != provider_id)
+            .cloned()
+            .collect();
+        write_json(&self.config_path, &next)?;
+        *values = next;
+        drop(values);
+        self.operations.cancel_provider(provider_id)?;
+        if let Some(reference) = removed.credential_ref {
+            let _ = self.credentials.delete(&reference);
+        }
+        Ok(())
     }
 
     pub fn read_consent(
@@ -469,7 +531,11 @@ impl AiFoundation {
                 "ai_stream",
             ));
         }
-        let credential = credential_for(&provider, "ai_stream")?;
+        let credential = provider
+            .credential_ref
+            .as_ref()
+            .map(|reference| self.credentials.get(reference))
+            .transpose()?;
         let operation = self
             .operations
             .start(input.operation_id.clone(), consent_key)?;
@@ -590,6 +656,43 @@ mod tests {
             credential_ref: None,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn every_offered_provider_kind_is_one_genai_connects_to() {
+        for (kind, name) in AI_PROVIDER_KINDS {
+            assert!(AdapterKind::from_lower_str(kind).is_some(), "{kind}");
+            assert!(!name.is_empty());
+        }
+    }
+
+    #[test]
+    fn keys_go_to_the_credential_store_and_settings_keep_a_reference() {
+        let root = tempdir().unwrap();
+        let credentials = Arc::new(crate::MemoryCredentials::new());
+        let ai = AiFoundation::open_with(
+            root.path().join("providers.json"),
+            root.path().join("consents.json"),
+            credentials.clone(),
+        )
+        .unwrap();
+        ai.save_provider(enabled_provider()).unwrap();
+        let first = ai.set_credential("test", "sk-first-secret").unwrap();
+        let second = ai.set_credential("test", "sk-second-secret").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(credentials.secrets(), vec!["sk-second-secret".to_owned()]);
+        let settings = std::fs::read_to_string(root.path().join("providers.json")).unwrap();
+        assert!(settings.contains(&second));
+        assert!(!settings.contains("secret"));
+
+        ai.clear_credential("test").unwrap();
+        assert!(credentials.secrets().is_empty());
+        assert_eq!(ai.list_providers().unwrap()[0].credential_ref, None);
+
+        ai.set_credential("test", "sk-third-secret").unwrap();
+        ai.remove_provider("test").unwrap();
+        assert!(credentials.secrets().is_empty());
+        assert!(ai.list_providers().unwrap().is_empty());
     }
 
     #[test]
