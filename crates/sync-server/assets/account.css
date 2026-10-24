@@ -82,7 +82,8 @@ button {
   cursor: pointer;
 }
 
-button.secondary {
+button.secondary,
+.passkey-ready button.link-button {
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--line);

@@ -1279,7 +1279,13 @@ async fn the_pages_are_plain_forms_under_a_policy_that_blocks_inline_scripts() {
         assert!(page.body.contains("<form") || path.starts_with("/account/confirm"));
     }
     let sign_in = site.get("/account/sign-in", None).await.body;
-    assert!(sign_in.contains("<form method=\"post\" action=\"/account/email-link\">"));
+    // The email form posts without script; its passkey button waits
+    // hidden for account-web.
+    assert!(sign_in.contains(
+        "<form method=\"post\" action=\"/account/email-link\" data-passkey=\"sign-in\">"
+    ));
+    assert!(sign_in.contains("<button type=\"button\" data-passkey-start hidden>"));
+    assert!(sign_in.contains("<button type=\"submit\""));
     for asset in ["account.css", "account.js"] {
         let reply = site.get(&format!("/account/assets/{asset}"), None).await;
         assert_eq!(reply.status, StatusCode::OK, "{asset}");

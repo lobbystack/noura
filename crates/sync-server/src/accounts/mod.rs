@@ -181,7 +181,10 @@ async fn page_headers(request: Request, next: Next) -> Response {
         HeaderValue::from_static(CONTENT_POLICY),
     );
     headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    // `strict-origin` keeps a mailed link's token out of every Referer and
+    // still lets a form post carry the `Origin` header that `same_origin`
+    // checks; `no-referrer` would send `Origin: null`.
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("strict-origin"));
     headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers
         .entry(CACHE_CONTROL)

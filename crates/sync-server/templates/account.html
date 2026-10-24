@@ -4,8 +4,8 @@
 <h1>Your account</h1>
 <p>You're signed in as {{ email }}.</p>
 <p data-passkey-count="{{ passkeys }}">{% if passkeys == 1 %}You have 1 passkey.{% else %}You have {{ passkeys }} passkeys.{% endif %}</p>
-<form class="passkey" data-passkey="add" hidden>
-<button type="submit">Add a passkey</button>
+<form data-passkey="add">
+<button type="button" data-passkey-start hidden>Add a passkey</button>
 <p class="status" data-status role="status"></p>
 </form>
 <form method="post" action="/account/sign-out">
