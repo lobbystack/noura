@@ -13,11 +13,12 @@ use hpke::kdf::HkdfSha256;
 use hpke::kem::XWing;
 use hpke::{Deserializable, Kem as _, OpModeR, OpModeS, Serializable};
 use rand_core::CryptoRng;
-use sync_protocol::codec::{Decode, ExactBytes, Nested, Text};
-use sync_protocol::crypto::{RandomError, SigningKey, random_array};
+use sync_protocol::account::AccountChain;
+use sync_protocol::codec::{Decode, Encode, ExactBytes, Nested, Text};
+use sync_protocol::crypto::{RandomError, SigningKey, hash, random_array};
 use sync_protocol::records::{
     AccountHead, AccountLink, Card, ENCAPSULATED_KEY_LEN, ENVELOPE_CIPHERTEXT_LEN, Enroll,
-    Envelope, LinkKind, Signed,
+    Envelope, LinkKind, RecoveryProof, Signed,
 };
 use sync_protocol::types::{Digest, Id, Key, SecretKey};
 use zeroize::Zeroizing;
@@ -176,6 +177,97 @@ pub fn verify_enrollment(
         return Err(EnrollmentError::Challenge);
     }
     Ok(proof.body.card.0.clone())
+}
+
+/// Builds the recovery proof (§12) with which the recovery identity
+/// `identity` proves to the server at `origin` that it holds its signing
+/// key, for the new device whose enrolled card is `new_card`.
+pub fn recovery_proof(
+    identity: &DeviceKeys,
+    origin: &str,
+    new_card: &Card,
+    challenge: Key,
+) -> Signed<RecoveryProof> {
+    Signed::sign(
+        RecoveryProof {
+            origin: Text::new(origin).expect("an origin fits a str"),
+            recovery_device: identity.device(),
+            new_card_digest: hash(&new_card.to_bytes()),
+            challenge,
+        },
+        identity.signing(),
+    )
+}
+
+/// What the server knows when it checks a recovery proof: its own origin,
+/// the current chain of the session's account and the session's enrolled
+/// card.
+#[derive(Clone, Debug)]
+pub struct RecoveryContext<'a> {
+    /// The server's configured public origin.
+    pub origin: &'a str,
+    /// The session account's current chain.
+    pub chain: &'a AccountChain,
+    /// The card the session enrolled.
+    pub session_card: &'a Card,
+}
+
+/// Why the server refuses a recovery proof (§12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RecoveryProofError {
+    /// The proof names a card that isn't the active recovery identity of
+    /// the session's account chain.
+    #[error("forbidden: not the active recovery identity")]
+    NotRecoveryIdentity,
+    /// The signature doesn't verify under the recovery identity's card.
+    #[error("signature_invalid")]
+    Signature,
+    /// The proof names another origin.
+    #[error("origin_mismatch")]
+    Origin,
+    /// The proof names another card than the session's enrolled one.
+    #[error("forbidden: another card")]
+    Card,
+}
+
+impl RecoveryProofError {
+    /// The server error code.
+    pub fn server_code(&self) -> &'static str {
+        match self {
+            RecoveryProofError::NotRecoveryIdentity | RecoveryProofError::Card => "forbidden",
+            RecoveryProofError::Signature => "signature_invalid",
+            RecoveryProofError::Origin => "origin_mismatch",
+        }
+    }
+}
+
+/// The server's recovery-proof verifier (§12): the signature under the
+/// recovery identity's card, that the card is the active recovery identity
+/// of the session's account chain, the origin, and that the new card is the
+/// session's enrolled card. The caller then checks that the challenge the
+/// proof answers is current and unused, and consumes it.
+pub fn verify_recovery_proof(
+    proof: &Signed<RecoveryProof>,
+    context: &RecoveryContext<'_>,
+) -> Result<Key, RecoveryProofError> {
+    let body = &proof.body;
+    let chain = context.chain;
+    let identity = chain
+        .card(&body.recovery_device)
+        .ok_or(RecoveryProofError::NotRecoveryIdentity)?;
+    proof
+        .verify(&identity.card.signing_public)
+        .map_err(|_| RecoveryProofError::Signature)?;
+    if !identity.recovery || !identity.active_at(chain.head_seqno()) {
+        return Err(RecoveryProofError::NotRecoveryIdentity);
+    }
+    if body.origin.as_str() != context.origin {
+        return Err(RecoveryProofError::Origin);
+    }
+    if body.new_card_digest != hash(&context.session_card.to_bytes()) {
+        return Err(RecoveryProofError::Card);
+    }
+    Ok(body.challenge)
 }
 
 /// The genesis link of a new account chain, signed by its own card.

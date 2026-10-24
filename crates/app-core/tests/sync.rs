@@ -19,10 +19,10 @@ async fn server() -> (String, DeviceCredentials, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temporary directory");
     let data = dir.path().join("data");
     sync_server::migrate(&data).await.expect("migrated");
-    let store = sync_server::open_store(&sync_server::Config {
-        data_dir: data,
-        listen: "127.0.0.1:0".parse().expect("an address"),
-    })
+    let store = sync_server::open_store(&sync_server::Config::new(
+        data,
+        "127.0.0.1:0".parse().expect("an address"),
+    ))
     .await
     .expect("the store opens");
 
@@ -42,6 +42,7 @@ async fn server() -> (String, DeviceCredentials, tempfile::TempDir) {
             Session {
                 account,
                 device: keys.device(),
+                recovery: None,
             },
         )
         .await

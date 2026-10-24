@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<h1>Sign in</h1>
+<form class="passkey" data-passkey="sign-in" hidden>
+<label for="passkey-email">Email</label>
+<input id="passkey-email" name="email" type="email" autocomplete="username webauthn" required>
+<button type="submit">Sign in with a passkey</button>
+<p class="status" data-status role="status"></p>
+</form>
+<form method="post" action="/account/email-link">
+<label for="link-email">Email</label>
+<input id="link-email" name="email" type="email" autocomplete="email" required>
+<button type="submit">Email me a sign-in link</button>
+</form>
+<p class="aside">New to Noura? <a href="/account/sign-up">Create an account</a></p>
+{% endblock %}

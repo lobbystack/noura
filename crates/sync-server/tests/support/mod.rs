@@ -172,10 +172,10 @@ pub fn push_body(ops: &[Signed<Operation>]) -> Vec<u8> {
 /// Writes an account of `devices` devices and a session for each into the
 /// data directory's database, with the server stopped.
 pub async fn seed(data: &Path, devices: usize) -> Account {
-    let store = sync_server::open_store(&sync_server::Config {
-        data_dir: data.to_owned(),
-        listen: "127.0.0.1:0".parse().expect("an address"),
-    })
+    let store = sync_server::open_store(&sync_server::Config::new(
+        data.to_owned(),
+        "127.0.0.1:0".parse().expect("an address"),
+    ))
     .await
     .expect("the data directory is ready");
     let seeded = seed_store(&store, devices).await;
@@ -202,6 +202,7 @@ pub async fn seed_store<B: sync_store::Backend>(
                 Session {
                     account,
                     device: key.device(),
+                    recovery: None,
                 },
             )
             .await

@@ -42,6 +42,12 @@ rust-version = "1.99"
 
 [workspace.dependencies]
 aho-corasick = "1"
+# The account pages of the sync server, as templates with plain forms (ADR
+# 0003). MIT OR Apache-2.0.
+askama = "0.16.1"
+# Lets the server tests implement passkey-authenticator's traits. MIT OR
+# Apache-2.0.
+async-trait = "0.1.92"
 # The sync server's HTTP layer, on hyper's HTTP/1 server. MIT.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "matched-path", "tokio"] }
 # Highlights fenced code in notes with tree-sitter grammars. MIT OR
@@ -133,6 +139,8 @@ jiff = { version = "0.2", features = ["serde"] }
 # files.
 jsonschema = { version = "0.59.0", default-features = false }
 keyring = "4"
+# Sign-in mail over SMTP for the sync server, with rustls. MIT.
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 # Rotates the local diagnostic log at 1 MB and keeps three old files.
 logroller = "0.1.12"
 memchr = "2.8.3"
@@ -150,6 +158,12 @@ objc2-foundation = { version = "0.3.2", default-features = false }
 # `reveal` shows an item selected in Finder, Explorer or a Linux file manager.
 opener = { version = "0.9.0", features = ["reveal"] }
 openssl = "0.10"
+# A software passkey that signs up and in at seam 4. MIT OR Apache-2.0.
+passkey-authenticator = "0.6.0"
+passkey-client = "0.6.0"
+passkey-crypto = "0.1.1"
+passkey-types = "0.6.0"
+public-suffix = "0.1.3"
 parking_lot = "0.12.5"
 pbkdf2 = "=0.12.2"
 # Without default features proptest leaves out its process-forking runner.

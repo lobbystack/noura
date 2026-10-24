@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM pending_passkeys WHERE token_hash = ?1\n             RETURNING email, credential_id, passkey, expires_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "email",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "name": "credential_id",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "credential_id"
+          }
+        }
+      },
+      {
+        "name": "passkey",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "passkey"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "916b8d5d9f0bcfe132de44179bed292086ae9b1cc13815a7021ae7645582c5fa"
+}

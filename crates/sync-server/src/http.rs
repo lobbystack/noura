@@ -16,9 +16,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use sync_protocol::codec::{Bytes, Decode, Encode, Text};
 use sync_protocol::messages::{
-    ErrorBody, MAX_BODY, MEDIA_TYPE, PullRequest, RESTORE_GENERATION_HEADER,
+    ChainAppendRequest, ChainsRequest, ErrorBody, MAX_BODY, MEDIA_TYPE, PullRequest,
+    RESTORE_GENERATION_HEADER, RecoveryRequest,
 };
-use sync_protocol::types::{Id, from_decimal};
+use sync_protocol::types::{Digest, Id, from_decimal};
 use sync_store::{Backend, Error, Refusal, Session, Store};
 
 /// A failed request: a refusal the protocol names, or a store failure.
@@ -37,7 +38,7 @@ fn refused(code: &'static str, message: &str) -> ApiError {
 /// The cause of a store failure, carried from the handler to the request
 /// log and never sent.
 #[derive(Clone)]
-struct InternalCause(String);
+pub(crate) struct InternalCause(pub(crate) String);
 
 fn encoded(status: StatusCode, body: Vec<u8>) -> Response {
     let mut response = (status, body).into_response();
@@ -97,20 +98,63 @@ where
 /// The signed-in device a bearer token names.
 pub struct Auth(pub Session);
 
-impl<B: Backend> FromRequestParts<Arc<Store<B>>> for Auth {
+/// The signed-in device a bearer token names, with the token's hash.
+pub struct AuthWithHash(pub Session, pub Digest);
+
+fn bearer(parts: &Parts) -> Result<&str, ApiError> {
+    parts
+        .headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or_else(|| refused("unauthorized", "no valid session"))
+}
+
+impl<B: Backend> FromRequestParts<AppState<B>> for Auth {
     type Rejection = ApiError;
 
     async fn from_request_parts(
         parts: &mut Parts,
-        store: &Arc<Store<B>>,
+        state: &AppState<B>,
     ) -> Result<Self, Self::Rejection> {
-        let token = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .ok_or_else(|| refused("unauthorized", "no valid session"))?;
-        Ok(Auth(store.session(token).await?))
+        let token = bearer(parts)?;
+        Ok(Auth(state.store.session(token).await?))
+    }
+}
+
+impl<B: Backend> FromRequestParts<AppState<B>> for AuthWithHash {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState<B>,
+    ) -> Result<Self, Self::Rejection> {
+        let token = bearer(parts)?;
+        let (session, hash) = state.store.session_and_hash(token).await?;
+        Ok(AuthWithHash(session, hash))
+    }
+}
+
+/// What every route reads: the store, and the account pages' settings.
+pub struct AppState<B: Backend> {
+    /// The store.
+    pub store: Arc<Store<B>>,
+    /// The account pages, sign-in and mail.
+    pub accounts: Arc<crate::accounts::Accounts>,
+}
+
+impl<B: Backend> Clone for AppState<B> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            accounts: self.accounts.clone(),
+        }
+    }
+}
+
+impl<B: Backend> axum::extract::FromRef<AppState<B>> for Arc<Store<B>> {
+    fn from_ref(state: &AppState<B>) -> Self {
+        state.store.clone()
     }
 }
 
@@ -258,6 +302,50 @@ async fn heads<B: Backend>(
         .await?))
 }
 
+async fn append_chain<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: ChainAppendRequest = decode(&body(request).await?)?;
+    let links = request.links.0.into_iter().map(|link| link.0).collect();
+    Ok(ok(&store.append_chain(session, links).await?))
+}
+
+async fn read_chains<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: ChainsRequest = decode(&body(request).await?)?;
+    Ok(ok(&store.read_chains(session, request).await?))
+}
+
+async fn challenge<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.challenge(session).await?))
+}
+
+async fn recovery<B: Backend>(
+    State(state): State<AppState<B>>,
+    AuthWithHash(session, hash): AuthWithHash,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: RecoveryRequest = decode(&body(request).await?)?;
+    state
+        .store
+        .prove_recovery(
+            session,
+            hash,
+            state.accounts.origin().as_str(),
+            request.recovery_proof.0,
+        )
+        .await?;
+    Ok(encoded(StatusCode::OK, Vec::new()))
+}
+
 async fn not_found() -> ApiError {
     refused("not_found", "no such route")
 }
@@ -287,11 +375,16 @@ async fn stamp_and_log(generation: u64, request: Request, next: Next) -> Respons
     response
 }
 
-/// The routes of §26 that the server serves so far.
-pub fn router<B: Backend>(store: Arc<Store<B>>) -> Router {
-    let generation = store.restore_generation();
+/// The routes of §26 that the server serves so far, and the account pages.
+pub fn router<B: Backend>(state: AppState<B>) -> Router {
+    let generation = state.store.restore_generation();
     Router::new()
         .route("/v2/limits", get(limits::<B>))
+        .route("/v2/accounts/chain", post(append_chain::<B>))
+        .route("/v2/accounts/chains", post(read_chains::<B>))
+        .route("/v2/devices/challenge", post(challenge::<B>))
+        .route("/v2/recovery", post(recovery::<B>))
+        .merge(crate::accounts::routes::<B>())
         .route(
             "/v2/workspaces",
             get(list_workspaces::<B>).post(create_workspace::<B>),
@@ -314,7 +407,7 @@ pub fn router<B: Backend>(store: Arc<Store<B>>) -> Router {
         )
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
-        .with_state(store)
+        .with_state(state)
         .layer(middleware::from_fn(move |request: Request, next: Next| {
             stamp_and_log(generation, request, next)
         }))

@@ -1,5 +1,5 @@
-//! The read routes of §26 and the account chain writes that tests use
-//! until ticket 46 adds the chain routes.
+//! The read routes of §26, and the trusted account chain writes that tests
+//! use to set up a store.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -42,7 +42,9 @@ pub(crate) async fn session_chain(
 }
 
 /// Appends links to an account's current chain, or starts one with a
-/// genesis, after checking every rule of §7. Returns the new head's seqno.
+/// genesis, after checking the rules of §7 that the links alone show but
+/// not who sends them: tests set up stores this way, and the chain route
+/// runs `chains::append`. Returns the new head's seqno.
 pub(crate) async fn append_account_links(
     txn: &mut impl WriteTxn,
     links: &[Signed<AccountLink>],
@@ -99,13 +101,23 @@ async fn authorize(
     let (row, policy) = policy::load(txn, cache, workspace)
         .await?
         .ok_or_else(|| refuse("not_found", "no such workspace"))?;
-    if !policy.head_snapshot().is_device(&session.device) {
+    if reader(policy.head_snapshot(), session).is_none() {
         return Err(refuse(
             "forbidden",
             "the device isn't active in this workspace",
         ));
     }
     Ok((row, policy))
+}
+
+/// The device a session reads a workspace as: its own card when the policy
+/// counts it among the workspace's devices, else the recovery identity it
+/// proved, which reads as itself until the recovered card joins (§12).
+pub(crate) fn reader(snapshot: &sync_protocol::policy::Snapshot, session: Session) -> Option<Id> {
+    if snapshot.is_device(&session.device) {
+        return Some(session.device);
+    }
+    session.recovery.filter(|r| snapshot.is_device(r))
 }
 
 /// Like [`authorize`], and the domain exists and the device reads it.
@@ -121,7 +133,8 @@ async fn authorize_domain(
     if !snapshot.domains.contains_key(&domain) {
         return Err(refuse("not_found", "no such domain"));
     }
-    if !snapshot.can_read(&session.device, &domain) {
+    let device = reader(snapshot, session).unwrap_or(session.device);
+    if !snapshot.can_read(&device, &domain) {
         return Err(refuse("forbidden", "the device can't read this domain"));
     }
     Ok(policy)
@@ -204,9 +217,9 @@ pub(crate) async fn keys(
     recipient: Id,
 ) -> Result<KeysResponse> {
     let (_, policy) = authorize(txn, cache, session, workspace).await?;
-    // A recovery identity's proven session reads its own envelopes too
-    // (ticket 47); every other session reads only its device's.
-    if recipient != session.device {
+    // A session reads its own device's envelopes, and a session that proved
+    // a recovery identity reads the identity's too (§12).
+    if recipient != session.device && Some(recipient) != session.recovery {
         return Err(refuse(
             "forbidden",
             "a session reads only its own device's envelopes",
@@ -224,7 +237,7 @@ pub(crate) async fn keys(
         }
         for row in rows {
             cursor = row.key_seq;
-            let reads = snapshot.can_read(&session.device, &row.domain);
+            let reads = snapshot.can_read(&recipient, &row.domain);
             let record = match row.record_type {
                 KEY_EPOCH if reads => KeyRecord::Epoch(
                     Signed::<Epoch>::from_bytes(&row.record).map_err(Error::internal)?,

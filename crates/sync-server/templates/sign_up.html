@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Create an account{% endblock %}
+{% block content %}
+<h1>Create an account</h1>
+<p>Either way, you confirm your email through a link we send you.</p>
+<form class="passkey" data-passkey="sign-up" hidden>
+<label for="passkey-email">Email</label>
+<input id="passkey-email" name="email" type="email" autocomplete="username webauthn" required>
+<button type="submit">Create a passkey</button>
+<p class="status" data-status role="status"></p>
+</form>
+<form method="post" action="/account/email-link">
+<label for="link-email">Email</label>
+<input id="link-email" name="email" type="email" autocomplete="email" required>
+<button type="submit">Email me a sign-up link</button>
+</form>
+<p class="aside">Have an account? <a href="/account/sign-in">Sign in</a></p>
+{% endblock %}

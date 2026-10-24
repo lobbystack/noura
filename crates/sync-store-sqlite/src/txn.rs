@@ -3,10 +3,11 @@
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use sync_protocol::live::LiveOp;
 use sync_protocol::records::{OpClass, Ref};
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
-    ChainHeadRow, DeleteRow, DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, RawEntry,
-    ReadTxn, Result, Session, WorkspaceRow, WriteTxn,
+    CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DomainRow, EpochRow, Error, KeyRow,
+    LinkRow, LockPlan, PasskeyRow, PendingPasskeyRow, RawEntry, ReadTxn, Result, Session,
+    WorkspaceRow, WriteTxn,
 };
 
 /// A read transaction from the pool, or the writer's connection inside its
@@ -153,7 +154,7 @@ impl ReadTxn for SqliteTxn {
     async fn session(&mut self, token_hash: Digest) -> Result<Option<Session>> {
         let hash = &token_hash.0[..];
         let row = sqlx::query!(
-            "SELECT account, device FROM sessions WHERE token_hash = ?1",
+            "SELECT account, device, recovery FROM sessions WHERE token_hash = ?1",
             hash
         )
         .fetch_optional(self.c())
@@ -163,6 +164,7 @@ impl ReadTxn for SqliteTxn {
             Ok(Session {
                 account: id(r.account)?,
                 device: id(r.device)?,
+                recovery: r.recovery.map(id).transpose()?,
             })
         })
         .transpose()
@@ -701,6 +703,101 @@ impl ReadTxn for SqliteTxn {
         .map_err(db)?;
         uint(row.head)
     }
+
+    async fn enrolled_card(&mut self, device: Id) -> Result<Option<(Id, Vec<u8>)>> {
+        let device = &device.0[..];
+        let row = sqlx::query!("SELECT account, card FROM cards WHERE device = ?1", device)
+            .fetch_optional(self.c())
+            .await
+            .map_err(db)?;
+        row.map(|r| Ok((id(r.account)?, r.card))).transpose()
+    }
+
+    async fn workspaces_recording(&mut self, account: Id) -> Result<Vec<Id>> {
+        let account = &account.0[..];
+        let rows = sqlx::query!(
+            "SELECT workspace FROM recorded_accounts WHERE account = ?1 ORDER BY workspace",
+            account
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.workspace)).collect()
+    }
+
+    async fn account_email(&mut self, account: Id) -> Result<Option<String>> {
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            "SELECT email FROM account_emails WHERE account = ?1",
+            account
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.map(|r| r.email))
+    }
+
+    async fn passkeys(&mut self, account: Id) -> Result<Vec<PasskeyRow>> {
+        let bytes = &account.0[..];
+        let rows = sqlx::query!(
+            "SELECT credential_id, passkey FROM passkeys WHERE account = ?1 ORDER BY credential_id",
+            bytes
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| PasskeyRow {
+                credential_id: r.credential_id,
+                account,
+                passkey: r.passkey,
+            })
+            .collect())
+    }
+
+    async fn passkey(&mut self, credential_id: &[u8]) -> Result<Option<PasskeyRow>> {
+        let row = sqlx::query!(
+            "SELECT credential_id, account, passkey FROM passkeys WHERE credential_id = ?1",
+            credential_id
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(PasskeyRow {
+                credential_id: r.credential_id,
+                account: id(r.account)?,
+                passkey: r.passkey,
+            })
+        })
+        .transpose()
+    }
+
+    async fn web_session(&mut self, token_hash: Digest) -> Result<Option<Id>> {
+        let hash = &token_hash.0[..];
+        let row = sqlx::query!(
+            "SELECT account FROM web_sessions WHERE token_hash = ?1",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| id(r.account)).transpose()
+    }
+}
+
+fn kind_code(kind: CeremonyKind) -> i64 {
+    i64::from(kind.code())
+}
+
+fn ceremony_kind(code: i64) -> Result<CeremonyKind> {
+    match code {
+        1 => Ok(CeremonyKind::SignUp),
+        2 => Ok(CeremonyKind::AddPasskey),
+        3 => Ok(CeremonyKind::SignIn),
+        _ => Err(Error::internal("unknown ceremony kind")),
+    }
 }
 
 impl WriteTxn for SqliteTxn {
@@ -714,11 +811,13 @@ impl WriteTxn for SqliteTxn {
         let hash = &token_hash.0[..];
         let account = &session.account.0[..];
         let device = &session.device.0[..];
+        let recovery = session.recovery.as_ref().map(|r| r.0.to_vec());
         sqlx::query!(
-            "INSERT INTO sessions (token_hash, account, device) VALUES (?1, ?2, ?3)",
+            "INSERT INTO sessions (token_hash, account, device, recovery) VALUES (?1, ?2, ?3, ?4)",
             hash,
             account,
-            device
+            device,
+            recovery
         )
         .execute(self.c())
         .await
@@ -1119,5 +1218,303 @@ impl WriteTxn for SqliteTxn {
         .await
         .map_err(db)?;
         Ok(())
+    }
+
+    async fn set_session_recovery(&mut self, token_hash: Digest, recovery: Id) -> Result<()> {
+        let hash = &token_hash.0[..];
+        let recovery = &recovery.0[..];
+        sqlx::query!(
+            "UPDATE sessions SET recovery = ?2 WHERE token_hash = ?1",
+            hash,
+            recovery
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_enrolled_card(&mut self, device: Id, account: Id, card: &[u8]) -> Result<()> {
+        let device = &device.0[..];
+        let account = &account.0[..];
+        sqlx::query!(
+            "INSERT INTO cards (device, account, card) VALUES (?1, ?2, ?3)",
+            device,
+            account,
+            card
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn record_accounts(&mut self, workspace: Id, accounts: &[Id]) -> Result<()> {
+        let workspace = &workspace.0[..];
+        for account in accounts {
+            let account = &account.0[..];
+            sqlx::query!(
+                "INSERT INTO recorded_accounts (workspace, account) VALUES (?1, ?2)
+                 ON CONFLICT DO NOTHING",
+                workspace,
+                account
+            )
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        }
+        Ok(())
+    }
+
+    async fn insert_challenge(
+        &mut self,
+        challenge: Key,
+        account: Id,
+        expires_at: u64,
+    ) -> Result<()> {
+        let challenge = &challenge.0[..];
+        let account = &account.0[..];
+        let expires_at = int(expires_at)?;
+        sqlx::query!(
+            "INSERT INTO challenges (challenge, account, expires_at) VALUES (?1, ?2, ?3)",
+            challenge,
+            account,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_challenge(&mut self, challenge: Key, account: Id) -> Result<Option<u64>> {
+        let challenge = &challenge.0[..];
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            "DELETE FROM challenges WHERE challenge = ?1 AND account = ?2 RETURNING expires_at",
+            challenge,
+            account
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| uint(r.expires_at)).transpose()
+    }
+
+    async fn insert_account(&mut self, account: Id, email: &str) -> Result<()> {
+        let account = &account.0[..];
+        sqlx::query!(
+            "INSERT INTO account_emails (account, email) VALUES (?1, ?2)
+             ON CONFLICT DO NOTHING",
+            account,
+            email
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_passkey(&mut self, row: &PasskeyRow) -> Result<bool> {
+        let credential_id = &row.credential_id[..];
+        let account = &row.account.0[..];
+        let passkey = &row.passkey[..];
+        let done = sqlx::query!(
+            "INSERT INTO passkeys (credential_id, account, passkey) VALUES (?1, ?2, ?3)
+             ON CONFLICT DO NOTHING",
+            credential_id,
+            account,
+            passkey
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn update_passkey(&mut self, credential_id: &[u8], passkey: &[u8]) -> Result<()> {
+        sqlx::query!(
+            "UPDATE passkeys SET passkey = ?2 WHERE credential_id = ?1",
+            credential_id,
+            passkey
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_web_session(&mut self, token_hash: Digest, account: Id) -> Result<()> {
+        let hash = &token_hash.0[..];
+        let account = &account.0[..];
+        sqlx::query!(
+            "INSERT INTO web_sessions (token_hash, account) VALUES (?1, ?2)",
+            hash,
+            account
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_web_session(&mut self, token_hash: Digest) -> Result<()> {
+        let hash = &token_hash.0[..];
+        sqlx::query!("DELETE FROM web_sessions WHERE token_hash = ?1", hash)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_magic_link(
+        &mut self,
+        token_hash: Digest,
+        email: &str,
+        expires_at: u64,
+    ) -> Result<()> {
+        let hash = &token_hash.0[..];
+        let expires_at = int(expires_at)?;
+        sqlx::query!(
+            "INSERT INTO magic_links (token_hash, email, expires_at) VALUES (?1, ?2, ?3)",
+            hash,
+            email,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_magic_link(&mut self, token_hash: Digest) -> Result<Option<(String, u64)>> {
+        let hash = &token_hash.0[..];
+        let row = sqlx::query!(
+            "DELETE FROM magic_links WHERE token_hash = ?1 RETURNING email, expires_at",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| Ok((r.email, uint(r.expires_at)?))).transpose()
+    }
+
+    async fn insert_ceremony(&mut self, row: &CeremonyRow) -> Result<()> {
+        let ceremony = &row.id.0[..];
+        let kind = kind_code(row.kind);
+        let account = row.account.as_ref().map(|a| a.0.to_vec());
+        let email = row.email.as_deref();
+        let state = &row.state[..];
+        let expires_at = int(row.expires_at)?;
+        sqlx::query!(
+            "INSERT INTO ceremonies (id, kind, account, email, state, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            ceremony,
+            kind,
+            account,
+            email,
+            state,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_ceremony(&mut self, ceremony: Id) -> Result<Option<CeremonyRow>> {
+        let bytes = &ceremony.0[..];
+        let row = sqlx::query!(
+            "DELETE FROM ceremonies WHERE id = ?1 RETURNING kind, account, email, state, expires_at",
+            bytes
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(CeremonyRow {
+                id: ceremony,
+                kind: ceremony_kind(r.kind)?,
+                account: r.account.map(id).transpose()?,
+                email: r.email,
+                state: r.state,
+                expires_at: uint(r.expires_at)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn insert_pending_passkey(
+        &mut self,
+        token_hash: Digest,
+        row: &PendingPasskeyRow,
+    ) -> Result<()> {
+        let hash = &token_hash.0[..];
+        let credential_id = &row.credential_id[..];
+        let passkey = &row.passkey[..];
+        let expires_at = int(row.expires_at)?;
+        sqlx::query!(
+            "INSERT INTO pending_passkeys (token_hash, email, credential_id, passkey, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            hash,
+            row.email,
+            credential_id,
+            passkey,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_pending_passkey(
+        &mut self,
+        token_hash: Digest,
+    ) -> Result<Option<PendingPasskeyRow>> {
+        let hash = &token_hash.0[..];
+        let row = sqlx::query!(
+            "DELETE FROM pending_passkeys WHERE token_hash = ?1
+             RETURNING email, credential_id, passkey, expires_at",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(PendingPasskeyRow {
+                email: r.email,
+                credential_id: r.credential_id,
+                passkey: r.passkey,
+                expires_at: uint(r.expires_at)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn delete_expired(&mut self, now: u64) -> Result<u64> {
+        let now = at_most(now);
+        let mut deleted = 0;
+        deleted += sqlx::query!("DELETE FROM magic_links WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        deleted += sqlx::query!("DELETE FROM pending_passkeys WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        deleted += sqlx::query!("DELETE FROM ceremonies WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        deleted += sqlx::query!("DELETE FROM challenges WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        Ok(deleted)
     }
 }

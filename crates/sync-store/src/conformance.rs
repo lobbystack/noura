@@ -261,6 +261,7 @@ impl<B: Backend> World<B> {
             let session = Session {
                 account,
                 device: key.device(),
+                recovery: None,
             };
             let token = random_token();
             store
@@ -369,12 +370,14 @@ impl<B: Backend> World<B> {
         let workspace = self.workspace;
         let revision = change.body.revision;
         let digest = change.digest();
+        let recorded: Vec<Id> = change.body.heads.iter().map(|h| h.account).collect();
         self.store
             .backend()
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
                     txn.insert_policy_change(workspace, revision, digest, &change.to_bytes())
                         .await?;
+                    txn.record_accounts(workspace, &recorded).await?;
                     txn.set_policy_head(workspace, revision, digest).await?;
                     let mut domains = domains;
                     if let Some((domain, _)) = &new_domain {
@@ -730,6 +733,7 @@ pub async fn creation_retries_and_conflicts<B: Backend>(store: Store<B>) {
     let session = Session {
         account,
         device: keys[0].device(),
+        recovery: None,
     };
     let cards = vec![keys[0].card(account)];
     let (body, genesis, _) = creation(&keys[0], &links, &cards);
@@ -779,6 +783,7 @@ pub async fn domain_ids_belong_to_their_workspace<B: Backend>(store: Store<B>) {
     let session = Session {
         account,
         device: keys[0].device(),
+        recovery: None,
     };
     let cards = vec![keys[0].card(account)];
     let shared = Id::random().expect("random");
@@ -812,6 +817,7 @@ pub async fn creation_checks_heads_signatures_and_recipients<B: Backend>(store: 
     let session = Session {
         account,
         device: keys[0].device(),
+        recovery: None,
     };
     let cards: Vec<Card> = keys.iter().map(|k| k.card(account)).collect();
 
@@ -859,6 +865,7 @@ pub async fn creation_checks_heads_signatures_and_recipients<B: Backend>(store: 
     let other = Session {
         account,
         device: keys[1].device(),
+        recovery: None,
     };
     assert_eq!(
         push_failure(store.create_workspace(other, body).await),
@@ -1083,6 +1090,7 @@ pub async fn operation_checks_answer_their_codes<B: Backend>(store: Store<B>) {
     let session = Session {
         account: stranger,
         device: keys[0].device(),
+        recovery: None,
     };
     let op = Signed::sign(
         Operation {
@@ -1314,6 +1322,7 @@ pub async fn policy_regression_and_stale_revisions<B: Backend>(store: Store<B>) 
     let session = Session {
         account: world.account,
         device: keys.device(),
+        recovery: None,
     };
     let token = random_token();
     world

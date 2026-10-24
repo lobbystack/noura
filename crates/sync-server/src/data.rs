@@ -39,7 +39,7 @@ pub fn database_path(data: &Path) -> PathBuf {
     data.join(DATABASE_FILE)
 }
 
-fn read_secret(path: &Path) -> Result<Option<SecretKey>, CommandError> {
+pub(crate) fn read_secret(path: &Path) -> Result<Option<SecretKey>, CommandError> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

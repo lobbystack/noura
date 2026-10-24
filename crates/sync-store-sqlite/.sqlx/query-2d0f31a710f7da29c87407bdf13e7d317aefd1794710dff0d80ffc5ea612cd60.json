@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO magic_links (token_hash, email, expires_at) VALUES (?1, ?2, ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2d0f31a710f7da29c87407bdf13e7d317aefd1794710dff0d80ffc5ea612cd60"
+}

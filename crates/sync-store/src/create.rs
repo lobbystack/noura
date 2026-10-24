@@ -309,6 +309,8 @@ pub(crate) async fn commit(
         txn.upsert_member(workspace, *account, member.role.code())
             .await?;
     }
+    let recorded: Vec<Id> = genesis.body.heads.iter().map(|h| h.account).collect();
+    txn.record_accounts(workspace, &recorded).await?;
     let entry = PolicyEntry {
         revision: 1,
         head: genesis_digest,

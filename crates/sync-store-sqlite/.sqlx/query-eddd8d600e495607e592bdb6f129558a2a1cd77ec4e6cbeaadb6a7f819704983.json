@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO passkeys (credential_id, account, passkey) VALUES (?1, ?2, ?3)\n             ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "eddd8d600e495607e592bdb6f129558a2a1cd77ec4e6cbeaadb6a7f819704983"
+}

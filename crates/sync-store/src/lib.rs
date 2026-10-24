@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+mod accounts;
+mod chains;
 mod create;
 mod hub;
 mod live;
@@ -28,18 +30,25 @@ pub mod conformance;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use sync_protocol::account::AccountChain;
 use sync_protocol::codec::{Bytes, Decode, Text};
 use sync_protocol::live::{LiveError, LiveOp};
 use sync_protocol::messages::{
-    EpochsResponse, ErrorBody, HeadResponse, KeysResponse, LimitsResponse, MAX_BODY,
-    MAX_WAIT_SECONDS, PolicyResponse, PullRequest, PullResponse, PushResponse, WorkspacesResponse,
+    ChainAppendResponse, ChainsRequest, ChainsResponse, ChallengeResponse, EpochsResponse,
+    ErrorBody, HeadResponse, KeysResponse, LimitsResponse, MAX_BODY, MAX_WAIT_SECONDS,
+    PolicyResponse, PullRequest, PullResponse, PushResponse, WorkspacesResponse,
     server_error_status,
 };
-use sync_protocol::records::{AccountLink, MAX_COVERS, MAX_RECIPIENTS, OpClass, Ref, Signed};
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::records::{
+    AccountLink, Card, MAX_COVERS, MAX_RECIPIENTS, OpClass, RecoveryProof, Ref, Signed,
+};
+
+pub use accounts::{SIGN_IN_TOKEN_LEN, SignInToken};
+pub use chains::SIGN_IN_TTL;
+use sync_protocol::types::{Digest, Id, Key, SecretKey};
 
 pub use hub::EventHub;
 pub use policy::PolicyCache;
@@ -136,6 +145,82 @@ pub struct Session {
     pub account: Id,
     /// The session's device.
     pub device: Id,
+    /// The recovery identity this session proved it holds (§12), if any.
+    pub recovery: Option<Id>,
+}
+
+impl Session {
+    /// A device's session that proved no recovery identity.
+    pub fn new(account: Id, device: Id) -> Self {
+        Self {
+            account,
+            device,
+            recovery: None,
+        }
+    }
+}
+
+/// A passkey ceremony's kind (§26 account pages).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CeremonyKind {
+    /// Registering a passkey to sign up with an email.
+    SignUp,
+    /// Registering another passkey for a signed-in account.
+    AddPasskey,
+    /// Signing in with a passkey.
+    SignIn,
+}
+
+impl CeremonyKind {
+    /// The kind's stored code.
+    pub fn code(self) -> u8 {
+        match self {
+            CeremonyKind::SignUp => 1,
+            CeremonyKind::AddPasskey => 2,
+            CeremonyKind::SignIn => 3,
+        }
+    }
+}
+
+/// A passkey ceremony's state between its two requests.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CeremonyRow {
+    /// The ceremony's random ID.
+    pub id: Id,
+    /// Its kind.
+    pub kind: CeremonyKind,
+    /// The account it serves, once known.
+    pub account: Option<Id>,
+    /// The email a sign-up names.
+    pub email: Option<String>,
+    /// The webauthn-rs state, serialized.
+    pub state: Vec<u8>,
+    /// When it expires, in Unix seconds.
+    pub expires_at: u64,
+}
+
+/// A passkey registered at sign-up, waiting for its email.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingPasskeyRow {
+    /// The email the sign-up names.
+    pub email: String,
+    /// The credential ID.
+    pub credential_id: Vec<u8>,
+    /// The passkey, serialized.
+    pub passkey: Vec<u8>,
+    /// When it expires, in Unix seconds.
+    pub expires_at: u64,
+}
+
+/// A stored passkey.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasskeyRow {
+    /// The credential ID.
+    pub credential_id: Vec<u8>,
+    /// The account it signs in to.
+    pub account: Id,
+    /// The passkey, serialized.
+    pub passkey: Vec<u8>,
 }
 
 /// A workspace's row.
@@ -412,6 +497,29 @@ pub trait ReadTxn: Send {
     ) -> impl Future<Output = Result<Vec<KeyRow>>> + Send;
     /// The workspace's latest key sequence.
     fn key_head(&mut self, workspace: Id) -> impl Future<Output = Result<u64>> + Send;
+    /// The account and card bytes of an enrolled card.
+    fn enrolled_card(
+        &mut self,
+        device: Id,
+    ) -> impl Future<Output = Result<Option<(Id, Vec<u8>)>>> + Send;
+    /// The workspaces whose policy records a head of the account.
+    fn workspaces_recording(&mut self, account: Id)
+    -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// The email a signed-up account names.
+    fn account_email(&mut self, account: Id)
+    -> impl Future<Output = Result<Option<String>>> + Send;
+    /// The account's passkeys, by credential ID.
+    fn passkeys(&mut self, account: Id) -> impl Future<Output = Result<Vec<PasskeyRow>>> + Send;
+    /// The passkey with this credential ID.
+    fn passkey(
+        &mut self,
+        credential_id: &[u8],
+    ) -> impl Future<Output = Result<Option<PasskeyRow>>> + Send;
+    /// The account of the web session whose token hashes to `token_hash`.
+    fn web_session(
+        &mut self,
+        token_hash: Digest,
+    ) -> impl Future<Output = Result<Option<Id>>> + Send;
 }
 
 /// The writes a store's write transaction offers, besides its reads.
@@ -539,6 +647,93 @@ pub trait WriteTxn: ReadTxn {
         device: Id,
         counter: u64,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Records the recovery identity the session proved it holds.
+    fn set_session_recovery(
+        &mut self,
+        token_hash: Digest,
+        recovery: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores an enrolled card.
+    fn insert_enrolled_card(
+        &mut self,
+        device: Id,
+        account: Id,
+        card: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records that the workspace's policy records heads of these accounts.
+    fn record_accounts(
+        &mut self,
+        workspace: Id,
+        accounts: &[Id],
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores an enrollment challenge.
+    fn insert_challenge(
+        &mut self,
+        challenge: Key,
+        account: Id,
+        expires_at: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes the account's challenge and returns its expiry, if it was
+    /// stored.
+    fn take_challenge(
+        &mut self,
+        challenge: Key,
+        account: Id,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    /// Stores a signed-up account, unless it exists.
+    fn insert_account(
+        &mut self,
+        account: Id,
+        email: &str,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores a passkey; returns false when its credential ID is taken.
+    fn insert_passkey(&mut self, row: &PasskeyRow) -> impl Future<Output = Result<bool>> + Send;
+    /// Replaces a passkey's stored form, such as after its counter moved.
+    fn update_passkey(
+        &mut self,
+        credential_id: &[u8],
+        passkey: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores a web session.
+    fn insert_web_session(
+        &mut self,
+        token_hash: Digest,
+        account: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a web session.
+    fn delete_web_session(&mut self, token_hash: Digest)
+    -> impl Future<Output = Result<()>> + Send;
+    /// Stores a magic link.
+    fn insert_magic_link(
+        &mut self,
+        token_hash: Digest,
+        email: &str,
+        expires_at: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a magic link and returns its email and expiry, if stored.
+    fn take_magic_link(
+        &mut self,
+        token_hash: Digest,
+    ) -> impl Future<Output = Result<Option<(String, u64)>>> + Send;
+    /// Stores a ceremony's state.
+    fn insert_ceremony(&mut self, row: &CeremonyRow) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a ceremony and returns it, if stored.
+    fn take_ceremony(&mut self, id: Id)
+    -> impl Future<Output = Result<Option<CeremonyRow>>> + Send;
+    /// Stores a passkey that waits for its email.
+    fn insert_pending_passkey(
+        &mut self,
+        token_hash: Digest,
+        row: &PendingPasskeyRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a waiting passkey and returns it, if stored.
+    fn take_pending_passkey(
+        &mut self,
+        token_hash: Digest,
+    ) -> impl Future<Output = Result<Option<PendingPasskeyRow>>> + Send;
+    /// Deletes every magic link, waiting passkey, ceremony and challenge
+    /// that expires at or before `now`, and returns how many it deleted.
+    fn delete_expired(&mut self, now: u64) -> impl Future<Output = Result<u64>> + Send;
 }
 
 /// A job that runs in one read transaction.
@@ -565,6 +760,28 @@ pub trait Backend: Send + Sync + 'static {
     fn write<R: Send + 'static>(&self, job: WriteJob<Self::Write, R>) -> BoxFut<'_, Result<R>>;
 }
 
+/// The store's clock, in Unix seconds. Tests move it forward to pass the
+/// 10 minutes after which sign-in rows expire.
+#[derive(Debug, Default)]
+pub struct Clock {
+    offset: AtomicU64,
+}
+
+impl Clock {
+    /// The current time in Unix seconds, plus any advance.
+    pub fn now(&self) -> u64 {
+        let system = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        system.saturating_add(self.offset.load(Ordering::Relaxed))
+    }
+
+    /// Moves the clock forward.
+    pub fn advance(&self, by: Duration) {
+        self.offset.fetch_add(by.as_secs(), Ordering::Relaxed);
+    }
+}
+
 /// The protocol's state on a database: workspace creation, push and pull,
 /// and the reads of §26, each checked as the spec sets.
 pub struct Store<B: Backend> {
@@ -573,6 +790,8 @@ pub struct Store<B: Backend> {
     hub: EventHub,
     generation: u64,
     retained_bytes: u64,
+    secret: Option<SecretKey>,
+    clock: Clock,
 }
 
 impl<B: Backend> Store<B> {
@@ -589,7 +808,20 @@ impl<B: Backend> Store<B> {
             hub: EventHub::default(),
             generation,
             retained_bytes: DEFAULT_RETAINED_BYTES,
+            secret: None,
+            clock: Clock::default(),
         })
+    }
+
+    /// Sets the server secret that account IDs derive from (§14).
+    pub fn with_secret(mut self, secret: SecretKey) -> Self {
+        self.secret = Some(secret);
+        self
+    }
+
+    /// The store's clock.
+    pub fn clock(&self) -> &Clock {
+        &self.clock
     }
 
     /// The backend.
@@ -624,15 +856,114 @@ impl<B: Backend> Store<B> {
 
     /// The session a bearer token names, or `unauthorized`.
     pub async fn session(&self, token: &str) -> Result<Session> {
+        Ok(self.session_and_hash(token).await?.0)
+    }
+
+    /// The session a bearer token names and the token's hash, or
+    /// `unauthorized`.
+    pub async fn session_and_hash(&self, token: &str) -> Result<(Session, Digest)> {
         let bytes: [u8; 32] = sync_protocol::types::from_base64url(token)
             .map_err(|_| refuse("unauthorized", "no valid session"))?;
         let hash = sync_protocol::crypto::hash(&bytes);
-        self.backend
+        let session = self
+            .backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move { txn.session(hash).await })
             }))
             .await?
-            .ok_or_else(|| refuse("unauthorized", "no valid session"))
+            .ok_or_else(|| refuse("unauthorized", "no valid session"))?;
+        Ok((session, hash))
+    }
+
+    /// `POST /v2/accounts/chain`: appends links to the session account's
+    /// chain, in order and all or none (§7).
+    pub async fn append_chain(
+        &self,
+        session: Session,
+        links: Vec<Signed<AccountLink>>,
+    ) -> Result<ChainAppendResponse> {
+        let seqno = self
+            .backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move { chains::append(txn, session, &links).await })
+            }))
+            .await?;
+        Ok(ChainAppendResponse { seqno })
+    }
+
+    /// `POST /v2/accounts/chains`: the links of the chains the session may
+    /// read, after each cursor (§7).
+    pub async fn read_chains(
+        &self,
+        session: Session,
+        request: ChainsRequest,
+    ) -> Result<ChainsResponse> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(
+                    async move { chains::read(txn, &cache, session, &request.cursors.0).await },
+                )
+            }))
+            .await
+    }
+
+    /// Stores a card that a session of its account enrolled, as ticket 47's
+    /// enrollment route will once it verifies the proof; until then tests
+    /// enroll cards this way. A device ID held with other bytes, or that a
+    /// link removed, gets `id_conflict`.
+    pub async fn enroll_card(&self, card: Card) -> Result<()> {
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move { chains::enroll(txn, &card).await })
+            }))
+            .await
+    }
+
+    /// `POST /v2/devices/challenge`.
+    pub async fn challenge(&self, session: Session) -> Result<ChallengeResponse> {
+        let now = self.clock.now();
+        let challenge = self
+            .backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move { chains::challenge(txn, session, now).await })
+            }))
+            .await?;
+        Ok(ChallengeResponse {
+            challenge,
+            expires_in: chains::SIGN_IN_TTL as u32,
+        })
+    }
+
+    /// `POST /v2/recovery`: records the recovery identity that the proof
+    /// shows the session holds (§12). `origin` is the server's public
+    /// origin, which the proof must name.
+    pub async fn prove_recovery(
+        &self,
+        session: Session,
+        token_hash: Digest,
+        origin: &str,
+        proof: Signed<RecoveryProof>,
+    ) -> Result<()> {
+        let now = self.clock.now();
+        let origin = origin.to_owned();
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    chains::prove_recovery(txn, session, token_hash, &origin, &proof, now).await
+                })
+            }))
+            .await
+    }
+
+    /// The account ID an email signs up under (§14), or `internal` when
+    /// the store has no server secret.
+    pub fn account_id(&self, email: &str) -> Result<Id> {
+        let secret = self
+            .secret
+            .as_ref()
+            .ok_or_else(|| Error::internal("the store has no server secret"))?;
+        Ok(sync_protocol::ids::account_id(secret, email))
     }
 
     /// Stores a session for `token`, the 32 random bytes a sign-in returns,
