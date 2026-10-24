@@ -630,7 +630,10 @@ pub trait WriteTxn: ReadTxn {
         account: Id,
         role: u8,
     ) -> impl Future<Output = Result<()>> + Send;
-    /// Stores a policy change. The workspace row names the head.
+    /// Stores a policy change. The workspace row names the head. The store
+    /// calls it only through `policy::store_change`, which also records the
+    /// change's accounts with [`WriteTxn::record_accounts`], or the chain
+    /// read route stops serving their chains (§7).
     fn insert_policy_change(
         &mut self,
         workspace: Id,

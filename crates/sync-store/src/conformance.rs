@@ -511,7 +511,6 @@ pub async fn inject_change<B: Backend>(
     let workspace = change.body.workspace;
     let revision = change.body.revision;
     let digest = change.digest();
-    let recorded: Vec<Id> = change.body.heads.iter().map(|h| h.account).collect();
     store
         .backend()
         .write(Box::new(move |txn: &mut B::Write| {
@@ -530,9 +529,7 @@ pub async fn inject_change<B: Backend>(
                     blobs: Vec::new(),
                 })
                 .await?;
-                txn.insert_policy_change(workspace, revision, digest, &change.to_bytes())
-                    .await?;
-                txn.record_accounts(workspace, &recorded).await?;
+                crate::policy::store_change(txn, workspace, &change).await?;
                 txn.set_policy_head(workspace, revision, digest).await?;
                 if let Some((domain, _)) = &new_domain {
                     txn.insert_domain(workspace, *domain).await?;
