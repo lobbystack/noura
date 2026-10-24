@@ -153,18 +153,27 @@ impl<'ast> MdDoc {
         map: &mut [Option<&'ast AstNode<'ast>>],
     ) {
         for child in node.children() {
-            if !child.is_container_block() {
-                continue;
-            }
-            if self.is_gutter_level(child) {
-                for i in self.node_lines(child).iter() {
-                    if let Some(slot) = map.get_mut(i) {
-                        *slot = Some(child);
-                    }
+            self.assign_deepest_gutter_from(child, map);
+        }
+    }
+
+    /// [`Self::assign_deepest_gutter`] for `node` and what it holds.
+    pub fn assign_deepest_gutter_from(
+        &self,
+        node: &'ast AstNode<'ast>,
+        map: &mut [Option<&'ast AstNode<'ast>>],
+    ) {
+        if !node.is_container_block() {
+            return;
+        }
+        if self.is_gutter_level(node) {
+            for i in self.node_lines(node).iter() {
+                if let Some(slot) = map.get_mut(i) {
+                    *slot = Some(node);
                 }
             }
-            self.assign_deepest_gutter(child, map);
         }
+        self.assign_deepest_gutter(node, map);
     }
 
     /// returns true if the syntax for a container block should be revealed

@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d64630dd7923a96345042a9c7fb385a3b95b82236aeb3419dbdaca8eb911f147 # shrinks to note = "a\n", edits = [(Index(0), Replace { region: Selection, text: " ", advance_cursor: true })]
+cc a9836a3a3038d91f529ac2b084625fd1d8511e0b4e1eaf5a093c9b16b80dfb45 # shrinks to note = "    a\n\n> a\na\n- [ ] a\n- [x] a\n \n \n", edits = [(Index(6510615555426900571), Newline { shift: false })]
+cc e9bac30b335a11925506d7987523b34d2acb0c6577dc73d002fbe77adb7f0147 # shrinks to note = "a\n| a | b |\n|---|---|\n| a | c |\n# aaaaa\n\n", edits = [(Index(13615453959166573812), Newline { shift: false })]
+cc cc73b867e14ea13e7d2c87b823e7c402249f5ed5f891a74e0c9313030d817b7c # shrinks to note = "1. a\n2. aa\n \n\n# a\n- a\n  - a\n- a\na\n \n  aa a a a \n\n\n", edits = [(Index(1446803456761533461), Delete { region: SelectionOrAdvance { advance: By(Char), backwards: true } }), (Index(6271892985061247550), Replace { region: Selection, text: " ", advance_cursor: true })]
+cc fbb53b870cd48662e6d55ee3b5d168f39308810a8c52b7c449ea078b1316dca8 # shrinks to note = "  a  aaa  a aa\n\n\n| a | b |\n|---|---|\n| a | c |\n- a\n  - aa\n- aaaaa\n\n# a\n    a\n\n\na\n", edits = [(Index(10348173504763894809), Newline { shift: false })]

@@ -156,6 +156,20 @@ pub enum Event {
     Unfold {
         tag: (Grapheme, Grapheme),
     }, // remove the fold tag at this range, showing the section it hid
+    /// An input method's marked text: shown at the caret while you
+    /// compose, and kept out of the text and its change events. Empty
+    /// text ends the composition and inserts nothing, as Escape does.
+    /// `selected` is the clause the input method is converting, in
+    /// characters of `text`.
+    Compose {
+        text: String,
+        selected: Option<std::ops::Range<usize>>,
+    },
+    /// An input method committed `text`: it ends the composition and
+    /// replaces the selection as one edit.
+    Commit {
+        text: String,
+    },
 }
 
 impl From<(Grapheme, Grapheme)> for Region {

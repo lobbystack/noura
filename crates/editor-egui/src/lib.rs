@@ -19,15 +19,18 @@ use input::mutation::EventState;
 use widget::block::LayoutCache;
 
 pub use editor_core::{bounds, commands, keymap};
+mod accesskit;
 mod chrome;
 pub mod fold;
 pub mod fonts;
+mod ime;
 pub mod input;
 pub mod palette;
 pub mod resolvers;
 mod scroll_content;
 pub mod seq;
 pub mod show;
+mod spelling;
 pub mod style;
 mod theme;
 pub(crate) mod widget;
@@ -37,6 +40,7 @@ pub mod widgets;
 mod tests;
 
 pub use input::Event;
+pub use spelling::SpellChecker;
 pub use widgets::glyphon_render::{
     GlyphonRenderCallbackResources, GlyphonRendererCallback, TextBufferArea, install_font_system,
     register_font_system, register_render_callback_resources,
@@ -75,6 +79,11 @@ pub struct PaintedSpan {
     pub shown_as_written: bool,
     /// The text the span drew.
     pub text: String,
+    /// Whether a line runs under the text, as under underlined text or an
+    /// input method's marked text.
+    pub underlined: bool,
+    /// Whether the spell checker flagged the text.
+    pub misspelled: bool,
 }
 
 /// A region painted this frame that a platform deciding touches itself
@@ -150,9 +159,14 @@ pub struct MdRender {
 
     // capabilities
     pub embeds: Box<dyn EmbedResolver>,
+    /// Marks misspelled words, when the app hands the editor a spell
+    /// checker.
+    pub(crate) spelling: spelling::Spelling,
 
     // caches
     pub layout_cache: LayoutCache,
+    /// Each top-level block's estimated row height.
+    pub(crate) row_approx: std::cell::RefCell<widget::block::RowApprox>,
 
     // viewport
     pub width: f32,
@@ -233,6 +247,11 @@ pub struct MdEdit {
     pub scroll_area: AffineScrollArea<DocRowId>,
 
     cursor_last_interact: Option<f64>,
+
+    /// The last egui pass in which the editor held the input method: it had
+    /// the keyboard and told the platform where text goes. See
+    /// [`MdEdit::end_dropped_composition`].
+    ime_pass: Option<u64>,
 }
 
 impl MdEdit {
@@ -262,6 +281,7 @@ impl MdEdit {
             scroll_area_velocity: Default::default(),
             scroll_area: AffineScrollArea::new(id_salt),
             cursor_last_interact: None,
+            ime_pass: None,
         }
     }
 }
@@ -275,6 +295,8 @@ pub struct MdConfig {
     /// Draws the formatting toolbar above the note and the small toolbar
     /// over a selection. Find opens with Mod-F either way.
     pub toolbar: bool,
+    /// What a screen reader calls the text.
+    pub label: String,
 }
 
 impl Default for MdConfig {
@@ -283,6 +305,7 @@ impl Default for MdConfig {
             readonly: false,
             ext: "md".into(),
             toolbar: false,
+            label: "Note text".into(),
         }
     }
 }
@@ -306,6 +329,9 @@ pub struct Editor {
 
     /// The toolbars and the find bar.
     chrome: chrome::Chrome,
+
+    /// What a screen reader calls the text.
+    label: String,
 }
 
 static PRINT: bool = false;
@@ -379,6 +405,10 @@ impl MdRender {
         };
         let dark_mode = ctx.global_style().visuals.dark_mode;
         let mut doc = MdDoc::with_seq(md, crate::seq::ws_seq(&ctx));
+        // A large note's full parse finishes in the background; the next
+        // frame takes it in.
+        let wake = ctx.clone();
+        doc.on_background_parse(move || wake.request_repaint());
         doc.readonly = readonly;
         doc.plaintext = !ext.eq_ignore_ascii_case("md");
         Self {
@@ -406,7 +436,9 @@ impl MdRender {
             single_line: false,
             search_range: None,
             embeds: Box::new(()),
+            spelling: Default::default(),
             layout_cache: Default::default(),
+            row_approx: Default::default(),
             width: Default::default(),
             width_seq: 0,
             viewport_height: Default::default(),
@@ -463,8 +495,33 @@ impl MdRender {
         // dep-stamp mismatch in the height + spacing caches. Text changes
         // can affect any entry, so the layout cache wipes wholesale here
         // before any reads.
-        self.layout_cache.ensure_text_consistent(self.doc.text_seq);
-        self.doc.reparse(arena)
+        let root = self.doc.reparse(arena);
+        self.layout_cache
+            .ensure_text_consistent(self.doc.bounds_seq);
+        root
+    }
+
+    /// The parse of the current text, from the document's cache when the
+    /// text hasn't changed. Wipes the layout cache when the parse is new: the
+    /// text changed, or a background parse of a large note arrived. Hand it
+    /// back with [`Self::put_ast`].
+    pub fn take_ast(&mut self) -> editor_core::Ast {
+        let ast = self.doc.take_ast();
+        self.layout_cache
+            .ensure_text_consistent(self.doc.bounds_seq);
+        ast
+    }
+
+    /// Keeps `ast` for the next [`Self::take_ast`].
+    pub fn put_ast(&mut self, ast: editor_core::Ast) {
+        self.doc.put_ast(ast);
+    }
+
+    /// Parses the current text and builds its bounds, if that hasn't
+    /// happened since it changed.
+    pub fn parse(&mut self) {
+        let ast = self.take_ast();
+        self.put_ast(ast);
     }
 
     /// The fragments painted last frame, as `editor-core`'s layout.
@@ -496,6 +553,7 @@ impl Editor {
             readonly,
             ext,
             toolbar,
+            label,
         } = config;
         let mut renderer = MdRender::new(ctx.clone(), md, &ext, readonly);
         renderer.interactive = true;
@@ -511,6 +569,7 @@ impl Editor {
             prev_dimensions: None,
             next_resp: Default::default(),
             chrome: chrome::Chrome::new(toolbar),
+            label,
         }
     }
 
@@ -521,8 +580,7 @@ impl Editor {
             md,
             MdConfig {
                 readonly: false,
-                ext: "md".into(),
-                toolbar: false,
+                ..MdConfig::default()
             },
         )
     }
@@ -530,6 +588,13 @@ impl Editor {
     /// Replaces the link resolver, which answers link and wikilink lookups.
     pub fn set_link_resolver(&mut self, resolver: Box<dyn LinkResolver>) {
         self.edit.renderer.doc.link_resolver = resolver;
+    }
+
+    /// Checks spelling with `checker`, or stops checking it with `None`.
+    pub fn set_spell_checker(&mut self, checker: Option<std::sync::Arc<dyn SpellChecker>>) {
+        let renderer = &mut self.edit.renderer;
+        renderer.spelling.set_checker(checker);
+        renderer.layout_cache.clear();
     }
 
     /// Replaces the embed resolver, which loads and paints images.
@@ -596,6 +661,11 @@ impl Editor {
                     glyphs: matches!(fragment.content, FragmentContent::Glyphs { .. }),
                     shown_as_written: !fragment.atomic,
                     text,
+                    underlined: fragment
+                        .style_stack
+                        .last()
+                        .is_some_and(|style| style.format.underline),
+                    misspelled: fragment.style_stack.iter().any(|style| style.misspelled),
                 }
             })
             .collect()
@@ -637,10 +707,11 @@ impl Editor {
         self.edit.renderer.buffer.saved(seq, content);
     }
 
-    pub fn focus(&self, ctx: &Context) {
-        ctx.memory_mut(|m| {
-            m.request_focus(self.id());
-        });
+    /// Gives the editor the keyboard. egui interrupts the input method's
+    /// composition on every focus request, so the editor ends its own.
+    pub fn focus(&mut self, ctx: &Context) {
+        let id = self.id();
+        self.edit.request_focus(ctx, id);
     }
 
     pub fn focus_lock(&mut self, ctx: &Context) {
@@ -675,7 +746,6 @@ impl Editor {
     /// show, the text below them, and the selection toolbar over the text.
     pub fn show(&mut self, ui: &mut Ui) -> Response {
         let ctx = ui.ctx().clone();
-        self.track_composition(&ctx);
         self.handle_find_key(&ctx);
         self.show_toolbar(ui);
         if self.find_open() {
@@ -756,51 +826,10 @@ impl Editor {
         let start = Instant::now();
 
         // --- draw phase (back to front) ---------------------------------------
-        // Re-parse for render. handle_input parsed its own; that arena has
-        // been dropped. The parse is assumed cheap (~1 ms).
-        let arena = Arena::new();
-        let root = {
-            let _parse = tracing::trace_span!("MarkdownEditor::parse").entered();
-            self.edit.renderer.parse(&arena)
-        };
-        self.update_formats(root);
-
-        if PRINT {
-            println!("{}", "=".repeat(80));
-            print_ast(root);
-        }
-
-        ui.painter().rect_filled(
-            ui.max_rect(),
-            0.,
-            self.edit.renderer.ctx.get_lb_theme().neutral_bg(),
-        );
-        self.edit.renderer.apply_theme(ui);
-        ui.spacing_mut().item_spacing.x = 0.;
-
-        let prev_offset = self.edit.scroll_area.stored_offset();
-
-        ui.vertical(|ui| {
-            // galleys / wrap_lines are cleared and repopulated inside
-            // MdEdit::show — don't clear here or input handling (which reads
-            // last-frame galleys) sees nothing.
-            self.edit.renderer.touch_targets.clear();
-            self.show_scrollable_editor(ui, root);
-        });
-
-        let new_offset = self.edit.scroll_area.stored_offset();
-        self.next_resp.scroll_updated = new_offset != prev_offset;
-        self.edit.scroll_area_velocity = self.edit.scroll_area.velocity();
-
-        // Selection can change both in `handle_input` and later during
-        // `MdEdit::show` pointer handling. Compute this after render so the
-        // response sees both paths.
-        resp.selection_updated |= prior_selection
-            != self
-                .edit
-                .in_progress_selection
-                .unwrap_or(self.edit.renderer.buffer.current.selection);
-
+        // The parse handle_input left, unless the text changed since.
+        let ast = self.edit.renderer.take_ast();
+        ast.with_root(|root| self.draw_parsed(ui, root, prior_selection, &mut resp));
+        self.edit.renderer.put_ast(ast);
         let render_elapsed = start.elapsed();
 
         if self.edit.renderer.debug {
@@ -863,6 +892,56 @@ impl Editor {
         resp
     }
 
+    /// The draw phase of [`Self::show_text`], with the parse of the text.
+    fn draw_parsed<'ast>(
+        &mut self,
+        ui: &mut Ui,
+        root: &'ast AstNode<'ast>,
+        prior_selection: (Grapheme, Grapheme),
+        resp: &mut Response,
+    ) {
+        self.update_formats(root);
+
+        if PRINT {
+            println!("{}", "=".repeat(80));
+            print_ast(root);
+        }
+
+        ui.painter().rect_filled(
+            ui.max_rect(),
+            0.,
+            self.edit.renderer.ctx.get_lb_theme().neutral_bg(),
+        );
+        self.edit.renderer.apply_theme(ui);
+        ui.spacing_mut().item_spacing.x = 0.;
+
+        let prev_offset = self.edit.scroll_area.stored_offset();
+
+        ui.vertical(|ui| {
+            // galleys / wrap_lines are cleared and repopulated inside
+            // MdEdit::show — don't clear here or input handling (which reads
+            // last-frame galleys) sees nothing.
+            self.edit.renderer.touch_targets.clear();
+            self.show_scrollable_editor(ui, root);
+        });
+        self.edit
+            .renderer
+            .update_accesskit(ui, self.id(), &self.label);
+
+        let new_offset = self.edit.scroll_area.stored_offset();
+        self.next_resp.scroll_updated = new_offset != prev_offset;
+        self.edit.scroll_area_velocity = self.edit.scroll_area.velocity();
+
+        // Selection can change both in `handle_input` and later during
+        // `MdEdit::show` pointer handling. Compute this after render so the
+        // response sees both paths.
+        resp.selection_updated |= prior_selection
+            != self
+                .edit
+                .in_progress_selection
+                .unwrap_or(self.edit.renderer.buffer.current.selection);
+    }
+
     pub fn will_consume_touch(&self, pos: Pos2) -> bool {
         self.touches_interactive_element(pos)
             || self.edit.scroll_area_velocity.abs().max_elem() > 0. // velocity zeroed at touch down
@@ -894,7 +973,7 @@ impl Editor {
     }
 
     #[tracing::instrument(name = "MarkdownEditor::paint", level = "trace", skip_all)]
-    fn show_scrollable_editor<'a>(&mut self, ui: &mut Ui, _root: &'a AstNode<'a>) {
+    fn show_scrollable_editor<'a>(&mut self, ui: &mut Ui, root: &'a AstNode<'a>) {
         let scroll_id = self.id();
 
         // Captured by the Frame::canvas closure so post-render code can
@@ -928,9 +1007,6 @@ impl Editor {
                 let max_width = self.edit.renderer.layout.max_width;
                 let col_width = (canvas_width - 2.0 * layout_margin).min(max_width).max(0.0);
                 self.edit.renderer.set_width(col_width);
-
-                let arena = Arena::new();
-                let root = self.edit.renderer.reparse(&arena);
 
                 // affine render: widget body spans the full canvas
                 // (scrollbar at canvas right); content centers within
@@ -1161,7 +1237,7 @@ impl Editor {
                         // action and commit on release (visuals are drawn
                         // after post_render so they composite on top).
                         self.edit.detect_touch_reorder(ui, false);
-                        self.edit.handle_block_drag(ui);
+                        self.edit.handle_block_drag(ui, root);
                         pre
                     })
                     .inner;
@@ -1172,7 +1248,7 @@ impl Editor {
                 // / `range_after` walk that assumes sorted ranges.
                 self.edit.renderer.bounds.wrap_lines.sort_by_key(|r| r.0);
 
-                self.edit.post_render(ui, canvas_rect, scroll_id, pre);
+                self.edit.post_render(ui, canvas_rect, scroll_id, pre, root);
                 self.edit.draw_dragged_overlay(ui, root);
                 ui.advance_cursor_after_rect(canvas_rect);
             });
@@ -1182,7 +1258,7 @@ impl Editor {
             if let (Some(canvas_rect), Some(range)) =
                 (captured_canvas_rect, self.edit.renderer.find_current_match)
             {
-                self.scroll_to_range(canvas_rect, range);
+                self.scroll_to_range_parsed(root, canvas_rect, range);
             }
         }
 
@@ -1191,7 +1267,7 @@ impl Editor {
             if let (Some(canvas_rect), Some(range)) =
                 (captured_canvas_rect, self.edit.renderer.preview_match)
             {
-                self.scroll_to_range(canvas_rect, range);
+                self.scroll_to_range_parsed(root, canvas_rect, range);
             }
         }
     }
@@ -1246,9 +1322,12 @@ impl Editor {
 
     /// Scrolls `range`, a find match or a search preview, to the middle of
     /// the view.
-    fn scroll_to_range(&mut self, canvas_rect: Rect, match_range: (Grapheme, Grapheme)) {
-        let arena = Arena::new();
-        let root = self.edit.renderer.reparse(&arena);
+    fn scroll_to_range_parsed<'a>(
+        &mut self,
+        root: &'a AstNode<'a>,
+        canvas_rect: Rect,
+        match_range: (Grapheme, Grapheme),
+    ) {
         let content = scroll_content::DocScrollContent::for_frame(
             &self.edit.renderer,
             root,

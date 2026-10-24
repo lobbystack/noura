@@ -304,6 +304,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "windows-sys 0.61.2",
+ "workspace-format",
 ]
 
 [[package]]
@@ -2489,6 +2490,7 @@ dependencies = [
  "opener",
  "rfd",
  "serde_json",
+ "spell-check",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -2741,9 +2743,11 @@ version = "0.2.0"
 dependencies = [
  "arborium",
  "comrak",
+ "memchr",
  "proptest",
  "regex",
  "ropey",
+ "rustc-hash 2.1.3",
  "similar",
  "tempfile",
  "unicode-segmentation",
@@ -2766,6 +2770,7 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "spell-check",
  "tempfile",
  "tracing",
  "unicode-linebreak",
@@ -5065,6 +5070,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kit-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+]
+
+[[package]]
 name = "kittest"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6608,12 +6620,14 @@ dependencies = [
  "libc",
  "semver",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "wasmtime",
  "wat",
+ "workspace-format",
 ]
 
 [[package]]
@@ -7208,6 +7222,14 @@ dependencies = [
  "bytemuck",
  "font-types 0.12.7",
  "once_cell",
+]
+
+[[package]]
+name = "recipes-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+ "serde_json",
 ]
 
 [[package]]
@@ -8379,6 +8401,16 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spell-check"
+version = "0.2.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "windows 0.62.2",
 ]
 
 [[package]]

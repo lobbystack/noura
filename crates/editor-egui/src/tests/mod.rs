@@ -27,6 +27,7 @@ mod edit_props;
 mod ios_host;
 mod regressions;
 mod render_props;
+mod row_approx;
 pub(crate) mod test_utils;
 
 /// Runs one headless frame and discards its output. egui panics when a

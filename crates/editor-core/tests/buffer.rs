@@ -277,3 +277,58 @@ fn a_reload_after_an_overlapping_outside_edit_stays_inside_the_text() {
     buffer.update();
     assert_eq!(buffer.current.text(), "more\n");
 }
+
+mod segments {
+    use editor_core::unicode_segs;
+    use proptest::prelude::*;
+
+    /// Text from pieces that make clusters span bytes, or end lines.
+    fn text() -> impl Strategy<Value = String> {
+        let piece = prop_oneof![
+            Just("a"),
+            Just(" "),
+            Just("\r"),
+            Just("\n"),
+            Just("\r\n"),
+            Just("e\u{301}"),
+            Just("\u{1f1eb}"),
+            Just("\u{1f1f7}"),
+            Just("\u{200d}"),
+            Just("\u{1f469}\u{200d}\u{1f467}"),
+            Just("\u{600}"),
+        ];
+        prop::collection::vec(piece, 0..40).prop_map(|pieces| pieces.concat())
+    }
+
+    proptest! {
+        /// Segmenting only the lines around a replacement gives the index
+        /// segmenting the whole text gives.
+        #[test]
+        fn an_index_updated_around_a_replacement_matches_a_fresh_one(
+            before in text(),
+            inserted in text(),
+            at in any::<prop::sample::Index>(),
+            len in any::<prop::sample::Index>(),
+        ) {
+            let boundaries: Vec<usize> = before
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain([before.len()])
+                .collect();
+            let start = boundaries[at.index(boundaries.len())];
+            let ends: Vec<usize> = boundaries
+                .iter()
+                .copied()
+                .filter(|end| *end >= start)
+                .collect();
+            let end = ends[len.index(ends.len())];
+            let mut after = before.clone();
+            after.replace_range(start..end, &inserted);
+
+            let mut segs = unicode_segs::calc(&before);
+            segs.replace_lines(&after, start..end, inserted.len());
+
+            prop_assert_eq!(segs, unicode_segs::calc(&after));
+        }
+    }
+}

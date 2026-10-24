@@ -534,6 +534,12 @@ fn the_windows_share_this_device_s_preferences() {
     assert_eq!(first.preferences(), second.preferences());
     let third = first.new_window().unwrap();
     assert_eq!(third.preferences(), first.preferences());
+
+    // Turning spell check off in one window turns it off in every note of
+    // every window.
+    first.set_spell_check(false);
+    second.poll();
+    assert!(!second.preferences().spell_check);
 }
 
 /// The workspace's name in one window's Settings shows in every window.

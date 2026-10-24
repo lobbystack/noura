@@ -7,7 +7,7 @@
 //!   hit-test, processes pointer events, renders, draws cursor / selection /
 //!   touch handles, and consumes a pending scroll-to-cursor.
 
-use comrak::Arena;
+use comrak::nodes::AstNode;
 use editor_core::buffer::{self, Buffer};
 use editor_core::offset_types::{Grapheme, RangeExt as _};
 use egui::os::OperatingSystem;
@@ -43,6 +43,7 @@ impl MdEdit {
     pub fn handle_input(&mut self, ctx: &Context, id: Id) -> buffer::Response {
         let focused = ctx.memory(|m| m.has_focus(id));
         let prior_entered_atom = self.renderer.entered_atom;
+        self.end_dropped_composition(ctx, focused);
 
         // Deferred block reorder
         let move_resp = match self.pending_block_move.take() {
@@ -52,8 +53,7 @@ impl MdEdit {
             None => buffer::Response::default(),
         };
 
-        let arena = Arena::new();
-        let root = self.renderer.reparse(&arena);
+        let ast = self.renderer.take_ast();
 
         let mut ops = Vec::new();
         // Some events (Undo, Redo) mutate state directly inside
@@ -67,26 +67,29 @@ impl MdEdit {
         // frame so undo isn't immediately re-undone.
         let mut undo_redo = false;
 
-        for event in std::mem::take(&mut self.event.internal_events) {
-            undo_redo |= matches!(event, Event::Undo | Event::Redo);
-            direct_resp |= self.calc_operations(ctx, root, event, &mut ops);
-        }
+        ast.with_root(|root| {
+            for event in std::mem::take(&mut self.event.internal_events) {
+                undo_redo |= matches!(event, Event::Undo | Event::Redo);
+                direct_resp |= self.calc_operations(ctx, root, event, &mut ops);
+            }
 
-        if focused {
-            let filter = EventFilter {
-                tab: true,
-                horizontal_arrows: true,
-                vertical_arrows: true,
-                escape: false,
-            };
-            let key_events: Vec<egui::Event> = ctx.input(|r| r.filtered_events(&filter));
-            for e in key_events {
-                if let Some(edit_event) = self.translate_egui_keyboard_event(e, root) {
-                    undo_redo |= matches!(edit_event, Event::Undo | Event::Redo);
-                    direct_resp |= self.calc_operations(ctx, root, edit_event, &mut ops);
+            if focused {
+                let filter = EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: false,
+                };
+                let key_events: Vec<egui::Event> = ctx.input(|r| r.filtered_events(&filter));
+                for e in key_events {
+                    if let Some(edit_event) = self.translate_egui_keyboard_event(e, root) {
+                        undo_redo |= matches!(edit_event, Event::Undo | Event::Redo);
+                        direct_resp |= self.calc_operations(ctx, root, edit_event, &mut ops);
+                    }
                 }
             }
-        }
+        });
+        self.renderer.put_ast(ast);
 
         self.renderer.buffer.queue(ops);
         let mut buf_resp = direct_resp;
@@ -95,27 +98,31 @@ impl MdEdit {
 
         if buf_resp.text_updated {
             self.renderer.bump_text_seq();
-            self.renderer.reparse(&arena);
+            self.renderer.parse();
         }
 
         let edited = buf_resp.text_updated || buf_resp.selection_user_moved;
-        buf_resp |= self.renderer.unfold_after_edit(&arena, edited, undo_redo);
+        buf_resp |= self.renderer.unfold_after_edit(edited, undo_redo);
 
         // An entered atom stays revealed only while the selection remains
         // within it; the range is re-resolved against the (possibly edited)
         // AST each frame so it tracks the atom rather than going stale.
         if let Some(prev) = self.renderer.entered_atom {
-            let root = self.renderer.reparse(&arena);
+            let ast = self.renderer.take_ast();
             let sel = self.renderer.buffer.current.selection;
-            self.renderer.entered_atom = root.descendants().find_map(|node| {
-                use comrak::nodes::NodeValue;
-                if !matches!(node.data.borrow().value, NodeValue::Link(_)) {
-                    return None;
-                }
-                let range = self.renderer.node_range(node);
-                (range.contains_range(&sel, true, true) && range.intersects(&prev, true))
-                    .then_some(range)
+            let entered = ast.with_root(|root| {
+                root.descendants().find_map(|node| {
+                    use comrak::nodes::NodeValue;
+                    if !matches!(node.data.borrow().value, NodeValue::Link(_)) {
+                        return None;
+                    }
+                    let range = self.renderer.node_range(node);
+                    (range.contains_range(&sel, true, true) && range.intersects(&prev, true))
+                        .then_some(range)
+                })
             });
+            self.renderer.put_ast(ast);
+            self.renderer.entered_atom = entered;
         }
 
         self.sync_reveal_selection(ctx, id, prior_entered_atom);
@@ -125,6 +132,33 @@ impl MdEdit {
         }
 
         buf_resp
+    }
+
+    /// Gives the editor the keyboard, ending any composition: egui
+    /// interrupts the input method's composition on every focus request,
+    /// and the platform drops its marked text.
+    pub fn request_focus(&mut self, ctx: &Context, id: Id) {
+        ctx.memory_mut(|m| m.request_focus(id));
+        self.renderer.doc.end_composition();
+    }
+
+    /// Ends a composition the input method dropped without saying so. egui
+    /// turns the input method off in a pass where no widget asks for it,
+    /// as when the editor loses the keyboard or isn't shown, and interrupts
+    /// the composition when a widget asks for the keyboard. The platform
+    /// then drops its marked text and sends no empty composition or commit:
+    /// winit sends only `Ime::Disabled`, which egui-winit ignores. So the
+    /// composition ends here, as a cancel would, once the editor lost the
+    /// keyboard or didn't hold the input method in the previous pass.
+    fn end_dropped_composition(&mut self, ctx: &Context, focused: bool) {
+        if self.renderer.doc.composition().is_none() {
+            return;
+        }
+        let pass = ctx.cumulative_pass_nr();
+        let held = self.ime_pass.is_some_and(|held| held + 1 >= pass);
+        if !focused || !held {
+            self.renderer.doc.end_composition();
+        }
     }
 
     /// Apply an edit from a platform text system (UIKit) now, outside the
@@ -139,21 +173,21 @@ impl MdEdit {
     /// the finger already, and a reveal would fight the gesture's scroll.
     pub fn apply_platform(&mut self, event: Event, reveal: bool) -> buffer::Response {
         let ctx = self.renderer.ctx.clone();
-        let arena = Arena::new();
-        let root = self.renderer.reparse(&arena);
+        let ast = self.renderer.take_ast();
         let undo_redo = matches!(event, Event::Undo | Event::Redo);
         let mut ops = Vec::new();
-        let mut resp = self.calc_operations(&ctx, root, event, &mut ops);
+        let mut resp = ast.with_root(|root| self.calc_operations(&ctx, root, event, &mut ops));
+        self.renderer.put_ast(ast);
         self.renderer.buffer.queue(ops);
         resp |= self.renderer.buffer.update();
         if resp.text_updated {
             self.renderer.bump_text_seq();
-            self.renderer.reparse(&arena);
+            self.renderer.parse();
         }
         // The frame's own edits get this in `show`; a platform's edit is
         // applied here, before that frame sees anything to unfold for.
         let edited = resp.text_updated || resp.selection_user_moved;
-        resp |= self.renderer.unfold_after_edit(&arena, edited, undo_redo);
+        resp |= self.renderer.unfold_after_edit(edited, undo_redo);
         if reveal && (resp.text_updated || resp.selection_user_moved) {
             self.pending_scroll = Some(ScrollTarget::Cursor);
             self.cursor_last_interact = Some(ctx.input(|i| i.time));
@@ -164,9 +198,11 @@ impl MdEdit {
 
     /// The edit a paste of `text` makes: a URL over a selection links it.
     pub fn paste_event(&mut self, text: String) -> Option<Event> {
-        let arena = Arena::new();
-        let root = self.renderer.reparse(&arena);
-        self.translate_egui_keyboard_event(egui::Event::Paste(text), root)
+        let ast = self.renderer.take_ast();
+        let event = ast
+            .with_root(|root| self.translate_egui_keyboard_event(egui::Event::Paste(text), root));
+        self.renderer.put_ast(ast);
+        event
     }
 
     /// Sync `reveal_selection` to the buffer selection, bumping `reveal_seq`
@@ -212,9 +248,13 @@ impl MdEdit {
             rect.width()
         };
         self.renderer.set_width(layout_width);
-        let arena = Arena::new();
-        let root = self.renderer.reparse(&arena);
+        let ast = self.renderer.take_ast();
+        ast.with_root(|root| self.show_parsed(ui, rect, id, root));
+        self.renderer.put_ast(ast);
+    }
 
+    /// [`Self::show`] with the parse of the text.
+    fn show_parsed<'ast>(&mut self, ui: &mut Ui, rect: Rect, id: Id, root: &'ast AstNode<'ast>) {
         // A multi-line field shorter than its content (the chat composer at
         // max height) scrolls vertically: wheel here, cursor-follow at the
         // bottom of this fn. `height` is memoized — computing it early is free.
@@ -251,8 +291,8 @@ impl MdEdit {
         });
         self.renderer.fragments.sort_by_key(|f| f.source_range);
 
-        self.handle_block_drag(ui);
-        self.post_render(ui, rect, id, pre);
+        self.handle_block_drag(ui, root);
+        self.post_render(ui, rect, id, pre, root);
         self.draw_dragged_overlay(ui, root);
         if overflow > 0.0 {
             self.show_overflow_scrollbar(ui, rect, id, height, overflow);
@@ -378,7 +418,7 @@ impl MdEdit {
 
     /// Consume the marker's [`BlockDragAction`] for the frame and, on
     /// release, commit the reorder via [`MdEdit::move_block`].
-    pub(crate) fn handle_block_drag(&mut self, ui: &mut Ui) {
+    pub(crate) fn handle_block_drag<'ast>(&mut self, ui: &mut Ui, root: &'ast AstNode<'ast>) {
         match self.renderer.block_drag_action.take() {
             Some(BlockDragAction::Started(drag)) => {
                 self.in_progress_block_drag = Some(drag);
@@ -418,7 +458,7 @@ impl MdEdit {
             None => {}
         }
         if self.in_progress_block_drag.is_some() {
-            self.auto_scroll_to_drag_pointer(ui);
+            self.auto_scroll_to_drag_pointer(ui, root);
             ui.ctx().request_repaint();
         }
     }
@@ -427,10 +467,7 @@ impl MdEdit {
     /// padded by `row_height` on each side. The pointer y is clamped to
     /// the viewport so dragging past the toolbar / window edge still
     /// scrolls at full rate.
-    fn auto_scroll_to_drag_pointer(&mut self, ui: &mut Ui) {
-        use crate::scroll_content::DocScrollContent;
-        use crate::widgets::affine_scroll::{Align, Reveal};
-
+    fn auto_scroll_to_drag_pointer<'ast>(&mut self, ui: &mut Ui, root: &'ast AstNode<'ast>) {
         let Some(pointer) = self.drag_pointer(ui) else {
             return;
         };
@@ -438,8 +475,9 @@ impl MdEdit {
         let viewport_y = (pointer.y - viewport.min.y).clamp(0.0, viewport.height());
         let pad = self.renderer.layout.row_height;
 
-        let arena = comrak::Arena::new();
-        let root = self.renderer.reparse(&arena);
+        use crate::scroll_content::DocScrollContent;
+        use crate::widgets::affine_scroll::{Align, Reveal};
+
         let content = DocScrollContent::for_frame(&self.renderer, root, viewport.height());
         let Some(top) = self
             .scroll_area
@@ -598,7 +636,7 @@ impl MdEdit {
             ));
         }
         for d in floating_deco {
-            ui.painter().hline(d.x, d.y, Stroke::new(1.0_f32, d.color));
+            d.paint(ui.painter());
         }
     }
 
@@ -630,7 +668,7 @@ impl MdEdit {
         // interact surrenders focus if anything was clicked, even a child —
         // restore if we thought we were focused at entry
         if prev_focused && !ui.memory(|m| m.has_focus(id)) {
-            ui.memory_mut(|m| m.request_focus(id));
+            self.request_focus(ui.ctx(), id);
         }
         let focused = ui.memory(|m| m.has_focus(id));
         if focused && !prev_focused {
@@ -726,7 +764,7 @@ impl MdEdit {
             if !cfg!(target_os = "ios")
                 && let Some(region) = region_opt
             {
-                ui.memory_mut(|m| m.request_focus(id));
+                self.request_focus(ui.ctx(), id);
                 self.calc_operations(ui.ctx(), root, Event::Select { region }, &mut ops);
             }
         }
@@ -758,7 +796,14 @@ impl MdEdit {
     /// selection / IME, touch handles, scroll-to-cursor consumption,
     /// focus lock, glyphon text-callback submission, draining of
     /// internal events.
-    pub fn post_render(&mut self, ui: &mut Ui, rect: Rect, id: Id, pre: PreRenderState) {
+    pub fn post_render<'ast>(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        id: Id,
+        pre: PreRenderState,
+        root: &'ast AstNode<'ast>,
+    ) {
         let focused = pre.focused;
 
         // Clip subsequent overlay paints (selection, cursor) to the editor rect
@@ -794,14 +839,28 @@ impl MdEdit {
                 self.cursor_last_interact = Some(now);
             }
             let blink = focused.then(|| now - self.cursor_last_interact.unwrap_or(now));
-            self.show_offset(
-                ui,
-                selection.1,
-                theme.bright.get_color(theme.prefs().primary),
-                blink,
-            );
-            if focused && let Some([top, bot]) = self.cursor_line(selection.1) {
-                let cursor_rect = Rect::from_min_max(top, bot);
+            let caret_color = theme.bright.get_color(theme.prefs().primary);
+            // While an input method composes, the caret sits in the marked
+            // text and its candidate window opens under it.
+            let marked = self.renderer.marked_geometry();
+            let ime_rect = match &marked {
+                Some(marked) => {
+                    let [top, bot] = marked.caret;
+                    crate::widgets::paint_caret(
+                        ui,
+                        top.x,
+                        egui::Rangef::new(top.y, bot.y),
+                        caret_color,
+                    );
+                    Some(marked.candidates)
+                }
+                None => {
+                    self.show_offset(ui, selection.1, caret_color, blink);
+                    self.cursor_line(selection.1)
+                        .map(|[top, bot]| Rect::from_min_max(top, bot))
+                }
+            };
+            if focused && let Some(cursor_rect) = ime_rect {
                 ui.output_mut(|o| {
                     o.ime = Some(egui::output::IMEOutput {
                         purpose: egui::IMEPurpose::Normal,
@@ -810,13 +869,14 @@ impl MdEdit {
                         should_interrupt_composition: false,
                     });
                 });
+                self.ime_pass = Some(ui.ctx().cumulative_pass_nr());
             }
         }
 
         // FindMatch is consumed by the caller (it owns find state).
         if matches!(self.pending_scroll, Some(ScrollTarget::Cursor)) {
             self.pending_scroll = None;
-            self.scroll_to_cursor(rect);
+            self.scroll_to_cursor(rect, root);
         }
 
         // lock focus filter so arrow keys / tab / shift+enter keep reaching us
@@ -852,8 +912,7 @@ impl MdEdit {
 
         // strikethroughs and underlines painted on top of text
         for deco in std::mem::take(&mut self.renderer.deco_lines) {
-            ui.painter()
-                .hline(deco.x, deco.y, Stroke::new(1.0_f32, deco.color));
+            deco.paint(ui.painter());
         }
 
         // A reorder selects the dragged section; its handles would clutter
@@ -890,9 +949,10 @@ impl MdEdit {
     /// cached work.
     pub fn measure_height(&mut self, width: f32) -> f32 {
         self.renderer.set_width(width);
-        let arena = Arena::new();
-        let root = self.renderer.reparse(&arena);
-        self.renderer.height(root)
+        let ast = self.renderer.take_ast();
+        let height = ast.with_root(|root| self.renderer.height(root));
+        self.renderer.put_ast(ast);
+        height
     }
 
     /// Reset the buffer to empty state. Chat composers call this after
@@ -913,8 +973,7 @@ impl MdEdit {
         // A platform text system asks about the new text before the next
         // frame: its units come from bounds, and nothing may answer from the
         // old text's layout.
-        let arena = Arena::new();
-        self.renderer.reparse(&arena);
+        self.renderer.parse();
         self.renderer.fragments.clear();
     }
 }

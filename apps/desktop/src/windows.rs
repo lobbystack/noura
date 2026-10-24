@@ -24,7 +24,7 @@ use std::{
 };
 
 use app_core::App;
-use app_ui::{FolderPicker, NouraUi};
+use app_ui::{FolderPicker, NouraUi, SpellChecker};
 use eframe::egui::{
     self, Context, Pos2, ViewportBuilder, ViewportCommand, ViewportId, ViewportInfo, mutex::Mutex,
     vec2,
@@ -127,6 +127,8 @@ pub struct Windows {
     quit_request: QuitRequest,
     /// The smoke run, until it has reported.
     smoke: Option<Smoke>,
+    /// The system's spell checker, which every window's notes share.
+    spell_checker: Option<Arc<dyn SpellChecker>>,
 }
 
 /// When a later launch asked, and when Noura last tried.
@@ -181,12 +183,22 @@ impl Windows {
             native_menu: None,
             quit_request: QuitRequest::default(),
             smoke: None,
+            spell_checker: None,
         }
     }
 
     /// End the app as Quit does when `quit` asks.
     pub fn quitting_on(mut self, quit: QuitRequest) -> Self {
         self.quit_request = quit;
+        self
+    }
+
+    /// Check spelling in every window's notes with `checker`.
+    pub fn checking_spelling_with(mut self, checker: Option<Arc<dyn SpellChecker>>) -> Self {
+        if let Some(first) = &mut self.first {
+            first.set_spell_checker(checker.clone());
+        }
+        self.spell_checker = checker;
         self
     }
 
@@ -297,11 +309,13 @@ impl Windows {
     fn add(&mut self, app: App, position: Option<Pos2>) {
         let id = ViewportId::from_hash_of(("noura window", self.next_id));
         self.next_id += 1;
+        let mut ui = NouraUi::new(app, (self.picker)());
+        ui.set_spell_checker(self.spell_checker.clone());
         self.others.push(Window {
             id,
             builder: builder(position),
             state: Arc::new(Mutex::new(WindowState {
-                ui: Some(NouraUi::new(app, (self.picker)())),
+                ui: Some(ui),
                 opened: Vec::new(),
                 origin: None,
             })),

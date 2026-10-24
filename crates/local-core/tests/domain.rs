@@ -1725,11 +1725,98 @@ fn raw_markdown_save_keeps_mixed_line_endings() {
 }
 
 #[test]
-fn raw_markdown_rejects_traversal_and_non_markdown_paths() {
-    let (_workspace, _app_data, engine) = engine();
+fn raw_markdown_rejects_traversal_and_files_that_arent_text() {
+    let (workspace, _app_data, engine) = engine();
+    std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+    std::fs::write(workspace.path().join("notes/photo.png"), b"\x89PNG\r\n").unwrap();
     assert!(engine.read_raw_markdown("../outside.md").is_err());
-    assert!(engine.read_raw_markdown("notes/file.txt").is_err());
+    assert!(engine.read_raw_markdown("../outside.txt").is_err());
+    assert!(engine.read_raw_markdown("/etc/hosts.txt").is_err());
     assert!(engine.read_raw_markdown(".noura/history/notes.md").is_err());
+    let error = engine.read_raw_markdown("notes/photo.png").unwrap_err();
+    assert_eq!(error.code, "invalid_raw_markdown_path");
+    let error = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "notes/photo.png".into(),
+            base_revision: String::new(),
+            base_body: String::new(),
+            local_body: "text".into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_raw_markdown_path");
+    assert_eq!(
+        std::fs::read(workspace.path().join("notes/photo.png")).unwrap(),
+        b"\x89PNG\r\n"
+    );
+}
+
+#[test]
+fn raw_text_saves_keep_a_code_files_bytes_and_stay_out_of_the_index() {
+    let (workspace, _app_data, engine) = engine();
+    let path = workspace.path().join("config.yaml");
+    std::fs::write(
+        &path,
+        b"\xEF\xBB\xBF---\r\nkey: needle\r\nother: 1\nlast: x",
+    )
+    .unwrap();
+    engine.reconcile().unwrap();
+    let base = engine.read_raw_markdown("config.yaml").unwrap();
+    assert!(base.has_bom);
+    assert_eq!(base.body, "---\nkey: needle\nother: 1\nlast: x");
+
+    let saved = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "config.yaml".into(),
+            base_revision: base.revision.clone(),
+            base_body: base.body.clone(),
+            local_body: base.body.replace("other: 1\n", "other: 2\nnew: 3\n"),
+        })
+        .unwrap();
+
+    let RawSaveResult::Saved {
+        current,
+        managed_object,
+    } = saved
+    else {
+        panic!("expected a save, got {saved:?}");
+    };
+    assert!(managed_object.is_none());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"\xEF\xBB\xBF---\r\nkey: needle\r\nother: 2\nnew: 3\r\nlast: x"
+    );
+    assert_eq!(
+        current.revision,
+        blake3::hash(&std::fs::read(&path).unwrap())
+            .to_hex()
+            .to_string()
+    );
+    let found = engine
+        .search(&SearchInput {
+            query: "needle".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn raw_text_reads_refuse_a_code_file_that_isnt_utf8() {
+    let (workspace, _app_data, engine) = engine();
+    let path = workspace.path().join("latin1.txt");
+    std::fs::write(&path, b"caf\xe9\n").unwrap();
+    let error = engine.read_raw_markdown("latin1.txt").unwrap_err();
+    assert_eq!(error.code, "invalid_utf8");
+    let error = engine
+        .save_raw_markdown(RawSaveInput {
+            relative_path: "latin1.txt".into(),
+            base_revision: String::new(),
+            base_body: String::new(),
+            local_body: "cafe\n".into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_utf8");
+    assert_eq!(std::fs::read(&path).unwrap(), b"caf\xe9\n");
 }
 
 #[test]

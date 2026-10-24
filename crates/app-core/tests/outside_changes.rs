@@ -878,9 +878,17 @@ fn properties_another_app_breaks_show_as_a_problem_until_they_are_fixed() {
 
     write(&live.folder, "Plan.md", &original);
 
-    live.wait_until("the problem goes", |app| parse_problems(app).is_empty());
-    let found = live.workspace().find_object(PLAN_ID).unwrap().unwrap();
-    assert_eq!(found.relative_path, "Plan.md");
+    // `write` truncates the file before it writes the text, so the watcher
+    // can report the empty file first: no problem and no note yet.
+    live.wait_until("the problem goes and the note is back", |app| {
+        parse_problems(app).is_empty()
+            && app
+                .workspace()
+                .unwrap()
+                .find_object(PLAN_ID)
+                .unwrap()
+                .is_some_and(|found| found.relative_path == "Plan.md")
+    });
 }
 
 #[test]

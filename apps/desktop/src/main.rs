@@ -17,6 +17,7 @@ mod login;
     allow(dead_code, reason = "Linux shows no native menu bar")
 )]
 mod menu;
+mod spelling;
 mod system;
 mod updates;
 mod windows;
@@ -197,8 +198,9 @@ fn main() -> eframe::Result {
                     let ctx = creation.egui_ctx.clone();
                     instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
                 }
-                let mut windows =
-                    Windows::new(app, instance, || Box::new(SystemFolderPicker)).quitting_on(quit);
+                let mut windows = Windows::new(app, instance, || Box::new(SystemFolderPicker))
+                    .quitting_on(quit)
+                    .checking_spelling_with(spelling::system_spell_checker());
                 if smoke {
                     windows = windows.smoke_test(smoke_report(&updates));
                 }

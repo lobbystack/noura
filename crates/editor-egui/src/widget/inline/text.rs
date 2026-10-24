@@ -5,7 +5,7 @@ use editor_core::spans::{InlineSpan, SpanKind};
 
 use crate::MdRender;
 use crate::palette::ThemeExt as _;
-use crate::widget::utils::wrap_layout::{EmbedSpec, Format, Layout};
+use crate::widget::utils::wrap_layout::{EmbedSpec, Format, Layout, StyleInfo};
 
 impl<'ast> MdRender {
     pub fn layout_text(
@@ -34,6 +34,22 @@ impl<'ast> MdRender {
         if let Some(search_range) = self.search_range {
             cuts.push(search_range.start());
             cuts.push(search_range.end());
+        }
+        // Misspelled words get their own style scope, which paints the
+        // wavy line under them. Tags and block IDs are names, not words.
+        let misspelled: Vec<(Grapheme, Grapheme)> = self
+            .misspelled_in(node, node_range)
+            .into_iter()
+            .filter(|word| {
+                !spans.iter().any(|span| {
+                    matches!(span.kind, SpanKind::Tag | SpanKind::BlockId)
+                        && span.range.intersects(word, false)
+                })
+            })
+            .collect();
+        for word in &misspelled {
+            cuts.push(word.start());
+            cuts.push(word.end());
         }
         cuts.retain(|cut| node_range.contains(*cut, true, true));
         cuts.sort();
@@ -150,7 +166,20 @@ impl<'ast> MdRender {
                 let theme = self.ctx.get_lb_theme();
                 format.color = theme.fg().get_color(theme.prefs().primary);
             }
-            layout.push_source(piece, &self.buffer[piece], format);
+            match misspelled
+                .iter()
+                .find(|word| word.contains_range(&piece, true, true))
+            {
+                Some(word) => {
+                    layout.style_open(StyleInfo {
+                        misspelled: true,
+                        ..StyleInfo::new(format.clone(), *word)
+                    });
+                    layout.push_source(piece, &self.buffer[piece], format);
+                    layout.style_close();
+                }
+                None => layout.push_source(piece, &self.buffer[piece], format),
+            }
         }
     }
 

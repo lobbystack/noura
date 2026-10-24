@@ -1,12 +1,15 @@
-//! The editor sessions service: each Markdown file open in a tab, what the
-//! editor shows of it, and the saves that bring its edits to disk.
+//! The editor sessions service: each Markdown, plain-text or code file open
+//! in a tab, what the editor shows of it, and the saves that bring its edits
+//! to disk.
 //!
 //! A managed note's editor shows the text after its frontmatter, and the
 //! properties panel shows the frontmatter. A Markdown file without an ID
-//! shows its whole text, frontmatter included. Saves write the file's whole
-//! text through `local-core`, which keeps the bytes nobody edited: the
-//! byte-order mark, each line's ending and the final newline. A save runs on
-//! a worker thread and counts only once the durable write returns.
+//! shows its whole text, frontmatter included. A plain-text or code file
+//! shows its whole text as source, with no Markdown drawn. Saves write the
+//! file's whole text through `local-core`, which keeps the bytes nobody
+//! edited: the byte-order mark, each line's ending and the final newline. A
+//! save runs on a worker thread and counts only once the durable write
+//! returns.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -234,9 +237,26 @@ pub struct NoteSession {
     /// managed note, or 0.
     body_start: usize,
     /// Whether the editor shows the whole file, as for a Markdown file
-    /// without an ID. Decided when the note opens, so a file that gains or
-    /// loses an ID while open keeps how its text maps to the editor.
+    /// without an ID. A managed note's file that holds no managed note
+    /// anymore shows whole from then on, as [`Self::read`] says. A Markdown
+    /// file shown whole that a save or a conflict choice leaves with an ID
+    /// and a type opens as a note, as [`Self::reopen_if_fixed`] says.
     whole_file: bool,
+    /// Whether the editor shows the text as source, without the live
+    /// preview. Decided when the note opens.
+    source_only: bool,
+    /// Whether the file is a plain-text or code file rather than Markdown:
+    /// its text is never read as frontmatter. Decided when it opens, and
+    /// again once nothing is unsaved after a move changed its extension.
+    text_file: bool,
+    /// Why the properties of a Markdown file shown whole don't parse, as
+    /// the file holds them now.
+    broken: Option<&'static str>,
+    /// Whether the editor shows the file as source because its properties
+    /// didn't parse when it opened, or when a managed note's file lost its
+    /// managed note. Once a save leaves them readable, the file shows as it
+    /// would open then.
+    broken_layout: bool,
     managed: Option<Managed>,
     /// The editor's text and its buffer version, as the editor last
     /// reported them.
@@ -278,17 +298,21 @@ pub struct NoteSession {
 }
 
 impl NoteSession {
-    /// Read the Markdown file at `relative_path`.
+    /// Read the Markdown, plain-text or code file at `relative_path`.
     pub(crate) fn open(engine: &WorkspaceEngine, relative_path: &str) -> Result<Self, AppError> {
         let read = engine
             .read_raw_markdown(relative_path)
             .map_err(|error| open_error(error, relative_path))?;
         let mut session = Self {
             relative_path: relative_path.to_owned(),
-            base: String::new(),
-            revision: String::new(),
+            base: read.body,
+            revision: read.revision,
             body_start: 0,
             whole_file: true,
+            source_only: false,
+            text_file: false,
+            broken: None,
+            broken_layout: false,
             managed: None,
             text: String::new(),
             version: 0,
@@ -307,30 +331,66 @@ impl NoteSession {
             conflict: None,
             deleted: false,
             restore_problem: None,
-            uses_crlf: false,
-            has_bom: false,
+            uses_crlf: read.uses_crlf,
+            has_bom: read.has_bom,
         };
-        session.whole_file = !matches!(
-            local_core::parse_markdown(relative_path, read.body.as_bytes()),
-            ParsedMarkdown::Managed(_)
-        );
-        session.take(read);
-        session.text = session.body().to_owned();
+        session.lay_out();
         Ok(session)
     }
 
-    /// Take `read` as what the file holds now.
-    fn take(&mut self, read: local_core::RawMarkdownRead) {
+    /// Show the text Noura last read as the file at its path opens: a
+    /// plain-text or code file as source, a managed note after its
+    /// frontmatter, and any other Markdown file whole, as source when its
+    /// properties don't parse.
+    fn lay_out(&mut self) {
+        self.text_file = !is_markdown(&self.relative_path);
+        self.whole_file = self.text_file
+            || !matches!(
+                local_core::parse_markdown(&self.relative_path, self.base.as_bytes()),
+                ParsedMarkdown::Managed(_)
+            );
+        let base = std::mem::take(&mut self.base);
+        let revision = std::mem::take(&mut self.revision);
+        self.read(base, revision);
+        self.text = self.body().to_owned();
+        self.broken_layout = self.broken.is_some();
+        self.source_only = self.text_file || self.broken_layout;
+    }
+
+    /// Take `read` as what the file holds now, as [`Self::read`] says.
+    fn take(&mut self, read: local_core::RawMarkdownRead) -> Option<String> {
         self.uses_crlf = read.uses_crlf;
         self.has_bom = read.has_bom;
-        self.read(read.body, read.revision);
+        self.read(read.body, read.revision)
     }
 
     /// Take `base`, the file's whole LF text, as what the file holds now.
-    fn read(&mut self, base: String, revision: String) {
-        let parsed = local_core::parse_markdown(&self.relative_path, base.as_bytes());
+    ///
+    /// A managed note's file that holds no managed note anymore, as when
+    /// another app broke its properties, shows whole from now on, as such
+    /// a file opens: as source under the notice when its properties don't
+    /// parse. The editor's text gains the frontmatter it followed, which
+    /// comes back as `Some` for the caller to put before any other text it
+    /// holds in the editor's old terms. The editor starts again from the
+    /// whole text, as a change of [`Self::shows_whole_file`] tells it.
+    /// Writes then send the whole text, so they never drop the frontmatter
+    /// or write it twice.
+    fn read(&mut self, base: String, revision: String) -> Option<String> {
+        let parsed = (!self.text_file)
+            .then(|| local_core::parse_markdown(&self.relative_path, base.as_bytes()));
+        let lost = (!self.whole_file && !matches!(parsed, Some(ParsedMarkdown::Managed(_))))
+            .then(|| self.base[..self.body_start].to_owned());
+        if lost.is_some() {
+            self.whole_file = true;
+        }
+        self.broken = match &parsed {
+            Some(ParsedMarkdown::Malformed { error, .. }) if self.whole_file => {
+                Some(properties_problem(error))
+            }
+            _ => None,
+        };
         self.managed = match parsed {
-            ParsedMarkdown::Managed(object) if !self.whole_file => Some(Managed {
+            Some(ParsedMarkdown::Managed(object)) if !self.whole_file => Some(Managed {
                 id: object.id,
                 object_type: object.object_type,
                 created: object.created,
@@ -345,6 +405,15 @@ impl NoteSession {
         };
         self.base = base;
         self.revision = revision;
+        if let Some(frontmatter) = &lost {
+            self.text.insert_str(0, frontmatter);
+            self.broken_layout = self.broken.is_some();
+            self.source_only = self.broken_layout;
+            if let Some(conflict) = &mut self.conflict {
+                conflict.shown.clone_from(&conflict.file);
+            }
+        }
+        lost
     }
 
     /// The text the file holds for the editor: after the frontmatter of a
@@ -357,15 +426,31 @@ impl NoteSession {
         &self.relative_path
     }
 
-    /// The note's name: its file name without `.md`.
+    /// The note's name, as the name field shows it: its file name without
+    /// `.md`, or a plain-text or code file's name without its extension.
     pub fn name(&self) -> String {
-        crate::files::shown_name(
-            self.relative_path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&self.relative_path),
-            crate::EntryKind::File,
-        )
+        let file_name = self.file_name();
+        if self.text_file {
+            return split_extension(file_name).0.to_owned();
+        }
+        crate::files::shown_name(file_name, crate::EntryKind::File)
+    }
+
+    /// The file name a rename to `name`, the name field's text, gives the
+    /// file: a plain-text or code file keeps its extension. A Markdown
+    /// file's `.md` comes back with the rename itself.
+    pub(crate) fn renamed_file_name(&self, name: &str) -> String {
+        if self.text_file {
+            return format!("{name}{}", split_extension(self.file_name()).1);
+        }
+        name.to_owned()
+    }
+
+    fn file_name(&self) -> &str {
+        self.relative_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.relative_path)
     }
 
     /// The text the editor shows.
@@ -373,9 +458,42 @@ impl NoteSession {
         &self.text
     }
 
+    /// Whether the editor shows the file's whole text, frontmatter
+    /// included, rather than a managed note's text after its frontmatter.
+    /// An editor drawn for one layout starts again when the other shows.
+    pub fn shows_whole_file(&self) -> bool {
+        self.whole_file
+    }
+
+    /// Whether the editor shows the text as source, without the live
+    /// preview: a plain-text or code file, or a Markdown file shown whole
+    /// whose properties don't parse.
+    pub fn shows_source(&self) -> bool {
+        self.source_only
+    }
+
+    /// Why the properties at the top of a Markdown file shown whole don't
+    /// parse, in plain words: the editor shows them in its text, where you
+    /// can fix them. `None` once they parse, and for every other file.
+    pub fn broken_properties(&self) -> Option<&str> {
+        self.broken
+    }
+
     /// The stable ID of a managed note.
     pub fn object_id(&self) -> Option<&str> {
         self.managed.as_ref().map(|managed| managed.id.as_str())
+    }
+
+    /// The type of a managed note, such as `note` or a plugin's type.
+    pub fn object_type(&self) -> Option<&str> {
+        self.managed
+            .as_ref()
+            .map(|managed| managed.object_type.as_str())
+    }
+
+    /// The revision of the file as Noura last read or saved it.
+    pub fn revision(&self) -> &str {
+        &self.revision
     }
 
     /// Whether the note has edits that aren't on disk yet, counting a save
@@ -564,11 +682,11 @@ impl NoteSession {
         };
         match written {
             Written::Text(Ok(RawSaveResult::Saved { current, .. })) => {
-                self.take(current);
+                let sent = in_whole_file(self.take(current), sent);
                 self.saved(version, sent, None);
             }
             Written::Text(Ok(RawSaveResult::Merged { current, .. })) => {
-                self.take(current);
+                let sent = in_whole_file(self.take(current), sent);
                 let merged = self.body().to_owned();
                 // The editor merges the outside edit in when it shows the
                 // note. Until then the session's text carries it too, so a
@@ -592,7 +710,9 @@ impl NoteSession {
                 self.property_edits
                     .drain(..count.min(self.property_edits.len()));
                 let body = self.body().to_owned();
-                self.take(read);
+                let frontmatter = self.take(read);
+                let body = in_whole_file(frontmatter.clone(), body);
+                let sent = in_whole_file(frontmatter, sent);
                 self.problem = None;
                 if self.body() != body {
                     // The edits went into the file as another program left
@@ -686,6 +806,40 @@ impl NoteSession {
         if self.text != self.body() && self.first_unsaved.is_none() {
             self.first_unsaved = self.last_edit;
         }
+        self.reopen_if_fixed();
+    }
+
+    /// Show the file as it would open now, once nothing is unsaved. A
+    /// Markdown file shown whole whose properties hold an ID and a type
+    /// shows as a note with its properties panel: the file opened with
+    /// them broken, they broke while you typed, or another app broke them.
+    /// A file shown as source for its broken properties whose properties
+    /// now read without an ID shows in the live preview. A move that
+    /// changed the file's extension shows it as its new kind. The editor
+    /// starts again from the note's text, as [`Self::take_reset`] tells it,
+    /// which writes nothing. Edits typed while the save ran wait for their
+    /// own save first, so the text the editor shows always maps to the file
+    /// the same way.
+    fn reopen_if_fixed(&mut self) {
+        if self.is_unsaved() {
+            return;
+        }
+        let same_kind = self.text_file != is_markdown(&self.relative_path);
+        if same_kind {
+            if self.text_file || !self.whole_file || self.broken.is_some() {
+                return;
+            }
+            let managed = matches!(
+                local_core::parse_markdown(&self.relative_path, self.base.as_bytes()),
+                ParsedMarkdown::Managed(_)
+            );
+            if !managed && !self.broken_layout {
+                return;
+            }
+        }
+        self.lay_out();
+        self.sync = None;
+        self.reset = Some(self.text.clone());
     }
 
     /// Another program deleted the file, or moved a file Noura can't
@@ -730,6 +884,7 @@ impl NoteSession {
             saved: (self.version, self.text.clone()),
             merged: None,
         });
+        self.reopen_if_fixed();
         Restored::Written
     }
 
@@ -828,17 +983,29 @@ impl NoteSession {
         if fresh.revision == self.revision {
             return false;
         }
+        self.replace_with(fresh);
+        true
+    }
+
+    /// Take `fresh`, the file opened again, in place of this session. The
+    /// editor takes its text, as [`Self::take_reset`] tells it.
+    fn replace_with(&mut self, fresh: Self) {
         let text = fresh.text.clone();
         *self = Self {
             version: self.version,
             reset: Some(text),
             ..fresh
         };
-        true
     }
 
+    /// Follow the file to `relative_path`. A move that turns a plain-text
+    /// or code file into a Markdown file, or the other way, as when the
+    /// name field renames `LICENSE` to `LICENSE.md`, shows the file as its
+    /// new kind once nothing is unsaved, as [`Self::reopen_if_fixed`] says.
+    /// Noura's own renames and moves save first, so that's at once.
     pub(crate) fn moved_to(&mut self, relative_path: &str) {
         relative_path.clone_into(&mut self.relative_path);
+        self.reopen_if_fixed();
     }
 
     /// Look at the file after the files changed on disk. A note with
@@ -929,10 +1096,15 @@ impl NoteSession {
                 self.problem = None;
                 self.waiting_for_edit = false;
                 self.forced = false;
-                self.take(resolved.current);
+                let lost = self.take(resolved.current).is_some();
                 match choice {
-                    // The file holds your text now.
+                    // The file holds your text now. When it holds no
+                    // managed note anymore, the editor shows all of it,
+                    // with the properties another app broke.
                     ConflictChoice::Mine => {
+                        if lost {
+                            self.text = self.body().to_owned();
+                        }
                         self.sync = Some(NoteSync {
                             saved: (self.version, self.text.clone()),
                             merged: None,
@@ -945,6 +1117,7 @@ impl NoteSession {
                         self.last_edit = None;
                     }
                 }
+                self.reopen_if_fixed();
             }
             Err(error) if error.code == "revision_conflict" => {
                 tracing::info!("the file changed again during conflict review");
@@ -1171,7 +1344,7 @@ fn open_error(error: CoreError, relative_path: &str) -> AppError {
     match error.code.as_str() {
         "invalid_utf8" => AppError::new(
             "invalid_utf8",
-            "This file isn't UTF-8 text, so the editor can't open it.",
+            "Noura can't read this file as text because it isn't UTF-8.",
         ),
         "file_not_downloaded" => AppError::new(
             "file_not_downloaded",
@@ -1201,7 +1374,52 @@ pub(crate) fn save_reason(error: &CoreError) -> String {
     }
 }
 
-/// Whether the file at `relative_path` opens in the note editor.
+/// Why frontmatter failed to parse with `error`, `workspace-format`'s
+/// message, in plain words. The conformance fixtures pin how each message
+/// starts.
+fn properties_problem(error: &str) -> &'static str {
+    if error.starts_with("Frontmatter has no closing delimiter") {
+        "The properties have no closing --- line."
+    } else if error.starts_with("Invalid YAML frontmatter") {
+        "The properties aren\u{2019}t valid YAML."
+    } else if error.starts_with("Managed frontmatter requires a string type") {
+        "The properties have an ID but no type."
+    } else if error.starts_with("The stable ID does not match the object type") {
+        "The ID doesn\u{2019}t match the type."
+    } else {
+        "Noura can\u{2019}t read the properties."
+    }
+}
+
+/// `text`, which follows the frontmatter of a managed note, as the whole
+/// file's text once [`NoteSession::read`] returned that `frontmatter`.
+fn in_whole_file(frontmatter: Option<String>, text: String) -> String {
+    match frontmatter {
+        Some(mut whole) => {
+            whole.push_str(&text);
+            whole
+        }
+        None => text,
+    }
+}
+
+/// `file_name` split before its extension's dot: `config.json` into
+/// `config` and `.json`. A name with no dot past its first character has no
+/// extension.
+fn split_extension(file_name: &str) -> (&str, &str) {
+    match file_name.rfind('.') {
+        Some(dot) if dot > 0 => file_name.split_at(dot),
+        _ => (file_name, ""),
+    }
+}
+
+/// Whether the file at `relative_path` opens in the editor: a Markdown file,
+/// or a plain-text or code file.
+pub(crate) fn opens_in_editor(relative_path: &str) -> bool {
+    is_markdown(relative_path) || local_core::is_plain_text_path(relative_path)
+}
+
+/// Whether the file at `relative_path` is Markdown, which opens as a note.
 pub(crate) fn is_markdown(relative_path: &str) -> bool {
     relative_path.len() > 3
         && relative_path.is_char_boundary(relative_path.len() - 3)

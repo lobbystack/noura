@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::widget::utils::wrap_layout::Format;
@@ -238,7 +237,9 @@ impl<'ast> MdRender {
                 n * row_height + (n - 1.0).max(0.0) * self.layout.row_spacing
             }
             NodeValue::ThematicBreak => self.height_thematic_break(),
-            NodeValue::FrontMatter(_) => self.height_front_matter(node),
+            // Front matter lays out like a code block, whose fences show
+            // with the caret in it: measured, not estimated or kept.
+            NodeValue::FrontMatter(_) => return self.height_front_matter(node),
             _ => 0.,
         };
         self.set_cached_node_height_approx(node, height);
@@ -360,15 +361,17 @@ pub type HeightDeps = [u64; 3];
 
 #[derive(Default)]
 pub struct LayoutCache {
-    pub height: RefCell<HashMap<u64, (f32, HeightDeps)>>,
-    pub height_approx: RefCell<HashMap<u64, (f32, HeightDeps)>>,
+    pub height: RefCell<editor_core::doc::NodeMap<editor_core::doc::NodeKey, (f32, HeightDeps)>>,
+    pub height_approx:
+        RefCell<editor_core::doc::NodeMap<editor_core::doc::NodeKey, (f32, HeightDeps)>>,
 
-    /// `text_seq` this cache was last consistent with. Drives wholesale
-    /// invalidation in [`Self::ensure_text_consistent`] — text changes
-    /// can affect any entry (fold tag insertions move distant sibling
-    /// heights, AST re-parse shifts sourcepos keys), so per-entry
-    /// stamping wouldn't help. Text-derived values live in
-    /// `editor-core`'s `TextCache`.
+    /// The document's `bounds_seq` this cache was last consistent with,
+    /// which moves when the text changes or a new parse of it arrives.
+    /// Drives wholesale invalidation in [`Self::ensure_text_consistent`] —
+    /// text changes can affect any entry (fold tag insertions move distant
+    /// sibling heights, AST re-parse shifts sourcepos keys), so per-entry
+    /// stamping wouldn't help. Text-derived values live in `editor-core`'s
+    /// `TextCache`.
     pub text_seq: std::cell::Cell<u64>,
 }
 
@@ -540,7 +543,66 @@ impl MdRender {
     }
 }
 
+/// The estimated height of each top-level block's row, with its spacing:
+/// what the scroll area sums every frame. An in-place reparse replaces the
+/// rows of the blocks it reparsed and keeps the rest.
+#[derive(Default)]
+pub struct RowApprox {
+    /// `bounds_seq` and the estimates' own dependencies the rows hold for.
+    deps: Option<(u64, HeightDeps)>,
+    rows: Vec<Option<f32>>,
+}
+
 impl<'ast> MdRender {
+    /// The estimated height of the row of top-level block `index`, `node`,
+    /// one of `count` blocks.
+    pub fn row_approx(&self, index: usize, node: &'ast AstNode<'ast>, count: usize) -> f32 {
+        let deps = (self.doc.bounds_seq, self.approx_deps());
+        {
+            let mut cache = self.row_approx.borrow_mut();
+            if cache.deps != Some(deps) {
+                let edit = self.doc.last_block_edit();
+                match (cache.deps, edit) {
+                    (Some((from, old_deps)), Some(edit))
+                        if from == edit.from_bounds_seq
+                            && deps.0 == edit.to_bounds_seq
+                            && old_deps == deps.1
+                            && edit.old_blocks.end <= cache.rows.len() =>
+                    {
+                        let new = edit.new_blocks.clone();
+                        cache.rows.splice(
+                            edit.old_blocks.clone(),
+                            std::iter::repeat_n(None, new.len()),
+                        );
+                        // The blocks on either side: one's spacing reaches
+                        // the run, the other can become the last block.
+                        if let Some(row) = cache.rows.get_mut(new.end) {
+                            *row = None;
+                        }
+                        if let Some(row) =
+                            new.start.checked_sub(1).and_then(|i| cache.rows.get_mut(i))
+                        {
+                            *row = None;
+                        }
+                    }
+                    _ => cache.rows.clear(),
+                }
+                cache.rows.resize(count, None);
+                cache.deps = Some(deps);
+            }
+            if let Some(Some(height)) = cache.rows.get(index) {
+                return *height;
+            }
+        }
+        let height = self.block_pre_spacing_height_approx(node)
+            + self.height_approx(node)
+            + self.block_post_spacing_height_approx(node);
+        if let Some(row) = self.row_approx.borrow_mut().rows.get_mut(index) {
+            *row = Some(height);
+        }
+        height
+    }
+
     fn height_deps(&self) -> HeightDeps {
         [self.width_seq, self.content_seq(), self.reveal_seq]
     }
@@ -550,6 +612,19 @@ impl<'ast> MdRender {
     /// changing or appearing.
     pub fn content_seq(&self) -> u64 {
         self.embeds.seq() ^ self.link_resolver.seq().rotate_left(32)
+    }
+
+    /// An estimate counts characters rather than laying text out, so the
+    /// syntax the caret reveals doesn't change it; only a fold the reveal
+    /// state opens does. Without fold tags, moving the caret keeps every
+    /// estimate.
+    fn approx_deps(&self) -> HeightDeps {
+        let reveal = if self.bounds.has_fold_tags {
+            self.reveal_seq
+        } else {
+            0
+        };
+        [self.width_seq, self.embeds.seq(), reveal]
     }
 
     pub fn get_cached_node_height(&self, node: &'ast AstNode<'ast>) -> Option<f32> {
@@ -571,7 +646,7 @@ impl<'ast> MdRender {
 
     pub fn get_cached_node_height_approx(&self, node: &'ast AstNode<'ast>) -> Option<f32> {
         let key = editor_core::MdDoc::pack_node_key(node);
-        let deps = self.height_deps();
+        let deps = self.approx_deps();
         let cache = self.layout_cache.height_approx.borrow();
         let (v, stamps) = cache.get(&key)?;
         (*stamps == deps).then_some(*v)
@@ -579,7 +654,7 @@ impl<'ast> MdRender {
 
     pub fn set_cached_node_height_approx(&self, node: &'ast AstNode<'ast>, height: f32) {
         let key = editor_core::MdDoc::pack_node_key(node);
-        let deps = self.height_deps();
+        let deps = self.approx_deps();
         self.layout_cache
             .height_approx
             .borrow_mut()

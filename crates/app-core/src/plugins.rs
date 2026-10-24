@@ -12,7 +12,8 @@
 //! haven't installed and approved it.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
+    ops::Range,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, PoisonError,
@@ -25,12 +26,13 @@ use std::{
 use local_core::{CoreError, WatchCoordinator, WorkspaceEntryKind};
 use plugin_host::{
     Candidate, Capability, Entry, EntryKind, Event, FileRead, InstallError, Listed, ObjectRead,
-    Page, PluginHost, PluginInstance, PluginManifest, ServiceError, View, WorkspacePath,
-    WorkspaceReads,
+    ObjectTypes, Page, PluginHost, PluginInstance, PluginManifest, ServiceError, Services, Value,
+    View, ViewError, ViewKind, ViewNode, VirtualRow, WorkspaceObjects, WorkspacePath,
+    WorkspaceReads, check_rows,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AppError, Workspace, store::JsonStore};
+use crate::{AppError, Workspace, plugin_objects::ObjectStore, store::JsonStore};
 
 /// Where the plugin host keeps installed plugins and their compiled code,
 /// under the app data folder.
@@ -53,6 +55,10 @@ const WATCH_WAIT: Duration = Duration::from_millis(500);
 
 /// The largest file a plugin may read.
 const MAX_READ_BYTES: u64 = 16 << 20;
+
+/// How many rows of a virtual list Noura asks a plugin for at once. Each
+/// batch starts at a multiple of this.
+const ROW_BATCH: u32 = 64;
 
 /// A capability as Settings and the install dialog show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +152,24 @@ struct Running {
     instance: PluginInstance,
     pages: Vec<Page>,
     views: BTreeMap<String, PluginView>,
+    /// The properties panels it last drew, by object ID, each with the
+    /// revision of the file it drew from.
+    panels: BTreeMap<String, (String, PluginView)>,
+    /// The rows of each virtual list fetched since the views were drawn,
+    /// by page and node ID.
+    rows: HashMap<(String, String), Rows>,
+}
+
+/// The rows of one virtual list fetched so far.
+#[derive(Default)]
+struct Rows {
+    /// The start of each batch asked for, whatever came back.
+    asked: std::collections::HashSet<u32>,
+    rows: HashMap<u32, VirtualRow>,
+    /// The ID of every row fetched, which no other row may repeat.
+    ids: std::collections::HashSet<String>,
+    /// Why the plugin's rows can't be shown.
+    problem: Option<String>,
 }
 
 /// A new build a watcher found in a plugin's folder, or why it can't load.
@@ -185,6 +209,8 @@ pub(crate) struct Plugins {
     manifests: BTreeMap<String, PluginManifest>,
     /// The workspace the running plugins read.
     workspace: Option<Arc<Workspace>>,
+    /// The object types the running plugins registered.
+    types: ObjectTypes,
     running: BTreeMap<String, Running>,
     problems: BTreeMap<String, String>,
     /// New builds whose capabilities wait for your approval.
@@ -212,6 +238,7 @@ impl Plugins {
             host: None,
             manifests: BTreeMap::new(),
             workspace: None,
+            types: ObjectTypes::new(),
             running: BTreeMap::new(),
             problems: BTreeMap::new(),
             updates: BTreeMap::new(),
@@ -397,13 +424,44 @@ impl Plugins {
                     ),
                 ));
             }
-            let reader: Arc<dyn WorkspaceReads> = Arc::new(WorkspaceReader(workspace));
+            let reader: Arc<dyn WorkspaceReads> = Arc::new(WorkspaceReader(workspace.clone()));
+            let objects: Arc<dyn WorkspaceObjects> =
+                Arc::new(ObjectStore::new(workspace, self.types.clone()));
+            let services = Services {
+                workspace: Some(reader),
+                objects: Some(objects),
+                types: self.types.clone(),
+            };
             let mut instance = host
-                .start(&loaded, &record.approved, Some(reader))
+                .start_with(&loaded, &record.approved, services)
                 .map_err(|error| {
                     tracing::warn!(%error, "a plugin didn't start");
                     AppError::new("plugin_start_failed", "It failed to start.")
                 })?;
+            let refused = if loaded
+                .manifest()
+                .capabilities
+                .contains(&Capability::ObjectTypes)
+            {
+                let registered = instance.register_object_types().map_err(|error| {
+                    tracing::warn!(%error, "a plugin didn't list its object types");
+                    AppError::new(
+                        "plugin_types_failed",
+                        "It failed while listing its object types.",
+                    )
+                })?;
+                registered
+                    .into_iter()
+                    .filter_map(|(object_type, result)| {
+                        result.err().map(|error| {
+                            tracing::warn!(code = error.code(), "a plugin's type wasn't added");
+                            format!("Noura didn't add the type {object_type}: {error}")
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let declares_views = loaded.manifest().capabilities.contains(&Capability::Views);
             let pages = if declares_views {
                 instance.pages().map_err(|error| {
@@ -413,18 +471,23 @@ impl Plugins {
             } else {
                 Vec::new()
             };
-            Ok((instance, pages))
+            Ok((instance, pages, refused))
         });
         match started {
-            Ok((instance, pages)) => {
+            Ok((instance, pages, refused)) => {
                 let pages = pages.into_iter().filter(valid_page).collect();
                 let mut running = Running {
                     instance,
                     pages,
                     views: BTreeMap::new(),
+                    panels: BTreeMap::new(),
+                    rows: HashMap::new(),
                 };
                 running.render_all();
                 self.running.insert(id.to_owned(), running);
+                if !refused.is_empty() {
+                    self.problems.insert(id.to_owned(), refused.join(" "));
+                }
             }
             Err(error) => {
                 self.problems.insert(id.to_owned(), error.message);
@@ -692,9 +755,10 @@ impl Plugins {
         self.running.get(plugin)?.views.get(page).cloned()
     }
 
-    /// Tell the plugin behind `page_id` that the button `node` was pressed,
-    /// and draw its pages again.
-    pub(crate) fn press(&mut self, page_id: &str, node: &str) {
+    /// Tell the plugin behind `page_id` about `event` in the page's view,
+    /// and draw its pages again. An input value of the wrong form, such as
+    /// a date that isn't `YYYY-MM-DD`, never reaches the plugin.
+    pub(crate) fn send(&mut self, page_id: &str, event: &Event) {
         let Some((plugin, page)) = split_page_id(page_id) else {
             return;
         };
@@ -704,20 +768,195 @@ impl Plugins {
         if !running.pages.iter().any(|known| known.id == page) {
             return;
         }
-        if let Err(error) = running
-            .instance
-            .handle_event(page, &Event::Pressed(node.to_owned()))
-        {
-            tracing::warn!(%error, "a plugin failed to handle a press");
+        if !well_formed_event(event) {
+            return;
         }
+        if let Err(error) = running.instance.handle_event(page, event) {
+            tracing::warn!(%error, "a plugin failed to handle an event");
+        }
+        // The event may have written objects whose panels show.
+        running.panels.clear();
         running.render_all();
         self.changed();
+    }
+
+    /// The properties panel of the object `object_id` of type
+    /// `object_type`, whose file has the revision `revision`, as the
+    /// running plugin that holds the type draws it. `None` when no running
+    /// plugin holds the type, so the kernel's panel shows.
+    pub(crate) fn panel(
+        &mut self,
+        object_type: &str,
+        object_id: &str,
+        revision: &str,
+    ) -> Option<PluginView> {
+        let owner = self.types.owner(object_type)?;
+        let running = self.running.get_mut(&owner)?;
+        if let Some((drawn, view)) = running.panels.get(object_id)
+            && drawn == revision
+        {
+            return Some(view.clone());
+        }
+        let view = match running.instance.render_panel(object_id) {
+            Ok(nodes) => View::from_nodes(nodes)
+                .map_err(|error| error.to_string())
+                .and_then(|view| match virtual_list_in(view.root()) {
+                    // A panel has no `rows` to fetch a virtual list's rows.
+                    Some(list) => Err(format!(
+                        "The virtual list {list} can't show in a properties panel."
+                    )),
+                    None => Ok(view),
+                }),
+            Err(error) => {
+                tracing::warn!(%error, "a plugin failed to draw a properties panel");
+                Err("The plugin failed while drawing this panel.".to_owned())
+            }
+        };
+        running
+            .panels
+            .insert(object_id.to_owned(), (revision.to_owned(), view.clone()));
+        Some(view)
+    }
+
+    /// Tell the plugin that holds `object_type` about `event` in the
+    /// properties panel of the object `object_id`, and draw its panels and
+    /// pages again. An input value of the wrong form never reaches the
+    /// plugin.
+    pub(crate) fn send_panel(&mut self, object_type: &str, object_id: &str, event: &Event) {
+        let Some(owner) = self.types.owner(object_type) else {
+            return;
+        };
+        let Some(running) = self.running.get_mut(&owner) else {
+            return;
+        };
+        if !well_formed_event(event) {
+            return;
+        }
+        if let Err(error) = running.instance.handle_panel_event(object_id, event) {
+            tracing::warn!(%error, "a plugin failed to handle an event in a panel");
+        }
+        running.panels.clear();
+        running.render_all();
+        self.changed();
+    }
+
+    /// The rows in `range` of the virtual list `node` in the plugin page
+    /// `page_id`, each `None` until the plugin returns it. Rows the
+    /// plugin hasn't returned yet are asked for in batches of
+    /// [`ROW_BATCH`], once each until the page draws again. A row whose ID
+    /// repeats one fetched before breaks the list's rules.
+    pub(crate) fn virtual_rows(
+        &mut self,
+        page_id: &str,
+        node: &str,
+        range: Range<u32>,
+    ) -> Result<Vec<Option<VirtualRow>>, String> {
+        let gone = || "The plugin that adds this page isn't running.".to_owned();
+        let (plugin, page) = split_page_id(page_id).ok_or_else(gone)?;
+        let running = self.running.get_mut(plugin).ok_or_else(gone)?;
+        let total = match running.views.get(page) {
+            Some(Ok(view)) => virtual_list_rows(view.root(), node),
+            _ => None,
+        }
+        .ok_or_else(|| format!("The page has no virtual list {node}."))?;
+        let range = range.start.min(total)..range.end.min(total);
+        let rows = running
+            .rows
+            .entry((page.to_owned(), node.to_owned()))
+            .or_default();
+        if let Some(problem) = &rows.problem {
+            return Err(problem.clone());
+        }
+        let first = range.start / ROW_BATCH * ROW_BATCH;
+        for start in (first..range.end).step_by(ROW_BATCH as usize) {
+            if !rows.asked.insert(start) {
+                continue;
+            }
+            let count = ROW_BATCH.min(total - start);
+            let fetched = running
+                .instance
+                .rows(page, node, start, count)
+                .map_err(|error| {
+                    tracing::warn!(%error, "a plugin failed to list rows");
+                    "The plugin failed while listing these rows.".to_owned()
+                })
+                .and_then(|fetched| check_rows(fetched, count).map_err(|error| error.to_string()))
+                .and_then(|fetched| {
+                    // `check_rows` checks one batch; a row may not repeat
+                    // the ID of a row in another.
+                    match fetched.iter().find(|row| rows.ids.contains(&row.id)) {
+                        Some(row) => {
+                            Err(ViewError::DuplicateRowId { id: row.id.clone() }.to_string())
+                        }
+                        None => Ok(fetched),
+                    }
+                });
+            match fetched {
+                Ok(fetched) => {
+                    rows.ids.extend(fetched.iter().map(|row| row.id.clone()));
+                    rows.rows.extend((start..).zip(fetched));
+                }
+                Err(problem) => {
+                    rows.problem = Some(problem.clone());
+                    return Err(problem);
+                }
+            }
+        }
+        Ok(range.map(|index| rows.rows.get(&index).cloned()).collect())
+    }
+}
+
+/// How many rows the virtual list `id` under `node` holds.
+fn virtual_list_rows(node: &ViewNode, id: &str) -> Option<u32> {
+    match &node.kind {
+        ViewKind::VirtualList { rows, .. } if node.id == id => Some(*rows),
+        _ => node
+            .children
+            .iter()
+            .find_map(|child| virtual_list_rows(child, id)),
+    }
+}
+
+/// The ID of the first virtual list under `node`, if any.
+fn virtual_list_in(node: &ViewNode) -> Option<&str> {
+    match &node.kind {
+        ViewKind::VirtualList { .. } => Some(&node.id),
+        _ => node.children.iter().find_map(virtual_list_in),
+    }
+}
+
+/// Whether the input values `event` carries have the form the plugin
+/// interface promises. Logs the ones that don't.
+fn well_formed_event(event: &Event) -> bool {
+    let well_formed = match event {
+        Event::Changed(field) => well_formed(&field.value),
+        Event::Submitted(submission) => submission
+            .fields
+            .iter()
+            .all(|field| well_formed(&field.value)),
+        _ => true,
+    };
+    if !well_formed {
+        tracing::warn!("an input value of the wrong form didn't reach a plugin");
+    }
+    well_formed
+}
+
+/// Whether an input value has the form the plugin interface promises:
+/// dates as `YYYY-MM-DD` and dates and times in RFC 3339 with an offset.
+fn well_formed(value: &Value) -> bool {
+    match value {
+        Value::Date(Some(date)) => workspace_format::is_civil_date(date),
+        Value::DateTime(Some(at)) => workspace_format::is_instant(at),
+        _ => true,
     }
 }
 
 impl Running {
-    /// Ask the plugin for each page's view and check it.
+    /// Ask the plugin for each page's view and check it. Virtual lists ask
+    /// for their rows again.
     fn render_all(&mut self) {
+        self.rows.clear();
         for page in &self.pages {
             let view = match self.instance.render(&page.id) {
                 Ok(nodes) => View::from_nodes(nodes).map_err(|error| error.to_string()),
@@ -927,5 +1166,49 @@ fn service_error(error: &CoreError, what: &str) -> ServiceError {
             tracing::warn!(code, operation = %error.operation, "a plugin's workspace read failed");
             ServiceError::Failed("Noura couldn't read the workspace.".to_owned())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use plugin_host::{Field, Node, NodeKind, VirtualList};
+
+    use super::*;
+
+    #[test]
+    fn a_virtual_list_inside_a_panel_is_found_at_any_depth() {
+        let node = |id: &str, kind, children| Node {
+            id: id.to_owned(),
+            kind,
+            children,
+        };
+        let seeds = NodeKind::VirtualList(VirtualList {
+            label: "Seeds".to_owned(),
+            rows: 10,
+        });
+        let nested = View::from_nodes(vec![
+            node("recipe", NodeKind::Panel(None), vec![1]),
+            node("more", NodeKind::Panel(None), vec![2]),
+            node("seeds", seeds, Vec::new()),
+        ])
+        .expect("a well-formed view");
+        assert_eq!(virtual_list_in(nested.root()), Some("seeds"));
+
+        let plain = View::from_nodes(vec![node("recipe", NodeKind::Panel(None), Vec::new())])
+            .expect("a well-formed view");
+        assert_eq!(virtual_list_in(plain.root()), None);
+    }
+
+    #[test]
+    fn an_event_with_a_date_of_the_wrong_form_is_refused() {
+        let changed = |date: &str| {
+            Event::Changed(Field {
+                node: "sown".to_owned(),
+                value: Value::Date(Some(date.to_owned())),
+            })
+        };
+        assert!(well_formed_event(&changed("2026-10-21")));
+        assert!(!well_formed_event(&changed("21/10/2026")));
+        assert!(well_formed_event(&Event::Pressed("vegetarian".to_owned())));
     }
 }

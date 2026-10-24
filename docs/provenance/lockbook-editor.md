@@ -74,9 +74,15 @@ To the workspace crate's editor:
 - The palette falls back to Lockbook's default light or dark theme when the app sets none.
 - `alert_type_title_ranges` gives a callout whose first line names no known type an empty type and uses the whole line as its title. Lockbook panicked there. You can reach that case by typing `---` above a line that holds a lone carriage return, which makes frontmatter that comrak counts one line short.
 - `own_prefix_len_task_item` keeps a task item's prefix inside its line. A parent item's padding counts columns, so after a tab it can claim part of the task's marker, as in `-\t- [ ] `. Lockbook then read past the end of the line and panicked.
+- Ticket 23 made the plain-text mode leave Markdown out of editing too. Return only breaks the line, Backspace only deletes, Tab nests nothing, and the mode reports no constructs, folds or images. Lockbook's plain-text mode drew the source as it is but still continued lists and quotes on Return and removed their markers on Backspace.
 - Spoilers remember their reveal by source range instead of by egui id.
 - Copied and cut text leaves `editor-core` through `MdDoc::copied`, and `editor-egui` hands it to egui's clipboard.
-- Inserts an input method's committed text the way a key press inserts text. Lockbook's desktop path ignored egui's input method events.
+- Ticket 22 shows an input method's marked text inline at the caret, underlined, and keeps it out of the buffer: `editor-core` holds the composition, and the commit replaces the selection as one edit. Lockbook's desktop path ignored egui's input method events.
+- Ticket 22 parses a note once per text version, where Lockbook parsed it three or four times a frame. `editor-core`'s `Ast` owns its comrak arena, so a parse outlives the call that made it. In a note of 64 KiB or more, an edit reparses the top-level blocks it reaches and rebuilds their bounds, and a background thread makes the full parse that replaces them.
+- Ticket 22 took several passes over the whole note out of each frame. Dropping the words inside list prefixes compared each word with each prefix. The fold buttons looked for a selected list item in every node, block lookups by offset tried every top-level block, and a heading measured its whole section to tell whether the pointer was over it.
+- Node cache keys give lines 32 bits instead of 14, so two nodes 16,384 lines apart no longer share a cached range or height.
+- A block's estimated height ignores the selection unless the note holds fold tags, and the scroll area keeps each block's estimate across an edit that reparses in place.
+- Ticket 22 added the note's AccessKit text node and the spell-check underlines, both new code.
 
 To the `lb-rs` text model:
 
@@ -87,6 +93,7 @@ To the `lb-rs` text model:
 - `lb-rs` moved both ends of a replacement past text an earlier edit inserted there. Merging another app's edit of a word then deleted a keystroke you typed right after it. Noura keeps a replacement's end before such an insertion, and `buffer_merge_insert_replace` now expects your keystroke to stay.
 - Restructured the word diff around a `Side` helper with the same algorithm, and took only `measure_replace` and `last_grapheme` from `units.rs`.
 - Uses `std::time` in place of `web_time`, and renamed identifiers throughout.
+- Ticket 22 updates the contiguous copy and the grapheme index around each replacement instead of rebuilding them from the rope. A cluster never crosses a line ending, so the buffer segments only the lines next to the edit again.
 
 Ticket 18 changed the fork so notes from Obsidian-style workspaces read as they do in today's editor:
 
@@ -95,7 +102,7 @@ Ticket 18 changed the fork so notes from Obsidian-style workspaces read as they 
 - comrak reads setext headings, and reads `__text__` as strong. Its alerts, spoilers, emoji shortcodes, superscript, subscript, code math and front matter extension are off, so their text shows as written. comrak reads `~x~` as strikethrough and has no option to stop, so the editor draws single-tilde strikethrough as written.
 - HTML the editor doesn't draw shows as written. Lockbook hid it away from the caret.
 - A soft line break keeps its own row, as Lockbook drew it.
-- `lookahead.rs` reads frontmatter and `$$` math within a 256 KiB lookahead. comrak parses a copy of the note in which the frontmatter's delimiter lines read as code fences, byte for byte, so source positions after frontmatter that holds a lone carriage return line up again. In that copy, a line inside a `$$` block that looks like block syntax starts with a stand-in byte, so the block stays one piece of math.
+- `lookahead.rs` reads frontmatter and `$$` math within a 256 KiB lookahead. comrak parses a copy of the note in which the frontmatter's delimiter lines read as code fences, byte for byte, so source positions after frontmatter that holds a lone carriage return line up again. In that copy, a line inside a `$$` block that looks like block syntax starts with a stand-in byte, so the block stays one piece of math. Ticket 22's in-place reparse parses the same copy and rebuilds the spans of the blocks it reparsed. An edit to blocks that hold `$$` math past the lookahead parses the whole note instead.
 - The `ToggleStyle` event for underline wraps the selection in `<u>` and `</u>`, or takes them off, as ticket 19's Mod-U command does. It used to write `__`, which now draws as strong.
 - New code reads callouts of any type (`callouts.rs`), and comments, tags, block IDs, `<u>`, embeds and image embeds (`spans.rs`). The alert widget no longer draws anything, because comrak's alerts are off.
 - A table shows its raw rows while the caret is anywhere in it, and each grid cell is a cell in the accessibility tree.
@@ -197,4 +204,4 @@ BSD-3-Clause requires binary distributions to reproduce the copyright notice, th
 ## Review
 
 - Reviewer: Claude (author review). Owner review pending.
-- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 18's changes, which copy no new source, and for ticket 19's find adaptation and removals.
+- Date: 2026-10-20. Corrected on 2026-10-20 to record the `lb-rs` text model as adapted BSD-3-Clause code. Updated on 2026-10-21 for ticket 18's changes, which copy no new source, ticket 19's find adaptation and removals, ticket 23's plain-text mode, and ticket 22's input method, parsing and performance changes.

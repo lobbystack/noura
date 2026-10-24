@@ -12,9 +12,10 @@
 
 use std::ops::Range;
 
-use comrak::Arena;
 use comrak::nodes::{AstNode, NodeValue};
+use comrak::{Arena, Options};
 
+use crate::ast::{Ast, Reparsed};
 use crate::doc::MdDoc;
 
 /// How far a construct's closing line may sit from its start, in bytes.
@@ -217,51 +218,113 @@ fn line_starts(text: &str) -> Vec<usize> {
     lines(text).map(|line| line.start).collect()
 }
 
-/// The display math in `root` whose closing `$$` sits past the lookahead,
-/// by the byte offset of its opening `$$`.
-fn distant_display_math<'a>(root: &'a AstNode<'a>, starts: &[usize]) -> Vec<usize> {
+/// The display math in `nodes` and everything inside them whose closing
+/// `$$` sits past the lookahead, by the byte offset of its opening `$$`.
+/// `line_start` gives where each 0-based line starts.
+fn distant_display_math<'a>(
+    nodes: impl IntoIterator<Item = &'a AstNode<'a>>,
+    line_start: impl Fn(usize) -> Option<usize>,
+) -> Vec<usize> {
     let byte = |line: usize, column: usize| {
-        starts
-            .get(line.saturating_sub(1))
-            .map_or(0, |start| start + column.saturating_sub(1))
+        line_start(line.saturating_sub(1)).map_or(0, |start| start + column.saturating_sub(1))
     };
-    root.descendants()
+    nodes
+        .into_iter()
+        .flat_map(|node| node.descendants())
         .filter_map(|node| {
             let data = node.data.borrow();
             let NodeValue::Math(math) = &data.value else {
                 return None;
             };
+            if !math.display_math {
+                return None;
+            }
             let sourcepos = data.sourcepos;
             let start = byte(sourcepos.start.line, sourcepos.start.column);
             let end = byte(sourcepos.end.line, sourcepos.end.column);
-            (math.display_math && end.saturating_sub(start) > LOOKAHEAD).then_some(start)
+            (end.saturating_sub(start) > LOOKAHEAD).then_some(start)
         })
         .collect()
 }
 
+/// The text comrak parses for a note's `text`: frontmatter reads as a code
+/// block, and lines inside `$$` math that closes within the lookahead stay
+/// inside it. Bytes change only to other ASCII bytes, so every offset and
+/// line stays put.
+fn comrak_source(mut text: String) -> String {
+    let frontmatter = mask_frontmatter(&mut text);
+    if memchr::memmem::find(text.as_bytes(), b"$$").is_some() {
+        mask_display_math(&mut text, frontmatter.map_or(0, |range| range.end));
+    }
+    text
+}
+
+/// `text` with the `$$` at each of `starts` turned into a stand-in comrak
+/// reads as plain text; the editor draws the note's own `$$` there.
+fn unpair(text: String, starts: Vec<usize>) -> String {
+    let mut bytes = text.into_bytes();
+    for start in starts {
+        bytes[start..start + 2].copy_from_slice(b"\x01\x01");
+    }
+    String::from_utf8(bytes).expect("ASCII stand-ins keep the text UTF-8")
+}
+
+/// How many times a parse turns distant `$$` into text and parses again.
+/// Each pass can only turn more `$$` into text; a few suffice.
+const DISTANT_MATH_PASSES: usize = 4;
+
+/// Parses a note's `text` into an [`Ast`] the way the editor reads it:
+/// frontmatter reads as a code block, and `$$` math whose closing signs sit
+/// past the lookahead reads as ordinary Markdown.
+pub(crate) fn parse_ast(text: String, options: &Options, text_seq: u64) -> Ast {
+    let mut ast = Ast::parse(comrak_source(text), options, text_seq);
+    for _ in 0..DISTANT_MATH_PASSES {
+        let distant =
+            ast.with_root(|root| distant_display_math([root], |line| ast.line_start(line)));
+        if distant.is_empty() {
+            break;
+        }
+        let text = unpair(ast.source().to_owned(), distant);
+        ast = Ast::parse(text, options, text_seq);
+    }
+    ast
+}
+
+/// Brings `ast` up to date with a note's `text` through [`Ast::update`],
+/// or returns `None` when the blocks it reparsed hold `$$` math whose
+/// closing signs sit past the lookahead, which only a full parse reads
+/// ([`parse_ast`]). `ast` is then a partial parse to throw away.
+pub(crate) fn update_ast(
+    ast: &mut Ast,
+    text: String,
+    options: &Options,
+    text_seq: u64,
+) -> Option<Reparsed> {
+    let reparsed = ast.update(comrak_source(text), options, text_seq);
+    let distant = ast.with_root(|root| {
+        let blocks = root
+            .children()
+            .skip(reparsed.blocks.start)
+            .take(reparsed.blocks.len());
+        distant_display_math(blocks, |line| ast.line_start(line))
+    });
+    distant.is_empty().then_some(reparsed)
+}
+
 impl MdDoc {
-    /// Parses the note with comrak: frontmatter reads as a code block, and
-    /// `$$` math whose closing signs sit past the lookahead reads as
-    /// ordinary Markdown. The caller owns the [`Arena`].
+    /// Parses the note with comrak, as [`parse_ast`] does. The caller owns
+    /// the [`Arena`].
     pub fn parse<'a>(&self, arena: &'a Arena<'a>) -> &'a AstNode<'a> {
         let options = Self::comrak_options();
-        let mut text = self.buffer.current.text_with("\n");
-        let frontmatter = mask_frontmatter(&mut text);
-        mask_display_math(&mut text, frontmatter.map_or(0, |range| range.end));
+        let mut text = comrak_source(self.buffer.current.text_with("\n"));
         let mut root = comrak::parse_document(arena, &text, &options);
-        // Each pass can only turn more `$$` into text; a few suffice.
-        for _ in 0..4 {
-            let distant = distant_display_math(root, &line_starts(&text));
+        for _ in 0..DISTANT_MATH_PASSES {
+            let starts = line_starts(&text);
+            let distant = distant_display_math([root], |line| starts.get(line).copied());
             if distant.is_empty() {
                 break;
             }
-            let mut bytes = std::mem::take(&mut text).into_bytes();
-            for start in distant {
-                // A stand-in comrak reads as plain text; the editor draws
-                // the note's own `$$` there.
-                bytes[start..start + 2].copy_from_slice(b"\x01\x01");
-            }
-            text = String::from_utf8(bytes).expect("ASCII stand-ins keep the text UTF-8");
+            text = unpair(text, distant);
             root = comrak::parse_document(arena, &text, &options);
         }
         root

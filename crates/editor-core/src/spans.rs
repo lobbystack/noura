@@ -57,6 +57,19 @@ pub struct InlineSpan {
 }
 
 impl InlineSpan {
+    /// Moves the span `by` graphemes later in the text, or earlier when
+    /// `by` is negative.
+    pub(crate) fn shift(&mut self, by: isize) {
+        let shift = |range: &mut (Grapheme, Grapheme)| {
+            for offset in [&mut range.0, &mut range.1] {
+                *offset = Grapheme((offset.0 as isize + by) as usize);
+            }
+        };
+        shift(&mut self.range);
+        shift(&mut self.reveal_range);
+        self.syntax.iter_mut().for_each(shift);
+    }
+
     fn new(kind: SpanKind, range: (Grapheme, Grapheme), syntax: Vec<(Grapheme, Grapheme)>) -> Self {
         Self {
             kind,
@@ -231,8 +244,16 @@ fn underlines(text: &str) -> Vec<Found> {
 impl<'ast> MdDoc {
     /// Recompute [`crate::bounds::Bounds::spans`]. Depends on text only.
     pub fn calc_inline_spans(&mut self, root: &'ast AstNode<'ast>) {
+        self.bounds.spans = self.inline_spans_in([root]);
+    }
+
+    /// The spans in `blocks` and the blocks inside them, sorted by range.
+    pub(crate) fn inline_spans_in(
+        &self,
+        blocks: impl IntoIterator<Item = &'ast AstNode<'ast>>,
+    ) -> Vec<InlineSpan> {
         let mut spans = Vec::new();
-        for node in root.descendants() {
+        for node in blocks.into_iter().flat_map(|block| block.descendants()) {
             if let Some(callout) = self.callout(node) {
                 let family = callout.family();
                 let mut marker = InlineSpan::new(
@@ -263,7 +284,7 @@ impl<'ast> MdDoc {
             }
         }
         spans.sort_by_key(|span| span.range);
-        self.bounds.spans = spans;
+        spans
     }
 
     /// The comments, tags, block IDs and underlines in an inline container.

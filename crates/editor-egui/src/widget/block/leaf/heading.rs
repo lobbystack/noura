@@ -195,12 +195,14 @@ impl<'ast> MdRender {
         }
 
         let pointer = ui.input(|i| i.pointer.latest_pos().unwrap_or_default());
+        // Whether the pointer is over the heading or the section under it,
+        // measured only as far down as the pointer: a section can run on
+        // for most of a long note.
         let hovered = {
-            let siblings_height = self.height(node) + self.heading_contained_siblings_height(node);
-            let siblings_space =
-                Rect::from_min_size(top_left, Vec2::new(self.width(node), siblings_height));
-
-            siblings_space.contains(pointer)
+            let x = top_left.x..=top_left.x + self.width(node);
+            x.contains(&pointer.x)
+                && pointer.y >= top_left.y
+                && self.heading_section_reaches(node, pointer.y - top_left.y)
         };
 
         // fold button
@@ -316,14 +318,18 @@ impl<'ast> MdRender {
         );
     }
 
-    fn heading_contained_siblings_height(&self, node: &'ast AstNode<'ast>) -> f32 {
+    /// Whether the heading and the blocks of its section reach `depth`
+    /// points below the heading's top.
+    fn heading_section_reaches(&self, node: &'ast AstNode<'ast>, depth: f32) -> bool {
         let NodeValue::Heading(heading) = &node.data.borrow().value else {
-            panic!("heading_contained_siblings_height() invoked for non-heading")
+            panic!("heading_section_reaches() invoked for non-heading")
         };
         let level = heading.level;
-        let mut height_sum = 0.0;
+        let mut height_sum = self.height(node);
         let mut sibling = node.next_sibling();
-        while let Some(s) = sibling {
+        while height_sum < depth
+            && let Some(s) = sibling
+        {
             if let NodeValue::Heading(sib_h) = &s.data.borrow().value
                 && sib_h.level <= level
             {
@@ -334,7 +340,7 @@ impl<'ast> MdRender {
             height_sum += self.block_post_spacing_height(s);
             sibling = s.next_sibling();
         }
-        height_sum
+        height_sum >= depth
     }
 
     pub fn fold_button_size_icon_size_space(
