@@ -3,12 +3,13 @@
 use serde_json::json;
 use sync_protocol::codec::{Encode, Nested, Sorted};
 use sync_protocol::records::{
-    Anchor, CheckpointAnchor, Offer, Signed, approval_code, approval_code_text, approval_commit,
-    invite_proof,
+    Anchor, CheckpointAnchor, Offer, PolicyKind, Signed, approval_code, approval_code_text,
+    approval_commit, invite_proof,
 };
 use sync_protocol::types::{Digest, Id, Key, to_hex};
 
 use super::common::{Fixture, secret};
+use super::policy::{Person, accepted, genesis, ids};
 use super::world::{World, world};
 
 pub const NC: Key = Key([0x3c; 32]);
@@ -155,6 +156,27 @@ pub fn fixture() -> Fixture {
         "card": to_hex(&candidate.to_bytes()),
         "expect": invite_proof(&invite_secret, &candidate.to_bytes()).to_hex(),
     }));
+
+    // Review of 0eef7d5: only the add_device link comes from the
+    // approver's card. Another device of the account records the new head
+    // in the workspace first, and the log, with the new card among its
+    // devices, verifies (§10 step 6).
+    let mut nora = Person::new("nora");
+    let mut log = genesis(&nora);
+    let phone = nora.add("nora phone");
+    log.push(nora.first(), vec![nora.head()], PolicyKind::AccountHeads);
+    let desktop = nora.add("nora desktop");
+    log.push(&phone, vec![nora.head()], PolicyKind::AccountHeads);
+    for actor in [nora.first(), &phone, &desktop] {
+        f.actor(actor);
+    }
+    accepted(
+        &mut f,
+        "the_new_head_recorded_first_by_another_device_of_the_account",
+        &[&nora.chain],
+        &log,
+        json!({"devices": {"3": ids(&[nora.first(), &phone, &desktop])}}),
+    );
     let _ = Digest::ZERO;
     f
 }

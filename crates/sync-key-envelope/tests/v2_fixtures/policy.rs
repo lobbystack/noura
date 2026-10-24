@@ -151,7 +151,7 @@ fn refused(
     }));
 }
 
-fn accepted(f: &mut Fixture, name: &str, people: &[&Chain], policy: &Policy, checks: Value) {
+pub fn accepted(f: &mut Fixture, name: &str, people: &[&Chain], policy: &Policy, checks: Value) {
     f.case(json!({
         "kind": "policy_chain",
         "name": name,
@@ -918,6 +918,46 @@ pub fn fixture() -> Fixture {
         "reference_seqno": 1,
         "expect": 4,
     }));
+
+    // Review of 0eef7d5: a lagging head whose envelopes wouldn't fit one
+    // push goes in steps, one card-adding link at a time, and the head
+    // that ends in a removal follows them.
+    let mut lena = Person::new("lena");
+    let mut steps = genesis(&lena);
+    let lena_phone = lena.add("lena phone");
+    let lena_tablet = lena.add("lena tablet");
+    let signer = lena.first().clone();
+    lena.chain.push(
+        &signer,
+        LinkKind::Remove {
+            device: lena_phone.device(),
+            keep: Sorted::default(),
+        },
+    );
+    for actor in [lena.first(), &lena_phone, &lena_tablet] {
+        f.actor(actor);
+    }
+    for seqno in 2..=4 {
+        steps.push(
+            lena.first(),
+            vec![lena.chain.head_at(seqno)],
+            PolicyKind::AccountHeads,
+        );
+    }
+    accepted(
+        &mut f,
+        "a_lagging_head_that_ends_in_a_removal_recorded_in_steps",
+        &[&lena.chain],
+        &steps,
+        json!({
+            "devices": {
+                "2": ids(&[lena.first(), &lena_phone]),
+                "3": ids(&[lena.first(), &lena_phone, &lena_tablet]),
+                "4": ids(&[lena.first(), &lena_tablet]),
+            },
+            "rotations": {"2": [], "3": [], "4": [ws_domain().to_hex()]},
+        }),
+    );
     chain_reads(&mut f);
     f.set(
         "limits",
