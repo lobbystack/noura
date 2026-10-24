@@ -245,6 +245,9 @@ struct NameDraft {
     /// The name the plugin drew the field with.
     drawn: String,
     text: String,
+    /// The field sent its name or its cancel since you last typed in it
+    /// or gave it the keyboard, so leaving it again sends nothing.
+    sent: bool,
 }
 
 /// A name field: it takes the keyboard when it first appears, and leaving
@@ -258,6 +261,7 @@ pub(super) fn name_field(ui: &mut Ui, node: &ViewNode, label: &str, value: &str,
     let mut draft = held.unwrap_or_else(|| NameDraft {
         drawn: value.to_owned(),
         text: value.to_owned(),
+        sent: false,
     });
     ui.add_space(4.0);
     let field_id = id.with("name");
@@ -273,11 +277,16 @@ pub(super) fn name_field(ui: &mut Ui, node: &ViewNode, label: &str, value: &str,
         response.request_focus();
     }
     let place = kit.place.plugin_place();
+    if response.gained_focus() {
+        draft.sent = false;
+    }
     if response.changed() {
+        draft.sent = false;
         kit.app
             .set_plugin_name_draft(place.clone(), &node.id, value, &draft.text);
     }
-    if response.lost_focus() {
+    if response.lost_focus() && !draft.sent {
+        draft.sent = true;
         let escaped = ui.input(|input| input.key_pressed(Key::Escape));
         let name = draft.text.trim();
         let event = if escaped || name.is_empty() || name == value.trim() {

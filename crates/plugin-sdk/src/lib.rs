@@ -29,7 +29,8 @@
 //!
 //! Each capability interface the plugin calls sits in its own module, such
 //! as [`workspace`], [`objects`] and [`network`], and works only when the
-//! plugin holds its capability.
+//! plugin holds its capability. [`clock`] needs none: it gives the instant
+//! now and this device's time zone, the plugin's only clock.
 
 // The generated bindings and their `export!` macro name this crate as
 // `plugin_sdk`, so plugin crates need no dependency on `wit-bindgen`.
@@ -535,8 +536,8 @@ impl View {
     }
 
     /// Show `warning`, such as `Overdue`, after the label of the list item
-    /// at `item`, in the theme's warning color. Screen readers read it
-    /// with the label.
+    /// at `item`, in the color Noura shows problems in. Screen readers
+    /// read it with the label.
     ///
     /// # Panics
     ///

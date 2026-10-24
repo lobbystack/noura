@@ -453,7 +453,20 @@ fn start_naming() {
 fn handle(event: Event) {
     match event {
         Event::Pressed(node) if node == "new-task" => start_naming(),
-        Event::Named(naming) if naming.node == "new-task-name" => create(&naming.name),
+        // A name reaches the field's plugin once; another for a field
+        // that closed names nothing.
+        Event::Named(naming)
+            if naming.node == "new-task-name"
+                && !naming.name.trim().is_empty()
+                && state().naming =>
+        {
+            create(naming.name.trim());
+        }
+        Event::Named(naming) if naming.node == "new-task-name" => {
+            let mut state = state();
+            state.naming = false;
+            state.naming_problem = None;
+        }
         Event::Cancelled(node) if node == "new-task-name" => {
             let mut state = state();
             state.naming = false;

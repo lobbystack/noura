@@ -277,10 +277,8 @@ fn open(node: &str) -> Option<String> {
             navigation::Placement::Preview
         };
         navigation::open_object(id, placement)
-    } else if let Some(page) = node.strip_prefix("open-page:") {
-        navigation::open_page(page)
     } else {
-        return None;
+        navigation::open_page(node.strip_prefix("open-page:")?)
     };
     Some(match answer {
         Ok(()) => "ok".to_owned(),

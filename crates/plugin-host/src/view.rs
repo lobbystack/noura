@@ -7,9 +7,10 @@
 //! node ID, an unlabeled control, a table row whose cells don't match the
 //! columns or hold no text, an empty menu, an input value of the wrong
 //! form, a virtual list too long to draw, a board without columns, a
-//! calendar date or an entry's start or end of the wrong form, or a view
-//! too large or deep to draw. [`check_rows`] does the same for the
-//! rows of a virtual list.
+//! calendar date or an entry's start or end of the wrong form, a list that
+//! selects an item it doesn't hold, a card with a checkbox or a warning,
+//! or a view too large or deep to draw. [`check_rows`] does the same for
+//! the rows of a virtual list.
 
 use std::collections::HashSet;
 

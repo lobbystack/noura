@@ -233,9 +233,9 @@ interface ui {
     // the box then shows what the plugin draws. Only list and virtual
     // list items show one: a card holding one breaks the rules.
     checked: option<bool>,
-    // A short warning after the label in the theme's warning color, such
-    // as `Overdue`, which screen readers read with the label. Only list
-    // and virtual list items show one.
+    // A short warning after the label, such as `Overdue`, in the color
+    // Noura shows problems in. Screen readers read it with the label.
+    // Only list and virtual list items show one.
     warning: option<string>,
   }
 

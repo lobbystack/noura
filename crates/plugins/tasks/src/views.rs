@@ -199,9 +199,8 @@ pub(crate) fn due_label(due: Due, now: &Now) -> String {
 }
 
 fn day_name(day: Date, today: Date) -> String {
-    let offset = (day - today)
-        .total((jiff::Unit::Day, today))
-        .map_or(i64::MAX, |days| days.round() as i64);
+    // Subtracting dates gives a span of whole days.
+    let offset = (day - today).get_days();
     match offset {
         0 => "Today".to_owned(),
         1 => "Tomorrow".to_owned(),
