@@ -136,13 +136,17 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
     Ok(ops)
 }
 
-/// The group a push may commit with (§15): pushes whose operations all
-/// write one domain. A push carries operations only so far; once pushes
-/// carry policy changes, those run alone.
+/// The group a push may commit with (§15): pushes that take only the
+/// shared policy lock and one domain's head row, so a group's transaction
+/// takes its locks in the order every push does. Those are pushes whose
+/// operations all write one domain and list no blob. A push that locks
+/// blob rows, the key-sequence row for an epoch bundle or envelope, or the
+/// policy lock exclusively for a policy change runs alone: in a group it
+/// would take that lock after the head row a push before it holds.
 pub(crate) fn group(workspace: Id, ops: &[PushedOp]) -> Option<WriteGroup> {
     let domain = ops.first()?.op.body.domain;
     ops.iter()
-        .all(|o| o.op.body.domain == domain)
+        .all(|o| o.op.body.domain == domain && o.op.body.blobs.is_empty())
         .then_some(WriteGroup { workspace, domain })
 }
 
@@ -418,4 +422,70 @@ async fn apply(
         domain,
         seq,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use sync_protocol::codec::{Bytes, Encode, Sorted};
+    use sync_protocol::crypto::SigningKey;
+    use sync_protocol::records::{Operation, Signed};
+    use sync_protocol::types::{Digest, Id, Nonce};
+
+    use super::{PushedOp, group};
+    use crate::WriteGroup;
+
+    fn pushed(index: usize, domain: Id, blobs: Vec<Id>) -> PushedOp {
+        let key = SigningKey::random().expect("random");
+        let op = Signed::sign(
+            Operation {
+                workspace: Id([1; 16]),
+                domain,
+                device: Id([2; 16]),
+                counter: index as u64 + 1,
+                previous: Digest::ZERO,
+                epoch: 1,
+                policy_revision: 1,
+                policy_head: Digest::ZERO,
+                previous_attempt: Digest::ZERO,
+                generation: 1,
+                checkpoint_seq: 0,
+                checkpoint: Digest::ZERO,
+                rid: Id::random().expect("random"),
+                delete: false,
+                supersedes: Sorted::default(),
+                blobs: Sorted::new(blobs).expect("sorted"),
+                nonce: Nonce::ZERO,
+                ciphertext: Bytes(vec![0; 272]),
+            },
+            &key,
+        );
+        let bytes = op.to_bytes();
+        PushedOp {
+            index,
+            digest: op.digest(),
+            op,
+            bytes,
+        }
+    }
+
+    #[test]
+    fn only_pushes_that_lock_one_head_row_group() {
+        let workspace = Id([1; 16]);
+        let (domain, other) = (Id([3; 16]), Id([4; 16]));
+        let one_domain = [pushed(0, domain, vec![]), pushed(1, domain, vec![])];
+        assert_eq!(
+            group(workspace, &one_domain),
+            Some(WriteGroup { workspace, domain })
+        );
+        let two_domains = [pushed(0, domain, vec![]), pushed(1, other, vec![])];
+        assert_eq!(group(workspace, &two_domains), None);
+        // Its blob rows come after the head row in the lock order, so a
+        // group would take them after a push before it held that row.
+        let with_blob = [
+            pushed(0, domain, vec![]),
+            pushed(1, domain, vec![Id([5; 16])]),
+        ];
+        assert_eq!(group(workspace, &with_blob), None);
+        assert_eq!(group(workspace, &[]), None);
+    }
 }

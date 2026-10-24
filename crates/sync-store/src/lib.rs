@@ -272,7 +272,8 @@ pub struct LockPlan {
 }
 
 /// The pushes a backend may commit together: those into one domain of one
-/// workspace that change no policy (§15).
+/// workspace that take only the shared policy lock and that domain's head
+/// row (§15).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WriteGroup {
     /// The workspace.

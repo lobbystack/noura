@@ -59,15 +59,20 @@ impl PgLimiter {
         if cost > limit.allowance {
             return Ok(refused);
         }
-        let (ends_at, cost_at, allowance) = (int(ends), int(cost), int(limit.allowance));
+        let (window, ends_at) = (int(limit.window_ms()), int(ends));
+        let (cost_at, allowance) = (int(cost), int(limit.allowance));
         // One statement adds the cost only while it fits, so instances that
-        // take from one key at once never pass the allowance together.
+        // take from one key at once never pass the allowance together. The
+        // window's length is part of the row's key, as in memory, so two
+        // limits on one key never share a count.
         let row = sqlx::query!(
-            "INSERT INTO rate_counters (key, window_ends, used) VALUES ($1, $2, $3)
-             ON CONFLICT (key, window_ends) DO UPDATE SET used = rate_counters.used + excluded.used
-             WHERE rate_counters.used + excluded.used <= $4
+            "INSERT INTO rate_counters (key, window_ms, window_ends, used) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (key, window_ms, window_ends)
+             DO UPDATE SET used = rate_counters.used + excluded.used
+             WHERE rate_counters.used + excluded.used <= $5
              RETURNING used",
             key,
+            window,
             ends_at,
             cost_at,
             allowance

@@ -196,14 +196,17 @@ CREATE TABLE checkpoints (
 );
 
 -- The limiter's counters (§26, Rate limits), which every instance shares:
--- a caller's key, when its current window ends in milliseconds since the
--- Unix epoch, and what the key used in that window. The limiter deletes
--- the rows of windows that ended.
+-- a caller's key, the limit's window length and when its current window
+-- ends, both in milliseconds, the end since the Unix epoch, and what the
+-- key used in that window. Limits with different windows count apart even
+-- when their windows end together. The limiter deletes the rows of windows
+-- that ended.
 CREATE TABLE rate_counters (
     key BYTEA NOT NULL,
+    window_ms BIGINT NOT NULL,
     window_ends BIGINT NOT NULL,
     used BIGINT NOT NULL,
-    PRIMARY KEY (key, window_ends)
+    PRIMARY KEY (key, window_ms, window_ends)
 );
 
 CREATE INDEX rate_counters_by_end ON rate_counters (window_ends);

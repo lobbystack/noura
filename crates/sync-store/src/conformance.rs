@@ -58,6 +58,7 @@ macro_rules! conformance_tests {
             chain_positions_and_heads,
             keys_and_epochs_serve_records_without_recipients,
             pruning_lock_meets_no_policy_lock,
+            creations_at_once_keep_the_workspace_limit,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -2128,6 +2129,52 @@ async fn domain_log<B: Backend>(
     }
 }
 
+/// Creations that one account sends at once never take it past the 100
+/// workspaces an account owns (§27): each counts the account's workspaces
+/// under its chain row, so exactly the ones that fit commit and the others
+/// get `workspace_limit`.
+pub async fn creations_at_once_keep_the_workspace_limit<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let creator = &world.devices[0];
+    let cards = vec![creator.keys.card(world.account)];
+    let body = || creation(&creator.keys, &world.links, &cards).0;
+    for _ in 1..96 {
+        world
+            .store
+            .create_workspace(creator.session, body())
+            .await
+            .expect("created");
+    }
+    let bodies: Vec<Vec<u8>> = (0..10).map(|_| body()).collect();
+    let creations: Vec<_> = bodies
+        .into_iter()
+        .map(|body| {
+            let store = world.store.clone();
+            let session = creator.session;
+            tokio::spawn(async move { store.create_workspace(session, body).await })
+        })
+        .collect();
+    let mut created = 0;
+    let mut refused = Vec::new();
+    for creation in creations {
+        match creation.await.expect("the creation ends") {
+            Ok(_) => created += 1,
+            Err(error) => refused.push(refusal(Err::<(), _>(error)).code),
+        }
+    }
+    assert_eq!(created, 4, "the four creations that fit commit");
+    assert!(
+        refused.iter().all(|code| *code == "workspace_limit"),
+        "{refused:?}"
+    );
+    let listed = world
+        .store
+        .workspaces(creator.session)
+        .await
+        .expect("listed");
+    assert_eq!(listed.workspaces.len(), 100);
+}
+
 /// A change that takes a device out of the workspace races that device's
 /// pushes, one every 500 ms through the second instance: no record of the
 /// device commits after the change's entry, and every push the change
@@ -2449,6 +2496,40 @@ pub async fn limits_hold_across_instances<B: Backend>(first: Arc<Store<B>>, seco
         }
     }
     assert_eq!(allowed, 25);
+
+    // Limits with different windows on one key count apart, even when both
+    // windows end at once, as a second's and two seconds' do every other
+    // second.
+    let short = Limit {
+        allowance: 2,
+        window: Duration::from_secs(1),
+    };
+    let long = Limit {
+        allowance: 3,
+        window: Duration::from_secs(2),
+    };
+    while !(1_000..1_400).contains(&(now_ms() % 2_000)) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(short.window_ends(now_ms()), long.window_ends(now_ms()));
+    let key = Id::random().expect("random").0;
+    assert_eq!(
+        one.take(&key, 2, short).await.expect("taken"),
+        Taken::Allowed
+    );
+    assert_eq!(
+        two.take(&key, 3, long).await.expect("taken"),
+        Taken::Allowed,
+        "the longer limit doesn't count the shorter one's takes"
+    );
+    assert!(matches!(
+        one.take(&key, 1, long).await.expect("taken"),
+        Taken::Refused { .. }
+    ));
+    assert!(matches!(
+        two.take(&key, 1, short).await.expect("taken"),
+        Taken::Refused { .. }
+    ));
 
     // A new window starts afresh. Start early in a window, so the filling
     // takes all land in one.
