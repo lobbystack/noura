@@ -1,4 +1,5 @@
 use comrak::nodes::{AstNode, NodeCodeBlock};
+use editor_core::highlight::CodeStyle;
 use editor_core::offset_types::{Grapheme, RangeExt as _};
 use egui::{Pos2, Rect, Stroke, Ui, Vec2};
 
@@ -276,24 +277,75 @@ impl<'ast> MdRender {
         }
     }
 
-    /// Build a `Layout` for one code-block line: the whole line goes in as
-    /// one push_source with the code format. Syntax highlighting waits for
-    /// a highlighter whose grammars have checked licenses.
+    /// Build a `Layout` for one code-block line in the code format, with
+    /// the pieces the block's language highlights in their colors when
+    /// `colors` asks. Colors leave sizes alone, so heights skip them.
     fn layout_code_block_line(
         &self,
         node: &'ast AstNode<'ast>,
         node_code_block: &NodeCodeBlock,
         line: (Grapheme, Grapheme),
         synthetic: bool,
+        colors: bool,
     ) -> Layout {
         let node_line = self.node_line(node, line);
         let code_line = self.code_line_range(node, node_code_block, node_line, synthetic);
-        let code_line_text = &self.buffer[code_line];
         let mut layout = Layout::new(code_line);
-        if !code_line.is_empty() {
-            layout.push_source(code_line, code_line_text, self.text_format(node));
+        if code_line.is_empty() {
+            return layout;
+        }
+        let format = self.text_format(node);
+        let highlights = if synthetic || !colors {
+            Vec::new()
+        } else {
+            self.code_block_highlights(node, node_code_block)
+        };
+        let mut from = code_line.start();
+        for (range, style) in highlights
+            .into_iter()
+            .filter(|(range, _)| range.intersects(&code_line, false))
+        {
+            let range = range.trim(&code_line);
+            if from < range.start() {
+                let plain = (from, range.start());
+                layout.push_source(plain, &self.buffer[plain], format.clone());
+            }
+            let styled = Format {
+                color: self.code_color(style),
+                ..format.clone()
+            };
+            layout.push_source(range, &self.buffer[range], styled);
+            from = range.end();
+        }
+        if from < code_line.end() {
+            let plain = (from, code_line.end());
+            layout.push_source(plain, &self.buffer[plain], format);
         }
         layout
+    }
+
+    /// The color highlighted code of `style` draws in.
+    fn code_color(&self, style: CodeStyle) -> egui::Color32 {
+        let theme = self.ctx.get_lb_theme();
+        if let Some(code) = theme.code_variant() {
+            return match style {
+                CodeStyle::Keyword => code.keyword,
+                CodeStyle::Function => code.function,
+                CodeStyle::Type => code.class,
+                CodeStyle::String => code.string,
+                CodeStyle::Number => code.number,
+                CodeStyle::Comment => code.comment,
+            };
+        }
+        let fg = theme.fg();
+        match style {
+            CodeStyle::Keyword => fg.magenta,
+            CodeStyle::Function => fg.blue,
+            CodeStyle::Type => fg.cyan,
+            CodeStyle::String => fg.green,
+            CodeStyle::Number => fg.yellow,
+            CodeStyle::Comment => theme.neutral_fg_secondary(),
+        }
     }
 
     fn height_code_block_line(
@@ -304,7 +356,7 @@ impl<'ast> MdRender {
         synthetic: bool,
     ) -> f32 {
         let width = self.width(node) - 2. * self.layout.block_padding;
-        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic);
+        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic, false);
         self.compute_layout_from(layout, width, self.layout.row_height)
             .height
     }
@@ -319,7 +371,7 @@ impl<'ast> MdRender {
         synthetic: bool,
     ) {
         let width = self.width(node) - 2. * self.layout.block_padding;
-        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic);
+        let layout = self.layout_code_block_line(node, node_code_block, line, synthetic, true);
         let result = self.compute_layout_from(layout, width, self.layout.row_height);
         self.show_wrap_layout(ui, top_left, &result);
     }

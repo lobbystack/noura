@@ -6,7 +6,7 @@ mod support;
 
 use std::sync::Arc;
 
-use plugin_host::{InstallErrorCode, PluginError, PluginHost};
+use plugin_host::{Capability, InstallErrorCode, PluginError};
 use support::plugins::{self, FakeWorkspace};
 
 #[test]
@@ -15,7 +15,7 @@ fn a_call_to_an_undeclared_capability_names_it_and_reaches_no_service() {
         return;
     };
     let workspace = Arc::new(FakeWorkspace::default());
-    let (mut instance, _folders) =
+    let (instance, _folders) =
         plugins::running(&probe, &["name = \"views\""], Some(workspace.clone()));
 
     let nodes = instance.render("list").expect("the plugin renders");
@@ -38,7 +38,7 @@ fn a_declared_capability_reaches_its_service() {
         return;
     };
     let workspace = Arc::new(FakeWorkspace::default());
-    let (mut instance, _folders) = plugins::running(
+    let (instance, _folders) = plugins::running(
         &probe,
         &["name = \"workspace-read\"", "name = \"views\""],
         Some(workspace.clone()),
@@ -51,11 +51,36 @@ fn a_declared_capability_reaches_its_service() {
 }
 
 #[test]
+fn a_revoked_capability_is_refused_from_the_plugins_next_call_on() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let workspace = Arc::new(FakeWorkspace::default());
+    let (plugin, _folders) = plugins::running(
+        &probe,
+        &["name = \"workspace-read\"", "name = \"views\""],
+        Some(workspace.clone()),
+    );
+    plugin.render("list").expect("the plugin renders");
+    assert_eq!(workspace.calls(), ["list"]);
+
+    plugin.set_approved(&[Capability::Views]);
+
+    let nodes = plugin.render("list").expect("the plugin renders");
+    assert_eq!(
+        plugins::texts(&nodes),
+        ["error capability-not-declared workspace-read"]
+    );
+    assert_eq!(workspace.calls(), ["list"]);
+    assert_eq!(plugin.granted(), [Capability::Views]);
+}
+
+#[test]
 fn a_plugin_without_views_gets_no_view_calls() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &["name = \"workspace-read\""], None);
+    let (instance, _folders) = plugins::running(&probe, &["name = \"workspace-read\""], None);
 
     assert_eq!(
         instance.pages().err(),
@@ -85,8 +110,7 @@ fn a_rust_plugin_that_uses_the_filesystem_fails_to_install_naming_the_import() {
         &uses_files,
     );
 
-    let error = PluginHost::new(library.path())
-        .unwrap()
+    let error = plugins::host(library.path())
         .inspect(folder.path())
         .err()
         .expect("the plugin is refused");
@@ -113,8 +137,7 @@ fn a_component_that_imports_sockets_or_http_fails_to_install_naming_the_import()
             &component,
         );
 
-        let error = PluginHost::new(library.path())
-            .unwrap()
+        let error = plugins::host(library.path())
             .inspect(folder.path())
             .err()
             .expect("the component is refused");

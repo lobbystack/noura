@@ -35,12 +35,15 @@ fn the_large_note_is_the_generators_output() {
 /// Counts of the constructs a note holds.
 fn constructs(text: &str) -> BTreeMap<&'static str, usize> {
     let arena = Arena::new();
-    let root = parse_document(&arena, text, &MdDoc::comrak_options());
+    let doc = MdDoc::new(text);
+    let root = doc.parse(&arena);
     let mut counts = BTreeMap::new();
     let mut count = |name| *counts.entry(name).or_insert(0) += 1;
+    if doc.frontmatter_range().is_some() {
+        count("frontmatter");
+    }
     for node in root.descendants() {
         match &node.data.borrow().value {
-            NodeValue::FrontMatter(_) => count("frontmatter"),
             NodeValue::Heading(heading) => count(match heading.level {
                 1 => "heading 1",
                 2 => "heading 2",

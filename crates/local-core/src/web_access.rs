@@ -10,6 +10,13 @@ use url::{Host, Url};
 
 use crate::{CoreError, ErrorCategory, Result};
 
+mod host_requests;
+
+pub use host_requests::{
+    HostRequest, HostRequests, HostResponse, TransportRequest, TransportResponse, WebMethod,
+    WebTransport,
+};
+
 const MAX_SEARCH_QUERY_BYTES: usize = 4 * 1024;
 const MAX_SEARCH_RESULTS: usize = 20;
 const MAX_REDIRECTS: usize = 5;

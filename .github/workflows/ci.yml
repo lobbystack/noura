@@ -57,6 +57,18 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
+      # rav1d, which decodes AVIF images in notes, assembles its x86 code
+      # with NASM.
+      - name: Install NASM
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            choco install nasm --no-progress -y
+            echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          else
+            sudo apt-get update && sudo apt-get install -y nasm
+          fi
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -79,7 +91,23 @@ jobs:
       - name: Build the plugins
         shell: bash
         run: bash crates/plugin-sdk/build-plugins.sh
+      # The PostgreSQL store's tests start throwaway clusters with the
+      # runner's initdb and pg_ctl and fail when PostgreSQL is missing. The
+      # Linux and Windows images ship PostgreSQL; Homebrew provides it on
+      # macOS.
+      - name: Install PostgreSQL on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
+          echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
       - run: cargo test --workspace --locked
+        env:
+          NOURA_S7_REQUIRE_PLUGINS: '1'
+          NOURA_REQUIRE_PLUGINS: '1'
+      # The plugin host's seam 3 suite again on Wasmtime's Pulley
+      # interpreter, which a future mobile host runs instead of native code.
+      - name: Run the plugin host's tests on the Pulley interpreter
+        run: cargo test -p plugin-host --features pulley --locked
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
           NOURA_REQUIRE_PLUGINS: '1'
@@ -117,6 +145,18 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: packages }
+      # rav1d, which decodes AVIF images in notes, assembles its x86 code
+      # with NASM.
+      - name: Install NASM
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            choco install nasm --no-progress -y
+            echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          else
+            sudo apt-get update && sudo apt-get install -y nasm
+          fi
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with: { tool: 'cargo-packager@0.11.8,cargo-about@0.9.2' }
       # libfuse2 runs AppImages, including the tools cargo-packager uses to
@@ -204,12 +244,62 @@ jobs:
           done
           echo "::error::The server never passed its health check."
           exit 1
+      # A hosted PostgreSQL usually requires TLS. This cluster refuses every
+      # connection without it, and the static binary migrates and serves
+      # through it.
+      - name: Migrate and serve on a PostgreSQL that requires TLS
+        run: |
+          binary="$PWD/target/x86_64-unknown-linux-musl/release/sync-server"
+          bin="$(pg_config --bindir 2> /dev/null || ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+          cluster="$RUNNER_TEMP/tls-cluster"
+          "$bin/initdb" -D "$cluster" -A trust -U postgres --no-sync > /dev/null
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
+            -subj /CN=localhost -keyout "$cluster/server.key" -out "$cluster/server.crt" 2> /dev/null
+          chmod 600 "$cluster/server.key"
+          {
+            echo "port = 54329"
+            echo "listen_addresses = '127.0.0.1'"
+            echo "unix_socket_directories = ''"
+            echo "ssl = on"
+          } >> "$cluster/postgresql.conf"
+          printf 'hostssl all all 127.0.0.1/32 trust\nhostnossl all all 127.0.0.1/32 reject\n' > "$cluster/pg_hba.conf"
+          "$bin/pg_ctl" -D "$cluster" -l "$RUNNER_TEMP/tls-cluster.log" -w start
+          export NOURA_DATABASE_URL="postgres://postgres@127.0.0.1:54329/postgres?sslmode=require"
+          export NOURA_SERVER_SECRET="$(openssl rand -hex 32)"
+          data="$RUNNER_TEMP/tls-data"
+          if NOURA_DATABASE_URL="${NOURA_DATABASE_URL/sslmode=require/sslmode=disable}" "$binary" migrate --data "$data"; then
+            echo "::error::The cluster took a connection without TLS."
+            exit 1
+          fi
+          "$binary" migrate --data "$data"
+          "$binary" serve --data "$data" --listen 127.0.0.1:8788 &
+          server=$!
+          for _ in $(seq 1 50); do
+            if "$binary" healthcheck --listen 127.0.0.1:8788; then
+              kill "$server"
+              wait "$server" || true
+              "$bin/pg_ctl" -D "$cluster" -m fast -w stop
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::The server on PostgreSQL never passed its health check."
+          exit 1
 
-  # sync-store-sqlite's queries are checked at compile time against offline
-  # data in crates/sync-store-sqlite/.sqlx, so builds need no database. This
-  # job rebuilds that data from the migrations and fails when it changed.
+  # Both stores' queries are checked at compile time against offline data in
+  # crates/sync-store-sqlite/.sqlx and crates/sync-store-postgres/.sqlx, so
+  # builds need no database. This job rebuilds that data from the
+  # migrations, PostgreSQL's in the service below, and fails when it changed.
   sqlx-offline-data:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -222,6 +312,61 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: sqlx }
       - run: scripts/sqlx-prepare.sh --check
+        env:
+          SQLX_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  # The store conformance suite, the server's PostgreSQL mode tests and the
+  # tracer on a PostgreSQL service, as a hosted deployment runs it, then the
+  # push soak for five minutes. Tests that need a cluster of their own, such
+  # as one that requires TLS, start it with the runner's PostgreSQL. The job
+  # builds dependencies optimized, the crypto crates among them, so a debug
+  # build of the server keeps the soak's rate on a shared runner.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      NOURA_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432
+      DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
+      TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The tests run several instances at once, each with 32 request
+      # connections, as the local test clusters allow with 500.
+      - name: Raise the service's connection limit
+        env:
+          SERVICE: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$SERVICE" psql -U postgres -c "ALTER SYSTEM SET max_connections = 500"
+          docker restart "$SERVICE"
+          for _ in $(seq 1 30); do
+            if docker exec "$SERVICE" pg_isready -U postgres; then
+              docker exec "$SERVICE" psql -U postgres -tAc "SHOW max_connections"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The PostgreSQL service didn't come back after its restart."
+          exit 1
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: postgres }
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync
+      - name: Run the push soak for five minutes
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-server --test soak -- --nocapture
+        env:
+          NOURA_SOAK_SECONDS: '300'
 
   editor-dependencies:
     runs-on: ubuntu-latest

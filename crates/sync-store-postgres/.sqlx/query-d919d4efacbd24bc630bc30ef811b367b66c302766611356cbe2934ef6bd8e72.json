@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor\n             FROM domains WHERE workspace = $1 AND domain = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "head_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "head_seq"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "epoch_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "epoch_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "epoch_policy_revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "epoch_policy_revision"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "retention_floor",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "retention_floor"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d919d4efacbd24bc630bc30ef811b367b66c302766611356cbe2934ef6bd8e72"
+}

@@ -225,6 +225,9 @@ pub struct App {
     preferences_seen: u64,
     /// The version of the plugins service this window shows.
     plugins_seen: u64,
+    /// How many times running plugins ran code that may write files, as
+    /// far as this window's open notes looked at their files.
+    plugin_acts_seen: u64,
     closed: bool,
     /// Windows this one opened for its workspace's other saved windows,
     /// until the client takes them.
@@ -352,6 +355,7 @@ impl App {
             recents_seen: 0,
             preferences_seen: 0,
             plugins_seen: 0,
+            plugin_acts_seen: 0,
             closed: false,
             opened_windows: Vec::new(),
             service: session.service.clone(),
@@ -444,6 +448,7 @@ impl App {
         window.preferences = self.preferences;
         window.preferences_seen = self.preferences_seen;
         window.plugins_seen = self.plugins_seen;
+        window.plugin_acts_seen = self.plugin_acts_seen;
         // The commands and Settings sections registered so far, what saves
         // pending changes, the login item and the packaged license list
         // serve every window.

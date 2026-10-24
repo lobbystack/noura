@@ -14,8 +14,9 @@ use crate::offset_types::{Grapheme, RangeExt as _};
 impl MdDoc {
     /// Brings bounds built for the text before an edit up to date with
     /// `root`, the parse [`crate::Ast::update`] left after reparsing
-    /// `reparsed`. The note must hold no fold tags.
+    /// `reparsed`. The fold bounds stay as they are, as nothing folds.
     pub(crate) fn update_bounds<'a>(&mut self, root: &'a AstNode<'a>, reparsed: &Reparsed) {
+        debug_assert!(self.bounds.folds.is_empty() && !self.bounds.has_folds);
         let old_total = self.bounds.source_lines.last().map_or(0, |line| line.1.0);
         let new_total = self.last_cursor_position().0;
         let delta = new_total as isize - old_total as isize;
@@ -140,6 +141,20 @@ impl MdDoc {
         }
         images.sort_unstable();
         splice_by_start(&mut self.bounds.images, (lo, old_hi), images, delta);
+
+        // Obsidian-style spans, and the frontmatter, which only the start
+        // of the text decides.
+        let spans = self.inline_spans_in(blocks.iter().copied());
+        let all = &mut self.bounds.spans;
+        let first = all.partition_point(|span| span.range.start() < lo);
+        let after = all
+            .partition_point(|span| span.range.start() < old_hi)
+            .max(first);
+        for span in &mut all[after..] {
+            span.shift(delta);
+        }
+        all.splice(first..after, spans);
+        self.bounds.frontmatter = self.frontmatter_range();
 
         self.bounds.text_seq = self.text_seq;
         self.bounds_seq = self.next_seq();

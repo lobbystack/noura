@@ -28,6 +28,10 @@ pub struct Ast {
     source: String,
     /// Where each line of `source` starts, as comrak counts lines.
     line_starts: Vec<usize>,
+    /// The display math, in `source` bytes, whose opening `$$` reads as
+    /// text because its closing signs sit past the lookahead; see
+    /// [`crate::lookahead`], which keeps it up to date.
+    distant_math: Vec<Range<usize>>,
 }
 
 // SAFETY: every reference the tree holds points into `arena`, which the
@@ -72,6 +76,7 @@ impl Ast {
             text_seq,
             source,
             line_starts,
+            distant_math: Vec::new(),
         }
     }
 
@@ -89,6 +94,22 @@ impl Ast {
     /// The text this tree is a parse of.
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Where line `line` of the source starts, 0-based, as comrak counts
+    /// lines.
+    pub(crate) fn line_start(&self, line: usize) -> Option<usize> {
+        self.line_starts.get(line).copied()
+    }
+
+    /// The display math whose opening `$$` this tree reads as text, as
+    /// [`crate::lookahead`] set it.
+    pub(crate) fn distant_math(&self) -> &[Range<usize>] {
+        &self.distant_math
+    }
+
+    pub(crate) fn set_distant_math(&mut self, distant_math: Vec<Range<usize>>) {
+        self.distant_math = distant_math;
     }
 
     /// Runs `work` with the tree's root.
@@ -237,6 +258,8 @@ impl Ast {
         self.source = source;
         self.line_starts = new_starts;
         self.text_seq = text_seq;
+        // The positions moved; the caller that tracks them sets them again.
+        self.distant_math.clear();
         Reparsed {
             old_lines: start_line..old_end_line,
             new_lines: start_line..new_end_line,
@@ -310,7 +333,7 @@ fn byte_of_line(starts: &[usize], line: usize, len: usize) -> usize {
     starts.get(line).copied().unwrap_or(len).min(len)
 }
 
-fn common_prefix(a: &[u8], b: &[u8]) -> usize {
+pub(crate) fn common_prefix(a: &[u8], b: &[u8]) -> usize {
     const CHUNK: usize = 64;
     let mut at = 0;
     while at + CHUNK <= a.len().min(b.len()) && a[at..at + CHUNK] == b[at..at + CHUNK] {
@@ -323,7 +346,7 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
         .count()
 }
 
-fn common_suffix(a: &[u8], b: &[u8]) -> usize {
+pub(crate) fn common_suffix(a: &[u8], b: &[u8]) -> usize {
     const CHUNK: usize = 64;
     let len = a.len().min(b.len());
     let mut at = 0;

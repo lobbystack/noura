@@ -10,6 +10,7 @@ use crate::{
     commands::{Run, area_keys, command_id},
     layout::FILES_SECTION,
     menus,
+    plugins::COMMAND_PREFIX,
     settings::settings_section,
 };
 
@@ -95,9 +96,18 @@ impl App {
     }
 
     /// Every command: the registered ones in the order they registered,
-    /// then one Go to command per rail page.
+    /// then one Go to command per rail page, then the commands running
+    /// plugins add, which have no shortcuts.
     pub fn commands(&self) -> Vec<Command> {
-        self.registry.list(&self.rail.ordered())
+        let mut commands = self.registry.list(&self.rail.ordered());
+        commands.extend(
+            self.session
+                .plugins()
+                .commands()
+                .into_iter()
+                .map(|(id, title)| Command::new(&id, &title, Area::Anywhere)),
+        );
+        commands
     }
 
     /// Add a command that does `run`. Fails when another command has its
@@ -117,6 +127,15 @@ impl App {
     /// it ran: nothing runs for an unknown ID, or for the second report of
     /// a key press that the menu and the window both report.
     pub fn run_command(&mut self, id: &str, source: CommandSource, at: Instant) -> bool {
+        if id.starts_with(COMMAND_PREFIX) {
+            // The plugin runs it on its own thread and draws its views
+            // again; the window shows them once they arrive.
+            let ran = self.session.plugins().run_command(id);
+            if ran {
+                self.session.wake_all();
+            }
+            return ran;
+        }
         let Some(run) = self.registry.run_of(id, &self.rail.ordered()) else {
             return false;
         };

@@ -18,6 +18,7 @@ directories.workspace = true
 # Tells a calendar date property from text shaped like one, and reads this
 # computer's clock in its time zone for the Inbox's greeting.
 jiff.workspace = true
+jsonschema.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
 nucleo-matcher.workspace = true
 plugin-host = { version = "0.2.0", path = "../plugin-host" }
@@ -45,9 +46,12 @@ proptest.workspace = true
 # The tests stop the index from accepting writes.
 rusqlite.workspace = true
 serde_yaml_ng.workspace = true
-# The sync tests run the real server on SQLite in-process.
+# The sync tests run the real server in-process, on SQLite and on a
+# throwaway PostgreSQL cluster.
 sync-server = { version = "0.2.0", path = "../sync-server" }
 sync-store = { version = "0.2.0", path = "../sync-store" }
+sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", features = ["testing"] }
+sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
 tempfile.workspace = true
 tokio.workspace = true
 

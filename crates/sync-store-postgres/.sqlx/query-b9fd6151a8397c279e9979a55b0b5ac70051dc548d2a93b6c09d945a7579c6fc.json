@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO members (workspace, account, role) VALUES ($1, $2, $3)\n             ON CONFLICT (workspace, account) DO UPDATE SET role = excluded.role",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b9fd6151a8397c279e9979a55b0b5ac70051dc548d2a93b6c09d945a7579c6fc"
+}

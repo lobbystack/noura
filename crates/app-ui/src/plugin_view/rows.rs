@@ -215,6 +215,10 @@ fn to_u32(index: usize) -> u32 {
 struct State {
     /// The selected row's ID, and its index when it was selected.
     selected: Option<(String, usize)>,
+    /// The row of a virtual list the keyboard moved to that the plugin
+    /// hasn't returned yet. The keyboard and the selection move there once
+    /// it arrives.
+    waiting: Option<usize>,
     /// The rows drawn last frame, to find the one with keyboard focus.
     drawn: Vec<(Id, usize)>,
     menu: Option<OpenMenu>,
@@ -416,11 +420,18 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
                 .map(|(_, index)| *index)
         })
         .and_then(|index| count.checked_sub(1).map(|last| index.min(last)));
-    let mut keyboard = focused;
-    let mut moved = asked.is_some();
+    // Keys move on from a row the keyboard waits for, while the list has
+    // the keyboard.
+    let waiting = state
+        .waiting
+        .take()
+        .filter(|index| focused.is_some() && *index < count);
+    let from = waiting.or(focused);
+    let mut keyboard = from;
+    let mut moved = asked.is_some() || waiting.is_some();
     let mut activate = None;
     let mut open_menu = None;
-    if let Some(mut current) = focused.filter(|_| state.menu.is_none() && count > 0) {
+    if let Some(mut current) = from.filter(|_| state.menu.is_none() && count > 0) {
         for key in take_keys(ui, false) {
             match key {
                 ListKey::Left | ListKey::Right => {}
@@ -433,7 +444,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
                 ListKey::Menu => open_menu = Some(current),
             }
         }
-        moved |= Some(current) != focused;
+        moved |= Some(current) != from;
         keyboard = Some(current);
     }
     let mut select = keyboard.filter(|_| moved);
@@ -474,6 +485,18 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
         if let Some(row) = row {
             rows_by_index.push((index, row));
         }
+    }
+    // The plugin hasn't returned the row the keyboard moved to: show where
+    // it will be, and move there once it arrives.
+    if let Some(index) = keyboard.filter(|_| moved)
+        && !rows_by_index.iter().any(|(at, _)| *at == index)
+    {
+        state.waiting = Some(index);
+        let rect = Rect::from_min_size(
+            pos2(area.left(), area.top() + index as f32 * ROW_HEIGHT),
+            vec2(area.width(), ROW_HEIGHT),
+        );
+        ui.scroll_to_rect(rect, None);
     }
     // A redraw may have moved a virtual list's selected row, such as when
     // rows came in above it. Where it is among the rows fetched, the
