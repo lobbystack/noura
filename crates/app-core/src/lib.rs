@@ -15,7 +15,9 @@
 //! extend. The plugins service installs plugins from folders and the ones
 //! that ship with Noura, keeps this device's approvals, turns plugins on
 //! and off per workspace and runs them through `plugin-host`, each on a
-//! thread of its own.
+//! thread of its own. [`AgentWorkspace`] gives an AI tool outside Noura,
+//! through MCP, the same search, file rules and plugin tools, beside the
+//! app on the same app data.
 
 mod agent;
 mod app;

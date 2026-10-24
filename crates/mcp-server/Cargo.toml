@@ -26,5 +26,4 @@ name = "noura-mcp"
 path = "src/main.rs"
 
 [dev-dependencies]
-app-core = { path = "../app-core", features = ["test-hooks"] }
 tempfile.workspace = true
