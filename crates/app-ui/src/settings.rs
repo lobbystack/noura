@@ -30,6 +30,8 @@ pub(crate) struct SettingsView {
     return_focus: Option<Id>,
     /// The name being typed in Name and location, once you start typing.
     name: Option<String>,
+    /// The release address being typed in Plugins.
+    release_address: String,
 }
 
 /// Draw Settings while it is open in the window whose ID salt is
@@ -154,7 +156,9 @@ fn content(
         settings_section::EDITOR => editor(ui, app, spelling),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
-        settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
+        settings_section::PLUGINS => {
+            crate::plugins::section(ui, app, picker, &mut view.release_address);
+        }
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
         id if app.is_plugin_settings(id) => crate::plugin_view::show_settings(ui, app, window, id),

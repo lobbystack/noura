@@ -119,7 +119,8 @@ fn the_install_dialog_lists_every_capability_before_any_code_runs() {
     assert_eq!(review.name, "Hello");
     assert_eq!(review.id, "hello");
     assert_eq!(review.version, "0.1.0");
-    assert_eq!(review.folder, folder.path().to_str().unwrap());
+    assert_eq!(review.source, folder.path().to_str().unwrap());
+    assert!(!review.from_github);
     assert_eq!(review.capabilities, hello_capabilities());
     // Nothing is installed or running yet.
     assert!(installed(&app).is_empty());
@@ -201,6 +202,9 @@ fn approving_installs_the_plugin_on_this_device_and_changes_no_workspace_file() 
             failed: false,
             problem: None,
             update: Vec::new(),
+            release: None,
+            newer: None,
+            update_check: None,
         }]
     );
     assert_eq!(everything(&fixture), before);
@@ -361,6 +365,9 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
             failed: false,
             problem: None,
             update: Vec::new(),
+            release: None,
+            newer: None,
+            update_check: None,
         }
     );
     assert_eq!(rail_titles(&app), ["Inbox", "Files"]);

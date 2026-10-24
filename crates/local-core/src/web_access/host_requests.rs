@@ -145,6 +145,11 @@ impl HostRequests {
         }
     }
 
+    /// Requests over HTTPS on this device's network, with `limits`.
+    pub fn https_with(limits: WebAccessLimits) -> Result<Self> {
+        Self::new(Arc::new(HttpsTransport), limits)
+    }
+
     /// Send `request` to one of `hosts`, following redirects to `hosts`.
     pub async fn send(&self, request: HostRequest, hosts: &[String]) -> Result<HostResponse> {
         let checked = check_request(request, hosts, self.limits)?;
