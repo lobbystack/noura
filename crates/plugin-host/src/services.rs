@@ -143,6 +143,10 @@ pub struct ObjectRecord {
     /// The frontmatter's other properties, as a JSON object.
     pub properties: String,
     pub revision: String,
+    /// When the object was created and last changed, as its frontmatter
+    /// says.
+    pub created: Option<String>,
+    pub updated: Option<String>,
     /// The first property, in the schema's order, that doesn't fit the
     /// type's schema. The file stays as it is.
     pub problem: Option<PropertyProblem>,
@@ -199,4 +203,53 @@ pub trait WorkspaceObjects: Send + Sync {
 
     /// Move the object's file to the trash.
     fn delete(&self, id: &str, expected_revision: &str) -> Result<(), ServiceError>;
+}
+
+/// The instant now and this device's time zone, as a plugin reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockReading {
+    /// RFC 3339, in UTC, such as `2026-10-21T13:30:00Z`.
+    pub instant: String,
+    /// An IANA name such as `America/Toronto`, or, for a zone without one,
+    /// its offset from UTC at `instant`, such as `-04:00`.
+    pub time_zone: String,
+}
+
+impl ClockReading {
+    /// The reading at `instant` in `zone`.
+    pub fn at(instant: jiff::Timestamp, zone: &jiff::tz::TimeZone) -> Self {
+        let time_zone = match zone.iana_name() {
+            Some(name) => name.to_owned(),
+            None => {
+                let seconds = zone.to_offset(instant).seconds();
+                let sign = if seconds < 0 { '-' } else { '+' };
+                let minutes = seconds.unsigned_abs() / 60;
+                format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+            }
+        };
+        Self {
+            instant: instant.to_string(),
+            time_zone,
+        }
+    }
+
+    /// This computer's clock and time zone.
+    pub fn system() -> Self {
+        Self::at(jiff::Timestamp::now(), &jiff::tz::TimeZone::system())
+    }
+}
+
+/// The clock plugins read: the app's, which tests can fix.
+pub trait DeviceClock: Send + Sync {
+    fn now(&self) -> ClockReading;
+}
+
+/// Opens objects and a plugin's own pages in the window you acted in, for
+/// plugins that hold the `views` capability.
+pub trait Navigation: Send + Sync {
+    /// Open the object with the stable ID `id` in the note editor.
+    fn open_object(&self, id: &str, placement: crate::Placement) -> Result<(), ServiceError>;
+
+    /// Show the plugin's own page `page`.
+    fn open_page(&self, page: &str) -> Result<(), ServiceError>;
 }

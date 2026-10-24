@@ -400,6 +400,41 @@ jobs:
       # test vectors and fixtures run with the workspace tests.
       - run: scripts/check-sync-protocol.sh
 
+  # The collaboration sandbox (sync-v2.md §22). Every platform runs its
+  # whole test suite twice, once on Cranelift and once on Pulley, and in
+  # each run the verdict fixtures and the records at the verdict's limits
+  # must reach the same verdicts and fuel on both backends. Linux also
+  # rebuilds the guest module and requires the bytes the sandbox embeds,
+  # checks that the guest's yrs resolves without `small-client`, runs the
+  # guest's unit tests, and runs the previous release on the current
+  # fixture.
+  collab-sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The release check needs the release tags.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: collab-sandbox }
+      - name: Run the sandbox on Pulley and Cranelift
+        shell: bash
+        run: scripts/check-collab-sandbox.sh backends
+      - name: Check the guest module, its yrs and the previous release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: scripts/check-collab-sandbox.sh module features guest release
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
@@ -414,3 +449,7 @@ jobs:
       # Checks advisories, bans, licenses, and sources. Bans needs version
       # requirements on every workspace path dependency.
       - run: cargo deny check
+      # The collaboration sandbox's guest and fuzz crates sit outside the
+      # workspace with lockfiles of their own, and the guest's crates ship
+      # inside the app's module.
+      - run: scripts/check-collab-sandbox.sh audit

@@ -3,7 +3,8 @@
 # account-web share (docs/workspace-format/sync-v2.md §4):
 # - its dependency tree, on every target, holds no filesystem, socket or
 #   database crate;
-# - it builds for wasm32-unknown-unknown, account-web's target.
+# - it builds for wasm32-unknown-unknown, account-web's target, with its
+#   wasm-js feature.
 # Pass --no-build to check the dependency tree only.
 set -euo pipefail
 
@@ -24,7 +25,7 @@ if [ -n "$found" ]; then
 fi
 
 if [ "${1:-}" != "--no-build" ]; then
-  if ! cargo build --locked --package sync-protocol --target wasm32-unknown-unknown; then
+  if ! cargo build --locked --package sync-protocol --features wasm-js --target wasm32-unknown-unknown; then
     echo "error: sync-protocol doesn't build for wasm32-unknown-unknown"
     fail=1
   fi

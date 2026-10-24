@@ -13,6 +13,9 @@ pulley = ["wasmtime/pulley"]
 [dependencies]
 # Names each component's bytes in the compiled code cache.
 blake3.workspace = true
+# Reads this computer's clock and time zone for plugins when the app
+# passes no clock of its own.
+jiff.workspace = true
 # Plugins' network requests go through its web access boundary.
 local-core = { version = "0.2.0", path = "../local-core" }
 # Waits a bounded time for a plugin that another plugin's command call
@@ -28,6 +31,13 @@ wasmtime.workspace = true
 # The workspace format's date and date-time rules, which input values
 # follow, and the envelope and schemas of the object types plugins register.
 workspace-format = { version = "0.2.0", path = "../workspace-format" }
+
+# process_memory: proc_pid_rusage on macOS, sysconf on Linux, and
+# GetProcessMemoryInfo on Windows.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+libc.workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dev-dependencies]
 egui = { workspace = true, features = ["default_fonts"] }

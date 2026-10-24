@@ -1,0 +1,64 @@
+[package]
+name = "collab-sandbox-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+collab-sandbox = { path = ".." }
+# The guest's own code, built natively so libFuzzer sees its coverage:
+# a panic here is a trap in the sandbox.
+collab-sandbox-guest = { path = "../../collab-sandbox-guest" }
+libfuzzer-sys = "0.4.10"
+
+# The guest's patched yrs, as the guest crate itself patches it.
+[patch.crates-io]
+yrs = { path = "../../collab-sandbox-guest/vendor/yrs" }
+
+# The fuzz targets build outside the Noura workspace, like the guest
+# module, so its builds and lockfile never see libFuzzer.
+[workspace]
+
+[[bin]]
+name = "verdict"
+path = "fuzz_targets/verdict.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "writer_record"
+path = "fuzz_targets/writer_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "guest_record"
+path = "fuzz_targets/guest_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "guest_writer_record"
+path = "fuzz_targets/guest_writer_record.rs"
+test = false
+doc = false
+bench = false
+
+# `cargo fuzz run --dev` and plain debug builds compile Wasmtime with
+# optimizations, or compiling the guest module alone takes over a minute.
+[profile.dev.package."*"]
+opt-level = 2

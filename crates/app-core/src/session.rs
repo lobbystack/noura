@@ -22,7 +22,7 @@ use crate::{
     FileTree, PendingWrites, Preferences, Problem, System, Updates, Workspace, WorkspaceService,
     app::{Change, Listeners},
     links::LinkFiles,
-    plugins::Plugins,
+    plugins::{Plugins, SystemClock},
     remote_images::RemoteImages,
     view_state::{StoredView, StoredWindow, ViewStore},
     watch::{Rescans, Snapshot, Update, Watch},
@@ -36,6 +36,14 @@ const MOVES_KEPT: usize = 256;
 /// A window's identity for this session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WindowKey(u64);
+
+#[cfg(test)]
+impl WindowKey {
+    /// The key of the `index`th window a session opened.
+    pub(crate) fn nth(index: u64) -> Self {
+        Self(index)
+    }
+}
 
 pub(crate) struct Session {
     pub(crate) app_data: PathBuf,
@@ -174,6 +182,9 @@ impl Session {
                     session.wake_all();
                 }
             }));
+            // Plugins read the time and time zone from the system, which
+            // tests fix.
+            plugins.set_clock(Arc::new(SystemClock(system.clone())));
             Self::with(app_data, system, rescans, writes, updates, plugins)
         })
     }

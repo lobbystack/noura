@@ -97,6 +97,11 @@ pub trait System: Send + Sync {
         u8::try_from(jiff::Zoned::now().hour()).unwrap_or(12)
     }
 
+    /// The instant now on this computer's clock, which plugins read.
+    fn now(&self) -> jiff::Timestamp {
+        jiff::Timestamp::now()
+    }
+
     /// This computer's time zone, where each day of a calendar grid starts
     /// and ends.
     fn time_zone(&self) -> jiff::tz::TimeZone {

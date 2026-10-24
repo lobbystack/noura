@@ -437,7 +437,8 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
             "Markdown",
             "Deep",
             "Broken",
-            "Events"
+            "Events",
+            "Opens"
         ]
     );
     assert_eq!(app.active_tab().unwrap().title(), "Probe");

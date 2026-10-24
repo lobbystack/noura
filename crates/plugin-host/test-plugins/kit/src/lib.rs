@@ -268,6 +268,8 @@ impl Plugin for Kit {
                     item: Item {
                         label: format!("Repeated {index}"),
                         detail: None,
+                        checked: None,
+                        warning: None,
                     },
                 })
                 .collect();
@@ -295,6 +297,8 @@ impl Plugin for Kit {
                         item: Item {
                             label,
                             detail: Some(format!("Batch {batch}")),
+                            checked: None,
+                            warning: None,
                         },
                     }
                 })
@@ -463,6 +467,8 @@ fn broken_rows(state: &mut State, start: u32, count: u32) -> Vec<VirtualRow> {
             item: Item {
                 label: format!("Broken {index}"),
                 detail: None,
+                checked: None,
+                warning: None,
             },
         })
         .collect()
@@ -591,6 +597,12 @@ fn describe(event: &Event) -> String {
             "moved {} in {} to {} at {}",
             placed.item, placed.node, placed.to, placed.position
         ),
+        Event::Checked(check) => format!(
+            "checked {} in {}: {}",
+            check.item, check.node, check.checked
+        ),
+        Event::Named(naming) => format!("named {} {:?}", naming.node, naming.name),
+        Event::Cancelled(node) => format!("cancelled {node}"),
     }
 }
 

@@ -115,6 +115,11 @@ pub struct MdDoc {
     /// Marked text an input method is composing at the caret. It never
     /// reaches the buffer; see [`crate::ime`].
     pub(crate) composition: Option<crate::ime::Composition>,
+    /// The note's document in the collaboration sandbox, in text mode.
+    pub(crate) text_mode: Option<crate::text_mode::TextMode>,
+    /// Change events text mode took from the buffer, for
+    /// [`Self::take_changes`].
+    pub(crate) changes: Vec<crate::buffer::TextChange>,
     pub debug: bool,
 }
 
@@ -201,6 +206,8 @@ impl MdDoc {
             stats: ParseStats::default(),
             last_block_edit: None,
             composition: None,
+            text_mode: None,
+            changes: Vec::new(),
             debug: false,
         }
     }
@@ -219,7 +226,10 @@ impl MdDoc {
     /// replacement the buffer applied. Replaying them on the text the note
     /// opened with gives its text now.
     pub fn take_changes(&mut self) -> Vec<crate::buffer::TextChange> {
-        self.buffer.take_changes()
+        self.send_text_mode_edits();
+        let mut changes = std::mem::take(&mut self.changes);
+        changes.extend(self.buffer.take_changes());
+        changes
     }
 
     /// Applies a batch of events the way one frame of input applies them:
@@ -267,6 +277,7 @@ impl MdDoc {
         }
         let edited = response.text_updated || response.selection_user_moved;
         response |= self.unfold_after_edit(edited, undo_redo);
+        self.send_text_mode_edits();
         response
     }
 

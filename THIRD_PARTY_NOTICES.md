@@ -40,7 +40,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## yrs 0.26.0 (native text collaboration)
 
-Dependency source and verification: [Yrs provenance](docs/provenance/yrs.md). No upstream implementation source was copied.
+Dependency source and verification: [Yrs provenance](docs/provenance/yrs.md). `crates/local-core` uses the crates.io package unchanged. The collaboration sandbox's guest module builds from a patched copy of the package in `crates/collab-sandbox-guest/vendor/yrs`; the provenance record lists each change.
 
 The MIT License (MIT)
 

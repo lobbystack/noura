@@ -29,7 +29,8 @@
 //!
 //! Each capability interface the plugin calls sits in its own module, such
 //! as [`workspace`], [`objects`] and [`network`], and works only when the
-//! plugin holds its capability.
+//! plugin holds its capability. [`clock`] needs none: it gives the instant
+//! now and this device's time zone, the plugin's only clock.
 
 // The generated bindings and their `export!` macro name this crate as
 // `plugin_sdk`, so plugin crates need no dependency on `wit-bindgen`.
@@ -60,9 +61,9 @@ pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Calendar, CalendarEntry, CalendarMode, Choice, Column, ColumnPress, Event, Field, Form, Input,
-    Item, ItemList, MenuItem, Move, Node, NodeKind, SortOrder, Submission, Table, Target, Value,
-    VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, Event, Field, Form,
+    Input, Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, SortOrder,
+    Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -91,6 +92,19 @@ pub mod command_calls {
     pub use crate::noura::plugin::command_calls::call;
 }
 
+/// The instant now and this device's time zone. Needs no capability, and
+/// is the plugin's only clock: WASI's clocks aren't linked.
+pub mod clock {
+    pub use crate::noura::plugin::clock::{Reading, now};
+}
+
+/// Opening an object in the note editor, or one of the plugin's own
+/// pages, in the window you acted in. Needs the `views` capability, and
+/// works only in answer to something you did.
+pub mod navigation {
+    pub use crate::noura::plugin::navigation::{Placement, open_object, open_page};
+}
+
 /// What a plugin adds to Noura. Noura calls each method only when the
 /// plugin holds the capability it needs; the defaults add nothing.
 pub trait Plugin {
@@ -101,6 +115,14 @@ pub trait Plugin {
 
     /// The nodes of a page's view. Needs `views`.
     fn render(_page: String) -> Vec<Node> {
+        Vec::new()
+    }
+
+    /// The nodes of the section a page adds to the sidebar above the file
+    /// tree while it shows, or none for no section. Its node IDs don't
+    /// repeat the page view's, and its events reach
+    /// [`handle_event`](Self::handle_event). Needs `views`.
+    fn sidebar(_page: String) -> Vec<Node> {
         Vec::new()
     }
 
@@ -200,6 +222,9 @@ macro_rules! export {
                 }
                 fn render(page: ::std::string::String) -> ::std::vec::Vec<$crate::Node> {
                     <$ty as $crate::Plugin>::render(page)
+                }
+                fn sidebar(page: ::std::string::String) -> ::std::vec::Vec<$crate::Node> {
+                    <$ty as $crate::Plugin>::sidebar(page)
                 }
                 fn rows(
                     page: ::std::string::String,
@@ -351,6 +376,24 @@ macro_rules! export {
 /// );
 /// assert_eq!(view.into_nodes().len(), 5);
 /// ```
+///
+/// A list can show which item is current, its items can carry a checkbox
+/// and a warning, and a name field names something new:
+///
+/// ```
+/// use plugin_sdk::View;
+///
+/// let mut view = View::panel("root", Some("Chores"));
+/// let views = view.list(View::ROOT, "views", "Views");
+/// view.item(views, "today", "Today", None);
+/// view.item(views, "all", "All", None);
+/// view.select(views, "today");
+/// let chores = view.list(View::ROOT, "chores", "Chores");
+/// let weed = view.checkbox_item(chores, "weed", "Weed the beds", Some("Yesterday"), false);
+/// view.warn(weed, "Overdue");
+/// view.name_field(View::ROOT, "new-chore", "New chore name", "");
+/// assert_eq!(view.into_nodes().len(), 7);
+/// ```
 #[derive(Debug, Clone)]
 pub struct View {
     nodes: Vec<Node>,
@@ -416,6 +459,7 @@ impl View {
         let list = ItemList {
             label: label.to_owned(),
             reorder: false,
+            selected: None,
         };
         self.add(parent, id, NodeKind::List(list))
     }
@@ -427,6 +471,7 @@ impl View {
         let list = ItemList {
             label: label.to_owned(),
             reorder: true,
+            selected: None,
         };
         self.add(parent, id, NodeKind::List(list))
     }
@@ -452,6 +497,8 @@ impl View {
         let card = Item {
             label: label.to_owned(),
             detail: detail.map(str::to_owned),
+            checked: None,
+            warning: None,
         };
         self.add(column, id, NodeKind::Card(card))
     }
@@ -462,8 +509,71 @@ impl View {
         let item = Item {
             label: label.to_owned(),
             detail: detail.map(str::to_owned),
+            checked: None,
+            warning: None,
         };
         self.add(list, id, NodeKind::Item(item))
+    }
+
+    /// Add an item like [`item`](Self::item) with a checkbox before its
+    /// label. Checking or unchecking it sends [`Event::Checked`]; the box
+    /// shows what you draw next.
+    pub fn checkbox_item(
+        &mut self,
+        list: u32,
+        id: &str,
+        label: &str,
+        detail: Option<&str>,
+        checked: bool,
+    ) -> u32 {
+        let item = Item {
+            label: label.to_owned(),
+            detail: detail.map(str::to_owned),
+            checked: Some(checked),
+            warning: None,
+        };
+        self.add(list, id, NodeKind::Item(item))
+    }
+
+    /// Show `warning`, such as `Overdue`, after the label of the list item
+    /// at `item`, in the color Noura shows problems in. Screen readers
+    /// read it with the label.
+    ///
+    /// # Panics
+    ///
+    /// When `item` isn't the index of a list item already added.
+    pub fn warn(&mut self, item: u32, warning: &str) {
+        match &mut self.nodes[item as usize].kind {
+            NodeKind::Item(item) => item.warning = Some(warning.to_owned()),
+            _ => panic!("only a list item shows a warning"),
+        }
+    }
+
+    /// Show the item with the node ID `item` selected in the list at
+    /// `list`, such as the view you're in. The list's selection moves
+    /// there when you draw another item selected than you drew before.
+    ///
+    /// # Panics
+    ///
+    /// When `list` isn't the index of a list already added.
+    pub fn select(&mut self, list: u32, item: &str) {
+        match &mut self.nodes[list as usize].kind {
+            NodeKind::List(list) => list.selected = Some(item.to_owned()),
+            _ => panic!("only a list selects an item"),
+        }
+    }
+
+    /// Add a field that names something, holding `value`: empty for
+    /// something new, the current name for a rename. It takes the
+    /// keyboard when it appears. Enter or leaving it sends
+    /// [`Event::Named`] with a new name, and Escape, or leaving it empty
+    /// or unchanged, sends [`Event::Cancelled`].
+    pub fn name_field(&mut self, parent: u32, id: &str, label: &str, value: &str) -> u32 {
+        let field = NameField {
+            label: label.to_owned(),
+            value: value.to_owned(),
+        };
+        self.add(parent, id, NodeKind::NameField(field))
     }
 
     /// Add a list of `rows` rows, at most 1,000,000, that Noura asks
