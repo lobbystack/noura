@@ -397,6 +397,12 @@ impl navigation::Host for HostState {
     fn open_page(&mut self, page: String) -> Result<(), types::Error> {
         self.navigation()?.open_page(&page).map_err(wit_error)
     }
+
+    fn trash_object(&mut self, id: String) -> Result<(), types::Error> {
+        // Only objects of the plugin's own types, as for its writes.
+        self.objects_for(&id)?;
+        self.navigation()?.trash_object(&id).map_err(wit_error)
+    }
 }
 
 impl objects::Host for HostState {

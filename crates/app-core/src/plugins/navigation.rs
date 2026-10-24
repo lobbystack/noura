@@ -1,5 +1,6 @@
-//! What a running plugin asks the window you acted in to show, and the
-//! clock it reads. A plugin's request waits here until that window polls,
+//! What a running plugin asks the window you acted in to show or move to
+//! the trash, and the clock it reads. A plugin's request waits here until
+//! that window polls,
 //! and only a call that answers something you did may make one: an event
 //! in one of the plugin's views or panels, or a command you ran from the
 //! command palette. Such a call runs on the plugin's own thread, so a call
@@ -15,17 +16,22 @@ use plugin_host::{ClockReading, DeviceClock, Navigation, Placement, ServiceError
 
 use crate::{OpenAs, System, session::WindowKey};
 
-/// Something a plugin asked a window to show.
+/// Something a plugin asked a window to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Opening {
-    /// The object with this stable ID, in the note editor.
+    /// Open the object with this stable ID in the note editor.
     Object { id: String, how: OpenAs },
-    /// The rail page with this ID.
+    /// Show the rail page with this ID.
     Page(String),
+    /// Move the object with this stable ID to the trash.
+    Trash(String),
 }
 
 /// The requests waiting for each window, oldest first.
 pub(crate) type Openings = Arc<Mutex<Vec<(WindowKey, Opening)>>>;
+
+/// Why a plugin's request outside a call that answers you opens nothing.
+const REFUSED: &str = "Noura opens things only in answer to something you did.";
 
 /// One running plugin's navigation service.
 pub(crate) struct Navigator {
@@ -57,6 +63,12 @@ impl Navigator {
     }
 
     fn request(&self, opening: Opening) -> Result<(), ServiceError> {
+        let refusal = match opening {
+            Opening::Trash(_) => {
+                "Noura moves things to the trash only in answer to something you did."
+            }
+            Opening::Object { .. } | Opening::Page(_) => REFUSED,
+        };
         let origin = *self
             .origin
             .lock()
@@ -66,9 +78,7 @@ impl Navigator {
             .filter(|(thread, _)| *thread == here)
             .map(|(_, window)| window)
         else {
-            return Err(ServiceError::Failed(
-                "Noura opens things only in answer to something you did.".to_owned(),
-            ));
+            return Err(ServiceError::Failed(refusal.to_owned()));
         };
         self.openings
             .lock()
@@ -93,6 +103,10 @@ impl Navigation for Navigator {
     fn open_page(&self, page: &str) -> Result<(), ServiceError> {
         self.request(Opening::Page(super::page_id(&self.plugin, page)))
     }
+
+    fn trash_object(&self, id: &str) -> Result<(), ServiceError> {
+        self.request(Opening::Trash(id.to_owned()))
+    }
 }
 
 /// The clock plugins read: this computer's, or the one a test passes as
@@ -108,8 +122,6 @@ impl DeviceClock for SystemClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const REFUSED: &str = "Noura opens things only in answer to something you did.";
 
     fn refused(answer: Result<(), ServiceError>) -> bool {
         matches!(answer, Err(ServiceError::Failed(message)) if message == REFUSED)

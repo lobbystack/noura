@@ -99,10 +99,11 @@ pub mod clock {
 }
 
 /// Opening an object in the note editor, or one of the plugin's own
-/// pages, in the window you acted in. Needs the `views` capability, and
-/// works only in answer to something you did.
+/// pages, in the window you acted in, and moving an object of the
+/// plugin's own types to the trash there. Needs the `views` capability,
+/// and works only in answer to something you did.
 pub mod navigation {
-    pub use crate::noura::plugin::navigation::{Placement, open_object, open_page};
+    pub use crate::noura::plugin::navigation::{Placement, open_object, open_page, trash_object};
 }
 
 /// What a plugin adds to Noura. Noura calls each method only when the
@@ -328,6 +329,8 @@ macro_rules! export {
 ///
 /// let form = view.form(View::ROOT, "new-bed", "New bed", "Add bed");
 /// view.input(form, "name", "Name", Value::Text(String::new()));
+/// // Add bed waits until the bed has a name.
+/// view.require(form, "name");
 /// view.input(form, "sown", "Sown on", Value::Date(None));
 /// view.choice_input(form, "sun", "Sun", &[("full", "Full sun"), ("shade", "Shade")], None);
 ///
@@ -378,7 +381,8 @@ macro_rules! export {
 /// ```
 ///
 /// A list can show which item is current, its items can carry a checkbox
-/// and a warning, and a name field names something new:
+/// and a warning, and a name field names something new, or renames an
+/// item in its place. A list can open its items on one click, as links:
 ///
 /// ```
 /// use plugin_sdk::View;
@@ -389,10 +393,13 @@ macro_rules! export {
 /// view.item(views, "all", "All", None);
 /// view.select(views, "today");
 /// let chores = view.list(View::ROOT, "chores", "Chores");
+/// view.open_on_click(chores);
 /// let weed = view.checkbox_item(chores, "weed", "Weed the beds", Some("Yesterday"), false);
 /// view.warn(weed, "Overdue");
+/// let mulch = view.checkbox_item(chores, "mulch", "Mulch", None, false);
+/// view.name_field(mulch, "rename", "Chore name", "Mulch");
 /// view.name_field(View::ROOT, "new-chore", "New chore name", "");
-/// assert_eq!(view.into_nodes().len(), 7);
+/// assert_eq!(view.into_nodes().len(), 9);
 /// ```
 #[derive(Debug, Clone)]
 pub struct View {
@@ -460,6 +467,7 @@ impl View {
             label: label.to_owned(),
             reorder: false,
             selected: None,
+            opens_on_click: false,
         };
         self.add(parent, id, NodeKind::List(list))
     }
@@ -472,6 +480,7 @@ impl View {
             label: label.to_owned(),
             reorder: true,
             selected: None,
+            opens_on_click: false,
         };
         self.add(parent, id, NodeKind::List(list))
     }
@@ -563,9 +572,24 @@ impl View {
         }
     }
 
+    /// Let one click open an item of the list at `list`, as a link does:
+    /// the click sends [`Event::Activated`] after any
+    /// [`Event::Selected`]. The arrow keys still only select.
+    ///
+    /// # Panics
+    ///
+    /// When `list` isn't the index of a list already added.
+    pub fn open_on_click(&mut self, list: u32) {
+        match &mut self.nodes[list as usize].kind {
+            NodeKind::List(list) => list.opens_on_click = true,
+            _ => panic!("only a list opens its items on a click"),
+        }
+    }
+
     /// Add a field that names something, holding `value`: empty for
-    /// something new, the current name for a rename. It takes the
-    /// keyboard when it appears. Enter or leaving it sends
+    /// something new, the current name for a rename. Its parent is a
+    /// panel or a form, or a list item it shows in place of, as for a
+    /// rename. It takes the keyboard when it appears. Enter or leaving it sends
     /// [`Event::Named`] with a new name, and Escape, or leaving it empty
     /// or unchanged, sends [`Event::Cancelled`].
     pub fn name_field(&mut self, parent: u32, id: &str, label: &str, value: &str) -> u32 {
@@ -605,13 +629,29 @@ impl View {
     }
 
     /// Add a form with a submit button labeled `submit`. Its inputs go
-    /// inside it; submitting sends [`Event::Submitted`] with their values.
+    /// inside it; submitting, by the button or Enter in a single-line text
+    /// input, sends [`Event::Submitted`] with their values.
     pub fn form(&mut self, parent: u32, id: &str, label: &str, submit: &str) -> u32 {
         let form = Form {
             label: label.to_owned(),
             submit: submit.to_owned(),
+            required: Vec::new(),
         };
         self.add(parent, id, NodeKind::Form(form))
+    }
+
+    /// Keep the form at `form` from being submitted until its text input
+    /// with the node ID `input` holds more than spaces. Its submit button
+    /// shows disabled meanwhile.
+    ///
+    /// # Panics
+    ///
+    /// When `form` isn't the index of a form already added.
+    pub fn require(&mut self, form: u32, input: &str) {
+        match &mut self.nodes[form as usize].kind {
+            NodeKind::Form(form) => form.required.push(input.to_owned()),
+            _ => panic!("only a form requires an input"),
+        }
     }
 
     /// Add a labeled input holding `value`, whose case sets the kind of
