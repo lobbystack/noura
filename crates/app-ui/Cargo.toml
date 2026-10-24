@@ -27,6 +27,12 @@ avif-parse = "2.1.0"
 rav1d = { version = "1.1.0", default-features = false }
 # Draws and edits the open note.
 editor-egui = { version = "0.2.0", path = "../editor-egui" }
+# Month, weekday and time names on calendar grids, in the computer's
+# locale.
+icu_calendar.workspace = true
+icu_datetime.workspace = true
+icu_locale_core.workspace = true
+icu_time.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]

@@ -27,6 +27,11 @@ ignore = [
   # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
   # not a reported vulnerability; decoder isolation remains a release gate.
   "RUSTSEC-2026-0215",
+  # crypto-bigint 0.5.5's timing leaks, through age 0.12.1's P-256 tag
+  # recipients. age has no release on crypto-bigint 0.7.6 yet, and Noura
+  # encrypts and decrypts with X25519 keys only, so no P-256 arithmetic
+  # runs on its secrets. Drop this once age moves to elliptic-curve 0.14.
+  "RUSTSEC-2026-0387",
 ]
 
 [bans]

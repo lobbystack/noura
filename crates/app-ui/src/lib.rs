@@ -5,6 +5,7 @@
 
 mod chooser;
 mod common;
+mod dates;
 mod finder;
 mod ignored_files;
 mod image_decoders;

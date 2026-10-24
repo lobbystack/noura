@@ -22,9 +22,9 @@ mod view;
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::{
-    Choice, Column, ColumnPress, Event, Field, Form, Input, Item, MenuItem, Node, NodeKind,
-    ObjectType, Page, PluginError, PluginInstance, Registration, Services, SortOrder, Submission,
-    Table, Target, Value, VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, ColumnPress, Event, Field, Form, Input,
+    Item, ItemList, MenuItem, Move, Node, NodeKind, ObjectType, Page, PluginError, PluginInstance,
+    Registration, Services, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 pub use manifest::{
     Capability, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,

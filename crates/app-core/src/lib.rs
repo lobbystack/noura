@@ -17,6 +17,7 @@
 //! them through `plugin-host`.
 
 mod app;
+mod calendar_grid;
 mod commands;
 mod diagnostics;
 mod error;
@@ -57,6 +58,7 @@ pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
     PaletteMode, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
 };
+pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
 };
@@ -88,8 +90,8 @@ pub use notes::{
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use plugin_host::{
-    Choice, Column, ColumnPress, Event as PluginEvent, Field, SortOrder, Submission, Target,
-    Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
+    CalendarMode, Choice, Column, ColumnPress, Event as PluginEvent, Field, Move as PluginMove,
+    SortOrder, Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{CapabilityLine, PluginInstall, PluginRow, PluginView};

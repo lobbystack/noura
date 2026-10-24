@@ -110,10 +110,20 @@ interface workspace {
 // Every label must hold more than spaces: Noura reads it to screen readers.
 interface ui {
   // A line in a list: a label and an optional quieter detail after it, on
-  // the same line.
+  // the same line. A board's card shows the detail under the label.
   record item {
     label: string,
     detail: option<string>,
+  }
+
+  // A list you select items in.
+  record item-list {
+    // Names the list for screen readers.
+    label: string,
+    // Whether you can drag its items to new positions. A drop sends
+    // `moved`, and the list then shows the items in the order the plugin
+    // draws them.
+    reorder: bool,
   }
 
   // A list of items fetched as they scroll into view, so it can hold more
@@ -196,6 +206,38 @@ interface ui {
     enabled: bool,
   }
 
+  // The period a calendar grid shows.
+  enum calendar-mode {
+    // Six weeks from the Sunday on or before the first of the month.
+    month,
+    // Sunday to Saturday, with a row of all-day entries above the hours.
+    week,
+    // One day, with a row of all-day entries above the hours.
+    day,
+  }
+
+  record calendar {
+    // Names the grid for screen readers.
+    label: string,
+    mode: calendar-mode,
+    // A day of the period to show, as `YYYY-MM-DD`.
+    date: string,
+  }
+
+  // A dated entry in a calendar grid. Noura draws it on each day it
+  // covers, in this device's time zone.
+  record calendar-entry {
+    title: string,
+    // An all-day entry's first day as `YYYY-MM-DD`, or a timed entry's
+    // start in RFC 3339 with an offset.
+    start: string,
+    // The end, in the form of the start: the day after an all-day
+    // entry's last day, or a timed entry's end. Without an end, or with
+    // one not after the start, an all-day entry takes its first day and a
+    // timed entry 30 minutes.
+    end: option<string>,
+  }
+
   variant node-kind {
     // Lays out its children from top to bottom. The label names the panel
     // for screen readers.
@@ -208,9 +250,9 @@ interface ui {
     // A button with this label. Presses come back by the node's ID. A
     // button whose child is a menu opens the menu instead.
     button(string),
-    // A list you select items in, by click or arrow keys, named for screen
-    // readers by this label. Its children are its items.
-    %list(string),
+    // A list you select items in, by click or arrow keys. Its children
+    // are its items.
+    %list(item-list),
     // An item of a list. Its only child may be a menu, which opens by
     // right-click or from the keyboard.
     item(item),
@@ -227,13 +269,38 @@ interface ui {
     form(form),
     // A labeled input. Changes come back by the node's ID.
     input(input),
-    // A menu with this label, the child of an item, a row or a button. Its
-    // children are menu items and separators, at least one item among them.
+    // A menu with this label, the child of an item, a row, a card or a
+    // button. Its children are menu items and separators, at least one
+    // item among them.
     menu(string),
     // A menu item. Choosing it sends its node ID.
     menu-item(menu-item),
     // A line between menu items.
     separator,
+    // A board, named for screen readers by this label. Its children are
+    // its columns, at least one. You drag cards within a column and
+    // between the board's columns: a drop sends `moved`, and the board
+    // then shows the cards where the plugin draws them, so a move the
+    // plugin refuses puts the card back.
+    board(string),
+    // A column of a board, with this label in its header. Its children
+    // are its cards.
+    board-column(string),
+    // A card in a board column, with its detail under its label. You
+    // select a card by click or arrow keys and open it by double-click or
+    // Enter, which send `selected` and `activated` naming the board. Its
+    // only child may be a menu, which opens by right-click or from the
+    // keyboard.
+    card(item),
+    // A calendar grid of the period the record sets. Its children are its
+    // entries; it draws those in the period. Its mode and period change
+    // only when the plugin draws new ones, such as after a press of one
+    // of its own buttons.
+    calendar(calendar),
+    // An entry of a calendar grid. You select an entry by click or the
+    // keyboard and open it by double-click or Enter, which send `selected`
+    // and `activated` naming the calendar.
+    entry(calendar-entry),
   }
 
   record node {
@@ -241,17 +308,35 @@ interface ui {
     id: string,
     kind: node-kind,
     // Indices into the view's node list. Panels and forms hold the nodes
-    // they lay out, lists their items, tables their rows, and menus their
-    // items; an item, a row or a button may hold one menu.
+    // they lay out, lists their items, tables their rows, boards their
+    // columns, columns their cards, calendars their entries, and menus
+    // their items; an item, a row, a card or a button may hold one menu.
     children: list<u32>,
   }
 
-  // An item of a list or a row of a table.
+  // An item of a list, a row of a table, a card of a board or an entry
+  // of a calendar grid.
   record target {
-    // The node ID of the list, virtual list or table.
+    // The node ID of the list, virtual list, table, board or calendar.
     node: string,
-    // The item's or the row's node ID, or a virtual list row's ID.
+    // The item's, the row's, the card's or the entry's node ID, or a
+    // virtual list row's ID.
     item: string,
+  }
+
+  // A card or a list item dragged to a new place. Nothing moves until the
+  // plugin draws it there.
+  record move {
+    // The node ID of the board or the list.
+    node: string,
+    // The node ID of the card or the item.
+    item: string,
+    // The node ID of the column the card was dropped in, or the list's
+    // own node ID.
+    to: string,
+    // Where it goes among that column's cards or the list's items,
+    // counted from 0 as if it had already left its old place.
+    position: u32,
   }
 
   // A header press in a table.
@@ -280,9 +365,11 @@ interface ui {
   variant event {
     // The button with this node ID was pressed.
     pressed(string),
-    // An item or a row was selected, by click or arrow keys.
+    // An item, a row, a card or an entry was selected, by click or the
+    // keyboard.
     selected(target),
-    // An item or a row was opened, by double-click or Enter.
+    // An item, a row, a card or an entry was opened, by double-click or
+    // Enter.
     activated(target),
     // A table's column header was pressed, so the plugin can sort.
     sorted(column-press),
@@ -292,6 +379,8 @@ interface ui {
     submitted(submission),
     // The menu item with this node ID was chosen.
     chosen(string),
+    // A card or a list item was dropped in a new place.
+    moved(move),
   }
 }
 
