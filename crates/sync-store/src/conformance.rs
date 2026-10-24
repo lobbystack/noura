@@ -28,7 +28,9 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
 mod devices;
+mod keys;
 pub use devices::*;
+pub use keys::*;
 
 /// Declares one `#[tokio::test]` per conformance case. `$open` is an async
 /// function returning a fresh store and a guard that keeps its database
@@ -74,6 +76,10 @@ macro_rules! conformance_tests {
             removing_links_end_sessions,
             active_devices_end_a_pending_cards_sessions,
             approval_requests_offers_and_reveals,
+            account_heads_changes_carry_their_envelopes,
+            rotations_follow_the_policy,
+            replacements_skip_only_their_rotators_epochs,
+            rewraps_reach_readers_and_close,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -100,6 +106,7 @@ macro_rules! instance_tests {
             limits_hold_across_instances,
             geneses_at_once_start_one_chain,
             enrollments_at_once_take_one_card,
+            chain_appends_race_pushes_recording_the_head,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

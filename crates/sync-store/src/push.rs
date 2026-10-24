@@ -2,6 +2,8 @@
 //! checks of §13 against the current state plus the records before each
 //! one, and the commit, all or none.
 
+mod keys;
+
 use std::sync::Arc;
 
 use sync_protocol::account::AccountChain;
@@ -12,8 +14,10 @@ use sync_protocol::messages::{
 };
 use sync_protocol::padding::is_padded_ciphertext_length;
 use sync_protocol::policy::PolicyChain;
-use sync_protocol::records::{Operation, Signed};
+use sync_protocol::records::{Envelope, EpochBundle, Operation, PolicyChange, Signed};
 use sync_protocol::types::{Digest, Id};
+
+pub(crate) use keys::KEY_REWRAP;
 
 use crate::policy::{self, PolicyCache};
 use crate::{
@@ -78,93 +82,141 @@ pub(crate) struct PushedOp {
     bytes: Vec<u8>,
 }
 
-/// Decodes a push and runs the checks that need no state: each record is an
-/// operation of this workspace, signed by the session's device, listed
-/// once, with a ciphertext of a padded length. The decoder already refused a ciphertext
-/// above 270,352 bytes with `too_large`.
-pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec<PushedOp>> {
+/// A pushed record, decoded, with its index in the push.
+pub(crate) enum Pushed {
+    /// An operation.
+    Op(PushedOp),
+    /// A policy change; this server takes `account_heads` so far, and
+    /// ticket 50 adds the other kinds.
+    Change(usize, Signed<PolicyChange>),
+    /// An epoch bundle: a rotation or a replacement (§9).
+    Epoch(usize, EpochBundle),
+    /// An envelope: one the change or the rotation before it needs, or a
+    /// lone envelope that answers a re-wrap request.
+    Envelope(usize, Signed<Envelope>),
+}
+
+impl Pushed {
+    fn index(&self) -> usize {
+        match self {
+            Pushed::Op(op) => op.index,
+            Pushed::Change(index, _) | Pushed::Epoch(index, _) | Pushed::Envelope(index, _) => {
+                *index
+            }
+        }
+    }
+}
+
+/// Decodes a push and runs the checks that need no state: each record
+/// belongs to this workspace and is signed by the session's device, listed
+/// once, and an operation's ciphertext has a padded length. The decoder
+/// already refused a ciphertext above 270,352 bytes with `too_large`.
+pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec<Pushed>> {
     let records = decode_records(body)?;
-    let mut ops = Vec::with_capacity(records.len());
+    let mut pushed = Vec::with_capacity(records.len());
     let mut digests = std::collections::BTreeSet::new();
     for (index, record) in records.into_iter().enumerate() {
-        let RecordRef::Operation(op) = record else {
-            return Err(failure(
-                index,
-                Refusal::new(
-                    "bad_request",
-                    "this server takes only operations in a push so far",
-                ),
-            ));
-        };
-        if op.body.workspace != workspace {
-            return Err(failure(
-                index,
-                Refusal::new("bad_request", "the operation names another workspace"),
-            ));
-        }
-        if op.body.device != session.device {
-            return Err(failure(
-                index,
-                Refusal::new(
-                    "forbidden",
-                    "the session's device signs every operation it pushes",
-                ),
-            ));
-        }
-        if !is_padded_ciphertext_length(op.body.ciphertext.len() as u64) {
-            return Err(failure(
-                index,
-                Refusal::new("padding_invalid", "the ciphertext isn't a padded length"),
-            ));
-        }
-        let bytes = op.to_bytes();
-        let digest = sync_protocol::crypto::hash(&bytes);
+        let fail = |code: &'static str, message: &str| failure(index, Refusal::new(code, message));
         // A second copy would take the retry path and get a second receipt
         // for one log entry.
-        if !digests.insert(digest) {
-            return Err(failure(
-                index,
-                Refusal::new("bad_request", "the push lists this operation twice"),
+        if !digests.insert(record.receipt_digest()) {
+            return Err(fail("bad_request", "the push lists this record twice"));
+        }
+        let (record_workspace, signer) = match &record {
+            RecordRef::Operation(op) => (op.body.workspace, op.body.device),
+            RecordRef::Policy(change) => (change.body.workspace, change.body.signer),
+            RecordRef::EpochBundle(bundle) => (
+                bundle.epoch.0.body.workspace,
+                bundle.epoch.0.body.rotating_device,
+            ),
+            RecordRef::Envelope(envelope) => {
+                (envelope.body.workspace, envelope.body.wrapping_device)
+            }
+            RecordRef::CheckpointBundle(_) | RecordRef::Profile(_) => {
+                // Checkpoints arrive with ticket 58 and profile pushes with
+                // ticket 48.
+                return Err(fail(
+                    "bad_request",
+                    "this server takes no checkpoint or profile in a push so far",
+                ));
+            }
+        };
+        if record_workspace != workspace {
+            return Err(fail("bad_request", "the record names another workspace"));
+        }
+        if signer != session.device {
+            return Err(fail(
+                "forbidden",
+                "the session's device signs every record it pushes",
             ));
         }
-        ops.push(PushedOp {
-            index,
-            op,
-            digest,
-            bytes,
+        pushed.push(match record {
+            RecordRef::Operation(op) => {
+                if !is_padded_ciphertext_length(op.body.ciphertext.len() as u64) {
+                    return Err(fail(
+                        "padding_invalid",
+                        "the ciphertext isn't a padded length",
+                    ));
+                }
+                let bytes = op.to_bytes();
+                let digest = sync_protocol::crypto::hash(&bytes);
+                Pushed::Op(PushedOp {
+                    index,
+                    op,
+                    digest,
+                    bytes,
+                })
+            }
+            RecordRef::Policy(change) => Pushed::Change(index, change),
+            RecordRef::EpochBundle(bundle) => Pushed::Epoch(index, bundle),
+            RecordRef::Envelope(envelope) => Pushed::Envelope(index, envelope),
+            RecordRef::CheckpointBundle(_) | RecordRef::Profile(_) => unreachable!("refused"),
         });
     }
-    Ok(ops)
+    Ok(pushed)
 }
 
 /// The group a push may commit with (§15): pushes that take only the
 /// shared policy lock and one domain's head row, so a group's transaction
-/// takes its locks in the order every push does. Those are pushes whose
-/// operations all write one domain and list no blob. A push that locks
-/// blob rows, the key-sequence row for an epoch bundle or envelope, or the
-/// policy lock exclusively for a policy change runs alone: in a group it
-/// would take that lock after the head row a push before it holds.
-pub(crate) fn group(workspace: Id, ops: &[PushedOp]) -> Option<WriteGroup> {
-    let domain = ops.first()?.op.body.domain;
-    ops.iter()
-        .all(|o| o.op.body.domain == domain && o.op.body.blobs.is_empty())
-        .then_some(WriteGroup { workspace, domain })
+/// takes its locks in the order every push does. Those are pushes of
+/// operations that all write one domain and list no blob. A push that
+/// locks blob rows, the key-sequence row for an epoch bundle or envelope,
+/// or the policy lock exclusively for a policy change runs alone: in a
+/// group it would take that lock after the head row a push before it holds.
+pub(crate) fn group(workspace: Id, pushed: &[Pushed]) -> Option<WriteGroup> {
+    let Some(Pushed::Op(first)) = pushed.first() else {
+        return None;
+    };
+    let domain = first.op.body.domain;
+    let groups = pushed.iter().all(|p| match p {
+        Pushed::Op(op) => op.op.body.domain == domain && op.op.body.blobs.is_empty(),
+        _ => false,
+    });
+    groups.then_some(WriteGroup { workspace, domain })
 }
 
-/// Checks each operation's signature under the session device's card from
-/// its account chain.
+/// Checks the signature of each operation, epoch record and envelope
+/// under the session device's card from its account chain. A policy
+/// change's signature is checked with the rest of §8 in the transaction.
 pub(crate) fn check_signatures(
-    ops: &[PushedOp],
+    pushed: &[Pushed],
     session: Session,
     chain: &AccountChain,
 ) -> Result<()> {
     let card = chain
         .card(&session.device)
         .ok_or_else(|| refuse("forbidden", "the session's card is in no account chain"))?;
-    for op in ops {
-        if op.op.verify(&card.card.signing_public).is_err() {
+    let key = &card.card.signing_public;
+    for record in pushed {
+        let valid = match record {
+            Pushed::Op(op) => op.op.verify(key).is_ok(),
+            Pushed::Change(..) => true,
+            Pushed::Epoch(_, bundle) => bundle.epoch.0.verify(key).is_ok(),
+            Pushed::Envelope(_, envelope) => envelope.verify(key).is_ok(),
+        };
+        if !valid {
             return Err(failure(
-                op.index,
+                record.index(),
                 Refusal::new(
                     "signature_invalid",
                     "the signature fails under the signer's card",
@@ -175,30 +227,63 @@ pub(crate) fn check_signatures(
     Ok(())
 }
 
-/// Validates the operations in order against the current state plus the
-/// ones before them, and writes each. The caller's transaction commits all
-/// of them or none.
+/// Validates the records in order against the current state plus the ones
+/// before them, and writes each. The caller's transaction commits all of
+/// them or none.
 pub(crate) async fn commit(
     txn: &mut impl WriteTxn,
     cache: &PolicyCache,
     generation: u64,
     session: Session,
     workspace: Id,
-    ops: Vec<PushedOp>,
+    pushed: Vec<Pushed>,
 ) -> Result<PushResponse> {
-    let mut domains: Vec<Id> = ops.iter().map(|o| o.op.body.domain).collect();
-    domains.sort();
-    domains.dedup();
-    let mut blobs: Vec<Id> = ops
+    let changes = pushed.iter().any(|p| matches!(p, Pushed::Change(..)));
+    let keys = pushed
         .iter()
-        .flat_map(|o| o.op.body.blobs.iter().copied())
+        .any(|p| matches!(p, Pushed::Epoch(..) | Pushed::Envelope(..)));
+    let mut domains: Vec<Id> = pushed
+        .iter()
+        .filter_map(|p| match p {
+            Pushed::Op(op) => Some(op.op.body.domain),
+            Pushed::Change(..) => None,
+            Pushed::Epoch(_, bundle) => Some(bundle.epoch.0.body.domain),
+            Pushed::Envelope(_, envelope) => Some(envelope.body.domain),
+        })
+        .collect();
+    let mut blobs: Vec<Id> = pushed
+        .iter()
+        .filter_map(|p| match p {
+            Pushed::Op(op) => Some(op.op.body.blobs.iter().copied()),
+            _ => None,
+        })
+        .flatten()
         .collect();
     blobs.sort();
     blobs.dedup();
+    if changes {
+        // A policy change writes an entry into every domain's log, so it
+        // takes the policy lock exclusively first; while it holds it, no
+        // other change can add or delete a domain, and it then locks every
+        // domain's head row in ID order (§15).
+        txn.lock(&LockPlan {
+            workspace: Some(workspace),
+            policy_exclusive: true,
+            key_sequence: keys,
+            domains: Vec::new(),
+            blobs: Vec::new(),
+        })
+        .await?;
+        if let Some((_, policy)) = policy::load(txn, cache, workspace).await? {
+            domains.extend(policy.head_snapshot().domains.keys().copied());
+        }
+    }
+    domains.sort();
+    domains.dedup();
     txn.lock(&LockPlan {
         workspace: Some(workspace),
-        policy_exclusive: false,
-        key_sequence: false,
+        policy_exclusive: changes,
+        key_sequence: keys,
         domains,
         blobs,
     })
@@ -206,24 +291,47 @@ pub(crate) async fn commit(
     let Some((row, policy)) = policy::load(txn, cache, workspace).await? else {
         return Err(refuse("not_found", "no such workspace"));
     };
-    if !policy.head_snapshot().is_device(&session.device) {
+    if crate::reads::reader(policy.head_snapshot(), session).is_none() {
         return Err(refuse(
             "forbidden",
             "the device isn't active in this workspace",
         ));
     }
-    let mut receipts = Vec::with_capacity(ops.len());
-    for op in &ops {
-        let receipt = apply(txn, &policy, generation, workspace, op)
-            .await
-            .map_err(|e| match e {
-                Error::Refused(refusal) => failure(op.index, refusal),
-                internal => internal,
-            })?;
-        receipts.push(receipt);
+    let mut state = keys::PushState::new(policy);
+    let mut receipts = Vec::with_capacity(pushed.len());
+    for record in &pushed {
+        let index = record.index();
+        let result = match record {
+            Pushed::Op(op) => apply(txn, state.policy(), generation, workspace, op)
+                .await
+                .map(|receipt| vec![receipt]),
+            Pushed::Change(_, change) => {
+                keys::apply_change(txn, &mut state, session, workspace, index, change).await
+            }
+            Pushed::Epoch(_, bundle) => {
+                keys::apply_epoch(txn, &mut state, session, workspace, index, bundle).await
+            }
+            Pushed::Envelope(_, envelope) => {
+                keys::apply_envelope(txn, &mut state, session, workspace, envelope)
+                    .await
+                    .map(|()| Vec::new())
+            }
+        };
+        let created = result.map_err(|e| match e {
+            Error::Refused(refusal) => failure(index, refusal),
+            internal => internal,
+        })?;
+        receipts.extend(created);
+    }
+    if let Some((index, refusal)) = state.unmet() {
+        return Err(failure(index, refusal));
+    }
+    let policy_revision = state.policy().head().0.max(row.policy_revision);
+    if changes {
+        cache.put(state.policy().clone());
     }
     Ok(PushResponse {
-        policy_revision: row.policy_revision,
+        policy_revision,
         receipts: List(receipts),
     })
 }
@@ -433,10 +541,10 @@ mod tests {
     use sync_protocol::records::{Operation, Signed};
     use sync_protocol::types::{Digest, Id, Nonce};
 
-    use super::{PushedOp, group};
+    use super::{Pushed, PushedOp, group};
     use crate::WriteGroup;
 
-    fn pushed(index: usize, domain: Id, blobs: Vec<Id>) -> PushedOp {
+    fn pushed(index: usize, domain: Id, blobs: Vec<Id>) -> Pushed {
         let key = SigningKey::random().expect("random");
         let op = Signed::sign(
             Operation {
@@ -462,12 +570,12 @@ mod tests {
             &key,
         );
         let bytes = op.to_bytes();
-        PushedOp {
+        Pushed::Op(PushedOp {
             index,
             digest: op.digest(),
             op,
             bytes,
-        }
+        })
     }
 
     #[test]

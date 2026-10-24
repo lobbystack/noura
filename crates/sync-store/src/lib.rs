@@ -1472,10 +1472,75 @@ impl<B: Backend> Store<B> {
         recipient: Id,
     ) -> Result<KeysResponse> {
         let cache = self.policies.clone();
+        let (response, acknowledged) = self
+            .backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    let response =
+                        reads::keys(txn, &cache, session, workspace, after, recipient).await?;
+                    let acknowledged =
+                        reads::acknowledged_rewraps(txn, workspace, recipient, after).await?;
+                    Ok((response, acknowledged))
+                })
+            }))
+            .await?;
+        // A fetch that passed an answer to the device's re-wrap request
+        // acknowledges it, and the server closes the request (§9).
+        if !acknowledged.is_empty() {
+            self.backend
+                .write(Box::new(move |txn: &mut B::Write| {
+                    Box::pin(async move {
+                        txn.lock(&LockPlan {
+                            workspace: Some(workspace),
+                            policy_exclusive: false,
+                            key_sequence: true,
+                            domains: Vec::new(),
+                            blobs: Vec::new(),
+                        })
+                        .await?;
+                        for request in
+                            reads::acknowledged_rewraps(txn, workspace, recipient, after).await?
+                        {
+                            txn.close_rewrap(workspace, &request).await?;
+                        }
+                        Ok(())
+                    })
+                }))
+                .await?;
+        }
+        Ok(response)
+    }
+
+    /// `GET /v2/workspaces/{w}/keys/current?recipient={device}`.
+    pub async fn current_keys(
+        &self,
+        session: Session,
+        workspace: Id,
+        recipient: Id,
+    ) -> Result<KeysResponse> {
+        let cache = self.policies.clone();
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move {
-                    reads::keys(txn, &cache, session, workspace, after, recipient).await
+                    reads::current_keys(txn, &cache, session, workspace, recipient).await
+                })
+            }))
+            .await
+    }
+
+    /// `POST /v2/workspaces/{w}/domains/{d}/rewrap`.
+    pub async fn rewrap(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        epoch: u64,
+    ) -> Result<()> {
+        let cache = self.policies.clone();
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    reads::rewrap(txn, &cache, session, workspace, domain, epoch).await
                 })
             }))
             .await

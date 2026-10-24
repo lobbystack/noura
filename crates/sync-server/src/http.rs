@@ -18,6 +18,7 @@ use sync_protocol::codec::{Bytes, Decode, Encode, Text};
 use sync_protocol::messages::{
     ChainAppendRequest, ChainsRequest, DeviceTokenRequest, EnrollRequest, ErrorBody, MAX_BODY,
     MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody,
+    RewrapBody,
 };
 use sync_protocol::types::{Digest, Id, from_decimal};
 use sync_store::{Backend, Error, Refusal, Session, Store};
@@ -260,6 +261,34 @@ async fn keys<B: Backend>(
     Ok(ok(&store
         .keys(session, id(&workspace)?, after, recipient)
         .await?))
+}
+
+async fn current_keys<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    let parameters = query(raw.as_deref())?;
+    let recipient = parameters
+        .get("recipient")
+        .map_or(Ok(session.device), |r| id(r))?;
+    Ok(ok(&store
+        .current_keys(session, id(&workspace)?, recipient)
+        .await?))
+}
+
+async fn rewrap<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, domain)): Segments<(String, String)>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: RewrapBody = decode(&body(request).await?)?;
+    store
+        .rewrap(session, id(&workspace)?, id(&domain)?, request.epoch)
+        .await?;
+    Ok(empty())
 }
 
 async fn epochs<B: Backend>(
@@ -539,6 +568,8 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         )
         .route("/v2/workspaces/{w}/policy", get(policy::<B>))
         .route("/v2/workspaces/{w}/keys", get(keys::<B>))
+        .route("/v2/workspaces/{w}/keys/current", get(current_keys::<B>))
+        .route("/v2/workspaces/{w}/domains/{d}/rewrap", post(rewrap::<B>))
         .route("/v2/workspaces/{w}/ops", post(push::<B>))
         .route("/v2/workspaces/{w}/pull", post(pull::<B>))
         .route(
