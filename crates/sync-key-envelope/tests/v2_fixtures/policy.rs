@@ -930,15 +930,21 @@ pub fn fixture() -> Fixture {
 /// policy records, up to the latest head recorded on it, a current
 /// member's current chain in full to the workspace's devices, and, for a
 /// device whose account `remove_member` removed, the chains up to the
-/// heads recorded by its removal.
+/// heads recorded by its removal. A case with `approval_request` gives the
+/// target account a waiting approval request that names an invitation to
+/// this workspace, which lets the sessions of the workspace's member
+/// accounts read its current chain in full.
 fn chain_reads(f: &mut Fixture) {
     let mut kim = Person::new("kim");
     let mut lee = Person::new("lee");
     let max = Person::new("max");
     let ned = Person::new("ned");
-    for person in [&kim, &lee, &max, &ned] {
+    let mut oda = Person::new("oda");
+    for person in [&kim, &lee, &max, &ned, &oda] {
         f.actor(person.first());
     }
+    let oda_phone = oda.add("oda phone");
+    f.actor(&oda_phone);
     let mut policy = genesis(&kim);
     add_member(&mut policy, &kim, &lee, Role::Editor);
     // An early change that the member signed.
@@ -958,20 +964,29 @@ fn chain_reads(f: &mut Fixture) {
     f.actor(&kim_phone);
     f.actor(&lee_phone);
     policy.push(kim.first(), vec![kim.head()], PolicyKind::AccountHeads);
+    let case = |name: &str, reader: &Person, target: &Person, expect: Option<u64>| {
+        json!({
+            "kind": "chain_read",
+            "name": name,
+            "account_chains": chains(&[&kim.chain, &lee.chain, &max.chain, &oda.chain]),
+            "changes": changes(&policy),
+            "reader": reader.first().device().to_hex(),
+            "reader_account": reader.account().to_hex(),
+            "account": target.account().to_hex(),
+            "genesis": target.chain.links[0].digest().to_hex(),
+            "current_seqno": target.chain.links.len(),
+            "expect": expect,
+        })
+    };
     let read =
         |f: &mut Fixture, name: &str, reader: &Person, target: &Person, expect: Option<u64>| {
-            f.case(json!({
-                "kind": "chain_read",
-                "name": name,
-                "account_chains": chains(&[&kim.chain, &lee.chain, &max.chain]),
-                "changes": changes(&policy),
-                "reader": reader.first().device().to_hex(),
-                "reader_account": reader.account().to_hex(),
-                "account": target.account().to_hex(),
-                "genesis": target.chain.links[0].digest().to_hex(),
-                "current_seqno": target.chain.links.len(),
-                "expect": expect,
-            }));
+            f.case(case(name, reader, target, expect));
+        };
+    let invited =
+        |f: &mut Fixture, name: &str, reader: &Person, target: &Person, expect: Option<u64>| {
+            let mut case = case(name, reader, target, expect);
+            case["approval_request"] = json!({ "invitation": id("oda invitation").to_hex() });
+            f.case(case);
         };
     read(
         f,
@@ -999,6 +1014,34 @@ fn chain_reads(f: &mut Fixture) {
         "a_device_outside_the_workspace_reads_no_chain_through_it",
         &ned,
         &kim,
+        None,
+    );
+    read(
+        f,
+        "a_member_reads_no_chain_of_an_account_the_workspace_never_recorded",
+        &max,
+        &oda,
+        None,
+    );
+    invited(
+        f,
+        "a_member_reads_an_invitees_current_chain_in_full_while_its_approval_request_waits",
+        &max,
+        &oda,
+        Some(2),
+    );
+    invited(
+        f,
+        "an_invitees_approval_request_opens_its_chain_to_no_removed_member",
+        &lee,
+        &oda,
+        None,
+    );
+    invited(
+        f,
+        "an_invitees_approval_request_opens_its_chain_to_no_account_outside_the_workspace",
+        &ned,
+        &oda,
         None,
     );
 }

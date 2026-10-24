@@ -385,16 +385,21 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
         }
         "chain_read" => {
             let verified = policy(case);
-            same(
-                json!(verified.chain_read_bound(
-                    &[id_of(&case["reader"])],
-                    &id_of(&case["reader_account"]),
-                    &id_of(&case["account"]),
-                    &digest_of(&case["genesis"]),
-                    Some(u64_of(&case["current_seqno"])),
-                )),
-                expect.clone(),
-            )
+            let reader_account = id_of(&case["reader_account"]);
+            let current = u64_of(&case["current_seqno"]);
+            let through_policy = verified.chain_read_bound(
+                &[id_of(&case["reader"])],
+                &reader_account,
+                &id_of(&case["account"]),
+                &digest_of(&case["genesis"]),
+                Some(current),
+            );
+            // A waiting approval request that names an invitation to the
+            // workspace serves the current chain in full to its members.
+            let through_request = (!case["approval_request"].is_null()
+                && verified.reads_invitees(&reader_account))
+            .then_some(current);
+            same(json!(through_policy.max(through_request)), expect.clone())
         }
         "anchored_by" => {
             let verified = policy(case);

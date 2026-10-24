@@ -645,7 +645,9 @@ async fn each_session_reads_the_chains_it_may_read() {
 /// The `chain_read` cases of `sync-v2-policy.json`, served by the store:
 /// its account chains and its workspace's policy go into the store, and
 /// each case's reader device reads the target chain to the bound the
-/// fixture pins, or gets `not_found`.
+/// fixture pins, or gets `not_found`. For a case with `approval_request`,
+/// the target account posts an approval request naming an invitation to
+/// the workspace first, which expires before the next case.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_server_serves_the_chain_reads_of_the_policy_fixture() {
     let path = concat!(
@@ -659,7 +661,8 @@ async fn the_server_serves_the_chain_reads_of_the_policy_fixture() {
         .iter()
         .filter(|c| c["kind"] == "chain_read")
         .collect();
-    assert!(cases.len() >= 4);
+    assert!(cases.len() >= 8);
+    assert!(cases.iter().any(|c| !c["approval_request"].is_null()));
     let first = cases[0];
     let (store, _dir) = store().await;
     let store = Arc::new(store);
@@ -682,6 +685,7 @@ async fn the_server_serves_the_chain_reads_of_the_policy_fixture() {
         .iter()
         .map(|c| Signed::from_bytes(&from_hex(c.as_str().unwrap()).unwrap()).unwrap())
         .collect();
+    let workspace = changes[0].body.workspace;
     store
         .backend()
         .write(Box::new(move |txn: &mut sync_store_sqlite::SqliteTxn| {
@@ -726,12 +730,30 @@ async fn the_server_serves_the_chain_reads_of_the_policy_fixture() {
             ),
         )
         .await;
+        let account = Id::from_hex(case["account"].as_str().unwrap()).unwrap();
+        let request = &case["approval_request"];
+        if !request.is_null() {
+            let invitation = Id::from_hex(request["invitation"].as_str().unwrap()).unwrap();
+            store
+                .store_approval_request(
+                    Session::new(account, Id::random().unwrap()),
+                    Digest(sync_protocol::crypto::random_array().unwrap()),
+                    Some((invitation, workspace)),
+                )
+                .await
+                .unwrap();
+        }
         let cursor = ChainCursor {
-            account: Id::from_hex(case["account"].as_str().unwrap()).unwrap(),
+            account,
             genesis: Some(Digest::from_hex(case["genesis"].as_str().unwrap()).unwrap()),
             after: 0,
         };
         let served = read(&reader, vec![cursor]).await;
+        if !request.is_null() {
+            store
+                .clock()
+                .advance(std::time::Duration::from_secs(sync_store::SIGN_IN_TTL));
+        }
         match case["expect"].as_u64() {
             Some(bound) => {
                 let page = &served.unwrap_or_else(|e| panic!("{name}: {e:?}")).pages.0[0];
