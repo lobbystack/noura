@@ -353,3 +353,46 @@ pub fn workspace_argument(
     }
     workspace.ok_or_else(usage)
 }
+
+/// Run the server as a command: read `--workspace <folder>` from
+/// `arguments`, serve that workspace over stdio until the AI tool
+/// disconnects, and return the exit code. Stdout carries only MCP, and
+/// warnings and the reason for a failure go to stderr, which AI tools
+/// keep in their logs. The desktop binary's `mcp` mode and `noura-mcp`
+/// both run this.
+pub fn run(arguments: impl IntoIterator<Item = OsString>) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .try_init();
+    let folder = match workspace_argument(arguments) {
+        Ok(folder) => folder,
+        Err(usage) => {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(app_data) = app_core::default_app_data_dir() else {
+        eprintln!("This system has no app data folder for Noura.");
+        return ExitCode::FAILURE;
+    };
+    let served = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            tracing::warn!(%error, "the MCP server's runtime didn't start");
+            "Noura couldn't start its MCP server.".to_owned()
+        })
+        .and_then(|runtime| runtime.block_on(serve_stdio(app_data, folder)));
+    match served {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
+    }
+}
