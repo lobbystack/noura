@@ -120,6 +120,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sync-server",
+ "sync-store",
+ "sync-store-sqlite",
  "tempfile",
  "tokio",
  "wasm-bindgen",

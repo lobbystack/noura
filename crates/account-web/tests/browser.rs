@@ -147,6 +147,7 @@ async fn sign_out(page: &Page) {
 /// allowlist that admits ada@example.com, and mail in an outbox.
 struct Site {
     base: String,
+    store: Arc<sync_store::Store<sync_store_sqlite::SqliteBackend>>,
     outbox: Outbox,
     /// The server mails after it answers; the tests wait for the sends.
     deliveries: Deliveries,
@@ -175,7 +176,7 @@ async fn site() -> Site {
     let mailer = outbox.clone();
     let deliveries = Deliveries::default();
     let counted = deliveries.clone();
-    let address = sync_server::spawn_with(store, "127.0.0.1:0", move |origin| {
+    let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", move |origin| {
         Accounts::new(
             origin,
             Allowlist::parse("ada@example.com"),
@@ -189,6 +190,7 @@ async fn site() -> Site {
     .unwrap();
     Site {
         base: format!("http://localhost:{}", address.port()),
+        store,
         outbox,
         deliveries,
         _dir: dir,
@@ -236,6 +238,7 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
         outbox,
         deliveries,
         _dir,
+        ..
     } = site().await;
     let (mut browser, events, _profile) = launch().await;
     let page = browser.new_page("about:blank").await.unwrap();
@@ -414,6 +417,87 @@ async fn the_email_link_forms_work_with_script_turned_off() {
     )
     .await;
     assert!(still_hidden);
+
+    browser.close().await.unwrap();
+    let _ = browser.wait().await;
+    events.abort();
+}
+
+/// A desktop signs in through the device page (§7): you sign in to the
+/// account pages, enter the code the app shows in any case, and approve
+/// it, and the app's next poll receives a session of your account.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs Chrome, which NOURA_CHROME names, and the built module"]
+async fn a_browser_approves_a_device_code_sign_in() {
+    let site = site().await;
+    let (mut browser, events, _profile) = launch().await;
+    let page = browser.new_page("about:blank").await.unwrap();
+    let grant = site
+        .store
+        .authorize_device(&format!("{}/device", site.base))
+        .await
+        .unwrap();
+    let user_code = grant.user_code.as_str().to_owned();
+    let device_code = grant.device_code.as_str().to_owned();
+
+    // The device page asks you to sign in first.
+    open(&page, &format!("{}/device", site.base)).await;
+    until(
+        &page,
+        "document.body.innerText.includes('Sign in to your account first')",
+    )
+    .await;
+    open(&page, &format!("{}/account/sign-in", site.base)).await;
+    let _: bool = eval(
+        &page,
+        "document.querySelector('input[name=email]').value = 'ada@example.com', true",
+    )
+    .await;
+    let _: bool = eval(
+        &page,
+        "document.querySelector('form[action=\"/account/email-link\"]').requestSubmit(), true",
+    )
+    .await;
+    until(&page, "document.body.innerText.includes('Check your email')").await;
+    let link = mailed_link(&site).await;
+    open(&page, &link).await;
+    let _: bool = eval(&page, "document.querySelector('form').requestSubmit(), true").await;
+    until(&page, "location.pathname === '/account'").await;
+
+    // Until you approve, the app's poll waits.
+    let pending = site.store.poll_device_token(&device_code).await;
+    assert!(
+        pending
+            .unwrap_err()
+            .to_string()
+            .contains("authorization_pending")
+    );
+    open(&page, &format!("{}/device", site.base)).await;
+    let typed = user_code.to_lowercase();
+    let _: bool = eval(
+        &page,
+        &format!("document.querySelector('input[name=user_code]').value = '{typed}', true"),
+    )
+    .await;
+    let _: bool = eval(&page, "document.querySelector('form').requestSubmit(), true").await;
+    until(
+        &page,
+        &format!("document.body.innerText.includes('{user_code}')"),
+    )
+    .await;
+    let _: bool = eval(
+        &page,
+        "document.querySelector('button[value=approve]').click(), true",
+    )
+    .await;
+    until(&page, "document.body.innerText.includes('Device signed in')").await;
+    site.store.clock().advance(std::time::Duration::from_secs(10));
+    let signed_in = site
+        .store
+        .poll_device_token(&device_code)
+        .await
+        .expect("the app receives its session");
+    assert_eq!(signed_in.session_token.as_str().len(), 43);
 
     browser.close().await.unwrap();
     let _ = browser.wait().await;
