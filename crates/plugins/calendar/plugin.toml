@@ -1,0 +1,18 @@
+id = "calendar"
+name = "Calendar"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "calendar_plugin.wasm"
+platforms = ["desktop"]
+
+# Finds every object with a due date, a date, or a start and end.
+[[capabilities]]
+name = "workspace-read"
+
+# The Calendar page, and opening an entry's object in a tab.
+[[capabilities]]
+name = "views"
+
+# Next 7 days in the Inbox.
+[[capabilities]]
+name = "inbox-sections"

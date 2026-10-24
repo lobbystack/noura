@@ -130,6 +130,7 @@ fn the_manifest_declares_the_task_type_with_todays_v1_fields() {
             Capability::WorkspaceRead,
             Capability::ObjectTypes,
             Capability::Views,
+            Capability::InboxSections,
             Capability::Commands {
                 targets: Vec::new()
             },

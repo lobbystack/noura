@@ -7,6 +7,7 @@
 //!   may read.
 //! - `read-file:<path>`: read a file.
 //! - `read-object:<id>`: read an object by its stable ID.
+//! - `read-object-at:<path>`: read the object in the file at a path.
 //! - `create-object:<type>:<title>`: create an object with an empty body.
 //! - `update-object:<id>:<revision>:<properties>`: set the properties,
 //!   a JSON object, of the object with that ID and revision.
@@ -24,7 +25,8 @@
 //!   `call:<plugin>/<command>:<input>` runs that command instead, and
 //!   shows as `<page> call` and what came back. A press on
 //!   `open-object:<id>:<preview or new-tab>` or `open-page:<page>` asks
-//!   Noura to open it, and shows as `<page> open` and what came back.
+//!   Noura to open it, and one on `trash-object:<id>` to move the object
+//!   to the trash; each shows as `<page> open` and what came back.
 //!
 //! - `opens`: ask Noura to open the page `events` while drawing, and say
 //!   what came back as `draw open <answer>`.
@@ -129,6 +131,8 @@ impl Plugin for Probe {
             vec![read_file(path)]
         } else if let Some(id) = page.strip_prefix("read-object:") {
             vec![read_object(id)]
+        } else if let Some(path) = page.strip_prefix("read-object-at:") {
+            vec![object_text(workspace::read_object_at(path))]
         } else if let Some(object) = page.strip_prefix("create-object:") {
             vec![create_object(object)]
         } else if let Some(update) = page.strip_prefix("update-object:") {
@@ -292,9 +296,12 @@ fn record(event: String) {
 }
 
 /// Ask Noura to open what `node` names, `open-object:<id>:<placement>` or
-/// `open-page:<page>`, and say what came back. `None` for any other node.
+/// `open-page:<page>`, or to trash `trash-object:<id>`, and say what came
+/// back. `None` for any other node.
 fn open(node: &str) -> Option<String> {
-    let answer = if let Some(rest) = node.strip_prefix("open-object:") {
+    let answer = if let Some(id) = node.strip_prefix("trash-object:") {
+        navigation::trash_object(id)
+    } else if let Some(rest) = node.strip_prefix("open-object:") {
         let (id, placement) = rest.rsplit_once(':').unwrap_or((rest, "preview"));
         let placement = if placement == "new-tab" {
             navigation::Placement::NewTab
@@ -390,7 +397,11 @@ fn update_object(update: &str) -> String {
 }
 
 fn read_object(id: &str) -> String {
-    match workspace::read_object(id) {
+    object_text(workspace::read_object(id))
+}
+
+fn object_text(read: Result<workspace::Object, Error>) -> String {
+    match read {
         Ok(object) => format!(
             "object {} type {} title {} path {} revision {} body {}",
             object.id,
@@ -544,6 +555,12 @@ fn broken(case: &str) -> Vec<Node> {
             node("beds", item_list("Beds"), &[2]),
             node("inner", NodeKind::Panel(None), &[]),
         ],
+        "text-in-item" => vec![
+            root(&[1]),
+            node("beds", item_list("Beds"), &[2]),
+            node("north", item("North bed"), &[3]),
+            node("note", NodeKind::Text("Sunny".into()), &[]),
+        ],
         "two-menus" => vec![
             root(&[1]),
             node("beds", item_list("Beds"), &[2]),
@@ -611,6 +628,17 @@ fn broken(case: &str) -> Vec<Node> {
             root(&[1]),
             node("outer", form("Outer"), &[2]),
             node("inner", form("Inner"), &[]),
+        ],
+        "required-checkbox" => vec![
+            root(&[1]),
+            node("new-bed", requiring("New bed", "shaded"), &[2]),
+            node("shaded", input("Shaded", Value::Checkbox(false)), &[]),
+        ],
+        "required-elsewhere" => vec![
+            root(&[1, 3]),
+            node("new-bed", requiring("New bed", "name"), &[2]),
+            node("size", input("Size", Value::Text(String::new())), &[]),
+            node("name", input("Name", Value::Text(String::new())), &[]),
         ],
         "no-columns" => vec![root(&[1]), node("plants", table(&[]), &[])],
         "blank-row" => vec![
@@ -696,6 +724,7 @@ fn broken(case: &str) -> Vec<Node> {
                     label: "Chores".into(),
                     reorder: false,
                     selected: Some("mulch".into()),
+                    opens_on_click: false,
                 }),
                 &[2, 3, 4],
             ),
@@ -716,6 +745,7 @@ fn broken(case: &str) -> Vec<Node> {
                     label: "Chores".into(),
                     reorder: false,
                     selected: Some("missing".into()),
+                    opens_on_click: false,
                 }),
                 &[2],
             ),
@@ -780,6 +810,7 @@ fn item_list(label: &str) -> NodeKind {
         label: label.into(),
         reorder: false,
         selected: None,
+        opens_on_click: false,
     })
 }
 
@@ -862,6 +893,16 @@ fn form(label: &str) -> NodeKind {
     NodeKind::Form(plugin_sdk::Form {
         label: label.into(),
         submit: "Save".into(),
+        required: Vec::new(),
+    })
+}
+
+/// A form that waits for its input `input` to hold text.
+fn requiring(label: &str, input: &str) -> NodeKind {
+    NodeKind::Form(plugin_sdk::Form {
+        label: label.into(),
+        submit: "Save".into(),
+        required: vec![input.into()],
     })
 }
 

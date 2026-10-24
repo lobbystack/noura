@@ -603,9 +603,10 @@ impl App {
         true
     }
 
-    /// Show what running plugins asked this window to show, oldest first,
-    /// once the pages they added are in the rail. An object Noura can't
-    /// find says so; a page the plugin doesn't add is passed over.
+    /// Do what running plugins asked of this window, oldest first: show
+    /// objects, and pages once they are in the rail, and move objects to
+    /// the trash. An object Noura can't find says so; a page the plugin
+    /// doesn't add is passed over.
     fn open_for_plugins(&mut self, openings: Vec<Opening>) {
         if self.closed || self.is_leaving_window() {
             return;
@@ -618,6 +619,30 @@ impl App {
                         self.open_page(&page_id, OpenAs::Preview);
                     }
                 }
+                Opening::Trash(id) => self.trash_object(&id),
+            }
+        }
+    }
+
+    /// Move the object with the stable ID `id` to the trash, wherever its
+    /// file is now, as Move to Trash in the file tree does, but leaving the
+    /// tree's current row where it is.
+    fn trash_object(&mut self, id: &str) {
+        let Some(workspace) = &self.workspace else {
+            return;
+        };
+        match workspace.engine().read_object(id) {
+            Ok(object) => self.trash_item(&object.relative_path, false),
+            Err(error) => {
+                tracing::warn!(code = %error.code, "a plugin asked to trash an object Noura can't read");
+                self.show_notice(
+                    "Couldn't move it to the trash",
+                    AppError::new(
+                        "object_not_found",
+                        "Noura couldn't find it in the workspace.",
+                    ),
+                    None,
+                );
             }
         }
     }
