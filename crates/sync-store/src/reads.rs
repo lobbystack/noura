@@ -14,7 +14,7 @@ use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{AccountLink, Envelope, Epoch, PolicyChange, Profile, Role, Signed};
 use sync_protocol::types::Id;
 
-use crate::policy::{self, PolicyCache};
+use crate::policy::{self, ChainCache, PolicyCache};
 use crate::pull::entry;
 use crate::push::{KEY_ENVELOPE, KEY_EPOCH};
 use crate::{Error, LinkRow, ReadTxn, Result, Session, WorkspaceRow, WriteTxn, refuse};
@@ -28,9 +28,10 @@ const CHUNK: u32 = 256;
 /// `device_removed`.
 pub(crate) async fn session_chain(
     txn: &mut impl ReadTxn,
+    chains: &ChainCache,
     session: Session,
-) -> Result<AccountChain> {
-    policy::current_chain(txn, session.account)
+) -> Result<Arc<AccountChain>> {
+    policy::cached_current_chain(txn, chains, session.account)
         .await?
         .filter(|chain| chain.is_active_at(&session.device, chain.head_seqno()))
         .ok_or_else(|| {

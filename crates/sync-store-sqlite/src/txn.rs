@@ -2,7 +2,7 @@
 
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use sync_protocol::live::LiveOp;
-use sync_protocol::records::{OpClass, Ref};
+use sync_protocol::records::{AccountHead, OpClass, Ref};
 use sync_protocol::types::{Digest, Id};
 use sync_store::{
     ChainHeadRow, DeleteRow, DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, RawEntry,
@@ -195,6 +195,30 @@ impl ReadTxn for SqliteTxn {
                 })
             })
             .collect()
+    }
+
+    async fn current_head(&mut self, account: Id) -> Result<Option<AccountHead>> {
+        let account_id = account;
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            r#"SELECT a.genesis AS "genesis!", l.seqno AS "seqno!: i64", l.digest AS "digest!"
+             FROM accounts a
+             JOIN account_links l ON l.account = a.account AND l.genesis = a.genesis
+             WHERE a.account = ?1 ORDER BY l.seqno DESC LIMIT 1"#,
+            account
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(AccountHead {
+                account: account_id,
+                genesis: digest(r.genesis)?,
+                seqno: uint(r.seqno)?,
+                head: digest(r.digest)?,
+            })
+        })
+        .transpose()
     }
 
     async fn workspace(&mut self, workspace: Id) -> Result<Option<WorkspaceRow>> {

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use sync_protocol::account::AccountChain;
 use sync_protocol::codec::Decode;
 use sync_protocol::policy::{AccountChains, PolicyChain};
-use sync_protocol::records::{AccountLink, PolicyChange, Signed};
+use sync_protocol::records::{AccountHead, AccountLink, PolicyChange, Signed};
 use sync_protocol::types::{Digest, Id};
 
 use crate::{Error, ReadTxn, Result, WorkspaceRow};
@@ -101,6 +101,57 @@ pub(crate) async fn chains_of(
                 .map_err(Error::internal)
         })
         .collect()
+}
+
+/// Each account's verified current chain, keyed by the head the store
+/// holds. Links only append and each names its predecessor's digest, so a
+/// chain whose genesis, head seqno and head digest match the stored ones is
+/// the stored chain; any other head is verified again.
+#[derive(Clone, Default)]
+pub(crate) struct ChainCache {
+    chains: Arc<Mutex<HashMap<Id, Arc<AccountChain>>>>,
+}
+
+impl ChainCache {
+    fn get(&self, head: &AccountHead) -> Option<Arc<AccountChain>> {
+        let chains = self.chains.lock().unwrap_or_else(PoisonError::into_inner);
+        chains
+            .get(&head.account)
+            .filter(|chain| {
+                chain.genesis() == head.genesis
+                    && chain.head_seqno() == head.seqno
+                    && chain.head_digest() == head.head
+            })
+            .cloned()
+    }
+
+    fn put(&self, chain: Arc<AccountChain>) {
+        let mut chains = self.chains.lock().unwrap_or_else(PoisonError::into_inner);
+        chains.insert(chain.account(), chain);
+    }
+}
+
+/// The account's current chain, verified, from `cache` while the stored
+/// head is the cached chain's.
+pub(crate) async fn cached_current_chain(
+    txn: &mut impl ReadTxn,
+    cache: &ChainCache,
+    account: Id,
+) -> Result<Option<Arc<AccountChain>>> {
+    let Some(head) = txn.current_head(account).await? else {
+        return Ok(None);
+    };
+    if let Some(chain) = cache.get(&head) {
+        return Ok(Some(chain));
+    }
+    let Some(chain) = current_chain(txn, account).await? else {
+        return Ok(None);
+    };
+    let chain = Arc::new(chain);
+    if chain.head() == head {
+        cache.put(chain.clone());
+    }
+    Ok(Some(chain))
 }
 
 /// The account's current chain, verified.

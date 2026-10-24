@@ -41,7 +41,9 @@ use sync_protocol::messages::{
     MAX_WAIT_SECONDS, PolicyResponse, PullRequest, PullResponse, PushResponse, WorkspacesResponse,
     server_error_status,
 };
-use sync_protocol::records::{AccountLink, MAX_COVERS, MAX_RECIPIENTS, OpClass, Ref, Signed};
+use sync_protocol::records::{
+    AccountHead, AccountLink, MAX_COVERS, MAX_RECIPIENTS, OpClass, Ref, Signed,
+};
 use sync_protocol::types::{Digest, Id};
 
 pub use hub::EventHub;
@@ -296,6 +298,12 @@ pub trait ReadTxn: Send {
     ) -> impl Future<Output = Result<Option<Digest>>> + Send;
     /// Every link of every chain of the account, by genesis then seqno.
     fn account_links(&mut self, account: Id) -> impl Future<Output = Result<Vec<LinkRow>>> + Send;
+    /// The head of the account's current chain: its genesis digest and its
+    /// last link's seqno and digest.
+    fn current_head(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Option<AccountHead>>> + Send;
     /// A workspace's row.
     fn workspace(
         &mut self,
@@ -642,6 +650,7 @@ pub trait Backend: Send + Sync + 'static {
 pub struct Store<B: Backend> {
     backend: B,
     policies: PolicyCache,
+    chains: policy::ChainCache,
     hub: EventHub,
     generation: u64,
     retained_bytes: u64,
@@ -662,6 +671,7 @@ impl<B: Backend> Store<B> {
         Ok(Self {
             backend,
             policies: PolicyCache::default(),
+            chains: policy::ChainCache::default(),
             hub,
             generation,
             retained_bytes: DEFAULT_RETAINED_BYTES,
@@ -983,10 +993,11 @@ impl<B: Backend> Store<B> {
     }
 
     /// The session account's current chain, which lists the session's card.
-    async fn session_chain(&self, session: Session) -> Result<AccountChain> {
+    async fn session_chain(&self, session: Session) -> Result<Arc<AccountChain>> {
+        let chains = self.chains.clone();
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
-                Box::pin(async move { reads::session_chain(txn, session).await })
+                Box::pin(async move { reads::session_chain(txn, &chains, session).await })
             }))
             .await
     }
