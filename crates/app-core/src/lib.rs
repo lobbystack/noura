@@ -92,12 +92,12 @@ pub use notes::{
 };
 pub use objects::ObjectRef;
 pub use operations::Imported;
-#[cfg(feature = "test-hooks")]
-pub use pdf::PdfRenderHold;
 pub use pdf::{
     EMBED_WIDTH, EmbedProblem, MAX_PDF_BYTES, PdfMatch, PdfPicture, PdfSearch, PdfState, PdfView,
     PdfZoom, THUMBNAIL_WIDTH, ZOOM_STEPS,
 };
+#[cfg(feature = "test-hooks")]
+pub use pdf::{PdfDrawFailure, PdfRenderHold};
 pub use plugin_host::{
     CalendarMode, Choice, Column, ColumnPress, Event as PluginEvent, Field, Move as PluginMove,
     SortOrder, Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,

@@ -20,7 +20,7 @@ use app_core::{
 };
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
 use egui::load::{SizeHint, SizedTexture, TexturePoll};
-use egui::{Button, ColorImage, CornerRadius, Rect, TextureHandle, TextureOptions, Ui, Vec2, vec2};
+use egui::{Button, CornerRadius, Rect, TextureHandle, TextureOptions, Ui, Vec2, vec2};
 
 /// The PDFs whose embed's Open in tab button was pressed, with the page
 /// each one's link names, for the note's view to open after it draws.
@@ -179,8 +179,11 @@ impl WorkspaceImages {
                     .get(url)
                     .is_none_or(|(generation, _)| *generation != picture.generation);
                 if fresh {
-                    let size = [picture.width as usize, picture.height as usize];
-                    let image = ColorImage::from_rgba_premultiplied(size, &picture.rgba);
+                    // No texture can hold a picture with no pixels on a side.
+                    let Some(image) = crate::pdf_view::picture_image(&picture) else {
+                        pages.remove(url);
+                        return EmbedState::NotFound;
+                    };
                     let texture = self.ctx.load_texture(
                         format!("pdf-embed-{url}"),
                         image,

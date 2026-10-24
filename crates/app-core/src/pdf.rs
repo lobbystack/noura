@@ -3,15 +3,17 @@
 //! of each page for search. Each PDF tab has a thread of its own that holds
 //! the parsed document, so opening, drawing, searching and unlocking never
 //! hold up the thread that draws the window. Bytes come through
-//! `local-core`'s checks. A password stays in memory only until the PDF
-//! opens with it or refuses it, and Noura logs, saves and shows it nowhere.
+//! `local-core`'s checks. Noura logs, saves and shows a password nowhere,
+//! and wipes its own copy once hayro has tried it. Copies that hayro makes
+//! while it tries one, or that a client's text field leaves behind, are
+//! freed without being wiped.
 
 use std::{
     collections::{HashMap, HashSet},
     panic::AssertUnwindSafe,
     sync::{
         Arc, Condvar, Mutex, PoisonError,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{Receiver, Sender, TryRecvError, channel},
     },
     time::SystemTime,
@@ -50,6 +52,9 @@ pub const THUMBNAIL_WIDTH: f32 = 100.0;
 /// The widest or tallest Noura draws a page, in pixels. A page zoomed past
 /// it draws at this size and stretches.
 const MAX_SIDE: f32 = 4096.0;
+
+/// The message for a PDF with no pages.
+const NO_PAGES: &str = "This PDF has no pages.";
 
 /// How wide an embed in a note draws its page, in pixels.
 pub const EMBED_WIDTH: f32 = 1200.0;
@@ -154,6 +159,8 @@ pub struct PdfView {
     picture: Option<PdfPicture>,
     thumbnails: HashMap<usize, PdfPicture>,
     search: PdfSearch,
+    /// The page whose newest drawing failed.
+    undrawn: Option<usize>,
 }
 
 impl PdfView {
@@ -169,6 +176,7 @@ impl PdfView {
             picture: None,
             thumbnails: HashMap::new(),
             search: PdfSearch::default(),
+            undrawn: None,
         }
     }
 
@@ -227,6 +235,12 @@ impl PdfView {
         self.picture.as_ref()
     }
 
+    /// Whether the newest drawing of the page that shows failed, so no
+    /// picture of it is coming.
+    pub fn page_failed(&self) -> bool {
+        self.undrawn == Some(self.page)
+    }
+
     pub fn thumbnails_shown(&self) -> bool {
         self.thumbnails_shown
     }
@@ -257,6 +271,8 @@ impl PdfView {
 
 /// The page a link's or an embed's `#page=` fragment names, as written:
 /// `None` when it names none or names one that isn't a whole number from 1.
+/// A number too large to hold names the largest page there could be, which
+/// is past the end of any PDF.
 pub(crate) fn page_in_link(target: &str) -> Option<u32> {
     let target = target.split('|').next().unwrap_or(target);
     let (_, fragment) = target.split_once('#')?;
@@ -264,7 +280,8 @@ pub(crate) fn page_in_link(target: &str) -> Option<u32> {
         .split('&')
         .find_map(|part| part.strip_prefix("page="))
         .filter(|page| !page.is_empty() && page.bytes().all(|byte| byte.is_ascii_digit()))
-        .and_then(|page| page.parse::<u32>().ok())
+        // Only digits are left, so a number that doesn't parse is too large.
+        .map(|page| page.parse::<u32>().unwrap_or(u32::MAX))
         .filter(|page| *page > 0)
 }
 
@@ -282,25 +299,44 @@ pub(crate) fn is_pdf(path: &str) -> bool {
         .is_some_and(|(stem, extension)| !stem.is_empty() && extension.eq_ignore_ascii_case("pdf"))
 }
 
-/// Holds every PDF thread before it draws a page, so tests can watch the
-/// window keep drawing while a page renders.
+/// Holds every PDF thread before it draws a page, or makes each drawing
+/// fail, so tests can watch the window keep drawing while a page renders
+/// and see what a page that can't be drawn shows.
 #[derive(Clone, Default)]
-pub(crate) struct RenderGate(Arc<(Mutex<bool>, Condvar)>);
+pub(crate) struct RenderGate(Arc<Gate>);
+
+#[derive(Default)]
+pub(crate) struct Gate {
+    held: Mutex<bool>,
+    changed: Condvar,
+    failing: AtomicBool,
+}
 
 impl RenderGate {
     fn wait(&self) {
-        let (held, changed) = &*self.0;
-        let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.0.held.lock().unwrap_or_else(PoisonError::into_inner);
         while *held {
-            held = changed.wait(held).unwrap_or_else(PoisonError::into_inner);
+            held = self
+                .0
+                .changed
+                .wait(held)
+                .unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    fn failing(&self) -> bool {
+        self.0.failing.load(Ordering::SeqCst)
     }
 
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub(crate) fn set(&self, hold: bool) {
-        let (held, changed) = &*self.0;
-        *held.lock().unwrap_or_else(PoisonError::into_inner) = hold;
-        changed.notify_all();
+        *self.0.held.lock().unwrap_or_else(PoisonError::into_inner) = hold;
+        self.0.changed.notify_all();
+    }
+
+    #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+    pub(crate) fn fail(&self, fail: bool) {
+        self.0.failing.store(fail, Ordering::SeqCst);
     }
 }
 
@@ -312,6 +348,17 @@ pub struct PdfRenderHold(pub(crate) RenderGate);
 impl Drop for PdfRenderHold {
     fn drop(&mut self) {
         self.0.set(false);
+    }
+}
+
+/// Makes every drawing of a page fail, until dropped.
+#[cfg(feature = "test-hooks")]
+pub struct PdfDrawFailure(pub(crate) RenderGate);
+
+#[cfg(feature = "test-hooks")]
+impl Drop for PdfDrawFailure {
+    fn drop(&mut self) {
+        self.0.fail(false);
     }
 }
 
@@ -355,6 +402,11 @@ enum Answer {
         kind: Kind,
         picture: PdfPicture,
     },
+    /// The page `page` couldn't be drawn.
+    NotDrawn {
+        kind: Kind,
+        page: usize,
+    },
     Searched {
         generation: u64,
         matches: Vec<PdfMatch>,
@@ -375,6 +427,10 @@ pub(crate) struct PdfSession {
     search_generation: u64,
     /// The page a link asked for before the page count was known.
     pending_page: Option<Option<u32>>,
+    /// What another thread needs, should this one stop.
+    engine: Arc<WorkspaceEngine>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    gate: RenderGate,
 }
 
 impl PdfSession {
@@ -386,35 +442,49 @@ impl PdfSession {
         wake: Arc<dyn Fn() + Send + Sync>,
         gate: RenderGate,
     ) -> Self {
-        let (requests, receive_requests) = channel();
-        let (send_answers, answers) = channel();
-        let worker = Worker {
-            engine,
-            path: path.to_owned(),
-            requests: receive_requests,
-            pending: Vec::new(),
-            answers: send_answers,
-            wake: wake.clone(),
-            gate,
-        };
-        let spawned = std::thread::Builder::new()
-            .name("pdf".into())
-            .spawn(move || worker.run());
-        let mut view = PdfView::new(path);
-        if let Err(error) = spawned {
-            tracing::error!(%error, "could not start a PDF thread");
-            view.state = PdfState::Failed {
-                message: "Noura couldn't open this PDF.".to_owned(),
-            };
-        }
-        Self {
-            view,
+        let (requests, answers) = (channel().0, channel().1);
+        let mut session = Self {
+            view: PdfView::new(path),
             requests,
             answers,
             asked: None,
             asked_thumbnails: HashSet::new(),
             search_generation: 0,
             pending_page: None,
+            engine,
+            wake,
+            gate,
+        };
+        session.start();
+        session
+    }
+
+    /// Start the tab's thread, which reads the PDF again. When it can't
+    /// start, the tab fails, and Try again starts it again.
+    fn start(&mut self) {
+        let (requests, receive_requests) = channel();
+        let (send_answers, answers) = channel();
+        let worker = Worker {
+            engine: self.engine.clone(),
+            path: self.view.path.clone(),
+            requests: receive_requests,
+            pending: Vec::new(),
+            answers: send_answers,
+            wake: self.wake.clone(),
+            gate: self.gate.clone(),
+        };
+        self.requests = requests;
+        self.answers = answers;
+        self.asked = None;
+        self.asked_thumbnails.clear();
+        let spawned = std::thread::Builder::new()
+            .name("pdf".into())
+            .spawn(move || worker.run());
+        if let Err(error) = spawned {
+            tracing::error!(%error, "could not start a PDF thread");
+            self.view.state = PdfState::Failed {
+                message: "Noura couldn't open this PDF.".to_owned(),
+            };
         }
     }
 
@@ -463,6 +533,7 @@ impl PdfSession {
                 // A new file draws again from scratch.
                 self.view.picture = None;
                 self.view.thumbnails.clear();
+                self.view.undrawn = None;
                 self.asked = None;
                 self.asked_thumbnails.clear();
                 let query = std::mem::take(&mut self.view.search.query);
@@ -479,11 +550,20 @@ impl PdfSession {
                 self.view.thumbnails.clear();
             }
             Answer::Rendered { kind, picture } => match kind {
-                Kind::Page => self.view.picture = Some(picture),
+                Kind::Page => {
+                    self.view.undrawn = None;
+                    self.view.picture = Some(picture);
+                }
                 Kind::Thumbnail => {
                     self.view.thumbnails.insert(picture.page, picture);
                 }
             },
+            // A thumbnail that can't be drawn stays a blank page.
+            Answer::NotDrawn { kind, page } => {
+                if kind == Kind::Page {
+                    self.view.undrawn = Some(page);
+                }
+            }
             Answer::Searched {
                 generation,
                 matches,
@@ -573,6 +653,7 @@ impl PdfSession {
             .is_some_and(|(asked, at)| asked == page && (at - density).abs() < 0.01 * at);
         if !same {
             self.asked = Some((page, density));
+            self.view.undrawn = None;
             self.send(Request::Render {
                 kind: Kind::Page,
                 page,
@@ -655,9 +736,13 @@ impl PdfSession {
     }
 
     pub(crate) fn retry(&mut self) {
-        if matches!(self.view.state, PdfState::Failed { .. }) {
-            self.view.state = PdfState::Opening;
-            self.send(Request::Retry);
+        if !matches!(self.view.state, PdfState::Failed { .. }) {
+            return;
+        }
+        self.view.state = PdfState::Opening;
+        // A thread that stopped takes no more requests: start another.
+        if self.requests.send(Request::Retry).is_err() {
+            self.start();
         }
     }
 
@@ -711,6 +796,12 @@ impl Worker {
             let tried = password.is_some();
             let read = read_pdf(&self.engine, &self.path, password.take());
             let next = match read {
+                Read::Open(pdf) if pdf.pages().is_empty() => {
+                    self.answer(Answer::Failed {
+                        message: NO_PAGES.to_owned(),
+                    });
+                    self.wait(&stamp)
+                }
                 Read::Open(pdf) => {
                     let pages = pdf
                         .pages()
@@ -826,14 +917,17 @@ impl Worker {
                     page,
                     density,
                 }) => {
-                    let Some(shown) = page.checked_sub(1).and_then(|index| pdf.pages().get(index))
-                    else {
-                        continue;
-                    };
+                    let shown = page.checked_sub(1).and_then(|index| pdf.pages().get(index));
                     self.gate.wait();
-                    match draw(shown, &cache, page, density) {
+                    let drawn = shown
+                        .filter(|_| !self.gate.failing())
+                        .and_then(|shown| draw(shown, &cache, page, density));
+                    match drawn {
                         Some(picture) => self.answer(Answer::Rendered { kind, picture }),
-                        None => tracing::warn!("a PDF page couldn't be drawn"),
+                        None => {
+                            tracing::warn!("a PDF page couldn't be drawn");
+                            self.answer(Answer::NotDrawn { kind, page });
+                        }
                     }
                 }
                 Some(Request::Search { generation, query }) => {
@@ -903,13 +997,35 @@ fn damaged() -> String {
     "Noura couldn't read this PDF. It may be damaged.".to_owned()
 }
 
-/// Draw `page`, number `number`, at `density` pixels per point.
+/// The pixels per point that draw a side `side` points long at `density`,
+/// kept within [`MAX_SIDE`] pixels and at least one pixel: hayro rounds a
+/// page's size in pixels down, and no texture can be 0 pixels on a side.
+fn side_scale(side: f32, density: f32) -> f32 {
+    let side = side.max(1.0);
+    let density = if density.is_finite() && density > 0.0 {
+        density
+    } else {
+        1.0
+    };
+    if side * density < 1.0 {
+        // One pixel and a half rounds down to one, whatever the rounding
+        // error.
+        1.5 / side
+    } else {
+        density.min(MAX_SIDE / side)
+    }
+}
+
+/// Draw `page`, number `number`, at `density` pixels per point, or on a
+/// side that would draw less than a pixel, one pixel. `None` when hayro
+/// fails.
 fn draw<'a>(
     page: &'a Page<'a>,
     cache: &RenderCache<'a>,
     number: usize,
     density: f32,
 ) -> Option<PdfPicture> {
+    let (width, height) = page.render_dimensions();
     let drawn = std::panic::catch_unwind(AssertUnwindSafe(|| {
         hayro::render(
             page,
@@ -917,13 +1033,17 @@ fn draw<'a>(
             &InterpreterSettings::default(),
             &RenderSettings::default(),
             &PixmapSettings {
-                x_scale: density,
-                y_scale: density,
+                x_scale: side_scale(width, density),
+                y_scale: side_scale(height, density),
                 bg_color: WHITE,
             },
         )
     }))
     .ok()?;
+    let pixels = usize::from(drawn.width()) * usize::from(drawn.height()) * 4;
+    if pixels == 0 || drawn.data_as_u8_slice().len() != pixels {
+        return None;
+    }
     Some(PdfPicture {
         page: number,
         width: u32::from(drawn.width()),
@@ -1129,24 +1249,48 @@ impl<'a> Device<'a> for TextDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::{Line, find, fold, is_pdf, page_in_link, page_to_open};
+    use std::{
+        sync::{Arc, mpsc::channel},
+        time::{Duration, Instant},
+    };
+
+    use local_core::WorkspaceEngine;
+
+    use super::{
+        Line, MAX_SIDE, PdfSession, PdfState, PdfView, RenderGate, damaged, find, fold, is_pdf,
+        page_in_link, page_to_open, side_scale,
+    };
 
     #[test]
     fn a_link_names_a_page_with_page_and_a_whole_number() {
         assert_eq!(page_in_link("Doc.pdf#page=7"), Some(7));
         assert_eq!(page_in_link("Doc.pdf#zoom=2&page=3"), Some(3));
         assert_eq!(page_in_link("Doc.pdf#page=2|Second"), Some(2));
+        assert_eq!(page_in_link("Doc.pdf#page=0003"), Some(3));
         for target in [
             "Doc.pdf",
             "Doc.pdf#page=",
             "Doc.pdf#page=0",
+            "Doc.pdf#page=000",
             "Doc.pdf#page=-1",
             "Doc.pdf#page=1.5",
             "Doc.pdf#page=bad",
-            "Doc.pdf#page=99999999999",
+            "Doc.pdf#page=-99999999999",
             "Doc.pdf#Heading",
         ] {
             assert_eq!(page_in_link(target), None, "{target}");
+        }
+    }
+
+    #[test]
+    fn a_page_number_too_large_to_hold_is_past_the_end() {
+        for target in [
+            "Doc.pdf#page=4294967296",
+            "Doc.pdf#page=99999999999",
+            "Doc.pdf#page=999999999999999999999999999999",
+        ] {
+            assert_eq!(page_in_link(target), Some(u32::MAX), "{target}");
+            assert_eq!(page_to_open(page_in_link(target), 3), 3, "{target}");
         }
     }
 
@@ -1156,6 +1300,115 @@ mod tests {
         assert_eq!(page_to_open(Some(200), 20), 20);
         assert_eq!(page_to_open(None, 20), 1);
         assert_eq!(page_to_open(Some(4), 0), 1);
+    }
+
+    #[test]
+    fn every_side_draws_at_least_one_pixel_and_at_most_the_largest() {
+        // hayro rounds a side's pixels down.
+        let pixels = |side: f32, density: f32| (side * side_scale(side, density)) as u16;
+        assert_eq!(pixels(612.0, 2.0), 1224);
+        assert_eq!(pixels(1.0, 0.25), 1);
+        assert_eq!(pixels(1.0, 0.284), 1);
+        assert_eq!(pixels(3.0, 0.01), 1);
+        assert_eq!(pixels(14400.0, 2.0), MAX_SIDE as u16);
+        assert_eq!(pixels(14400.0, 0.0001), 1);
+        for density in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!((1..=MAX_SIDE as u16).contains(&pixels(10.0, density)));
+        }
+    }
+
+    /// A session of the fixture PDF `name`, open in a new workspace, and
+    /// the folders that hold the workspace and its app data.
+    fn session(name: &str, bytes: &[u8]) -> (PdfSession, [tempfile::TempDir; 2]) {
+        let app_data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join(name), bytes).unwrap();
+        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
+            folder.path(),
+            "Test",
+            None,
+            app_data.path(),
+        )
+        .unwrap();
+        let session = PdfSession::open(
+            Arc::new(engine),
+            name,
+            Arc::new(|| {}),
+            RenderGate::default(),
+        );
+        (session, [app_data, folder])
+    }
+
+    fn wait_until(session: &mut PdfSession, what: &str, done: impl Fn(&PdfView) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            session.poll();
+            if done(session.view()) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting until {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn try_again_starts_a_new_thread_when_the_tabs_thread_stopped() {
+        let (mut session, _folders) =
+            session("text.pdf", include_bytes!("../tests/fixtures/pdf/text.pdf"));
+        wait_until(&mut session, "the PDF opens", |view| {
+            view.state() == &PdfState::Ready
+        });
+        session.go_to(3);
+
+        // The thread stops, which drops its ends of both channels.
+        session.requests = channel().0;
+        session.answers = channel().1;
+        assert!(session.poll());
+        assert_eq!(
+            session.view().state(),
+            &PdfState::Failed { message: damaged() }
+        );
+
+        session.retry();
+        assert_eq!(session.view().state(), &PdfState::Opening);
+        wait_until(&mut session, "the PDF opens again", |view| {
+            view.state() == &PdfState::Ready
+        });
+        assert_eq!(session.view().page_count(), 3);
+        assert_eq!(session.view().page(), 3, "the page you were on stays");
+        session.size(612.0, 1.0);
+        wait_until(&mut session, "the page draws", |view| {
+            view.picture().is_some()
+        });
+    }
+
+    #[test]
+    fn a_page_that_cant_be_drawn_says_so_and_draws_when_asked_again() {
+        let (mut session, _folders) =
+            session("text.pdf", include_bytes!("../tests/fixtures/pdf/text.pdf"));
+        wait_until(&mut session, "the PDF opens", |view| {
+            view.state() == &PdfState::Ready
+        });
+        session.gate.fail(true);
+        session.size(612.0, 1.0);
+        assert!(!session.view().page_failed());
+        wait_until(&mut session, "the drawing fails", PdfView::page_failed);
+        assert!(session.view().picture().is_none());
+
+        session.gate.fail(false);
+        session.step_page(true);
+        assert!(!session.view().page_failed(), "page 2 hasn't failed");
+        session.size(612.0, 1.0);
+        wait_until(&mut session, "page 2 draws", |view| {
+            view.picture().is_some_and(|picture| picture.page == 2)
+        });
+        session.step_page(false);
+        session.size(612.0, 1.0);
+        assert!(!session.view().page_failed(), "page 1 draws again");
+        wait_until(&mut session, "page 1 draws", |view| {
+            view.picture().is_some_and(|picture| picture.page == 1)
+        });
+        assert!(!session.view().page_failed());
     }
 
     #[test]

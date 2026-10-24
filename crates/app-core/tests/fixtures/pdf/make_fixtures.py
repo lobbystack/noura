@@ -4,6 +4,9 @@ text.pdf: three Letter pages of Helvetica text.
 large.pdf: 400 pages that share one dense drawing, slow to render.
 locked.pdf: two pages behind the user password "open sesame", encrypted
 with the standard security handler, revision 3, 128-bit RC4.
+slivers.pdf: three pages that draw less than a pixel on one side or both:
+14400 by 1 points, 1 by 14400 points, and 1 by 1 point.
+empty.pdf: a PDF with no pages.
 
 Standard library only. Run: python3 make_fixtures.py OUTPUT_DIR
 """
@@ -104,9 +107,17 @@ def dense_drawing() -> bytes:
     return b"\n".join(ops)
 
 
-def write_pdf(path: Path, page_streams, shared=False, encryption=None, file_id=None):
+def write_pdf(
+    path: Path,
+    page_streams,
+    shared=False,
+    encryption=None,
+    file_id=None,
+    sizes=None,
+):
     """`page_streams` holds one content stream per page, or with `shared`
-    one stream that every page draws."""
+    one stream that every page draws. `sizes` holds each page's width and
+    height in points, Letter by default."""
     objects = {}
     number = iter(range(1, 100000))
     catalog = next(number)
@@ -128,10 +139,11 @@ def write_pdf(path: Path, page_streams, shared=False, encryption=None, file_id=N
         n = next(number)
         kids.append(n)
         contents = stream_numbers[0] if shared else stream_numbers[index]
+        width, height = sizes[index] if sizes else (612, 792)
         objects[n] = (
-            b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] "
+            b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %d %d] "
             b"/Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
-            % (pages, font, contents)
+            % (pages, width, height, font, contents)
         )
     objects[pages] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (
         b" ".join(b"%d 0 R" % kid for kid in kids),
@@ -195,6 +207,13 @@ def main():
         encryption=Encryption(b"open sesame", b"owner of noura", file_id),
         file_id=file_id,
     )
+    sizes = [(14400, 1), (1, 14400), (1, 1)]
+    write_pdf(
+        folder / "slivers.pdf",
+        [b"0 g 0 0 %d %d re f" % size for size in sizes],
+        sizes=sizes,
+    )
+    write_pdf(folder / "empty.pdf", [])
 
 
 if __name__ == "__main__":

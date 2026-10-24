@@ -115,6 +115,36 @@ fn a_large_pdf_shows_its_page_count_and_the_window_keeps_drawing_while_the_page_
 }
 
 #[test]
+fn a_page_that_cant_be_drawn_says_so_in_place_of_the_page() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = workspace(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("text.pdf", &pdf("text.pdf"))],
+    );
+    let failing = harness.state().app().fail_pdf_drawing_for_testing();
+
+    open(&mut harness, "text.pdf");
+    wait_until(&mut harness, "the page says it can't be drawn", |harness| {
+        harness
+            .query_by_label("Noura couldn\u{2019}t draw page 1.")
+            .is_some()
+    });
+    assert!(harness.query_by_label("Rendering page 1\u{2026}").is_none());
+    assert!(!shows_page(&harness, "Page 1 of 3"));
+
+    // Another page asks for its drawing again.
+    drop(failing);
+    harness
+        .get_by_role_and_label(Role::Button, "Next page")
+        .click();
+    wait_until(&mut harness, "page 2 draws", |harness| {
+        shows_page(harness, "Page 2 of 3")
+    });
+}
+
+#[test]
 fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps_its_place() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
@@ -294,8 +324,10 @@ fn a_locked_pdf_asks_for_its_password_and_says_when_its_wrong() {
             .is_some()
     });
 
+    // The field takes the keyboard when the form shows.
+    harness.run_steps(2);
     let field = harness.get_by_role_and_label(Role::PasswordInput, "PDF password");
-    field.focus();
+    assert!(field.is_focused());
     field.type_text("sesame");
     harness.key_press(Key::Enter);
     wait_until(
@@ -308,9 +340,11 @@ fn a_locked_pdf_asks_for_its_password_and_says_when_its_wrong() {
         },
     );
 
+    // And again after a wrong password, so you can type the next one.
+    harness.run_steps(2);
     let field = harness.get_by_role_and_label(Role::PasswordInput, "PDF password");
     assert_eq!(field.value().as_deref().unwrap_or_default(), "");
-    field.focus();
+    assert!(field.is_focused());
     field.type_text("open sesame");
     harness
         .get_by_role_and_label(Role::Button, "Unlock")

@@ -86,8 +86,8 @@ impl App {
         }
     }
 
-    /// Try `password` on the locked PDF in `tab`. Noura keeps it in memory
-    /// only until the PDF opens or refuses it, and writes it nowhere.
+    /// Try `password` on the locked PDF in `tab`. Noura writes it nowhere
+    /// and wipes its copy once the PDF opens with it or refuses it.
     pub fn pdf_unlock(&mut self, tab: TabId, password: String) {
         self.change_pdf(tab, |session| {
             session.unlock(password);
@@ -127,6 +127,14 @@ impl App {
     pub fn hold_pdf_rendering_for_testing(&self) -> crate::pdf::PdfRenderHold {
         self.viewers.gate.set(true);
         crate::pdf::PdfRenderHold(self.viewers.gate.clone())
+    }
+
+    /// Make every drawing of a PDF page fail, until the guard drops, so
+    /// tests can see what a page that can't be drawn shows.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_pdf_drawing_for_testing(&self) -> crate::pdf::PdfDrawFailure {
+        self.viewers.gate.fail(true);
+        crate::pdf::PdfDrawFailure(self.viewers.gate.clone())
     }
 
     /// Open the PDF at `relative_path` as `how` says, at the page `page`

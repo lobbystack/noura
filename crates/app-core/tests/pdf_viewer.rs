@@ -120,6 +120,97 @@ fn a_file_that_is_no_pdf_says_noura_cant_read_it() {
 }
 
 #[test]
+fn a_pdf_with_no_pages_says_so() {
+    let fixture = Fixture::new(&[("empty.pdf", &pdf("empty.pdf"))]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "empty.pdf");
+
+    wait_until(&mut app, "the PDF fails", |app| {
+        matches!(app.pdf(tab).unwrap().state(), PdfState::Failed { .. })
+    });
+    assert_eq!(
+        state(&app, tab),
+        PdfState::Failed {
+            message: "This PDF has no pages.".to_owned()
+        }
+    );
+}
+
+/// The picture `picture` holds at least a pixel on each side, and a pixel
+/// of bytes for each.
+fn assert_drawn(picture: &app_core::PdfPicture, what: &str) {
+    assert!(
+        picture.width > 0 && picture.height > 0,
+        "{what} drew {} by {} pixels",
+        picture.width,
+        picture.height
+    );
+    assert_eq!(
+        picture.rgba.len(),
+        picture.width as usize * picture.height as usize * 4,
+        "{what}"
+    );
+}
+
+#[test]
+fn a_page_thinner_than_a_pixel_still_draws_a_pixel_wide_in_its_tab_thumbnail_and_embed() {
+    let fixture = Fixture::new(&[
+        ("slivers.pdf", &pdf("slivers.pdf")),
+        ("Slivers.md", b"# Slivers\n\n![[slivers.pdf]]\n"),
+    ]);
+    let mut app = fixture.app();
+    let tab = open_ready(&mut app, "slivers.pdf");
+    let view = app.pdf(tab).unwrap();
+    assert_eq!(view.page_size(1), Some([14400.0, 1.0]));
+    assert_eq!(view.page_size(2), Some([1.0, 14400.0]));
+    assert_eq!(view.page_size(3), Some([1.0, 1.0]));
+
+    // Fit width in an 800-point tab on a 1x screen draws page 1 a quarter
+    // of a pixel high, page 2 a quarter of a pixel wide, and page 3 at
+    // 25% a quarter of a pixel each way.
+    for (page, fit) in [(1, true), (2, true), (3, false)] {
+        app.pdf_go_to(tab, page);
+        if fit {
+            app.pdf_fit_width(tab);
+        } else {
+            for _ in 0..20 {
+                app.pdf_zoom_out(tab);
+            }
+        }
+        app.size_pdf(tab, 800.0, 1.0);
+        wait_until(&mut app, "the page draws", |app| {
+            app.pdf(tab)
+                .unwrap()
+                .picture()
+                .is_some_and(|picture| picture.page == page)
+        });
+        assert_drawn(app.pdf(tab).unwrap().picture().unwrap(), "the page");
+    }
+
+    app.pdf_toggle_thumbnails(tab);
+    for page in 1..=3 {
+        app.want_pdf_thumbnail(tab, page, 1.0);
+    }
+    wait_until(&mut app, "the thumbnails draw", |app| {
+        (1..=3).all(|page| app.pdf(tab).unwrap().thumbnail(page).is_some())
+    });
+    for page in 1..=3 {
+        assert_drawn(
+            app.pdf(tab).unwrap().thumbnail(page).unwrap(),
+            "a thumbnail",
+        );
+    }
+
+    let note = open_from_tree(&mut app, "Slivers.md");
+    for target in ["slivers.pdf", "slivers.pdf#page=2", "slivers.pdf#page=3"] {
+        let PdfEmbedState::Drawn(picture) = embed(&mut app, note, target) else {
+            panic!("{target} didn't draw");
+        };
+        assert_drawn(&picture, target);
+    }
+}
+
+#[test]
 fn previous_next_page_number_zoom_and_fit_width_move_through_the_pdf_and_stay_with_the_tab() {
     let fixture = Fixture::new(&[("text.pdf", &pdf("text.pdf")), ("Plan.md", b"# Plan\n")]);
     let mut app = fixture.app();
@@ -406,6 +497,7 @@ fn a_link_with_a_page_number_opens_the_pdf_at_that_page_and_leaves_the_note_alon
 
     for (target, expected) in [
         ("Docs/text.pdf#page=9", 3),
+        ("Docs/text.pdf#page=99999999999", 3),
         ("text.pdf#page=3", 3),
         ("Docs/text.pdf#page=x", 1),
         ("Docs/text.pdf#page=0", 1),
@@ -467,6 +559,7 @@ fn an_embed_of_a_pdf_shows_the_page_its_fragment_names_and_leaves_the_note_alone
         ("text.pdf#page=2", 2),
         ("Docs/text.pdf", 1),
         ("text.pdf#page=40", 3),
+        ("text.pdf#page=99999999999", 3),
         ("text.pdf#page=nope", 1),
     ] {
         let PdfEmbedState::Drawn(picture) = embed(&mut app, note, target) else {

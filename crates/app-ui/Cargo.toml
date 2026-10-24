@@ -34,6 +34,8 @@ icu_datetime.workspace = true
 icu_locale_core.workspace = true
 icu_time.workspace = true
 jiff.workspace = true
+# Wipes the password a locked PDF's field holds when its tab closes.
+zeroize.workspace = true
 
 [dev-dependencies]
 # The tests hold the PDF threads to watch the window draw meanwhile.

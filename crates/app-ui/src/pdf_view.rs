@@ -12,6 +12,7 @@ use egui::{
     Spinner, Stroke, TextEdit, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2, accesskit::Role,
     load::SizedTexture, text_edit::TextEditState, vec2,
 };
+use zeroize::Zeroize;
 
 use crate::{
     common::{muted, primary_button},
@@ -31,17 +32,30 @@ pub(crate) struct PdfViews {
     tabs: HashMap<TabId, PdfTab>,
 }
 
+/// The room the password field's text has before it moves, which would
+/// leave a copy behind.
+const PASSWORD_ROOM: usize = 256;
+
 #[derive(Default)]
 struct PdfTab {
     /// What the page number field holds while you type in it.
     page_field: Option<String>,
     /// What the search field holds.
     search: String,
-    /// What the password field holds, until you unlock.
+    /// What the password field holds, until you unlock. It's wiped when
+    /// the tab closes.
     password: String,
+    /// The password field took the keyboard since the form showed.
+    password_focused: bool,
     /// The page's picture as uploaded, by its generation.
     page: Option<(u64, TextureHandle)>,
     thumbnails: HashMap<usize, Option<(u64, TextureHandle)>>,
+}
+
+impl Drop for PdfTab {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
 }
 
 impl PdfViews {
@@ -84,6 +98,9 @@ pub(crate) fn show(
     };
     let view = views.tabs.entry(tab).or_default();
     let mut actions = Vec::new();
+    if !matches!(pdf.state(), PdfState::Locked { .. }) {
+        view.password_focused = false;
+    }
     match pdf.state() {
         PdfState::Opening | PdfState::Unlocking => {
             ui.vertical_centered(|ui| {
@@ -133,6 +150,9 @@ fn apply(ui: &Ui, app: &mut App, view: &mut PdfTab, window: Id, tab: TabId, acti
         Action::PreviousMatch => app.pdf_previous_match(tab),
         Action::Unlock => {
             let password = std::mem::take(&mut view.password);
+            // The form takes the keyboard again if the password is wrong,
+            // however soon it comes back.
+            view.password_focused = false;
             // The field's undo history holds what you typed too.
             ui.ctx()
                 .data_mut(|data| data.remove::<TextEditState>(password_id(window, tab)));
@@ -150,7 +170,9 @@ fn password_id(window: Id, tab: TabId) -> Id {
     window.with(("pdf-password", tab))
 }
 
-/// Ask for the password of a locked PDF. Enter or Unlock tries it.
+/// Ask for the password of a locked PDF. Enter or Unlock tries it. The
+/// field takes the keyboard when the form shows, and again after a wrong
+/// password.
 fn password_form(
     ui: &mut Ui,
     view: &mut PdfTab,
@@ -175,6 +197,10 @@ fn password_form(
             });
             ui.add_space(4.0);
         }
+        if view.password.capacity() < PASSWORD_ROOM {
+            // The field is empty here, so nothing is left behind.
+            view.password.reserve(PASSWORD_ROOM);
+        }
         let field = ui
             .add(
                 TextEdit::singleline(&mut view.password)
@@ -184,6 +210,10 @@ fn password_form(
                     .desired_width(220.0),
             )
             .accessible_name("PDF password");
+        if !view.password_focused {
+            field.request_focus();
+            view.password_focused = true;
+        }
         let entered = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
         ui.add_space(8.0);
         let unlock = primary_button(ui, "Unlock", !view.password.is_empty()).clicked();
@@ -343,24 +373,40 @@ fn search(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Actio
     }
 }
 
+/// `picture` as an image egui can upload, unless it has no pixels on a
+/// side, which no texture can hold, or its bytes don't fill it.
+pub(crate) fn picture_image(picture: &PdfPicture) -> Option<ColorImage> {
+    let size = [picture.width as usize, picture.height as usize];
+    let filled = size[0] > 0 && size[1] > 0 && picture.rgba.len() == size[0] * size[1] * 4;
+    filled.then(|| ColorImage::from_rgba_premultiplied(size, &picture.rgba))
+}
+
 /// Upload `picture` unless `uploaded` holds it already, and return the
-/// texture that shows it.
+/// texture that shows it. `None` when the picture can't be uploaded.
 fn upload(
     ui: &Ui,
     uploaded: &mut Option<(u64, TextureHandle)>,
     picture: &PdfPicture,
     name: &str,
-) -> TextureHandle {
+) -> Option<TextureHandle> {
     if let Some((generation, texture)) = uploaded
         && *generation == picture.generation
     {
-        return texture.clone();
+        return Some(texture.clone());
     }
-    let size = [picture.width as usize, picture.height as usize];
-    let image = ColorImage::from_rgba_premultiplied(size, &picture.rgba);
-    let texture = ui.ctx().load_texture(name, image, TextureOptions::LINEAR);
+    let texture = ui
+        .ctx()
+        .load_texture(name, picture_image(picture)?, TextureOptions::LINEAR);
     *uploaded = Some((picture.generation, texture.clone()));
-    texture
+    Some(texture)
+}
+
+/// `size` scaled to fit within `bounds`, keeping its shape, but at least a
+/// point on each side so a sliver of a page still shows.
+fn fit_within(size: [f32; 2], bounds: Vec2) -> Vec2 {
+    let [width, height] = size.map(|side| side.max(f32::EPSILON));
+    let scale = (bounds.x / width).min(bounds.y / height);
+    vec2((width * scale).max(1.0), (height * scale).max(1.0))
 }
 
 /// One thumbnail per page, in a panel beside the page. Picking one shows
@@ -374,15 +420,16 @@ fn thumbnails(
 ) {
     let palette = Palette::of(ui.ctx());
     let pixels_per_point = ui.ctx().pixels_per_point();
-    let height = |page: usize| {
-        pdf.page_size(page)
-            .map_or(THUMBNAIL_WIDTH, |[width, height]| {
-                THUMBNAIL_WIDTH * height / width.max(1.0)
-            })
-    };
+    let size_of = |page: usize| pdf.page_size(page).unwrap_or([612.0, 792.0]);
     // Rows share one height so the panel scrolls without measuring every
-    // page: the first page's, which most PDFs keep.
-    let row = height(1).min(THUMBNAIL_WIDTH * 2.0) + 24.0;
+    // page: the first page's, which most PDFs keep, within a half and
+    // twice the thumbnail's width. Each page fits its row's box at its own
+    // shape.
+    let [first_width, first_height] = size_of(1);
+    let box_height = (THUMBNAIL_WIDTH * first_height / first_width.max(1.0))
+        .clamp(THUMBNAIL_WIDTH / 2.0, THUMBNAIL_WIDTH * 2.0);
+    let bounds = vec2(THUMBNAIL_WIDTH, box_height);
+    let row = box_height + 24.0;
     Panel::left(("pdf-thumbnails", tab))
         .resizable(false)
         .exact_size(THUMBNAILS_WIDTH)
@@ -398,7 +445,7 @@ fn thumbnails(
                     .show_rows(ui, row, pdf.page_count(), |ui, rows| {
                         for page in rows.start + 1..=rows.end {
                             actions.push(Action::Thumbnail(page, pixels_per_point));
-                            let size = vec2(THUMBNAIL_WIDTH, height(page).min(row - 24.0));
+                            let size = fit_within(size_of(page), bounds);
                             let current = page == pdf.page();
                             let (rect, response) = ui.allocate_exact_size(
                                 vec2(ui.available_width(), row),
@@ -409,15 +456,17 @@ fn thumbnails(
                                 node.set_role(Role::Button);
                                 node.set_selected(current);
                             });
-                            let frame = egui::Rect::from_min_size(
-                                rect.center_top() + vec2(-size.x / 2.0, 4.0),
+                            let frame = egui::Rect::from_center_size(
+                                rect.center_top() + vec2(0.0, 4.0 + box_height / 2.0),
                                 size,
                             );
                             let painter = ui.painter();
                             painter.rect_filled(frame, radius(0.25), egui::Color32::WHITE);
-                            if let Some(picture) = pdf.thumbnail(page) {
-                                let slot = view.thumbnails.entry(page).or_default();
-                                let texture = upload(ui, slot, picture, "pdf-thumbnail");
+                            let slot = view.thumbnails.entry(page).or_default();
+                            if let Some(texture) = pdf
+                                .thumbnail(page)
+                                .and_then(|picture| upload(ui, slot, picture, "pdf-thumbnail"))
+                            {
                                 egui::Image::from_texture(SizedTexture::new(texture.id(), size))
                                     .paint_at(ui, frame);
                             }
@@ -433,7 +482,7 @@ fn thumbnails(
                                 egui::StrokeKind::Outside,
                             );
                             painter.text(
-                                egui::pos2(rect.center().x, frame.bottom() + 4.0),
+                                egui::pos2(rect.center().x, rect.top() + box_height + 8.0),
                                 egui::Align2::CENTER_TOP,
                                 page.to_string(),
                                 egui::FontId::proportional(12.0),
@@ -449,7 +498,8 @@ fn thumbnails(
 }
 
 /// The page that shows, at the zoom's size, in a scroll area. Until its
-/// picture arrives, a blank page says it's rendering.
+/// picture arrives, a blank page says it's rendering, or that it couldn't
+/// be drawn.
 fn page(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, tab: TabId, actions: &mut Vec<Action>) {
     let number = pdf.page();
     let count = pdf.page_count();
@@ -459,6 +509,7 @@ fn page(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, tab: TabId, actions: &mut
     let scale = pdf.scale();
     let size = vec2(width * scale, height * scale);
     let picture = pdf.picture().filter(|picture| picture.page == number);
+    let failed = pdf.page_failed();
     ScrollArea::both()
         .id_salt(("pdf-page", tab))
         .auto_shrink(false)
@@ -466,23 +517,25 @@ fn page(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, tab: TabId, actions: &mut
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                 ui.add_space(PAGE_MARGIN);
                 let label = format!("Page {number} of {count}");
-                match picture {
-                    Some(picture) => {
-                        let texture = upload(ui, &mut view.page, picture, "pdf-page");
+                let texture =
+                    picture.and_then(|picture| upload(ui, &mut view.page, picture, "pdf-page"));
+                match texture {
+                    Some(texture) => {
                         ui.add(
                             egui::Image::from_texture(SizedTexture::new(texture.id(), size))
                                 .alt_text(label),
                         );
                     }
-                    None => blank_page(ui, size, number),
+                    None => blank_page(ui, size, number, failed || picture.is_some()),
                 }
                 ui.add_space(PAGE_MARGIN);
             });
         });
 }
 
-/// A white page of `size` that says page `number` is rendering.
-fn blank_page(ui: &mut Ui, size: Vec2, number: usize) {
+/// A white page of `size` that says page `number` is rendering, or with
+/// `failed`, that it couldn't be drawn.
+fn blank_page(ui: &mut Ui, size: Vec2, number: usize, failed: bool) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let palette = Palette::of(ui.ctx());
     ui.painter()
@@ -499,10 +552,60 @@ fn blank_page(ui: &mut Ui, size: Vec2, number: usize) {
         .accessibility_role(Role::Status);
     ui.scope_builder(builder, |ui| {
         ui.add_space((rect.height() / 3.0).min(120.0));
-        ui.add(Spinner::new().size(16.0));
-        ui.label(
-            RichText::new(format!("Rendering page {number}\u{2026}"))
-                .color(egui::Color32::from_gray(90)),
-        );
+        let text = if failed {
+            format!("Noura couldn\u{2019}t draw page {number}.")
+        } else {
+            ui.add(Spinner::new().size(16.0));
+            format!("Rendering page {number}\u{2026}")
+        };
+        ui.label(RichText::new(text).color(egui::Color32::from_gray(90)));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use app_core::PdfPicture;
+    use egui::vec2;
+
+    use super::{fit_within, picture_image};
+
+    fn picture(width: u32, height: u32, bytes: usize) -> PdfPicture {
+        PdfPicture {
+            page: 1,
+            width,
+            height,
+            rgba: Arc::from(vec![255; bytes]),
+            generation: 0,
+        }
+    }
+
+    #[test]
+    fn a_picture_with_no_pixels_on_a_side_is_never_uploaded() {
+        assert!(picture_image(&picture(0, 1, 0)).is_none());
+        assert!(picture_image(&picture(4096, 0, 0)).is_none());
+        assert!(picture_image(&picture(2, 2, 12)).is_none(), "too few bytes");
+        let image = picture_image(&picture(2, 1, 8)).unwrap();
+        assert_eq!(image.size, [2, 1]);
+    }
+
+    #[test]
+    fn a_thumbnail_keeps_its_pages_shape_inside_its_row() {
+        let bounds = vec2(100.0, 129.0);
+        // A page as tall as the row's first is as wide as the panel.
+        let letter = fit_within([612.0, 792.0], vec2(100.0, 100.0 * 792.0 / 612.0));
+        assert!((letter.x - 100.0).abs() < 0.01 && (letter.y - 129.41).abs() < 0.01);
+        // A taller page fits the row's height and narrows to its shape.
+        let tall = fit_within([612.0, 1584.0], bounds);
+        assert!((tall.y - 129.0).abs() < 0.01);
+        assert!((tall.x / tall.y - 612.0 / 1584.0).abs() < 0.001);
+        // A wider page fits the panel's width.
+        let wide = fit_within([1584.0, 612.0], bounds);
+        assert!((wide.x - 100.0).abs() < 0.01);
+        assert!((wide.x / wide.y - 1584.0 / 612.0).abs() < 0.001);
+        // A sliver still shows a point.
+        assert_eq!(fit_within([14400.0, 1.0], bounds).y, 1.0);
+        assert_eq!(fit_within([1.0, 14400.0], bounds).x, 1.0);
+    }
 }
