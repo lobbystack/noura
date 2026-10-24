@@ -19,6 +19,7 @@ members = [
     "crates/plugin-host/test-plugins/uses-files",
     "crates/plugin-sdk",
     "crates/plugins/hello",
+    "crates/plugins/tasks",
     "crates/spell-check",
     "crates/sync-key-envelope",
     "crates/sync-protocol",

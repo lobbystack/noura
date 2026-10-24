@@ -5255,6 +5255,7 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "js-sys",
  "log",
@@ -7086,6 +7087,7 @@ dependencies = [
  "blake3",
  "egui",
  "egui_kittest",
+ "jiff",
  "libc",
  "local-core",
  "parking_lot",
@@ -9474,6 +9476,15 @@ name = "target-lexicon"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+
+[[package]]
+name = "tasks-plugin"
+version = "0.2.0"
+dependencies = [
+ "jiff",
+ "plugin-sdk",
+ "serde_json",
+]
 
 [[package]]
 name = "tempfile"

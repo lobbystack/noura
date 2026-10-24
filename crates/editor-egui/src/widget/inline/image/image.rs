@@ -320,6 +320,7 @@ impl<'ast> MdEdit {
             Event::OpenLink {
                 url: url.to_string(),
                 wikilink: false,
+                new_tab: false,
             }
         } else {
             Event::Select {
@@ -335,9 +336,11 @@ impl<'ast> MdEdit {
         }
         if response.clicked() {
             if open {
+                // Only a Cmd-click opens an image, and it asks for a new tab.
                 self.renderer.render_events.push(Event::OpenLink {
                     url: url.to_string(),
                     wikilink: false,
+                    new_tab: true,
                 });
             } else {
                 self.request_focus(ui.ctx(), id);

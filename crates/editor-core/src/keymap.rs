@@ -3,7 +3,7 @@
 //! names, and the toolbar labels its buttons from the same table.
 //!
 //! The formatting keys follow Obsidian where Obsidian has a default (Mod-B,
-//! Mod-I, Mod-K, Mod-Enter), the legacy app for underline and
+//! Mod-I, Mod-K, Mod-Enter, Alt-Enter), the legacy app for underline and
 //! strikethrough, and common editors for headings and lists.
 
 use crate::commands::Format;
@@ -88,6 +88,8 @@ pub enum Command {
     Redo,
     /// Open find in the note.
     Find,
+    /// Open the link at the caret, as a click on it does.
+    OpenLink,
 }
 
 impl Command {
@@ -101,6 +103,7 @@ impl Command {
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::Find => "Find in the note",
+            Self::OpenLink => "Open the link at the caret",
         }
     }
 
@@ -114,6 +117,7 @@ impl Command {
             Self::Outdent => Event::Indent { deindent: true },
             Self::Undo => Event::Undo,
             Self::Redo => Event::Redo,
+            Self::OpenLink => Event::OpenSelectedLink,
             Self::Find => return None,
         })
     }
@@ -151,6 +155,7 @@ pub fn keymap(apple: bool) -> Vec<(Command, Vec<Shortcut>)> {
         (Command::Undo, vec![command(Z)]),
         (Command::Redo, redo),
         (Command::Find, vec![command(F)]),
+        (Command::OpenLink, vec![Shortcut::new(Enter).with_alt()]),
     ]
 }
 

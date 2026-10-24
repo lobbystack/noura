@@ -123,12 +123,8 @@ impl ExampleApp {
             if response.text_updated && self.status.starts_with("Saved") {
                 self.status.clear();
             }
-            if let Some(link) = response.opened_links.into_iter().last() {
-                self.status = match link {
-                    OpenedLink::File(file) => format!("Link to {file}"),
-                    OpenedLink::External(url) => format!("Link to {url}"),
-                    OpenedLink::NotFound { target } => format!("Nothing matches {target}"),
-                };
+            if let Some(OpenedLink { target, .. }) = response.opened_links.into_iter().last() {
+                self.status = format!("Link to {target}");
             }
         });
     }

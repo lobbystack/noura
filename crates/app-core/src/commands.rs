@@ -453,6 +453,10 @@ fn note_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
         ("Undo", vec![command(Z)]),
         ("Redo", redo),
         ("Find in the note", vec![command(F)]),
+        (
+            "Open the link at the caret",
+            vec![Shortcut::new(Enter).with_alt()],
+        ),
         // F2 moves from the text to the note's name field.
         ("Rename the note", vec![Shortcut::new(F2)]),
     ]
