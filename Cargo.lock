@@ -8497,6 +8497,7 @@ dependencies = [
 name = "sync-store"
 version = "0.2.0"
 dependencies = [
+ "hashlink 0.11.1",
  "serde",
  "serde_json",
  "sync-key-envelope",
