@@ -1,9 +1,10 @@
 //! The workspace's dated entries: one for each `due`, `date` and `start`
 //! property of any object, whatever its type and whichever plugin owns
 //! it, with the object's `end` beside it. Each object's file is read
-//! again only when its revision changes.
+//! again only when the listing's revision differs from the revision of
+//! the bytes last read.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use plugin_sdk::workspace::{self, EntryKind};
 use serde_json::{Map, Value};
@@ -20,13 +21,16 @@ pub(crate) struct Entry {
     /// and a number after a second file with the same ID.
     pub(crate) key: String,
     pub(crate) source_id: String,
+    /// Whether another file holds the same stable ID.
+    pub(crate) shared_id: bool,
     pub(crate) source_type: String,
     pub(crate) title: String,
     pub(crate) property: String,
     pub(crate) start: String,
     pub(crate) end: Option<String>,
-    /// The object's other properties, as its frontmatter holds them.
-    pub(crate) properties: Map<String, Value>,
+    /// The object's other properties, as its frontmatter holds them,
+    /// shared by the object's entries.
+    pub(crate) properties: Arc<Map<String, Value>>,
 }
 
 impl CalendarItem for Entry {
@@ -70,8 +74,10 @@ impl Entry {
 
 /// An object's file as last read.
 struct Read {
+    /// The revision of the bytes read, which can differ from the
+    /// listing's when the file changed before the index saw it.
     revision: String,
-    object: Option<Object>,
+    object: Object,
 }
 
 /// What an entry needs from its object.
@@ -80,7 +86,7 @@ struct Object {
     id: String,
     object_type: String,
     title: String,
-    properties: Map<String, Value>,
+    properties: Arc<Map<String, Value>>,
 }
 
 /// The objects read so far, by the path of their files.
@@ -97,8 +103,9 @@ impl Entries {
     }
 
     /// Every dated entry in the workspace now, in the order of the paths
-    /// of their files. A file read fails quietly: its entries wait for
-    /// the next listing.
+    /// of their files. A file that fails to read, such as one that lives
+    /// only in the cloud for now, keeps the entries of its last read, or
+    /// has none until a read succeeds. Each listing tries it again.
     pub(crate) fn all(&mut self) -> Result<Vec<Entry>, plugin_sdk::Error> {
         let listed = workspace::list_entries()?;
         let mut kept = BTreeMap::new();
@@ -108,33 +115,22 @@ impl Entries {
             }
             let revision = entry.revision.unwrap_or_default();
             let read = match self.reads.remove(&entry.path) {
-                Some(read) if read.revision == revision && !revision.is_empty() => read,
-                _ => Read {
-                    revision,
-                    object: workspace::read_object_at(&entry.path)
-                        .ok()
-                        .map(|object| Object {
-                            id: object.id,
-                            object_type: object.object_type,
-                            // A grid entry and a list item need a label
-                            // with more than spaces.
-                            title: if object.title.trim().is_empty() {
-                                "Untitled".to_owned()
-                            } else {
-                                object.title
-                            },
-                            properties: serde_json::from_str(&object.properties)
-                                .unwrap_or_default(),
-                        }),
-                },
+                Some(read) if read.revision == revision && !revision.is_empty() => Some(read),
+                last => read_at(&entry.path).or(last),
             };
-            kept.insert(entry.path, read);
+            if let Some(read) = read {
+                kept.insert(entry.path, read);
+            }
         }
         self.reads = kept;
 
+        let mut files: BTreeMap<&str, usize> = BTreeMap::new();
+        for read in self.reads.values() {
+            *files.entry(&read.object.id).or_default() += 1;
+        }
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         let mut entries = Vec::new();
-        for object in self.reads.values().filter_map(|read| read.object.as_ref()) {
+        for object in self.reads.values().map(|read| &read.object) {
             let text = |key: &str| object.properties.get(key).and_then(Value::as_str);
             let end = text("end").map(str::to_owned);
             for property in STARTS {
@@ -151,6 +147,9 @@ impl Entries {
                 entries.push(Entry {
                     key,
                     source_id: object.id.clone(),
+                    shared_id: files
+                        .get(object.id.as_str())
+                        .is_some_and(|&count| count > 1),
                     source_type: object.object_type.clone(),
                     title: object.title.clone(),
                     property: property.to_owned(),
@@ -162,4 +161,25 @@ impl Entries {
         }
         Ok(entries)
     }
+}
+
+/// The object in the file at `path` and the revision of the bytes read,
+/// or `None` when the file couldn't be read.
+fn read_at(path: &str) -> Option<Read> {
+    let object = workspace::read_object_at(path).ok()?;
+    Some(Read {
+        revision: object.revision,
+        object: Object {
+            id: object.id,
+            object_type: object.object_type,
+            // A grid entry and a list item need a label with more than
+            // spaces.
+            title: if object.title.trim().is_empty() {
+                "Untitled".to_owned()
+            } else {
+                object.title
+            },
+            properties: Arc::new(serde_json::from_str(&object.properties).unwrap_or_default()),
+        },
+    })
 }

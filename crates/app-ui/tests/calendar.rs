@@ -1,14 +1,15 @@
 //! The Calendar plugin through AccessKit: the page's Previous, Today and
-//! Next buttons and View choice, entries on the grid labeled with their
-//! title and their time on this device's clock, and the entry panel's
+//! Next buttons and View choice, today's cell marked as the current date,
+//! entries on the grid labeled with their title and their time on this
+//! device's clock, and the entry panel's
 //! title, type, properties and Open, which shows a task beside the Tasks
 //! properties panel. The fake system keeps Toronto's time zone and US
 //! English, and its clock reads 11:00 on Wednesday 21 October 2026.
 
 mod support;
 
-use egui::accesskit::Role;
-use egui_kittest::kittest::Queryable;
+use egui::accesskit::{AriaCurrent, Role};
+use egui_kittest::kittest::{NodeT, Queryable};
 use support::{
     FakePicker, FakeSystem, create_workspace, harness_with,
     kit::{Ui, labels, open_page, run},
@@ -108,6 +109,16 @@ fn entries_in(harness: &Ui, cell: &str) -> Vec<String> {
     )
 }
 
+/// The labels of the grid's nodes with `role` that are the current date.
+fn today_in(harness: &Ui, role: Role) -> Vec<String> {
+    labels(
+        harness
+            .get_by_role_and_label(Role::Grid, "Calendar")
+            .get_all_by_role(role)
+            .filter(|node| node.accesskit_node().aria_current() == Some(AriaCurrent::Date)),
+    )
+}
+
 #[test]
 fn the_page_labels_its_buttons_its_view_choice_and_its_entries() {
     let Some(Opened {
@@ -135,6 +146,10 @@ fn the_page_labels_its_buttons_its_view_choice_and_its_entries() {
         entries_in(&harness, "Wednesday, October 21, 2026"),
         ["Retreat, all day", "Standup, 9:00 AM–9:30 AM"]
     );
+    assert_eq!(
+        today_in(&harness, Role::Cell),
+        ["Wednesday, October 21, 2026"]
+    );
     assert!(harness.unnamed_widgets().is_empty());
 
     harness
@@ -155,6 +170,11 @@ fn the_page_labels_its_buttons_its_view_choice_and_its_entries() {
         headers.first().map(String::as_str),
         Some("Sunday, October 18, 2026")
     );
+    assert_eq!(
+        today_in(&harness, Role::ColumnHeader),
+        ["Wednesday, October 21, 2026"]
+    );
+    assert!(today_in(&harness, Role::Cell).is_empty());
 
     press_button(&mut harness, "Next week");
     wait_until(&mut harness, |harness| {

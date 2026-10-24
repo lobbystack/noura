@@ -1,7 +1,8 @@
 //! Seam 1: the Inbox's Next 7 days with the clock stopped at 11:00 on
 //! Wednesday 21 October 2026 in Toronto. With Calendar on, the section
 //! lists up to five entries from the start of today through seven days
-//! ahead, in the device's time zone, each with when it starts; it says
+//! ahead, in the device's time zone, each with when it starts, in the
+//! order they start on the device's clock; it says
 //! "Nothing scheduled this week." when nothing is, and it leaves the Inbox
 //! when Calendar turns off.
 
@@ -92,6 +93,79 @@ fn next_7_days_lists_five_entries_from_the_start_of_today_with_readable_dates() 
                 line("Retreat", "Saturday"),
             ]
         ))
+    );
+}
+
+#[test]
+fn an_entry_this_evening_lists_before_tomorrows_all_day_entries() {
+    // 21:00 tonight in Toronto is already tomorrow in UTC, after the
+    // midnight in UTC that the rules give tomorrow's all-day entries.
+    let fixture = Fixture::new(&[
+        (
+            "Evening call.md",
+            &note(
+                "a",
+                "due: 2026-10-22T01:00:00Z
+",
+            ),
+        ),
+        (
+            "Fair.md",
+            &note(
+                "b",
+                "date: 2026-10-22
+",
+            ),
+        ),
+        (
+            "Garden.md",
+            &note(
+                "c",
+                "date: 2026-10-22
+",
+            ),
+        ),
+        (
+            "Harvest.md",
+            &note(
+                "d",
+                "date: 2026-10-22
+",
+            ),
+        ),
+        (
+            "Market.md",
+            &note(
+                "e",
+                "date: 2026-10-22
+",
+            ),
+        ),
+        (
+            "Picnic.md",
+            &note(
+                "f",
+                "date: 2026-10-22
+",
+            ),
+        ),
+    ]);
+    let mut app = app_on(&fixture);
+    let Some(_folder) = with_calendar(&mut app) else {
+        return;
+    };
+
+    wait_until(&mut app, "the section draws", |app| section(app).is_some());
+
+    assert_eq!(
+        section(&app).map(|(_, lines)| lines),
+        Some(vec![
+            line("Evening call", "21:00"),
+            line("Fair", "Tomorrow"),
+            line("Garden", "Tomorrow"),
+            line("Harvest", "Tomorrow"),
+            line("Market", "Tomorrow"),
+        ])
     );
 }
 

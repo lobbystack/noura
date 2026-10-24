@@ -42,6 +42,21 @@ impl Now {
         }
     }
 
+    /// The instant `start`, a date or an instant, begins at on this
+    /// device: a date at its first instant in the device's time zone,
+    /// where the rules put it at midnight in UTC. `None` for a malformed
+    /// start.
+    pub(crate) fn instant(&self, start: &str) -> Option<Timestamp> {
+        if start.len() == 10 {
+            let day = start.parse::<Date>().ok()?;
+            return day
+                .to_zoned(self.zone.clone())
+                .ok()
+                .map(|day| day.timestamp());
+        }
+        start.parse().ok()
+    }
+
     /// How `start`, a date or an instant, reads in a list: Today,
     /// Tomorrow, a weekday within the week or a short date, and the time
     /// on the device's clock for an instant, alone when it falls today.

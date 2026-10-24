@@ -348,6 +348,72 @@ fn selecting_an_entry_shows_its_panel_and_open_shows_its_task_with_the_tasks_pan
 }
 
 #[test]
+fn the_panel_of_an_entry_whose_id_another_file_shares_says_open_might_show_that_file() {
+    let fixture = Fixture::new(&[
+        (
+            "Plan.md",
+            &object_file(
+                "note",
+                A,
+                "date: 2026-10-21
+",
+            ),
+        ),
+        // A copy made in another app, with the same ID.
+        (
+            "Plan copy.md",
+            &object_file(
+                "note",
+                A,
+                "date: 2026-10-22
+",
+            ),
+        ),
+        (
+            "Review.md",
+            &object_file(
+                "note",
+                B,
+                "date: 2026-10-21
+",
+            ),
+        ),
+    ]);
+    let system = FakeSystem::new();
+    system.set_clock("2026-10-21T15:00:00Z", "America/Toronto");
+    let mut app = fixture.app_with(system);
+    let Some(_calendar) = with_calendar(&mut app) else {
+        return;
+    };
+    let shared = "Another file has the same ID, so Open might show that file.";
+
+    // Paths order the copies, so the copy's file comes first.
+    select(&mut app, &format!("note_{A}:date"));
+    assert_eq!(
+        texts_under(&app, "entry"),
+        Some(vec![
+            "Plan copy".to_owned(),
+            "Type: note".to_owned(),
+            shared.to_owned()
+        ])
+    );
+    select(&mut app, &format!("note_{A}:date:2"));
+    assert_eq!(
+        texts_under(&app, "entry"),
+        Some(vec![
+            "Plan".to_owned(),
+            "Type: note".to_owned(),
+            shared.to_owned()
+        ])
+    );
+    select(&mut app, &format!("note_{B}:date"));
+    assert_eq!(
+        texts_under(&app, "entry"),
+        Some(vec!["Review".to_owned(), "Type: note".to_owned()])
+    );
+}
+
+#[test]
 fn opening_an_entry_from_the_grid_shows_its_object_and_close_hides_the_panel() {
     let (fixture, system) = week();
     let mut app = fixture.app_with(system);

@@ -34,15 +34,19 @@ pub(crate) fn select_calendar_entries<T: CalendarItem>(
 ) -> Result<Vec<T>, CalendarError> {
     let range = CalendarRange::parse(start, end)?;
     entries.retain(|entry| calendar_entry_overlaps(entry, range));
-    entries.sort_by(|left, right| {
-        calendar_instant(left.start())
-            .ok()
-            .cmp(&calendar_instant(right.start()).ok())
+    // Each start parses once, not in every comparison.
+    let mut keyed: Vec<(Option<jiff::Timestamp>, T)> = entries
+        .into_iter()
+        .map(|entry| (calendar_instant(entry.start()).ok(), entry))
+        .collect();
+    keyed.sort_by(|(left_at, left), (right_at, right)| {
+        left_at
+            .cmp(right_at)
             .then_with(|| left.title().cmp(right.title()))
             .then_with(|| left.source_id().cmp(right.source_id()))
             .then_with(|| left.property().cmp(right.property()))
     });
-    Ok(entries)
+    Ok(keyed.into_iter().map(|(_, entry)| entry).collect())
 }
 
 /// Check calendar range bounds without selecting anything.

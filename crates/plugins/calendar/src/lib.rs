@@ -262,6 +262,14 @@ fn entry_panel(view: &mut View, entry: &Entry) {
     let panel = view.add_panel(View::ROOT, "entry", Some("Selected entry"));
     view.text(panel, "entry-title", &entry.title);
     view.text(panel, "entry-type", &format!("Type: {}", entry.source_type));
+    if entry.shared_id {
+        // Open goes by stable ID, which names either file.
+        view.text(
+            panel,
+            "entry-shared-id",
+            "Another file has the same ID, so Open might show that file.",
+        );
+    }
     let columns = vec![
         Column {
             id: "property".into(),
@@ -275,7 +283,7 @@ fn entry_panel(view: &mut View, entry: &Entry) {
         },
     ];
     let table = view.table(panel, "entry-properties", "Properties", columns);
-    for (name, value) in &entry.properties {
+    for (name, value) in entry.properties.iter() {
         let value = shown_value(value);
         view.row(table, &format!("property:{name}"), &[name, &value]);
     }
@@ -358,10 +366,19 @@ fn open(key: &str) {
 }
 
 /// The Inbox's Next 7 days: up to five entries from the start of today
-/// through seven days ahead, each with when it starts.
+/// through seven days ahead, each with when it starts. They list in the
+/// order they start on this device, so west of UTC an entry this evening
+/// lists before tomorrow's all-day entries, which the rules order by
+/// midnight in UTC.
 fn next_seven_days() -> Vec<Node> {
     let now = Now::read();
-    let entries = all_entries(&mut state()).and_then(|all| within(all, &now, now.today, 7));
+    let entries = all_entries(&mut state())
+        .and_then(|all| within(all, &now, now.today, 7))
+        .map(|mut entries| {
+            // A stable sort keeps the rules' order between equal starts.
+            entries.sort_by_key(|entry| now.instant(&entry.start));
+            entries
+        });
     let mut view = View::panel(SECTION, None);
     match entries {
         Ok(entries) if entries.is_empty() => {
