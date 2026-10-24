@@ -38,10 +38,10 @@ impl PgLimiter {
         u64::try_from(row.now).map_err(|_| Error::internal("the database's clock is before 1970"))
     }
 
-    /// Deletes the counters of every window that has ended. Ticket 52 runs
-    /// it on a schedule; [`Limiter::take`] already drops a key's ended
-    /// windows when the key starts a new one.
-    pub async fn prune(&self) -> Result<u64> {
+    /// Deletes the counters of every window that has ended.
+    /// [`Limiter::take`] also drops a key's ended windows when the key
+    /// starts a new one.
+    async fn prune_now(&self) -> Result<u64> {
         let now = int(self.now_ms().await?);
         let done = sqlx::query!("DELETE FROM rate_counters WHERE window_ends <= $1", now)
             .execute(&self.pool)
@@ -100,5 +100,9 @@ impl PgLimiter {
 impl Limiter for PgLimiter {
     fn take<'a>(&'a self, key: &'a [u8], cost: u64, limit: Limit) -> BoxFut<'a, Result<Taken>> {
         Box::pin(self.take_now(key, cost, limit))
+    }
+
+    fn prune(&self) -> BoxFut<'_, Result<u64>> {
+        Box::pin(self.prune_now())
     }
 }

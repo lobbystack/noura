@@ -2474,6 +2474,16 @@ pub async fn limits_hold_across_instances<B: Backend>(first: Arc<Store<B>>, seco
         two.take(&key, 2, second_window).await.expect("taken"),
         Taken::Allowed
     );
+
+    // Pruning deletes the counts of ended windows, whichever instance
+    // prunes.
+    tokio::time::sleep(second_window.window + Duration::from_millis(50)).await;
+    assert!(one.prune().await.expect("pruned") >= 1);
+    assert_eq!(
+        two.prune().await.expect("pruned"),
+        0,
+        "nothing ended is left"
+    );
 }
 
 /// The access list naming `account` as a manager.

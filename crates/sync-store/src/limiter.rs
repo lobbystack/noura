@@ -56,7 +56,14 @@ pub trait Limiter: Send + Sync {
     /// fits, and refuses it otherwise. A cost above the whole allowance
     /// never fits.
     fn take<'a>(&'a self, key: &'a [u8], cost: u64, limit: Limit) -> BoxFut<'a, Result<Taken>>;
+
+    /// Deletes the counts of every window that has ended, and returns how
+    /// many it deleted. The server runs it every [`PRUNE_EVERY`].
+    fn prune(&self) -> BoxFut<'_, Result<u64>>;
 }
+
+/// How often the server deletes the counts of ended windows.
+pub const PRUNE_EVERY: Duration = Duration::from_secs(60);
 
 /// Milliseconds since the Unix epoch on this computer's clock.
 pub fn now_ms() -> u64 {
@@ -118,5 +125,15 @@ impl MemoryLimiter {
 impl Limiter for MemoryLimiter {
     fn take<'a>(&'a self, key: &'a [u8], cost: u64, limit: Limit) -> BoxFut<'a, Result<Taken>> {
         Box::pin(async move { Ok(self.take_at(key, cost, limit, now_ms())) })
+    }
+
+    fn prune(&self) -> BoxFut<'_, Result<u64>> {
+        Box::pin(async move {
+            let now = now_ms();
+            let mut counters = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
+            let before = counters.len();
+            counters.retain(|_, counter| counter.window_ends > now);
+            Ok((before - counters.len()) as u64)
+        })
     }
 }

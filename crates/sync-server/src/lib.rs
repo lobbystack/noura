@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sync_store::{Backend, Store};
+use sync_store::{Backend, Limiter, Store};
 use sync_store_sqlite::SqliteBackend;
 use tokio::net::TcpListener;
 
@@ -101,6 +101,7 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     let log_dir = config.data_dir.join(data::LOG_DIR);
     logs::init(&log_dir).map_err(|e| CommandError(format!("can't open the log: {e}")))?;
     let pruning = logs::spawn_pruning(log_dir, logs::PRUNE_PERIOD);
+    let counters = spawn_counter_pruning(store.backend().limiter());
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|e| CommandError(format!("can't listen on {}: {e}", config.listen)))?;
@@ -111,9 +112,24 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     eprintln!("sync-server listening on {bound}");
     let served = serve_on(store.clone(), listener, shutdown_signal()).await;
     pruning.abort();
+    counters.abort();
     store.backend().close().await;
     tracing::info!("stopped");
     served.map_err(|e| CommandError(format!("the server failed: {e}")))
+}
+
+/// Deletes the limiter's counts of ended windows every minute, so no count
+/// outlives its window by more than that (§29).
+fn spawn_counter_pruning(limiter: Arc<dyn Limiter>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(sync_store::limiter::PRUNE_EVERY);
+        loop {
+            every.tick().await;
+            if let Err(error) = limiter.prune().await {
+                tracing::warn!("can't prune the rate counters: {error}");
+            }
+        }
+    })
 }
 
 /// `sync-server healthcheck`: whether a Noura sync server answers
