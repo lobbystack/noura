@@ -9,18 +9,22 @@
 //! window shares the bytes egui holds for a workspace image, which egui
 //! forgets once no open note draws from them. An embed of a PDF draws the
 //! page its link names, which `app-core` draws on another thread, with an
-//! Open in tab button over its corner.
+//! Open in tab button over its corner. An embed of a locked PDF says so
+//! beside the button, since only its tab asks for the password.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use app_core::{
-    EMBED_WIDTH, ImageVersion, NoteLinks, PdfEmbedState, RemoteImageState, is_remote_image,
+    EMBED_WIDTH, EmbedProblem, ImageVersion, NoteLinks, PdfEmbedState, RemoteImageState,
+    is_remote_image,
 };
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
 use egui::load::{SizeHint, SizedTexture, TexturePoll};
-use egui::{Button, CornerRadius, Rect, TextureHandle, TextureOptions, Ui, Vec2, vec2};
+use egui::{
+    Button, CornerRadius, Label, Rect, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, vec2,
+};
 
 /// The PDFs whose embed's Open in tab button was pressed, with the page
 /// each one's link names, for the note's view to open after it draws.
@@ -28,6 +32,12 @@ pub(crate) type PdfOpens = Arc<Mutex<Vec<(String, Option<u32>)>>>;
 
 /// The box an image takes while it loads, in pixels.
 const LOADING_SIZE: Vec2 = Vec2::new(96.0, 96.0);
+
+/// The box an embed of a locked PDF takes, in points.
+const LOCKED_SIZE: Vec2 = Vec2::new(360.0, 96.0);
+
+/// What an embed of a locked PDF says beside its Open in tab button.
+pub(crate) const LOCKED_PDF: &str = "This PDF is locked. Open it in a tab to enter its password.";
 
 /// Where a workspace image stands.
 #[derive(Clone, PartialEq, Eq)]
@@ -130,6 +140,8 @@ pub(crate) struct WorkspaceImages {
     /// The pages the note's PDF embeds drew, as uploaded, by the address
     /// the note names each embed with.
     pdf_pages: Mutex<HashMap<String, (u64, TextureHandle)>>,
+    /// The addresses of the note's embeds of locked PDFs.
+    locked_pdfs: Mutex<HashSet<String>>,
     /// Where an Open in tab button puts its PDF.
     opens: PdfOpens,
 }
@@ -159,6 +171,7 @@ impl WorkspaceImages {
             decoded: Mutex::default(),
             included: Mutex::default(),
             pdf_pages: Mutex::default(),
+            locked_pdfs: Mutex::default(),
             opens,
         }
     }
@@ -167,7 +180,22 @@ impl WorkspaceImages {
     /// drew.
     fn pdf_state(&self, url: &str) -> EmbedState {
         let ctx = self.ctx.clone();
-        match self.links.pdf_embed(url, move || ctx.request_repaint()) {
+        let state = self.links.pdf_embed(url, move || ctx.request_repaint());
+        let locked = state == Some(PdfEmbedState::Problem(EmbedProblem::Locked));
+        if locked {
+            self.locked_pdfs.lock().unwrap().insert(url.to_owned());
+        } else {
+            self.locked_pdfs.lock().unwrap().remove(url);
+        }
+        match state {
+            // A box that keeps the Open in tab button, whose tab asks for
+            // the password. A page drawn before the PDF locked goes.
+            Some(PdfEmbedState::Problem(EmbedProblem::Locked)) => {
+                if self.pdf_pages.lock().unwrap().remove(url).is_some() {
+                    self.seq.fetch_add(1, Ordering::SeqCst);
+                }
+                EmbedState::Loaded(LOCKED_SIZE * self.ctx.pixels_per_point())
+            }
             None | Some(PdfEmbedState::Problem(_)) => EmbedState::NotFound,
             // A Letter page's shape, until the page draws.
             Some(PdfEmbedState::Drawing) => {
@@ -207,8 +235,31 @@ impl WorkspaceImages {
                 .corner_radius(rounding)
                 .paint_at(ui, rect);
         }
-        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
         let size = vec2(96.0, 24.0);
+        if self.locked_pdfs.lock().unwrap().contains(url) {
+            let visuals = ui.visuals();
+            ui.painter().rect(
+                rect,
+                rounding,
+                visuals.faint_bg_color,
+                visuals.widgets.noninteractive.bg_stroke,
+                StrokeKind::Inside,
+            );
+            let text = Rect::from_min_max(
+                rect.left_top() + vec2(12.0, 8.0),
+                rect.right_bottom() - vec2(size.x + 20.0, 8.0),
+            );
+            if text.is_positive() {
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt(("locked", url))
+                        .max_rect(text)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                    |ui| ui.add(Label::new(LOCKED_PDF).wrap()),
+                );
+            }
+        }
+        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
         let button = Rect::from_min_size(rect.right_top() + vec2(-size.x - 8.0, 8.0), size);
         let response = ui
             .push_id(url, |ui| ui.put(button, Button::new("Open in tab")))

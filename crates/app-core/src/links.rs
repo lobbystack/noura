@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use local_core::WorkspaceEngine;
 
@@ -138,17 +139,51 @@ struct EmbedRead {
     reading: bool,
 }
 
+/// How many PDF embeds Noura keeps beyond those a note asked for in the
+/// last [`PDF_EMBED_RECENT`]. A page drawn [`EMBED_WIDTH`] pixels wide
+/// takes about 7 MB.
+const PDF_EMBEDS_KEPT: usize = 8;
+
+/// How long a PDF embed counts as shown after a note last asked for it.
+/// An open note asks for its embeds each time it draws.
+const PDF_EMBED_RECENT: Duration = Duration::from_secs(30);
+
+/// Each PDF embed by the PDF's path and the page its link names.
+type PdfEmbedPages = HashMap<(String, Option<u32>), PdfEmbedDraw>;
+
 /// What the PDF embeds drawn so far show, kept across listings.
 #[derive(Default)]
 struct PdfEmbeds {
-    /// Each embed by the PDF's path and the page its link names.
-    pages: Mutex<HashMap<(String, Option<u32>), PdfEmbedDraw>>,
+    pages: Mutex<PdfEmbedPages>,
     /// Counts the drawings finished so far.
     drawn: AtomicU64,
 }
 
+/// Forget the PDF embeds no note asked for since `now` less
+/// [`PDF_EMBED_RECENT`], oldest first, until at most [`PDF_EMBEDS_KEPT`]
+/// remain. An embed asked for again draws again.
+fn forget_unshown_pdf_embeds(pages: &mut PdfEmbedPages, now: Instant) {
+    if pages.len() <= PDF_EMBEDS_KEPT {
+        return;
+    }
+    let mut unshown: Vec<(Instant, (String, Option<u32>))> = pages
+        .iter()
+        .filter(|(_, embed)| {
+            !embed.busy && now.saturating_duration_since(embed.asked) >= PDF_EMBED_RECENT
+        })
+        .map(|(key, embed)| (embed.asked, key.clone()))
+        .collect();
+    unshown.sort();
+    let extra = pages.len() - PDF_EMBEDS_KEPT;
+    for (_, key) in unshown.into_iter().take(extra) {
+        pages.remove(&key);
+    }
+}
+
 /// What one PDF embed shows, and which version of the file it drew.
 struct PdfEmbedDraw {
+    /// When a note last asked for it.
+    asked: Instant,
     /// The listing the newest check or drawing started under.
     listing: u64,
     /// The size and modification time of the file the drawing came from.
@@ -361,6 +396,7 @@ impl NoteLinks {
     ) -> Option<PdfEmbedState> {
         let listing = self.files.get().seq;
         let (path, asked) = self.pdf_link(target)?;
+        let now = Instant::now();
         let pdfs = Arc::clone(&self.files.pdfs);
         let mut pages = pdfs
             .pages
@@ -368,44 +404,59 @@ impl NoteLinks {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let key = (path.clone(), asked);
         let embed = pages.entry(key.clone()).or_insert_with(|| PdfEmbedDraw {
+            asked: now,
             listing,
             stamp: None,
             shown: None,
             busy: false,
         });
+        embed.asked = now;
         if (embed.shown.is_none() || embed.listing != listing) && !embed.busy {
             embed.listing = listing;
             embed.busy = true;
             let known = embed.shown.is_some().then_some(embed.stamp);
             let engine = Arc::clone(&self.engine);
             let pdfs = Arc::clone(&pdfs);
-            std::thread::spawn(move || {
-                // The version comes first, so a write during the drawing
-                // makes the next check differ.
-                let stamp = engine.file_version(&path).ok();
-                let shown = (known != Some(stamp)).then(|| {
-                    match draw_page_once(&engine, &path, asked, EMBED_WIDTH) {
-                        Ok(picture) => PdfEmbedState::Drawn(picture),
-                        Err(problem) => PdfEmbedState::Problem(problem),
+            let spawned = std::thread::Builder::new()
+                .name("pdf-embed".into())
+                .spawn(move || {
+                    // The version comes first, so a write during the drawing
+                    // makes the next check differ.
+                    let stamp = engine.file_version(&path).ok();
+                    let shown = (known != Some(stamp)).then(|| {
+                        match draw_page_once(&engine, &path, asked, EMBED_WIDTH) {
+                            Ok(picture) => PdfEmbedState::Drawn(picture),
+                            Err(problem) => PdfEmbedState::Problem(problem),
+                        }
+                    });
+                    if let Some(embed) = pdfs
+                        .pages
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get_mut(&key)
+                    {
+                        embed.busy = false;
+                        if let Some(shown) = shown {
+                            embed.stamp = stamp;
+                            embed.shown = Some(shown);
+                        }
                     }
+                    pdfs.drawn.fetch_add(1, Ordering::SeqCst);
+                    drawn();
                 });
-                if let Some(embed) = pdfs
-                    .pages
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get_mut(&key)
-                {
-                    embed.busy = false;
-                    if let Some(shown) = shown {
-                        embed.stamp = stamp;
-                        embed.shown = Some(shown);
-                    }
-                }
-                pdfs.drawn.fetch_add(1, Ordering::SeqCst);
-                drawn();
-            });
+            if let Err(error) = spawned {
+                // The next listing tries again; the last drawing shows
+                // meanwhile.
+                tracing::warn!(%error, "a PDF embed's thread didn't start");
+                embed.busy = false;
+                embed
+                    .shown
+                    .get_or_insert(PdfEmbedState::Problem(EmbedProblem::Unreadable));
+            }
         }
-        Some(embed.shown.clone().unwrap_or(PdfEmbedState::Drawing))
+        let shown = embed.shown.clone().unwrap_or(PdfEmbedState::Drawing);
+        forget_unshown_pdf_embeds(&mut pages, now);
+        Some(shown)
     }
 
     /// The workspace file `target` leads to, or `None` when it names no
@@ -829,5 +880,49 @@ mod tests {
         assert!(has_extension("x.markdown"));
         assert!(!has_extension("v1.2 notes"));
         assert!(!has_extension("folder.d/Plan"));
+    }
+
+    #[test]
+    fn noura_keeps_every_shown_pdf_embed_and_at_most_eight_others() {
+        use super::{
+            PDF_EMBED_RECENT, PDF_EMBEDS_KEPT, PdfEmbedDraw, PdfEmbedPages,
+            forget_unshown_pdf_embeds,
+        };
+        use std::time::{Duration, Instant};
+
+        let now = Instant::now() + 10 * PDF_EMBED_RECENT;
+        let embed = |asked: Instant, busy: bool| PdfEmbedDraw {
+            asked,
+            listing: 0,
+            stamp: None,
+            shown: None,
+            busy,
+        };
+        let key = |page: u32| (format!("{page}.pdf"), Some(page));
+        let mut pages = PdfEmbedPages::new();
+        // Ten embeds a note showed long ago, the oldest first, one of them
+        // drawing still, and three a note shows now.
+        for page in 0..10 {
+            let asked = now - 5 * PDF_EMBED_RECENT + Duration::from_secs(u64::from(page));
+            pages.insert(key(page), embed(asked, page == 1));
+        }
+        for page in 10..13 {
+            pages.insert(key(page), embed(now, false));
+        }
+
+        forget_unshown_pdf_embeds(&mut pages, now);
+
+        assert_eq!(pages.len(), PDF_EMBEDS_KEPT);
+        let mut kept: Vec<u32> = pages.keys().filter_map(|(_, page)| *page).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, [1, 6, 7, 8, 9, 10, 11, 12]);
+
+        // With more shown than Noura keeps, it keeps every shown one.
+        let mut shown = PdfEmbedPages::new();
+        for page in 0..20 {
+            shown.insert(key(page), embed(now - Duration::from_secs(1), false));
+        }
+        forget_unshown_pdf_embeds(&mut shown, now);
+        assert_eq!(shown.len(), 20);
     }
 }

@@ -458,6 +458,49 @@ fn a_pdf_embedded_in_a_note_shows_its_page_and_opens_in_a_tab_at_that_page() {
 }
 
 #[test]
+fn an_embed_of_a_locked_pdf_says_so_and_opens_in_a_tab_that_asks_for_the_password() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let note = "# Reading\n\n![[locked.pdf#page=2]]\n";
+    let mut harness = workspace(
+        app_data.path(),
+        &folder,
+        &[
+            ("locked.pdf", &pdf("locked.pdf")),
+            ("Reading.md", note.as_bytes()),
+        ],
+    );
+    open(&mut harness, "Reading");
+    let note_tab = active(&harness);
+
+    wait_until(
+        &mut harness,
+        "the embed says the PDF is locked",
+        |harness| {
+            harness
+                .query_by_label("This PDF is locked. Open it in a tab to enter its password.")
+                .is_some()
+        },
+    );
+    harness
+        .get_by_role_and_label(Role::Button, "Open locked.pdf in a tab")
+        .click();
+    harness.run_steps(4);
+
+    assert_ne!(active(&harness), note_tab);
+    wait_until(&mut harness, "the tab asks for the password", |harness| {
+        harness
+            .query_by_role_and_label(Role::PasswordInput, "PDF password")
+            .is_some()
+    });
+    assert_eq!(
+        std::fs::read_to_string(folder.join("Reading.md")).unwrap(),
+        note
+    );
+}
+
+#[test]
 fn a_click_on_a_page_link_in_a_note_opens_the_pdf_at_that_page() {
     let note = "See [the summary](Docs/text.pdf#page=2), [the end](text.pdf#page=9) \
                 and [the start](text.pdf#page=x).\n";

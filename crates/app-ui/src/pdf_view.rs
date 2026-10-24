@@ -201,10 +201,7 @@ fn password_form(
             });
             ui.add_space(4.0);
         }
-        if view.password.capacity() < PASSWORD_ROOM {
-            // The field is empty here, so nothing is left behind.
-            view.password.reserve(PASSWORD_ROOM);
-        }
+        make_room(&mut view.password);
         let field = ui
             .add(
                 TextEdit::singleline(&mut view.password)
@@ -226,6 +223,18 @@ fn password_form(
             actions.push(Action::Unlock);
         }
     });
+}
+
+/// Give the password field's text [`PASSWORD_ROOM`] bytes, so typing
+/// never moves it. An undo in the field hands it text with no room to
+/// spare, so the text moves to a new string and Noura wipes the old one.
+fn make_room(password: &mut String) {
+    if password.capacity() >= PASSWORD_ROOM {
+        return;
+    }
+    let mut roomy = String::with_capacity(PASSWORD_ROOM);
+    roomy.push_str(password);
+    std::mem::replace(password, roomy).zeroize();
 }
 
 /// A button that shows `icon` and reads as `label`.
@@ -574,7 +583,7 @@ mod tests {
     use app_core::PdfPicture;
     use egui::vec2;
 
-    use super::{fit_within, picture_image};
+    use super::{PASSWORD_CHARS, PASSWORD_ROOM, fit_within, make_room, picture_image};
 
     fn picture(width: u32, height: u32, bytes: usize) -> PdfPicture {
         PdfPicture {
@@ -612,5 +621,23 @@ mod tests {
         // A sliver still shows a point.
         assert_eq!(fit_within([14400.0, 1.0], bounds).y, 1.0);
         assert_eq!(fit_within([1.0, 14400.0], bounds).x, 1.0);
+    }
+
+    #[test]
+    fn the_password_moves_to_a_roomy_string_and_keeps_its_text() {
+        // As an undo leaves it: no room past the text.
+        let mut password = String::from("open sesame");
+        password.shrink_to_fit();
+        assert!(password.capacity() < PASSWORD_ROOM);
+
+        make_room(&mut password);
+
+        assert_eq!(password, "open sesame");
+        assert!(password.capacity() >= PASSWORD_ROOM);
+        // Typing up to the limit then fits where the text is.
+        let before = password.as_ptr();
+        password.push_str(&"\u{e9}".repeat(PASSWORD_CHARS - "open sesame".len()));
+        make_room(&mut password);
+        assert_eq!(password.as_ptr(), before);
     }
 }
