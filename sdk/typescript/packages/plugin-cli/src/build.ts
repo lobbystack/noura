@@ -84,6 +84,11 @@ export const tools = part(exported('tools'), {
 });
 `;
 
+/** A console whose every method does nothing. */
+const QUIET_CONSOLE = `const nothing = () => {};
+export default new Proxy({}, { get: () => nothing });
+`;
+
 /** Build the plugin in `folder`. */
 export async function build(folder: string): Promise<Built> {
 	const started = performance.now();
@@ -108,6 +113,14 @@ export async function build(folder: string): Promise<Built> {
 		const entry = join(work, 'entry.ts');
 		const imported = source.split(sep).join('/');
 		await writeFile(entry, `// @ts-nocheck\nimport * as plugin from ${JSON.stringify(imported)};\n${DEFAULTS}`);
+		// Noura gives plugins no console, so `console` is one that drops
+		// what it's given rather than one the host would have to provide.
+		const quiet = join(work, 'console.js');
+		await writeFile(quiet, QUIET_CONSOLE);
+		await writeFile(
+			join(work, 'bundle.config.mjs'),
+			`export default { transform: { inject: { console: [${JSON.stringify(quiet.split(sep).join('/'))}, 'default'] } } };\n`,
+		);
 		const out = join(work, 'plugin.wasm');
 		await componentize(entry, wit, out, { work, folder });
 		await mkdir(dirname(component), { recursive: true });
@@ -161,6 +174,8 @@ function componentize(
 		'qjs',
 		'--backend-qjs-disable-async',
 		'--backend-qjs-stub-wasi',
+		'--bundle-config',
+		join(work, 'bundle.config.mjs'),
 		'--out',
 		out,
 	];

@@ -28,5 +28,8 @@
 	"dependencies": {
 		"@bytecodealliance/jco": "1.39.0",
 		"@noura/plugin-cli": "0.1.0"
+	},
+	"devDependencies": {
+		"@noura/plugin-types": "0.1.0"
 	}
 }
