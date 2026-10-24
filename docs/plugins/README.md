@@ -155,7 +155,15 @@ The mock host implements every interface of `noura:plugin` from the same WIT the
 - `fetch`: answers to the requests that pass the manifest's hosts.
 - `commands`: other plugins' commands, by `plugin/command`.
 
-The host drives each export: `pages`, `view`, `texts`, `sidebar`, `rows`, `send` and `press` for pages, `commands`, `runCommand` and `callCommand`, `inboxSections`, `inboxSection` and `sendInbox`, `settingsPage`, `settings` and `sendSettings`, `tools` and `callTool`, and `objectTypes`, `panel` and `sendPanel`. `host.objects()` lists the objects the plugin wrote, and `host.openings` what it asked Noura to open. A call to an export whose capability the manifest doesn't declare throws a `CapabilityError` that names it.
+The host's methods drive each export:
+
+- Pages: `pages`, `view`, `texts`, `sidebar`, `rows`, `send` and `press`.
+- Commands: `commands`, `runCommand`, as the palette runs one, and `callCommand`, as another plugin calls one.
+- The Inbox and Settings: `inboxSections`, `inboxSection`, `sendInbox`, `settingsPage`, `settings` and `sendSettings`.
+- Tools: `tools` and `callTool`.
+- Object types: `objectTypes`, `panel` and `sendPanel`.
+
+`host.objects()` lists the objects the plugin wrote, and `host.openings` what it asked Noura to open. Without its capability, a listing method such as `pages` returns nothing, since Noura never asks, and the other methods throw a `CapabilityError` that names the capability.
 
 The mock host doesn't check views against Noura's drawing rules or properties against their schemas. Run the plugin in Noura for those.
 
