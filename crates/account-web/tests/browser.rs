@@ -2,7 +2,8 @@
 //! account pages and the module, and Chrome with a virtual WebAuthn
 //! authenticator signs up with a passkey, confirms the email through the
 //! mailed link, adds a second passkey and signs in with each one. The pages
-//! block inline scripts.
+//! block inline scripts, and with script turned off their email-link forms
+//! still sign you in.
 //!
 //! The test needs Chrome or Chrome's headless shell, which `NOURA_CHROME`
 //! names, and the module that `scripts/build-account-web.sh` builds, which
@@ -24,6 +25,7 @@ use chromiumoxide::cdp::browser_protocol::web_authn::{
     AuthenticatorTransport, Credential, EnableParams, GetCredentialsParams,
     RemoveVirtualAuthenticatorParams, VirtualAuthenticatorOptions,
 };
+use chromiumoxide::cdp::browser_protocol::emulation::SetScriptExecutionDisabledParams;
 use chromiumoxide::page::Page;
 use futures_util::StreamExt;
 use sync_server::accounts::Deliveries;
@@ -141,18 +143,23 @@ async fn sign_out(page: &Page) {
     until(page, "location.pathname === '/account/sign-in'").await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs Chrome, which NOURA_CHROME names, and the built module"]
-async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either() {
-    let chrome =
-        std::env::var_os("NOURA_CHROME").expect("NOURA_CHROME names Chrome or its headless shell");
+/// The real sync server with the account pages and the built module, an
+/// allowlist that admits ada@example.com, and mail in an outbox.
+struct Site {
+    base: String,
+    outbox: Outbox,
+    /// The server mails after it answers; the tests wait for the sends.
+    deliveries: Deliveries,
+    _dir: tempfile::TempDir,
+}
+
+async fn site() -> Site {
     let assets = assets();
     assert!(
         assets.join("account_web_bg.wasm").exists(),
         "run scripts/build-account-web.sh first; {} holds no module",
         assets.display()
     );
-
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     sync_server::migrate(&data).await.unwrap();
@@ -166,7 +173,6 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
     );
     let outbox = Outbox::default();
     let mailer = outbox.clone();
-    // The server mails after it answers; the test waits for the sends.
     let deliveries = Deliveries::default();
     let counted = deliveries.clone();
     let address = sync_server::spawn_with(store, "127.0.0.1:0", move |origin| {
@@ -181,10 +187,21 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
     })
     .await
     .unwrap();
-    let base = format!("http://localhost:{}", address.port());
+    Site {
+        base: format!("http://localhost:{}", address.port()),
+        outbox,
+        deliveries,
+        _dir: dir,
+    }
+}
 
+/// Chrome, from `NOURA_CHROME`, with a fresh profile, and the task that
+/// drives its DevTools connection.
+async fn launch() -> (Browser, tokio::task::JoinHandle<()>, tempfile::TempDir) {
+    let chrome =
+        std::env::var_os("NOURA_CHROME").expect("NOURA_CHROME names Chrome or its headless shell");
     let profile = tempfile::tempdir().unwrap();
-    let (mut browser, mut handler) = Browser::launch(
+    let (browser, mut handler) = Browser::launch(
         BrowserConfig::builder()
             .chrome_executable(chrome)
             .user_data_dir(profile.path())
@@ -197,6 +214,30 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
     .await
     .expect("Chrome starts");
     let events = tokio::spawn(async move { while handler.next().await.is_some() {} });
+    (browser, events, profile)
+}
+
+/// The first link to `base` in the last mail the outbox holds.
+async fn mailed_link(site: &Site) -> String {
+    site.deliveries.idle().await;
+    let mail = site.outbox.0.lock().unwrap().pop().expect("a mail");
+    mail.text
+        .split_whitespace()
+        .find(|w| w.starts_with(&site.base))
+        .expect("the link")
+        .to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs Chrome, which NOURA_CHROME names, and the built module"]
+async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either() {
+    let Site {
+        base,
+        outbox,
+        deliveries,
+        _dir,
+    } = site().await;
+    let (mut browser, events, _profile) = launch().await;
     let page = browser.new_page("about:blank").await.unwrap();
     page.execute(EnableParams::default()).await.unwrap();
     let laptop = authenticator(&page).await;
@@ -256,6 +297,7 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
         .find(|w| w.starts_with(&base))
         .expect("the link")
         .to_owned();
+    assert_eq!(mail.subject, "Confirm your Noura account");
     open(&page, &link).await;
     let _: bool = eval(
         &page,
@@ -313,6 +355,54 @@ async fn a_browser_signs_up_with_a_passkey_adds_another_and_signs_in_with_either
         "document.body.innerText.includes('You have 2 passkeys.')",
     )
     .await;
+
+    browser.close().await.unwrap();
+    let _ = browser.wait().await;
+    events.abort();
+}
+
+/// With script turned off, the module never runs and the pages still work
+/// as plain forms: the email-link form mails a link, and the link's page
+/// signs you in with its one button.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs Chrome, which NOURA_CHROME names, and the built module"]
+async fn the_email_link_forms_work_with_script_turned_off() {
+    let site = site().await;
+    let (mut browser, events, _profile) = launch().await;
+    let page = browser.new_page("about:blank").await.unwrap();
+    page.execute(SetScriptExecutionDisabledParams::new(true))
+        .await
+        .unwrap();
+    open(&page, &format!("{}/account/sign-in", site.base)).await;
+    // The module never ran: it shows the passkey button once it loads.
+    let hidden: bool = eval(&page, "document.querySelector('[data-passkey-start]').hidden").await;
+    assert!(hidden, "the module ran with script turned off");
+
+    // The test fills the field and submits the form as the browser's own
+    // submit does, with no script of the page.
+    let _: bool = eval(
+        &page,
+        "document.querySelector('input[name=email]').value = 'Ada@Example.com', true",
+    )
+    .await;
+    let _: bool = eval(
+        &page,
+        "document.querySelector('form[action=\"/account/email-link\"]').requestSubmit(), true",
+    )
+    .await;
+    until(&page, "document.body.innerText.includes('Check your email')").await;
+    let link = mailed_link(&site).await;
+    open(&page, &link).await;
+    let _: bool = eval(
+        &page,
+        "document.querySelector('form').requestSubmit(), true",
+    )
+    .await;
+    until(&page, "location.pathname === '/account'").await;
+    until(&page, "document.body.innerText.includes('ada@example.com')").await;
+    let still_hidden: bool =
+        eval(&page, "document.querySelector('[data-passkey-start]').hidden").await;
+    assert!(still_hidden);
 
     browser.close().await.unwrap();
     let _ = browser.wait().await;
