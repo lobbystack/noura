@@ -297,6 +297,14 @@ impl NoteLinks {
         resolve_link_path(&self.source, target, &self.files.get())
     }
 
+    /// Whether following a link to `target` from this note leads
+    /// somewhere: to a web page for an `http`, `https` or `www.` address,
+    /// as [`App::follow_note_link`](crate::App::follow_note_link) sends
+    /// it, or to a workspace file.
+    pub fn leads_somewhere(&self, target: &str) -> bool {
+        web_address(target.trim()).is_some() || self.resolve(target).is_some()
+    }
+
     /// The workspace files that typing `[[typed` suggests, best first, as
     /// quick open ranks them: names before paths, an exact name before a
     /// name that starts with what you typed. Nothing typed lists files by
@@ -324,28 +332,39 @@ impl NoteLinks {
             .collect()
     }
 
-    /// How `[[` offers the file at `path`. A shared name links by path,
-    /// from the top of the workspace when the path alone would lead to
-    /// another file from this note.
+    /// How `[[` offers the file at `path`. A unique name links by name and
+    /// a shared one by path. When that leads to another file from this
+    /// note, the link is the path from the top of the workspace, then the
+    /// path with `.md`, as for `Report.pdf.md` beside `Report.pdf`.
     fn suggestion(&self, index: &LinkIndex, path: &str) -> LinkSuggestion {
         let name = embed_title(path);
         let shared = index
             .shown_names
             .get(&name.to_lowercase())
             .is_some_and(|count| *count > 1);
-        let link = if shared {
-            let without_md = if crate::notes::is_markdown(path) {
-                &path[..path.len() - 3]
-            } else {
-                path
-            };
-            match resolve_link_path(&self.source, without_md, index) {
-                Some(found) if found == path => without_md.to_owned(),
-                _ => format!("/{without_md}"),
-            }
+        let without_md = if crate::notes::is_markdown(path) {
+            &path[..path.len() - 3]
         } else {
-            name.clone()
+            path
         };
+        let mut links = vec![
+            without_md.to_owned(),
+            format!("/{without_md}"),
+            path.to_owned(),
+            format!("/{path}"),
+        ];
+        if !shared {
+            links.insert(0, name.clone());
+        }
+        let leads_here =
+            |link: &String| resolve_link_path(&self.source, link, index).as_deref() == Some(path);
+        // A file no link reaches, as `Plan` beside `Plan.md`, keeps the
+        // first.
+        let link = links
+            .iter()
+            .find(|link| leads_here(link))
+            .unwrap_or(&links[0])
+            .clone();
         LinkSuggestion {
             folder: shared.then(|| folder_of(path).to_owned()),
             name,
@@ -549,6 +568,24 @@ pub fn is_external_link(url: &str) -> bool {
     url.get(..4)
         .is_some_and(|start| start.eq_ignore_ascii_case("www."))
         || (has_scheme(url) && url.find(':').is_some_and(|colon| colon > 1))
+}
+
+/// The web page a link to `target` opens: `target` itself when it starts
+/// with `http://` or `https://`, and `https://` before it when it starts
+/// with `www.`.
+pub(crate) fn web_address(target: &str) -> Option<String> {
+    let starts_with = |prefix: &str| {
+        target
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    };
+    if starts_with("http://") || starts_with("https://") {
+        Some(target.to_owned())
+    } else if starts_with("www.") {
+        Some(format!("https://{target}"))
+    } else {
+        None
+    }
 }
 
 /// Whether `url` names a remote image, which loads only when you ask.

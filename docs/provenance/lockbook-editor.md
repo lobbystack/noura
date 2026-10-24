@@ -116,6 +116,8 @@ Ticket 19 removed Lockbook's Tab handling and the flattening of non-breaking spa
 
 Ticket 20 changed how links open. A click on a drawn link opens it, as in the legacy app, where Lockbook asked for Cmd-click on the desktop. A link whose source shows takes a plain click as a caret move: the editor decides with the reveal rule that draws the source, where Lockbook counted only a caret inside the link. Cmd-click, Ctrl-click off Apple platforms and a middle-click ask for a new tab, and a Ctrl-click on macOS opens nothing. Alt-Enter opens the link at the caret. The editor reports each link you open with its target as the note writes it, and the embedding app finds where it leads. Ticket 20 removed `open_link` and the `OpenedLink` variants that carried a resolved target.
 
+The `[[` list takes Up, Down, Enter, Tab and Escape only while you hold no modifier, so Shift-Up still extends the selection and Alt-Enter still follows a link. After a pick, the list stays closed until you type again, even when the caret stays in the link before a `|` or `#`. A pick inside an `![[embed]]` keeps the embed's `]]`, size and heading.
+
 ## Left behind
 
 | Source | Reason |

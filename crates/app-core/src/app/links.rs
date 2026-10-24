@@ -4,7 +4,7 @@
 use super::App;
 use crate::{
     AppError, OpenAs, TabId,
-    links::{is_external_link, link_path},
+    links::{is_external_link, link_path, web_address},
 };
 
 impl App {
@@ -43,23 +43,5 @@ impl App {
                 );
             }
         }
-    }
-}
-
-/// The web page a link to `target` opens: `target` itself when it starts
-/// with `http://` or `https://`, and `https://` before it when it starts
-/// with `www.`.
-fn web_address(target: &str) -> Option<String> {
-    let starts_with = |prefix: &str| {
-        target
-            .get(..prefix.len())
-            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
-    };
-    if starts_with("http://") || starts_with("https://") {
-        Some(target.to_owned())
-    } else if starts_with("www.") {
-        Some(format!("https://{target}"))
-    } else {
-        None
     }
 }

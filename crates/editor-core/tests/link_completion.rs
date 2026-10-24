@@ -95,6 +95,20 @@ fn there_is_no_query_in_code_in_plain_text_or_with_a_selection() {
 }
 
 #[test]
+fn there_is_no_query_in_math_or_a_link_destination() {
+    for (text, caret) in [("$[[pl$ x\n", 5), ("[x]([[pl) y\n", 8)] {
+        let mut doc = MdDoc::new(text);
+        caret_at(&mut doc, caret);
+        assert_eq!(query(&mut doc), None, "{text:?}");
+    }
+
+    // A wikilink beside them still takes one.
+    let mut doc = MdDoc::new("$x$ [[pl and [x](y.md)\n");
+    caret_at(&mut doc, 8);
+    assert_eq!(query(&mut doc).as_deref(), Some("pl"));
+}
+
+#[test]
 fn picking_a_file_inserts_its_link_and_closes_the_brackets() {
     let mut doc = MdDoc::new("");
     type_text(&mut doc, "See [[pl");
@@ -140,6 +154,58 @@ fn picking_a_file_keeps_brackets_that_already_follow() {
     pick(&mut doc, "Plan");
     assert_eq!(doc.text(), "[[Plan|the plan]] and [[Plan#Goals]]\n");
     assert_eq!(doc.selection(), (g(28), g(28)));
+}
+
+#[test]
+fn picking_a_file_with_nothing_typed_keeps_brackets_that_follow() {
+    let mut doc = MdDoc::new("See [[]] here\n");
+    caret_at(&mut doc, 6);
+    assert_eq!(query(&mut doc).as_deref(), Some(""));
+    pick(&mut doc, "Plan");
+    assert_eq!(doc.text(), "See [[Plan]] here\n");
+    assert_eq!(doc.selection(), (g(12), g(12)));
+}
+
+#[test]
+fn picking_a_file_inside_an_embed_keeps_the_embed_whole() {
+    // (text, caret, typed, picked, text after, caret after)
+    for (text, caret, typed, link, expected, after) in [
+        ("![[p]]\n", 4, "i", "pic.png", "![[pic.png]]\n", 12),
+        ("![[]]\n", 3, "p", "pic.png", "![[pic.png]]\n", 12),
+        ("![[]]\n", 3, "", "pic.png", "![[pic.png]]\n", 12),
+        ("![[p|300]]\n", 4, "i", "pic.png", "![[pic.png|300]]\n", 10),
+        (
+            "See ![[N#Sec]] here\n",
+            8,
+            "o",
+            "Note",
+            "See ![[Note#Sec]] here\n",
+            11,
+        ),
+        ("![[Plxx]]\n", 5, "", "Plan", "![[Plan]]\n", 9),
+        (
+            "![[Pl xx|alias]] and more\n",
+            5,
+            "",
+            "Plan",
+            "![[Plan|alias]] and more\n",
+            7,
+        ),
+    ] {
+        let mut doc = MdDoc::new(text);
+        caret_at(&mut doc, caret);
+        type_text(&mut doc, typed);
+        assert!(query(&mut doc).is_some(), "{text:?}");
+        pick(&mut doc, link);
+        assert_eq!(doc.text(), expected, "{text:?}");
+        assert_eq!(doc.selection(), (g(after), g(after)), "{text:?}");
+    }
+
+    // An embed being typed gets its closing brackets.
+    let mut doc = MdDoc::new("");
+    type_text(&mut doc, "Look ![[pi");
+    pick(&mut doc, "pic.png");
+    assert_eq!(doc.text(), "Look ![[pic.png]]");
 }
 
 #[test]

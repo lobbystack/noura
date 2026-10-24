@@ -174,6 +174,28 @@ fn web_links_open_in_the_browser_and_other_schemes_do_nothing() {
 }
 
 #[test]
+fn a_link_leads_somewhere_when_following_it_opens_a_page_or_a_file() {
+    let fixture = Fixture::new(FILES);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Inbox.md");
+    let links = app.note_links(tab).unwrap();
+
+    // What the browser opens leads somewhere, in a wikilink too.
+    for target in [
+        "https://example.com",
+        "HTTP://example.org",
+        "www.example.com/page",
+        "Plan",
+        "diagram.png",
+    ] {
+        assert!(links.leads_somewhere(target), "{target:?}");
+    }
+    for target in ["Plan B", "mailto:someone@example.com", "obsidian://open"] {
+        assert!(!links.leads_somewhere(target), "{target:?}");
+    }
+}
+
+#[test]
 fn a_link_to_a_missing_note_says_so_and_writes_nothing() {
     let fixture = Fixture::new(FILES);
     let system = FakeSystem::new();

@@ -105,8 +105,21 @@ fn point_at(harness: &Ui, needle: &str, nth: usize) -> Pos2 {
 }
 
 /// Click `button` at `pos` with `modifiers` held, as a person does: the
-/// pointer and the keys get there a few frames before the click.
+/// pointer and the keys get there a few frames before the click. The
+/// harness gives each event a frame, so the press and the release come a
+/// frame apart.
 fn click_at(harness: &mut Ui, pos: Pos2, button: PointerButton, modifiers: Modifiers) {
+    click_held(harness, pos, button, modifiers, 0);
+}
+
+/// [`click_at`], with the button held down for `frames` more frames.
+fn click_held(
+    harness: &mut Ui,
+    pos: Pos2,
+    button: PointerButton,
+    modifiers: Modifiers,
+    frames: usize,
+) {
     harness.event(Event::PointerMoved(pos));
     harness.event(Event::ModifiersChanged(modifiers));
     harness.run_steps(3);
@@ -117,6 +130,9 @@ fn click_at(harness: &mut Ui, pos: Pos2, button: PointerButton, modifiers: Modif
             pressed,
             modifiers,
         });
+        if pressed {
+            harness.run_steps(1 + frames);
+        }
     }
     harness.event(Event::ModifiersChanged(Modifiers::NONE));
     harness.run_steps(6);
@@ -133,6 +149,34 @@ fn caret_in_draft_link(harness: &mut Ui) {
     press(harness, Modifiers::NONE, Key::End);
     press(harness, Modifiers::NONE, Key::ArrowLeft);
     press(harness, Modifiers::NONE, Key::ArrowLeft);
+}
+
+/// Move the caret into the wikilink's target from the keyboard, so its
+/// source shows: from the start of the line to after `Ot`.
+fn caret_in_other_link(harness: &mut Ui) {
+    press(harness, Modifiers::NONE, Key::Home);
+    for _ in 0.."See [[Ot".len() {
+        press(harness, Modifiers::NONE, Key::ArrowRight);
+    }
+    assert_eq!(caret(harness), "See [[Ot".len());
+}
+
+/// Nothing to place before a click on a drawn link.
+fn nothing(_: &mut Ui) {}
+
+/// The `[[` list's options, with whether each is highlighted. None while
+/// the list is closed.
+fn listed(harness: &Ui) -> Vec<(String, bool)> {
+    harness
+        .query_all_by_role(Role::ListBoxOption)
+        .map(|option| {
+            let node = option.accesskit_node();
+            (
+                node.label().unwrap_or_default(),
+                node.is_selected().unwrap_or_default(),
+            )
+        })
+        .collect()
 }
 
 /// The caret's offset in the note's characters, as the editor reports it
@@ -316,6 +360,19 @@ fn a_ctrl_click_on_macos_opens_nothing() {
     assert_eq!(tabs(&harness), [("Plan".to_owned(), true)]);
 }
 
+/// A click that opens a link in a new tab.
+struct NewTabClick {
+    platform: Platform,
+    /// What the caret shows before the click.
+    place: Setup,
+    /// The click lands on this character of the first such text.
+    on: (&'static str, usize),
+    button: PointerButton,
+    modifiers: Modifiers,
+    /// The title of the tab the link opens.
+    opens: &'static str,
+}
+
 #[test]
 fn cmd_click_ctrl_click_and_middle_click_open_a_new_tab() {
     let ctrl = Modifiers {
@@ -328,42 +385,152 @@ fn cmd_click_ctrl_click_and_middle_click_open_a_new_tab() {
         command: true,
         ..Modifiers::NONE
     };
-    for (platform, source, button, modifiers) in [
-        (Platform::Windows, false, PointerButton::Primary, ctrl),
-        (Platform::MacOs, false, PointerButton::Primary, cmd),
-        (
+    let click = |platform, place: Setup, on, button, modifiers, opens| NewTabClick {
+        platform,
+        place,
+        on,
+        button,
+        modifiers,
+        opens,
+    };
+    let (primary, middle, none) = (
+        PointerButton::Primary,
+        PointerButton::Middle,
+        Modifiers::NONE,
+    );
+    let drawn = ("the draft", 1);
+    let draft_source = ("Draft.md", 2);
+    let other_source = ("Other", 3);
+    let cases = [
+        // On the drawn link.
+        click(Platform::Windows, nothing, drawn, primary, ctrl, "Draft"),
+        click(Platform::MacOs, nothing, drawn, primary, cmd, "Draft"),
+        click(Platform::Windows, nothing, drawn, middle, none, "Draft"),
+        // On a Markdown link's visible source.
+        click(
             Platform::Windows,
-            false,
-            PointerButton::Middle,
-            Modifiers::NONE,
+            caret_in_draft_link,
+            draft_source,
+            primary,
+            ctrl,
+            "Draft",
         ),
-        (Platform::Windows, true, PointerButton::Primary, ctrl),
-        (
+        click(
+            Platform::MacOs,
+            caret_in_draft_link,
+            draft_source,
+            primary,
+            cmd,
+            "Draft",
+        ),
+        click(
             Platform::Windows,
-            true,
-            PointerButton::Middle,
-            Modifiers::NONE,
+            caret_in_draft_link,
+            draft_source,
+            middle,
+            none,
+            "Draft",
         ),
-    ] {
+        // On a wikilink's visible source.
+        click(
+            Platform::Linux,
+            caret_in_other_link,
+            other_source,
+            primary,
+            ctrl,
+            "Other",
+        ),
+        click(
+            Platform::MacOs,
+            caret_in_other_link,
+            other_source,
+            primary,
+            cmd,
+            "Other",
+        ),
+        click(
+            Platform::Windows,
+            caret_in_other_link,
+            other_source,
+            middle,
+            none,
+            "Other",
+        ),
+    ];
+    for (index, case) in cases.into_iter().enumerate() {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
-        let mut harness = opened_plan(app_data.path(), &parent.path().join("Garden"), platform);
-        let pos = if source {
-            caret_in_draft_link(&mut harness);
-            point_at(&harness, "Draft.md", 2)
-        } else {
-            point_at(&harness, "the draft", 1)
-        };
+        let folder = parent.path().join("Garden");
+        let mut harness = opened_plan(app_data.path(), &folder, case.platform);
+        (case.place)(&mut harness);
+        let pos = point_at(&harness, case.on.0, case.on.1);
 
-        click_at(&mut harness, pos, button, modifiers);
+        click_at(&mut harness, pos, case.button, case.modifiers);
 
-        let case = format!("{platform:?}, on source: {source}, {button:?}");
+        let name = format!(
+            "case {index}: {:?}, on {:?}, {:?}",
+            case.platform, case.on.0, case.button
+        );
+        assert_eq!(
+            tabs(&harness),
+            [("Plan".to_owned(), true), (case.opens.to_owned(), false)],
+            "{name}"
+        );
+        assert_eq!(active(&harness).as_deref(), Some(case.opens), "{name}");
+    }
+}
+
+#[test]
+fn a_click_held_for_a_few_frames_acts_as_a_quick_one() {
+    let cmd = Modifiers {
+        mac_cmd: true,
+        command: true,
+        ..Modifiers::NONE
+    };
+    for frames in [1, 2] {
+        // A plain click on a drawn link opens it in the preview tab.
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Garden");
+        let mut harness = opened_plan(app_data.path(), &folder, Platform::MacOs);
+        let pos = point_at(&harness, "Other", 1);
+        click_held(
+            &mut harness,
+            pos,
+            PointerButton::Primary,
+            Modifiers::NONE,
+            frames,
+        );
+        assert_eq!(tabs(&harness), [("Other".to_owned(), true)], "{frames}");
+
+        // On visible source, a plain click places the caret and a
+        // Cmd-click opens a new tab.
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Garden");
+        let mut harness = opened_plan(app_data.path(), &folder, Platform::MacOs);
+        caret_in_draft_link(&mut harness);
+        let pos = point_at(&harness, "Draft.md", 2);
+        click_held(
+            &mut harness,
+            pos,
+            PointerButton::Primary,
+            Modifiers::NONE,
+            frames,
+        );
+        assert_eq!(tabs(&harness), [("Plan".to_owned(), true)], "{frames}");
+        let destination = PLAN.find("Draft.md").unwrap();
+        assert!(
+            (destination + 2..=destination + 3).contains(&caret(&harness)),
+            "{frames}: the caret went to {}",
+            caret(&harness)
+        );
+        click_held(&mut harness, pos, PointerButton::Primary, cmd, frames);
         assert_eq!(
             tabs(&harness),
             [("Plan".to_owned(), true), ("Draft".to_owned(), false)],
-            "{case}"
+            "{frames}"
         );
-        assert_eq!(active(&harness).as_deref(), Some("Draft"), "{case}");
     }
 }
 
@@ -437,5 +604,103 @@ fn typing_two_brackets_lists_files_and_picking_one_inserts_its_link() {
     assert_eq!(
         note_text(&harness),
         "See [[Other]] and [the draft](Draft.md). [[Other]] [[Draft]] [[pl\n"
+    );
+}
+
+#[test]
+fn a_pick_before_display_text_leaves_the_list_closed() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened_plan(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::Windows,
+    );
+    press(&mut harness, Modifiers::NONE, Key::End);
+    harness.event(Event::Text(" [[p|the plan]]".into()));
+    harness.run_steps(3);
+    for _ in 0.."|the plan]]".len() {
+        press(&mut harness, Modifiers::NONE, Key::ArrowLeft);
+    }
+    harness.event(Event::Text("l".into()));
+    harness.run_steps(3);
+    assert_eq!(listed(&harness), [("Plan".to_owned(), true)]);
+
+    press(&mut harness, Modifiers::NONE, Key::Enter);
+    assert_eq!(
+        note_text(&harness),
+        "See [[Other]] and [the draft](Draft.md). [[Plan|the plan]]\n"
+    );
+    // The caret stays in the link, before `|`, and the list stays closed,
+    // so the next Enter starts a new line.
+    assert!(harness.query_by_label("Link suggestions").is_none());
+    press(&mut harness, Modifiers::NONE, Key::Enter);
+    assert!(
+        note_text(&harness).contains("[[Plan\n"),
+        "{:?}",
+        note_text(&harness)
+    );
+}
+
+#[test]
+fn the_list_takes_its_keys_only_with_no_modifier_held() {
+    let shift_down = (Modifiers::SHIFT, Key::ArrowDown);
+    for (modifiers, key) in [
+        (Modifiers::ALT, Key::Enter),
+        (Modifiers::SHIFT, Key::Enter),
+        (Modifiers::SHIFT, Key::Tab),
+        shift_down,
+    ] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let mut harness = opened_plan(
+            app_data.path(),
+            &parent.path().join("Garden"),
+            Platform::Windows,
+        );
+        press(&mut harness, Modifiers::NONE, Key::End);
+        harness.event(Event::Text(" [[".into()));
+        harness.run_steps(3);
+        let first = [
+            ("Draft".to_owned(), true),
+            ("Other".to_owned(), false),
+            ("Plan".to_owned(), false),
+        ];
+        assert_eq!(listed(&harness), first);
+
+        press(&mut harness, modifiers, key);
+
+        let case = format!("{modifiers:?} {key:?}");
+        assert!(
+            !note_text(&harness).contains("[[Draft]]"),
+            "{case} picked a file"
+        );
+        if (modifiers, key) == shift_down {
+            assert!(
+                !listed(&harness).contains(&("Other".to_owned(), true)),
+                "{case} moved the list"
+            );
+        }
+    }
+
+    // Down alone moves through the list.
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened_plan(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::Windows,
+    );
+    press(&mut harness, Modifiers::NONE, Key::End);
+    harness.event(Event::Text(" [[".into()));
+    harness.run_steps(3);
+    press(&mut harness, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(
+        listed(&harness),
+        [
+            ("Draft".to_owned(), false),
+            ("Other".to_owned(), true),
+            ("Plan".to_owned(), false),
+        ]
     );
 }

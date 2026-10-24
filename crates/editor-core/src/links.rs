@@ -9,6 +9,7 @@ use crate::doc::MdDoc;
 use crate::offset_types::{Grapheme, RangeExt as _};
 use crate::operation_types::Operation;
 use crate::resolvers::{LinkState, ResolvedLink};
+use crate::spans::SpanKind;
 
 /// How far before the caret the `[[` of a link being typed may start, in
 /// graphemes.
@@ -56,8 +57,9 @@ impl<'ast> MdDoc {
 
     /// The `[[` link being typed at the caret, in text that takes links:
     /// the caret follows `[[` and what's typed after it, with no `#`, `|`,
-    /// bracket or new line between them. `None` with a selection, in code,
-    /// in a read-only note and in plain text.
+    /// bracket or new line between them. `None` with a selection, in a
+    /// read-only note, in plain text, and where text is literal, as in
+    /// code, math and a link's destination.
     pub fn link_query(&mut self) -> Option<LinkQuery> {
         self.with_ast(|doc, root| doc.link_query_in(root))
     }
@@ -88,11 +90,16 @@ impl<'ast> MdDoc {
         if paragraphs.is_empty() {
             return None;
         }
-        let in_code = root.descendants().any(|node| {
-            matches!(node.data.borrow().value, NodeValue::Code(_))
-                && self.node_range(node).contains(start, false, false)
+        // Literal text takes no links. A wikilink does: the query may sit
+        // in one.
+        let typed = (start - 2, caret);
+        let in_literal = root.descendants().any(|node| {
+            !matches!(node.data.borrow().value, NodeValue::WikiLink(_))
+                && self
+                    .literal_range(node)
+                    .is_some_and(|literal| literal.intersects(&typed, false))
         });
-        if in_code {
+        if in_literal {
             return None;
         }
         Some(LinkQuery {
@@ -102,11 +109,12 @@ impl<'ast> MdDoc {
     }
 
     /// The edit that puts `link` in place of the `[[` link query in
-    /// `root`. Inside a wikilink that `]]` already closes on the line, it
-    /// replaces the whole target and keeps the `]]`, or the `|display
-    /// text` or `#heading` right after the target. Anywhere else it
-    /// replaces only what's typed and adds `]]`, so a later `#tag`, table
-    /// pipe or bracket on the line stays where it is.
+    /// `root`. When `]]` closes the target, it replaces the whole target
+    /// and keeps the `]]`. Inside a wikilink or an `![[embed]]` that `]]`
+    /// closes on the line, it keeps the `|display text` or `#heading`
+    /// right after the target too. Anywhere else it replaces only what's
+    /// typed and adds `]]`, so a later `#tag`, table pipe or bracket on
+    /// the line stays where it is.
     pub(crate) fn complete_link_event(
         &self,
         root: &'ast AstNode<'ast>,
@@ -117,7 +125,7 @@ impl<'ast> MdDoc {
             range: (start, caret),
             ..
         } = self.link_query_in(root)?;
-        let (replaced_end, text) = match self.closed_wikilink_target_end(root, start, caret) {
+        let (replaced_end, text) = match self.closed_link_target_end(root, start, caret) {
             Some((end, true)) => (end + 2, format!("{link}]]")),
             Some((end, false)) => (end, link.to_owned()),
             None => (caret, format!("{link}]]")),
@@ -132,33 +140,59 @@ impl<'ast> MdDoc {
         })
     }
 
-    /// Where the target ends in the wikilink of `root` whose target starts
-    /// at `start` and holds `caret`, with whether `]]` comes right after
-    /// it rather than a `|` or `#`. `None` when no wikilink there closes
-    /// on the caret's line.
-    fn closed_wikilink_target_end(
+    /// Where the target that starts at `start` and holds `caret` ends,
+    /// with whether `]]` comes right after it rather than the `|` or `#`
+    /// of a wikilink or embed that `]]` closes on the caret's line. `None`
+    /// when no `]]` closes the target there.
+    fn closed_link_target_end(
         &self,
         root: &'ast AstNode<'ast>,
         start: Grapheme,
         caret: Grapheme,
     ) -> Option<(Grapheme, bool)> {
-        let link = root.descendants().find_map(|node| {
-            let range = self.node_range(node);
-            (matches!(node.data.borrow().value, NodeValue::WikiLink(_))
-                && range.start() + 2 == start
-                && caret + 2 <= range.end())
-            .then_some(range)
-        })?;
-        let close = link.end() - 2;
+        let last = self.buffer.current.segs.last_cursor_position();
         let mut end = caret;
-        while end < close && !ends_link_target(&self.buffer[(end, end + 1)]) {
+        while end < last && !ends_link_target(&self.buffer[(end, end + 1)]) {
             end += 1;
         }
-        match &self.buffer[(end, end + 1)] {
-            _ if end == close => Some((end, true)),
-            "|" | "#" if !self.buffer[(end, close)].contains(['\n', '\r']) => Some((end, false)),
-            _ => None,
+        if end + 2 <= last && &self.buffer[(end, end + 2)] == "]]" {
+            return Some((end, true));
         }
+        if end == last || !matches!(&self.buffer[(end, end + 1)], "|" | "#") {
+            return None;
+        }
+        let close = self.link_close(root, start, caret)?;
+        (end < close && !self.buffer[(end, close)].contains(['\n', '\r'])).then_some((end, false))
+    }
+
+    /// Where the `]]` starts that closes the wikilink of `root`, or the
+    /// `![[embed]]`, whose target starts at `start` and holds `caret`.
+    fn link_close(
+        &self,
+        root: &'ast AstNode<'ast>,
+        start: Grapheme,
+        caret: Grapheme,
+    ) -> Option<Grapheme> {
+        let holds = |range: (Grapheme, Grapheme), open: usize| {
+            range.start() + open == start && caret + 2 <= range.end()
+        };
+        let wikilink = root.descendants().find_map(|node| {
+            let range = self.node_range(node);
+            (matches!(node.data.borrow().value, NodeValue::WikiLink(_)) && holds(range, 2))
+                .then_some(range)
+        });
+        // comrak parses no wikilink in an embed; the editor finds embeds
+        // itself.
+        let embed = || {
+            self.bounds.spans.iter().find_map(|span| {
+                (matches!(
+                    span.kind,
+                    SpanKind::Embed { .. } | SpanKind::ImageEmbed { .. }
+                ) && holds(span.range, 3))
+                .then_some(span.range)
+            })
+        };
+        wikilink.or_else(embed).map(|range| range.end() - 2)
     }
 
     /// URL (or wikilink target) of the first link-like node whose source range

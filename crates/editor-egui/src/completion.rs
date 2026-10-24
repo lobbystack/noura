@@ -12,9 +12,7 @@
 
 use editor_core::resolvers::LinkSuggestion;
 use egui::accesskit::Role;
-use egui::{
-    Align2, Atom, Button, Context, Frame, Key, Modifiers, Order, Pos2, Rect, RichText, UiBuilder,
-};
+use egui::{Align2, Atom, Button, Context, Frame, Key, Order, Pos2, Rect, RichText, UiBuilder};
 
 use crate::Editor;
 use crate::input::Event;
@@ -31,6 +29,10 @@ pub(crate) struct LinkCompletion {
     found: Option<(String, u64, Vec<LinkSuggestion>)>,
     /// Where the list drew last frame.
     rect: Option<Rect>,
+    /// A file was just picked. The text the pick changes doesn't open the
+    /// list again, even when the caret stays in the link, as it does
+    /// before a `|display text` or `#heading`.
+    picked: bool,
 }
 
 impl LinkCompletion {
@@ -64,7 +66,8 @@ impl Editor {
     }
 
     /// Takes Up, Down, Enter, Tab and Escape while the list shows, before
-    /// the text sees them.
+    /// the text sees them. Only the keys alone: Shift-Up still extends the
+    /// selection, and Alt-Enter still follows a link.
     pub(crate) fn handle_completion_keys(&mut self, ctx: &Context) {
         let Some(found) = self.shown_suggestions(ctx) else {
             return;
@@ -72,11 +75,11 @@ impl Editor {
         let count = found.len();
         let (up, down, enter, tab, escape) = ctx.input_mut(|input| {
             (
-                input.consume_key(Modifiers::NONE, Key::ArrowUp),
-                input.consume_key(Modifiers::NONE, Key::ArrowDown),
-                input.consume_key(Modifiers::NONE, Key::Enter),
-                input.consume_key(Modifiers::NONE, Key::Tab),
-                input.consume_key(Modifiers::NONE, Key::Escape),
+                consume_plain_key(input, Key::ArrowUp),
+                consume_plain_key(input, Key::ArrowDown),
+                consume_plain_key(input, Key::Enter),
+                consume_plain_key(input, Key::Tab),
+                consume_plain_key(input, Key::Escape),
             )
         });
         let picked = (enter || tab).then(|| found[self.chrome.completion.selected].link.clone());
@@ -101,6 +104,7 @@ impl Editor {
     /// Puts `link` in the `[[` link being typed and closes the list.
     fn pick_link(&mut self, ctx: &Context, link: String) {
         self.chrome.completion.close();
+        self.chrome.completion.picked = true;
         self.push_event(Event::CompleteLink { link });
         self.focus(ctx);
         ctx.request_repaint();
@@ -108,8 +112,10 @@ impl Editor {
 
     /// Opens the list when typing leaves the caret in a `[[` link, finds
     /// the files for what's typed, and closes the list once the caret
-    /// leaves the link.
+    /// leaves the link. A pick's edit lands by the next call, which leaves
+    /// the list closed.
     pub(crate) fn update_completion(&mut self, text_updated: bool) {
+        let picked = std::mem::take(&mut self.chrome.completion.picked);
         if !text_updated && !self.chrome.completion.open {
             return;
         }
@@ -117,8 +123,11 @@ impl Editor {
             self.chrome.completion.close();
             return;
         };
-        if text_updated {
+        if text_updated && !picked {
             self.chrome.completion.open = true;
+        }
+        if !self.chrome.completion.open {
+            return;
         }
         let seq = self.edit.renderer.doc.link_resolver.seq();
         let completion = &mut self.chrome.completion;
@@ -218,6 +227,26 @@ impl Editor {
             self.pick_link(ctx, link);
         }
     }
+}
+
+/// Consumes the presses of `key` made with no modifier held. egui's own
+/// `consume_key` ignores an extra Shift or Alt.
+fn consume_plain_key(input: &mut egui::InputState, key: Key) -> bool {
+    let mut found = false;
+    input.events.retain(|event| {
+        let plain = matches!(
+            event,
+            egui::Event::Key {
+                key: pressed,
+                pressed: true,
+                modifiers,
+                ..
+            } if *pressed == key && modifiers.is_none()
+        );
+        found |= plain;
+        !plain
+    });
+    found
 }
 
 /// What the list shows beside a file's name: its folder when another file

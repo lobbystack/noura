@@ -105,3 +105,38 @@ fn every_suggestion_links_to_its_own_file() {
         assert_eq!(led_to, files, "from {source}");
     }
 }
+
+#[test]
+fn a_name_that_leads_to_another_file_links_by_its_whole_path() {
+    let fixture = Fixture::new(&[
+        ("Inbox.md", b"# Inbox\n"),
+        ("Reading/Report.pdf", b"%PDF"),
+        ("Reading/Report.pdf.md", b"Notes on the report\n"),
+        ("Drafts/Plan.md", b"Plan\n"),
+        ("Drafts/Plan.md.md", b"Odd name\n"),
+    ]);
+    let mut app = fixture.app();
+
+    let tab = open_from_tree(&mut app, "Inbox.md");
+    let links = app.note_links(tab).unwrap();
+    let mut found: Vec<(String, String)> = links
+        .suggest("")
+        .into_iter()
+        .map(|suggestion| {
+            let led_to = links.resolve(&suggestion.link).expect("it resolves");
+            (suggestion.link, led_to)
+        })
+        .collect();
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("Drafts/Plan.md.md", "Drafts/Plan.md.md"),
+            ("Inbox", "Inbox.md"),
+            ("Plan", "Drafts/Plan.md"),
+            ("Reading/Report.pdf", "Reading/Report.pdf"),
+            ("Reading/Report.pdf.md", "Reading/Report.pdf.md"),
+        ]
+        .map(|(link, file)| (link.to_owned(), file.to_owned()))
+    );
+}
