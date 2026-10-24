@@ -119,6 +119,12 @@ interface workspace {
 
   // The object with this stable ID, wherever its file is now.
   read-object: func(id: string) -> result<object, error>;
+
+  // The object the file at a workspace-relative path holds. It reads a
+  // file whose ID another file shares too, as after a copy in another app,
+  // which `read-object` refuses. A file that holds no object returns
+  // `not-found`.
+  read-object-at: func(path: string) -> result<object, error>;
 }
 
 // Requests to the HTTPS hosts the manifest's `network` capability lists.

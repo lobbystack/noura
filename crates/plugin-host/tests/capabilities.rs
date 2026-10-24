@@ -24,11 +24,14 @@ fn a_call_to_an_undeclared_capability_names_it_and_reaches_no_service() {
         plugins::texts(&nodes),
         ["error capability-not-declared workspace-read"]
     );
-    let nodes = instance.render("read-file:Plan.md").unwrap();
-    assert_eq!(
-        plugins::texts(&nodes),
-        ["error capability-not-declared workspace-read"]
-    );
+    for call in ["read-file:Plan.md", "read-object-at:Plan.md"] {
+        let nodes = instance.render(call).unwrap();
+        assert_eq!(
+            plugins::texts(&nodes),
+            ["error capability-not-declared workspace-read"],
+            "{call}"
+        );
+    }
     assert!(workspace.calls().is_empty(), "{:?}", workspace.calls());
 }
 

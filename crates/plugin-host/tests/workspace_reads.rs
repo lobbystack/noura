@@ -106,6 +106,35 @@ fn an_object_reads_by_its_stable_id_with_its_revision() {
 }
 
 #[test]
+fn an_object_reads_by_the_path_of_its_file_with_its_revision() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let workspace = Arc::new(workspace());
+    let (instance, _folders) = plugins::running(&probe, &READS, Some(workspace.clone()));
+
+    let nodes = instance.render("read-object-at:Notes/Plan.md").unwrap();
+    assert_eq!(
+        plugins::texts(&nodes),
+        [
+            "object note_01 type note title Plan path Notes/Plan.md revision rev-plan body Grow \
+             tomatoes"
+        ]
+    );
+    let nodes = instance.render("read-object-at:Notes/Gone.md").unwrap();
+    assert_eq!(plugins::texts(&nodes), ["error not-found Notes/Gone.md"]);
+    let nodes = instance.render("read-object-at:../Plan.md").unwrap();
+    assert_eq!(plugins::texts(&nodes), ["error invalid-path ../Plan.md"]);
+    assert_eq!(
+        workspace.calls(),
+        [
+            "read-object-at Notes/Plan.md",
+            "read-object-at Notes/Gone.md"
+        ]
+    );
+}
+
+#[test]
 fn a_path_that_isnt_workspace_relative_never_reaches_the_workspace() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;

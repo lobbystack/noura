@@ -6,7 +6,9 @@
 //!
 //! AccessKit sees a grid: a row of column headers, then rows of cells, one
 //! cell per day, or per day and hour. Each entry sits in the cell of its
-//! day, and of its start's hour, labeled with its title and time.
+//! day, and of its start's hour, labeled with its title and time. Today's
+//! cell in a month, and today's header in a week or a day, carry the
+//! current-date state.
 //!
 //! You select an entry by click or the keyboard and open it with Enter or
 //! a double-click. The arrow keys walk the entries day by day, and Home
@@ -20,7 +22,7 @@ use app_core::{
 };
 use egui::{
     Align2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo,
-    accesskit::{Action, Role},
+    accesskit::{Action, AriaCurrent, Role},
     pos2, vec2,
 };
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
@@ -72,6 +74,8 @@ struct Cell {
     rect: Rect,
     role: Role,
     label: String,
+    /// Whether the cell is today's day, which the grid marks.
+    today: bool,
     /// The entries the cell holds, by index into the shown entries, and
     /// where each one draws.
     entries: Vec<(usize, Rect)>,
@@ -281,6 +285,13 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
                 .accessibility_role(cell.role)
                 .accessibility_label(cell.label.as_str());
             let cell_ui = row_ui.new_child(builder);
+            if cell.today {
+                cell_ui
+                    .ctx()
+                    .accesskit_node_builder(cell_ui.unique_id(), |node| {
+                        node.set_aria_current(AriaCurrent::Date);
+                    });
+            }
             for &(index, rect) in &cell.entries {
                 let shown = &grid.shown[index];
                 let id = entry_id(shown);
@@ -391,6 +402,7 @@ fn month(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
                 rect,
                 role: Role::ColumnHeader,
                 label: grid.names.weekday_long(day.date),
+                today: false,
                 entries: Vec::new(),
             }
         })
@@ -452,6 +464,7 @@ fn month(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
                     rect,
                     role: Role::Cell,
                     label: grid.names.full_date(day.date),
+                    today: day.date == grid.today,
                     entries,
                 }
             })
@@ -502,6 +515,7 @@ fn hours(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
                 rect,
                 role: Role::ColumnHeader,
                 label: grid.names.full_date(day.date),
+                today: day.date == grid.today,
                 entries: Vec::new(),
             }
         })
@@ -556,6 +570,7 @@ fn hours(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
             rect,
             role: Role::Cell,
             label: grid.names.full_date(day.date),
+            today: false,
             entries,
         });
     }
@@ -619,6 +634,7 @@ fn hours(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
                 rect: cell,
                 role: Role::Cell,
                 label: format!("{}, {hour_name}", day_labels[day_index]),
+                today: false,
                 entries,
             });
         }
@@ -641,6 +657,7 @@ fn row_header(ui: &Ui, rect: Rect, label: String, palette: &Palette) -> Cell {
         rect,
         role: Role::RowHeader,
         label,
+        today: false,
         entries: Vec::new(),
     }
 }

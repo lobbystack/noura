@@ -17,6 +17,7 @@ members = [
     "crates/plugin-host/test-plugins/recipes",
     "crates/plugin-host/test-plugins/uses-files",
     "crates/plugin-sdk",
+    "crates/plugins/calendar",
     "crates/plugins/hello",
     "crates/plugins/tasks",
     "crates/spell-check",
