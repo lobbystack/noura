@@ -19,7 +19,10 @@ const QUIET_MS = 100;
  * Build the plugin in `folder` and again after each change to `src` or
  * its manifest. Each build reports to `log`, and a failed one says why.
  */
-export async function dev(folder: string, log: (line: string) => void): Promise<Dev> {
+export async function dev(
+	folder: string,
+	log: (line: string) => void,
+): Promise<Dev> {
 	folder = resolve(folder);
 	let building = false;
 	let again = false;

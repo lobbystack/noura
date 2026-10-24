@@ -78,7 +78,7 @@ name = "views"
 Each `[[capabilities]]` table asks for one capability:
 
 | Capability | Lets the plugin | Interfaces |
-|---|---|---|
+| --- | --- | --- |
 | `workspace-read` | Read the workspace's files, folders and objects | [`workspace`](interfaces/workspace.md) |
 | `object-types` | Add its own object types with a properties panel, and create, change, move and delete their objects | [`object-types`](interfaces/object-types.md), [`objects`](interfaces/objects.md) |
 | `views` | Add pages to the rail, and open pages and objects in answer to something you did | [`view`](interfaces/view.md), [`navigation`](interfaces/navigation.md) |
@@ -100,7 +100,13 @@ import type { Node } from 'noura:plugin/ui@0.1.0';
 
 export const view: ViewExports = {
 	pages: () => [{ id: 'hello', title: 'Hello' }],
-	render: (): Node[] => [{ id: 'root', kind: { tag: 'text', val: 'Hello from a plugin.' }, children: new Uint32Array() }],
+	render: (): Node[] => [
+		{
+			id: 'root',
+			kind: { tag: 'text', val: 'Hello from a plugin.' },
+			children: new Uint32Array(),
+		},
+	],
 };
 ```
 

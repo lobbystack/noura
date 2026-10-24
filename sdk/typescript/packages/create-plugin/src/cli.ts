@@ -36,7 +36,11 @@ folder. Noura reloads the plugin each time dev mode builds it.`);
 main(process.argv.slice(2)).then(
 	(code) => process.exit(code),
 	(error: unknown) => {
-		console.error(error instanceof CreateError ? error.message : String((error as Error)?.stack ?? error));
+		console.error(
+			error instanceof CreateError
+				? error.message
+				: String((error as Error)?.stack ?? error),
+		);
 		process.exit(1);
 	},
 );

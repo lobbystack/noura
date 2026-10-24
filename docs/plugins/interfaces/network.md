@@ -38,23 +38,37 @@ export const tools: ToolsExports = {
 	tools: () => [
 		{
 			name: 'temperature',
-			description: 'The temperature now, in degrees Celsius, at a latitude and longitude.',
+			description:
+				'The temperature now, in degrees Celsius, at a latitude and longitude.',
 			inputSchema: JSON.stringify({
 				type: 'object',
-				properties: { latitude: { type: 'number' }, longitude: { type: 'number' } },
+				properties: {
+					latitude: { type: 'number' },
+					longitude: { type: 'number' },
+				},
 				required: ['latitude', 'longitude'],
 			}),
 		},
 	],
 
 	callTool(_name: string, args: string): string {
-		const { latitude, longitude } = JSON.parse(args) as { latitude: number; longitude: number };
+		const { latitude, longitude } = JSON.parse(args) as {
+			latitude: number;
+			longitude: number;
+		};
 		const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m`;
-		const response = fetch({ method: 'get', url, headers: [], body: new Uint8Array() });
+		const response = fetch({
+			method: 'get',
+			url,
+			headers: [],
+			body: new Uint8Array(),
+		});
 		if (response.status !== 200) {
 			throw `Open-Meteo answered with status ${response.status}.`;
 		}
-		const answer = JSON.parse(new TextDecoder().decode(response.body)) as { current: { temperature_2m: number } };
+		const answer = JSON.parse(new TextDecoder().decode(response.body)) as {
+			current: { temperature_2m: number };
+		};
 		return JSON.stringify({ celsius: answer.current.temperature_2m });
 	},
 };

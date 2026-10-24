@@ -37,7 +37,12 @@ let count = 0;
 export const commands: CommandsExports = {
 	commands: () => [
 		{ id: 'add-one', title: 'Counter: add one', palette: true, plugins: false },
-		{ id: 'count', title: 'Counter: read the count', palette: false, plugins: true },
+		{
+			id: 'count',
+			title: 'Counter: read the count',
+			palette: false,
+			plugins: true,
+		},
 	],
 
 	run(id: string, _input: string): string {
@@ -56,8 +61,16 @@ export const commands: CommandsExports = {
 export const view: ViewExports = {
 	pages: () => [{ id: 'counter', title: 'Counter' }],
 	render: (): Node[] => [
-		{ id: 'root', kind: { tag: 'panel', val: 'Counter' }, children: new Uint32Array([1]) },
-		{ id: 'count', kind: { tag: 'text', val: `The count is ${count}.` }, children: new Uint32Array() },
+		{
+			id: 'root',
+			kind: { tag: 'panel', val: 'Counter' },
+			children: new Uint32Array([1]),
+		},
+		{
+			id: 'count',
+			kind: { tag: 'text', val: `The count is ${count}.` },
+			children: new Uint32Array(),
+		},
 	],
 };
 ```

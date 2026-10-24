@@ -2,7 +2,15 @@
 // manifest names as `entry`, against the WIT of the interface version the
 // manifest asks for.
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import {
+	access,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rename,
+	rm,
+	writeFile,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -106,13 +114,18 @@ export async function build(folder: string): Promise<Built> {
 	}
 	const component = resolve(folder, manifest.entry);
 	if (!component.startsWith(folder + sep)) {
-		throw new BuildError(`The entry ${manifest.entry} in plugin.toml isn't inside the plugin's folder.`);
+		throw new BuildError(
+			`The entry ${manifest.entry} in plugin.toml isn't inside the plugin's folder.`,
+		);
 	}
 	const work = await mkdtemp(join(tmpdir(), 'noura-plugin-'));
 	try {
 		const entry = join(work, 'entry.ts');
 		const imported = source.split(sep).join('/');
-		await writeFile(entry, `// @ts-nocheck\nimport * as plugin from ${JSON.stringify(imported)};\n${DEFAULTS}`);
+		await writeFile(
+			entry,
+			`// @ts-nocheck\nimport * as plugin from ${JSON.stringify(imported)};\n${DEFAULTS}`,
+		);
 		// Noura gives plugins no console, so `console` is one that drops
 		// what it's given rather than one the host would have to provide.
 		const quiet = join(work, 'console.js');
@@ -161,7 +174,10 @@ function componentize(
 	out: string,
 	{ work, folder }: { work: string; folder: string },
 ): Promise<void> {
-	const jco = join(dirname(createRequire(import.meta.url).resolve('@bytecodealliance/jco')), 'jco.js');
+	const jco = join(
+		dirname(createRequire(import.meta.url).resolve('@bytecodealliance/jco')),
+		'jco.js',
+	);
 	const args = [
 		jco,
 		'componentize',
@@ -188,12 +204,16 @@ function componentize(
 		let output = '';
 		child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
 		child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
-		child.on('error', (error) => fail(new BuildError(`The build didn't start: ${plain(error.message)}`)));
+		child.on('error', (error) =>
+			fail(new BuildError(`The build didn't start: ${plain(error.message)}`)),
+		);
 		child.on('close', (code) => {
 			if (code === 0) {
 				done();
 			} else {
-				fail(new BuildError(`The build failed.\n${failure(output, work, folder)}`));
+				fail(
+					new BuildError(`The build failed.\n${failure(output, work, folder)}`),
+				);
 			}
 		});
 	});
@@ -215,7 +235,9 @@ function failure(output: string, work: string, folder: string): string {
 		.replace(COLORS, '')
 		.replace(/\(jco componentize\) /g, '')
 		.replace(/(?:\.\.\/)+[^\s:\]]+/g, (path) => {
-			const inFolder = relative(folder, resolve(work, path)).split(sep).join('/');
+			const inFolder = relative(folder, resolve(work, path))
+				.split(sep)
+				.join('/');
 			return inFolder.startsWith('..') ? path : inFolder;
 		});
 	const blocks = text
@@ -224,7 +246,9 @@ function failure(output: string, work: string, folder: string): string {
 		.map((block) =>
 			block
 				.split('\n')
-				.filter((line) => !/^\s+at |^\s*errors: \[Getter\/Setter\]|^\s*}$/.test(line))
+				.filter(
+					(line) => !/^\s+at |^\s*errors: \[Getter\/Setter\]|^\s*}$/.test(line),
+				)
 				.join('\n')
 				.trimEnd(),
 		)

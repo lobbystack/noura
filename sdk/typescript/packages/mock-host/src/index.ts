@@ -9,7 +9,11 @@
 // other plugins. Pass `fetch` and `commands` to answer for those.
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { type Capability, type Manifest, readManifest } from '@noura/plugin-cli';
+import {
+	type Capability,
+	type Manifest,
+	readManifest,
+} from '@noura/plugin-cli';
 
 import { type Exports, type Loaded, load } from './component.js';
 import { type MockObject, MockWorkspace } from './workspace.js';
@@ -79,7 +83,9 @@ export interface MockHostOptions {
 export class CapabilityError extends Error {
 	override name = 'CapabilityError';
 	constructor(readonly capability: string) {
-		super(`plugin.toml doesn't declare the ${capability} capability, so Noura never makes this call.`);
+		super(
+			`plugin.toml doesn't declare the ${capability} capability, so Noura never makes this call.`,
+		);
 	}
 }
 
@@ -111,14 +117,26 @@ function refused(capability: string): never {
 }
 
 /** The flat node list a plugin returns, as a tree from its first node. */
-export function tree(nodes: { id: string; kind: { tag: string; val?: unknown }; children: ArrayLike<number> }[]): ViewNode {
+export function tree(
+	nodes: {
+		id: string;
+		kind: { tag: string; val?: unknown };
+		children: ArrayLike<number>;
+	}[],
+): ViewNode {
 	const build = (index: number, seen: Set<number>): ViewNode => {
 		const node = nodes[index];
 		if (!node || seen.has(index)) {
-			throw new Error(`The view's node list reaches node ${index} twice or doesn't hold it.`);
+			throw new Error(
+				`The view's node list reaches node ${index} twice or doesn't hold it.`,
+			);
 		}
 		seen.add(index);
-		return { id: node.id, kind: clean(node.kind) as ViewNode['kind'], children: Array.from(node.children).map((child) => build(child, seen)) };
+		return {
+			id: node.id,
+			kind: clean(node.kind) as ViewNode['kind'],
+			children: Array.from(node.children).map((child) => build(child, seen)),
+		};
 	};
 	if (nodes.length === 0) {
 		throw new Error('The plugin returned no nodes.');
@@ -189,20 +207,29 @@ export class MockHost {
 	}
 
 	private declares(name: string): boolean {
-		return this.manifest.capabilities.some((capability) => capability.name === name);
+		return this.manifest.capabilities.some(
+			(capability) => capability.name === name,
+		);
 	}
 
 	private capability(name: string): Capability | undefined {
-		return this.manifest.capabilities.find((capability) => capability.name === name);
+		return this.manifest.capabilities.find(
+			(capability) => capability.name === name,
+		);
 	}
 
 	private async start(): Promise<void> {
 		this.exports = await this.loaded.instantiate(this.imports());
 		this.types.clear();
 		if (this.declares('object-types')) {
-			for (const declared of this.call('objectTypes', 'types') as { name: string }[]) {
+			for (const declared of this.call('objectTypes', 'types') as {
+				name: string;
+			}[]) {
 				const held = PLUGIN_TYPES[declared.name];
-				if (!KERNEL_TYPES.includes(declared.name) && (held === undefined || held === this.manifest.id)) {
+				if (
+					!KERNEL_TYPES.includes(declared.name) &&
+					(held === undefined || held === this.manifest.id)
+				) {
 					this.types.add(declared.name);
 				}
 			}
@@ -256,7 +283,9 @@ export class MockHost {
 		const objectsFor = (id: string) => objects(id.split('_')[0] ?? '');
 		// Noura opens and trashes things only in answer to an event in one
 		// of the plugin's views or a command you ran from the palette.
-		const navigation = (refusal = 'Noura opens things only in answer to something you did.') => {
+		const navigation = (
+			refusal = 'Noura opens things only in answer to something you did.',
+		) => {
 			if (!this.declares('views')) {
 				refused('views');
 			}
@@ -273,13 +302,19 @@ export class MockHost {
 				readObject: (id: string) => workspace().readObject(id),
 			},
 			'noura:plugin/objects': {
-				create: (object: Parameters<MockWorkspace['create']>[0]) => objects(object.objectType).create(object),
+				create: (object: Parameters<MockWorkspace['create']>[0]) =>
+					objects(object.objectType).create(object),
 				get: (id: string) => objectsFor(id).get(id),
 				list: (objectType: string) => objects(objectType).list(objectType),
-				update: (id: string, revision: string, changes: Parameters<MockWorkspace['update']>[2]) =>
-					objectsFor(id).update(id, revision, changes),
-				moveTo: (id: string, revision: string, path: string) => objectsFor(id).moveTo(id, revision, path),
-				delete: (id: string, revision: string) => objectsFor(id).delete(id, revision),
+				update: (
+					id: string,
+					revision: string,
+					changes: Parameters<MockWorkspace['update']>[2],
+				) => objectsFor(id).update(id, revision, changes),
+				moveTo: (id: string, revision: string, path: string) =>
+					objectsFor(id).moveTo(id, revision, path),
+				delete: (id: string, revision: string) =>
+					objectsFor(id).delete(id, revision),
 			},
 			'noura:plugin/network': {
 				fetch: (request: Request) => {
@@ -288,16 +323,28 @@ export class MockHost {
 					try {
 						url = new URL(request.url);
 					} catch {
-						throw { tag: 'network-refused', val: `${request.url} isn't a URL.` };
+						throw {
+							tag: 'network-refused',
+							val: `${request.url} isn't a URL.`,
+						};
 					}
 					if (url.protocol !== 'https:') {
-						throw { tag: 'network-refused', val: 'Noura sends requests only over HTTPS.' };
+						throw {
+							tag: 'network-refused',
+							val: 'Noura sends requests only over HTTPS.',
+						};
 					}
 					if (!network.hosts.includes(url.hostname)) {
-						throw { tag: 'network-refused', val: `plugin.toml doesn't list ${url.hostname}.` };
+						throw {
+							tag: 'network-refused',
+							val: `plugin.toml doesn't list ${url.hostname}.`,
+						};
 					}
 					if (!this.options.fetch) {
-						throw { tag: 'failed', val: 'The mock host has no network. Pass fetch to createMockHost.' };
+						throw {
+							tag: 'failed',
+							val: 'The mock host has no network. Pass fetch to createMockHost.',
+						};
 					}
 					return this.options.fetch(request);
 				},
@@ -306,7 +353,11 @@ export class MockHost {
 				call: (plugin: string, command: string, input: string) => {
 					const commands = this.capability('commands') ?? refused('commands');
 					const target = `${plugin}/${command}`;
-					if (!commands.targets.some((allowed) => allowed === plugin || allowed === target)) {
+					if (
+						!commands.targets.some(
+							(allowed) => allowed === plugin || allowed === target,
+						)
+					) {
 						throw { tag: 'target-not-declared', val: target };
 					}
 					const run = this.options.commands?.[target];
@@ -338,7 +389,9 @@ export class MockHost {
 				},
 				trashObject: (id: string) => {
 					const store = objectsFor(id);
-					navigation('Noura moves things to the trash only in answer to something you did.');
+					navigation(
+						'Noura moves things to the trash only in answer to something you did.',
+					);
 					const object = store.get(id);
 					store.delete(id, object.revision);
 					this.openings.push({ kind: 'trash', id });
@@ -378,13 +431,23 @@ export class MockHost {
 	}
 
 	/** Rows `start` up to `start + count` of the page's virtual list `node`. */
-	async rows(page: string, node: string, start: number, count: number): Promise<unknown[]> {
+	async rows(
+		page: string,
+		node: string,
+		start: number,
+		count: number,
+	): Promise<unknown[]> {
 		await this.page(page);
-		return clean(this.call('view', 'rows', page, node, start, count)) as unknown[];
+		return clean(
+			this.call('view', 'rows', page, node, start, count),
+		) as unknown[];
 	}
 
 	/** Tell the plugin about `event` in the page's view or its sidebar section. */
-	async send(page: string, event: { tag: string; val?: unknown }): Promise<void> {
+	async send(
+		page: string,
+		event: { tag: string; val?: unknown },
+	): Promise<void> {
 		await this.page(page);
 		this.act(() => this.call('view', 'handleEvent', page, event));
 	}
@@ -396,19 +459,25 @@ export class MockHost {
 
 	/** The commands the plugin offers: none without the `commands` capability. */
 	async commands(): Promise<Command[]> {
-		return this.declares('commands') ? (this.call('commands', 'commands') as Command[]) : [];
+		return this.declares('commands')
+			? (this.call('commands', 'commands') as Command[])
+			: [];
 	}
 
 	/** Run the command `id` as the command palette does, with empty input. */
 	async runCommand(id: string): Promise<string> {
 		this.needs('commands');
-		return this.act(() => this.answer(() => this.call('commands', 'run', id, '')));
+		return this.act(() =>
+			this.answer(() => this.call('commands', 'run', id, '')),
+		);
 	}
 
 	/** Run the command `id` with `input`, as another plugin calls it. */
 	async callCommand(id: string, input: string): Promise<string> {
 		this.needs('commands');
-		const offered = (await this.commands()).find((command) => command.id === id);
+		const offered = (await this.commands()).find(
+			(command) => command.id === id,
+		);
 		if (!offered?.plugins) {
 			throw new Error(`The plugin doesn't offer ${id} to other plugins.`);
 		}
@@ -417,7 +486,9 @@ export class MockHost {
 
 	/** The plugin's Inbox sections: none without the `inbox-sections` capability. */
 	async inboxSections(): Promise<Page[]> {
-		return this.declares('inbox-sections') ? (this.call('inbox', 'sections') as Page[]) : [];
+		return this.declares('inbox-sections')
+			? (this.call('inbox', 'sections') as Page[])
+			: [];
 	}
 
 	async inboxSection(section: string): Promise<ViewNode> {
@@ -425,14 +496,19 @@ export class MockHost {
 		return tree(this.call('inbox', 'renderSection', section) as never);
 	}
 
-	async sendInbox(section: string, event: { tag: string; val?: unknown }): Promise<void> {
+	async sendInbox(
+		section: string,
+		event: { tag: string; val?: unknown },
+	): Promise<void> {
 		this.needs('inbox-sections');
 		this.act(() => this.call('inbox', 'handleSectionEvent', section, event));
 	}
 
 	/** The title of the plugin's Settings page, or `null` for none. */
 	async settingsPage(): Promise<string | null> {
-		return this.declares('settings') ? ((this.call('settings', 'page') as string | undefined) ?? null) : null;
+		return this.declares('settings')
+			? ((this.call('settings', 'page') as string | undefined) ?? null)
+			: null;
 	}
 
 	async settings(): Promise<ViewNode> {
@@ -447,7 +523,9 @@ export class MockHost {
 
 	/** The tools the plugin offers: none without the `tools` capability. */
 	async tools(): Promise<Tool[]> {
-		return this.declares('tools') ? (this.call('tools', 'tools') as Tool[]) : [];
+		return this.declares('tools')
+			? (this.call('tools', 'tools') as Tool[])
+			: [];
 	}
 
 	/** Call the tool `name` with `args`, a value or its JSON text. */
@@ -471,7 +549,10 @@ export class MockHost {
 		return tree(this.call('objectTypes', 'renderPanel', id) as never);
 	}
 
-	async sendPanel(id: string, event: { tag: string; val?: unknown }): Promise<void> {
+	async sendPanel(
+		id: string,
+		event: { tag: string; val?: unknown },
+	): Promise<void> {
 		this.needs('object-types');
 		this.act(() => this.call('objectTypes', 'handlePanelEvent', id, event));
 	}
@@ -501,6 +582,8 @@ export class MockHost {
 }
 
 /** Load the plugin built in `options.folder`, the current folder by default, and start it. */
-export function createMockHost(options: MockHostOptions = {}): Promise<MockHost> {
+export function createMockHost(
+	options: MockHostOptions = {},
+): Promise<MockHost> {
 	return MockHost.create(options);
 }

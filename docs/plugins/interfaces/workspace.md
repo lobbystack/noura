@@ -48,14 +48,28 @@ export const view: ViewExports = {
 
 	render(): Node[] {
 		const paths = listEntries()
-			.flatMap((entry) => (entry.tag === 'ok' && entry.val.kind === 'file' ? [entry.val.path] : []))
+			.flatMap((entry) =>
+				entry.tag === 'ok' && entry.val.kind === 'file' ? [entry.val.path] : [],
+			)
 			.filter((path) => path.endsWith('.md'))
 			.sort();
-		const list: NodeKind = { tag: 'list', val: { label: 'Markdown files', reorder: false, opensOnClick: false } };
+		const list: NodeKind = {
+			tag: 'list',
+			val: { label: 'Markdown files', reorder: false, opensOnClick: false },
+		};
 		return [
 			node('root', { tag: 'panel', val: 'Markdown files' }, [1]),
-			node('files', list, paths.map((_, index) => index + 2)),
-			...paths.map((path) => node(path, { tag: 'item', val: { label: path, detail: firstLine(path) } })),
+			node(
+				'files',
+				list,
+				paths.map((_, index) => index + 2),
+			),
+			...paths.map((path) =>
+				node(path, {
+					tag: 'item',
+					val: { label: path, detail: firstLine(path) },
+				}),
+			),
 		];
 	},
 };

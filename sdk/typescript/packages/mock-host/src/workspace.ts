@@ -46,7 +46,12 @@ export function validPath(path: string): boolean {
 		path.length <= 4096 &&
 		!path.startsWith('/') &&
 		!path.includes('\\') &&
-		path.split('/').every((part) => part !== '' && part !== '.' && part !== '..' && !/\p{Cc}/u.test(part)) &&
+		path
+			.split('/')
+			.every(
+				(part) =>
+					part !== '' && part !== '.' && part !== '..' && !/\p{Cc}/u.test(part),
+			) &&
 		path.split('/')[0] !== '.noura'
 	);
 }
@@ -85,7 +90,9 @@ function ulid(): string {
 		head = alphabet[time % 32] + head;
 		time = Math.floor(time / 32);
 	}
-	const random = [...randomBytes(16)].map((byte) => alphabet[byte % 32]).join('');
+	const random = [...randomBytes(16)]
+		.map((byte) => alphabet[byte % 32])
+		.join('');
 	return head + random;
 }
 
@@ -106,17 +113,34 @@ export class MockWorkspace {
 	constructor(files: Record<string, string | Uint8Array> = {}) {
 		for (const [path, content] of Object.entries(files)) {
 			checkPath(path);
-			this.files.set(path, typeof content === 'string' ? new TextEncoder().encode(content) : content);
+			this.files.set(
+				path,
+				typeof content === 'string'
+					? new TextEncoder().encode(content)
+					: content,
+			);
 		}
 	}
 
 	private taken(path: string): boolean {
-		return this.files.has(path) || [...this.objects.values()].some((object) => object.path === path);
+		return (
+			this.files.has(path) ||
+			[...this.objects.values()].some((object) => object.path === path)
+		);
 	}
 
 	/** Every file and folder, with the folders their paths imply, sorted. */
 	listEntries() {
-		const entries = new Map<string, { path: string; kind: 'file' | 'folder'; objectId?: string; objectType?: string; revision?: string }>();
+		const entries = new Map<
+			string,
+			{
+				path: string;
+				kind: 'file' | 'folder';
+				objectId?: string;
+				objectType?: string;
+				revision?: string;
+			}
+		>();
 		const addFolders = (path: string) => {
 			const parts = path.split('/');
 			for (let end = 1; end < parts.length; end += 1) {
@@ -149,18 +173,40 @@ export class MockWorkspace {
 		if (bytes) {
 			return { path, bytes, revision: revisionOf(bytes) };
 		}
-		const object = [...this.objects.values()].find((candidate) => candidate.path === path);
+		const object = [...this.objects.values()].find(
+			(candidate) => candidate.path === path,
+		);
 		if (object) {
 			const text = `---\nid: ${object.id}\ntype: ${object.objectType}\n---\n${object.body}`;
-			return { path, bytes: new TextEncoder().encode(text), revision: object.revision };
+			return {
+				path,
+				bytes: new TextEncoder().encode(text),
+				revision: object.revision,
+			};
 		}
 		return refuse('not-found', path);
 	}
 
 	readObject(id: string) {
 		const object = this.objects.get(id) ?? refuse('not-found', id);
-		const { id: objectId, objectType, title, path, body, properties: props, revision } = object;
-		return { id: objectId, objectType, title, path, body, properties: props, revision };
+		const {
+			id: objectId,
+			objectType,
+			title,
+			path,
+			body,
+			properties: props,
+			revision,
+		} = object;
+		return {
+			id: objectId,
+			objectType,
+			title,
+			path,
+			body,
+			properties: props,
+			revision,
+		};
 	}
 
 	create(object: NewObject): MockObject {
@@ -203,12 +249,17 @@ export class MockWorkspace {
 	}
 
 	list(objectType: string): MockObject[] {
-		return [...this.objects.values()].filter((object) => object.objectType === objectType);
+		return [...this.objects.values()].filter(
+			(object) => object.objectType === objectType,
+		);
 	}
 
 	update(id: string, expectedRevision: string, changes: Changes): MockObject {
 		const object = this.current(id, expectedRevision);
-		const merged = { ...JSON.parse(object.properties), ...properties(changes.properties) };
+		const merged = {
+			...JSON.parse(object.properties),
+			...properties(changes.properties),
+		};
 		for (const name of changes.remove) {
 			delete merged[name];
 		}

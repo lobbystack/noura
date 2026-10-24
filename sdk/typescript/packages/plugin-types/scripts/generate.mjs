@@ -17,9 +17,21 @@ if (!version) {
 }
 const out = join(here, '..', version);
 rmSync(out, { recursive: true, force: true });
-const jco = join(dirname(createRequire(import.meta.url).resolve('@bytecodealliance/jco')), 'jco.js');
+const jco = join(
+	dirname(createRequire(import.meta.url).resolve('@bytecodealliance/jco')),
+	'jco.js',
+);
 execFileSync(
 	process.execPath,
-	[jco, 'guest-types', wit, '--world-name', 'plugin', '--out-dir', out, '--quiet'],
+	[
+		jco,
+		'guest-types',
+		wit,
+		'--world-name',
+		'plugin',
+		'--out-dir',
+		out,
+		'--quiet',
+	],
 	{ stdio: 'inherit' },
 );

@@ -19,15 +19,21 @@ const EXAMPLES = join(KIT, '.examples');
 /** The interfaces the WIT defines, by name. */
 async function interfaces(): Promise<string[]> {
 	const wit = await readFile(WIT, 'utf8');
-	return [...wit.matchAll(/^interface ([a-z-]+) \{/gm)].map((match) => match[1] ?? '').sort();
+	return [...wit.matchAll(/^interface ([a-z-]+) \{/gm)]
+		.map((match) => match[1] ?? '')
+		.sort();
 }
 
 /** The body of the first fenced block of `language` in `markdown`. */
 function block(markdown: string, language: string): string | undefined {
-	return new RegExp(`^\`\`\`${language}\\n([\\s\\S]*?)^\`\`\`$`, 'm').exec(markdown)?.[1];
+	return new RegExp(`^\`\`\`${language}\\n([\\s\\S]*?)^\`\`\`$`, 'm').exec(
+		markdown,
+	)?.[1];
 }
 
-const pages = (await readdir(PAGES)).filter((name) => name.endsWith('.md')).sort();
+const pages = (await readdir(PAGES))
+	.filter((name) => name.endsWith('.md'))
+	.sort();
 
 /** Write the example on `page` into its own project folder. */
 async function writeExample(page: string): Promise<string> {
@@ -35,7 +41,9 @@ async function writeExample(page: string): Promise<string> {
 	const manifest = block(markdown, 'toml');
 	const source = block(markdown, 'ts');
 	if (manifest === undefined || source === undefined) {
-		throw new Error(`${page} needs a toml block with plugin.toml and a ts block with src/plugin.ts.`);
+		throw new Error(
+			`${page} needs a toml block with plugin.toml and a ts block with src/plugin.ts.`,
+		);
 	}
 	const project = join(EXAMPLES, page.replace(/\.md$/, ''));
 	await mkdir(join(project, 'src'), { recursive: true });
@@ -45,7 +53,9 @@ async function writeExample(page: string): Promise<string> {
 }
 
 test('each interface has an author page', async () => {
-	expect(pages.map((page) => page.replace(/\.md$/, ''))).toEqual(await interfaces());
+	expect(pages.map((page) => page.replace(/\.md$/, ''))).toEqual(
+		await interfaces(),
+	);
 });
 
 describe('each page’s example', () => {
@@ -62,7 +72,10 @@ describe('each page’s example', () => {
 				include: ['*/src'],
 			}),
 		);
-		host = await RealHost.start({ 'Plan.md': '# Plan\n', 'Notes/Idea.md': 'An idea.\n' });
+		host = await RealHost.start({
+			'Plan.md': '# Plan\n',
+			'Notes/Idea.md': 'An idea.\n',
+		});
 	});
 	afterAll(async () => {
 		await host?.close();
@@ -70,11 +83,17 @@ describe('each page’s example', () => {
 	});
 
 	test('type-checks', () => {
-		const typescript = dirname(createRequire(import.meta.url).resolve('typescript/package.json'));
+		const typescript = dirname(
+			createRequire(import.meta.url).resolve('typescript/package.json'),
+		);
 		const tsc = join(typescript, 'bin/tsc');
-		const checked = spawnSync(process.execPath, [tsc, '-p', join(EXAMPLES, 'tsconfig.json')], {
-			encoding: 'utf8',
-		});
+		const checked = spawnSync(
+			process.execPath,
+			[tsc, '-p', join(EXAMPLES, 'tsconfig.json')],
+			{
+				encoding: 'utf8',
+			},
+		);
 		expect(checked.stdout + checked.stderr).toBe('');
 		expect(checked.status).toBe(0);
 	});

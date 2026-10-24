@@ -42,8 +42,16 @@ export const view: ViewExports = {
 	],
 
 	render: (page: string): Node[] => [
-		{ id: 'root', kind: { tag: 'panel', val: `The ${page} page` }, children: new Uint32Array([1]) },
-		{ id: 'open', kind: { tag: 'button', val: `Open the ${OTHER[page]} page` }, children: new Uint32Array() },
+		{
+			id: 'root',
+			kind: { tag: 'panel', val: `The ${page} page` },
+			children: new Uint32Array([1]),
+		},
+		{
+			id: 'open',
+			kind: { tag: 'button', val: `Open the ${OTHER[page]} page` },
+			children: new Uint32Array(),
+		},
 	],
 
 	handleEvent(page: string, event: Event) {

@@ -40,13 +40,17 @@ export async function readManifest(folder: string): Promise<Manifest> {
 	try {
 		text = await readFile(path, 'utf8');
 	} catch {
-		throw new ManifestError(`${path} isn't there. A plugin's folder holds its ${MANIFEST_FILE}.`);
+		throw new ManifestError(
+			`${path} isn't there. A plugin's folder holds its ${MANIFEST_FILE}.`,
+		);
 	}
 	let raw: Record<string, unknown>;
 	try {
 		raw = parse(text);
 	} catch (error) {
-		throw new ManifestError(`${path} isn't valid TOML: ${(error as Error).message}`);
+		throw new ManifestError(
+			`${path} isn't valid TOML: ${(error as Error).message}`,
+		);
 	}
 	const field = (name: string): string => {
 		const value = raw[name];
@@ -56,20 +60,22 @@ export async function readManifest(folder: string): Promise<Manifest> {
 		return value;
 	};
 	const strings = (value: unknown): string[] =>
-		Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-	const capabilities = (Array.isArray(raw.capabilities) ? raw.capabilities : []).map(
-		(entry: unknown): Capability => {
-			const capability = (entry ?? {}) as Record<string, unknown>;
-			if (typeof capability.name !== 'string') {
-				throw new ManifestError(`${path} lists a capability without a name.`);
-			}
-			return {
-				name: capability.name,
-				hosts: strings(capability.hosts),
-				targets: strings(capability.targets),
-			};
-		},
-	);
+		Array.isArray(value)
+			? value.filter((item): item is string => typeof item === 'string')
+			: [];
+	const capabilities = (
+		Array.isArray(raw.capabilities) ? raw.capabilities : []
+	).map((entry: unknown): Capability => {
+		const capability = (entry ?? {}) as Record<string, unknown>;
+		if (typeof capability.name !== 'string') {
+			throw new ManifestError(`${path} lists a capability without a name.`);
+		}
+		return {
+			name: capability.name,
+			hosts: strings(capability.hosts),
+			targets: strings(capability.targets),
+		};
+	});
 	return {
 		id: field('id'),
 		name: field('name'),

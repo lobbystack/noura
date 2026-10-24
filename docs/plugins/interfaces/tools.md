@@ -36,10 +36,16 @@ export const tools: ToolsExports = {
 	tools: () => [
 		{
 			name: 'count_files',
-			description: 'Counts the files in a folder of the workspace, or in the whole workspace.',
+			description:
+				'Counts the files in a folder of the workspace, or in the whole workspace.',
 			inputSchema: JSON.stringify({
 				type: 'object',
-				properties: { folder: { type: 'string', description: 'A workspace-relative folder, such as Notes.' } },
+				properties: {
+					folder: {
+						type: 'string',
+						description: 'A workspace-relative folder, such as Notes.',
+					},
+				},
 			}),
 		},
 	],
@@ -50,7 +56,10 @@ export const tools: ToolsExports = {
 		}
 		const { folder } = JSON.parse(args) as { folder?: string };
 		const files = listEntries().filter(
-			(entry) => entry.tag === 'ok' && entry.val.kind === 'file' && (!folder || entry.val.path.startsWith(`${folder}/`)),
+			(entry) =>
+				entry.tag === 'ok' &&
+				entry.val.kind === 'file' &&
+				(!folder || entry.val.path.startsWith(`${folder}/`)),
 		);
 		return JSON.stringify({ files: files.length });
 	},

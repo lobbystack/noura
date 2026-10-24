@@ -46,7 +46,7 @@ Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, t
 - `crates/sync-server` is the sync service. `crates/sync-store-sqlite` and `crates/sync-store-postgres` implement its store and pass one conformance suite. Local features never depend on the server.
 - `crates/account-web` is the WebAssembly module for passkey ceremonies and the encrypted share viewer.
 - `apps/desktop` is the desktop binary: windows, menus, drag and drop, and updates.
-- `sdk/typescript` holds the generated types, project template, and CLI for TypeScript plugin authors.
+- `sdk/typescript` holds the `@noura` packages for TypeScript plugin authors: the types generated from the WIT, the project template, the CLI and the mock host. Its tests drive `crates/kit-host`, a test-only binary that serves `app-core`'s plugin service over stdio as the real host. Author docs live in `docs/plugins/`, and `scripts/plugin-reference.sh` regenerates the interface reference from the WIT.
 - `apps/website` contains the static marketing site and legal pages for noura.app. It uses no other workspace package.
 
 ### Workspace schema ownership

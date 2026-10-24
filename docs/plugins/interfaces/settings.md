@@ -41,16 +41,31 @@ export const settings: SettingsExports = {
 	page: () => 'Greeting',
 
 	renderSettings: (): Node[] => [
-		{ id: 'root', kind: { tag: 'panel', val: 'Greeting' }, children: new Uint32Array([1]) },
+		{
+			id: 'root',
+			kind: { tag: 'panel', val: 'Greeting' },
+			children: new Uint32Array([1]),
+		},
 		{
 			id: 'greeting',
-			kind: { tag: 'input', val: { label: 'Greeting', value: { tag: 'text', val: greeting }, choices: [] } },
+			kind: {
+				tag: 'input',
+				val: {
+					label: 'Greeting',
+					value: { tag: 'text', val: greeting },
+					choices: [],
+				},
+			},
 			children: new Uint32Array(),
 		},
 	],
 
 	handleSettingsEvent(event: Event) {
-		if (event.tag === 'changed' && event.val.node === 'greeting' && event.val.value.tag === 'text') {
+		if (
+			event.tag === 'changed' &&
+			event.val.node === 'greeting' &&
+			event.val.value.tag === 'text'
+		) {
 			greeting = event.val.value.val;
 		}
 	},
@@ -59,8 +74,16 @@ export const settings: SettingsExports = {
 export const view: ViewExports = {
 	pages: () => [{ id: 'greeting', title: 'Greeting' }],
 	render: (): Node[] => [
-		{ id: 'root', kind: { tag: 'panel', val: 'Greeting' }, children: new Uint32Array([1]) },
-		{ id: 'text', kind: { tag: 'text', val: `${greeting}!` }, children: new Uint32Array() },
+		{
+			id: 'root',
+			kind: { tag: 'panel', val: 'Greeting' },
+			children: new Uint32Array([1]),
+		},
+		{
+			id: 'text',
+			kind: { tag: 'text', val: `${greeting}!` },
+			children: new Uint32Array(),
+		},
 	],
 };
 ```

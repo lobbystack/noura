@@ -23,11 +23,19 @@ export const view: ViewExports = {
 
 	render(): Node[] {
 		// Needs the workspace-read capability, which plugin.toml declares.
-		const files = listEntries().filter((entry) => entry.tag === 'ok' && entry.val.kind === 'file');
+		const files = listEntries().filter(
+			(entry) => entry.tag === 'ok' && entry.val.kind === 'file',
+		);
 		return [
 			node('root', { tag: 'panel', val: '{{name}}' }, [1, 2, 3]),
-			node('files', { tag: 'text', val: `Your workspace holds ${plural(files.length, 'file', 'files')}.` }),
-			node('presses', { tag: 'text', val: `You pressed the button ${plural(presses, 'time', 'times')}.` }),
+			node('files', {
+				tag: 'text',
+				val: `Your workspace holds ${plural(files.length, 'file', 'files')}.`,
+			}),
+			node('presses', {
+				tag: 'text',
+				val: `You pressed the button ${plural(presses, 'time', 'times')}.`,
+			}),
 			node('press', { tag: 'button', val: 'Press' }),
 		];
 	},

@@ -11,9 +11,14 @@ export interface Host {
 	pages(): Promise<{ id: string; title: string }[]>;
 	view(page: string): Promise<ViewTree>;
 	send(page: string, event: { tag: string; val?: unknown }): Promise<void>;
-	tools(): Promise<{ name: string; description: string; inputSchema: string }[]>;
+	tools(): Promise<
+		{ name: string; description: string; inputSchema: string }[]
+	>;
 	/** The tool's answer, or the message it failed with. */
-	callTool(name: string, args: unknown): Promise<{ answer: string } | { failure: string }>;
+	callTool(
+		name: string,
+		args: unknown,
+	): Promise<{ answer: string } | { failure: string }>;
 	close(): Promise<void>;
 }
 
@@ -32,7 +37,10 @@ function clean(value: unknown): unknown {
 	return value;
 }
 
-export async function mockHost(folder: string, files: Record<string, string>): Promise<Host> {
+export async function mockHost(
+	folder: string,
+	files: Record<string, string>,
+): Promise<Host> {
 	const host: MockHost = await createMockHost({ folder, files });
 	return {
 		name: 'mock host',
@@ -55,7 +63,10 @@ export async function mockHost(folder: string, files: Record<string, string>): P
 }
 
 /** The plugin in `folder` on the real host, or `undefined` when it isn't built. */
-export async function realHost(folder: string, files: Record<string, string>): Promise<Host | undefined> {
+export async function realHost(
+	folder: string,
+	files: Record<string, string>,
+): Promise<Host | undefined> {
 	const host = await RealHost.start(files);
 	if (!host) {
 		return undefined;
@@ -72,12 +83,17 @@ export async function realHost(folder: string, files: Record<string, string>): P
 		async pages() {
 			return (await host.pages())
 				.filter((page) => page.id.startsWith(prefix))
-				.map((page) => ({ id: page.id.slice(prefix.length), title: page.title }));
+				.map((page) => ({
+					id: page.id.slice(prefix.length),
+					title: page.title,
+				}));
 		},
 		async view(page) {
 			const answer = await host.view(prefix + page);
 			if (!answer || !('view' in answer)) {
-				throw new Error(`The page ${page} shows no view: ${JSON.stringify(answer)}`);
+				throw new Error(
+					`The page ${page} shows no view: ${JSON.stringify(answer)}`,
+				);
 			}
 			return clean(answer.view) as ViewTree;
 		},
@@ -85,7 +101,11 @@ export async function realHost(folder: string, files: Record<string, string>): P
 		async tools() {
 			return (await host.tools())
 				.filter((tool) => tool.plugin === id)
-				.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+				.map(({ name, description, inputSchema }) => ({
+					name,
+					description,
+					inputSchema,
+				}));
 		},
 		callTool: (name, args) => host.callTool(id, name, args),
 		close: () => host.close(),

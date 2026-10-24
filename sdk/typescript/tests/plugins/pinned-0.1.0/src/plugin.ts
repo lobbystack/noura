@@ -11,11 +11,26 @@ import type {
 } from '@noura/plugin-types';
 import { now } from 'noura:plugin/clock@0.1.0';
 import { call } from 'noura:plugin/command-calls@0.1.0';
-import { openObject, openPage, trashObject } from 'noura:plugin/navigation@0.1.0';
+import {
+	openObject,
+	openPage,
+	trashObject,
+} from 'noura:plugin/navigation@0.1.0';
 import { fetch } from 'noura:plugin/network@0.1.0';
-import { create, delete as remove, get, list, moveTo, update } from 'noura:plugin/objects@0.1.0';
+import {
+	create,
+	delete as remove,
+	get,
+	list,
+	moveTo,
+	update,
+} from 'noura:plugin/objects@0.1.0';
 import type { Event, Node } from 'noura:plugin/ui@0.1.0';
-import { listEntries, readFile, readObject } from 'noura:plugin/workspace@0.1.0';
+import {
+	listEntries,
+	readFile,
+	readObject,
+} from 'noura:plugin/workspace@0.1.0';
 
 /** Every import, so a build against an interface that lost one fails. */
 export const IMPORTS = [
@@ -37,14 +52,25 @@ export const IMPORTS = [
 ];
 
 function text(id: string, value: string): Node[] {
-	return [{ id, kind: { tag: 'text', val: value }, children: new Uint32Array() }];
+	return [
+		{ id, kind: { tag: 'text', val: value }, children: new Uint32Array() },
+	];
 }
 
 function check(): string {
 	const entries = listEntries().filter((entry) => entry.tag === 'ok').length;
-	const created = create({ objectType: 'pin', title: 'Pin', body: 'pinned', properties: '{}' });
+	const created = create({
+		objectType: 'pin',
+		title: 'Pin',
+		body: 'pinned',
+		properties: '{}',
+	});
 	const moved = moveTo(created.id, created.revision, 'pins/Moved.md');
-	const updated = update(moved.id, moved.revision, { body: 'still pinned', properties: '{}', remove: [] });
+	const updated = update(moved.id, moved.revision, {
+		body: 'still pinned',
+		properties: '{}',
+		remove: [],
+	});
 	remove(updated.id, updated.revision);
 	return JSON.stringify({
 		entries,
@@ -73,7 +99,9 @@ export const objectTypes: ObjectTypesExports = {
 };
 
 export const commands: CommandsExports = {
-	commands: () => [{ id: 'check', title: 'Pinned: check', palette: true, plugins: true }],
+	commands: () => [
+		{ id: 'check', title: 'Pinned: check', palette: true, plugins: true },
+	],
 	run: () => check(),
 };
 
@@ -90,6 +118,12 @@ export const settings: SettingsExports = {
 };
 
 export const tools: ToolsExports = {
-	tools: () => [{ name: 'check', description: 'Calls the 0.1.0 imports.', inputSchema: '{"type":"object"}' }],
+	tools: () => [
+		{
+			name: 'check',
+			description: 'Calls the 0.1.0 imports.',
+			inputSchema: '{"type":"object"}',
+		},
+	],
 	callTool: () => check(),
 };

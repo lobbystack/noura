@@ -34,9 +34,21 @@ export const view: ViewExports = {
 	render(): Node[] {
 		const { instant, timeZone } = now();
 		return [
-			{ id: 'root', kind: { tag: 'panel', val: 'Clock' }, children: new Uint32Array([1, 2]) },
-			{ id: 'instant', kind: { tag: 'text', val: `It's ${instant}.` }, children: new Uint32Array() },
-			{ id: 'zone', kind: { tag: 'text', val: `This device keeps time in ${timeZone}.` }, children: new Uint32Array() },
+			{
+				id: 'root',
+				kind: { tag: 'panel', val: 'Clock' },
+				children: new Uint32Array([1, 2]),
+			},
+			{
+				id: 'instant',
+				kind: { tag: 'text', val: `It's ${instant}.` },
+				children: new Uint32Array(),
+			},
+			{
+				id: 'zone',
+				kind: { tag: 'text', val: `This device keeps time in ${timeZone}.` },
+				children: new Uint32Array(),
+			},
 		];
 	},
 };

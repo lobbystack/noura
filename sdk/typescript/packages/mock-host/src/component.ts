@@ -8,7 +8,10 @@ import { pathToFileURL } from 'node:url';
 import { transpile } from '@bytecodealliance/jco';
 
 /** What a component's interfaces offer once instantiated, by interface. */
-export type Exports = Record<string, Record<string, (...args: unknown[]) => unknown>>;
+export type Exports = Record<
+	string,
+	Record<string, (...args: unknown[]) => unknown>
+>;
 
 /** The functions the mock host gives the component, by interface name without its version. */
 export type Imports = object;
@@ -31,12 +34,15 @@ function withTraps(imports: Imports): Imports {
 			{},
 			{
 				get: (_, name) => () => {
-					throw new Error(`The plugin called ${face}#${String(name)}, which Noura doesn't provide.`);
+					throw new Error(
+						`The plugin called ${face}#${String(name)}, which Noura doesn't provide.`,
+					);
 				},
 			},
 		);
 	return new Proxy(imports, {
-		get: (target, face: string) => (target as Record<string, object>)[face] ?? trapping(face),
+		get: (target, face: string) =>
+			(target as Record<string, object>)[face] ?? trapping(face),
 	});
 }
 
@@ -56,7 +62,9 @@ export async function load(bytes: Uint8Array): Promise<Loaded> {
 		await mkdir(dirname(join(folder, name)), { recursive: true });
 		await writeFile(join(folder, name), data);
 	}
-	const module = (await import(pathToFileURL(join(folder, 'plugin.js')).href)) as {
+	const module = (await import(
+		pathToFileURL(join(folder, 'plugin.js')).href
+	)) as {
 		instantiate(
 			getCoreModule: (name: string) => Promise<WebAssembly.Module>,
 			imports: Imports,

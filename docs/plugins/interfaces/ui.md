@@ -43,7 +43,12 @@ import type { Event, Node, NodeKind } from 'noura:plugin/ui@0.1.0';
 
 const books = ['The Left Hand of Darkness'];
 
-function add(nodes: Node[], parent: number | undefined, id: string, kind: NodeKind): number {
+function add(
+	nodes: Node[],
+	parent: number | undefined,
+	id: string,
+	kind: NodeKind,
+): number {
 	nodes.push({ id, kind, children: new Uint32Array() });
 	const index = nodes.length - 1;
 	const holder = parent === undefined ? undefined : nodes[parent];
@@ -58,27 +63,44 @@ export const view: ViewExports = {
 
 	render(): Node[] {
 		const nodes: Node[] = [];
-		const root = add(nodes, undefined, 'root', { tag: 'panel', val: 'Reading list' });
+		const root = add(nodes, undefined, 'root', {
+			tag: 'panel',
+			val: 'Reading list',
+		});
 		const form = add(nodes, root, 'add-book', {
 			tag: 'form',
 			val: { label: 'Add a book', submit: 'Add', required: ['title'] },
 		});
-		add(nodes, form, 'title', { tag: 'input', val: { label: 'Title', value: { tag: 'text', val: '' }, choices: [] } });
+		add(nodes, form, 'title', {
+			tag: 'input',
+			val: { label: 'Title', value: { tag: 'text', val: '' }, choices: [] },
+		});
 		const list = add(nodes, root, 'books', {
 			tag: 'list',
 			val: { label: 'Books', reorder: false, opensOnClick: false },
 		});
 		books.forEach((title, index) => {
-			const item = add(nodes, list, `book-${index}`, { tag: 'item', val: { label: title } });
-			const menu = add(nodes, item, `menu-${index}`, { tag: 'menu', val: `Actions for ${title}` });
-			add(nodes, menu, `remove-${index}`, { tag: 'menu-item', val: { label: 'Remove', enabled: true } });
+			const item = add(nodes, list, `book-${index}`, {
+				tag: 'item',
+				val: { label: title },
+			});
+			const menu = add(nodes, item, `menu-${index}`, {
+				tag: 'menu',
+				val: `Actions for ${title}`,
+			});
+			add(nodes, menu, `remove-${index}`, {
+				tag: 'menu-item',
+				val: { label: 'Remove', enabled: true },
+			});
 		});
 		return nodes;
 	},
 
 	handleEvent(_page: string, event: Event) {
 		if (event.tag === 'submitted') {
-			const title = event.val.fields.find((field) => field.node === 'title')?.value;
+			const title = event.val.fields.find(
+				(field) => field.node === 'title',
+			)?.value;
 			if (title?.tag === 'text' && title.val.trim() !== '') {
 				books.push(title.val.trim());
 			}

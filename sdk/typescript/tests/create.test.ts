@@ -35,14 +35,18 @@ test('the project holds a manifest, the typed interfaces, an example and its tes
 		expect(manifest).toContain('interface-version = "0.1.0"');
 		const source = await readFile(join(project, 'src/plugin.ts'), 'utf8');
 		expect(source).toContain("from 'noura:plugin/workspace@0.1.0'");
-		const pkg = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
+		const pkg = JSON.parse(
+			await readFile(join(project, 'package.json'), 'utf8'),
+		);
 		expect(pkg.name).toBe('word-count');
 		expect(pkg.devDependencies).toMatchObject({
 			'@noura/plugin-cli': '^0.1.0',
 			'@noura/plugin-types': '^0.1.0',
 			'@noura/mock-host': '^0.1.0',
 		});
-		const tsconfig = JSON.parse(await readFile(join(project, 'tsconfig.json'), 'utf8'));
+		const tsconfig = JSON.parse(
+			await readFile(join(project, 'tsconfig.json'), 'utf8'),
+		);
 		expect(tsconfig.compilerOptions.types).toContain('@noura/plugin-types');
 	});
 });
@@ -53,7 +57,10 @@ test('the example builds and runs in Noura on the first try', async () => {
 		const project = join(folder, 'word-count');
 		await succeed('noura-plugin', ['build'], project);
 
-		const host = await RealHost.start({ 'Plan.md': 'plan', 'Notes/Idea.md': 'idea' });
+		const host = await RealHost.start({
+			'Plan.md': 'plan',
+			'Notes/Idea.md': 'idea',
+		});
 		if (!host) {
 			return;
 		}

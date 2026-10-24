@@ -3,7 +3,11 @@
 // real host. Its `probe` tool takes `{"call": name}` and answers
 // `{"ok": ...}` or `{"error": ...}` as JSON. Its page shows the outcome of
 // the last call a button made.
-import type { ObjectTypesExports, ToolsExports, ViewExports } from '@noura/plugin-types';
+import type {
+	ObjectTypesExports,
+	ToolsExports,
+	ViewExports,
+} from '@noura/plugin-types';
 import { call as callCommand } from 'noura:plugin/command-calls@0.1.0';
 import { now } from 'noura:plugin/clock@0.1.0';
 import { openPage } from 'noura:plugin/navigation@0.1.0';
@@ -16,7 +20,11 @@ import { listEntries, readFile } from 'noura:plugin/workspace@0.1.0';
 const CALLS: Record<string, () => unknown> = {
 	'list-entries': () =>
 		listEntries()
-			.map((entry) => (entry.tag === 'ok' ? `${entry.val.kind} ${entry.val.path}` : entry.val.tag))
+			.map((entry) =>
+				entry.tag === 'ok'
+					? `${entry.val.kind} ${entry.val.path}`
+					: entry.val.tag,
+			)
 			.sort(),
 	'read-file': () => new TextDecoder().decode(readFile('Plan.md').bytes),
 	'read-missing': () => readFile('Missing.md').path,
@@ -28,12 +36,19 @@ const CALLS: Record<string, () => unknown> = {
 	'call-command': () => callCommand('tasks', 'create-task', '{}'),
 	'call-other': () => callCommand('calendar', 'show-day', '{}'),
 	'create-object': () =>
-		create({ objectType: 'probe-note', title: 'Probe', body: '', properties: '{}' }).id.startsWith('probe-note_'),
+		create({
+			objectType: 'probe-note',
+			title: 'Probe',
+			body: '',
+			properties: '{}',
+		}).id.startsWith('probe-note_'),
 	'list-objects': () => list('note').length,
 	'list-own': () => list('probe-note').map((object) => object.path),
 	'update-stale': () => {
 		const [object] = list('probe-note');
-		return object && update(object.id, 'stale', { properties: '{}', remove: [] }).id;
+		return (
+			object && update(object.id, 'stale', { properties: '{}', remove: [] }).id
+		);
 	},
 	now: () => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/.test(now().instant),
 	'open-page': () => openPage('probe'),
@@ -42,7 +57,8 @@ const CALLS: Record<string, () => unknown> = {
 };
 
 function get(url: string): number {
-	return fetch({ method: 'get', url, headers: [], body: new Uint8Array() }).status;
+	return fetch({ method: 'get', url, headers: [], body: new Uint8Array() })
+		.status;
 }
 
 function attempt(name: string): { ok: unknown } | { error: unknown } {

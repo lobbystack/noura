@@ -8,7 +8,11 @@ import { inTemporaryFolder, start, succeed } from './support/kit.js';
 import { RealHost, texts } from './support/real-host.js';
 
 /** Poll the page until it shows `text`, for up to a minute. */
-async function waitForText(host: RealHost, page: string, text: string): Promise<string[]> {
+async function waitForText(
+	host: RealHost,
+	page: string,
+	text: string,
+): Promise<string[]> {
 	const deadline = Date.now() + 60_000;
 	let shown: string[] = [];
 	while (Date.now() < deadline) {
@@ -19,7 +23,9 @@ async function waitForText(host: RealHost, page: string, text: string): Promise<
 		}
 		await new Promise((wait) => setTimeout(wait, 100));
 	}
-	throw new Error(`The page never showed “${text}”. It shows ${JSON.stringify(shown)}.`);
+	throw new Error(
+		`The page never showed “${text}”. It shows ${JSON.stringify(shown)}.`,
+	);
 }
 
 test('saving the source while dev mode runs shows the new build in Noura', async () => {
@@ -29,27 +35,40 @@ test('saving the source while dev mode runs shows the new build in Noura', async
 		const dev = start('noura-plugin', ['dev'], project);
 		try {
 			await dev.waitFor(/^Waiting for changes/);
-			expect(dev.output()).toMatch(/^Built Word count 0\.1\.0 into dist\/plugin\.wasm in [0-9.]+ s\.$/m);
+			expect(dev.output()).toMatch(
+				/^Built Word count 0\.1\.0 into dist\/plugin\.wasm in [0-9.]+ s\.$/m,
+			);
 
 			const host = await RealHost.start({ 'Plan.md': 'plan' });
 			if (!host) {
 				return;
 			}
 			try {
-				expect(await host.install(project)).toMatchObject({ running: true, problem: null });
+				expect(await host.install(project)).toMatchObject({
+					running: true,
+					problem: null,
+				});
 				const page = 'plugin:word-count:main';
 				await waitForText(host, page, 'Your workspace holds 1 file.');
 
 				const source = join(project, 'src/plugin.ts');
 				const text = await readFile(source, 'utf8');
-				await writeFile(source, text.replace('Your workspace holds', 'This workspace holds'));
+				await writeFile(
+					source,
+					text.replace('Your workspace holds', 'This workspace holds'),
+				);
 
 				await dev.waitFor(/^Built Word count/, 2);
-				expect(await waitForText(host, page, 'This workspace holds 1 file.')).toEqual([
+				expect(
+					await waitForText(host, page, 'This workspace holds 1 file.'),
+				).toEqual([
 					'This workspace holds 1 file.',
 					'You pressed the button 0 times.',
 				]);
-				expect(await host.plugin('word-count')).toMatchObject({ running: true, problem: null });
+				expect(await host.plugin('word-count')).toMatchObject({
+					running: true,
+					problem: null,
+				});
 			} finally {
 				await host.close();
 			}

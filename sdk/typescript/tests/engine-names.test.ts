@@ -32,15 +32,20 @@ async function namingTheEngine(paths: string[]): Promise<string[]> {
 
 test('the template and the CLI’s package configuration don’t name the engine', async () => {
 	const template = await files(join(KIT, 'packages/create-plugin/template'));
-	const configuration = ['plugin-cli', 'create-plugin', 'mock-host', 'plugin-types'].map((name) =>
-		join(KIT, 'packages', name, 'package.json'),
-	);
+	const configuration = [
+		'plugin-cli',
+		'create-plugin',
+		'mock-host',
+		'plugin-types',
+	].map((name) => join(KIT, 'packages', name, 'package.json'));
 	expect(await namingTheEngine([...template, ...configuration])).toEqual([]);
 });
 
 test('a generated project and everything the CLI prints don’t name the engine', async () => {
 	await inTemporaryFolder(async (folder) => {
-		const printed = [await succeed('create-noura-plugin', ['word-count'], folder)];
+		const printed = [
+			await succeed('create-noura-plugin', ['word-count'], folder),
+		];
 		const project = join(folder, 'word-count');
 		expect(await namingTheEngine(await files(project))).toEqual([]);
 

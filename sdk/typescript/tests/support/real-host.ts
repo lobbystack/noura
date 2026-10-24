@@ -21,14 +21,22 @@ export function kitHostBinary(): string | undefined {
 	const target = process.env.CARGO_TARGET_DIR ?? join(REPO, 'target');
 	const binary =
 		process.env.NOURA_KIT_HOST ??
-		join(target, 'debug', process.platform === 'win32' ? 'noura-kit-host.exe' : 'noura-kit-host');
+		join(
+			target,
+			'debug',
+			process.platform === 'win32' ? 'noura-kit-host.exe' : 'noura-kit-host',
+		);
 	if (existsSync(binary)) {
 		return binary;
 	}
 	if (process.env.NOURA_REQUIRE_KIT_HOST === '1') {
-		throw new Error(`The kit host isn't built at ${binary}. Run cargo build -p kit-host.`);
+		throw new Error(
+			`The kit host isn't built at ${binary}. Run cargo build -p kit-host.`,
+		);
 	}
-	console.warn(`Skipping the real host: it isn't built at ${binary}. Run cargo build -p kit-host.`);
+	console.warn(
+		`Skipping the real host: it isn't built at ${binary}. Run cargo build -p kit-host.`,
+	);
 	return undefined;
 }
 
@@ -73,7 +81,10 @@ export type ToolAnswer = { answer: string } | { failure: string };
 
 export class RealHost {
 	private next = 1;
-	private readonly waiting = new Map<number, { done(value: unknown): void; fail(error: Error): void }>();
+	private readonly waiting = new Map<
+		number,
+		{ done(value: unknown): void; fail(error: Error): void }
+	>();
 
 	private constructor(
 		private readonly child: ChildProcessWithoutNullStreams,
@@ -83,7 +94,11 @@ export class RealHost {
 	) {
 		const lines = createInterface({ input: child.stdout });
 		lines.on('line', (line) => {
-			const answer = JSON.parse(line) as { id: number; ok?: unknown; error?: string };
+			const answer = JSON.parse(line) as {
+				id: number;
+				ok?: unknown;
+				error?: string;
+			};
 			const waiting = this.waiting.get(answer.id);
 			this.waiting.delete(answer.id);
 			if (answer.error !== undefined) {
@@ -98,7 +113,9 @@ export class RealHost {
 	 * Start the host with a workspace holding `files`, by path. Returns
 	 * `undefined` when the binary isn't built.
 	 */
-	static async start(files: Record<string, string> = {}): Promise<RealHost | undefined> {
+	static async start(
+		files: Record<string, string> = {},
+	): Promise<RealHost | undefined> {
 		const binary = kitHostBinary();
 		if (!binary) {
 			return undefined;
@@ -109,9 +126,13 @@ export class RealHost {
 			await mkdir(dirname(join(workspace, path)), { recursive: true });
 			await writeFile(join(workspace, path), text);
 		}
-		const child = spawn(binary, ['--app-data', join(root, 'app-data'), '--workspace', workspace], {
-			stdio: ['pipe', 'pipe', 'pipe'],
-		});
+		const child = spawn(
+			binary,
+			['--app-data', join(root, 'app-data'), '--workspace', workspace],
+			{
+				stdio: ['pipe', 'pipe', 'pipe'],
+			},
+		);
 		let stderr = '';
 		child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
 		await new Promise<void>((ready, fail) => {
@@ -124,12 +145,17 @@ export class RealHost {
 					fail(new Error(`The kit host didn't start: ${line}`));
 				}
 			});
-			child.once('exit', (code) => fail(new Error(`The kit host stopped with ${code}: ${stderr}`)));
+			child.once('exit', (code) =>
+				fail(new Error(`The kit host stopped with ${code}: ${stderr}`)),
+			);
 		});
 		return new RealHost(child, root, workspace);
 	}
 
-	private request<T>(op: string, fields: Record<string, unknown> = {}): Promise<T> {
+	private request<T>(
+		op: string,
+		fields: Record<string, unknown> = {},
+	): Promise<T> {
 		const id = this.next++;
 		return new Promise<T>((done, fail) => {
 			this.waiting.set(id, { done: done as (value: unknown) => void, fail });
@@ -168,7 +194,11 @@ export class RealHost {
 	}
 
 	callTool(plugin: string, name: string, args: unknown): Promise<ToolAnswer> {
-		return this.request('callTool', { plugin, name, arguments: JSON.stringify(args) });
+		return this.request('callTool', {
+			plugin,
+			name,
+			arguments: JSON.stringify(args),
+		});
 	}
 
 	async close(): Promise<void> {

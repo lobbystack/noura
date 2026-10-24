@@ -58,17 +58,62 @@ export const view: ViewExports = {
 	pages: () => [{ id: 'readings', title: 'Readings' }],
 
 	render(): Node[] {
-		const readings = list('reading').sort((a, b) => a.title.localeCompare(b.title));
+		const readings = list('reading').sort((a, b) =>
+			a.title.localeCompare(b.title),
+		);
 		const items = readings.map((_, index) => index + 5);
 		return [
-			{ id: 'root', kind: { tag: 'panel', val: 'Readings' }, children: new Uint32Array([1, 4]) },
-			{ id: 'add', kind: { tag: 'form', val: { label: 'Add a book', submit: 'Add', required: ['title'] } }, children: new Uint32Array([2, 3]) },
-			{ id: 'title', kind: { tag: 'input', val: { label: 'Title', value: { tag: 'text', val: '' }, choices: [] } }, children: new Uint32Array() },
-			{ id: 'author', kind: { tag: 'input', val: { label: 'Author', value: { tag: 'text', val: '' }, choices: [] } }, children: new Uint32Array() },
-			{ id: 'books', kind: { tag: 'list', val: { label: 'Books', reorder: false, opensOnClick: false } }, children: new Uint32Array(items) },
+			{
+				id: 'root',
+				kind: { tag: 'panel', val: 'Readings' },
+				children: new Uint32Array([1, 4]),
+			},
+			{
+				id: 'add',
+				kind: {
+					tag: 'form',
+					val: { label: 'Add a book', submit: 'Add', required: ['title'] },
+				},
+				children: new Uint32Array([2, 3]),
+			},
+			{
+				id: 'title',
+				kind: {
+					tag: 'input',
+					val: { label: 'Title', value: { tag: 'text', val: '' }, choices: [] },
+				},
+				children: new Uint32Array(),
+			},
+			{
+				id: 'author',
+				kind: {
+					tag: 'input',
+					val: {
+						label: 'Author',
+						value: { tag: 'text', val: '' },
+						choices: [],
+					},
+				},
+				children: new Uint32Array(),
+			},
+			{
+				id: 'books',
+				kind: {
+					tag: 'list',
+					val: { label: 'Books', reorder: false, opensOnClick: false },
+				},
+				children: new Uint32Array(items),
+			},
 			...readings.map((reading): Node => ({
 				id: reading.id,
-				kind: { tag: 'item', val: { label: reading.title, detail: JSON.parse(reading.properties).author, checked: finished(reading.properties) } },
+				kind: {
+					tag: 'item',
+					val: {
+						label: reading.title,
+						detail: JSON.parse(reading.properties).author,
+						checked: finished(reading.properties),
+					},
+				},
 				children: new Uint32Array(),
 			})),
 		];
@@ -77,10 +122,17 @@ export const view: ViewExports = {
 	handleEvent(_page: string, event: Event) {
 		if (event.tag === 'submitted') {
 			const text = (node: string) => {
-				const value = event.val.fields.find((field) => field.node === node)?.value;
+				const value = event.val.fields.find(
+					(field) => field.node === node,
+				)?.value;
 				return value?.tag === 'text' ? value.val.trim() : '';
 			};
-			create({ objectType: 'reading', title: text('title'), body: '', properties: JSON.stringify({ author: text('author') }) });
+			create({
+				objectType: 'reading',
+				title: text('title'),
+				body: '',
+				properties: JSON.stringify({ author: text('author') }),
+			});
 		} else if (event.tag === 'checked') {
 			const reading = get(event.val.item);
 			update(reading.id, reading.revision, {

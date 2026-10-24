@@ -39,16 +39,31 @@ export const inbox: InboxExports = {
 
 	renderSection(): Node[] {
 		const waiting = listEntries()
-			.flatMap((entry) => (entry.tag === 'ok' && entry.val.kind === 'file' ? [entry.val.path] : []))
+			.flatMap((entry) =>
+				entry.tag === 'ok' && entry.val.kind === 'file' ? [entry.val.path] : [],
+			)
 			.filter((path) => path.startsWith('Inbox/'))
 			.sort();
 		if (waiting.length === 0) {
-			return [{ id: 'empty', kind: { tag: 'text', val: 'Nothing is waiting in Inbox/.' }, children: new Uint32Array() }];
+			return [
+				{
+					id: 'empty',
+					kind: { tag: 'text', val: 'Nothing is waiting in Inbox/.' },
+					children: new Uint32Array(),
+				},
+			];
 		}
 		return [
 			{
 				id: 'waiting',
-				kind: { tag: 'list', val: { label: 'Waiting in Inbox/', reorder: false, opensOnClick: false } },
+				kind: {
+					tag: 'list',
+					val: {
+						label: 'Waiting in Inbox/',
+						reorder: false,
+						opensOnClick: false,
+					},
+				},
 				children: new Uint32Array(waiting.map((_, index) => index + 1)),
 			},
 			...waiting.map((path): Node => ({

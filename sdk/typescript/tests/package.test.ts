@@ -15,10 +15,19 @@ test('one command writes an archive of the manifest and the component', async ()
 
 		const output = await succeed('noura-plugin', ['package'], project);
 
-		expect(output).toContain('Wrote the release archive dist/word-count-0.1.0.zip.');
-		const archive = unzipSync(await readFile(join(project, 'dist/word-count-0.1.0.zip')));
-		expect(Object.keys(archive).sort()).toEqual(['dist/plugin.wasm', 'plugin.toml']);
-		expect(archive['plugin.toml']).toEqual(new Uint8Array(await readFile(join(project, 'plugin.toml'))));
+		expect(output).toContain(
+			'Wrote the release archive dist/word-count-0.1.0.zip.',
+		);
+		const archive = unzipSync(
+			await readFile(join(project, 'dist/word-count-0.1.0.zip')),
+		);
+		expect(Object.keys(archive).sort()).toEqual([
+			'dist/plugin.wasm',
+			'plugin.toml',
+		]);
+		expect(archive['plugin.toml']).toEqual(
+			new Uint8Array(await readFile(join(project, 'plugin.toml'))),
+		);
 		expect(archive['dist/plugin.wasm']).toEqual(
 			new Uint8Array(await readFile(join(project, 'dist/plugin.wasm'))),
 		);

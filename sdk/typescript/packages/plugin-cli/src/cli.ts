@@ -22,7 +22,9 @@ Commands:
 The folder defaults to the current one.`;
 
 function version(): string {
-	const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+	const manifest = JSON.parse(
+		readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+	) as {
 		version: string;
 	};
 	return manifest.version;
@@ -34,7 +36,12 @@ async function main(args: string[]): Promise<number> {
 		console.log(version());
 		return 0;
 	}
-	if (!command || command === '--help' || command === '-h' || command === 'help') {
+	if (
+		!command ||
+		command === '--help' ||
+		command === '-h' ||
+		command === 'help'
+	) {
 		console.log(USAGE);
 		return command ? 0 : 1;
 	}
@@ -50,7 +57,9 @@ async function main(args: string[]): Promise<number> {
 		case 'package': {
 			const packed = await pack(folder);
 			const archive = relative(folder, packed.archive).split(sep).join('/');
-			console.log(`${describe(packed, folder)}\nWrote the release archive ${archive}.`);
+			console.log(
+				`${describe(packed, folder)}\nWrote the release archive ${archive}.`,
+			);
 			return 0;
 		}
 		case 'dev': {
@@ -63,7 +72,9 @@ async function main(args: string[]): Promise<number> {
 			return 0;
 		}
 		default:
-			console.error(`noura-plugin doesn't have a ${command} command.\n\n${USAGE}`);
+			console.error(
+				`noura-plugin doesn't have a ${command} command.\n\n${USAGE}`,
+			);
 			return 1;
 	}
 }

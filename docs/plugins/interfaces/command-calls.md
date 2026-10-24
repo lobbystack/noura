@@ -46,9 +46,21 @@ export const view: ViewExports = {
 	pages: () => [{ id: 'quick-task', title: 'Quick task' }],
 
 	render: (): Node[] => [
-		{ id: 'root', kind: { tag: 'panel', val: 'Quick task' }, children: new Uint32Array([1, 2]) },
-		{ id: 'last', kind: { tag: 'text', val: last }, children: new Uint32Array() },
-		{ id: 'create', kind: { tag: 'button', val: 'Add a task to water the plants' }, children: new Uint32Array() },
+		{
+			id: 'root',
+			kind: { tag: 'panel', val: 'Quick task' },
+			children: new Uint32Array([1, 2]),
+		},
+		{
+			id: 'last',
+			kind: { tag: 'text', val: last },
+			children: new Uint32Array(),
+		},
+		{
+			id: 'create',
+			kind: { tag: 'button', val: 'Add a task to water the plants' },
+			children: new Uint32Array(),
+		},
 	],
 
 	handleEvent(_page: string, event: Event) {
@@ -56,10 +68,13 @@ export const view: ViewExports = {
 			return;
 		}
 		try {
-			const task = JSON.parse(call('tasks', 'create', JSON.stringify({ title: 'Water the plants' })));
+			const task = JSON.parse(
+				call('tasks', 'create', JSON.stringify({ title: 'Water the plants' })),
+			);
 			last = `Created ${task.title}.`;
 		} catch (error) {
-			const payload = (error as { payload?: { tag: string; val?: unknown } }).payload;
+			const payload = (error as { payload?: { tag: string; val?: unknown } })
+				.payload;
 			last = `Tasks didn't create it: ${payload?.tag ?? String(error)}.`;
 		}
 	},

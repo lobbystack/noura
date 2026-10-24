@@ -30,7 +30,9 @@ test('a plugin built against noura:plugin@0.1.0 runs every interface in Noura', 
 				],
 			});
 			expect(await host.view('plugin:pinned:pinned')).toMatchObject({
-				view: { kind: { tag: 'text', val: 'Built against noura:plugin@0.1.0.' } },
+				view: {
+					kind: { tag: 'text', val: 'Built against noura:plugin@0.1.0.' },
+				},
 			});
 			const answer = await host.callTool('pinned', 'check', {});
 			expect('answer' in answer && JSON.parse(answer.answer)).toEqual({

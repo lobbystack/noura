@@ -28,7 +28,10 @@ export async function pack(folder: string): Promise<Packed> {
 	const built = await build(folder);
 	const { manifest } = built;
 	const entry = relative(folder, built.component).split(sep).join('/');
-	const archive = join(dirname(built.component), archiveName(manifest.id, manifest.version));
+	const archive = join(
+		dirname(built.component),
+		archiveName(manifest.id, manifest.version),
+	);
 	const bytes = zipSync(
 		{
 			[MANIFEST_FILE]: await readFile(join(folder, MANIFEST_FILE)),

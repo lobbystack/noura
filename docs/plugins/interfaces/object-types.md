@@ -17,7 +17,11 @@ A schema lists each property's `name` and `kind`, in the order Noura writes them
 ```json
 {
 	"properties": [
-		{ "name": "course", "kind": { "enum": ["starter", "main", "dessert"] }, "default": "main" },
+		{
+			"name": "course",
+			"kind": { "enum": ["starter", "main", "dessert"] },
+			"default": "main"
+		},
 		{ "name": "vegetarian", "kind": "boolean", "default": false },
 		{ "name": "cooked", "kind": "date", "nullable": true }
 	]
@@ -63,18 +67,42 @@ export const objectTypes: ObjectTypesExports = {
 
 	renderPanel(object: string): Node[] {
 		const recipe = get(object);
-		const properties = JSON.parse(recipe.properties) as { course?: string; vegetarian?: boolean };
-		const choices = COURSES.map((course) => ({ id: course, label: course[0]?.toUpperCase() + course.slice(1) }));
+		const properties = JSON.parse(recipe.properties) as {
+			course?: string;
+			vegetarian?: boolean;
+		};
+		const choices = COURSES.map((course) => ({
+			id: course,
+			label: course[0]?.toUpperCase() + course.slice(1),
+		}));
 		return [
-			{ id: 'panel', kind: { tag: 'panel', val: 'Recipe' }, children: new Uint32Array([1, 2]) },
+			{
+				id: 'panel',
+				kind: { tag: 'panel', val: 'Recipe' },
+				children: new Uint32Array([1, 2]),
+			},
 			{
 				id: 'course',
-				kind: { tag: 'input', val: { label: 'Course', value: { tag: 'choice', val: properties.course }, choices } },
+				kind: {
+					tag: 'input',
+					val: {
+						label: 'Course',
+						value: { tag: 'choice', val: properties.course },
+						choices,
+					},
+				},
 				children: new Uint32Array(),
 			},
 			{
 				id: 'vegetarian',
-				kind: { tag: 'input', val: { label: 'Vegetarian', value: { tag: 'checkbox', val: properties.vegetarian === true }, choices: [] } },
+				kind: {
+					tag: 'input',
+					val: {
+						label: 'Vegetarian',
+						value: { tag: 'checkbox', val: properties.vegetarian === true },
+						choices: [],
+					},
+				},
 				children: new Uint32Array(),
 			},
 		];
@@ -86,8 +114,14 @@ export const objectTypes: ObjectTypesExports = {
 		}
 		const { node, value } = event.val;
 		const recipe = get(object);
-		const changed = value.tag === 'choice' || value.tag === 'checkbox' ? { [node]: value.val } : {};
-		update(recipe.id, recipe.revision, { properties: JSON.stringify(changed), remove: [] });
+		const changed =
+			value.tag === 'choice' || value.tag === 'checkbox'
+				? { [node]: value.val }
+				: {};
+		update(recipe.id, recipe.revision, {
+			properties: JSON.stringify(changed),
+			remove: [],
+		});
 	},
 };
 ```

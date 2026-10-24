@@ -3,7 +3,11 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CapabilityError, type MockHost, createMockHost } from '@noura/mock-host';
+import {
+	CapabilityError,
+	type MockHost,
+	createMockHost,
+} from '@noura/mock-host';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 
 import { buildTestPlugin } from './support/kit.js';
@@ -23,8 +27,16 @@ beforeAll(async () => {
 	]);
 	host = await createMockHost({
 		folder: project,
-		clock: () => ({ instant: '2026-10-21T13:30:00Z', timeZone: 'America/Toronto' }),
-		fetch: (request) => ({ status: 200, url: request.url, headers: [], body: new Uint8Array() }),
+		clock: () => ({
+			instant: '2026-10-21T13:30:00Z',
+			timeZone: 'America/Toronto',
+		}),
+		fetch: (request) => ({
+			status: 200,
+			url: request.url,
+			headers: [],
+			body: new Uint8Array(),
+		}),
 		commands: { 'tasks/create-task': (input) => `created from ${input}` },
 	});
 });
@@ -53,10 +65,9 @@ test('the clock reads what the test passes', async () => {
 test('the objects the plugin writes show in the mock workspace', async () => {
 	expect(await host.objectTypes()).toEqual(['probe-note']);
 	await probe('create-object');
-	expect(host.objects().map((object) => [object.objectType, object.path])).toContainEqual([
-		'probe-note',
-		'probe-notes/Probe.md',
-	]);
+	expect(
+		host.objects().map((object) => [object.objectType, object.path]),
+	).toContainEqual(['probe-note', 'probe-notes/Probe.md']);
 });
 
 test('a press that opens a page shows in the openings', async () => {
@@ -67,11 +78,15 @@ test('a press that opens a page shows in the openings', async () => {
 test('a view the manifest doesn’t declare names the capability', async () => {
 	const withoutViews = await mkdtemp(join(tmpdir(), 'noura-kit-'));
 	try {
-		const tools = await buildTestPlugin('probe', withoutViews, ['name = "tools"']);
+		const tools = await buildTestPlugin('probe', withoutViews, [
+			'name = "tools"',
+		]);
 		const toolsOnly = await createMockHost({ folder: tools });
 		try {
 			expect(await toolsOnly.pages()).toEqual([]);
-			const refused = await toolsOnly.view('probe').catch((error: unknown) => error);
+			const refused = await toolsOnly
+				.view('probe')
+				.catch((error: unknown) => error);
 			expect(refused).toBeInstanceOf(CapabilityError);
 			expect((refused as CapabilityError).capability).toBe('views');
 		} finally {

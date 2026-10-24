@@ -2,7 +2,15 @@
 // example, its test, and the package and TypeScript setup that build and
 // test it with the kit.
 import { readFileSync } from 'node:fs';
-import { cp, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import {
+	cp,
+	mkdir,
+	readFile,
+	readdir,
+	rename,
+	stat,
+	writeFile,
+} from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +18,9 @@ const TEMPLATE = fileURLToPath(new URL('../template/', import.meta.url));
 
 /** The kit's version, which every `@noura` package shares. */
 const KIT_VERSION = (
-	JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+	JSON.parse(
+		readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+	) as { version: string }
 ).version;
 
 /** The versions of the tools a new project checks and tests with. */
@@ -52,7 +62,9 @@ export async function createPlugin(folder: string): Promise<Created> {
 		);
 	}
 	if (await exists(folder)) {
-		throw new CreateError(`${folder} exists already. Choose a new folder for the plugin.`);
+		throw new CreateError(
+			`${folder} exists already. Choose a new folder for the plugin.`,
+		);
 	}
 	const name = nameFor(id);
 	await mkdir(folder, { recursive: true });
@@ -65,7 +77,10 @@ export async function createPlugin(folder: string): Promise<Created> {
 			await writeFile(file, filled);
 		}
 	}
-	await writeFile(join(folder, 'package.json'), `${JSON.stringify(packageJson(id), null, '\t')}\n`);
+	await writeFile(
+		join(folder, 'package.json'),
+		`${JSON.stringify(packageJson(id), null, '\t')}\n`,
+	);
 	return { folder, id, name };
 }
 

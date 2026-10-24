@@ -21,7 +21,11 @@ export interface Ran {
 }
 
 /** Run one of the kit's tools in `cwd` and wait for it to stop. */
-export function run(tool: keyof typeof TOOLS, args: string[], cwd: string): Promise<Ran> {
+export function run(
+	tool: keyof typeof TOOLS,
+	args: string[],
+	cwd: string,
+): Promise<Ran> {
 	return new Promise((done, fail) => {
 		const child = spawn(process.execPath, [TOOLS[tool], ...args], { cwd });
 		let output = '';
@@ -42,7 +46,11 @@ export interface Running {
 }
 
 /** Start one of the kit's tools in `cwd`, leaving it running. */
-export function start(tool: keyof typeof TOOLS, args: string[], cwd: string): Running {
+export function start(
+	tool: keyof typeof TOOLS,
+	args: string[],
+	cwd: string,
+): Running {
 	const child = spawn(process.execPath, [TOOLS[tool], ...args], { cwd });
 	let output = '';
 	const listeners = new Set<() => void>();
@@ -52,11 +60,14 @@ export function start(tool: keyof typeof TOOLS, args: string[], cwd: string): Ru
 	};
 	child.stdout.on('data', heard);
 	child.stderr.on('data', heard);
-	const exited = new Promise<void>((stopped) => child.once('exit', () => stopped()));
+	const exited = new Promise<void>((stopped) =>
+		child.once('exit', () => stopped()),
+	);
 	return {
 		output: () => output,
 		waitFor(pattern, count = 1) {
-			const matches = () => output.split('\n').filter((line) => pattern.test(line)).length >= count;
+			const matches = () =>
+				output.split('\n').filter((line) => pattern.test(line)).length >= count;
 			return new Promise((done, fail) => {
 				const check = () => {
 					if (matches()) {
@@ -64,7 +75,9 @@ export function start(tool: keyof typeof TOOLS, args: string[], cwd: string): Ru
 						done();
 					} else if (child.exitCode !== null) {
 						listeners.delete(check);
-						fail(new Error(`${tool} stopped with ${child.exitCode}:\n${output}`));
+						fail(
+							new Error(`${tool} stopped with ${child.exitCode}:\n${output}`),
+						);
 					}
 				};
 				listeners.add(check);
@@ -82,10 +95,16 @@ export function start(tool: keyof typeof TOOLS, args: string[], cwd: string): Ru
 }
 
 /** Run a tool and fail with its output unless it succeeds. */
-export async function succeed(tool: keyof typeof TOOLS, args: string[], cwd: string): Promise<string> {
+export async function succeed(
+	tool: keyof typeof TOOLS,
+	args: string[],
+	cwd: string,
+): Promise<string> {
 	const ran = await run(tool, args, cwd);
 	if (ran.code !== 0) {
-		throw new Error(`${tool} ${args.join(' ')} stopped with ${ran.code}:\n${ran.output}`);
+		throw new Error(
+			`${tool} ${args.join(' ')} stopped with ${ran.code}:\n${ran.output}`,
+		);
 	}
 	return ran.output;
 }
@@ -96,13 +115,19 @@ export async function succeed(tool: keyof typeof TOOLS, args: string[], cwd: str
  * manifest declares, each written as its `[[capabilities]]` table's body,
  * such as `name = "views"`.
  */
-export async function buildTestPlugin(name: string, folder: string, capabilities?: string[]): Promise<string> {
+export async function buildTestPlugin(
+	name: string,
+	folder: string,
+	capabilities?: string[],
+): Promise<string> {
 	const project = join(folder, name);
 	await cp(join(KIT, 'tests/plugins', name), project, { recursive: true });
 	if (capabilities) {
 		const manifest = await readFile(join(project, 'plugin.toml'), 'utf8');
 		const head = manifest.split('[[capabilities]]')[0]?.trimEnd() ?? '';
-		const tables = capabilities.map((capability) => `[[capabilities]]\n${capability}\n`).join('\n');
+		const tables = capabilities
+			.map((capability) => `[[capabilities]]\n${capability}\n`)
+			.join('\n');
 		await writeFile(join(project, 'plugin.toml'), `${head}\n\n${tables}`);
 	}
 	await succeed('noura-plugin', ['build'], project);
@@ -110,7 +135,9 @@ export async function buildTestPlugin(name: string, folder: string, capabilities
 }
 
 /** A folder that `use` gets and that is removed afterwards. */
-export async function inTemporaryFolder<T>(use: (folder: string) => Promise<T>): Promise<T> {
+export async function inTemporaryFolder<T>(
+	use: (folder: string) => Promise<T>,
+): Promise<T> {
 	const folder = await mkdtemp(join(tmpdir(), 'noura-kit-'));
 	try {
 		return await use(folder);

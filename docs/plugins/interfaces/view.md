@@ -41,22 +41,46 @@ export const view: ViewExports = {
 	pages: () => [{ id: 'numbers', title: 'Numbers' }],
 
 	render: (): Node[] => [
-		{ id: 'root', kind: { tag: 'panel', val: 'Numbers' }, children: new Uint32Array([1]) },
-		{ id: 'numbers', kind: { tag: 'virtual-list', val: { label: 'Numbers', rows: COUNT } }, children: new Uint32Array() },
+		{
+			id: 'root',
+			kind: { tag: 'panel', val: 'Numbers' },
+			children: new Uint32Array([1]),
+		},
+		{
+			id: 'numbers',
+			kind: { tag: 'virtual-list', val: { label: 'Numbers', rows: COUNT } },
+			children: new Uint32Array(),
+		},
 	],
 
-	rows(_page: string, _node: string, start: number, count: number): VirtualRow[] {
+	rows(
+		_page: string,
+		_node: string,
+		start: number,
+		count: number,
+	): VirtualRow[] {
 		const end = Math.min(start + count, COUNT);
 		const rows: VirtualRow[] = [];
 		for (let number = start; number < end; number += 1) {
-			rows.push({ id: String(number + 1), item: { label: `Number ${number + 1}` } });
+			rows.push({
+				id: String(number + 1),
+				item: { label: `Number ${number + 1}` },
+			});
 		}
 		return rows;
 	},
 
 	sidebar: (): Node[] => [
-		{ id: 'side', kind: { tag: 'panel', val: 'Selection' }, children: new Uint32Array([1]) },
-		{ id: 'chosen', kind: { tag: 'text', val: selected ?? 'Select a number.' }, children: new Uint32Array() },
+		{
+			id: 'side',
+			kind: { tag: 'panel', val: 'Selection' },
+			children: new Uint32Array([1]),
+		},
+		{
+			id: 'chosen',
+			kind: { tag: 'text', val: selected ?? 'Select a number.' },
+			children: new Uint32Array(),
+		},
 	],
 
 	handleEvent(_page: string, event: Event) {

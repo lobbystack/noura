@@ -56,7 +56,10 @@ test('a capability the manifest declares works', async () => {
 			'name = "tools"',
 			'name = "workspace-read"',
 		]);
-		const host = await RealHost.start({ 'Plan.md': 'plan', 'Notes/Idea.md': 'idea' });
+		const host = await RealHost.start({
+			'Plan.md': 'plan',
+			'Notes/Idea.md': 'idea',
+		});
 		if (!host) {
 			return;
 		}

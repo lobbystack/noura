@@ -69,8 +69,16 @@ function today(): string {
 export const view: ViewExports = {
 	pages: () => [{ id: 'today', title: 'Today' }],
 	render: (): Node[] => [
-		{ id: 'root', kind: { tag: 'panel', val: 'Today' }, children: new Uint32Array([1]) },
-		{ id: 'line', kind: { tag: 'text', val: today() }, children: new Uint32Array() },
+		{
+			id: 'root',
+			kind: { tag: 'panel', val: 'Today' },
+			children: new Uint32Array([1]),
+		},
+		{
+			id: 'line',
+			kind: { tag: 'text', val: today() },
+			children: new Uint32Array(),
+		},
 	],
 };
 ```
