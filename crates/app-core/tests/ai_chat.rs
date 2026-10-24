@@ -16,13 +16,14 @@ use support::{
 
 /// A workspace with the AI plugin on, one provider set up and consented,
 /// talking to a fake provider.
+/// The app comes first, so it closes before its folders go.
 struct Chatting {
-    fixture: Fixture,
-    system: std::sync::Arc<FakeSystem>,
     app: App,
     provider: std::sync::Arc<FakeProvider>,
     id: String,
+    system: std::sync::Arc<FakeSystem>,
     _plugin: support::plugins::PluginFolder,
+    fixture: Fixture,
 }
 
 impl Chatting {
@@ -335,6 +336,52 @@ fn chats_come_back_after_a_relaunch_and_continue_with_another_provider() {
     assert!(answers.contains(&(Some(second.clone()), Some("gpt-test".to_owned()))));
     assert!(ai::lines(&app).contains(&"Local, llama3".to_owned()));
     assert!(ai::lines(&app).contains(&"Cloud, gpt-test".to_owned()));
+}
+
+#[test]
+fn switching_workspace_mid_answer_stops_it_and_keeps_the_partial_answer() {
+    let Some(mut chat) = Chatting::new() else {
+        return;
+    };
+    let provider = chat.provider.clone();
+    let id = chat.id.clone();
+    ai::send(&mut chat.app, "Count to ten", &id);
+    chat.wait("the request leaves", |_| provider.requests().len() == 1);
+    provider.say(0, "One, two,");
+    chat.wait("the first words show", |app| {
+        ai::lines(app).contains(&"md: One, two,".to_owned())
+    });
+
+    // Another folder opens as a plain workspace.
+    let other = chat.fixture.outside();
+    chat.app.open_folder(other.clone());
+    let other = other.canonicalize().unwrap();
+    ai::wait_until(&mut chat.app, "the other workspace opens", |app| {
+        app.workspace().is_some_and(|workspace| {
+            std::path::Path::new(workspace.root()).canonicalize().ok() == Some(other.clone())
+        })
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let files = messages(&chat.fixture);
+        if files
+            .iter()
+            .any(|text| text.contains("kind: assistant") && text.contains("status: cancelled"))
+        {
+            let answer = files
+                .iter()
+                .find(|text| text.contains("kind: assistant"))
+                .unwrap();
+            assert!(answer.ends_with("\nOne, two,\n"), "{answer}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the answer never ended: {files:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(provider.cancelled(0));
 }
 
 #[test]

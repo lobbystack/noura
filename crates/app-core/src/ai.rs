@@ -726,7 +726,17 @@ impl Ai {
                 store.start_stream_with(workspace.id(), input, client)
             };
             match stream {
-                Ok(stream) => Ok((message, operation, stream)),
+                Ok(stream) => Ok((
+                    Answer {
+                        chat: chat.clone(),
+                        message,
+                        begun: begun.revision.clone(),
+                        text: String::new(),
+                        calls: Vec::new(),
+                    },
+                    operation,
+                    stream,
+                )),
                 Err(error) => {
                     let code = error_code(&error);
                     finish_answer(
@@ -742,18 +752,19 @@ impl Ai {
             }
         })();
         match asked {
-            Ok((_, operation, stream)) => {
+            Ok((answer, operation, stream)) => {
                 if let Some(run) = lock(&self.state).runs.get_mut(id) {
                     run.operation = Some(operation);
                 }
                 let ai = self.clone();
                 let run = id.to_owned();
-                let engine = engine.clone();
+                let followed = engine.clone();
                 let started = std::thread::Builder::new()
                     .name("ai-run".to_owned())
-                    .spawn(move || ai.follow(&run, &engine, stream.receiver));
+                    .spawn(move || ai.follow(&run, &followed, answer, stream.receiver));
                 if let Err(error) = started {
                     tracing::warn!(%error, "an AI run's thread didn't start");
+                    self.fail(id, &incomplete());
                 }
             }
             Err(error) => self.fail(id, &error),
@@ -767,6 +778,7 @@ impl Ai {
         self: &Arc<Self>,
         id: &str,
         engine: &Arc<WorkspaceEngine>,
+        mut answer: Answer,
         mut frames: tokio::sync::mpsc::Receiver<AiStreamFrame>,
     ) {
         let ended = loop {
@@ -776,18 +788,21 @@ impl Ai {
             match frame.event {
                 AiStreamEvent::Started { .. } => {}
                 AiStreamEvent::TextDelta { text } => {
+                    answer.text.push_str(&text);
                     if let Some(run) = lock(&self.state).runs.get_mut(id) {
                         run.text.push_str(&text);
                     }
                     self.redraw_run(id);
                 }
                 AiStreamEvent::ToolCall { call } => {
+                    let call = AiToolCall {
+                        id: call.call_id,
+                        name: call.name,
+                        arguments: call.arguments.to_string(),
+                    };
+                    answer.calls.push(call.clone());
                     if let Some(run) = lock(&self.state).runs.get_mut(id) {
-                        run.tool_calls.push(AiToolCall {
-                            id: call.call_id,
-                            name: call.name,
-                            arguments: call.arguments.to_string(),
-                        });
+                        run.tool_calls.push(call);
                     }
                 }
                 AiStreamEvent::Completed { .. } => break Ended::Completed,
@@ -795,25 +810,26 @@ impl Ai {
                 AiStreamEvent::Error { error } => break Ended::Failed(error),
             }
         };
-        self.end(id, engine, ended);
+        self.end(id, engine, answer, ended);
     }
 
     /// Write the run's answer with how it ended, and the tool calls it
-    /// asked for, then show the run as ended.
-    fn end(self: &Arc<Self>, id: &str, engine: &Arc<WorkspaceEngine>, ended: Ended) {
-        let Some((chat, message, begun, text, calls)) =
-            lock(&self.state).runs.get(id).and_then(|run| {
-                Some((
-                    run.chat.clone(),
-                    run.message.clone()?,
-                    run.message_revision.clone(),
-                    run.text.clone(),
-                    run.tool_calls.clone(),
-                ))
-            })
-        else {
-            return;
-        };
+    /// asked for, then show the run as ended. The answer reaches its file
+    /// even when the run is gone, as after a switch to another workspace.
+    fn end(
+        self: &Arc<Self>,
+        id: &str,
+        engine: &Arc<WorkspaceEngine>,
+        answer: Answer,
+        ended: Ended,
+    ) {
+        let Answer {
+            chat,
+            message,
+            begun,
+            text,
+            calls,
+        } = answer;
         let (status, error) = match &ended {
             Ended::Completed => (ChatMessageStatus::Completed, None),
             Ended::Cancelled => (ChatMessageStatus::Cancelled, None),
@@ -1068,6 +1084,16 @@ impl Ai {
             updated: created.value.updated,
         })
     }
+}
+
+/// An answer as it streams in, and the message it goes to.
+struct Answer {
+    chat: String,
+    message: String,
+    /// The message's revision as Noura began it.
+    begun: String,
+    text: String,
+    calls: Vec<AiToolCall>,
 }
 
 /// How a provider's answer ended.
