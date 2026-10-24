@@ -155,9 +155,22 @@ pub(crate) fn order(tasks: &mut [Task], now: &Now) {
             .cmp(&right.done())
             .then_with(|| by_due(left, right, &now.zone))
             .then_with(|| weight(&left.priority).cmp(&weight(&right.priority)))
-            .then_with(|| left.updated.cmp(&right.updated))
+            .then_with(|| by_update(left, right))
             .then_with(|| left.path.cmp(&right.path))
     });
+}
+
+/// Older last updates first, compared as instants, since another app may
+/// write one with its own offset or with fractions of a second. A value
+/// that isn't RFC 3339 sorts after those that are, by its text.
+fn by_update(left: &Task, right: &Task) -> Ordering {
+    let instant = |task: &Task| task.updated.parse::<Timestamp>().ok();
+    match (instant(left), instant(right)) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => left.updated.cmp(&right.updated),
+    }
 }
 
 fn by_due(left: &Task, right: &Task, zone: &TimeZone) -> Ordering {

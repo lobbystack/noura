@@ -14,7 +14,10 @@ mod commands;
 mod task;
 mod views;
 
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
+};
 
 use jiff::civil::Date;
 use plugin_sdk::{
@@ -147,7 +150,9 @@ fn tasks() -> Result<Vec<Task>, Error> {
     Ok(objects::list(TASK)?.iter().map(Task::of).collect())
 }
 
-/// Every project in the workspace, as (stable ID, title), by title.
+/// Every project in the workspace, as (stable ID, title), by title. Two
+/// files with one ID, as after copying a project's folder outside Noura,
+/// show as one project, under the title that sorts first.
 fn projects() -> Vec<(String, String)> {
     let mut projects: Vec<(String, String)> = workspace::list_entries()
         .unwrap_or_default()
@@ -164,8 +169,11 @@ fn projects() -> Vec<(String, String)> {
     projects.sort_by(|a, b| {
         a.1.to_lowercase()
             .cmp(&b.1.to_lowercase())
+            .then_with(|| a.1.cmp(&b.1))
             .then_with(|| a.0.cmp(&b.0))
     });
+    let mut seen = BTreeSet::new();
+    projects.retain(|(id, _)| seen.insert(id.clone()));
     projects
 }
 

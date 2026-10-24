@@ -10,7 +10,7 @@
 use std::{ops::Range, path::PathBuf};
 
 use jiff::{civil::Date, tz::TimeZone};
-use plugin_host::{Event, Naming, VirtualRow};
+use plugin_host::{Event, Naming, ViewKind, ViewNode, VirtualRow};
 
 use super::{App, Change};
 use crate::{
@@ -35,7 +35,8 @@ pub enum PluginPlace {
     Settings(String),
 }
 
-/// What you typed in a plugin's name field that hasn't reached the plugin.
+/// What you typed in a plugin's name field, until its plugin took the
+/// name and the field went away.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameDraft {
     pub place: PluginPlace,
@@ -44,6 +45,8 @@ pub struct NameDraft {
     /// The name the field started from.
     pub started: String,
     pub typed: String,
+    /// The name went to the plugin, which hasn't answered yet.
+    pub sent: bool,
 }
 
 impl App {
@@ -308,6 +311,7 @@ impl App {
             node: node_id.to_owned(),
             started: started.to_owned(),
             typed: typed.to_owned(),
+            sent: false,
         };
         match self
             .name_drafts
@@ -331,23 +335,81 @@ impl App {
         &self.name_drafts
     }
 
-    /// A name or a cancel from a name field ends what it held.
+    /// A cancel from a name field ends what it held. A name it sent waits
+    /// for the plugin's answer: the field may stay with the name in it, as
+    /// after a create that failed.
     fn forget_name_draft(&mut self, place: &PluginPlace, event: &Event) {
-        let node = match event {
-            Event::Named(naming) => &naming.node,
-            Event::Cancelled(node) => node,
-            _ => return,
-        };
-        let node = node.clone();
-        self.clear_plugin_name_draft(place, &node);
+        match event {
+            Event::Named(naming) => {
+                if let Some(draft) = self
+                    .name_drafts
+                    .iter_mut()
+                    .find(|draft| draft.place == *place && draft.node == naming.node)
+                {
+                    draft.sent = true;
+                }
+            }
+            Event::Cancelled(node) => {
+                let node = node.clone();
+                self.clear_plugin_name_draft(place, &node);
+            }
+            _ => {}
+        }
+    }
+
+    /// Once the plugins answered, a name that reached its plugin is done
+    /// when its field went away or starts from another name. When the
+    /// field still shows as it did, the name in it waits again to reach
+    /// the plugin if the window closes.
+    fn settle_name_drafts(&mut self) {
+        if !self.name_drafts.iter().any(|draft| draft.sent) {
+            return;
+        }
+        let drafts = std::mem::take(&mut self.name_drafts);
+        self.name_drafts = drafts
+            .into_iter()
+            .filter_map(|mut draft| {
+                if !draft.sent {
+                    return Some(draft);
+                }
+                let shows = self
+                    .plugin_view_at(&draft.place)
+                    .and_then(Result::ok)
+                    .is_some_and(|view| shows_name_field(view.root(), &draft.node, &draft.started));
+                draft.sent = false;
+                shows.then_some(draft)
+            })
+            .collect();
+    }
+
+    /// The view at `place`, while its plugin draws one there.
+    fn plugin_view_at(&self, place: &PluginPlace) -> Option<PluginView> {
+        match place {
+            PluginPlace::Page(page_id) => self.plugin_view(page_id),
+            PluginPlace::Sidebar(page_id) => self.plugin_sidebar(page_id),
+            PluginPlace::Panel(tab) => self.plugin_panel(*tab),
+            PluginPlace::Inbox { plugin, section } => self
+                .session
+                .plugins()
+                .inbox_sections()
+                .into_iter()
+                .find(|shown| shown.plugin_id == *plugin && shown.section_id == *section)
+                .map(|shown| shown.content),
+            PluginPlace::Settings(section_id) => self.plugin_settings_view(section_id),
+        }
     }
 
     /// Send each name still typed in a name field to its plugin, as when
-    /// the window closes. Returns whether any went.
+    /// the window closes. Returns whether any went, or one sent before
+    /// waits for its plugin's answer.
     pub(super) fn commit_name_drafts(&mut self) -> bool {
         let drafts = std::mem::take(&mut self.name_drafts);
         let mut sent = false;
         for draft in drafts {
+            if draft.sent {
+                sent = true;
+                continue;
+            }
             let name = draft.typed.trim();
             if name.is_empty() || name == draft.started.trim() {
                 continue;
@@ -517,6 +579,7 @@ impl App {
             )
         };
         if !working {
+            self.settle_name_drafts();
             self.names_sent_while_leaving();
         }
         let acted = acts != self.plugin_acts_seen;
@@ -650,4 +713,15 @@ impl App {
             self.rail.unregister(&id);
         }
     }
+}
+
+/// Whether `node` or a node under it is the name field `id`, starting from
+/// `started`.
+fn shows_name_field(node: &ViewNode, id: &str, started: &str) -> bool {
+    if node.id == id {
+        return matches!(&node.kind, ViewKind::NameField { value, .. } if value == started);
+    }
+    node.children
+        .iter()
+        .any(|child| shows_name_field(child, id, started))
 }

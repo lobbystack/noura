@@ -39,9 +39,14 @@ fn new_task_writes_nothing_until_you_name_the_task() {
     assert!(naming(&app));
     assert_eq!(fixture.snapshot(), before);
 
+    // You type the name and press Enter, as the name field does.
+    let place = PluginPlace::Page(PAGE.to_owned());
+    app.set_plugin_name_draft(place, "new-task-name", "", "Buy seeds");
     send(&mut app, named("Buy seeds"));
 
     assert!(!naming(&app));
+    // The field went away, so a close has no name left to send again.
+    assert!(app.plugin_name_drafts().is_empty());
     let bytes = fixture.read("tasks/Buy seeds.md");
     let id = support::object_id(&bytes);
     assert!(id.starts_with("task_"), "{id}");
@@ -123,6 +128,33 @@ fn a_name_still_in_the_field_when_the_window_closes_is_created_first() {
     assert_eq!(property(&bytes, "status"), Some("todo".into()));
     settle(&mut other);
     assert_eq!(labels(&other), ["Call the plumber"]);
+}
+
+#[test]
+fn a_name_left_in_the_field_after_a_failed_create_is_created_when_the_window_closes() {
+    let fixture = Fixture::new(&[("tasks", b"in the way")]);
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    let mut other = app.new_window().expect("a second window opens");
+    app.press_plugin_button(PAGE, "new-task");
+    settle(&mut app);
+    let place = PluginPlace::Page(PAGE.to_owned());
+    app.set_plugin_name_draft(place, "new-task-name", "", "Buy seeds");
+    send(&mut app, named("Buy seeds"));
+    assert!(naming(&app));
+    assert!(text(&app, "new-task-problem").is_some());
+
+    // The name stays in the field, so closing the window sends it again.
+    std::fs::remove_file(fixture.root.join("tasks")).unwrap();
+    app.close_window();
+    support::plugins::wait_until(&mut app, "the window closes", |app| app.is_closed());
+
+    let bytes = fixture.read("tasks/Buy seeds.md");
+    assert_eq!(property(&bytes, "status"), Some("todo".into()));
+    settle(&mut other);
+    assert_eq!(labels(&other), ["Buy seeds"]);
 }
 
 #[test]

@@ -37,6 +37,14 @@ const MOVES_KEPT: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WindowKey(u64);
 
+#[cfg(test)]
+impl WindowKey {
+    /// The key of the `index`th window a session opened.
+    pub(crate) fn nth(index: u64) -> Self {
+        Self(index)
+    }
+}
+
 pub(crate) struct Session {
     pub(crate) app_data: PathBuf,
     pub(crate) service: Arc<WorkspaceService>,

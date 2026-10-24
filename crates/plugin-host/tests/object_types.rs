@@ -244,6 +244,8 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
         ("chat", r#"{"properties":[]}"#, "kernel_type"),
         ("project", r#"{"properties":[]}"#, "kernel_type"),
         ("workspace", r#"{"properties":[]}"#, "kernel_type"),
+        // Tasks belong to the Tasks plugin, even while it is off.
+        ("task", r#"{"properties":[]}"#, "type_reserved"),
     ];
     for (object_type, schema, code) in refused {
         let error = types
@@ -252,6 +254,12 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
         assert_eq!(error.code(), code, "{object_type} {schema}");
     }
     assert_eq!(types.owner("recipe"), None);
+    assert_eq!(types.owner("task"), None);
+    // The plugin it is held for registers it.
+    types
+        .register("tasks", 2, "task", r#"{"properties":[]}"#)
+        .unwrap();
+    assert_eq!(types.owner("task").as_deref(), Some("tasks"));
 }
 
 #[test]

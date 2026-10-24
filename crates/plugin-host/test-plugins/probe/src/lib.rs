@@ -24,19 +24,24 @@
 //!   `open-object:<id>:<preview or new-tab>` or `open-page:<page>` asks
 //!   Noura to open it, and shows as `<page> open` and what came back.
 //!
+//! - `opens`: ask Noura to open the page `events` while drawing, and say
+//!   what came back as `draw open <answer>`.
+//!
 //! The page `hello` adds a sidebar section with a line of text and a
 //! button; the other pages add none.
 //! - anything else: a panel with a line of text and a button.
 //!
 //! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
-//! `markdown:deep`, titled Deep, `nodes:cycle`, titled Broken, and
-//! `events`. The first shares the hello plugin's page ID, so a test can
+//! `markdown:deep`, titled Deep, `nodes:cycle`, titled Broken, `events`
+//! and `opens`. The first shares the hello plugin's page ID, so a test can
 //! swap one build for the other under an open page.
 //!
 //! It offers the commands `say-hello`, in the command palette;
 //! `describe`, which other plugins may call and which lists the workspace
-//! with the probe's own capabilities; and `relay`, which other plugins may
-//! call with `<plugin>/<command>:<input>` to run a command in turn. It adds
+//! with the probe's own capabilities; `relay`, which other plugins may
+//! call with `<plugin>/<command>:<input>` to run a command in turn; and
+//! `open`, which other plugins may call with `open-object:<id>:<placement>`
+//! or `open-page:<page>` to ask Noura to open it. It adds
 //! an Inbox section, `probe`, a page in Settings with a button that counts
 //! presses, and a tool, `echo`, whose schema asks for a `text` string.
 
@@ -95,6 +100,10 @@ impl Plugin for Probe {
                 id: "events".into(),
                 title: "Events".into(),
             },
+            Page {
+                id: "opens".into(),
+                title: "Opens".into(),
+            },
         ]
     }
 
@@ -129,6 +138,11 @@ impl Plugin for Probe {
             vec![format!("now {} {}", now.instant, now.time_zone)]
         } else if page == "events" {
             EVENTS.lock().unwrap().clone()
+        } else if page == "opens" {
+            vec![format!(
+                "draw open {}",
+                open("open-page:events").unwrap_or_default()
+            )]
         } else {
             let mut view = View::panel("root", Some("Probe"));
             view.text(View::ROOT, "line", "Probe is running.");
@@ -188,6 +202,12 @@ impl Plugin for Probe {
                 palette: false,
                 plugins: true,
             },
+            Command {
+                id: "open".into(),
+                title: "Open something".into(),
+                palette: false,
+                plugins: true,
+            },
         ]
     }
 
@@ -200,6 +220,7 @@ impl Plugin for Probe {
                 Err(error) => describe(&error),
             }),
             "relay" => Ok(relay(&input)),
+            "open" => Ok(open(&input).unwrap_or_default()),
             _ => Err(format!("The probe has no command {id}.")),
         }
     }

@@ -138,6 +138,53 @@ fn a_task_opens_with_status_priority_due_date_and_a_project_picker_beside_its_bo
 }
 
 #[test]
+fn two_project_files_with_one_id_show_as_one_project_in_the_panel_the_filters_and_the_sidebar() {
+    let garden = format!("project_{H}");
+    let fixture = Fixture::new(&[
+        (
+            "tasks/Paint the fence.md",
+            &task_file(
+                A,
+                &format!("status: todo\npriority: medium\nproject: {garden}\n"),
+                "2026-10-01T10:00:00Z",
+            ),
+        ),
+        ("projects/Garden/Garden.md", &project_file(H)),
+        // A copy of the project's folder, made outside Noura.
+        ("projects/Garden copy/Garden.md", &project_file(H)),
+    ]);
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+
+    let lists = tasks::sidebar(&app);
+    assert_eq!(
+        lists[1].items,
+        [(format!("project:{garden}"), "Garden".to_owned(), None)]
+    );
+    let page = tasks::page(&app);
+    let Some(ViewKind::Input { choices, .. }) =
+        find(page.root(), "filter-project").map(|node| &node.kind)
+    else {
+        panic!("the page has a project filter");
+    };
+    let filters: Vec<String> = choices.iter().map(|choice| choice.id.clone()).collect();
+    assert_eq!(filters, ["any", "none", &format!("is:{garden}")]);
+
+    let tab = open_from_tree(&mut app, "tasks/Paint the fence.md");
+    wait_for(&mut app, tab, "project", choice(&garden));
+    let (_, projects) = input(&app, tab, "project").unwrap();
+    assert_eq!(
+        ids(&projects),
+        [
+            ("none".to_owned(), "No project".to_owned()),
+            (garden.clone(), "Garden".to_owned())
+        ]
+    );
+}
+
+#[test]
 fn each_change_in_the_panel_writes_the_task_and_keeps_its_body() {
     let fixture = workspace();
     let mut app = fixture.app();
