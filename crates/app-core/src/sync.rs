@@ -300,6 +300,23 @@ impl SyncClient {
     }
 }
 
+/// Verifies the links the server served for `account`'s chain under
+/// `genesis`, which the device doesn't keep yet: links of another chain
+/// report `sync_account_unauthorized`, as a chain that breaks a rule does.
+fn verify_served(
+    account: Id,
+    genesis: Digest,
+    links: &[Signed<AccountLink>],
+    listed_elsewhere: &BTreeSet<Id>,
+) -> Result<AccountChain, SyncError> {
+    let chain = AccountChain::verify(links, listed_elsewhere)
+        .map_err(|e| SyncError::Check(e.client_code()))?;
+    if chain.account() != account || chain.genesis() != genesis {
+        return Err(SyncError::Check("sync_account_unauthorized"));
+    }
+    Ok(chain)
+}
+
 /// A remote workspace this device created or verified, with its verified
 /// policy, the workspace domain's current key and the domain's log state.
 pub struct RemoteWorkspace {
@@ -389,30 +406,72 @@ impl SyncService {
         self.own_chain().await
     }
 
-    /// The device's own account chain from the server: judged against the
-    /// head the device keeps of it, or, before it keeps one, entered from
-    /// the head it verified its chain from. A refusal stops every
-    /// workspace.
+    /// The device's own account chain from the server: the chain its
+    /// reference head lies on, judged against the head the device keeps of
+    /// it, or, before it keeps one, entered from that reference head. A
+    /// refusal stops every workspace.
     pub async fn own_chain(&mut self) -> Result<AccountChain, SyncError> {
         if let Some(code) = self.heads.stopped([]) {
             return Err(SyncError::Check(code));
         }
         let account = self.credentials.account;
-        let kept = self.heads.kept_of(&account);
-        let genesis = kept.first().map(|h| h.genesis);
-        let (links, _) = self.client.whole_chain(account, genesis).await?;
+        let genesis = self.credentials.reference_head.genesis;
+        let (links, _) = self.client.whole_chain(account, Some(genesis)).await?;
+        let mut served = BTreeMap::new();
+        served.insert(genesis, links);
+        let listed = self.listed_elsewhere(account, genesis, &served).await?;
+        let links = &served[&genesis];
         let secrets = self.secrets.clone();
-        if genesis.is_some() {
-            return self.heads.accept(&links, &BTreeSet::new(), &*secrets);
+        if self.heads.kept(&account, &genesis).is_some() {
+            return self
+                .heads
+                .accept(account, genesis, links, &listed, &*secrets);
         }
-        let chain = AccountChain::verify(&links, &BTreeSet::new())
-            .map_err(|e| SyncError::Check(e.client_code()))?;
+        let chain = verify_served(account, genesis, links, &listed)?;
         self.heads.enter(
             &chain,
             Anchor::Own(&self.credentials.reference_head),
             &*secrets,
         )?;
         Ok(chain)
+    }
+
+    /// The device IDs that the chains of `account` other than `genesis`
+    /// list, among those the device keeps and those in `served`, by
+    /// genesis: no link may list one of them again (§7).
+    async fn listed_elsewhere(
+        &mut self,
+        account: Id,
+        genesis: Digest,
+        served: &BTreeMap<Digest, Vec<Signed<AccountLink>>>,
+    ) -> Result<BTreeSet<Id>, SyncError> {
+        let mut others: BTreeSet<Digest> = self
+            .heads
+            .kept_of(&account)
+            .iter()
+            .map(|h| h.genesis)
+            .collect();
+        others.extend(served.keys().copied());
+        others.remove(&genesis);
+        let mut listed = BTreeSet::new();
+        for other in others {
+            let links = match served.get(&other) {
+                Some(links) => links.clone(),
+                None => match self.client.whole_chain(account, Some(other)).await {
+                    Ok((links, _)) => links,
+                    // A chain the session may no longer read, such as one
+                    // of an account it shares no workspace with anymore.
+                    Err(SyncError::Refused { status: 404, .. }) => continue,
+                    Err(error) => return Err(error),
+                },
+            };
+            // A chain that fails its own checks gets refused where the
+            // device judges it; the devices it lists still count here.
+            if let Ok(chain) = AccountChain::verify(&links, &BTreeSet::new()) {
+                listed.extend(chain.listed_devices());
+            }
+        }
+        Ok(listed)
     }
 
     /// Verifies the chains a workspace's policy records, other than the
@@ -432,15 +491,23 @@ impl SyncService {
             .map(|h| (h.account, h.genesis))
             .filter(|(account, genesis)| !(*account == own.account() && *genesis == own.genesis()))
             .collect();
+        let mut served: BTreeMap<Id, BTreeMap<Digest, Vec<Signed<AccountLink>>>> =
+            BTreeMap::new();
+        for (account, genesis) in &recorded {
+            let (links, _) = self.client.whole_chain(*account, Some(*genesis)).await?;
+            served.entry(*account).or_default().insert(*genesis, links);
+        }
         let mut fresh = Vec::new();
         let secrets = self.secrets.clone();
         for (account, genesis) in recorded {
-            let (links, _) = self.client.whole_chain(account, Some(genesis)).await?;
+            let of_account = &served[&account];
+            let listed = self.listed_elsewhere(account, genesis, of_account).await?;
+            let links = &of_account[&genesis];
             let chain = if self.heads.kept(&account, &genesis).is_some() {
-                self.heads.accept(&links, &BTreeSet::new(), &*secrets)?
+                self.heads
+                    .accept(account, genesis, links, &listed, &*secrets)?
             } else {
-                let chain = AccountChain::verify(&links, &BTreeSet::new())
-                    .map_err(|e| SyncError::Check(e.client_code()))?;
+                let chain = verify_served(account, genesis, links, &listed)?;
                 fresh.push(chain.clone());
                 chain
             };

@@ -14,7 +14,9 @@
 //! account is its own. A chain under a genesis the device doesn't keep
 //! enters only through an anchor: a verified workspace log that names it
 //! in its genesis, an `add_member` or an `accept_reset`, or, for the
-//! device's own account, the head it verified its chain from.
+//! device's own account, the head it verified its chain from. Refusals
+//! live in the same file, so a restart doesn't lift a stop until you act
+//! on its alert.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -66,6 +68,22 @@ struct Stored {
     heads: Vec<AccountHead>,
     /// The chain each workspace's policy names for each member account.
     names: Vec<Named>,
+    /// The accounts whose chains the device refused, with the code.
+    #[serde(default)]
+    refused: Vec<Refused>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Refused {
+    account: Id,
+    code: String,
+}
+
+/// The refusal codes a stop keeps, as the static codes errors carry.
+fn refusal_code(code: &str) -> Option<&'static str> {
+    ["sync_account_forked", "sync_account_unauthorized"]
+        .into_iter()
+        .find(|known| *known == code)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -162,7 +180,15 @@ impl KeptHeads {
                 .into_iter()
                 .map(|n| ((n.workspace, n.account), n.genesis))
                 .collect(),
-            refused: BTreeMap::new(),
+            refused: stored
+                .refused
+                .iter()
+                .map(|r| {
+                    refusal_code(&r.code)
+                        .map(|code| (r.account, code))
+                        .ok_or_else(rolled_back)
+                })
+                .collect::<Result<_, _>>()?,
         };
         if let Some(floor) = stored_own_head(credentials, &device)? {
             let below = heads
@@ -175,15 +201,38 @@ impl KeptHeads {
         Ok(heads)
     }
 
-    /// Rebuilds the heads after `sync_journal_rollback`, from the account
-    /// heads that the logs of the device's workspaces record, and the
-    /// own-account head the credential store keeps, which the rebuilt heads
-    /// never fall below.
+    /// Rebuilds the heads after `sync_journal_rollback` from the verified
+    /// logs of the device's workspaces: every head each records, the chain
+    /// each names for each member, and the own-account head the credential
+    /// store keeps, which the rebuilt heads never fall below.
+    pub fn rebuild_from<'a>(
+        dir: &Path,
+        own: Id,
+        device: Id,
+        policies: impl IntoIterator<Item = &'a PolicyChain>,
+        credentials: &dyn SyncCredentials,
+    ) -> Result<Self, SyncError> {
+        let mut recorded = Vec::new();
+        let mut names = Vec::new();
+        for policy in policies {
+            recorded.extend(policy.recorded_heads(policy.head().0).cloned());
+            for (account, member) in &policy.head_snapshot().members {
+                names.push((policy.workspace(), *account, member.head.genesis));
+            }
+        }
+        Self::rebuild(dir, own, device, recorded, names, credentials)
+    }
+
+    /// Rebuilds the heads from `recorded` heads and the chain `names` that
+    /// workspaces' policies give their members, as (workspace, account,
+    /// genesis), and the own-account head the credential store keeps,
+    /// which the rebuilt heads never fall below.
     pub fn rebuild(
         dir: &Path,
         own: Id,
         device: Id,
         recorded: impl IntoIterator<Item = AccountHead>,
+        names: impl IntoIterator<Item = (Id, Id, Digest)>,
         credentials: &dyn SyncCredentials,
     ) -> Result<Self, SyncError> {
         let key = journal_key(credentials, &device)?;
@@ -203,7 +252,10 @@ impl KeptHeads {
             own,
             key,
             heads,
-            names: BTreeMap::new(),
+            names: names
+                .into_iter()
+                .map(|(workspace, account, genesis)| ((workspace, account), genesis))
+                .collect(),
             refused: BTreeMap::new(),
         };
         rebuilt.save()?;
@@ -234,23 +286,29 @@ impl KeptHeads {
         self.own
     }
 
-    /// Judges a chain the server serves under a genesis the device keeps,
-    /// from its genesis, and keeps its new head. A refusal stops the
-    /// account's workspaces, as [`KeptHeads::stopped`] reports.
+    /// Judges the chain the server serves for `account` under `genesis`,
+    /// which the device keeps, from its genesis, and keeps its new head.
+    /// Links of another account or under another genesis don't extend the
+    /// kept head. `listed_elsewhere` holds the device IDs that the
+    /// account's other chains list. A refusal stops the account's
+    /// workspaces, as [`KeptHeads::stopped`] reports.
     pub fn accept(
         &mut self,
+        account: Id,
+        genesis: Digest,
         served: &[Signed<AccountLink>],
         listed_elsewhere: &BTreeSet<Id>,
         credentials: &dyn SyncCredentials,
     ) -> Result<AccountChain, SyncError> {
-        let first = served
-            .first()
-            .ok_or(SyncError::Check("sync_account_forked"))?;
-        let account = first.body.account;
-        let genesis = first.digest();
         let kept = self
             .kept(&account, &genesis)
             .ok_or(SyncError::Check("sync_account_unauthorized"))?;
+        let requested = served
+            .first()
+            .is_some_and(|first| first.body.account == account && first.digest() == genesis);
+        if !requested {
+            return Err(self.refuse(account, ChainRefusal::Forked));
+        }
         match kept.judge(served, listed_elsewhere) {
             Ok(chain) => {
                 self.keep(chain.head(), credentials)?;
@@ -333,11 +391,26 @@ impl KeptHeads {
             .find_map(|account| self.refused.get(&account).copied())
     }
 
+    /// Lifts the stop that a refusal of `account`'s chain set, once you
+    /// acted on its alert, such as by having the server repaired or the
+    /// account removed and invited again. The app's alert calls it.
+    pub fn clear_refusal(&mut self, account: &Id) -> Result<(), SyncError> {
+        if self.refused.remove(account).is_some() {
+            self.save()?;
+        }
+        Ok(())
+    }
+
     fn refuse(&mut self, account: Id, refusal: ChainRefusal) -> SyncError {
         let code = refusal.client_code();
         // Both refusals stop the same workspaces (§7).
         let _stops: Stops = refusal.stops(account == self.own);
-        self.refused.entry(account).or_insert(code);
+        if !self.refused.contains_key(&account) {
+            self.refused.insert(account, code);
+            // A refusal that can't be written still stops the running
+            // service, and the device judges the same chain again later.
+            let _ = self.save();
+        }
         SyncError::Check(code)
     }
 
@@ -387,6 +460,14 @@ impl KeptHeads {
                     workspace: *workspace,
                     account: *account,
                     genesis: *genesis,
+                })
+                .collect(),
+            refused: self
+                .refused
+                .iter()
+                .map(|(account, code)| Refused {
+                    account: *account,
+                    code: (*code).to_owned(),
                 })
                 .collect(),
         };
