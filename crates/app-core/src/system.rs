@@ -96,6 +96,18 @@ pub trait System: Send + Sync {
     fn local_hour(&self) -> u8 {
         u8::try_from(jiff::Zoned::now().hour()).unwrap_or(12)
     }
+
+    /// This computer's time zone, where each day of a calendar grid starts
+    /// and ends.
+    fn time_zone(&self) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::system()
+    }
+
+    /// The language and region this computer formats dates and times for,
+    /// as a BCP 47 tag such as `fr-CA`, when the system says.
+    fn locale(&self) -> Option<String> {
+        sys_locale::get_locale()
+    }
 }
 
 /// No operating system services: deleted items go to the workspace's trash

@@ -23,8 +23,8 @@
 use std::sync::Mutex;
 
 use plugin_sdk::{
-    Choice, Column, Error, Event, Input, Item, MenuItem, Node, NodeKind, Page, Plugin, Table,
-    Value, View, VirtualList, VirtualRow, workspace,
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, Error, Event, Input, Item, ItemList,
+    MenuItem, Node, NodeKind, Page, Plugin, Table, Value, View, VirtualList, VirtualRow, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -262,12 +262,12 @@ fn broken(case: &str) -> Vec<Node> {
         "item-outside-list" => vec![root(&[1]), node("north", item("North bed"), &[])],
         "panel-in-list" => vec![
             root(&[1]),
-            node("beds", NodeKind::List("Beds".into()), &[2]),
+            node("beds", item_list("Beds"), &[2]),
             node("inner", NodeKind::Panel(None), &[]),
         ],
         "two-menus" => vec![
             root(&[1]),
-            node("beds", NodeKind::List("Beds".into()), &[2]),
+            node("beds", item_list("Beds"), &[2]),
             node("north", item("North bed"), &[3, 5]),
             node("menu-a", NodeKind::Menu("A".into()), &[4]),
             node("water", menu_item("Water"), &[]),
@@ -350,8 +350,118 @@ fn broken(case: &str) -> Vec<Node> {
                 &[],
             ),
         ],
+        "card-outside-column" => vec![root(&[1]), node("plan", card("Plan"), &[])],
+        "column-outside-board" => vec![root(&[1]), node("todo", column("To do"), &[])],
+        "item-in-board" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("north", item("North bed"), &[]),
+        ],
+        "panel-in-column" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column("To do"), &[3]),
+            node("inner", NodeKind::Panel(None), &[]),
+        ],
+        "unlabeled-column" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column(" "), &[]),
+        ],
+        "unlabeled-card" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column("To do"), &[3]),
+            node("plan", card(""), &[]),
+        ],
+        "board-without-columns" => vec![root(&[1]), node("work", board(), &[])],
+        "card-with-two-menus" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column("To do"), &[3]),
+            node("plan", card("Plan"), &[4, 6]),
+            node("menu-a", NodeKind::Menu("A".into()), &[5]),
+            node("start", menu_item("Start"), &[]),
+            node("menu-b", NodeKind::Menu("B".into()), &[7]),
+            node("finish", menu_item("Finish"), &[]),
+        ],
+        "entry-outside-calendar" => vec![root(&[1]), node("standup", standup(), &[])],
+        "item-in-calendar" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("north", item("North bed"), &[]),
+        ],
+        "unlabeled-calendar" => vec![
+            root(&[1]),
+            node("schedule", calendar("", "2026-10-21"), &[]),
+        ],
+        "untitled-entry" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("standup", entry(" ", "2026-10-21", None), &[]),
+        ],
+        "bad-calendar-date" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-32"), &[]),
+        ],
+        "bad-entry-start" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("standup", entry("Standup", "2026-10-21 09:00", None), &[]),
+        ],
+        "mixed-entry-end" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node(
+                "standup",
+                entry("Standup", "2026-10-21T09:00:00-04:00", Some("2026-10-22")),
+                &[],
+            ),
+        ],
         _ => vec![root(&[])],
     }
+}
+
+fn calendar(label: &str, date: &str) -> NodeKind {
+    NodeKind::Calendar(Calendar {
+        label: label.into(),
+        mode: CalendarMode::Week,
+        date: date.into(),
+    })
+}
+
+fn entry(title: &str, start: &str, end: Option<&str>) -> NodeKind {
+    NodeKind::Entry(CalendarEntry {
+        title: title.into(),
+        start: start.into(),
+        end: end.map(Into::into),
+    })
+}
+
+fn standup() -> NodeKind {
+    entry("Standup", "2026-10-21T09:00:00-04:00", None)
+}
+
+fn item_list(label: &str) -> NodeKind {
+    NodeKind::List(ItemList {
+        label: label.into(),
+        reorder: false,
+    })
+}
+
+fn board() -> NodeKind {
+    NodeKind::Board("Work".into())
+}
+
+fn column(label: &str) -> NodeKind {
+    NodeKind::BoardColumn(label.into())
+}
+
+fn card(label: &str) -> NodeKind {
+    NodeKind::Card(Item {
+        label: label.into(),
+        detail: None,
+    })
 }
 
 fn cells(cells: &[&str]) -> Vec<String> {

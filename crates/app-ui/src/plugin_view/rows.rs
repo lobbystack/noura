@@ -7,10 +7,15 @@
 //! Only the rows in view are drawn, plus the row with the keyboard, which
 //! keeps its focus while it is scrolled away. A virtual list asks
 //! `app-core` for the rows it draws, which fetches them from the plugin.
+//!
+//! You can drag the items of a list the plugin lets you reorder. A drop
+//! sends one move event, and the list shows the order the plugin draws.
 
 use std::ops::Range;
 
-use app_core::{Column, ColumnPress, PluginEvent, SortOrder, Target, ViewKind, ViewNode};
+use app_core::{
+    Column, ColumnPress, PluginEvent, PluginMove, SortOrder, Target, ViewKind, ViewNode,
+};
 use egui::{
     Align2, Event, EventFilter, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Shape,
     Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
@@ -18,24 +23,29 @@ use egui::{
     pos2, vec2,
 };
 
-use super::{Kit, menu};
+use super::{Kit, drag, menu};
 use crate::theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius};
 
 /// The height of a row and of a table's header.
 pub(super) const ROW_HEIGHT: f32 = 28.0;
 
-/// Keys a list takes while one of its rows has focus.
-const KEY_FILTER: EventFilter = EventFilter {
-    tab: false,
-    horizontal_arrows: false,
-    vertical_arrows: true,
-    escape: false,
-};
+/// Keys a list takes while one of its rows has focus. A board takes the
+/// left and right arrows as well.
+pub(super) const fn key_filter(horizontal: bool) -> EventFilter {
+    EventFilter {
+        tab: false,
+        horizontal_arrows: horizontal,
+        vertical_arrows: true,
+        escape: false,
+    }
+}
 
 #[derive(Clone, Copy)]
-enum ListKey {
+pub(super) enum ListKey {
     Up,
     Down,
+    Left,
+    Right,
     Home,
     End,
     Activate,
@@ -43,7 +53,7 @@ enum ListKey {
     Menu,
 }
 
-fn list_key(key: Key, modifiers: Modifiers) -> Option<ListKey> {
+fn list_key(key: Key, modifiers: Modifiers, horizontal: bool) -> Option<ListKey> {
     if modifiers.matches_exact(Modifiers::SHIFT) {
         return (key == Key::F10).then_some(ListKey::Menu);
     }
@@ -53,6 +63,8 @@ fn list_key(key: Key, modifiers: Modifiers) -> Option<ListKey> {
     Some(match key {
         Key::ArrowUp => ListKey::Up,
         Key::ArrowDown => ListKey::Down,
+        Key::ArrowLeft if horizontal => ListKey::Left,
+        Key::ArrowRight if horizontal => ListKey::Right,
         Key::Home => ListKey::Home,
         Key::End => ListKey::End,
         Key::Enter => ListKey::Activate,
@@ -63,8 +75,9 @@ fn list_key(key: Key, modifiers: Modifiers) -> Option<ListKey> {
 }
 
 /// Take the list's keys out of this frame's input, so neither egui's focus
-/// moves nor a click on the focused row sees them.
-fn take_keys(ui: &Ui) -> Vec<ListKey> {
+/// moves nor a click on the focused row sees them. `horizontal` takes the
+/// left and right arrows too.
+pub(super) fn take_keys(ui: &Ui, horizontal: bool) -> Vec<ListKey> {
     ui.input_mut(|input| {
         let mut taken = Vec::new();
         input.events.retain(|event| {
@@ -74,7 +87,7 @@ fn take_keys(ui: &Ui) -> Vec<ListKey> {
                     pressed: true,
                     modifiers,
                     ..
-                } => list_key(*key, *modifiers),
+                } => list_key(*key, *modifiers, horizontal),
                 _ => None,
             };
             match key {
@@ -216,12 +229,13 @@ struct OpenMenu {
     focus_first: bool,
 }
 
-pub(super) fn list(ui: &mut Ui, node: &ViewNode, label: &str, kit: &mut Kit) {
+pub(super) fn list(ui: &mut Ui, node: &ViewNode, label: &str, reorder: bool, kit: &mut Kit) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::ListBox)
         .accessibility_label(label);
     ui.scope_builder(builder, |ui| {
-        rows(ui, kit, node, &Source::Nodes(&node.children), None);
+        let kind = if reorder { Kind::Reorder } else { Kind::List };
+        rows(ui, kit, node, &Source::Nodes(&node.children), kind);
     });
 }
 
@@ -233,7 +247,7 @@ pub(super) fn virtual_list(ui: &mut Ui, node: &ViewNode, label: &str, count: u32
         let source = Source::Fetched {
             count: count as usize,
         };
-        rows(ui, kit, node, &source, None);
+        rows(ui, kit, node, &source, Kind::List);
     });
 }
 
@@ -244,7 +258,13 @@ pub(super) fn table(ui: &mut Ui, node: &ViewNode, label: &str, columns: &[Column
     ui.scope_builder(builder, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         header(ui, node, columns, kit);
-        rows(ui, kit, node, &Source::Nodes(&node.children), Some(columns));
+        rows(
+            ui,
+            kit,
+            node,
+            &Source::Nodes(&node.children),
+            Kind::Table(columns),
+        );
     });
 }
 
@@ -330,7 +350,7 @@ fn arrow(center: Pos2, order: SortOrder, palette: &Palette) -> Shape {
     Shape::convex_polygon(points, palette.muted_foreground, Stroke::NONE)
 }
 
-fn text(ui: &Ui, text: &str, width: f32, size: f32) -> std::sync::Arc<egui::Galley> {
+pub(super) fn text(ui: &Ui, text: &str, width: f32, size: f32) -> std::sync::Arc<egui::Galley> {
     WidgetText::from(text).into_galley(
         ui,
         Some(TextWrapMode::Truncate),
@@ -339,9 +359,23 @@ fn text(ui: &Ui, text: &str, width: f32, size: f32) -> std::sync::Arc<egui::Gall
     )
 }
 
-/// The rows of the list or table `list`, drawn at the cursor. `columns`
-/// is set for a table, whose rows draw a cell per column.
-fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: Option<&[Column]>) {
+/// What a list of rows is.
+#[derive(Clone, Copy)]
+enum Kind<'a> {
+    List,
+    /// A list whose items you can drag to new positions.
+    Reorder,
+    /// A table, whose rows draw a cell per column.
+    Table(&'a [Column]),
+}
+
+/// The rows of the list or table `list`, drawn at the cursor.
+fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind) {
+    let columns = match kind {
+        Kind::Table(columns) => Some(columns),
+        Kind::List | Kind::Reorder => None,
+    };
+    let reorder = matches!(kind, Kind::Reorder);
     let list_id = kit.id(&list.id);
     let mut state: State = ui.data(|data| data.get_temp(list_id)).unwrap_or_default();
     let count = source.count();
@@ -387,8 +421,9 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
     let mut activate = None;
     let mut open_menu = None;
     if let Some(mut current) = focused.filter(|_| state.menu.is_none() && count > 0) {
-        for key in take_keys(ui) {
+        for key in take_keys(ui, false) {
             match key {
+                ListKey::Left | ListKey::Right => {}
                 ListKey::Up => current = current.saturating_sub(1),
                 ListKey::Down => current = (current + 1).min(count - 1),
                 ListKey::Home => current = 0,
@@ -470,12 +505,18 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
             vec2(area.width(), ROW_HEIGHT),
         );
         let is_selected = Some(index) == selected_index;
-        let sense = if Some(index) == tab_stop {
+        let mut sense = if Some(index) == tab_stop {
             Sense::click()
         } else {
             Sense::CLICK
         };
+        if reorder {
+            sense |= Sense::DRAG;
+        }
         let response = ui.interact(rect, id, sense);
+        if reorder {
+            drag::start(&response, list_id, &row.id, &row.label);
+        }
         response.widget_info(|| WidgetInfo::labeled(role, true, row.label.as_str()));
         let detail = row.detail.clone();
         let has_menu = row.menu.is_some();
@@ -521,7 +562,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
             response.scroll_to_me(None);
         }
         if response.has_focus() {
-            ui.memory_mut(|memory| memory.set_focus_lock_filter(id, KEY_FILTER));
+            ui.memory_mut(|memory| memory.set_focus_lock_filter(id, key_filter(false)));
         }
         if let (Some(open), Some(menu_node)) = (state.menu.as_mut(), row.menu)
             && open.row == row.id
@@ -558,6 +599,9 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
     }
     if let Some(item) = chosen {
         kit.events.push(PluginEvent::Chosen(item));
+    }
+    if reorder && let Source::Nodes(nodes) = source {
+        drop_in_list(ui, kit, list, nodes, area);
     }
 
     // Pointer and focus changes, then what the keys asked for.
@@ -613,6 +657,45 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, columns: O
         });
     }
     ui.data_mut(|data| data.insert_temp(list_id, state));
+}
+
+/// While an item of the reorderable list `list` is dragged, the line where
+/// it would land, and on release the move event, unless it would land
+/// where it is.
+fn drop_in_list(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, nodes: &[ViewNode], area: Rect) {
+    let Some(dragged) = drag::dragging(ui, kit.id(&list.id)) else {
+        return;
+    };
+    drag::follow_pointer(ui, &dragged.label);
+    let Some(from) = nodes.iter().position(|node| node.id == dragged.item) else {
+        return;
+    };
+    let Some(pointer) = drag::pointer(ui)
+        .filter(|pointer| area.expand2(vec2(0.0, ROW_HEIGHT / 2.0)).contains(*pointer))
+    else {
+        return;
+    };
+    // The gap between rows nearest the pointer, then where the item lands
+    // once it has left its own place.
+    let gap = ((pointer.y - area.top()) / ROW_HEIGHT)
+        .round()
+        .clamp(0.0, nodes.len() as f32) as usize;
+    let position = if gap > from { gap - 1 } else { gap };
+    if position == from {
+        return;
+    }
+    let line = pos2(area.left(), area.top() + gap as f32 * ROW_HEIGHT);
+    let label = format!("{} goes to position {}", dragged.label, position + 1);
+    drag::indicator(ui, line, area.width(), &label);
+    if drag::released(ui) {
+        drag::finish(ui);
+        kit.events.push(PluginEvent::Moved(PluginMove {
+            node: list.id.clone(),
+            item: dragged.item.clone(),
+            to: list.id.clone(),
+            position: to_u32(position),
+        }));
+    }
 }
 
 /// Why a virtual list's rows can't be shown, where they would be.
