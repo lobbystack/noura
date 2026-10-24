@@ -18,6 +18,9 @@ use support::{create_workspace, harness_for, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
+/// Puts the caret or a selection in place before a click.
+type Setup = fn(&mut Ui);
+
 const PLAN: &str = "See [[Other]] and [the draft](Draft.md).\n";
 
 /// A workspace whose note `Plan` links to `Other` and `Draft`, with
@@ -192,6 +195,125 @@ fn a_click_on_visible_link_source_places_the_caret() {
         "the caret went to {}",
         caret(&harness)
     );
+}
+
+#[test]
+fn a_click_on_link_source_the_caret_or_a_selection_shows_places_the_caret() {
+    // Right after `]]`, as a pick from the `[[` list leaves the caret;
+    // right after `)`; right before `[[`; and a selection over the links.
+    let cases: [(&str, Setup, &str); 4] = [
+        (
+            "after ]]",
+            |harness| {
+                press(harness, Modifiers::NONE, Key::Home);
+                for _ in 0.."See [[Other]]".len() {
+                    press(harness, Modifiers::NONE, Key::ArrowRight);
+                }
+                assert_eq!(caret(harness), "See [[Other]]".len());
+            },
+            "Other",
+        ),
+        (
+            "after )",
+            |harness| {
+                press(harness, Modifiers::NONE, Key::End);
+                press(harness, Modifiers::NONE, Key::ArrowLeft);
+                assert_eq!(caret(harness), PLAN.find(").").unwrap() + 1);
+            },
+            "Draft.md",
+        ),
+        (
+            "before [[",
+            |harness| {
+                press(harness, Modifiers::NONE, Key::Home);
+                for _ in 0.."See ".len() {
+                    press(harness, Modifiers::NONE, Key::ArrowRight);
+                }
+                assert_eq!(caret(harness), "See ".len());
+            },
+            "Other",
+        ),
+        (
+            "selection over the links",
+            |harness| {
+                press(harness, Modifiers::NONE, Key::Home);
+                press(harness, Modifiers::SHIFT, Key::End);
+            },
+            "Draft.md",
+        ),
+    ];
+    for (case, place, needle) in cases {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let mut harness = opened_plan(
+            app_data.path(),
+            &parent.path().join("Garden"),
+            Platform::Windows,
+        );
+        place(&mut harness);
+
+        let pos = point_at(&harness, needle, 2);
+        click_at(&mut harness, pos, PointerButton::Primary, Modifiers::NONE);
+
+        assert_eq!(tabs(&harness), [("Plan".to_owned(), true)], "{case}");
+        let at = PLAN.find(needle).unwrap();
+        assert!(
+            (at + 2..=at + 3).contains(&caret(&harness)),
+            "{case}: the caret went to {}",
+            caret(&harness)
+        );
+    }
+}
+
+#[test]
+fn a_link_just_picked_from_the_list_takes_a_plain_click_as_a_caret_move() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened_plan(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::Windows,
+    );
+    press(&mut harness, Modifiers::NONE, Key::End);
+    harness.event(Event::Text(" [[oth".into()));
+    harness.run_steps(3);
+    press(&mut harness, Modifiers::NONE, Key::Enter);
+    let text = note_text(&harness);
+    assert_eq!(text, "See [[Other]] and [the draft](Draft.md). [[Other]]\n");
+
+    // The edit kept the tab.
+    assert_eq!(tabs(&harness), [("Plan".to_owned(), false)]);
+
+    let pos = point_at(&harness, " [[Other]]\n", 4);
+    click_at(&mut harness, pos, PointerButton::Primary, Modifiers::NONE);
+
+    assert_eq!(tabs(&harness), [("Plan".to_owned(), false)]);
+    let at = text.find(" [[Other]]\n").unwrap() + 4;
+    assert!(
+        (at..=at + 1).contains(&caret(&harness)),
+        "the caret went to {}",
+        caret(&harness)
+    );
+}
+
+#[test]
+fn a_ctrl_click_on_macos_opens_nothing() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened_plan(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::MacOs,
+    );
+    let ctrl = Modifiers {
+        ctrl: true,
+        ..Modifiers::NONE
+    };
+
+    let pos = point_at(&harness, "the draft", 1);
+    click_at(&mut harness, pos, PointerButton::Primary, ctrl);
+
+    assert_eq!(tabs(&harness), [("Plan".to_owned(), true)]);
 }
 
 #[test]

@@ -19,7 +19,7 @@ impl<'ast> MdRender {
         let node_range = self.node_range(node);
         let state = self.link_state_for_wikilink(&url);
         let fmt = self.text_format_link(parent, state);
-        let revealed = self.range_revealed_interior(node_range);
+        let revealed = self.node_revealed(node);
         let clickable = self.link_clickable(revealed);
         let salt = Self::link_interaction_id_salt(node_range);
         let sense = self.link_sense(clickable);

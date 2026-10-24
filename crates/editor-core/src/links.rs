@@ -102,9 +102,11 @@ impl<'ast> MdDoc {
     }
 
     /// The edit that puts `link` in place of the `[[` link query in
-    /// `root`: inside a link that's already closed, it replaces the whole
-    /// target and keeps the `]]`, a `|display text` or a `#heading` after
-    /// it; otherwise it replaces what's typed and adds `]]`.
+    /// `root`. Inside a wikilink that `]]` already closes on the line, it
+    /// replaces the whole target and keeps the `]]`, or the `|display
+    /// text` or `#heading` right after the target. Anywhere else it
+    /// replaces only what's typed and adds `]]`, so a later `#tag`, table
+    /// pipe or bracket on the line stays where it is.
     pub(crate) fn complete_link_event(
         &self,
         root: &'ast AstNode<'ast>,
@@ -115,21 +117,10 @@ impl<'ast> MdDoc {
             range: (start, caret),
             ..
         } = self.link_query_in(root)?;
-        let last = self.last_cursor_position();
-        let mut end = caret;
-        while end < last && !ends_link_target(&self.buffer[(end, end + 1)]) {
-            end += 1;
-        }
-        let follows = |text: &str| {
-            let after = end + text.chars().count();
-            after <= last && &self.buffer[(end, after)] == text
-        };
-        let (replaced_end, text) = if follows("]]") {
-            (end + 2, format!("{link}]]"))
-        } else if follows("|") || follows("#") {
-            (end, link.to_owned())
-        } else {
-            (caret, format!("{link}]]"))
+        let (replaced_end, text) = match self.closed_wikilink_target_end(root, start, caret) {
+            Some((end, true)) => (end + 2, format!("{link}]]")),
+            Some((end, false)) => (end, link.to_owned()),
+            None => (caret, format!("{link}]]")),
         };
         Some(Event::Replace {
             region: Region::BetweenLocations {
@@ -139,6 +130,35 @@ impl<'ast> MdDoc {
             text,
             advance_cursor: true,
         })
+    }
+
+    /// Where the target ends in the wikilink of `root` whose target starts
+    /// at `start` and holds `caret`, with whether `]]` comes right after
+    /// it rather than a `|` or `#`. `None` when no wikilink there closes
+    /// on the caret's line.
+    fn closed_wikilink_target_end(
+        &self,
+        root: &'ast AstNode<'ast>,
+        start: Grapheme,
+        caret: Grapheme,
+    ) -> Option<(Grapheme, bool)> {
+        let link = root.descendants().find_map(|node| {
+            let range = self.node_range(node);
+            (matches!(node.data.borrow().value, NodeValue::WikiLink(_))
+                && range.start() + 2 == start
+                && caret + 2 <= range.end())
+            .then_some(range)
+        })?;
+        let close = link.end() - 2;
+        let mut end = caret;
+        while end < close && !ends_link_target(&self.buffer[(end, end + 1)]) {
+            end += 1;
+        }
+        match &self.buffer[(end, end + 1)] {
+            _ if end == close => Some((end, true)),
+            "|" | "#" if !self.buffer[(end, close)].contains(['\n', '\r']) => Some((end, false)),
+            _ => None,
+        }
     }
 
     /// URL (or wikilink target) of the first link-like node whose source range

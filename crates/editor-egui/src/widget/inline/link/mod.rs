@@ -49,8 +49,9 @@ impl<'ast> MdRender {
         let parent = node.parent().unwrap();
         let state = self.link_state_for_url(&url);
         let link_fmt = self.text_format_link(parent, state);
-        // Interior-only: a cursor inside reveals raw markdown.
-        let revealed = self.range_revealed_interior(node_range);
+        // The rule `layout_circumfix` draws the source by, so a link whose
+        // source shows never opens on a plain click.
+        let revealed = self.node_revealed(node);
 
         let clickable = self.link_clickable(revealed);
         let salt = Self::link_interaction_id_salt(node_range);
@@ -136,7 +137,10 @@ impl<'ast> MdRender {
                 self.render_events.push(open(true));
                 return;
             }
-            if response.clicked() && (self.readonly || !self.touch_mode) {
+            // Ctrl held without the command key is a macOS Ctrl-click, a
+            // secondary click there, so it opens nothing.
+            let secondary = ui.input(|i| i.modifiers.ctrl && !i.modifiers.command);
+            if response.clicked() && (self.readonly || !self.touch_mode) && !secondary {
                 let new_tab = !self.touch_mode && ui.input(|i| i.modifiers.command);
                 self.render_events.push(open(new_tab));
                 return;

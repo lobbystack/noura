@@ -143,6 +143,47 @@ fn picking_a_file_keeps_brackets_that_already_follow() {
 }
 
 #[test]
+fn picking_a_file_keeps_later_text_on_the_line() {
+    // A tag later in the sentence isn't the link's heading.
+    let mut doc = MdDoc::new("See [[ about #budget\n");
+    caret_at(&mut doc, 6);
+    type_text(&mut doc, "pl");
+    pick(&mut doc, "Plan");
+    assert_eq!(doc.text(), "See [[Plan]] about #budget\n");
+    assert_eq!(doc.selection(), (g(12), g(12)));
+
+    // A pipe later on the line isn't the link's display text.
+    let mut doc = MdDoc::new("See [[ with a | pipe\n");
+    caret_at(&mut doc, 6);
+    type_text(&mut doc, "pl");
+    pick(&mut doc, "Plan");
+    assert_eq!(doc.text(), "See [[Plan]] with a | pipe\n");
+
+    // Nor is the next cell of a table row.
+    let mut doc = MdDoc::new("| a | b |\n| - | - |\n| [[ x | y |\n");
+    caret_at(&mut doc, 24);
+    type_text(&mut doc, "pl");
+    assert_eq!(query(&mut doc).as_deref(), Some("pl"));
+    pick(&mut doc, "Plan");
+    assert_eq!(doc.text(), "| a | b |\n| - | - |\n| [[Plan]] x | y |\n");
+
+    // A single bracket doesn't close the link, and stays.
+    let mut doc = MdDoc::new("See [[] here\n");
+    caret_at(&mut doc, 6);
+    type_text(&mut doc, "pl");
+    pick(&mut doc, "Plan");
+    assert_eq!(doc.text(), "See [[Plan]]] here\n");
+    assert_eq!(doc.selection(), (g(12), g(12)));
+
+    // A link that closes only on a later line isn't closed here.
+    let mut doc = MdDoc::new("See [[\nmore]]\n");
+    caret_at(&mut doc, 6);
+    type_text(&mut doc, "pl");
+    pick(&mut doc, "Plan");
+    assert_eq!(doc.text(), "See [[Plan]]\nmore]]\n");
+}
+
+#[test]
 fn undo_takes_back_the_picked_link() {
     let mut doc = MdDoc::new("");
     type_text(&mut doc, "[[pl");

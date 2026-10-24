@@ -147,8 +147,8 @@ impl Editor {
     }
 
     /// The list, under the caret, or above it when the text's bottom edge
-    /// leaves no room. Each file shows its name, and its folder when
-    /// another file shares the name.
+    /// leaves no room. Each file shows its name, and its folder (`/` at
+    /// the top of the workspace) when another file shares the name.
     pub(crate) fn show_completion(&mut self, ctx: &Context) {
         let Some(found) = self.shown_suggestions(ctx).map(<[_]>::to_vec) else {
             self.chrome.completion.rect = None;
@@ -184,7 +184,7 @@ impl Editor {
                         ui.set_min_width(240.0);
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (index, suggestion) in found.iter().enumerate() {
-                            let folder = suggestion.folder.as_deref().unwrap_or_default();
+                            let folder = folder_column(suggestion.folder.as_deref());
                             let button = Button::selectable(
                                 index == selected,
                                 (
@@ -217,5 +217,28 @@ impl Editor {
         if let Some(link) = clicked {
             self.pick_link(ctx, link);
         }
+    }
+}
+
+/// What the list shows beside a file's name: its folder when another file
+/// shares the name, `/` for the top of the workspace, and nothing when
+/// the name alone tells the file apart.
+fn folder_column(folder: Option<&str>) -> &str {
+    match folder {
+        Some("") => "/",
+        Some(folder) => folder,
+        None => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::folder_column;
+
+    #[test]
+    fn a_shared_name_at_the_top_of_the_workspace_shows_a_slash() {
+        assert_eq!(folder_column(Some("")), "/");
+        assert_eq!(folder_column(Some("Projects/2026")), "Projects/2026");
+        assert_eq!(folder_column(None), "");
     }
 }
