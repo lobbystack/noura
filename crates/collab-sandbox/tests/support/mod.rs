@@ -355,3 +355,20 @@ pub fn insert_between(
     }
     w.string(text).var(0).0
 }
+
+/// The process's memory in use, after the system allocator hands back the
+/// blocks it keeps for reuse. Only a test binary whose global allocator is
+/// `support/direct.rs`, on Unix, counts just what it holds; elsewhere the
+/// allocator keeps freed blocks, so this gives `None` and the test skips
+/// its memory checks.
+pub fn memory_in_use() -> Option<u64> {
+    #[cfg(unix)]
+    {
+        plugin_host::release_free_memory();
+        plugin_host::process_memory()
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}

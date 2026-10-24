@@ -24,10 +24,9 @@ use std::path::PathBuf;
 
 use collab_sandbox::fuzzing;
 use collab_sandbox::op::{Op, Splice};
-use plugin_host::{process_memory, release_free_memory};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
-use support::{Lib0, client, sandbox};
+use support::{Lib0, client, memory_in_use, sandbox};
 
 /// Client IDs a hostile writer might name: the signer's own, others, client
 /// 0, and the edges of the ranges the verdict checks.
@@ -292,11 +291,6 @@ fn nested_meta() -> impl Strategy<Value = Vec<u8>> {
         data.extend_from_slice(&payload);
         data
     })
-}
-
-fn memory_in_use() -> Option<u64> {
-    release_free_memory();
-    process_memory()
 }
 
 fn run<S: Strategy>(

@@ -21,8 +21,9 @@ use std::time::Instant;
 use collab_sandbox::{
     Event, Note, Record, RemoteRecord, StopReason, Unreadable, VERDICT_MEMORY_BYTES,
 };
-use plugin_host::{process_memory, release_free_memory};
-use support::{Lib0, client, client_ids, insert, path_meta, sandbox, update_payload};
+use support::{
+    Lib0, client, client_ids, insert, memory_in_use, path_meta, sandbox, update_payload,
+};
 use sync_protocol::codec::{Bytes, Encode, Sorted, Text};
 use sync_protocol::records::{BlobRef, Content, Meta, Payload, PayloadKind};
 use sync_protocol::types::{Digest, Id, SecretKey};
@@ -102,13 +103,6 @@ fn stopped(events: &[Event]) -> Option<StopReason> {
         Event::Stopped { reason, .. } => Some(*reason),
         _ => None,
     })
-}
-
-/// The process's memory in use: the system allocator first hands back the
-/// large blocks it keeps for reuse.
-fn memory_in_use() -> Option<u64> {
-    release_free_memory();
-    process_memory()
 }
 
 /// Runs `scenario` and checks that the process's memory afterward sits

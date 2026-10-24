@@ -17,7 +17,9 @@
 //!    records that passed, under a fuel allowance per writer.
 //!
 //! [`NoteHandle`] runs a [`Note`] off the calling thread, so the editor stays
-//! responsive while a slow record decodes.
+//! responsive while a slow record decodes, and [`SandboxDocument`] hands it
+//! to `editor-core` as the note's document. Each load of a document inserts
+//! under a client ID from the device's [`LoadReservation`].
 
 mod allowance;
 mod editor;
