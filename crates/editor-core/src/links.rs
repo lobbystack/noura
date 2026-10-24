@@ -30,6 +30,14 @@ fn ends_link_target(grapheme: &str) -> bool {
     matches!(grapheme, "[" | "]" | "|" | "#" | "\n" | "\r" | "\r\n")
 }
 
+/// Whether `grapheme`, after the caret, ends the part of a `[[` link's
+/// target that a pick may replace: what [`ends_link_target`] ends, or a
+/// backtick or `*` that may open code or emphasis the `]]` belongs to.
+/// Windows and Obsidian allow no `*` in a file name.
+fn ends_closed_link_target(grapheme: &str) -> bool {
+    ends_link_target(grapheme) || matches!(grapheme, "`" | "*")
+}
+
 pub fn node_link_url(node: &AstNode<'_>) -> String {
     match &node.data.borrow().value {
         NodeValue::Link(link) | NodeValue::Image(link) => link.url.clone(),
@@ -112,9 +120,10 @@ impl<'ast> MdDoc {
     /// `root`. When `]]` closes the target, it replaces the whole target
     /// and keeps the `]]`. Inside a wikilink or an `![[embed]]` that `]]`
     /// closes on the line, it keeps the `|display text` or `#heading`
-    /// right after the target too. Anywhere else it replaces only what's
-    /// typed and adds `]]`, so a later `#tag`, table pipe or bracket on
-    /// the line stays where it is.
+    /// right after the target too, and the `\` of a table cell's `\|`.
+    /// Anywhere else, or when a backtick or `*` comes before the `]]`, it
+    /// replaces only what's typed and adds `]]`, so a later `#tag`, table
+    /// pipe, bracket or markup on the line stays where it is.
     pub(crate) fn complete_link_event(
         &self,
         root: &'ast AstNode<'ast>,
@@ -143,7 +152,8 @@ impl<'ast> MdDoc {
     /// Where the target that starts at `start` and holds `caret` ends,
     /// with whether `]]` comes right after it rather than the `|` or `#`
     /// of a wikilink or embed that `]]` closes on the caret's line. `None`
-    /// when no `]]` closes the target there.
+    /// when no `]]` closes the target there, or when code or emphasis
+    /// markup comes first: `]]` after it may belong to that markup.
     fn closed_link_target_end(
         &self,
         root: &'ast AstNode<'ast>,
@@ -152,7 +162,7 @@ impl<'ast> MdDoc {
     ) -> Option<(Grapheme, bool)> {
         let last = self.buffer.current.segs.last_cursor_position();
         let mut end = caret;
-        while end < last && !ends_link_target(&self.buffer[(end, end + 1)]) {
+        while end < last && !ends_closed_link_target(&self.buffer[(end, end + 1)]) {
             end += 1;
         }
         if end + 2 <= last && &self.buffer[(end, end + 2)] == "]]" {
@@ -162,7 +172,17 @@ impl<'ast> MdDoc {
             return None;
         }
         let close = self.link_close(root, start, caret)?;
-        (end < close && !self.buffer[(end, close)].contains(['\n', '\r'])).then_some((end, false))
+        if end >= close || self.buffer[(end, close)].contains(['\n', '\r']) {
+            return None;
+        }
+        // In a table cell, `\|` starts the display text or size: the
+        // backslash goes with the pipe and stays.
+        let backslashes = (start.0..end.0)
+            .rev()
+            .take_while(|&at| &self.buffer[(Grapheme(at), Grapheme(at + 1))] == "\\")
+            .count();
+        let escaped = &self.buffer[(end, end + 1)] == "|" && backslashes % 2 == 1;
+        Some((if escaped { end - 1 } else { end }, false))
     }
 
     /// Where the `]]` starts that closes the wikilink of `root`, or the

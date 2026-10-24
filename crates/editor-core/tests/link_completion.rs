@@ -250,6 +250,73 @@ fn picking_a_file_keeps_later_text_on_the_line() {
 }
 
 #[test]
+fn picking_a_file_in_a_table_keeps_the_escaped_pipe() {
+    const HEAD: &str = "| a | b |\n| - | - |\n";
+    // (row, carets, picked, row after, caret after): the caret sits before
+    // the target, after it or between its backslash and the pipe.
+    for (row, carets, link, expected, after) in [
+        (
+            r"| [[pl\|alias]] | x |",
+            [4, 6, 7],
+            "Plan",
+            r"| [[Plan\|alias]] | x |",
+            8,
+        ),
+        (
+            r"| ![[pi\|300]] | x |",
+            [5, 7, 8],
+            "pic.png",
+            r"| ![[pic.png\|300]] | x |",
+            12,
+        ),
+    ] {
+        for caret in carets {
+            let mut doc = MdDoc::new(&format!("{HEAD}{row}\n"));
+            caret_at(&mut doc, HEAD.len() + caret);
+            assert!(query(&mut doc).is_some(), "{row:?} at {caret}");
+            pick(&mut doc, link);
+            assert_eq!(
+                doc.text(),
+                format!("{HEAD}{expected}\n"),
+                "{row:?} at {caret}"
+            );
+            let after = g(HEAD.len() + after);
+            assert_eq!(doc.selection(), (after, after), "{row:?} at {caret}");
+        }
+    }
+
+    // Two backslashes are an escaped backslash in the target, and the
+    // pipe after them is a bare one.
+    let mut doc = MdDoc::new(r"[[pl\\|alias]]");
+    caret_at(&mut doc, 4);
+    pick(&mut doc, "Plan");
+    assert_eq!(doc.text(), "[[Plan|alias]]");
+}
+
+#[test]
+fn picking_a_file_keeps_markup_after_the_target() {
+    // (text, caret, text after): a backtick or `*` may open code or
+    // emphasis that the `]]` belongs to, so the pick replaces only what's
+    // typed, as a single bracket makes it do.
+    for (text, caret, expected) in [
+        (
+            "text [[pl **bold]]** more\n",
+            9,
+            "text [[Plan]] **bold]]** more\n",
+        ),
+        ("See [[pl `x]]` end\n", 8, "See [[Plan]] `x]]` end\n"),
+        ("[[pl*x|y]]\n", 4, "[[Plan]]*x|y]]\n"),
+        ("[[a[b]] c\n", 3, "[[Plan]][b]] c\n"),
+    ] {
+        let mut doc = MdDoc::new(text);
+        caret_at(&mut doc, caret);
+        assert!(query(&mut doc).is_some(), "{text:?}");
+        pick(&mut doc, "Plan");
+        assert_eq!(doc.text(), expected, "{text:?}");
+    }
+}
+
+#[test]
 fn undo_takes_back_the_picked_link() {
     let mut doc = MdDoc::new("");
     type_text(&mut doc, "[[pl");
