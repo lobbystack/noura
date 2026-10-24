@@ -17,19 +17,11 @@ use workspace_format::{ObjectTypeRegistry, PropertySchema, RegistrationError, Wo
 use crate::PropertyProblem;
 
 /// The types the kernel keeps for itself. No plugin may register them.
-/// The kernel still creates and checks tasks and projects, so a plugin
-/// that took one of those types could change every task or project
-/// already in the workspace. They move to the Tasks and Projects plugins
-/// with tickets 29 and 31, and chats and chat messages move to the AI
-/// plugin with ticket 36.
-pub const KERNEL_TYPES: [&str; 6] = [
-    "note",
-    "workspace",
-    "task",
-    "project",
-    "chat",
-    "chat-message",
-];
+/// The kernel still creates and checks projects, so a plugin that took
+/// that type could change every project already in the workspace. Tasks
+/// belong to the Tasks plugin. Projects move to the Projects plugin with
+/// ticket 31, and chats and chat messages to the AI plugin with ticket 36.
+pub const KERNEL_TYPES: [&str; 5] = ["note", "workspace", "project", "chat", "chat-message"];
 
 /// The most types one plugin may register.
 const MAX_TYPES: usize = 64;

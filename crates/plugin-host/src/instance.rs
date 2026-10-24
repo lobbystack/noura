@@ -11,9 +11,9 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
-    Capability, EntryKind, Limits, Listed, NewObject, ObjectChanges, ObjectRecord, ObjectTypes,
-    PropertyProblem, Router, ServiceError, TypeError, WorkspaceObjects, WorkspacePath,
-    WorkspaceReads,
+    Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation, NewObject,
+    ObjectChanges, ObjectRecord, ObjectTypes, PropertyProblem, Router, ServiceError, TypeError,
+    WorkspaceObjects, WorkspacePath, WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -36,13 +36,16 @@ use bindings::exports::noura::plugin::{
     commands as commands_export, inbox as inbox_export, object_types as types_export,
     settings as settings_export, tools as tools_export, view as view_export,
 };
+pub use bindings::noura::plugin::navigation::Placement;
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{
-    Calendar, CalendarEntry, CalendarMode, Choice, Column, ColumnPress, Event, Field, Form, Input,
-    Item, ItemList, MenuItem, Move, Node, NodeKind, SortOrder, Submission, Table, Target, Value,
-    VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, Event, Field, Form,
+    Input, Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, SortOrder,
+    Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
-use bindings::noura::plugin::{command_calls, network, objects, types, workspace};
+use bindings::noura::plugin::{
+    clock, command_calls, navigation, network, objects, types, workspace,
+};
 
 /// The capability behind object types, their panels and object writes.
 const OBJECT_TYPES: &str = "object-types";
@@ -111,6 +114,12 @@ pub struct Services {
     /// Finds the plugins whose commands a plugin calls, for the targets of
     /// `commands`.
     pub router: Weak<Router>,
+    /// The instant now and this device's time zone. Without one, plugins
+    /// read this computer's clock and time zone.
+    pub clock: Option<Arc<dyn DeviceClock>>,
+    /// Opens objects and the plugin's pages in the window you acted in,
+    /// for `views`. Without one, every request fails.
+    pub navigation: Option<Arc<dyn Navigation>>,
 }
 
 /// How long the current call has run.
@@ -212,6 +221,16 @@ impl HostState {
             .objects
             .as_deref()
             .ok_or_else(|| types::Error::Failed("No workspace is open.".to_owned()))
+    }
+
+    /// The navigation service, when the plugin holds `views`.
+    fn navigation(&self) -> Result<&dyn Navigation, types::Error> {
+        if !self.holds("views") {
+            return Err(types::Error::CapabilityNotDeclared("views".to_owned()));
+        }
+        self.services.navigation.as_deref().ok_or_else(|| {
+            types::Error::Failed("Noura can't open anything for this plugin here.".to_owned())
+        })
     }
 
     /// The object service for the object with the stable ID `id`, whose
@@ -351,6 +370,35 @@ impl command_calls::Host for HostState {
     }
 }
 
+impl clock::Host for HostState {
+    fn now(&mut self) -> clock::Reading {
+        let reading = match &self.services.clock {
+            Some(clock) => clock.now(),
+            None => ClockReading::system(),
+        };
+        clock::Reading {
+            instant: reading.instant,
+            time_zone: reading.time_zone,
+        }
+    }
+}
+
+impl navigation::Host for HostState {
+    fn open_object(
+        &mut self,
+        id: String,
+        placement: navigation::Placement,
+    ) -> Result<(), types::Error> {
+        self.navigation()?
+            .open_object(&id, placement)
+            .map_err(wit_error)
+    }
+
+    fn open_page(&mut self, page: String) -> Result<(), types::Error> {
+        self.navigation()?.open_page(&page).map_err(wit_error)
+    }
+}
+
 impl objects::Host for HostState {
     fn create(&mut self, object: objects::NewObject) -> Result<objects::Object, types::Error> {
         let service = self.objects(&object.object_type)?;
@@ -446,6 +494,8 @@ fn wit_object(object: ObjectRecord) -> objects::Object {
         body: object.body,
         properties: object.properties,
         revision: object.revision,
+        created: object.created,
+        updated: object.updated,
         problem: object.problem.map(wit_problem),
     }
 }
@@ -711,6 +761,13 @@ impl PluginInstance {
     pub(crate) fn render(&mut self, page: &str) -> Result<Vec<Node>, PluginError> {
         let view = self.view()?;
         view.call_render(&mut self.store, page)
+            .map_err(|error| self.failed(&error))
+    }
+
+    /// The nodes of the section the page `page` adds to the sidebar.
+    pub(crate) fn render_sidebar(&mut self, page: &str) -> Result<Vec<Node>, PluginError> {
+        let view = self.view()?;
+        view.call_sidebar(&mut self.store, page)
             .map_err(|error| self.failed(&error))
     }
 

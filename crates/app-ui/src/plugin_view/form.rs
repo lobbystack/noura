@@ -7,12 +7,17 @@
 //! than the one it drew before, so a plugin that ignores a change doesn't
 //! wipe your typing. A date field sends nothing until it holds a whole
 //! `YYYY-MM-DD` date, and says so meanwhile.
+//!
+//! A name field takes the keyboard when it appears. Enter or leaving it
+//! sends the name it holds, and Escape, or leaving it empty or unchanged,
+//! cancels. `app-core` keeps what you type in it meanwhile, so a name
+//! still in the field when the window closes reaches the plugin first.
 
 use app_core::{
-    Field, InputValue, PluginEvent, Submission, ViewKind, ViewNode, date_time_fields,
+    Field, InputValue, PluginEvent, PluginNaming, Submission, ViewKind, ViewNode, date_time_fields,
     date_time_value, date_value,
 };
-use egui::{Id, RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
+use egui::{Id, Key, RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
 
 use super::{Kit, boxed};
 use crate::{
@@ -229,6 +234,62 @@ pub(super) fn input(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             node: node.id.clone(),
             value: draft.shown.clone(),
         }));
+    }
+    ui.data_mut(|data| data.insert_temp(id, draft));
+}
+
+/// What a name field remembers between frames, in egui's memory under its
+/// ID.
+#[derive(Clone)]
+struct NameDraft {
+    /// The name the plugin drew the field with.
+    drawn: String,
+    text: String,
+}
+
+/// A name field: it takes the keyboard when it first appears, and leaving
+/// it sends the name it holds, or cancels on Escape or with no new name.
+pub(super) fn name_field(ui: &mut Ui, node: &ViewNode, label: &str, value: &str, kit: &mut Kit) {
+    let id = kit.id(&node.id);
+    let held = ui
+        .data(|data| data.get_temp::<NameDraft>(id))
+        .filter(|draft| draft.drawn == value);
+    let appeared = held.is_none();
+    let mut draft = held.unwrap_or_else(|| NameDraft {
+        drawn: value.to_owned(),
+        text: value.to_owned(),
+    });
+    ui.add_space(4.0);
+    let field_id = id.with("name");
+    let response = ui
+        .add(
+            TextEdit::singleline(&mut draft.text)
+                .id(field_id)
+                .hint_text(label)
+                .desired_width(f32::INFINITY),
+        )
+        .accessible_name(label);
+    if appeared {
+        response.request_focus();
+    }
+    let place = kit.place.plugin_place();
+    if response.changed() {
+        kit.app
+            .set_plugin_name_draft(place.clone(), &node.id, value, &draft.text);
+    }
+    if response.lost_focus() {
+        let escaped = ui.input(|input| input.key_pressed(Key::Escape));
+        let name = draft.text.trim();
+        let event = if escaped || name.is_empty() || name == value.trim() {
+            PluginEvent::Cancelled(node.id.clone())
+        } else {
+            PluginEvent::Named(PluginNaming {
+                node: node.id.clone(),
+                name: name.to_owned(),
+            })
+        };
+        kit.app.clear_plugin_name_draft(&place, &node.id);
+        kit.events.push(event);
     }
     ui.data_mut(|data| data.insert_temp(id, draft));
 }

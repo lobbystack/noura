@@ -56,8 +56,8 @@ mod workspace;
 mod writes;
 
 pub use app::{
-    App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
-    PaletteMode, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
+    App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
+    Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
 };
 pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
@@ -91,9 +91,9 @@ pub use notes::{
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use plugin_host::{
-    CalendarMode, Choice, Column, ColumnPress, Event as PluginEvent, Field, Grant,
-    Move as PluginMove, SortOrder, Submission, Target, Value as InputValue, View, ViewKind,
-    ViewNode, VirtualRow,
+    CalendarMode, Check as PluginCheck, Choice, Column, ColumnPress, Event as PluginEvent, Field,
+    Grant, Move as PluginMove, Naming as PluginNaming, SortOrder, Submission, Target,
+    Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{

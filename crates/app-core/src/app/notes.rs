@@ -53,6 +53,9 @@ pub(super) enum Departure {
 pub(super) struct Leaving {
     action: Leave,
     prompt: Option<(TabId, UnsavedPrompt)>,
+    /// Names still typed in plugins' name fields went to their plugins,
+    /// which haven't answered yet. Nothing closes until they do.
+    naming: bool,
 }
 
 /// What Noura asks when a note couldn't save before a tab, the window, the
@@ -608,17 +611,35 @@ impl App {
                 self.start_note_write(tab);
             }
         }
+        // A name still typed in a plugin's name field reaches its plugin
+        // before the window goes.
+        let naming = matches!(action, Leave::CloseWindow | Leave::Depart { .. })
+            && self.commit_name_drafts();
         match &mut self.leaving {
-            Some(leaving) => leaving.action = action,
+            Some(leaving) => {
+                leaving.action = action;
+                leaving.naming |= naming;
+            }
             None => {
                 self.leaving = Some(Leaving {
                     action,
                     prompt: None,
+                    naming,
                 });
             }
         }
         self.listeners.emit(Change::Note);
         self.advance_leaving();
+    }
+
+    /// The plugins answered the names a leave sent them: the leave goes on.
+    pub(super) fn names_sent_while_leaving(&mut self) {
+        if let Some(leaving) = &mut self.leaving
+            && leaving.naming
+        {
+            leaving.naming = false;
+            self.advance_leaving();
+        }
     }
 
     /// Ask every window to save its notes, and then quit, open another
@@ -659,6 +680,7 @@ impl App {
         if let Some(Leaving {
             action: Leave::Depart { round, then },
             prompt,
+            ..
         }) = &self.leaving
         {
             let (round, then, asking) = (*round, then.clone(), prompt.is_some());
@@ -714,7 +736,7 @@ impl App {
         let Some(leaving) = &self.leaving else {
             return;
         };
-        if leaving.prompt.is_some() {
+        if leaving.prompt.is_some() || leaving.naming {
             return;
         }
         let action = leaving.action.clone();

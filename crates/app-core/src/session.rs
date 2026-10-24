@@ -22,7 +22,7 @@ use crate::{
     FileTree, PendingWrites, Preferences, Problem, System, Updates, Workspace, WorkspaceService,
     app::{Change, Listeners},
     links::LinkFiles,
-    plugins::Plugins,
+    plugins::{Plugins, SystemClock},
     remote_images::RemoteImages,
     view_state::{StoredView, StoredWindow, ViewStore},
     watch::{Rescans, Snapshot, Update, Watch},
@@ -174,6 +174,9 @@ impl Session {
                     session.wake_all();
                 }
             }));
+            // Plugins read the time and time zone from the system, which
+            // tests fix.
+            plugins.set_clock(Arc::new(SystemClock(system.clone())));
             Self::with(app_data, system, rescans, writes, updates, plugins)
         })
     }

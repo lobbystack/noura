@@ -10,11 +10,17 @@
 //!
 //! You can drag the items of a list the plugin lets you reorder. A drop
 //! sends one move event, and the list shows the order the plugin draws.
+//!
+//! An item may carry a checkbox, which a click on it or the space bar on
+//! its row checks or unchecks, and a warning after its label, which
+//! screen readers read with the label. A list follows the item the plugin
+//! shows selected whenever the plugin draws another one.
 
 use std::ops::Range;
 
 use app_core::{
-    Column, ColumnPress, PluginEvent, PluginMove, SortOrder, Target, ViewKind, ViewNode,
+    Column, ColumnPress, PluginCheck, PluginEvent, PluginMove, SortOrder, Target, ViewKind,
+    ViewNode,
 };
 use egui::{
     Align2, Event, EventFilter, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Shape,
@@ -107,26 +113,54 @@ struct Row<'a> {
     id: String,
     label: String,
     detail: Option<String>,
+    /// The item's checkbox, checked or not, when it has one.
+    checked: Option<bool>,
+    /// The warning after the label.
+    warning: Option<String>,
     cells: Vec<String>,
     menu: Option<&'a ViewNode>,
 }
 
 impl<'a> Row<'a> {
     fn of(node: &'a ViewNode) -> Self {
-        let (label, detail, cells) = match &node.kind {
-            ViewKind::Item { label, detail } => (label.clone(), detail.clone(), Vec::new()),
-            ViewKind::Row { cells } => (row_label(cells), None, cells.clone()),
-            _ => (String::new(), None, Vec::new()),
-        };
-        Self {
+        let mut row = Self {
             id: node.id.clone(),
-            label,
-            detail,
-            cells,
+            label: String::new(),
+            detail: None,
+            checked: None,
+            warning: None,
+            cells: Vec::new(),
             menu: node
                 .children
                 .iter()
                 .find(|child| matches!(child.kind, ViewKind::Menu { .. })),
+        };
+        match &node.kind {
+            ViewKind::Item {
+                label,
+                detail,
+                checked,
+                warning,
+            } => {
+                row.label.clone_from(label);
+                row.detail.clone_from(detail);
+                row.checked = *checked;
+                row.warning.clone_from(warning);
+            }
+            ViewKind::Row { cells } => {
+                row.label = row_label(cells);
+                row.cells.clone_from(cells);
+            }
+            _ => {}
+        }
+        row
+    }
+
+    /// The name screen readers give the row: its label, then its warning.
+    fn spoken(&self) -> String {
+        match &self.warning {
+            Some(warning) => format!("{}, {warning}", self.label),
+            None => self.label.clone(),
         }
     }
 }
@@ -168,7 +202,12 @@ impl<'a> Source<'a> {
                         row.map(|row| Row {
                             id: row.id,
                             label: row.item.label,
-                            detail: row.item.detail,
+                            detail: row.item.detail.filter(|detail| !detail.trim().is_empty()),
+                            checked: row.item.checked,
+                            warning: row
+                                .item
+                                .warning
+                                .filter(|warning| !warning.trim().is_empty()),
                             cells: Vec::new(),
                             menu: None,
                         })
@@ -222,6 +261,9 @@ struct State {
     /// The rows drawn last frame, to find the one with keyboard focus.
     drawn: Vec<(Id, usize)>,
     menu: Option<OpenMenu>,
+    /// The item the plugin showed selected when it drew the list last,
+    /// once it drew the list.
+    shown: Option<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -233,14 +275,37 @@ struct OpenMenu {
     focus_first: bool,
 }
 
-pub(super) fn list(ui: &mut Ui, node: &ViewNode, label: &str, reorder: bool, kit: &mut Kit) {
+pub(super) fn list(
+    ui: &mut Ui,
+    node: &ViewNode,
+    (label, reorder, selected): (&str, bool, Option<&str>),
+    kit: &mut Kit,
+) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::ListBox)
         .accessibility_label(label);
     ui.scope_builder(builder, |ui| {
         let kind = if reorder { Kind::Reorder } else { Kind::List };
+        follow_selection(ui, kit, node, selected);
         rows(ui, kit, node, &Source::Nodes(&node.children), kind);
     });
+}
+
+/// Move the list's selection to the item the plugin shows selected, when
+/// it shows another one than it showed before: none clears it.
+fn follow_selection(ui: &Ui, kit: &Kit, list: &ViewNode, selected: Option<&str>) {
+    let list_id = kit.id(&list.id);
+    let mut state: State = ui.data(|data| data.get_temp(list_id)).unwrap_or_default();
+    let shown = selected.map(str::to_owned);
+    if state.shown.as_ref() == Some(&shown) {
+        return;
+    }
+    state.selected = shown.as_ref().and_then(|id| {
+        let index = list.children.iter().position(|item| item.id == *id)?;
+        Some((id.clone(), index))
+    });
+    state.shown = Some(shown);
+    ui.data_mut(|data| data.insert_temp(list_id, state));
 }
 
 pub(super) fn virtual_list(ui: &mut Ui, node: &ViewNode, label: &str, count: u32, kit: &mut Kit) {
@@ -431,6 +496,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
     let mut moved = asked.is_some() || waiting.is_some();
     let mut activate = None;
     let mut open_menu = None;
+    let mut toggle = None;
     if let Some(mut current) = from.filter(|_| state.menu.is_none() && count > 0) {
         for key in take_keys(ui, false) {
             match key {
@@ -439,7 +505,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
                 ListKey::Down => current = (current + 1).min(count - 1),
                 ListKey::Home => current = 0,
                 ListKey::End => current = count - 1,
-                ListKey::Select => {}
+                ListKey::Select => toggle = Some(current),
                 ListKey::Activate => activate = Some(current),
                 ListKey::Menu => open_menu = Some(current),
             }
@@ -540,7 +606,8 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
         if reorder {
             drag::start(&response, list_id, &row.id, &row.label);
         }
-        response.widget_info(|| WidgetInfo::labeled(role, true, row.label.as_str()));
+        let spoken = row.spoken();
+        response.widget_info(|| WidgetInfo::labeled(role, true, spoken.as_str()));
         let detail = row.detail.clone();
         let has_menu = row.menu.is_some();
         ui.ctx().accesskit_node_builder(id, |node| {
@@ -557,6 +624,16 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
         });
         if let Some(columns) = columns {
             cells(ui, rect, id, row, columns, &palette);
+        }
+        if let Some(checked) = row.checked {
+            let flip = Some(index) == toggle;
+            if checkbox(ui, rect, id, row, checked, &palette) || flip {
+                kit.events.push(PluginEvent::Checked(PluginCheck {
+                    node: list.id.clone(),
+                    item: row.id.clone(),
+                    checked: !checked,
+                }));
+            }
         }
         paint_row(
             ui,
@@ -760,6 +837,58 @@ fn cells(ui: &mut Ui, rect: Rect, row_id: Id, row: &Row, columns: &[Column], pal
     }
 }
 
+/// The checkbox before an item's label, a child of its row `row_id` in
+/// the accessibility tree, named by the item's label. Returns whether a
+/// click checked or unchecked it.
+fn checkbox(
+    ui: &mut Ui,
+    rect: Rect,
+    row_id: Id,
+    row: &Row,
+    checked: bool,
+    palette: &Palette,
+) -> bool {
+    let size = 14.0;
+    let center = pos2(rect.left() + 10.0 + size / 2.0, rect.center().y);
+    let box_rect = Rect::from_center_size(center, vec2(size, size));
+    let builder = UiBuilder::new()
+        .id_salt("checkbox")
+        .max_rect(box_rect.expand(4.0))
+        .accessibility_parent(row_id);
+    let box_ui = ui.new_child(builder);
+    let response = box_ui.interact(box_rect.expand(4.0), row_id.with("checkbox"), Sense::CLICK);
+    response
+        .widget_info(|| WidgetInfo::selected(Role::CheckBox, true, checked, row.label.as_str()));
+    if box_ui.is_rect_visible(box_rect) {
+        let painter = box_ui.painter();
+        let stroke = if response.hovered() {
+            palette.ring
+        } else {
+            palette.border
+        };
+        if checked {
+            painter.rect_filled(box_rect, radius(0.3), palette.primary);
+            let points = vec![
+                box_rect.left_center() + vec2(3.0, 0.0),
+                box_rect.center_bottom() + vec2(-1.0, -3.5),
+                box_rect.right_top() + vec2(-3.0, 3.5),
+            ];
+            painter.add(Shape::line(
+                points,
+                Stroke::new(1.6, palette.primary_foreground),
+            ));
+        } else {
+            painter.rect_stroke(
+                box_rect,
+                radius(0.3),
+                Stroke::new(1.0, stroke),
+                StrokeKind::Inside,
+            );
+        }
+    }
+    response.clicked()
+}
+
 /// A row's background, focus ring and, for a list, its label and detail.
 fn paint_row(
     ui: &Ui,
@@ -798,15 +927,43 @@ fn paint_row(
         .as_deref()
         .map(|detail| text(ui, detail, inner.width() * 0.4, SUPPORTING_SIZE));
     let detail_width = detail.as_ref().map_or(0.0, |galley| galley.size().x + 16.0);
+    let warning = row
+        .warning
+        .as_deref()
+        .map(|warning| text(ui, warning, inner.width() * 0.3, SUPPORTING_SIZE));
+    let warning_width = warning.as_ref().map_or(0.0, |galley| galley.size().x + 8.0);
+    let start = if row.checked.is_some() { 32.0 } else { 8.0 };
     let label = text(
         ui,
         &row.label,
-        inner.width() - 16.0 - detail_width,
+        inner.width() - start - 8.0 - detail_width - warning_width,
         BODY_SIZE,
     );
     let at =
-        Align2::LEFT_CENTER.anchor_size(pos2(inner.left() + 8.0, rect.center().y), label.size());
-    painter.galley(at.min, label, palette.foreground);
+        Align2::LEFT_CENTER.anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
+    let label_end = at.right();
+    let done = row.checked == Some(true);
+    let color = if done {
+        palette.muted_foreground
+    } else {
+        palette.foreground
+    };
+    painter.galley(at.min, label, color);
+    if done {
+        // A checked item's label is struck through, as a done task reads.
+        painter.line_segment(
+            [
+                pos2(at.left(), at.center().y),
+                pos2(at.right(), at.center().y),
+            ],
+            Stroke::new(1.0, palette.muted_foreground),
+        );
+    }
+    if let Some(warning) = warning {
+        let at =
+            Align2::LEFT_CENTER.anchor_size(pos2(label_end + 8.0, rect.center().y), warning.size());
+        painter.galley(at.min, warning, palette.destructive);
+    }
     if let Some(detail) = detail {
         let at = Align2::RIGHT_CENTER
             .anchor_size(pos2(inner.right() - 8.0, rect.center().y), detail.size());
