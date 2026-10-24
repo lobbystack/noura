@@ -16,6 +16,7 @@
 pub mod account_heads;
 pub mod approval;
 pub mod device;
+pub mod device_list;
 pub mod heads;
 pub mod removal;
 mod routes;
@@ -484,7 +485,11 @@ impl SyncService {
         &mut self,
         links: Vec<Signed<AccountLink>>,
     ) -> Result<AccountChain, SyncError> {
+        let digests: Vec<Digest> = links.iter().map(|l| l.digest()).collect();
         self.client.append_chain(links).await?;
+        for digest in digests {
+            self.heads.witness(digest)?;
+        }
         self.own_chain().await
     }
 
@@ -798,6 +803,7 @@ impl SyncService {
         self.client.create_workspace(records).await?;
         self.heads
             .name(workspace, chain.account(), chain.genesis())?;
+        self.heads.first_trusted(workspace, 1)?;
 
         let mut epochs = EpochChain::new(workspace, domain);
         epochs
@@ -876,7 +882,11 @@ impl SyncService {
         if policy.workspace() != workspace {
             return Err(SyncError::Check("sync_workspace_unverified"));
         }
-        match self.heads.anchor(&workspace) {
+        // The revision after which the device alerts you to the changes
+        // other devices of your account signed: an anchor's head, the
+        // genesis it signed itself, or, trusted through another device's
+        // change, the whole log (§7).
+        let trusted_after = match self.heads.anchor(&workspace) {
             Some((revision, head)) => {
                 let change = policy
                     .change(revision)
@@ -884,15 +894,21 @@ impl SyncService {
                 if change.digest() != head {
                     return Err(SyncError::Check("sync_policy_forked"));
                 }
+                revision
             }
             None => {
                 policy
                     .anchored_by(&own, &self.credentials.reference_head)
                     .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+                let created = policy
+                    .change(1)
+                    .is_some_and(|genesis| genesis.body.signer == self.credentials.keys.device());
+                u64::from(created)
             }
-        }
+        };
         self.check_short(&policy, &short).await?;
         self.take_policy(&policy, &chains, fresh)?;
+        self.heads.first_trusted(workspace, trusted_after)?;
         Ok(policy)
     }
 
