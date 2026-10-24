@@ -25,6 +25,12 @@ pub trait SyncCredentials {
     fn read_optional(&self, reference: &str) -> Result<Option<Zeroizing<String>>> {
         self.read(reference).map(Some)
     }
+    /// Removes the item at `reference`. A store that can't delete
+    /// overwrites the item with an empty value, which readers of v2 device
+    /// secrets take as absent.
+    fn delete(&self, reference: &str) -> Result<()> {
+        self.write(reference, "")
+    }
 }
 
 pub struct OsSyncCredentials;

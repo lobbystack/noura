@@ -80,6 +80,31 @@ struct Stored {
     links: Vec<KeptLinks>,
     /// The chain each workspace's policy names for each member account.
     names: Vec<Named>,
+    /// The policy heads that an approval offer or a recovery kit anchored
+    /// for each workspace (§10, §12).
+    #[serde(default)]
+    anchors: Vec<WorkspaceAnchor>,
+    /// The revision after which the device alerts you to each policy
+    /// change another device of your account signed, per workspace (§7).
+    #[serde(default)]
+    trusted: Vec<Trusted>,
+    /// The digests of the own account's links this device signed, or
+    /// whose approval it took part in (§7, Device list).
+    #[serde(default)]
+    witnessed: Vec<Digest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct WorkspaceAnchor {
+    workspace: Id,
+    revision: u64,
+    head: Digest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Trusted {
+    workspace: Id,
+    after: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +147,9 @@ pub struct KeptHeads {
     links: BTreeMap<(Id, Digest), BTreeMap<u64, Digest>>,
     names: BTreeMap<(Id, Id), Digest>,
     refused: BTreeMap<Id, &'static str>,
+    anchors: BTreeMap<Id, (u64, Digest)>,
+    trusted: BTreeMap<Id, u64>,
+    witnessed: BTreeSet<Digest>,
 }
 
 impl std::fmt::Debug for KeptHeads {
@@ -247,6 +275,17 @@ impl KeptHeads {
                 .map(|n| ((n.workspace, n.account), n.genesis))
                 .collect(),
             refused: stored_refusals(credentials, &device)?,
+            anchors: stored
+                .anchors
+                .into_iter()
+                .map(|a| (a.workspace, (a.revision, a.head)))
+                .collect(),
+            trusted: stored
+                .trusted
+                .into_iter()
+                .map(|t| (t.workspace, t.after))
+                .collect(),
+            witnessed: stored.witnessed.into_iter().collect(),
         };
         if let Some(floor) = stored_own_head(credentials, &device)? {
             let below = heads
@@ -326,6 +365,9 @@ impl KeptHeads {
                 .map(|(workspace, account, genesis)| ((workspace, account), genesis))
                 .collect(),
             refused: stored_refusals(credentials, &device)?,
+            anchors: BTreeMap::new(),
+            trusted: BTreeMap::new(),
+            witnessed: BTreeSet::new(),
         };
         rebuilt.save()?;
         for account in forked {
@@ -356,6 +398,60 @@ impl KeptHeads {
     /// The device's own account.
     pub fn own_account(&self) -> Id {
         self.own
+    }
+
+    /// The policy head that an approval offer or a recovery kit anchored for
+    /// `workspace`: its revision and digest (§10, §12).
+    pub fn anchor(&self, workspace: &Id) -> Option<(u64, Digest)> {
+        self.anchors.get(workspace).copied()
+    }
+
+    /// Keeps the policy head that an approval offer or a recovery kit
+    /// anchors for `workspace`; the device then trusts the log from its
+    /// genesis through that head (§8).
+    pub fn set_anchor(
+        &mut self,
+        workspace: Id,
+        revision: u64,
+        head: Digest,
+    ) -> Result<(), SyncError> {
+        self.anchors.insert(workspace, (revision, head));
+        self.save()
+    }
+
+    /// The revision after which the device alerts you to each policy change
+    /// that another device of your account signed in `workspace`, once it
+    /// trusts the workspace (§7).
+    pub fn trusted_after(&self, workspace: &Id) -> Option<u64> {
+        self.trusted.get(workspace).copied()
+    }
+
+    /// Notes when the device first trusted `workspace`: after `revision`,
+    /// the head of an anchor, a kit or the genesis it created, or 0 when it
+    /// first trusted the log through another device's change, so it alerts
+    /// you to that log's earlier changes too (§7). A later call changes
+    /// nothing.
+    pub fn first_trusted(&mut self, workspace: Id, revision: u64) -> Result<(), SyncError> {
+        if self.trusted.contains_key(&workspace) {
+            return Ok(());
+        }
+        self.trusted.insert(workspace, revision);
+        self.save()
+    }
+
+    /// Notes a link of the own account's chain that this device signed, or
+    /// the `add_device` of an approval it took part in, so the device list
+    /// raises no alert for it (§7).
+    pub fn witness(&mut self, link: Digest) -> Result<(), SyncError> {
+        if self.witnessed.insert(link) {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Whether this device signed `link` or took part in its approval.
+    pub fn witnessed(&self, link: &Digest) -> bool {
+        self.witnessed.contains(link)
     }
 
     /// Judges the chain the server serves for `account` under `genesis`,
@@ -679,6 +775,24 @@ impl KeptHeads {
                     genesis: *genesis,
                 })
                 .collect(),
+            anchors: self
+                .anchors
+                .iter()
+                .map(|(workspace, (revision, head))| WorkspaceAnchor {
+                    workspace: *workspace,
+                    revision: *revision,
+                    head: *head,
+                })
+                .collect(),
+            trusted: self
+                .trusted
+                .iter()
+                .map(|(workspace, after)| Trusted {
+                    workspace: *workspace,
+                    after: *after,
+                })
+                .collect(),
+            witnessed: self.witnessed.iter().copied().collect(),
         };
         let json =
             serde_json::to_vec_pretty(&stored).map_err(|e| SyncError::Invalid(e.to_string()))?;

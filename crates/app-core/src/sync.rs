@@ -14,6 +14,10 @@
 //! client (ticket 48).
 
 pub mod account_heads;
+pub mod approval;
+pub mod device;
+pub mod heads;
+mod routes;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -25,7 +29,7 @@ use sync_protocol::chain::{ChainRecord, ChainVerifier, NoFetch};
 use sync_protocol::codec::{Bytes, Decode, Encode, List, Nested, Sorted, Text};
 use sync_protocol::crypto::{hash, random_nonce};
 use sync_protocol::keys::{
-    EnvelopeVerdict, EpochChain, EpochParams, LogJudge, build_epoch, check_envelope,
+    EnvelopeVerdict, EpochChain, EpochParams, LogJudge, build_epoch, check_envelope, walk_lineage,
 };
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::messages::{
@@ -38,7 +42,7 @@ use sync_protocol::messages::{
 pub use account_heads::{Anchor, KeptHeads};
 use sync_protocol::policy::{AccountChains, PolicyChain};
 use sync_protocol::records::{
-    AccountHead, AccountLink, Card, Content, EpochBundle, Operation, Payload, PayloadKind,
+    AccountHead, AccountLink, Card, Content, Epoch, EpochBundle, Operation, Payload, PayloadKind,
     PolicyChange, PolicyKind, Profile, ProfilePayload, Signed, SyncPath, check_monotonic,
 };
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
@@ -70,6 +74,20 @@ pub enum SyncError {
     /// rules of §13.
     #[error("{0}")]
     Invalid(String),
+    /// A sign-in through the browser ended without a session (§7).
+    #[error("{0}")]
+    SignIn(device::SignInEnd),
+}
+
+impl SyncError {
+    /// The server's error code, for a refusal.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            SyncError::Refused { code, .. } => Some(code),
+            SyncError::Check(code) => Some(code),
+            _ => None,
+        }
+    }
 }
 
 fn network(error: impl std::fmt::Display) -> SyncError {
@@ -97,7 +115,7 @@ pub struct DeviceCredentials {
 }
 
 impl DeviceCredentials {
-    fn card(&self) -> Card {
+    pub fn card(&self) -> Card {
         self.keys.card(self.account)
     }
 }
@@ -141,10 +159,30 @@ impl SyncClient {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<T, SyncError> {
-        let mut request = self
-            .http
-            .request(method, format!("{}{path}", self.base))
-            .bearer_auth(&self.token);
+        let bytes = self.send(method, path, body).await?;
+        T::from_bytes(&bytes).map_err(network)
+    }
+
+    /// A call to a route whose success returns an empty body.
+    async fn call_empty(
+        &mut self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<(), SyncError> {
+        self.send(method, path, body).await.map(|_| ())
+    }
+
+    async fn send(
+        &mut self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, SyncError> {
+        let mut request = self.http.request(method, format!("{}{path}", self.base));
+        if !self.token.is_empty() {
+            request = request.bearer_auth(&self.token);
+        }
         if let Some(body) = body {
             request = request.header("content-type", MEDIA_TYPE).body(body);
         }
@@ -167,7 +205,7 @@ impl SyncClient {
                 detail: error.detail.map(|d| d.0),
             });
         }
-        T::from_bytes(&bytes).map_err(network)
+        Ok(bytes.to_vec())
     }
 
     /// `POST /v2/workspaces`.
@@ -339,6 +377,7 @@ pub struct RemoteWorkspace {
     policy: PolicyChain,
     epochs: EpochChain,
     key: SecretKey,
+    keys: BTreeMap<u64, SecretKey>,
     own_head: (u64, Digest),
     cursor: u64,
     judge: LogJudge,
@@ -351,6 +390,22 @@ impl RemoteWorkspace {
     /// The accepted policy head's revision.
     pub fn policy_revision(&self) -> u64 {
         self.policy.head().0
+    }
+
+    /// The verified policy.
+    pub fn policy(&self) -> &PolicyChain {
+        &self.policy
+    }
+
+    /// The workspace domain's latest accepted epoch number.
+    pub fn epoch(&self) -> u64 {
+        self.epochs.latest().map_or(0, |e| e.record.body.epoch)
+    }
+
+    /// Whether the device holds the key of the workspace domain's epoch
+    /// `epoch`.
+    pub fn holds_key(&self, epoch: u64) -> bool {
+        self.keys.contains_key(&epoch)
     }
 }
 
@@ -377,6 +432,9 @@ pub struct SyncService {
     credentials: DeviceCredentials,
     heads: KeptHeads,
     secrets: Secrets,
+    /// The digest of the one approval offer this device keeps outstanding
+    /// (§10).
+    outstanding: Option<Digest>,
 }
 
 impl SyncService {
@@ -395,7 +453,18 @@ impl SyncService {
             credentials,
             heads,
             secrets,
+            outstanding: None,
         })
+    }
+
+    /// The device's credentials.
+    pub fn credentials(&self) -> &DeviceCredentials {
+        &self.credentials
+    }
+
+    /// The heads the device keeps, to change.
+    pub fn kept_heads_mut(&mut self) -> &mut KeptHeads {
+        &mut self.heads
     }
 
     /// The heads the device keeps.
@@ -738,6 +807,7 @@ impl SyncService {
             domain,
             policy,
             epochs,
+            keys: BTreeMap::from([(1, key.clone())]),
             key,
             own_head: (0, Digest::ZERO),
             cursor: 0,
@@ -752,19 +822,49 @@ impl SyncService {
     /// and every account chain the policy records, judges each chain the
     /// device keeps a head of against that head, or, when the policy no
     /// longer names it for a current member, against the links it kept up
-    /// to the head the log records (§7), verifies the policy, which
-    /// must record this account's head in a change that a device of the
-    /// account, active at the head the device keeps, signed (§8), then
-    /// fetches the workspace domain's epoch records and this device's
-    /// envelope, and checks the key.
+    /// to the head the log records (§7), verifies the policy, which must
+    /// match an anchor the device keeps for it or record this account's
+    /// head in a change that a device of the account, active at the head
+    /// the device keeps, signed (§8), then fetches the workspace domain's
+    /// current epoch record and this device's envelope from `keys/current`,
+    /// checks the key, and derives the earlier epochs' keys through
+    /// lineage (§9).
     pub async fn open_workspace(&mut self, workspace: Id) -> Result<RemoteWorkspace, SyncError> {
+        let policy = self.verified_policy(workspace).await?;
+        let domain = policy.head_snapshot().workspace_domain;
+        let recipient = self.credentials.keys.clone();
+        let (epochs, keys) = self
+            .load_keys(workspace, domain, &policy, &recipient)
+            .await?;
+        let key = epochs
+            .latest()
+            .and_then(|latest| keys.get(&latest.record.body.epoch).cloned())
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        Ok(RemoteWorkspace {
+            workspace,
+            domain,
+            policy,
+            epochs,
+            key,
+            keys,
+            own_head: (0, Digest::ZERO),
+            cursor: 0,
+            judge: LogJudge::new(domain),
+            verifier: ChainVerifier::new(),
+            live: LiveSet::new(),
+            last: BTreeMap::new(),
+        })
+    }
+
+    /// Fetches and verifies a workspace's whole policy chain, as
+    /// [`SyncService::open_workspace`] describes, and keeps the heads it
+    /// brings in.
+    pub(crate) async fn verified_policy(
+        &mut self,
+        workspace: Id,
+    ) -> Result<PolicyChain, SyncError> {
         let own = self.own_chain().await?;
-        let response = self.client.policy(workspace, 0).await?;
-        let changes: Vec<Signed<PolicyChange>> =
-            response.changes.0.into_iter().map(|c| c.0).collect();
-        if changes.len() as u64 != response.head_revision {
-            return Err(SyncError::Check("sync_policy_rollback"));
-        }
+        let changes = self.policy_changes(workspace).await?;
         let RecordedChains {
             chains,
             fresh,
@@ -775,67 +875,125 @@ impl SyncService {
         if policy.workspace() != workspace {
             return Err(SyncError::Check("sync_workspace_unverified"));
         }
-        policy
-            .anchored_by(&own, &self.credentials.reference_head)
-            .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        match self.heads.anchor(&workspace) {
+            Some((revision, head)) => {
+                let change = policy
+                    .change(revision)
+                    .ok_or(SyncError::Check("sync_policy_rollback"))?;
+                if change.digest() != head {
+                    return Err(SyncError::Check("sync_policy_forked"));
+                }
+            }
+            None => {
+                policy
+                    .anchored_by(&own, &self.credentials.reference_head)
+                    .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+            }
+        }
         self.check_short(&policy, &short).await?;
         self.take_policy(&policy, &chains, fresh)?;
-        let domain = policy.head_snapshot().workspace_domain;
+        Ok(policy)
+    }
 
-        let device = self.credentials.keys.device();
-        let card = self.credentials.card();
-        let keys = self.client.keys(workspace, 0, device).await?;
-        let mut epochs = EpochChain::new(workspace, domain);
-        let mut envelopes = BTreeMap::new();
-        let mut records = Vec::new();
-        for entry in keys.entries.0 {
+    /// Every policy change of a workspace, page by page; a server that
+    /// stops short of its own head reports `sync_policy_rollback`.
+    pub(crate) async fn policy_changes(
+        &mut self,
+        workspace: Id,
+    ) -> Result<Vec<Signed<PolicyChange>>, SyncError> {
+        let mut changes: Vec<Signed<PolicyChange>> = Vec::new();
+        loop {
+            let response = self.client.policy(workspace, changes.len() as u64).await?;
+            let more = !response.changes.0.is_empty();
+            changes.extend(response.changes.0.into_iter().map(|c| c.0));
+            if changes.len() as u64 >= response.head_revision {
+                if changes.len() as u64 != response.head_revision {
+                    return Err(SyncError::Check("sync_policy_rollback"));
+                }
+                return Ok(changes);
+            }
+            if !more {
+                return Err(SyncError::Check("sync_policy_rollback"));
+            }
+        }
+    }
+
+    /// The epoch records and keys of `domain` that `recipient` holds: the
+    /// current epoch record and its envelope from `keys/current`, the
+    /// envelope checked under its wrapping device's card, and every earlier
+    /// key derived through lineage and checked against its own record's
+    /// `key_check`, each record accepted in order against `policy` (§9).
+    pub(crate) async fn load_keys(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        policy: &PolicyChain,
+        recipient: &DeviceKeys,
+    ) -> Result<(EpochChain, BTreeMap<u64, SecretKey>), SyncError> {
+        let card = recipient.card(self.credentials.account);
+        let current = self
+            .client
+            .current_keys(workspace, recipient.device())
+            .await?;
+        let mut record = None;
+        let mut envelope = None;
+        for entry in current.entries.0 {
             match entry.record {
-                KeyRecord::Epoch(record) if record.body.domain == domain => records.push(record),
-                KeyRecord::Envelope(envelope) if envelope.body.domain == domain => {
-                    envelopes.insert(envelope.body.epoch, envelope);
+                KeyRecord::Epoch(epoch) if epoch.body.domain == domain => record = Some(epoch),
+                KeyRecord::Envelope(env)
+                    if env.body.domain == domain && env.body.recipient == recipient.device() =>
+                {
+                    envelope = Some(env)
                 }
                 _ => {}
             }
         }
-        let mut key = None;
-        for record in records {
-            let envelope = envelopes
-                .get(&record.body.epoch)
-                .ok_or(SyncError::Check("sync_key_mismatch"))?;
-            let unwrapped = unwrap(&envelope.body, &self.credentials.keys, &card)
-                .map_err(|_| SyncError::Check("sync_key_mismatch"))?;
-            let verdict = check_envelope(
-                envelope,
-                &record.body,
-                &unwrapped,
-                &card,
-                &policy,
-                policy.head().0,
-                None,
-            )
-            .map_err(|e| SyncError::Check(e.client_code()))?;
-            if verdict != EnvelopeVerdict::Accept {
-                return Err(SyncError::Check("sync_key_mismatch"));
-            }
-            epochs
-                .accept(&record, &unwrapped, &policy)
-                .map_err(|e| SyncError::Check(e.client_code()))?;
-            key = Some(unwrapped);
-        }
-        let key = key.ok_or(SyncError::Check("sync_key_mismatch"))?;
-        Ok(RemoteWorkspace {
-            workspace,
-            domain,
+        let record = record.ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let envelope = envelope
+            .filter(|e| e.body.epoch == record.body.epoch)
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let key = unwrap(&envelope.body, recipient, &card)
+            .map_err(|_| SyncError::Check("sync_key_mismatch"))?;
+        let verdict = check_envelope(
+            &envelope,
+            &record.body,
+            &key,
+            &card,
             policy,
-            epochs,
-            key,
-            own_head: (0, Digest::ZERO),
-            cursor: 0,
-            judge: LogJudge::new(domain),
-            verifier: ChainVerifier::new(),
-            live: LiveSet::new(),
-            last: BTreeMap::new(),
-        })
+            policy.head().0,
+            None,
+        )
+        .map_err(|e| SyncError::Check(e.client_code()))?;
+        if verdict != EnvelopeVerdict::Accept {
+            return Err(SyncError::Check("sync_key_mismatch"));
+        }
+        let lineage: Vec<Signed<Epoch>> = self
+            .client
+            .epochs(workspace, domain, record.body.epoch)
+            .await?
+            .epochs
+            .0
+            .into_iter()
+            .map(|e| e.0)
+            .collect();
+        if lineage.first() != Some(&record)
+            || lineage
+                .last()
+                .is_none_or(|first| !first.body.previous.is_zero())
+        {
+            return Err(SyncError::Check("sync_key_mismatch"));
+        }
+        let derived =
+            walk_lineage(&lineage, &key).map_err(|e| SyncError::Check(e.client_code()))?;
+        let mut epochs = EpochChain::new(workspace, domain);
+        let mut keys = BTreeMap::new();
+        for (record, key) in lineage.iter().rev().zip(derived.iter().rev()) {
+            epochs
+                .accept(record, key, policy)
+                .map_err(|e| SyncError::Check(e.client_code()))?;
+            keys.insert(record.body.epoch, key.clone());
+        }
+        Ok((epochs, keys))
     }
 
     /// Pushes a file at `path` as a new object: a padded, encrypted `file`
@@ -945,6 +1103,26 @@ impl SyncService {
                 detail: None,
             });
         }
+        // A policy entry above the accepted head, or an epoch entry the
+        // device hasn't accepted, sends it for the policy and keys first.
+        let head = remote.policy.head().0;
+        if page
+            .entries
+            .iter()
+            .any(|e| matches!(&e.record, EntryRecord::Policy(entry) if entry.revision > head))
+        {
+            self.refresh_policy(remote).await?;
+        }
+        let unknown_epoch = page.entries.iter().any(|e| match &e.record {
+            EntryRecord::Epoch(epoch) => remote
+                .epochs
+                .get(epoch.body.epoch)
+                .is_none_or(|accepted| accepted.digest != epoch.digest()),
+            _ => false,
+        });
+        if unknown_epoch {
+            self.refresh_keys(remote).await?;
+        }
         // Judge the page on copies, and keep them only when every record
         // passes.
         let mut judge = remote.judge.clone();
@@ -1034,16 +1212,14 @@ fn check_and_open(
         .map_err(|e| SyncError::Check(e.client_code()))?;
     last.insert(body.device, body.clone());
     let class = live.apply(LiveOp::from_operation(op, seq));
-    // Older epochs' keys come through lineage once rotations exist
-    // (ticket 47); the tracer holds the current one.
-    let epoch = remote
-        .epochs
-        .latest()
-        .filter(|e| e.record.body.epoch == body.epoch)
-        .ok_or(SyncError::Check("sync_key_mismatch"))?;
+    // Every epoch's key comes from an envelope or a later key's lineage.
+    let (Some(epoch), Some(key)) = (remote.epochs.get(body.epoch), remote.keys.get(&body.epoch))
+    else {
+        return Err(SyncError::Check("sync_key_mismatch"));
+    };
     // A record that passes every check but doesn't open counts as applied
     // and unreadable (§13); the review store arrives with ticket 48.
-    let Ok(payload) = op.body.open_payload(&remote.key, &epoch.digest, class) else {
+    let Ok(payload) = op.body.open_payload(key, &epoch.digest, class) else {
         return Ok(None);
     };
     Ok(match payload.kind {

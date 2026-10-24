@@ -397,3 +397,179 @@ impl Proxy {
 pub fn encode(value: &impl Encode) -> Vec<u8> {
     value.to_bytes()
 }
+
+/// Approves a device grant's code on the server once the app first waits,
+/// and moves the server's clock by each wait, as time passing would.
+pub struct Approving<B: Backend> {
+    store: Arc<Store<B>>,
+    account: Id,
+    code: Mutex<Option<String>>,
+}
+
+impl<B: Backend> app_core::sync::device::Pause for Approving<B> {
+    fn pause(
+        &self,
+        seconds: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            self.store
+                .clock()
+                .advance(std::time::Duration::from_secs(seconds));
+            let code = self.code.lock().unwrap().take();
+            if let Some(code) = code {
+                assert!(
+                    self.store
+                        .decide_device_grant(self.account, &code, true)
+                        .await
+                        .expect("decided"),
+                    "the code waits"
+                );
+            }
+        })
+    }
+}
+
+impl<B: Backend> Server<B> {
+    /// Signs a person up with `email` and returns their account.
+    pub async fn person(&self, email: &str) -> Id {
+        let link = self.store.issue_magic_link(email).await.expect("a link");
+        self.store
+            .sign_in_with_magic_link(&link)
+            .await
+            .expect("used")
+            .expect("a current link")
+            .0
+    }
+
+    /// Signs a desktop in to `account` through the device grant at `base`,
+    /// approving its code as you would on the device page.
+    pub async fn sign_in(&self, account: Id, base: &str) -> app_core::sync::device::SignedIn {
+        let grant = app_core::sync::device::DeviceSignIn::start(base, &|_| Ok(()))
+            .await
+            .expect("the grant starts");
+        let pause = Approving {
+            store: self.store.clone(),
+            account,
+            code: Mutex::new(Some(grant.user_code().to_owned())),
+        };
+        grant.finish(&pause).await.expect("signed in")
+    }
+}
+
+/// A signed-in device's sync service, with its own application data folder
+/// and credential store.
+pub struct Desktop {
+    pub service: SyncService,
+    pub credentials: DeviceCredentials,
+    pub secrets: Arc<MemorySecrets>,
+    pub state: tempfile::TempDir,
+}
+
+impl Desktop {
+    /// The service of a device that joined its account's chain.
+    pub async fn connect(
+        base: &str,
+        credentials: DeviceCredentials,
+        secrets: Arc<MemorySecrets>,
+        state: tempfile::TempDir,
+    ) -> Self {
+        let heads = KeptHeads::open(
+            state.path(),
+            credentials.account,
+            credentials.keys.device(),
+            &*secrets,
+        )
+        .expect("the kept heads open");
+        let service = SyncService::connect(base, credentials.clone(), heads, secrets.clone())
+            .await
+            .expect("connects");
+        Self {
+            service,
+            credentials,
+            secrets,
+            state,
+        }
+    }
+
+    pub fn id(&self) -> Id {
+        self.credentials.keys.device()
+    }
+}
+
+/// The first device of a new account: it signs in through the device
+/// grant, enrolls and signs the genesis.
+pub async fn first_desktop<B: Backend>(server: &Server<B>, email: &str) -> Desktop {
+    let account = server.person(email).await;
+    let signed_in = server.sign_in(account, &server.base).await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let credentials = match app_core::sync::device::join(&signed_in, &*secrets)
+        .await
+        .expect("enrolled")
+    {
+        app_core::sync::device::Joined::First(credentials) => credentials,
+        app_core::sync::device::Joined::NeedsApproval { .. } => panic!("a first device"),
+    };
+    Desktop::connect(
+        &server.base,
+        credentials,
+        secrets,
+        tempfile::tempdir().expect("a folder"),
+    )
+    .await
+}
+
+/// A candidate device of `account`: signed in and enrolled, with its
+/// approval request posted.
+pub struct NewDesktop {
+    pub candidate: app_core::sync::approval::Candidate,
+    pub secrets: Arc<MemorySecrets>,
+    pub state: tempfile::TempDir,
+    pub heads: KeptHeads,
+}
+
+/// Signs a new device of `account` in, then posts its approval request and
+/// polls for offers through `base`, such as a tampering proxy.
+pub async fn new_desktop<B: Backend>(server: &Server<B>, account: Id, base: &str) -> NewDesktop {
+    let signed_in = server.sign_in(account, &server.base).await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let (keys, client) = match app_core::sync::device::join(&signed_in, &*secrets)
+        .await
+        .expect("enrolled")
+    {
+        app_core::sync::device::Joined::NeedsApproval { keys, client } => (keys, client),
+        app_core::sync::device::Joined::First(_) => panic!("the account has a chain"),
+    };
+    let client = if base == server.base {
+        client
+    } else {
+        app_core::sync::SyncClient::connect(base, &signed_in.session_token)
+            .await
+            .expect("connects")
+    };
+    let device = keys.device();
+    let candidate = app_core::sync::approval::Candidate::request(client, keys, account)
+        .await
+        .expect("the request");
+    let state = tempfile::tempdir().expect("a folder");
+    let heads = KeptHeads::open(state.path(), account, device, &*secrets).expect("heads");
+    NewDesktop {
+        candidate,
+        secrets,
+        state,
+        heads,
+    }
+}
+
+impl NewDesktop {
+    /// The approved device's service, once its approval committed.
+    pub async fn joined(mut self, base: &str) -> Desktop {
+        let credentials = self
+            .candidate
+            .joined(&mut self.heads, &*self.secrets)
+            .await
+            .expect("the approval verifies")
+            .expect("the approver committed");
+        drop(self.heads);
+        Desktop::connect(base, credentials, self.secrets, self.state).await
+    }
+}
