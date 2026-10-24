@@ -866,10 +866,11 @@ impl Plugins {
         } else {
             self.stop(id);
             self.problems.remove(id);
+            // What the other plugins show may come from this one's
+            // commands, as a project's tasks come from Tasks. A plugin
+            // that starts has them draw again once it registered.
+            self.draw_again(Some(id));
         }
-        // What the other plugins show may come from this one's commands,
-        // as a project's tasks come from Tasks.
-        self.draw_again(Some(id));
         self.changed();
         Ok(())
     }
@@ -1083,6 +1084,7 @@ impl Plugins {
             return;
         };
         running.outstanding = running.outstanding.saturating_sub(1);
+        let started = outcome.registrations.is_some();
         if let Some(registrations) = outcome.registrations {
             running.registrations = registrations;
         }
@@ -1154,6 +1156,12 @@ impl Plugins {
                 outcome.id.clone(),
                 "It failed too often and stopped for this session.".to_owned(),
             );
+        }
+        // The plugin registered its types and commands, so what the other
+        // plugins show from its commands, as a project's tasks from Tasks,
+        // may change.
+        if started {
+            self.draw_again(Some(&outcome.id));
         }
         self.changed();
     }

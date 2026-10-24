@@ -377,6 +377,15 @@ fn with_tasks_off_a_project_opens_with_its_status_and_overview_and_says_tasks_is
             ("Kitchen".to_owned(), Some("Planned".to_owned())),
         ]
     );
+
+    // Turned on again, Tasks shows the project's tasks once more.
+    assert!(app.set_plugin_enabled("tasks", true), "Tasks turns on");
+    support::plugins::wait_until(&mut app, "the board and the counts come back", |app| {
+        app.plugin_panel(tab)
+            .and_then(Result::ok)
+            .is_some_and(|view| find(view.root(), "board").is_some())
+            && listed(app)[0].1.as_deref() == Some("Active · 3 tasks")
+    });
 }
 
 #[test]
