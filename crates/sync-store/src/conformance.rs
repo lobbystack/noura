@@ -53,6 +53,7 @@ macro_rules! conformance_tests {
             failed_pushes_leave_the_others_committed,
             pull_pages_each_domain,
             pull_stays_within_one_mebibyte,
+            pull_keeps_room_for_every_page,
             pull_wakes_when_another_device_pushes,
             chain_positions_and_heads,
             keys_and_epochs_serve_records_without_recipients,
@@ -947,6 +948,17 @@ pub async fn retry_returns_the_original_receipt<B: Backend>(store: Store<B>) {
         .expect("retried");
     assert_eq!(first, again);
     assert_eq!(world.pull(0, 0).await.head, 3, "one copy");
+    // A push that lists one operation twice would get two receipts for one
+    // log entry, so it gets `bad_request` naming the second copy.
+    let next = world.op(0, |o| {
+        o.counter = 2;
+        o.previous = op.digest();
+    });
+    assert_eq!(
+        push_failure(world.push(0, &[next.clone(), next]).await),
+        ("bad_request", 1)
+    );
+    assert_eq!(world.pull(0, 0).await.head, 3, "nothing committed");
     let other = world.op(0, |o| {
         o.rid = op.body.rid;
         o.ciphertext = Bytes(vec![1; 272]);
@@ -1243,6 +1255,13 @@ pub async fn removed_device_and_pending_rotation<B: Backend>(store: Store<B>) {
             },
         )
         .await;
+    // The account chain alone stops the removed card's pushes, before any
+    // policy change records the new head.
+    let early = world.op(1, |op| {
+        op.counter = 2;
+        op.previous = before.digest();
+    });
+    assert_eq!(refusal(world.push(1, &[early]).await).code, "forbidden");
     let change = world.change(0, vec![head], PolicyKind::AccountHeads);
     let domain = world.domain;
     world.inject_policy(change, vec![domain], None).await;
@@ -1540,6 +1559,14 @@ pub async fn pull_pages_each_domain<B: Backend>(store: Store<B>) {
         vec![2]
     );
     pages[1].check_shape().expect("a page");
+
+    // A cursor above the head, as after a database put back by file copy,
+    // keeps its place and reports the lower head, which the client reports
+    // as `sync_server_rollback`.
+    let page = world.pull(0, 50).await;
+    assert_eq!(page.status, PageStatus::Ok);
+    assert_eq!((page.complete_through, page.head), (50, 2));
+    assert!(page.entries.is_empty());
 }
 
 /// A pull returns at most 1 MiB and its `complete_through` says where to
@@ -1629,6 +1656,64 @@ pub async fn pull_stays_within_one_mebibyte<B: Backend>(store: Store<B>) {
         .code,
         "too_large"
     );
+}
+
+/// One domain of small operations can't crowd out the other pages: the
+/// pull sets aside every page's fixed fields before it fills any page, so
+/// the response stays within 1 MiB however many cursors it lists.
+pub async fn pull_keeps_room_for_every_page<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let mut previous = Digest::ZERO;
+    let mut counter = 0;
+    for _ in 0..4 {
+        let mut batch = Vec::new();
+        for _ in 0..500 {
+            counter += 1;
+            let op = world.op(0, |op| {
+                op.counter = counter;
+                op.previous = previous;
+            });
+            previous = op.digest();
+            batch.push(op);
+        }
+        world.push(0, &batch).await.expect("pushed");
+    }
+    let session = world.devices[0].session;
+    for count in [1, 2, 8, 256] {
+        let mut cursors = vec![PullCursor {
+            domain: world.domain,
+            after: 0,
+        }];
+        cursors.extend((1..count).map(|_| PullCursor {
+            domain: Id::random().expect("random"),
+            after: 0,
+        }));
+        let response = world
+            .store
+            .pull(
+                session,
+                world.workspace,
+                PullRequest {
+                    cursors: List(cursors),
+                    wait_seconds: 0,
+                },
+            )
+            .await
+            .expect("pull");
+        assert_eq!(response.pages.len(), count);
+        let first = &response.pages[0];
+        first.check_shape().expect("a page");
+        assert!(
+            first.complete_through < first.head,
+            "2,000 operations fill more than one pull"
+        );
+        let size = response.to_bytes().len();
+        assert!(
+            size <= MAX_BODY,
+            "{count} cursors: {size} bytes, {} over 1 MiB",
+            size.saturating_sub(MAX_BODY)
+        );
+    }
 }
 
 /// A pull that waits wakes when another device's push commits.

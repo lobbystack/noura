@@ -61,10 +61,15 @@ pub(crate) async fn snapshot(
             "the device isn't active in this workspace",
         ));
     }
-    let mut budget = MAX_BODY.saturating_sub(4);
+    // Every page's fixed fields come off the budget before any page takes
+    // entries, so one domain's entries can't use bytes a later page needs.
+    // `Store::pull` caps the cursors at 256, whose 21,760 fixed bytes leave
+    // room for the largest entry.
+    let mut budget = MAX_BODY
+        .saturating_sub(4)
+        .saturating_sub(PAGE_FIXED.saturating_mul(cursors.len()));
     let mut pages = Vec::with_capacity(cursors.len());
     for cursor in cursors {
-        budget = budget.saturating_sub(PAGE_FIXED);
         let empty = |status: PageStatus| Page {
             domain: cursor.domain,
             status,

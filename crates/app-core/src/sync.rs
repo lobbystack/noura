@@ -20,7 +20,7 @@ use sync_protocol::keys::{
 };
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::messages::{
-    EntryRecord, ErrorBody, KeyRecord, KeysResponse, LimitsResponse, MEDIA_TYPE, PageStatus,
+    EntryRecord, ErrorBody, KeyRecord, KeysResponse, LimitsResponse, MEDIA_TYPE, Page, PageStatus,
     PolicyResponse, PullCursor, PullRequest, PullResponse, PushRequest, PushResponse,
     RESTORE_GENERATION_HEADER, Receipt, RecordRef,
 };
@@ -576,8 +576,7 @@ impl SyncService {
             .into_iter()
             .find(|p| p.domain == remote.domain)
             .ok_or(SyncError::Check("sync_chain_gap"))?;
-        page.check_shape()
-            .map_err(|_| SyncError::Network("the pull page breaks §15".into()))?;
+        check_page(&page, remote.cursor)?;
         if page.status != PageStatus::Ok {
             return Err(SyncError::Refused {
                 code: format!("{:?}", page.status),
@@ -699,4 +698,55 @@ fn check_and_open(
         }),
         _ => None,
     })
+}
+
+/// Checks a pull page against the client's cursor, then its shape (§15). A
+/// head below the cursor means the server went back (§14): it answers such
+/// a cursor with `complete_through` at the cursor, above its head, so the
+/// shape check alone would only call the page malformed. The tracer keeps
+/// one generation; ticket 60 handles a page from a new one.
+fn check_page(page: &Page, cursor: u64) -> Result<(), SyncError> {
+    if page.status == PageStatus::Ok && page.head < cursor {
+        return Err(SyncError::Check("sync_server_rollback"));
+    }
+    page.check_shape()
+        .map_err(|_| SyncError::Network("the pull page breaks §15".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(after: u64, complete_through: u64, head: u64) -> Page {
+        Page {
+            domain: Id([1; 16]),
+            status: PageStatus::Ok,
+            after,
+            complete_through,
+            head,
+            retention_floor: 0,
+            checkpoint_seq: 0,
+            restore_generation: 1,
+            policy_revision: 1,
+            checkpoint_due: 0,
+            entries: Default::default(),
+        }
+    }
+
+    /// A server put back by file copy answers a cursor above its head with
+    /// `complete_through` at the cursor, so the client checks the head
+    /// against its cursor before the page's shape.
+    #[test]
+    fn a_head_below_the_cursor_is_a_server_rollback() {
+        assert!(matches!(
+            check_page(&page(5, 5, 3), 5),
+            Err(SyncError::Check("sync_server_rollback"))
+        ));
+        check_page(&page(3, 5, 5), 3).expect("a page that moves the cursor");
+        check_page(&page(5, 5, 5), 5).expect("a page at the head");
+        assert!(matches!(
+            check_page(&page(3, 6, 5), 3),
+            Err(SyncError::Network(_))
+        ));
+    }
 }

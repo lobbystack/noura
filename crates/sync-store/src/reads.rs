@@ -22,16 +22,23 @@ use crate::{Error, LinkRow, ReadTxn, Result, Session, WorkspaceRow, WriteTxn, re
 /// Key stream rows read per query.
 const CHUNK: u32 = 256;
 
-/// The session device's account chain: its account's current chain, which
-/// must list the device.
+/// The session device's account chain: its account's current chain, in
+/// which the device's card must be active at the head. A card that a link
+/// removed gets `forbidden` until tickets 46 and 47 answer it with
+/// `device_removed`.
 pub(crate) async fn session_chain(
     txn: &mut impl ReadTxn,
     session: Session,
 ) -> Result<AccountChain> {
     policy::current_chain(txn, session.account)
         .await?
-        .filter(|chain| chain.card(&session.device).is_some())
-        .ok_or_else(|| refuse("forbidden", "the session's card is in no account chain"))
+        .filter(|chain| chain.is_active_at(&session.device, chain.head_seqno()))
+        .ok_or_else(|| {
+            refuse(
+                "forbidden",
+                "the session's card isn't active in its account chain",
+            )
+        })
 }
 
 /// Appends links to an account's current chain, or starts one with a

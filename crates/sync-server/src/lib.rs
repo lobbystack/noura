@@ -84,8 +84,9 @@ async fn shutdown_signal() {
 /// database.
 pub async fn serve(config: Config) -> Result<(), CommandError> {
     let store = Arc::new(open_store(&config).await?);
-    logs::init(&config.data_dir.join(data::LOG_DIR))
-        .map_err(|e| CommandError(format!("can't open the log: {e}")))?;
+    let log_dir = config.data_dir.join(data::LOG_DIR);
+    logs::init(&log_dir).map_err(|e| CommandError(format!("can't open the log: {e}")))?;
+    let pruning = logs::spawn_pruning(log_dir, logs::PRUNE_PERIOD);
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|e| CommandError(format!("can't listen on {}: {e}", config.listen)))?;
@@ -95,6 +96,7 @@ pub async fn serve(config: Config) -> Result<(), CommandError> {
     tracing::info!("serving");
     eprintln!("sync-server listening on {bound}");
     let served = serve_on(store.clone(), listener, shutdown_signal()).await;
+    pruning.abort();
     store.backend().close().await;
     tracing::info!("stopped");
     served.map_err(|e| CommandError(format!("the server failed: {e}")))

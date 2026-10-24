@@ -76,12 +76,13 @@ pub(crate) struct PushedOp {
 }
 
 /// Decodes a push and runs the checks that need no state: each record is an
-/// operation of this workspace, signed by the session's device, with a
-/// ciphertext of a padded length. The decoder already refused a ciphertext
+/// operation of this workspace, signed by the session's device, listed
+/// once, with a ciphertext of a padded length. The decoder already refused a ciphertext
 /// above 270,352 bytes with `too_large`.
 pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec<PushedOp>> {
     let records = decode_records(body)?;
     let mut ops = Vec::with_capacity(records.len());
+    let mut digests = std::collections::BTreeSet::new();
     for (index, record) in records.into_iter().enumerate() {
         let RecordRef::Operation(op) = record else {
             return Err(failure(
@@ -115,6 +116,14 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
         }
         let bytes = op.to_bytes();
         let digest = sync_protocol::crypto::hash(&bytes);
+        // A second copy would take the retry path and get a second receipt
+        // for one log entry.
+        if !digests.insert(digest) {
+            return Err(failure(
+                index,
+                Refusal::new("bad_request", "the push lists this operation twice"),
+            ));
+        }
         ops.push(PushedOp {
             index,
             op,
