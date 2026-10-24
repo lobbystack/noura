@@ -177,7 +177,7 @@ fn board(view: &mut View, section: u32, tasks: &[Task], remembered: &mut Remembe
             view.text(section, "new-task-problem", problem);
         }
     }
-    let board = view.board(section, "board", "Board");
+    let board = view.board(section, "board", "Task board");
     remembered.columns.clear();
     for (status, label) in STATUSES {
         let column = view.board_column(board, &format!("column:{status}"), label);
