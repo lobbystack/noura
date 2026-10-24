@@ -11,9 +11,9 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
-    Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation, NewObject,
-    ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PropertyProblem, Router, ServiceError,
-    TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
+    AiChats, Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation,
+    NewObject, ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PropertyProblem, Router,
+    ServiceError, TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -36,6 +36,12 @@ use bindings::exports::noura::plugin::{
     commands as commands_export, inbox as inbox_export, object_types as types_export,
     settings as settings_export, tools as tools_export, view as view_export,
 };
+pub use bindings::noura::plugin::ai::{
+    Chat as AiChat, Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
+    MessageStatus as AiMessageStatus, Provider as AiProvider, Request as AiRequest, Run as AiRun,
+    RunStatus as AiRunStatus, ToolCall as AiToolCall, ToolDefinition as AiToolDefinition,
+    ToolResult as AiToolResult,
+};
 pub use bindings::noura::plugin::navigation::Placement;
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{
@@ -44,7 +50,7 @@ pub use bindings::noura::plugin::ui::{
     Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{
-    clock, command_calls, navigation, network, objects, types, workspace,
+    ai, clock, command_calls, navigation, network, objects, types, workspace,
 };
 
 /// The capability behind object types, their panels and object writes.
@@ -120,6 +126,9 @@ pub struct Services {
     /// Opens objects and the plugin's pages in the window you acted in,
     /// for `views`. Without one, every request fails.
     pub navigation: Option<Arc<dyn Navigation>>,
+    /// Chats with the AI providers you set up, for `ai`. Without one,
+    /// every call fails.
+    pub ai: Option<Arc<dyn AiChats>>,
 }
 
 /// How long the current call has run.
@@ -231,6 +240,17 @@ impl HostState {
         self.services.navigation.as_deref().ok_or_else(|| {
             types::Error::Failed("Noura can't open anything for this plugin here.".to_owned())
         })
+    }
+
+    /// The AI service, when the plugin holds `ai`.
+    fn ai(&self) -> Result<&dyn AiChats, types::Error> {
+        if !self.holds("ai") {
+            return Err(types::Error::CapabilityNotDeclared("ai".to_owned()));
+        }
+        self.services
+            .ai
+            .as_deref()
+            .ok_or_else(|| types::Error::Failed("Noura can't reach AI providers here.".to_owned()))
     }
 
     /// The object service for the object with the stable ID `id`, whose
@@ -414,6 +434,47 @@ impl navigation::Host for HostState {
         // Only objects of the plugin's own types, as for its writes.
         self.objects_for(&id)?;
         self.navigation()?.trash_object(&id).map_err(wit_error)
+    }
+}
+
+impl ai::Host for HostState {
+    fn providers(&mut self) -> Result<Vec<ai::Provider>, types::Error> {
+        self.ai()?.providers().map_err(wit_error)
+    }
+
+    fn chats(&mut self) -> Result<Vec<ai::Chat>, types::Error> {
+        self.ai()?.chats().map_err(wit_error)
+    }
+
+    fn read_chat(&mut self, id: String) -> Result<(ai::Chat, Vec<ai::Message>), types::Error> {
+        self.ai()?.read_chat(&id).map_err(wit_error)
+    }
+
+    fn create_chat(&mut self) -> Result<ai::Chat, types::Error> {
+        self.ai()?.create_chat().map_err(wit_error)
+    }
+
+    fn send(&mut self, request: ai::Request) -> Result<ai::Run, types::Error> {
+        self.ai()?.send(request).map_err(wit_error)
+    }
+
+    fn answer_tools(
+        &mut self,
+        run: String,
+        results: Vec<ai::ToolResult>,
+        tools: Vec<ai::ToolDefinition>,
+    ) -> Result<ai::Run, types::Error> {
+        self.ai()?
+            .answer_tools(&run, results, tools)
+            .map_err(wit_error)
+    }
+
+    fn read_run(&mut self, id: String) -> Result<ai::Run, types::Error> {
+        self.ai()?.read_run(&id).map_err(wit_error)
+    }
+
+    fn stop(&mut self, id: String) -> Result<(), types::Error> {
+        self.ai()?.stop(&id).map_err(wit_error)
     }
 }
 

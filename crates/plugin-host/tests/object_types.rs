@@ -241,12 +241,15 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
             r#"{"properties":[{"name":"a","kind":"number","default":"x"}]}"#,
             "invalid_default",
         ),
-        ("chat", r#"{"properties":[]}"#, "kernel_type"),
+        ("note", r#"{"properties":[]}"#, "kernel_type"),
         ("workspace", r#"{"properties":[]}"#, "kernel_type"),
-        // Tasks belong to the Tasks plugin and projects to the Projects
-        // plugin, even while they are off.
+        // Tasks belong to the Tasks plugin, projects to the Projects
+        // plugin, and chats and their messages to the AI plugin, even
+        // while they are off.
         ("task", r#"{"properties":[]}"#, "type_reserved"),
         ("project", r#"{"properties":[]}"#, "type_reserved"),
+        ("chat", r#"{"properties":[]}"#, "type_reserved"),
+        ("chat-message", r#"{"properties":[]}"#, "type_reserved"),
     ];
     for (object_type, schema, code) in refused {
         let error = types
@@ -261,6 +264,10 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
         .register("tasks", 2, "task", r#"{"properties":[]}"#)
         .unwrap();
     assert_eq!(types.owner("task").as_deref(), Some("tasks"));
+    types
+        .register("ai", 3, "chat", r#"{"properties":[]}"#)
+        .unwrap();
+    assert_eq!(types.owner("chat").as_deref(), Some("ai"));
 }
 
 #[test]

@@ -701,6 +701,7 @@ impl Plugins {
             router: Arc::downgrade(&self.router),
             clock: self.clock.clone(),
             navigation: Some(navigation),
+            ai: None,
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests
