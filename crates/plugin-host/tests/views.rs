@@ -218,6 +218,7 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
             label: "Beds".into(),
             reorder: false,
             selected: None,
+            opens_on_click: false,
         }
     );
     let item = |label: &str, detail: Option<&str>| ViewKind::Item {
@@ -467,6 +468,7 @@ fn a_board_holds_labeled_columns_of_labeled_cards_with_menus() {
             label: "Queue".into(),
             reorder: true,
             selected: None,
+            opens_on_click: false,
         }
     );
 }
@@ -488,6 +490,7 @@ fn a_list_shows_its_selected_item_and_items_carry_checkboxes_and_warnings() {
             label: "Chores".into(),
             reorder: false,
             selected: Some("mulch".into()),
+            opens_on_click: false,
         }
     );
     let item = |label: &str, checked: Option<bool>, warning: Option<&str>| ViewKind::Item {

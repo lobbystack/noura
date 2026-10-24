@@ -423,3 +423,84 @@ fn a_task_opens_beside_the_tasks_panel_with_its_labeled_properties() {
         ["No project", "Garden"]
     );
 }
+
+/// The Inbox's Due today list.
+fn due_today(harness: &Ui) -> Vec<String> {
+    harness
+        .query_by_role_and_label(Role::ListBox, "Due today")
+        .map(|list| labels(list.get_all_by_role(Role::ListBoxOption)))
+        .unwrap_or_default()
+}
+
+#[test]
+fn due_today_in_the_inbox_shows_each_tasks_name_and_due_label_and_opens_it_on_click() {
+    let Some(Opened {
+        mut harness,
+        _folders,
+        ..
+    }) = opened()
+    else {
+        return;
+    };
+    open_page(&mut harness, "Inbox");
+    wait_until(&mut harness, |harness| !due_today(harness).is_empty());
+
+    harness.get_by_role_and_label(Role::Heading, "Due today");
+    harness.get_by_label("1 task");
+    assert_eq!(due_today(&harness), ["Water the beds, Overdue"]);
+    let row = harness
+        .get_by_role_and_label(Role::ListBox, "Due today")
+        .get_by_role_and_label(Role::ListBoxOption, "Water the beds, Overdue");
+    assert_eq!(
+        row.accesskit_node().description(),
+        Some("Jan 6, 2020".into())
+    );
+    assert!(harness.unnamed_widgets().is_empty());
+
+    row.click();
+
+    wait_until(&mut harness, |harness| {
+        harness
+            .state()
+            .app()
+            .active_tab()
+            .is_some_and(|tab| tab.title() == "Water the beds")
+    });
+}
+
+#[test]
+fn due_today_says_when_nothing_is_due_and_all_tasks_opens_the_tasks_page() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    open_page(&mut harness, "Inbox");
+    wait_until(&mut harness, |harness| !due_today(harness).is_empty());
+
+    harness
+        .get_by_role_and_label(Role::ListBox, "Due today")
+        .get_by_role_and_label(Role::CheckBox, "Water the beds")
+        .click();
+
+    wait_until(&mut harness, |harness| {
+        harness.query_by_label("Nothing due today.").is_some()
+    });
+    assert_eq!(status(&folder, "tasks/Water the beds.md"), "done");
+    assert!(due_today(&harness).is_empty());
+
+    harness
+        .get_by_role_and_label(Role::Button, "All tasks")
+        .click();
+
+    wait_until(&mut harness, |harness| {
+        harness
+            .state()
+            .app()
+            .active_tab()
+            .is_some_and(|tab| tab.title() == "Tasks")
+    });
+}

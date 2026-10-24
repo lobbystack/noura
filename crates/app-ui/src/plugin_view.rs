@@ -267,7 +267,16 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             label,
             reorder,
             selected,
-        } => rows::list(ui, node, (label, *reorder, selected.as_deref()), kit),
+            opens_on_click,
+        } => {
+            let options = rows::ListOptions {
+                label,
+                reorder: *reorder,
+                selected: selected.as_deref(),
+                opens_on_click: *opens_on_click,
+            };
+            rows::list(ui, node, &options, kit);
+        }
         ViewKind::Board { label } => board::board(ui, node, label, kit),
         ViewKind::Calendar { label, mode, date } => {
             calendar::calendar(ui, node, label, *mode, date, kit);

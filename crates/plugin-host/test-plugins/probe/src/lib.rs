@@ -674,6 +674,7 @@ fn broken(case: &str) -> Vec<Node> {
                     label: "Chores".into(),
                     reorder: false,
                     selected: Some("mulch".into()),
+                    opens_on_click: false,
                 }),
                 &[2, 3, 4],
             ),
@@ -694,6 +695,7 @@ fn broken(case: &str) -> Vec<Node> {
                     label: "Chores".into(),
                     reorder: false,
                     selected: Some("missing".into()),
+                    opens_on_click: false,
                 }),
                 &[2],
             ),
@@ -758,6 +760,7 @@ fn item_list(label: &str) -> NodeKind {
         label: label.into(),
         reorder: false,
         selected: None,
+        opens_on_click: false,
     })
 }
 

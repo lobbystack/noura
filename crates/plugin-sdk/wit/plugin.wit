@@ -252,6 +252,11 @@ interface ui {
     // or none, the list's selection moves there; otherwise the item you
     // selected last stays selected.
     selected: option<string>,
+    // Whether one click opens an item, as a link does: a click sends
+    // `selected` when the item wasn't selected, then `activated`. The
+    // arrow keys still only select. Enter and a double-click open an item
+    // in every list.
+    opens-on-click: bool,
   }
 
   // A one-line field that names something: a new task, or a rename. It

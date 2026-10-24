@@ -63,11 +63,13 @@ pub enum ViewKind {
     },
     /// A list whose children are its items. With `reorder`, you can drag
     /// them to new positions. `selected` names the item the plugin shows
-    /// selected, one of its children.
+    /// selected, one of its children. With `opens_on_click`, one click
+    /// opens an item, as a link does.
     List {
         label: String,
         reorder: bool,
         selected: Option<String>,
+        opens_on_click: bool,
     },
     /// An item of a list, which may hold a menu, with a checkbox when
     /// `checked` is set and a warning after its label when `warning` is.
@@ -691,6 +693,7 @@ fn build(
             label: list.label.clone(),
             reorder: list.reorder,
             selected: list.selected.clone(),
+            opens_on_click: list.opens_on_click,
         },
         NodeKind::Item(item) => ViewKind::Item {
             label: item.label.clone(),

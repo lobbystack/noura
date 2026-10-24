@@ -460,6 +460,7 @@ impl View {
             label: label.to_owned(),
             reorder: false,
             selected: None,
+            opens_on_click: false,
         };
         self.add(parent, id, NodeKind::List(list))
     }
@@ -472,6 +473,7 @@ impl View {
             label: label.to_owned(),
             reorder: true,
             selected: None,
+            opens_on_click: false,
         };
         self.add(parent, id, NodeKind::List(list))
     }
@@ -560,6 +562,20 @@ impl View {
         match &mut self.nodes[list as usize].kind {
             NodeKind::List(list) => list.selected = Some(item.to_owned()),
             _ => panic!("only a list selects an item"),
+        }
+    }
+
+    /// Let one click open an item of the list at `list`, as a link does:
+    /// the click sends [`Event::Activated`] after any
+    /// [`Event::Selected`]. The arrow keys still only select.
+    ///
+    /// # Panics
+    ///
+    /// When `list` isn't the index of a list already added.
+    pub fn open_on_click(&mut self, list: u32) {
+        match &mut self.nodes[list as usize].kind {
+            NodeKind::List(list) => list.opens_on_click = true,
+            _ => panic!("only a list opens its items on a click"),
         }
     }
 

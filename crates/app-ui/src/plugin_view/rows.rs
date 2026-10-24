@@ -1,5 +1,6 @@
 //! Lists, virtual lists and tables: rows you select by click or the arrow
-//! keys, Home and End, and open with Enter or a double-click. A row's menu
+//! keys, Home and End, and open with Enter or a double-click, or with one
+//! click in a list that opens its items as links do. A row's menu
 //! opens by right-click, the context-menu key or Shift-F10. Selection
 //! follows the keyboard, as in a list box, and each list is one stop in
 //! the Tab order, on its selected row.
@@ -275,18 +276,28 @@ struct OpenMenu {
     focus_first: bool,
 }
 
-pub(super) fn list(
-    ui: &mut Ui,
-    node: &ViewNode,
-    (label, reorder, selected): (&str, bool, Option<&str>),
-    kit: &mut Kit,
-) {
+/// A list's label, whether you can drag its items, the item the plugin
+/// shows selected, and whether one click opens an item.
+pub(super) struct ListOptions<'a> {
+    pub(super) label: &'a str,
+    pub(super) reorder: bool,
+    pub(super) selected: Option<&'a str>,
+    pub(super) opens_on_click: bool,
+}
+
+pub(super) fn list(ui: &mut Ui, node: &ViewNode, options: &ListOptions, kit: &mut Kit) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::ListBox)
-        .accessibility_label(label);
+        .accessibility_label(options.label);
     ui.scope_builder(builder, |ui| {
-        let kind = if reorder { Kind::Reorder } else { Kind::List };
-        follow_selection(ui, kit, node, selected);
+        let kind = if options.reorder {
+            Kind::Reorder
+        } else {
+            Kind::List {
+                opens_on_click: options.opens_on_click,
+            }
+        };
+        follow_selection(ui, kit, node, options.selected);
         rows(ui, kit, node, &Source::Nodes(&node.children), kind);
     });
 }
@@ -316,7 +327,10 @@ pub(super) fn virtual_list(ui: &mut Ui, node: &ViewNode, label: &str, count: u32
         let source = Source::Fetched {
             count: count as usize,
         };
-        rows(ui, kit, node, &source, Kind::List);
+        let kind = Kind::List {
+            opens_on_click: false,
+        };
+        rows(ui, kit, node, &source, kind);
     });
 }
 
@@ -431,7 +445,8 @@ pub(super) fn text(ui: &Ui, text: &str, width: f32, size: f32) -> std::sync::Arc
 /// What a list of rows is.
 #[derive(Clone, Copy)]
 enum Kind<'a> {
-    List,
+    /// A list, whose items open on one click when `opens_on_click` is set.
+    List { opens_on_click: bool },
     /// A list whose items you can drag to new positions.
     Reorder,
     /// A table, whose rows draw a cell per column.
@@ -442,8 +457,14 @@ enum Kind<'a> {
 fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind) {
     let columns = match kind {
         Kind::Table(columns) => Some(columns),
-        Kind::List | Kind::Reorder => None,
+        Kind::List { .. } | Kind::Reorder => None,
     };
+    let opens_on_click = matches!(
+        kind,
+        Kind::List {
+            opens_on_click: true
+        }
+    );
     let reorder = matches!(kind, Kind::Reorder);
     let list_id = kit.id(&list.id);
     let mut state: State = ui.data(|data| data.get_temp(list_id)).unwrap_or_default();
@@ -732,7 +753,15 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
             state.selected = Some((id, index));
         }
     }
-    for index in [activate, double_clicked].into_iter().flatten() {
+    // A click opens an item of a list that opens on one click, once a
+    // frame however many clicks it took.
+    for index in [
+        activate,
+        double_clicked.or(clicked.filter(|_| opens_on_click)),
+    ]
+    .into_iter()
+    .flatten()
+    {
         if let Some(id) = state
             .selected
             .as_ref()

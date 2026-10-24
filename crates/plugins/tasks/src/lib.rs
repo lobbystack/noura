@@ -11,6 +11,7 @@
 //! folder holding `plugin.toml` and the built `tasks_plugin.wasm`.
 
 mod commands;
+mod inbox;
 mod task;
 mod views;
 
@@ -21,7 +22,7 @@ use std::{
 
 use jiff::civil::Date;
 use plugin_sdk::{
-    Command, Error, Event, Node, ObjectType, Page, Plugin, Value, View,
+    Command, Error, Event, InboxSection, Node, ObjectType, Page, Plugin, Value, View,
     navigation::{self, Placement},
     objects::{self, Changes, NewObject},
     workspace,
@@ -59,6 +60,10 @@ struct State {
     panels: BTreeMap<String, String>,
     /// What each task's panel says about its last change.
     panel_notices: BTreeMap<String, String>,
+    /// The revision of each task as the Inbox's Due today drew it.
+    due_listed: BTreeMap<String, String>,
+    /// What Due today says about the last change from it.
+    due_notice: Option<String>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -71,6 +76,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     listed: BTreeMap::new(),
     panels: BTreeMap::new(),
     panel_notices: BTreeMap::new(),
+    due_listed: BTreeMap::new(),
+    due_notice: None,
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -133,6 +140,18 @@ impl Plugin for Tasks {
             offered("complete", "Complete a task"),
             offered("reopen", "Reopen a task"),
         ]
+    }
+
+    fn inbox_sections() -> Vec<InboxSection> {
+        inbox::sections()
+    }
+
+    fn render_inbox_section(_section: String) -> Vec<Node> {
+        inbox::render()
+    }
+
+    fn handle_inbox_event(_section: String, event: Event) {
+        inbox::handle(event);
     }
 
     fn run_command(id: String, input: String) -> Result<String, String> {
@@ -594,21 +613,27 @@ fn complete(id: &str, done: bool) {
     let Some(revision) = state().listed.get(id).cloned() else {
         return;
     };
+    state().notice = set_done(id, &revision, done);
+}
+
+/// Mark the task `id` done, or back to todo, against `revision`, and say
+/// what the list should tell you: nothing when it worked.
+fn set_done(id: &str, revision: &str, done: bool) -> Option<String> {
     let status = if done { "done" } else { "todo" };
     let written = objects::update(
         id,
-        &revision,
+        revision,
         &Changes {
             body: None,
             properties: json!({ "status": status }).to_string(),
             remove: Vec::new(),
         },
     );
-    state().notice = match written {
+    match written {
         Ok(_) => None,
         Err(Error::RevisionConflict(_)) => Some(CHANGED_ELSEWHERE.to_owned()),
         Err(error) => Some(format!("Couldn't change the task: {}", reason(&error))),
-    };
+    }
 }
 
 /// A task's properties panel: status, priority, due date and project.

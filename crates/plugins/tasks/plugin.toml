@@ -17,6 +17,10 @@ name = "object-types"
 [[capabilities]]
 name = "views"
 
+# Due today in the Inbox.
+[[capabilities]]
+name = "inbox-sections"
+
 # New task in the command palette, and create, update, complete and
 # reopen for other plugins.
 [[capabilities]]
