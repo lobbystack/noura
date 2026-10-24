@@ -30,7 +30,8 @@ async fn a_fresh_client_pulls_and_decrypts_what_another_pushed_on_postgres() {
 
 async fn push_and_pull<B: Backend>(server: Server<B>) {
     let account = Account::new(&server).await;
-    let device = &account.devices[0];    let note = b"# Field notes\n\nThe first synced note.\n";
+    let device = &account.devices[0];
+    let note = b"# Field notes\n\nThe first synced note.\n";
 
     let mut writer = device.connect(&server.base, account.reference()).await;
     let mut created = writer
@@ -96,7 +97,8 @@ async fn push_and_pull<B: Backend>(server: Server<B>) {
                 !bytes.windows(plaintext.len()).any(|w| w == plaintext),
                 "{} holds plaintext",
                 file.display()
-            );        }
+            );
+        }
     }
 }
 

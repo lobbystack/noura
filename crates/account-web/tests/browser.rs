@@ -20,12 +20,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::cdp::browser_protocol::emulation::SetScriptExecutionDisabledParams;
 use chromiumoxide::cdp::browser_protocol::web_authn::{
     AddCredentialParams, AddVirtualAuthenticatorParams, AuthenticatorId, AuthenticatorProtocol,
     AuthenticatorTransport, Credential, EnableParams, GetCredentialsParams,
     RemoveVirtualAuthenticatorParams, VirtualAuthenticatorOptions,
 };
-use chromiumoxide::cdp::browser_protocol::emulation::SetScriptExecutionDisabledParams;
 use chromiumoxide::page::Page;
 use futures_util::StreamExt;
 use sync_server::accounts::Deliveries;
@@ -375,7 +375,11 @@ async fn the_email_link_forms_work_with_script_turned_off() {
         .unwrap();
     open(&page, &format!("{}/account/sign-in", site.base)).await;
     // The module never ran: it shows the passkey button once it loads.
-    let hidden: bool = eval(&page, "document.querySelector('[data-passkey-start]').hidden").await;
+    let hidden: bool = eval(
+        &page,
+        "document.querySelector('[data-passkey-start]').hidden",
+    )
+    .await;
     assert!(hidden, "the module ran with script turned off");
 
     // The test fills the field and submits the form as the browser's own
@@ -390,7 +394,11 @@ async fn the_email_link_forms_work_with_script_turned_off() {
         "document.querySelector('form[action=\"/account/email-link\"]').requestSubmit(), true",
     )
     .await;
-    until(&page, "document.body.innerText.includes('Check your email')").await;
+    until(
+        &page,
+        "document.body.innerText.includes('Check your email')",
+    )
+    .await;
     let link = mailed_link(&site).await;
     open(&page, &link).await;
     let _: bool = eval(
@@ -400,8 +408,11 @@ async fn the_email_link_forms_work_with_script_turned_off() {
     .await;
     until(&page, "location.pathname === '/account'").await;
     until(&page, "document.body.innerText.includes('ada@example.com')").await;
-    let still_hidden: bool =
-        eval(&page, "document.querySelector('[data-passkey-start]').hidden").await;
+    let still_hidden: bool = eval(
+        &page,
+        "document.querySelector('[data-passkey-start]').hidden",
+    )
+    .await;
     assert!(still_hidden);
 
     browser.close().await.unwrap();

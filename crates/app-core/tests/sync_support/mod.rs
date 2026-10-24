@@ -108,7 +108,11 @@ impl Server<PgBackend> {
 }
 
 impl<B: Backend> Server<B> {
-    async fn serve(store: Store<B>, dir: tempfile::TempDir, postgres: Option<TestDatabase>) -> Self {
+    async fn serve(
+        store: Store<B>,
+        dir: tempfile::TempDir,
+        postgres: Option<TestDatabase>,
+    ) -> Self {
         let store = Arc::new(store);
         let address = sync_server::spawn(store.clone(), "127.0.0.1:0")
             .await

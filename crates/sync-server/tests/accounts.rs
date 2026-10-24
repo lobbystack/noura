@@ -16,8 +16,8 @@ use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use serde_json::{Value, json};
 use sqlx::{Connection, Row, SqliteConnection};
-use sync_server::accounts::mail::{Mail, MailError, MailTransport, Resend, SendFuture, Smtp};
 use sync_server::accounts::Deliveries;
+use sync_server::accounts::mail::{Mail, MailError, MailTransport, Resend, SendFuture, Smtp};
 use sync_server::{Accounts, Allowlist, PublicOrigin};
 use sync_store::Store;
 use sync_store_sqlite::{DATABASE_FILE, SqliteBackend};
@@ -756,7 +756,11 @@ async fn start_passkey_sign_up(site: &Site, key: &mut Passkey, email: &str) -> R
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_passkey_sign_up_for_an_existing_account_adds_no_passkey() {
     let outbox = Outbox::default();
-    let site = site("alice@example.com, bob@example.com", Box::new(outbox.clone())).await;
+    let site = site(
+        "alice@example.com, bob@example.com",
+        Box::new(outbox.clone()),
+    )
+    .await;
     site.form(
         "/account/email-link",
         &[("email", "alice@example.com")],
@@ -780,7 +784,11 @@ async fn a_passkey_sign_up_for_an_existing_account_adds_no_passkey() {
     let mail = outbox.take().pop().expect("a mail to Alice");
     assert_eq!(mail.to, "alice@example.com");
     assert_eq!(mail.subject, "Sign in to Noura");
-    assert!(mail.text.contains("didn't add their passkey"), "{}", mail.text);
+    assert!(
+        mail.text.contains("didn't add their passkey"),
+        "{}",
+        mail.text
+    );
     let link = link_in(&mail);
     assert!(link.starts_with(&format!("{}/account/email-link?token=", site.base)));
 
@@ -788,7 +796,11 @@ async fn a_passkey_sign_up_for_an_existing_account_adds_no_passkey() {
     // follows the link, which signs her in.
     let refused = passkey_sign_in(&site, &mut stranger, "alice@example.com").await;
     assert_eq!(refused.json()["error"], "no_passkey");
-    let signed_in = site.follow(&link).await.session_cookie().expect("signed in");
+    let signed_in = site
+        .follow(&link)
+        .await
+        .session_cookie()
+        .expect("signed in");
     for cookie in [&alice, &signed_in] {
         let page = account_page(&site, cookie).await;
         assert!(page.body.contains("alice@example.com"));
@@ -1031,7 +1043,10 @@ async fn the_database_holds_tokens_only_as_hashes_and_no_session_expiry() {
     let values = every_value(&site.database()).await;
     let challenge_hash = sync_protocol::crypto::hash(&challenge.0);
     for (table, column, value) in &values {
-        assert!(!contains(value, &challenge.0), "{table}.{column} holds a challenge");
+        assert!(
+            !contains(value, &challenge.0),
+            "{table}.{column} holds a challenge"
+        );
     }
     assert!(
         values

@@ -120,7 +120,7 @@ async fn migrate_then_serve_on_an_empty_postgres_database() {
     ));
     assert!(first.status.success(), "{}", stderr(&first));
     assert!(
-        stderr(&first).contains("ran 1 migration(s)"),
+        stderr(&first).contains("ran 2 migration(s)"),
         "{}",
         stderr(&first)
     );

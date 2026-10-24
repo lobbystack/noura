@@ -5,9 +5,9 @@ use sync_protocol::live::LiveOp;
 use sync_protocol::records::{AccountHead, OpClass, Ref};
 use sync_protocol::types::{Digest, Id};
 use sync_store::{
-    ApprovalRequestRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DomainRow, EpochRow, Error, KeyRow,
-    LinkRow, LockPlan, PasskeyRow, PendingPasskeyRow, RawEntry, ReadTxn, Result, Session,
-    WorkspaceRow, WriteTxn,
+    ApprovalRequestRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DomainRow, EpochRow,
+    Error, KeyRow, LinkRow, LockPlan, PasskeyRow, PendingPasskeyRow, RawEntry, ReadTxn, Result,
+    Session, WorkspaceRow, WriteTxn,
 };
 
 /// A read transaction from the pool, or the writer's connection inside its

@@ -153,7 +153,13 @@ fn a_rolled_back_heads_file_reports_a_journal_rollback_and_rebuilds() {
     );
     let links = vec![genesis.clone(), link];
     heads
-        .accept(account, genesis.digest(), &links, &BTreeSet::new(), &secrets)
+        .accept(
+            account,
+            genesis.digest(),
+            &links,
+            &BTreeSet::new(),
+            &secrets,
+        )
         .unwrap();
     drop(heads);
     KeptHeads::open(dir.path(), account, keys.device(), &secrets).expect("current heads open");
@@ -357,7 +363,13 @@ fn served_links_of_another_chain_extend_no_kept_head() {
         },
     );
     let served = [stranger_genesis.clone(), grown];
-    let refused = heads.accept(account, genesis.digest(), &served, &BTreeSet::new(), &secrets);
+    let refused = heads.accept(
+        account,
+        genesis.digest(),
+        &served,
+        &BTreeSet::new(),
+        &secrets,
+    );
     assert!(matches!(
         refused,
         Err(SyncError::Check("sync_account_forked"))
@@ -878,7 +890,10 @@ async fn a_refused_chain_stays_refused_after_a_restart() {
     let owner = &s.owner.devices[0];
     s.proxy.honest();
     let mut device = owner.connect(&s.proxy.base, s.owner.reference()).await;
-    device.open_workspace(s.workspace).await.expect("an honest open");
+    device
+        .open_workspace(s.workspace)
+        .await
+        .expect("an honest open");
     let other = DeviceKeys::generate().unwrap();
     let fork = next_link(
         &s.member.devices[0].keys,

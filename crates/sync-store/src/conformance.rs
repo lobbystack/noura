@@ -3085,7 +3085,11 @@ pub async fn approval_requests_open_the_invitees_chain<B: Backend>(store: Store<
     );
     let invitation = Id::random().expect("random");
     store
-        .store_approval_request(request, Digest([3; 32]), Some((invitation, world.workspace)))
+        .store_approval_request(
+            request,
+            Digest([3; 32]),
+            Some((invitation, world.workspace)),
+        )
         .await
         .expect("stored");
     assert_eq!(
@@ -3097,7 +3101,9 @@ pub async fn approval_requests_open_the_invitees_chain<B: Backend>(store: Store<
         "not_found",
         "the outsider's account doesn't belong to the workspace"
     );
-    store.clock().advance(Duration::from_secs(crate::SIGN_IN_TTL));
+    store
+        .clock()
+        .advance(Duration::from_secs(crate::SIGN_IN_TTL));
     assert_eq!(
         refusal(served_seqno(store, owner, invitee).await).code,
         "not_found",

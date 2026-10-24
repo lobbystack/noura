@@ -46,8 +46,7 @@ use sync_protocol::messages::{
     server_error_status,
 };
 use sync_protocol::records::{
-    AccountHead, AccountLink, Card, MAX_COVERS, MAX_RECIPIENTS, OpClass, RecoveryProof, Ref,
-    Signed,
+    AccountHead, AccountLink, Card, MAX_COVERS, MAX_RECIPIENTS, OpClass, RecoveryProof, Ref, Signed,
 };
 
 pub use accounts::{SIGN_IN_TOKEN_LEN, SignInToken};

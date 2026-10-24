@@ -405,8 +405,8 @@ impl KeptHeads {
         let code = refusal.client_code();
         // Both refusals stop the same workspaces (§7).
         let _stops: Stops = refusal.stops(account == self.own);
-        if !self.refused.contains_key(&account) {
-            self.refused.insert(account, code);
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.refused.entry(account) {
+            entry.insert(code);
             // A refusal that can't be written still stops the running
             // service, and the device judges the same chain again later.
             let _ = self.save();

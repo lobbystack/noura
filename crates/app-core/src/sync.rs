@@ -491,8 +491,7 @@ impl SyncService {
             .map(|h| (h.account, h.genesis))
             .filter(|(account, genesis)| !(*account == own.account() && *genesis == own.genesis()))
             .collect();
-        let mut served: BTreeMap<Id, BTreeMap<Digest, Vec<Signed<AccountLink>>>> =
-            BTreeMap::new();
+        let mut served: BTreeMap<Id, BTreeMap<Digest, Vec<Signed<AccountLink>>>> = BTreeMap::new();
         for (account, genesis) in &recorded {
             let (links, _) = self.client.whole_chain(*account, Some(*genesis)).await?;
             served.entry(*account).or_default().insert(*genesis, links);
