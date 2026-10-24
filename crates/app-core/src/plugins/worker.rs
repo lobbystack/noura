@@ -429,7 +429,7 @@ fn draw(plugin: &RunningPlugin, registrations: &Registrations) -> BTreeMap<Surfa
 pub(super) fn failure_message(error: &PluginError, doing: Doing) -> String {
     match error {
         PluginError::Deadline { deadline } => format!(
-            "The plugin took longer than its {} limit, so Noura stopped it.",
+            "The plugin ran longer than its time limit of {}, so Noura stopped it.",
             seconds(*deadline)
         ),
         PluginError::MemoryCap { cap_bytes } => format!(

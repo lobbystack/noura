@@ -1,6 +1,8 @@
 //! Plugins through AccessKit: a plugin's page in Settings drawn from its
 //! nodes, the first-run screen for the plugins that ship with Noura, and
-//! revoking what a plugin may use on the Plugins page.
+//! the Plugins page, which lists each capability, network host and
+//! command target a plugin may use, shipped plugins included, and revokes
+//! them one at a time.
 
 mod support;
 
@@ -236,5 +238,109 @@ fn the_plugins_page_lists_what_a_plugin_may_use_and_revokes_one_at_a_time() {
             .approved
             .iter()
             .all(|line| line.description != read)
+    );
+}
+
+#[test]
+fn the_plugins_page_lists_each_network_host_and_command_target_and_revokes_a_host_alone() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (mut harness, _folders) = opened(|app_data, parent| {
+        let manifest = plugins::probe_manifest_with(&[
+            "name = \"network\"\nhosts = [\"api.example.com\"]",
+            "name = \"commands\"\ntargets = [\"tasks\"]",
+        ]);
+        let folder = plugins::folder(parent, &manifest, "plugin.wasm", &probe);
+        install_and_enable(app_data, &folder, "probe");
+    });
+    open_settings_section(&mut harness, "Plugins");
+    let host = "Connect to api.example.com.";
+    let target = "Run the commands the tasks plugin offers.";
+
+    let row = dialog(&harness, "Settings").get_by_role_and_label(Role::Group, "Probe");
+    let shown = labels(&row);
+    for expected in [
+        "Read the files and folders in your workspace.",
+        host,
+        "Add commands to the command palette and offer them to other plugins.",
+        target,
+    ] {
+        assert!(shown.iter().any(|label| label == expected), "{shown:?}");
+    }
+    row.get_by_role_and_label(Role::Button, &format!("Revoke: {host}"))
+        .focus();
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    settle(&mut harness);
+
+    let row = dialog(&harness, "Settings").get_by_role_and_label(Role::Group, "Probe");
+    assert!(
+        row.query_by_role_and_label(Role::Button, &format!("Allow: {host}"))
+            .is_some()
+    );
+    assert!(
+        row.query_by_role_and_label(Role::Button, &format!("Revoke: {target}"))
+            .is_some()
+    );
+    let probe_row = harness
+        .state()
+        .app()
+        .plugins()
+        .into_iter()
+        .find(|row| row.id == "probe")
+        .unwrap();
+    assert!(
+        probe_row
+            .revoked
+            .iter()
+            .any(|line| line.description == host)
+    );
+    assert!(
+        probe_row
+            .approved
+            .iter()
+            .any(|line| line.description == target)
+    );
+}
+
+#[test]
+fn the_plugins_page_shows_a_shipped_plugin_and_what_it_may_use() {
+    let Some(hello) = plugins::built("hello_plugin") else {
+        return;
+    };
+    let shipped = shipped_with_hello(&hello);
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    let mut harness = harness_registering(app_data.path(), FakePicker::default(), |app| {
+        app.set_shipped_plugins(shipped.path().to_owned());
+    });
+    settle(&mut harness);
+    dialog(&harness, "Plugins that ship with Noura")
+        .get_by_role_and_label(Role::Button, "Allow and continue")
+        .click();
+    harness.run();
+    settle(&mut harness);
+
+    open_settings_section(&mut harness, "Plugins");
+
+    let row = dialog(&harness, "Settings").get_by_role_and_label(Role::Group, "Hello");
+    let shown = labels(&row);
+    for expected in [
+        "Ships with Noura",
+        "You allowed it to:",
+        "Read the files and folders in your workspace.",
+        "Add pages to the rail and show panels in them.",
+    ] {
+        assert!(shown.iter().any(|label| label == expected), "{shown:?}");
+    }
+    assert!(
+        row.query_by_role_and_label(
+            Role::Button,
+            "Revoke: Add pages to the rail and show panels in them."
+        )
+        .is_some()
     );
 }

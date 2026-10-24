@@ -64,12 +64,16 @@ pub struct Health {
     pub stopped: bool,
 }
 
-/// A plugin's store, when it has one, and its failures.
+/// A plugin's store, when it has one. A call holds it while it runs.
+type Slot = Option<PluginInstance>;
+
+/// A plugin's recent failures. It has its own lock, which no call holds
+/// while the plugin runs, so reading a plugin's health never waits for
+/// its call.
 #[derive(Default)]
-struct Slot {
-    instance: Option<PluginInstance>,
+struct Failures {
     /// When each recent failure happened, oldest first.
-    failures: Vec<Instant>,
+    at: Vec<Instant>,
     stopped: bool,
 }
 
@@ -88,6 +92,7 @@ pub struct RunningPlugin {
     grants: Grants,
     services: Services,
     slot: Mutex<Slot>,
+    failures: Mutex<Failures>,
 }
 
 impl RunningPlugin {
@@ -113,7 +118,8 @@ impl RunningPlugin {
             limits,
             grants,
             services,
-            slot: Mutex::new(Slot::default()),
+            slot: Mutex::new(None),
+            failures: Mutex::new(Failures::default()),
         }
     }
 
@@ -141,20 +147,23 @@ impl RunningPlugin {
         *self.grants.write() = granted;
     }
 
+    /// Whether the plugin keeps failing. This doesn't wait for a call
+    /// that is running.
     pub fn health(&self) -> Health {
-        let mut slot = self.slot.lock();
-        forget_old_failures(&mut slot);
+        let mut failures = self.failures.lock();
+        failures.forget_old();
         Health {
-            recent_failures: slot.failures.len(),
-            stopped: slot.stopped,
+            recent_failures: failures.at.len(),
+            stopped: failures.stopped,
         }
     }
 
     /// Let a stopped plugin run again, in a new store, with its failures
-    /// forgotten.
+    /// forgotten. A stopped plugin runs no call, so this waits for none.
     pub fn restart(&self) {
         let mut slot = self.slot.lock();
-        *slot = Slot::default();
+        *slot = None;
+        *self.failures.lock() = Failures::default();
     }
 
     pub fn pages(&self) -> Result<Vec<Page>, PluginError> {
@@ -311,10 +320,10 @@ impl RunningPlugin {
         chain: Vec<String>,
         call: impl FnOnce(&mut PluginInstance) -> Result<R, PluginError>,
     ) -> Result<R, PluginError> {
-        if slot.stopped {
+        if self.failures.lock().stopped {
             return Err(PluginError::Stopped);
         }
-        let instance = match &mut slot.instance {
+        let instance = match &mut *slot {
             Some(instance) => instance,
             empty => match PluginInstance::start(
                 &self.engine,
@@ -330,7 +339,7 @@ impl RunningPlugin {
             ) {
                 Ok(instance) => empty.insert(instance),
                 Err(error) => {
-                    failed(slot, &self.manifest.id, &error);
+                    self.failed(&error);
                     return Err(error);
                 }
             },
@@ -341,10 +350,23 @@ impl RunningPlugin {
             && error.is_failure()
         {
             // A store that trapped can't run again.
-            slot.instance = None;
-            failed(slot, &self.manifest.id, error);
+            *slot = None;
+            self.failed(error);
         }
         result
+    }
+
+    /// Note a failure, and stop the plugin when it keeps failing.
+    fn failed(&self, error: &PluginError) {
+        let id = &self.manifest.id;
+        tracing::warn!(plugin = id, %error, "a plugin call failed");
+        let mut failures = self.failures.lock();
+        failures.forget_old();
+        failures.at.push(Instant::now());
+        if failures.at.len() >= MAX_FAILURES {
+            tracing::warn!(plugin = id, "a plugin kept failing and stopped");
+            failures.stopped = true;
+        }
     }
 }
 
@@ -354,21 +376,10 @@ impl Drop for RunningPlugin {
     }
 }
 
-/// Note a failure, and stop the plugin when it keeps failing.
-fn failed(slot: &mut Slot, id: &str, error: &PluginError) {
-    tracing::warn!(plugin = id, %error, "a plugin call failed");
-    forget_old_failures(slot);
-    slot.failures.push(Instant::now());
-    if slot.failures.len() >= MAX_FAILURES {
-        tracing::warn!(plugin = id, "a plugin kept failing and stopped");
-        slot.stopped = true;
-        slot.instance = None;
+impl Failures {
+    fn forget_old(&mut self) {
+        self.at.retain(|failed| failed.elapsed() < FAILURE_WINDOW);
     }
-}
-
-fn forget_old_failures(slot: &mut Slot) {
-    slot.failures
-        .retain(|failed| failed.elapsed() < FAILURE_WINDOW);
 }
 
 /// What a command call found in its target.
@@ -379,8 +390,9 @@ enum Offered {
     No,
 }
 
-/// Hears which plugin ran a command another plugin called, so the app can
-/// draw that plugin's views again.
+/// Hears which plugin ran a command another plugin called, or failed
+/// while running one, so the app can draw that plugin's views again and
+/// learn whether it stopped.
 pub type CalledListener = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The running plugins whose commands other plugins may call.
@@ -403,7 +415,7 @@ impl Router {
     }
 
     /// Call `listener` with a plugin's ID after it runs a command another
-    /// plugin called.
+    /// plugin called, or fails while running one.
     pub fn on_called(&self, listener: CalledListener) {
         *self.called.write() = Some(listener);
     }
@@ -434,21 +446,29 @@ impl Router {
             }
             instance.run_command(command, input).map(Offered::Ran)
         });
+        let ran = match &outcome {
+            Ok(Offered::Ran(_)) => true,
+            Err(error) => error.is_failure(),
+            Ok(Offered::No) => false,
+        };
+        if ran && let Some(listener) = self.called.read().clone() {
+            listener(plugin);
+        }
         match outcome {
-            Ok(Offered::Ran(answer)) => {
-                if let Some(listener) = self.called.read().clone() {
-                    listener(plugin);
-                }
-                answer.map_err(CallError::Failed)
-            }
+            Ok(Offered::Ran(answer)) => answer.map_err(CallError::Failed),
             Ok(Offered::No)
             | Err(PluginError::CapabilityNotDeclared { .. } | PluginError::Stopped) => {
                 Err(CallError::TargetUnavailable(target))
             }
             Err(PluginError::Busy { plugin }) => Err(CallError::Busy(plugin)),
-            Err(error) => Err(CallError::Failed(format!(
-                "The {plugin} plugin failed while running {command}: {error}."
-            ))),
+            // The target's own failure, such as a trap's message, stays
+            // in the local log: the caller is another plugin's code.
+            Err(error) => {
+                tracing::warn!(%error, target, "a plugin failed running another plugin's call");
+                Err(CallError::Failed(format!(
+                    "The {plugin} plugin failed while running {command}."
+                )))
+            }
         }
     }
 }

@@ -171,7 +171,7 @@ fn a_section_that_fails_or_runs_past_its_deadline_shows_an_error_in_its_own_plac
             .expect_err("the section shows an error")
     };
     let reason = error_in("Looping section");
-    assert!(reason.contains("1 second limit"), "{reason}");
+    assert!(reason.contains("time limit of 1 second"), "{reason}");
     let reason = error_in("Broken section");
     assert!(reason.contains("lists child 7"), "{reason}");
     assert!(shown.contains(&(
@@ -349,7 +349,10 @@ fn the_plugins_page_lists_each_approval_and_a_revoked_one_takes_effect_on_the_ne
                 "Connect to api.example.com.",
                 Grant::Host("api.example.com".into())
             ),
-            capability("commands", "Add commands to the command palette."),
+            capability(
+                "commands",
+                "Add commands to the command palette and offer them to other plugins."
+            ),
             line(
                 "commands",
                 "Run the commands the tasks plugin offers.",
@@ -544,7 +547,7 @@ fn a_plugin_that_loops_allocates_or_panics_fails_alone_and_windows_keep_polling_
         "a poll took {slowest:?}"
     );
     let reason = plugins::texts(&app, page).expect_err("the page says why");
-    assert!(reason.contains("1 second limit"), "{reason}");
+    assert!(reason.contains("time limit of 1 second"), "{reason}");
 
     app.press_plugin_button(page, "allocate");
     settle(&mut app);
@@ -588,4 +591,45 @@ fn a_plugin_that_loops_allocates_or_panics_fails_alone_and_windows_keep_polling_
         row.running && !row.failed && row.problem.is_none(),
         "{row:?}"
     );
+}
+
+#[test]
+fn a_plugin_that_keeps_failing_in_calls_from_another_plugin_shows_as_failed_in_settings() {
+    let (Some(caller), Some(bad)) = (
+        probe(&[
+            "name = \"views\"",
+            "name = \"commands\"\ntargets = [\"misbehave\"]",
+        ]),
+        misbehave(&["name = \"views\"", "name = \"commands\""]),
+    ) else {
+        return;
+    };
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    plugins::install_and_enable(&mut app, caller.path(), "probe");
+    plugins::install_and_enable(&mut app, bad.path(), "misbehave");
+
+    // Only the probe runs jobs of its own: each press calls the misbehave
+    // plugin's `loop` command, which runs past its deadline.
+    for _ in 0..3 {
+        app.press_plugin_button("plugin:probe:hello", "call:misbehave/loop:");
+        settle(&mut app);
+    }
+
+    assert_eq!(
+        events(&app),
+        ["hello call error failed The misbehave plugin failed while running loop."; 3]
+    );
+    let row = app
+        .plugins()
+        .into_iter()
+        .find(|row| row.id == "misbehave")
+        .unwrap();
+    assert!(row.failed && !row.running, "{row:?}");
+    assert_eq!(
+        row.problem.as_deref(),
+        Some("It failed too often and stopped for this session.")
+    );
+    assert!(row.enabled);
+    assert!(!rail_titles(&app).contains(&"Misbehave".to_owned()));
 }

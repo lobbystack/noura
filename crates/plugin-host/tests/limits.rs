@@ -2,7 +2,9 @@
 //! A plugin that loops forever, allocates past its cap or panics returns an
 //! error to its caller while other plugins keep answering. Its next call
 //! runs in a new store, and a plugin that keeps failing stops for the
-//! session until you start it again.
+//! session until you start it again. Reading a plugin's health never waits
+//! for its call, and a call that waits too long in all fails naming the
+//! limit it passed.
 
 mod support;
 
@@ -25,6 +27,7 @@ fn limits() -> Limits {
     Limits {
         memory_bytes: 32 << 20,
         call_deadline: DEADLINE,
+        ..Limits::default()
     }
 }
 
@@ -146,6 +149,32 @@ fn a_command_that_loops_returns_an_error_to_the_caller() {
 }
 
 #[test]
+fn reading_a_plugins_health_doesnt_wait_for_its_call() {
+    let Some((plugin, _folders)) = misbehave() else {
+        return;
+    };
+    let looping = plugin.clone();
+    let call = std::thread::spawn(move || looping.render("loop"));
+    std::thread::sleep(DEADLINE / 5);
+
+    let asked = Instant::now();
+    let health = plugin.health();
+    let took = asked.elapsed();
+
+    assert!(
+        !call.is_finished(),
+        "the call ended before the health check"
+    );
+    assert!(took < DEADLINE / 5, "the health check took {took:?}");
+    assert_eq!(health.recent_failures, 0);
+    assert_eq!(
+        call.join().unwrap(),
+        Err(PluginError::Deadline { deadline: DEADLINE })
+    );
+    assert_eq!(plugin.health().recent_failures, 1);
+}
+
+#[test]
 fn a_plugin_that_keeps_failing_stops_until_it_is_started_again() {
     let Some((plugin, _folders)) = misbehave() else {
         return;
@@ -189,15 +218,12 @@ impl WebTransport for SlowServer {
     }
 }
 
-#[test]
-fn time_spent_waiting_for_the_network_doesnt_count_toward_the_deadline() {
-    let Some(probe) = plugins::built("probe_plugin") else {
-        return;
-    };
+/// The probe under `limits`, sending its requests to a [`SlowServer`].
+fn slow_probe(probe: &[u8], limits: Limits) -> (Arc<RunningPlugin>, [tempfile::TempDir; 2]) {
     let requests = HostRequests::new(Arc::new(SlowServer), WebAccessLimits::default()).unwrap();
-    let (plugin, _folders) = plugins::start(
+    plugins::start(
         "probe",
-        &probe,
+        probe,
         &[
             "name = \"views\"",
             "name = \"network\"\nhosts = [\"api.example.com\"]",
@@ -206,8 +232,16 @@ fn time_spent_waiting_for_the_network_doesnt_count_toward_the_deadline() {
             network: Some(Arc::new(requests)),
             ..Services::default()
         },
-        limits(),
-    );
+        limits,
+    )
+}
+
+#[test]
+fn time_spent_waiting_for_the_network_doesnt_count_toward_the_deadline() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (plugin, _folders) = slow_probe(&probe, limits());
 
     let nodes = plugin
         .render("fetch:https://api.example.com/slow")
@@ -216,5 +250,31 @@ fn time_spent_waiting_for_the_network_doesnt_count_toward_the_deadline() {
     assert_eq!(
         plugins::texts(&nodes),
         ["status 200 url https://api.example.com/slow body late"]
+    );
+}
+
+#[test]
+fn a_call_that_waits_past_its_whole_call_limit_fails_naming_that_limit() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    // The server answers after three deadlines, past the call's limit of
+    // two, though the plugin's own work stays far under one.
+    let max_call_time = DEADLINE * 2;
+    let (plugin, _folders) = slow_probe(
+        &probe,
+        Limits {
+            max_call_time,
+            ..limits()
+        },
+    );
+
+    let result = plugin.render("fetch:https://api.example.com/slow");
+
+    assert_eq!(
+        result,
+        Err(PluginError::Deadline {
+            deadline: max_call_time
+        })
     );
 }

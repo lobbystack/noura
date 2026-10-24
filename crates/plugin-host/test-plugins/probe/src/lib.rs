@@ -17,7 +17,9 @@
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
 //! - `events`: the events, commands and tool calls the plugin received,
 //!   oldest first: a press as `<page> pressed <node>`, any other event in
-//!   its debug form.
+//!   its debug form. A press on a node whose ID is
+//!   `call:<plugin>/<command>:<input>` runs that command instead, and
+//!   shows as `<page> call` and what came back.
 //! - anything else: a panel with a line of text and a button.
 //!
 //! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
@@ -132,6 +134,12 @@ impl Plugin for Probe {
     }
 
     fn handle_event(page: String, event: Event) {
+        if let Event::Pressed(node) = &event
+            && let Some(call) = node.strip_prefix("call:")
+        {
+            record(format!("{page} call {}", relay(call)));
+            return;
+        }
         record(format!("{page} {}", event_text(&event)));
     }
 

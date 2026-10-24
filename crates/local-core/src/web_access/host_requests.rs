@@ -761,4 +761,52 @@ mod tests {
         assert_eq!(outside.body, b"hi");
         assert_eq!(inside.unwrap().body, b"hi");
     }
+
+    /// A request through the real transport to `url`, which only
+    /// `address` may answer.
+    fn pinned(url: &str, address: SocketAddr) -> TransportRequest {
+        TransportRequest {
+            method: WebMethod::Get,
+            url: Url::parse(url).unwrap(),
+            addresses: vec![address],
+            headers: Vec::new(),
+            body: Vec::new(),
+            timeout: Duration::from_secs(5),
+            max_response_bytes: 1024,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_https_transport_connects_only_to_the_checked_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // A `.invalid` name never resolves, so a connection that reaches
+        // the listener came from the address the boundary checked.
+        let url = format!("https://pinned.invalid:{}/", address.port());
+        let accepted = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(stream);
+        });
+
+        let result = HttpsTransport.send(pinned(&url, address)).await;
+
+        assert!(result.is_err(), "no TLS server answered");
+        tokio::time::timeout(Duration::from_secs(5), accepted)
+            .await
+            .expect("the transport connected to the checked address")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_https_transport_refuses_plain_http_without_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://pinned.invalid:{}/", address.port());
+
+        let result = HttpsTransport.send(pinned(&url, address)).await;
+
+        assert!(result.is_err());
+        let accepted = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        assert!(accepted.is_err(), "the transport connected over plain HTTP");
+    }
 }

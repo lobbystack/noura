@@ -46,11 +46,6 @@ use bindings::noura::plugin::{command_calls, network, objects, types, workspace}
 /// The capability behind object types, their panels and object writes.
 const OBJECT_TYPES: &str = "object-types";
 
-/// The longest one call may take in all, time spent waiting for the
-/// network or for another plugin included. The call deadline counts only
-/// the plugin's own work, so this bounds a plugin that waits in a loop.
-const MAX_CALL_TIME: Duration = Duration::from_secs(120);
-
 /// The capabilities a running plugin may use now. Revoking one changes
 /// this, and the plugin's next call sees the change.
 pub(crate) type Grants = Arc<RwLock<Vec<Capability>>>;
@@ -67,6 +62,9 @@ pub enum PluginError {
     Instantiate(String),
     #[error("the plugin needs more than its {cap_bytes}-byte memory cap")]
     MemoryCap { cap_bytes: usize },
+    /// The call ran past one of its time limits: the plugin's own work
+    /// past [`Limits::call_deadline`], or the whole call, waits included,
+    /// past [`Limits::max_call_time`]. `deadline` is the limit it passed.
     #[error("the plugin ran past its {deadline:?} deadline")]
     Deadline { deadline: Duration },
     #[error("the plugin failed: {0}")]
@@ -121,15 +119,34 @@ struct Clock {
     /// Time spent waiting for the network or another plugin, which the
     /// deadline doesn't count.
     waited: Duration,
+    /// How long the plugin's own work may take.
     deadline: Duration,
+    /// How long the whole call may take, waits included.
+    max_time: Duration,
+    /// The limit that interrupted the call, once one did.
+    passed: Option<Duration>,
 }
 
 impl Clock {
-    fn start(deadline: Duration) -> Self {
+    fn start(limits: Limits) -> Self {
         Self {
             started: Instant::now(),
             waited: Duration::ZERO,
-            deadline,
+            deadline: limits.call_deadline,
+            max_time: limits.max_call_time,
+            passed: None,
+        }
+    }
+
+    /// The limit the call has passed, if any: its own work's deadline
+    /// first, then the whole call's.
+    fn passed(&self) -> Option<Duration> {
+        if self.used() >= self.deadline {
+            Some(self.deadline)
+        } else if self.started.elapsed() >= self.max_time {
+            Some(self.max_time)
+        } else {
+            None
         }
     }
 
@@ -503,7 +520,7 @@ pub type Registration = (String, Result<(), TypeError>);
 pub(crate) struct PluginInstance {
     store: Store<HostState>,
     exports: Exports,
-    call_deadline: Duration,
+    limits: Limits,
     _epochs: Arc<EpochTicker>,
 }
 
@@ -526,30 +543,30 @@ impl PluginInstance {
         grants: Grants,
         services: Services,
     ) -> Result<Self, PluginError> {
-        let call_deadline = limits.call_deadline;
         let state = HostState {
             limiter: StoreLimiter::new(limits.memory_bytes),
             grants,
             services,
             chain: Vec::new(),
-            clock: Clock::start(call_deadline),
+            clock: Clock::start(limits),
             plugin: owner.plugin.to_owned(),
             instance: owner.token,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limiter);
-        store.set_epoch_deadline(deadline_ticks(call_deadline));
+        store.set_epoch_deadline(deadline_ticks(limits.call_deadline));
         // The deadline counts the plugin's own work: when it passes, time
         // spent waiting for the network or another plugin buys more ticks.
-        store.epoch_deadline_callback(|store| {
-            let clock = store.data().clock;
-            let used = clock.used();
-            if used >= clock.deadline || clock.started.elapsed() >= MAX_CALL_TIME {
-                Ok(UpdateDeadline::Interrupt)
-            } else {
-                Ok(UpdateDeadline::Continue(deadline_ticks(
-                    clock.deadline - used,
-                )))
+        store.epoch_deadline_callback(|mut store| {
+            let clock = &mut store.data_mut().clock;
+            match clock.passed() {
+                Some(limit) => {
+                    clock.passed = Some(limit);
+                    Ok(UpdateDeadline::Interrupt)
+                }
+                None => Ok(UpdateDeadline::Continue(deadline_ticks(
+                    clock.deadline - clock.used(),
+                ))),
             }
         });
         let mut linker = Linker::new(engine);
@@ -609,11 +626,11 @@ impl PluginInstance {
                 ),
             })
         })()
-        .map_err(|error| failure(&store, &error, call_deadline, PluginError::Instantiate))?;
+        .map_err(|error| failure(&store, &error, PluginError::Instantiate))?;
         Ok(Self {
             store,
             exports,
-            call_deadline,
+            limits,
             _epochs: Arc::clone(epochs),
         })
     }
@@ -622,12 +639,12 @@ impl PluginInstance {
     /// a fresh deadline, and no memory-cap refusal left from an earlier
     /// call, so a failure reports its own cause.
     pub(crate) fn begin(&mut self, chain: Vec<String>) {
-        let deadline = self.call_deadline;
         let state = self.store.data_mut();
         state.chain = chain;
-        state.clock = Clock::start(deadline);
+        state.clock = Clock::start(self.limits);
         state.limiter.cap_hit = false;
-        self.store.set_epoch_deadline(deadline_ticks(deadline));
+        self.store
+            .set_epoch_deadline(deadline_ticks(self.limits.call_deadline));
     }
 
     /// Fails unless the plugin holds `capability`.
@@ -640,7 +657,7 @@ impl PluginInstance {
     }
 
     fn failed(&self, error: &wasmtime::Error) -> PluginError {
-        failure(&self.store, error, self.call_deadline, PluginError::Call)
+        failure(&self.store, error, PluginError::Call)
     }
 
     fn view(&self) -> Result<view_export::Guest, PluginError> {
@@ -855,12 +872,12 @@ impl PluginInstance {
 fn failure(
     store: &Store<HostState>,
     error: &wasmtime::Error,
-    call_deadline: Duration,
     other: fn(String) -> PluginError,
 ) -> PluginError {
+    let clock = store.data().clock;
     match Failure::of(&store.data().limiter, error) {
         Failure::Deadline => PluginError::Deadline {
-            deadline: call_deadline,
+            deadline: clock.passed.unwrap_or(clock.deadline),
         },
         Failure::MemoryCap { cap_bytes } => PluginError::MemoryCap { cap_bytes },
         Failure::Other(message) => other(message),

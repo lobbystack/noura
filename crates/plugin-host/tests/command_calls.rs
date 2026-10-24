@@ -4,18 +4,20 @@
 //! capabilities: here the target reads a workspace the caller can't, and
 //! creates an object of its own type, which the caller can't. An
 //! undeclared target, a target that is off, and a call cycle back into a
-//! busy plugin each return a structured error instead of hanging.
+//! busy plugin each return a structured error instead of hanging. A target
+//! that fails tells the caller only that it failed, and the router's
+//! listener hears of each failure, so the app learns when it stops.
 
 mod support;
 
 use std::{
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use plugin_host::{
-    Entry, EntryKind, Limits, Listed, ObjectTypes, Router, RunningPlugin, Services, WorkspacePath,
-    WorkspaceReads,
+    Entry, EntryKind, Limits, Listed, MAX_FAILURES, ObjectTypes, Router, RunningPlugin, Services,
+    WorkspacePath, WorkspaceReads,
 };
 use support::plugins::{self, FakeObjects, FakeWorkspace};
 
@@ -295,6 +297,70 @@ fn a_command_that_calls_itself_returns_busy() {
     assert_eq!(
         call(&pair.caller, "target/relay:target/describe:"),
         "answer error busy target"
+    );
+}
+
+#[test]
+fn a_target_that_fails_tells_the_caller_only_that_and_stops_after_failing_again_and_again() {
+    let (Some(probe), Some(misbehave)) = (
+        plugins::built("probe_plugin"),
+        plugins::built("misbehave_plugin"),
+    ) else {
+        return;
+    };
+    let router = Arc::new(Router::default());
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let listener = heard.clone();
+    router.on_called(Arc::new(move |id: &str| {
+        listener.lock().unwrap().push(id.to_owned());
+    }));
+    // The misbehave plugin's `loop` command runs past its deadline.
+    let (target, _target_folders) = plugins::start(
+        "misbehave",
+        &misbehave,
+        &["name = \"views\"", "name = \"commands\""],
+        Services {
+            router: Arc::downgrade(&router),
+            ..Services::default()
+        },
+        Limits {
+            call_deadline: Duration::from_millis(200),
+            ..Limits::default()
+        },
+    );
+    let (caller, _caller_folders) = plugins::start(
+        "caller",
+        &probe,
+        &[
+            "name = \"views\"",
+            "name = \"commands\"\ntargets = [\"misbehave\"]",
+        ],
+        Services {
+            router: Arc::downgrade(&router),
+            ..Services::default()
+        },
+        Limits::default(),
+    );
+    router.insert(target.clone());
+    router.insert(caller.clone());
+
+    for _ in 0..MAX_FAILURES {
+        assert_eq!(
+            call(&caller, "misbehave/loop:"),
+            "error failed The misbehave plugin failed while running loop."
+        );
+    }
+
+    assert_eq!(*heard.lock().unwrap(), ["misbehave"; MAX_FAILURES]);
+    assert!(target.health().stopped);
+    assert_eq!(
+        call(&caller, "misbehave/loop:"),
+        "error target-unavailable misbehave/loop"
+    );
+    // The caller keeps answering.
+    assert_eq!(
+        plugins::texts(&caller.render("hello").unwrap()),
+        ["Probe is running."]
     );
 }
 

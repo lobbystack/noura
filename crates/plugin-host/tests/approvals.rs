@@ -165,7 +165,7 @@ fn each_host_and_target_is_its_own_grant_with_a_plain_description() {
             ),
             (
                 Grant::Capability("commands".into()),
-                "Add commands to the command palette.".into()
+                "Add commands to the command palette and offer them to other plugins.".into()
             ),
             (
                 Grant::Target("tasks".into()),

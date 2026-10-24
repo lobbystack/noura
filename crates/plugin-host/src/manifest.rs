@@ -140,7 +140,8 @@ impl Capability {
                 .map(|host| (Grant::Host(host.clone()), format!("Connect to {host}.")))
                 .collect(),
             Self::Commands { targets } => {
-                let mut grants = whole("Add commands to the command palette.");
+                let mut grants =
+                    whole("Add commands to the command palette and offer them to other plugins.");
                 grants.extend(targets.iter().map(|target| {
                     let description = match target.split_once('/') {
                         Some((plugin, command)) => {
