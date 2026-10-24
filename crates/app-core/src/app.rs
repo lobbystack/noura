@@ -36,6 +36,7 @@ use crate::{
     workspace::identity_changed,
 };
 
+mod ai;
 mod commands;
 mod drops;
 mod file_actions;
@@ -147,6 +148,9 @@ pub enum Change {
     Problems,
     /// The Inbox's recent notes or plugin sections changed.
     Inbox,
+    /// The AI providers, your consent for them, or the consent prompt
+    /// changed.
+    Ai,
 }
 
 type Listener = Box<dyn Fn(Change) + Send + Sync>;
@@ -231,6 +235,8 @@ pub struct App {
     preferences_seen: u64,
     /// The version of the plugins service this window shows.
     plugins_seen: u64,
+    /// The version of the AI service this window shows.
+    ai_seen: u64,
     /// How many times running plugins ran code that may write files, as
     /// far as this window's open notes looked at their files.
     plugin_acts_seen: u64,
@@ -365,6 +371,7 @@ impl App {
             recents_seen: 0,
             preferences_seen: 0,
             plugins_seen: 0,
+            ai_seen: 0,
             plugin_acts_seen: 0,
             closed: false,
             opened_windows: Vec::new(),
@@ -758,6 +765,7 @@ impl App {
         let preferences = self.poll_preferences();
         let departing = self.poll_departure();
         let plugins = self.poll_plugins();
+        let ai = self.poll_ai();
         let viewed = self.poll_viewers();
         saved
             | updated
@@ -769,6 +777,7 @@ impl App {
             | preferences
             | departing
             | plugins
+            | ai
             | viewed
     }
 
@@ -917,6 +926,7 @@ impl App {
         self.restore_view(windows.next().unwrap_or_default());
         // The workspace's plugins start, and their pages bring back the
         // tabs that waited for them.
+        self.session.ai.open_workspace(Some(workspace.clone()));
         self.session.plugins().open_workspace(Some(workspace));
         self.poll_plugins();
         self.notice = None;

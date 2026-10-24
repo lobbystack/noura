@@ -243,14 +243,24 @@ impl HostState {
     }
 
     /// The AI service, when the plugin holds `ai`.
-    fn ai(&self) -> Result<&dyn AiChats, types::Error> {
+    fn ai(&self) -> Result<Arc<dyn AiChats>, types::Error> {
         if !self.holds("ai") {
             return Err(types::Error::CapabilityNotDeclared("ai".to_owned()));
         }
         self.services
             .ai
-            .as_deref()
+            .clone()
             .ok_or_else(|| types::Error::Failed("Noura can't reach AI providers here.".to_owned()))
+    }
+
+    /// Run `call` on the AI service. Reading and writing chat files is
+    /// waiting, which the call's deadline doesn't count.
+    fn with_ai<R>(
+        &mut self,
+        call: impl FnOnce(&dyn AiChats) -> Result<R, ServiceError>,
+    ) -> Result<R, types::Error> {
+        let ai = self.ai()?;
+        self.waiting(|_| call(ai.as_ref())).map_err(wit_error)
     }
 
     /// The object service for the object with the stable ID `id`, whose
@@ -439,23 +449,23 @@ impl navigation::Host for HostState {
 
 impl ai::Host for HostState {
     fn providers(&mut self) -> Result<Vec<ai::Provider>, types::Error> {
-        self.ai()?.providers().map_err(wit_error)
+        self.with_ai(|ai| ai.providers())
     }
 
     fn chats(&mut self) -> Result<Vec<ai::Chat>, types::Error> {
-        self.ai()?.chats().map_err(wit_error)
+        self.with_ai(|ai| ai.chats())
     }
 
     fn read_chat(&mut self, id: String) -> Result<(ai::Chat, Vec<ai::Message>), types::Error> {
-        self.ai()?.read_chat(&id).map_err(wit_error)
+        self.with_ai(|ai| ai.read_chat(&id))
     }
 
     fn create_chat(&mut self) -> Result<ai::Chat, types::Error> {
-        self.ai()?.create_chat().map_err(wit_error)
+        self.with_ai(|ai| ai.create_chat())
     }
 
     fn send(&mut self, request: ai::Request) -> Result<ai::Run, types::Error> {
-        self.ai()?.send(request).map_err(wit_error)
+        self.with_ai(|ai| ai.send(request))
     }
 
     fn answer_tools(
@@ -464,17 +474,15 @@ impl ai::Host for HostState {
         results: Vec<ai::ToolResult>,
         tools: Vec<ai::ToolDefinition>,
     ) -> Result<ai::Run, types::Error> {
-        self.ai()?
-            .answer_tools(&run, results, tools)
-            .map_err(wit_error)
+        self.with_ai(|ai| ai.answer_tools(&run, results, tools))
     }
 
     fn read_run(&mut self, id: String) -> Result<ai::Run, types::Error> {
-        self.ai()?.read_run(&id).map_err(wit_error)
+        self.with_ai(|ai| ai.read_run(&id))
     }
 
     fn stop(&mut self, id: String) -> Result<(), types::Error> {
-        self.ai()?.stop(&id).map_err(wit_error)
+        self.with_ai(|ai| ai.stop(&id))
     }
 }
 

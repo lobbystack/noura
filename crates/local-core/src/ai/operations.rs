@@ -99,7 +99,7 @@ impl Drop for AiOperation {
     }
 }
 
-pub(super) async fn run_stream<S: AiStreamer>(
+pub(super) async fn run_stream<S: AiStreamer + ?Sized>(
     mut operation: AiOperation,
     sender: mpsc::Sender<AiStreamFrame>,
     model: AiModelRef,

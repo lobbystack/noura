@@ -42,7 +42,7 @@ use plugin_host::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppError, Workspace, plugin_objects::ObjectStore, session::WindowKey, store::JsonStore,
+    AppError, Workspace, ai::Ai, plugin_objects::ObjectStore, session::WindowKey, store::JsonStore,
 };
 use navigation::{Navigator, Openings};
 pub(crate) use navigation::{Opening, SystemClock};
@@ -411,6 +411,8 @@ pub(crate) struct Plugins {
     wake: Option<Wake>,
     /// Counts the changes the windows show: plugins, pages and views.
     version: u64,
+    /// The AI service plugins that hold `ai` chat through.
+    ai: Option<Arc<Ai>>,
 }
 
 impl Plugins {
@@ -452,7 +454,14 @@ impl Plugins {
             openings: Openings::default(),
             wake: None,
             version: 0,
+            ai: None,
         }
+    }
+
+    /// Let plugins that hold `ai` chat through `ai`, from the next start
+    /// on.
+    pub(crate) fn set_ai(&mut self, ai: Arc<Ai>) {
+        self.ai = Some(ai);
     }
 
     pub(crate) fn set_wake(&mut self, wake: Wake) {
@@ -701,7 +710,7 @@ impl Plugins {
             router: Arc::downgrade(&self.router),
             clock: self.clock.clone(),
             navigation: Some(navigation),
-            ai: None,
+            ai: self.ai.as_ref().map(|ai| ai.access(id)),
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests
@@ -1071,6 +1080,30 @@ impl Plugins {
         let called: Vec<String> = self.called.try_iter().collect();
         for id in called {
             self.acts += 1;
+            self.send(&id, Job::Redraw);
+        }
+        // A plugin's AI run wrote to its chat or streamed more of its
+        // answer.
+        let mut answered = self
+            .ai
+            .as_ref()
+            .map(|ai| ai.take_redraws())
+            .unwrap_or_default();
+        // The providers or your consent changed: every plugin that chats
+        // draws again.
+        if self
+            .ai
+            .as_ref()
+            .is_some_and(|ai| ai.take_settings_changed())
+        {
+            answered.extend(
+                self.running
+                    .iter()
+                    .filter(|(_, running)| Capability::holds(&running.plugin.granted(), "ai"))
+                    .map(|(id, _)| id.clone()),
+            );
+        }
+        for id in answered {
             self.send(&id, Job::Redraw);
         }
     }

@@ -476,7 +476,7 @@ impl AiFoundation {
         self.start_stream_with(workspace_id, input, Arc::new(GenAiStreamer))
     }
 
-    pub fn start_stream_with<S: AiStreamer>(
+    pub fn start_stream_with<S: AiStreamer + ?Sized>(
         &self,
         workspace_id: &str,
         input: AiStreamInput,

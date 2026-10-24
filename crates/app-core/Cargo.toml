@@ -29,8 +29,12 @@ serde.workspace = true
 serde_json.workspace = true
 # The locale calendar grids name months, weekdays and times in.
 sys-locale.workspace = true
+# Drives the requests to AI providers and streams their answers.
+tokio.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
+# Names AI runs and the provider requests they make.
+uuid.workspace = true
 # The workspace format's date and date-time rules, which plugin input
 # values follow.
 workspace-format = { version = "0.2.0", path = "../workspace-format" }
@@ -39,6 +43,8 @@ zeroize.workspace = true
 
 [dev-dependencies]
 app-core = { path = ".", features = ["test-hooks"] }
+# The fake AI provider streams what each test tells it to.
+futures.workspace = true
 # The tests record which folders each change syncs.
 local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
 # Search treats arbitrary typed text as plain words.
