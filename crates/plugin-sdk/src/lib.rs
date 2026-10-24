@@ -329,6 +329,8 @@ macro_rules! export {
 ///
 /// let form = view.form(View::ROOT, "new-bed", "New bed", "Add bed");
 /// view.input(form, "name", "Name", Value::Text(String::new()));
+/// // Add bed waits until the bed has a name.
+/// view.require(form, "name");
 /// view.input(form, "sown", "Sown on", Value::Date(None));
 /// view.choice_input(form, "sun", "Sun", &[("full", "Full sun"), ("shade", "Shade")], None);
 ///
@@ -379,7 +381,8 @@ macro_rules! export {
 /// ```
 ///
 /// A list can show which item is current, its items can carry a checkbox
-/// and a warning, and a name field names something new:
+/// and a warning, and a name field names something new, or renames an
+/// item in its place. A list can open its items on one click, as links:
 ///
 /// ```
 /// use plugin_sdk::View;
@@ -390,10 +393,13 @@ macro_rules! export {
 /// view.item(views, "all", "All", None);
 /// view.select(views, "today");
 /// let chores = view.list(View::ROOT, "chores", "Chores");
+/// view.open_on_click(chores);
 /// let weed = view.checkbox_item(chores, "weed", "Weed the beds", Some("Yesterday"), false);
 /// view.warn(weed, "Overdue");
+/// let mulch = view.checkbox_item(chores, "mulch", "Mulch", None, false);
+/// view.name_field(mulch, "rename", "Chore name", "Mulch");
 /// view.name_field(View::ROOT, "new-chore", "New chore name", "");
-/// assert_eq!(view.into_nodes().len(), 7);
+/// assert_eq!(view.into_nodes().len(), 9);
 /// ```
 #[derive(Debug, Clone)]
 pub struct View {
@@ -623,7 +629,8 @@ impl View {
     }
 
     /// Add a form with a submit button labeled `submit`. Its inputs go
-    /// inside it; submitting sends [`Event::Submitted`] with their values.
+    /// inside it; submitting, by the button or Enter in a single-line text
+    /// input, sends [`Event::Submitted`] with their values.
     pub fn form(&mut self, parent: u32, id: &str, label: &str, submit: &str) -> u32 {
         let form = Form {
             label: label.to_owned(),

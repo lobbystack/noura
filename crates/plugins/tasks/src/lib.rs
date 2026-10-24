@@ -2,10 +2,12 @@
 //! fields, draws a task's properties panel beside its body in the note
 //! editor, and adds the Tasks page: the views Today, Upcoming, All and
 //! Completed and one per project and per folder in the sidebar, filters,
-//! and a list of tasks you check off. New task names a task before its
-//! file exists. Other plugins change tasks through its `create`,
-//! `update`, `complete` and `reopen` commands, which [`commands`]
-//! documents.
+//! and a list of tasks you check off, each with a menu to open, rename,
+//! check off or trash it. New task names a task before its file exists.
+//! The Inbox's Due today section lists what is due by tonight and adds a
+//! task due today in one step. Other plugins change tasks through its
+//! `create`, `update`, `complete` and `reopen` commands, which
+//! [`commands`] documents.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `tasks_plugin.wasm`.

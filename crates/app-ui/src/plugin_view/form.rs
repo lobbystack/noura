@@ -1,8 +1,9 @@
 //! Forms and their labeled inputs: single-line and multi-line text, a
 //! checkbox, a single choice drawn as radio buttons like Settings' choices,
 //! a date, and a date and time. Each change sends the input's typed value;
-//! the submit button sends every input of the form, once each text input
-//! the form requires holds more than spaces.
+//! the submit button, or Enter in a single-line text input, sends every
+//! input of the form, once each text input the form requires holds more
+//! than spaces.
 //!
 //! What you type stays until the plugin draws the input with a value other
 //! than the one it drew before, so a plugin that ignores a change doesn't
@@ -78,14 +79,17 @@ pub(super) fn form(
     kit: &mut Kit,
 ) {
     boxed(ui, Role::Form, Some(label), |ui| {
+        let outer = std::mem::take(&mut kit.entered);
         for child in &node.children {
             super::node(ui, child, kit);
         }
+        let entered = std::mem::replace(&mut kit.entered, outer);
         ui.add_space(8.0);
         let ready = required
             .iter()
             .all(|input| holds_text(ui, node, input, kit));
-        if primary_button(ui, submit, ready).clicked() && ready {
+        let pressed = primary_button(ui, submit, ready).clicked();
+        if (pressed || entered) && ready {
             let mut fields = Vec::new();
             let mut whole = true;
             inputs(ui, node, kit, &mut fields, &mut whole);
@@ -187,6 +191,12 @@ pub(super) fn input(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 } else {
                     InputValue::Text(draft.text.clone())
                 };
+            }
+            if !multiline
+                && response.lost_focus()
+                && ui.input(|input| input.key_pressed(Key::Enter))
+            {
+                kit.entered = true;
             }
         }
         InputValue::Date(_) => {

@@ -555,6 +555,16 @@ fn add_stays_disabled_until_you_type_a_name_and_the_field_clears_after_adding() 
         .get_by_role_and_label(Role::TextInput, "Task");
     assert_eq!(field.value().unwrap_or_default(), "");
     assert!(add_button(&harness).accesskit_node().is_disabled());
+
+    // Enter in the field adds the task too.
+    field.focus();
+    run(&mut harness);
+    type_text(&mut harness, "Order seeds");
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |harness| {
+        due_today(harness).contains(&"Order seeds".to_owned())
+    });
+    assert!(folder.join("tasks/Order seeds.md").exists());
 }
 
 /// The items of the open menu labeled `label`.

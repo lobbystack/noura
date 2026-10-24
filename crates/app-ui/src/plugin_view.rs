@@ -55,6 +55,9 @@ struct Kit<'a> {
     events: Vec<PluginEvent>,
     /// The link clicked in a Markdown node.
     link: Option<String>,
+    /// Enter left a single-line text input this frame, which submits the
+    /// form around it.
+    entered: bool,
 }
 
 impl Kit<'_> {
@@ -196,6 +199,7 @@ fn draw(
         app,
         events: Vec::new(),
         link: None,
+        entered: false,
     };
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);

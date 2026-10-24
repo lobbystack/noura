@@ -12,7 +12,7 @@ use app_core::{Field, InputValue, OpenAs, PluginCheck, PluginEvent, Submission, 
 use support::{
     FakeSystem, Fixture,
     tasks::{
-        A, B, C, D, E, F, G, H, due_labels, due_rows, due_text, due_view, find, inbox_section,
+        A, B, C, D, E, F, G, H, Row, due_labels, due_rows, due_text, due_view, find, inbox_section,
         property, send_due, task_file, with_tasks,
     },
 };
@@ -130,28 +130,22 @@ fn each_row_shows_the_tasks_name_and_due_label_and_marks_overdue_tasks() {
         return;
     };
 
-    let shown: Vec<(String, Option<String>, Option<bool>, Option<String>)> = due_rows(&app)
-        .into_iter()
-        .map(|row| (row.label, row.detail, row.checked, row.warning))
-        .collect();
-
-    let row = |label: &str, due: &str, overdue: bool| {
-        (
-            label.to_owned(),
-            Some(due.to_owned()),
-            Some(false),
-            overdue.then(|| "Overdue".to_owned()),
-        )
+    let row = |suffix: &str, label: &str, due: &str, overdue: bool| Row {
+        id: format!("task_{suffix}"),
+        label: label.to_owned(),
+        detail: Some(due.to_owned()),
+        checked: Some(false),
+        warning: overdue.then(|| "Overdue".to_owned()),
     };
     assert_eq!(
-        shown,
+        due_rows(&app),
         [
-            row("Prune", "Oct 1", true),
-            row("Water the beds", "Oct 19", true),
-            row("Pay rent", "Today", false),
-            row("Sweep", "Today", false),
-            row("Rake", "Today", false),
-            row("Oil the hinges", "Today", false),
+            row(K, "Prune", "Oct 1", true),
+            row(A, "Water the beds", "Oct 19", true),
+            row(B, "Pay rent", "Today", false),
+            row(G, "Sweep", "Today", false),
+            row(H, "Rake", "Today", false),
+            row(J, "Oil the hinges", "Today", false),
         ]
     );
 }
@@ -322,7 +316,7 @@ fn the_add_field_creates_a_task_due_on_the_devices_date_then_clears() {
     assert_eq!(form.label, "Add a task for today");
     assert_eq!(form.submit, "Add");
     // Add waits for a name.
-    assert_eq!(form.required, [form.input.clone()]);
+    assert_eq!(form.required, std::slice::from_ref(&form.input));
     assert_eq!(form.text, "");
 
     add(&mut app, &form.input, "Buy seeds");
@@ -335,7 +329,7 @@ fn the_add_field_creates_a_task_due_on_the_devices_date_then_clears() {
     // The field starts again, empty.
     let next = add_form(&app);
     assert_ne!(next.input, form.input);
-    assert_eq!(next.required, [next.input.clone()]);
+    assert_eq!(next.required, std::slice::from_ref(&next.input));
     assert_eq!(next.text, "");
 }
 

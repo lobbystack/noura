@@ -427,7 +427,8 @@ interface ui {
     // child may be a menu.
     row(list<string>),
     // Lays out its children like a panel, with a submit button after them.
-    // Submitting sends the value of every input inside it.
+    // Submitting, by the button or Enter in a single-line text input
+    // inside it, sends the value of every input inside it.
     form(form),
     // A labeled input. Changes come back by the node's ID.
     input(input),
