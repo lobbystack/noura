@@ -7423,6 +7423,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "projects-plugin"
+version = "0.2.0"
+dependencies = [
+ "jiff",
+ "plugin-sdk",
+ "proptest",
+ "serde_json",
+]
+
+[[package]]
 name = "proptest"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

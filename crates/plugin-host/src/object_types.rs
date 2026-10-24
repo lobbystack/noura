@@ -17,18 +17,17 @@ use workspace_format::{ObjectTypeRegistry, PropertySchema, RegistrationError, Wo
 use crate::PropertyProblem;
 
 /// The types the kernel keeps for itself. No plugin may register them.
-/// The kernel still creates and checks projects, so a plugin that took
-/// that type could change every project already in the workspace. Tasks
-/// belong to the Tasks plugin. Projects move to the Projects plugin with
-/// ticket 31, and chats and chat messages to the AI plugin with ticket 36.
-pub const KERNEL_TYPES: [&str; 5] = ["note", "workspace", "project", "chat", "chat-message"];
+/// Tasks belong to the Tasks plugin and projects to the Projects plugin.
+/// Chats and chat messages move to the AI plugin with ticket 36.
+pub const KERNEL_TYPES: [&str; 4] = ["note", "workspace", "chat", "chat-message"];
 
 /// Types held for one plugin, by the plugin's ID, which no other plugin
 /// may register even while that one is off. Files of these types already
 /// fill workspaces, so a plugin that took one could rewrite every one of
-/// them. The Tasks plugin, which ships with Noura, holds tasks; other
-/// plugins change tasks through its commands.
-pub const PLUGIN_TYPES: [(&str, &str); 1] = [("task", "tasks")];
+/// them. The Tasks plugin, which ships with Noura, holds tasks, and the
+/// Projects plugin holds projects; other plugins change them through
+/// their commands.
+pub const PLUGIN_TYPES: [(&str, &str); 2] = [("task", "tasks"), ("project", "projects")];
 
 /// The most types one plugin may register.
 const MAX_TYPES: usize = 64;

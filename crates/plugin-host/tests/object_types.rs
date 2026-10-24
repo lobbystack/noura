@@ -242,10 +242,11 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
             "invalid_default",
         ),
         ("chat", r#"{"properties":[]}"#, "kernel_type"),
-        ("project", r#"{"properties":[]}"#, "kernel_type"),
         ("workspace", r#"{"properties":[]}"#, "kernel_type"),
-        // Tasks belong to the Tasks plugin, even while it is off.
+        // Tasks belong to the Tasks plugin and projects to the Projects
+        // plugin, even while they are off.
         ("task", r#"{"properties":[]}"#, "type_reserved"),
+        ("project", r#"{"properties":[]}"#, "type_reserved"),
     ];
     for (object_type, schema, code) in refused {
         let error = types
