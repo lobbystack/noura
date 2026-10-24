@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO server (id, restore_generation, secret_check) VALUES (1, ?1, ?2)\n         ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "262b871a653a9fed331ec33f08f4bee4f7d54b6224ac9978cc1654da780c05a0"
+}

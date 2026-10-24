@@ -16,11 +16,15 @@ Resumable uploads use `@tus/server`, `@tus/file-store`, and `@tus/utils` (MIT). 
 
 The browser viewer uses Marked (MIT), DOMPurify (the Apache-2.0 option of its dual license), and Public Sans (OFL-1.1). Native and portable encryption use age, aes-gcm, ed25519-dalek, x25519-dalek (BSD-3-Clause), hkdf (MIT/Apache-2.0), and zeroize under their permissive Cargo-declared license options. These are dependencies, not copied donor implementations. The pinned Cargo and Bun lockfiles remain the complete dependency inventories.
 
+The v2 sync server (`sync-server`, `sync-store` and `sync-store-sqlite`) uses axum (MIT), sqlx (MIT/Apache-2.0) with the SQLite it bundles (public domain), tokio and tracing (MIT), and jiff (MIT/Unlicense). These are dependencies, not copied donor implementations. Atuin's server (MIT) served as a layout reference, and noura copied none of its code.
+
 Sync protocol v2 (`sync-protocol` and `sync-key-envelope`) uses ed25519-dalek 3 and x25519-dalek 3 (BSD-3-Clause), hpke with x-wing and ml-kem, chacha20poly1305, aead-stream and getrandom (MIT/Apache-2.0), and blake3 (CC0-1.0/Apache-2.0). These are dependencies, not copied donor implementations. Its tests read one draft-ietf-hpke-pq vector taken from the `hpke` package and the Wycheproof sets through the `wycheproof` crate (Apache-2.0); see `docs/provenance/sync-v2-test-vectors.md`.
 
 The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3 device fingerprints and attachment content revisions, and `@noble/ciphers` (MIT) for the ChaCha20-Poly1305 primitive inside the byte-compatible `age` attachment stream; the Rust side uses the `blake3` and `age` crates. These are dependencies, not copied donor implementations.
 
 Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, MIT `trash`, MIT `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`, MIT `Tauri`, MIT `Svelte`, MIT `Tiptap`, and CC0-1.0 `fractional-indexing`. Desktop release packaging includes the generated license file described above.
+
+Plugin calendar grids name weekdays and months and write times in your locale with ICU4X's `icu_datetime`, `icu_calendar`, `icu_time` and `icu_locale_core` (Unicode-3.0), which compile in CLDR data under the same license. `sys-locale` (MIT/Apache-2.0) reads the locale from the operating system. These are dependencies, not copied donor implementations, and the generated license file carries their license texts.
 
 ## atomicwrites 0.4.4 (Windows device settings)
 

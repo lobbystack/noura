@@ -6,11 +6,27 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+axum.workspace = true
+# Names the server's daily log files and prunes those older than 14 days.
+jiff.workspace = true
 # webauthn-rs links OpenSSL. Building it from source keeps the Linux server one
 # static binary.
 openssl = { workspace = true, features = ["vendored"] }
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+sync-store = { version = "0.2.0", path = "../sync-store" }
 sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres" }
 sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
 tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 url.workspace = true
 webauthn-rs.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+# The tests read and change the database the way an operator's tools would.
+sqlx = { workspace = true, features = ["sqlite-bundled"] }
+sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
+sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
+tempfile.workspace = true

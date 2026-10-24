@@ -186,7 +186,42 @@ jobs:
             echo "::error::$binary needs shared libraries."
             exit 1
           fi
-          "$binary"
+          "$binary" version
+      - name: Migrate, serve and pass the health check
+        run: |
+          binary=target/x86_64-unknown-linux-musl/release/sync-server
+          data="$RUNNER_TEMP/sync-data"
+          "$binary" migrate --data "$data"
+          "$binary" serve --data "$data" --listen 127.0.0.1:8787 &
+          server=$!
+          for _ in $(seq 1 50); do
+            if "$binary" healthcheck --listen 127.0.0.1:8787; then
+              kill "$server"
+              wait "$server" || true
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::The server never passed its health check."
+          exit 1
+
+  # sync-store-sqlite's queries are checked at compile time against offline
+  # data in crates/sync-store-sqlite/.sqlx, so builds need no database. This
+  # job rebuilds that data from the migrations and fails when it changed.
+  sqlx-offline-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - name: Install the SQLite command-line tool
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: sqlx }
+      - run: scripts/sqlx-prepare.sh --check
 
   editor-dependencies:
     runs-on: ubuntu-latest

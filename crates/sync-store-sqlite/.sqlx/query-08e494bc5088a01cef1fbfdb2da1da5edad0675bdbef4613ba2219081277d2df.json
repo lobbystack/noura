@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n                 SELECT 1 FROM covers\n                 WHERE workspace = ?1 AND rid = ?2 AND device = ?3 AND counter >= ?4 AND by_seq <= ?5\n             ) AS \"covered!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "covered!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "08e494bc5088a01cef1fbfdb2da1da5edad0675bdbef4613ba2219081277d2df"
+}

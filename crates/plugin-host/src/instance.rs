@@ -27,8 +27,9 @@ pub use bindings::exports::noura::plugin::object_types::ObjectType;
 pub use bindings::exports::noura::plugin::view::Page;
 use bindings::exports::noura::plugin::{object_types as types_export, view as view_export};
 pub use bindings::noura::plugin::ui::{
-    Choice, Column, ColumnPress, Event, Field, Form, Input, Item, MenuItem, Node, NodeKind,
-    SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, ColumnPress, Event, Field, Form, Input,
+    Item, ItemList, MenuItem, Move, Node, NodeKind, SortOrder, Submission, Table, Target, Value,
+    VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{objects, types, workspace};
 

@@ -283,7 +283,10 @@ pub enum PageShapeError {
 }
 
 impl Page {
-    /// Checks the rules of §15 that a page's fields alone show.
+    /// Checks the rules of §15 that a page's fields alone show. A client
+    /// compares `head` with its cursor first: a server that went back
+    /// answers a cursor above its head with `complete_through` at the
+    /// cursor, which this check reports only as [`PageShapeError::Range`].
     pub fn check_shape(&self) -> Result<(), PageShapeError> {
         if self.status != PageStatus::Ok {
             let keeps_floor = self.status == PageStatus::Compacted;
@@ -673,6 +676,7 @@ pub const SERVER_ERRORS: &[(&str, u16)] = &[
     ("invitation_limit", 409),
     ("invitation_invalid", 404),
     ("share_limit", 409),
+    ("internal", 500),
 ];
 
 /// The HTTP status of a server error code.

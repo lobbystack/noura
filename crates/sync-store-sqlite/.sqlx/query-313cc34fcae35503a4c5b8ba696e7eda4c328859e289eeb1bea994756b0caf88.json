@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n                 SELECT 1 FROM operations\n                 WHERE workspace = ?1 AND rid = ?2 AND device = ?3 AND counter = ?4\n             ) AS \"exists!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "313cc34fcae35503a4c5b8ba696e7eda4c328859e289eeb1bea994756b0caf88"
+}

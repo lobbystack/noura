@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO key_entries (workspace, key_seq, record_type, domain, recipient, record)\n             VALUES (?1, (SELECT COALESCE(MAX(key_seq), 0) + 1 FROM key_entries WHERE workspace = ?1),\n                     ?2, ?3, ?4, ?5)\n             RETURNING key_seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "key_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "key_entries",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a311cc174fdc8926d5bff62924ada62ffd1bf7221446b0dd620d5b0ce3ee2f5b"
+}

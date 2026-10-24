@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT restore_generation FROM server WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "restore_generation",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "server",
+            "name": "restore_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "eb10265d1de1da4bafc9c0ba237e16ea402f52b1f5d3f5fdcb7c2b35a5dacdb4"
+}

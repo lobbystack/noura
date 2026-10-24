@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(MAX(key_seq), 0) AS \"head!: i64\" FROM key_entries WHERE workspace = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "head!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "099a11a6059470c4cfba4843fcac198e3df1958d39aabd1799aa01fcf394585d"
+}

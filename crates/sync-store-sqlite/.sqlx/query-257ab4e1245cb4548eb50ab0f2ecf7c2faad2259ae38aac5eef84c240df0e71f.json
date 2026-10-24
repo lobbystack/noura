@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO account_links (account, genesis, seqno, digest, link) VALUES (?1, ?2, ?3, ?4, ?5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "257ab4e1245cb4548eb50ab0f2ecf7c2faad2259ae38aac5eef84c240df0e71f"
+}

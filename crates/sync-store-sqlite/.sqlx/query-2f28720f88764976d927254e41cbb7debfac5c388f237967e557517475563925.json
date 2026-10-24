@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE domains SET head_seq = head_seq + 1 WHERE workspace = ?1 AND domain = ?2\n             RETURNING head_seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "head_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "head_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2f28720f88764976d927254e41cbb7debfac5c388f237967e557517475563925"
+}

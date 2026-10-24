@@ -1,7 +1,7 @@
 //! A plugin page or properties panel: the view its plugin drew, with the
 //! kit's widgets and the theme's tokens, or the reason it can't be drawn
 //! in its place. Presses, selections, header presses, menu choices, input
-//! changes and submits go back to the plugin by node ID.
+//! changes, submits and drops go back to the plugin by node ID.
 //!
 //! What the widgets remember between frames, such as a list's selection,
 //! an open menu or the text you typed, lives in egui's memory under IDs
@@ -10,6 +10,9 @@
 //! its own: every window draws with one egui context and shares its
 //! memory.
 
+mod board;
+mod calendar;
+mod drag;
 mod form;
 mod menu;
 mod rows;
@@ -181,16 +184,23 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             }
         }
         ViewKind::Button { label } => menu::button(ui, node, label, kit),
-        ViewKind::List { label } => rows::list(ui, node, label, kit),
+        ViewKind::List { label, reorder } => rows::list(ui, node, label, *reorder, kit),
+        ViewKind::Board { label } => board::board(ui, node, label, kit),
+        ViewKind::Calendar { label, mode, date } => {
+            calendar::calendar(ui, node, label, *mode, date, kit);
+        }
         ViewKind::VirtualList { label, rows } => {
             rows::virtual_list(ui, node, label, *rows, kit);
         }
         ViewKind::Table { label, columns } => rows::table(ui, node, label, columns, kit),
         ViewKind::Form { label, submit } => form::form(ui, node, label, submit, kit),
         ViewKind::Input { .. } => form::input(ui, node, kit),
-        // Their list, table or menu draws them.
+        // Their list, table, board or menu draws them.
         ViewKind::Item { .. }
         | ViewKind::Row { .. }
+        | ViewKind::BoardColumn { .. }
+        | ViewKind::Card { .. }
+        | ViewKind::Entry { .. }
         | ViewKind::Menu { .. }
         | ViewKind::MenuItem { .. }
         | ViewKind::Separator => {}

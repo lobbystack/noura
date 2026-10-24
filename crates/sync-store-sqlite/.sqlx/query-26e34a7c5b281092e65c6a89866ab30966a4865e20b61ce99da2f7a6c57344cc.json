@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT record FROM policy_changes WHERE workspace = ?1 AND revision > ?2 ORDER BY revision",
+  "describe": {
+    "columns": [
+      {
+        "name": "record",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "policy_changes",
+            "name": "record"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "26e34a7c5b281092e65c6a89866ab30966a4865e20b61ce99da2f7a6c57344cc"
+}
