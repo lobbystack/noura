@@ -40,6 +40,7 @@ pub(crate) fn failure(index: usize, refusal: Refusal) -> Error {
         code: refusal.code,
         message: refusal.message,
         detail: Some(detail.to_bytes()),
+        retry_after_seconds: refusal.retry_after_seconds,
     })
 }
 
@@ -232,6 +233,7 @@ fn chain_conflict(domain: Id, head: Option<ChainHeadRow>) -> Error {
     Error::Refused(Refusal {
         code: "chain_conflict",
         message: "the counter or previous digest doesn't follow the server's head".into(),
+        retry_after_seconds: None,
         detail: Some(
             ChainConflictDetail {
                 domain,

@@ -389,6 +389,7 @@ pub fn fixture() -> Fixture {
         "device_token_response",
         &DeviceTokenResponse {
             session_token: Text::new(Key([8; 32]).to_base64url()).unwrap(),
+            account: Id([0x0a; 16]),
         },
     );
     body(

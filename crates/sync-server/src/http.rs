@@ -16,8 +16,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use sync_protocol::codec::{Bytes, Decode, Encode, Text};
 use sync_protocol::messages::{
-    ChainAppendRequest, ChainsRequest, ErrorBody, MAX_BODY, MEDIA_TYPE, PullRequest,
-    RESTORE_GENERATION_HEADER, RecoveryRequest,
+    ChainAppendRequest, ChainsRequest, DeviceTokenRequest, EnrollRequest, ErrorBody, MAX_BODY,
+    MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody,
 };
 use sync_protocol::types::{Digest, Id, from_decimal};
 use sync_store::{Backend, Error, Refusal, Session, Store};
@@ -100,6 +100,24 @@ pub struct Auth(pub Session);
 
 /// The signed-in device a bearer token names, with the token's hash.
 pub struct AuthWithHash(pub Session, pub Digest);
+
+/// The signed-in device a bearer token names, also when a link removed its
+/// card: such a session keeps the right to read its account's chains (§7).
+pub struct ChainReader(pub Session);
+
+impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState<B>,
+    ) -> Result<Self, Self::Rejection> {
+        let token = bearer(parts)?;
+        Ok(ChainReader(
+            state.store.session_reading_chains(token).await?,
+        ))
+    }
+}
 
 fn bearer(parts: &Parts) -> Result<&str, ApiError> {
     parts
@@ -314,7 +332,7 @@ async fn append_chain<B: Backend>(
 
 async fn read_chains<B: Backend>(
     State(store): State<Arc<Store<B>>>,
-    Auth(session): Auth,
+    ChainReader(session): ChainReader,
     request: Body,
 ) -> Result<Response, ApiError> {
     let request: ChainsRequest = decode(&body(request).await?)?;
@@ -344,6 +362,120 @@ async fn recovery<B: Backend>(
         )
         .await?;
     Ok(encoded(StatusCode::OK, Vec::new()))
+}
+
+fn empty() -> Response {
+    encoded(StatusCode::OK, Vec::new())
+}
+
+fn digest(text: &str) -> Result<Digest, ApiError> {
+    Digest::from_base64url(text)
+        .map_err(|_| refused("bad_request", "a digest isn't 43 characters of base64url"))
+}
+
+async fn device_authorize<B: Backend>(
+    State(state): State<AppState<B>>,
+) -> Result<Response, ApiError> {
+    let uri = format!("{}/device", state.accounts.origin().as_str());
+    Ok(ok(&state.store.authorize_device(&uri).await?))
+}
+
+async fn device_token<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: DeviceTokenRequest = decode(&body(request).await?)?;
+    Ok(ok(&store
+        .poll_device_token(request.device_code.as_str())
+        .await?))
+}
+
+async fn enroll<B: Backend>(
+    State(state): State<AppState<B>>,
+    AuthWithHash(session, hash): AuthWithHash,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: EnrollRequest = decode(&body(request).await?)?;
+    state
+        .store
+        .enroll_device(
+            session,
+            hash,
+            state.accounts.origin().as_str(),
+            request.enroll.0.to_bytes(),
+        )
+        .await?;
+    Ok(empty())
+}
+
+async fn devices<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.devices(session).await?))
+}
+
+async fn end_device<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(device): Segments<String>,
+) -> Result<Response, ApiError> {
+    store.end_device_sessions(session, id(&device)?).await?;
+    Ok(empty())
+}
+
+async fn post_approval_request<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    store
+        .post_approval_request(session, body(request).await?)
+        .await?;
+    Ok(empty())
+}
+
+async fn approval_requests<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.own_approval_requests(session).await?))
+}
+
+async fn post_offer<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: OfferRequest = decode(&body(request).await?)?;
+    store.post_offer(session, request.offer.0).await?;
+    Ok(empty())
+}
+
+async fn offers<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.offers(session).await?))
+}
+
+async fn reveal<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(offer): Segments<String>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: RevealBody = decode(&body(request).await?)?;
+    store.reveal(session, digest(&offer)?, request.nc).await?;
+    Ok(empty())
+}
+
+async fn read_reveal<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(offer): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.read_reveal(session, digest(&offer)?).await?))
 }
 
 async fn not_found() -> ApiError {
@@ -383,6 +515,22 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         .route("/v2/accounts/chain", post(append_chain::<B>))
         .route("/v2/accounts/chains", post(read_chains::<B>))
         .route("/v2/devices/challenge", post(challenge::<B>))
+        .route("/v2/device/authorize", post(device_authorize::<B>))
+        .route("/v2/device/token", post(device_token::<B>))
+        .route("/v2/devices", get(devices::<B>).post(enroll::<B>))
+        .route(
+            "/v2/devices/{device}",
+            axum::routing::delete(end_device::<B>),
+        )
+        .route(
+            "/v2/approval-requests",
+            get(approval_requests::<B>).post(post_approval_request::<B>),
+        )
+        .route("/v2/approvals", get(offers::<B>).post(post_offer::<B>))
+        .route(
+            "/v2/approvals/{offer}/reveal",
+            get(read_reveal::<B>).post(reveal::<B>),
+        )
         .route("/v2/recovery", post(recovery::<B>))
         .merge(crate::accounts::routes::<B>())
         .route(

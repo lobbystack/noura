@@ -23,9 +23,9 @@ use crate::{Error, LinkRow, ReadTxn, Result, Session, WorkspaceRow, WriteTxn, re
 const CHUNK: u32 = 256;
 
 /// The session device's account chain: its account's current chain, in
-/// which the device's card must be active at the head. A card that a link
-/// removed gets `forbidden` until ticket 47 answers it with
-/// `device_removed`.
+/// which the device's card must be active at the head. A session whose card
+/// a link removed answers `device_removed` before it gets here, and one
+/// whose device hasn't enrolled or joined the chain yet gets `forbidden`.
 pub(crate) async fn session_chain(
     txn: &mut impl ReadTxn,
     chains: &ChainCache,
@@ -89,6 +89,7 @@ pub(crate) async fn append_account_links(
     if new_chain {
         txn.set_current_genesis(account, chain.genesis()).await?;
     }
+    crate::chains::end_removed_sessions(txn, &chain, start).await?;
     Ok(chain.head_seqno())
 }
 

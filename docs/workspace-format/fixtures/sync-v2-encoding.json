@@ -818,12 +818,13 @@
 			"type": "device_token_request"
 		},
 		{
-			"digest": "b7ae4df5222980c1ebf7211e1eca0d3015ad4af436d90ca26256e320490ddec5",
+			"digest": "4026ed84e50aa5d0dd6ca425b7b9ea507ae55b526b95654ec992baf83f195496",
 			"expect": "ok",
-			"hex": "002b43416749434167494341674943416749434167494341674943416749434167494341674943416749434167",
+			"hex": "002b434167494341674943416749434167494341674943416749434167494341674943416749434167494341670a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
 			"name": "device_token_response",
 			"type": "device_token_response",
 			"value": {
+				"account": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
 				"session_token": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
 			}
 		},

@@ -1,13 +1,15 @@
 //! The store's reads and writes on SQLite, each a compile-checked query.
 
 use sqlx::{Sqlite, SqliteConnection, Transaction};
+use sync_protocol::codec::{Decode, Encode};
 use sync_protocol::live::LiveOp;
+use sync_protocol::messages::DeviceRemovedDetail;
 use sync_protocol::records::{AccountHead, OpClass, Ref};
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
-    ApprovalRequestRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DomainRow, EpochRow,
-    Error, KeyRow, LinkRow, LockPlan, PasskeyRow, PendingPasskeyRow, RawEntry, ReadTxn, Result,
-    Session, WorkspaceRow, WriteTxn,
+    ApprovalRequestRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DeviceGrantRow,
+    DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow, PendingPasskeyRow,
+    RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow, WorkspaceRow, WriteTxn,
 };
 
 /// A read transaction from the pool, or the writer's connection inside its
@@ -142,6 +144,102 @@ fn db(error: sqlx::Error) -> Error {
     Error::internal(error)
 }
 
+fn key(bytes: Vec<u8>) -> Result<Key> {
+    bytes
+        .try_into()
+        .map(Key)
+        .map_err(|_| Error::internal("a stored key isn't 32 bytes"))
+}
+
+fn removed_by(bytes: Option<Vec<u8>>) -> Result<Option<RemovedBy>> {
+    bytes
+        .map(|bytes| {
+            DeviceRemovedDetail::from_bytes(&bytes)
+                .map(|d| RemovedBy {
+                    genesis: d.genesis,
+                    seqno: d.seqno,
+                })
+                .map_err(Error::internal)
+        })
+        .transpose()
+}
+
+fn account_head(bytes: Option<Vec<u8>>) -> Result<Option<AccountHead>> {
+    bytes
+        .map(|bytes| AccountHead::from_bytes(&bytes).map_err(Error::internal))
+        .transpose()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_row(
+    commit_digest: Vec<u8>,
+    account: Vec<u8>,
+    device: Vec<u8>,
+    card: Vec<u8>,
+    candidate_head: Option<Vec<u8>>,
+    invitation: Option<Vec<u8>>,
+    invite_proof: Option<Vec<u8>>,
+    workspace: Option<Vec<u8>>,
+    request: Vec<u8>,
+    expires_at: i64,
+) -> Result<ApprovalRequestRow> {
+    Ok(ApprovalRequestRow {
+        commit: digest(commit_digest)?,
+        account: id(account)?,
+        device: id(device)?,
+        card,
+        candidate_head: account_head(candidate_head)?,
+        invitation: invitation.map(id).transpose()?,
+        invite_proof: invite_proof.map(digest).transpose()?,
+        workspace: workspace.map(id).transpose()?,
+        request,
+        expires_at: uint(expires_at)?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn offer_row(
+    offer_digest: Vec<u8>,
+    commit_digest: Vec<u8>,
+    candidate_card_digest: Vec<u8>,
+    approver: Vec<u8>,
+    account: Vec<u8>,
+    offer: Vec<u8>,
+    nc: Option<Vec<u8>>,
+    expires_at: i64,
+) -> Result<OfferRow> {
+    Ok(OfferRow {
+        offer_digest: digest(offer_digest)?,
+        commit: digest(commit_digest)?,
+        candidate_card_digest: digest(candidate_card_digest)?,
+        approver: id(approver)?,
+        account: id(account)?,
+        offer,
+        nc: nc.map(key).transpose()?,
+        expires_at: uint(expires_at)?,
+    })
+}
+
+fn grant_row(
+    device_code_hash: Vec<u8>,
+    user_code_hash: Vec<u8>,
+    account: Option<Vec<u8>>,
+    denied: i64,
+    poll_interval: i64,
+    next_poll: i64,
+    expires_at: i64,
+) -> Result<DeviceGrantRow> {
+    Ok(DeviceGrantRow {
+        device_code_hash: digest(device_code_hash)?,
+        user_code_hash: digest(user_code_hash)?,
+        account: account.map(id).transpose()?,
+        denied: denied != 0,
+        interval: uint(poll_interval)?,
+        next_poll: uint(next_poll)?,
+        expires_at: uint(expires_at)?,
+    })
+}
+
 impl ReadTxn for SqliteTxn {
     async fn restore_generation(&mut self) -> Result<u64> {
         let row = sqlx::query!("SELECT restore_generation FROM server WHERE id = 1")
@@ -151,23 +249,305 @@ impl ReadTxn for SqliteTxn {
         uint(row.restore_generation)
     }
 
-    async fn session(&mut self, token_hash: Digest) -> Result<Option<Session>> {
+    async fn session(&mut self, token_hash: Digest) -> Result<Option<SessionRow>> {
         let hash = &token_hash.0[..];
         let row = sqlx::query!(
-            "SELECT account, device, recovery FROM sessions WHERE token_hash = ?1",
+            "SELECT account, device, recovery, removed FROM sessions WHERE token_hash = ?1",
             hash
         )
         .fetch_optional(self.c())
         .await
         .map_err(db)?;
         row.map(|r| {
-            Ok(Session {
-                account: id(r.account)?,
-                device: id(r.device)?,
-                recovery: r.recovery.map(id).transpose()?,
+            Ok(SessionRow {
+                session: Session {
+                    account: id(r.account)?,
+                    device: id(r.device)?,
+                    recovery: r.recovery.map(id).transpose()?,
+                },
+                removed: removed_by(r.removed)?,
             })
         })
         .transpose()
+    }
+
+    async fn device_grant(&mut self, code_hash: Digest) -> Result<Option<DeviceGrantRow>> {
+        let hash = &code_hash.0[..];
+        let row = sqlx::query!(
+            "SELECT device_code_hash, user_code_hash, account, denied, poll_interval, next_poll,
+                    expires_at
+             FROM device_grants WHERE device_code_hash = ?1",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            grant_row(
+                r.device_code_hash,
+                r.user_code_hash,
+                r.account,
+                r.denied,
+                r.poll_interval,
+                r.next_poll,
+                r.expires_at,
+            )
+        })
+        .transpose()
+    }
+
+    async fn device_grant_by_user_code(
+        &mut self,
+        user_code_hash: Digest,
+    ) -> Result<Option<DeviceGrantRow>> {
+        let hash = &user_code_hash.0[..];
+        let row = sqlx::query!(
+            "SELECT device_code_hash, user_code_hash, account, denied, poll_interval, next_poll,
+                    expires_at
+             FROM device_grants WHERE user_code_hash = ?1",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            grant_row(
+                r.device_code_hash,
+                r.user_code_hash,
+                r.account,
+                r.denied,
+                r.poll_interval,
+                r.next_poll,
+                r.expires_at,
+            )
+        })
+        .transpose()
+    }
+
+    async fn enrolled_cards(&mut self, account: Id) -> Result<Vec<(Id, Vec<u8>)>> {
+        let account = &account.0[..];
+        let rows = sqlx::query!(
+            "SELECT device, card FROM cards WHERE account = ?1 ORDER BY device",
+            account
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| Ok((id(r.device)?, r.card)))
+            .collect()
+    }
+
+    async fn session_counts(&mut self, account: Id) -> Result<Vec<(Id, u64)>> {
+        let account = &account.0[..];
+        let rows = sqlx::query!(
+            r#"SELECT device, COUNT(*) AS "count!: i64" FROM sessions
+               WHERE account = ?1 AND removed IS NULL GROUP BY device ORDER BY device"#,
+            account
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| Ok((id(r.device)?, uint(r.count)?)))
+            .collect()
+    }
+
+    async fn approval_requests(&mut self, account: Id) -> Result<Vec<ApprovalRequestRow>> {
+        let account = &account.0[..];
+        let rows = sqlx::query!(
+            "SELECT commit_digest, account, device, card, candidate_head, invitation,
+                    invite_proof, workspace, request, expires_at
+             FROM approval_requests WHERE account = ?1 ORDER BY commit_digest",
+            account
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                request_row(
+                    r.commit_digest,
+                    r.account,
+                    r.device,
+                    r.card,
+                    r.candidate_head,
+                    r.invitation,
+                    r.invite_proof,
+                    r.workspace,
+                    r.request,
+                    r.expires_at,
+                )
+            })
+            .collect()
+    }
+
+    async fn approval_request(&mut self, commit: Digest) -> Result<Option<ApprovalRequestRow>> {
+        let commit = &commit.0[..];
+        let row = sqlx::query!(
+            "SELECT commit_digest, account, device, card, candidate_head, invitation,
+                    invite_proof, workspace, request, expires_at
+             FROM approval_requests WHERE commit_digest = ?1",
+            commit
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            request_row(
+                r.commit_digest,
+                r.account,
+                r.device,
+                r.card,
+                r.candidate_head,
+                r.invitation,
+                r.invite_proof,
+                r.workspace,
+                r.request,
+                r.expires_at,
+            )
+        })
+        .transpose()
+    }
+
+    async fn approval_offer(&mut self, offer_digest: Digest) -> Result<Option<OfferRow>> {
+        let offer_digest = &offer_digest.0[..];
+        let row = sqlx::query!(
+            "SELECT offer_digest, commit_digest, candidate_card_digest, approver, account, offer,
+                    nc, expires_at
+             FROM approval_offers WHERE offer_digest = ?1",
+            offer_digest
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            offer_row(
+                r.offer_digest,
+                r.commit_digest,
+                r.candidate_card_digest,
+                r.approver,
+                r.account,
+                r.offer,
+                r.nc,
+                r.expires_at,
+            )
+        })
+        .transpose()
+    }
+
+    async fn approval_offers_for(&mut self, card_digest: Digest) -> Result<Vec<OfferRow>> {
+        let card_digest = &card_digest.0[..];
+        let rows = sqlx::query!(
+            "SELECT offer_digest, commit_digest, candidate_card_digest, approver, account, offer,
+                    nc, expires_at
+             FROM approval_offers WHERE candidate_card_digest = ?1 ORDER BY offer_digest",
+            card_digest
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                offer_row(
+                    r.offer_digest,
+                    r.commit_digest,
+                    r.candidate_card_digest,
+                    r.approver,
+                    r.account,
+                    r.offer,
+                    r.nc,
+                    r.expires_at,
+                )
+            })
+            .collect()
+    }
+
+    async fn rewrap_requests(&mut self, workspace: Id) -> Result<Vec<RewrapRow>> {
+        let workspace = &workspace.0[..];
+        let rows = sqlx::query!(
+            "SELECT domain, epoch, device, key_seq FROM rewrap_requests
+             WHERE workspace = ?1 ORDER BY domain, epoch, device",
+            workspace
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(RewrapRow {
+                    domain: id(r.domain)?,
+                    epoch: uint(r.epoch)?,
+                    device: id(r.device)?,
+                    key_seq: uint(r.key_seq)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn rewrap_answers(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        epoch: u64,
+        device: Id,
+    ) -> Result<Vec<(Id, u64)>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let epoch = at_most(epoch);
+        let device = &device.0[..];
+        let rows = sqlx::query!(
+            "SELECT wrapper, key_seq FROM rewrap_answers
+             WHERE workspace = ?1 AND domain = ?2 AND epoch = ?3 AND device = ?4
+             ORDER BY key_seq",
+            workspace,
+            domain,
+            epoch,
+            device
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| Ok((id(r.wrapper)?, uint(r.key_seq)?)))
+            .collect()
+    }
+
+    async fn writers_between(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        after: u64,
+        before: u64,
+    ) -> Result<Vec<Id>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let after = at_most(after);
+        let before = at_most(before);
+        let rows = sqlx::query!(
+            "SELECT DISTINCT device FROM operations
+             WHERE workspace = ?1 AND domain = ?2 AND seq > ?3 AND seq < ?4 ORDER BY device",
+            workspace,
+            domain,
+            after,
+            before
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.device)).collect()
+    }
+
+    async fn profiles(&mut self, workspace: Id) -> Result<Vec<Vec<u8>>> {
+        let workspace = &workspace.0[..];
+        let rows = sqlx::query!(
+            "SELECT record FROM profiles WHERE workspace = ?1 ORDER BY profile_revision",
+            workspace
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        Ok(rows.into_iter().map(|r| r.record).collect())
     }
 
     async fn current_genesis(&mut self, account: Id) -> Result<Option<Digest>> {
@@ -639,7 +1019,7 @@ impl ReadTxn for SqliteTxn {
         let domain = &domain.0[..];
         let epoch = at_most(epoch);
         let row = sqlx::query!(
-            "SELECT epoch, digest, previous, record FROM epochs
+            "SELECT epoch, seq, digest, previous, record FROM epochs
              WHERE workspace = ?1 AND domain = ?2 AND epoch = ?3",
             workspace,
             domain,
@@ -651,6 +1031,7 @@ impl ReadTxn for SqliteTxn {
         row.map(|r| {
             Ok(EpochRow {
                 epoch: uint(r.epoch)?,
+                seq: uint(r.seq)?,
                 digest: digest(r.digest)?,
                 previous: digest(r.previous)?,
                 record: r.record,
@@ -669,7 +1050,7 @@ impl ReadTxn for SqliteTxn {
         let domain = &domain.0[..];
         let epoch_digest = &epoch_digest.0[..];
         let row = sqlx::query!(
-            "SELECT epoch, digest, previous, record FROM epochs
+            "SELECT epoch, seq, digest, previous, record FROM epochs
              WHERE workspace = ?1 AND domain = ?2 AND digest = ?3",
             workspace,
             domain,
@@ -681,6 +1062,7 @@ impl ReadTxn for SqliteTxn {
         row.map(|r| {
             Ok(EpochRow {
                 epoch: uint(r.epoch)?,
+                seq: uint(r.seq)?,
                 digest: digest(r.digest)?,
                 previous: digest(r.previous)?,
                 record: r.record,
@@ -719,13 +1101,13 @@ impl ReadTxn for SqliteTxn {
     async fn key_head(&mut self, workspace: Id) -> Result<u64> {
         let workspace = &workspace.0[..];
         let row = sqlx::query!(
-            r#"SELECT COALESCE(MAX(key_seq), 0) AS "head!: i64" FROM key_entries WHERE workspace = ?1"#,
+            "SELECT key_seq FROM key_sequences WHERE workspace = ?1",
             workspace
         )
-        .fetch_one(self.c())
+        .fetch_optional(self.c())
         .await
         .map_err(db)?;
-        uint(row.head)
+        row.map_or(Ok(0), |r| uint(r.key_seq))
     }
 
     async fn enrolled_card(&mut self, device: Id) -> Result<Option<(Id, Vec<u8>)>> {
@@ -1181,16 +1563,18 @@ impl WriteTxn for SqliteTxn {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
         let epoch = int(row.epoch)?;
+        let seq = int(row.seq)?;
         let epoch_digest = &row.digest.0[..];
         let previous = &row.previous.0[..];
         let record = &row.record[..];
         let policy_revision = int(policy_revision)?;
         sqlx::query!(
-            "INSERT INTO epochs (workspace, domain, epoch, digest, previous, record, bundle)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO epochs (workspace, domain, epoch, seq, digest, previous, record, bundle)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             workspace,
             domain,
             epoch,
+            seq,
             epoch_digest,
             previous,
             record,
@@ -1219,28 +1603,326 @@ impl WriteTxn for SqliteTxn {
         workspace: Id,
         record_type: u8,
         domain: Id,
+        epoch: u64,
         recipient: Option<Id>,
         record: &[u8],
     ) -> Result<u64> {
         let workspace = &workspace.0[..];
         let record_type = i64::from(record_type);
         let domain = &domain.0[..];
+        let epoch = int(epoch)?;
         let recipient = recipient.map(|r| r.0.to_vec());
+        // The workspace's key sequence row hands out each sequence once,
+        // also after the server deleted the rows with the highest ones.
         let row = sqlx::query!(
-            "INSERT INTO key_entries (workspace, key_seq, record_type, domain, recipient, record)
-             VALUES (?1, (SELECT COALESCE(MAX(key_seq), 0) + 1 FROM key_entries WHERE workspace = ?1),
-                     ?2, ?3, ?4, ?5)
+            "INSERT INTO key_sequences (workspace, key_seq) VALUES (?1, 1)
+             ON CONFLICT (workspace) DO UPDATE SET key_seq = key_seq + 1
              RETURNING key_seq",
-            workspace,
-            record_type,
-            domain,
-            recipient,
-            record
+            workspace
         )
         .fetch_one(self.c())
         .await
         .map_err(db)?;
-        uint(row.key_seq)
+        let key_seq = row.key_seq;
+        sqlx::query!(
+            "INSERT INTO key_entries
+                 (workspace, key_seq, record_type, domain, epoch, recipient, record)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            workspace,
+            key_seq,
+            record_type,
+            domain,
+            epoch,
+            recipient,
+            record
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        uint(key_seq)
+    }
+
+    async fn drop_old_epochs(&mut self, workspace: Id, domain: Id, epoch: u64) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let epoch = int(epoch)?;
+        sqlx::query!(
+            "DELETE FROM key_entries
+             WHERE workspace = ?1 AND domain = ?2 AND record_type IN (4, 5) AND epoch < ?3",
+            workspace,
+            domain,
+            epoch
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "DELETE FROM rewrap_requests WHERE workspace = ?1 AND domain = ?2 AND epoch < ?3",
+            workspace,
+            domain,
+            epoch
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "DELETE FROM rewrap_answers WHERE workspace = ?1 AND domain = ?2 AND epoch < ?3",
+            workspace,
+            domain,
+            epoch
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_rewrap_request(&mut self, workspace: Id, row: &RewrapRow) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &row.domain.0[..];
+        let epoch = int(row.epoch)?;
+        let device = &row.device.0[..];
+        let key_seq = int(row.key_seq)?;
+        sqlx::query!(
+            "INSERT INTO rewrap_requests (workspace, domain, epoch, device, key_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            workspace,
+            domain,
+            epoch,
+            device,
+            key_seq
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_rewrap_answer(
+        &mut self,
+        workspace: Id,
+        request: &RewrapRow,
+        wrapper: Id,
+        key_seq: u64,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &request.domain.0[..];
+        let epoch = int(request.epoch)?;
+        let device = &request.device.0[..];
+        let wrapper = &wrapper.0[..];
+        let key_seq = int(key_seq)?;
+        sqlx::query!(
+            "INSERT INTO rewrap_answers (workspace, domain, epoch, device, wrapper, key_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            workspace,
+            domain,
+            epoch,
+            device,
+            wrapper,
+            key_seq
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn close_rewrap(&mut self, workspace: Id, request: &RewrapRow) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &request.domain.0[..];
+        let epoch = int(request.epoch)?;
+        let device = &request.device.0[..];
+        let key_seq = int(request.key_seq)?;
+        sqlx::query!(
+            "DELETE FROM rewrap_requests
+             WHERE workspace = ?1 AND domain = ?2 AND epoch = ?3 AND device = ?4",
+            workspace,
+            domain,
+            epoch,
+            device
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "DELETE FROM rewrap_answers
+             WHERE workspace = ?1 AND domain = ?2 AND epoch = ?3 AND device = ?4",
+            workspace,
+            domain,
+            epoch,
+            device
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "DELETE FROM key_entries WHERE workspace = ?1 AND key_seq = ?2 AND record_type = 5",
+            workspace,
+            key_seq
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_device_grant(&mut self, row: &DeviceGrantRow) -> Result<()> {
+        let code = &row.device_code_hash.0[..];
+        let user = &row.user_code_hash.0[..];
+        let account = row.account.as_ref().map(|a| a.0.to_vec());
+        let denied = i64::from(row.denied);
+        let interval = int(row.interval)?;
+        let next_poll = int(row.next_poll)?;
+        let expires_at = int(row.expires_at)?;
+        sqlx::query!(
+            "INSERT INTO device_grants
+                 (device_code_hash, user_code_hash, account, denied, poll_interval, next_poll,
+                  expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            code,
+            user,
+            account,
+            denied,
+            interval,
+            next_poll,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn update_device_grant(&mut self, row: &DeviceGrantRow) -> Result<()> {
+        let code = &row.device_code_hash.0[..];
+        let account = row.account.as_ref().map(|a| a.0.to_vec());
+        let denied = i64::from(row.denied);
+        let interval = int(row.interval)?;
+        let next_poll = int(row.next_poll)?;
+        sqlx::query!(
+            "UPDATE device_grants SET account = ?2, denied = ?3, poll_interval = ?4, next_poll = ?5
+             WHERE device_code_hash = ?1",
+            code,
+            account,
+            denied,
+            interval,
+            next_poll
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_device_grant(&mut self, code_hash: Digest) -> Result<()> {
+        let code = &code_hash.0[..];
+        sqlx::query!(
+            "DELETE FROM device_grants WHERE device_code_hash = ?1",
+            code
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn bind_session(&mut self, token_hash: Digest, device: Id) -> Result<()> {
+        let hash = &token_hash.0[..];
+        let device = &device.0[..];
+        sqlx::query!(
+            "UPDATE sessions SET device = ?2 WHERE token_hash = ?1",
+            hash,
+            device
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn remove_sessions(
+        &mut self,
+        account: Id,
+        devices: &[Id],
+        link: RemovedBy,
+    ) -> Result<()> {
+        let account = &account.0[..];
+        let detail = DeviceRemovedDetail {
+            genesis: link.genesis,
+            seqno: link.seqno,
+        }
+        .to_bytes();
+        for device in devices {
+            let device = &device.0[..];
+            sqlx::query!(
+                "UPDATE sessions SET removed = ?3
+                 WHERE account = ?1 AND device = ?2 AND removed IS NULL",
+                account,
+                device,
+                detail
+            )
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        }
+        Ok(())
+    }
+
+    async fn delete_device_sessions(&mut self, account: Id, device: Id) -> Result<u64> {
+        let account = &account.0[..];
+        let device = &device.0[..];
+        Ok(sqlx::query!(
+            "DELETE FROM sessions WHERE account = ?1 AND device = ?2",
+            account,
+            device
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected())
+    }
+
+    async fn insert_approval_offer(&mut self, row: &OfferRow) -> Result<()> {
+        let offer_digest = &row.offer_digest.0[..];
+        let commit = &row.commit.0[..];
+        let card = &row.candidate_card_digest.0[..];
+        let approver = &row.approver.0[..];
+        let account = &row.account.0[..];
+        let offer = &row.offer[..];
+        let nc = row.nc.as_ref().map(|k| k.0.to_vec());
+        let expires_at = int(row.expires_at)?;
+        sqlx::query!(
+            "INSERT INTO approval_offers
+                 (offer_digest, commit_digest, candidate_card_digest, approver, account, offer, nc,
+                  expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            offer_digest,
+            commit,
+            card,
+            approver,
+            account,
+            offer,
+            nc,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_reveal(&mut self, offer_digest: Digest, nc: Key) -> Result<()> {
+        let offer_digest = &offer_digest.0[..];
+        let nc = &nc.0[..];
+        sqlx::query!(
+            "UPDATE approval_offers SET nc = ?2 WHERE offer_digest = ?1",
+            offer_digest,
+            nc
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
     }
 
     async fn insert_profile(&mut self, workspace: Id, revision: u64, record: &[u8]) -> Result<()> {
@@ -1370,18 +2052,27 @@ impl WriteTxn for SqliteTxn {
         let commit = &row.commit.0[..];
         let account = &row.account.0[..];
         let device = &row.device.0[..];
+        let card = &row.card[..];
+        let candidate_head = row.candidate_head.as_ref().map(|h| h.to_bytes());
         let invitation = row.invitation.as_ref().map(|i| i.0.to_vec());
+        let invite_proof = row.invite_proof.as_ref().map(|p| p.0.to_vec());
         let workspace = row.workspace.as_ref().map(|w| w.0.to_vec());
+        let request = &row.request[..];
         let expires_at = int(row.expires_at)?;
         sqlx::query!(
             "INSERT INTO approval_requests
-                 (commit_digest, account, device, invitation, workspace, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (commit_digest, account, device, card, candidate_head, invitation, invite_proof,
+                  workspace, request, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             commit,
             account,
             device,
+            card,
+            candidate_head,
             invitation,
+            invite_proof,
             workspace,
+            request,
             expires_at
         )
         .execute(self.c())
@@ -1605,6 +2296,16 @@ impl WriteTxn for SqliteTxn {
             .map_err(db)?
             .rows_affected();
         deleted += sqlx::query!("DELETE FROM approval_requests WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        deleted += sqlx::query!("DELETE FROM approval_offers WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        deleted += sqlx::query!("DELETE FROM device_grants WHERE expires_at <= ?1", now)
             .execute(self.c())
             .await
             .map_err(db)?

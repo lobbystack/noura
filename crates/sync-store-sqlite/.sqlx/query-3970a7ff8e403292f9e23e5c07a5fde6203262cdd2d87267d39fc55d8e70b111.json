@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET device = ?2 WHERE token_hash = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3970a7ff8e403292f9e23e5c07a5fde6203262cdd2d87267d39fc55d8e70b111"
+}

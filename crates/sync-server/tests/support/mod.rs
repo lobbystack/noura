@@ -293,6 +293,11 @@ impl Client {
             .await
     }
 
+    pub async fn delete(&self, path: &str) -> Reply {
+        self.send(self.http.delete(format!("{}{path}", self.base)))
+            .await
+    }
+
     pub async fn post(&self, path: &str, body: Vec<u8>) -> Reply {
         self.send(
             self.http

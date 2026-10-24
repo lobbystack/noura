@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT key_seq FROM key_sequences WHERE workspace = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "key_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "key_sequences",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "52f5f3b3d674960be656c31c70da127460a2ebc32e9a30d906b5d4fe91f9d7a4"
+}

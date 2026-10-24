@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM key_entries\n             WHERE workspace = ?1 AND domain = ?2 AND record_type IN (4, 5) AND epoch < ?3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b6b26e7e680a4c0b7eac98355efc44a7b11f6f68783d4a803e87a47fdba28112"
+}

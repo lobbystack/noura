@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT offer_digest, commit_digest, candidate_card_digest, approver, account, offer,\n                    nc, expires_at\n             FROM approval_offers WHERE offer_digest = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "offer_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "offer_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "commit_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "commit_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "candidate_card_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "candidate_card_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "approver",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "approver"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "account",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "offer",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "offer"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "nc",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "nc"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "77481a3a405df1e9a0509067e6eb31c4dbb5b7747b48e99a2f3b22332e02a1fb"
+}

@@ -769,6 +769,9 @@ crate::wire_struct! {
     pub struct DeviceTokenResponse {
         /// The session token's 43 characters.
         pub session_token: Text,
+        /// The account the person who approved the code signed in to, which
+        /// the device's card names.
+        pub account: Id,
     }
 }
 

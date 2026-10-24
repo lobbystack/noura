@@ -14,7 +14,9 @@ use sync_protocol::records::{AccountLink, Card, LinkKind, RecoveryProof, Signed}
 use sync_protocol::types::{Digest, Id, Key};
 
 use crate::policy::{self, PolicyCache};
-use crate::{ApprovalRequestRow, Error, LinkRow, ReadTxn, Result, Session, WriteTxn, refuse};
+use crate::{
+    ApprovalRequestRow, Error, LinkRow, ReadTxn, RemovedBy, Result, Session, WriteTxn, refuse,
+};
 
 /// How long an enrollment challenge, a magic link, a passkey ceremony or a
 /// sign-up waiting for its email stays usable (§27).
@@ -127,7 +129,38 @@ pub(crate) async fn append(
         )
         .await?;
     }
+    end_removed_sessions(txn, &chain, start).await?;
     Ok(chain.head_seqno())
+}
+
+/// Ends, in the append's transaction, the sessions of every card that a
+/// link of `chain` at or above seqno `start` removed: each keeps only the
+/// right to read its account's chains and answers `device_removed` naming
+/// the link (§7).
+pub(crate) async fn end_removed_sessions(
+    txn: &mut impl WriteTxn,
+    chain: &AccountChain,
+    start: u64,
+) -> Result<()> {
+    for seqno in start..=chain.head_seqno() {
+        let removed: Vec<Id> = chain
+            .cards()
+            .filter(|state| state.removed_at == Some(seqno))
+            .map(|state| state.card.device)
+            .collect();
+        if !removed.is_empty() {
+            txn.remove_sessions(
+                chain.account(),
+                &removed,
+                RemovedBy {
+                    genesis: chain.genesis(),
+                    seqno,
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 /// The highest seqno of `account`'s chain under `genesis` that `session`
@@ -341,12 +374,21 @@ pub(crate) async fn store_approval_request(
     invitation: Option<(Id, Id)>,
     now: u64,
 ) -> Result<()> {
+    let card = txn
+        .enrolled_card(session.device)
+        .await?
+        .map(|(_, card)| card)
+        .unwrap_or_default();
     txn.insert_approval_request(&ApprovalRequestRow {
         commit,
         account: session.account,
         device: session.device,
+        card,
+        candidate_head: None,
         invitation: invitation.map(|(invitation, _)| invitation),
+        invite_proof: None,
         workspace: invitation.map(|(_, workspace)| workspace),
+        request: Vec::new(),
         expires_at: now + SIGN_IN_TTL,
     })
     .await

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET removed = ?3\n                 WHERE account = ?1 AND device = ?2 AND removed IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "a1e27f3462572373a0ebb4b7cefda101619f3f0396fa7193cf6b9fcb50e5f4ae"
+}

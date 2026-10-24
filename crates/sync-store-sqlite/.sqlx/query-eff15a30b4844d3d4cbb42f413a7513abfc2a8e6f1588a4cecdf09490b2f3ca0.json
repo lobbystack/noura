@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT device, COUNT(*) AS \"count!: i64\" FROM sessions\n               WHERE account = ?1 AND removed IS NULL GROUP BY device ORDER BY device",
+  "describe": {
+    "columns": [
+      {
+        "name": "device",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "count!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "eff15a30b4844d3d4cbb42f413a7513abfc2a8e6f1588a4cecdf09490b2f3ca0"
+}

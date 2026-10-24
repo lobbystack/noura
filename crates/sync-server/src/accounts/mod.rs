@@ -218,7 +218,113 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/account/passkeys/add/start", post(add_start::<B>))
         .route("/account/passkeys/add/finish", post(add_finish::<B>))
         .route("/account/assets/{file}", get(asset::<B>))
+        .route("/device", get(device_page::<B>).post(device_code::<B>))
+        .route("/device/decide", post(device_decide::<B>))
         .layer(middleware::from_fn(page_headers))
+}
+
+/// `GET /device`: the device page (§7), where you enter the code the
+/// desktop app shows once you're signed in.
+async fn device_page<B: Backend>(State(state): State<AppState<B>>, headers: HeaderMap) -> Response {
+    match signed_in(&state.store, &headers).await {
+        Ok(Some(_)) => html(StatusCode::OK, &pages::Device { error: "" }),
+        Ok(None) => html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => failure(error),
+    }
+}
+
+fn unknown_code() -> Response {
+    html(
+        StatusCode::BAD_REQUEST,
+        &pages::Device {
+            error: "That code doesn't work. Check it against your computer, or sign in again there for a new code. A code works once, within 10 minutes.",
+        },
+    )
+}
+
+/// `POST /device`: checks the entered code and asks you to confirm it.
+async fn device_code<B: Backend>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !same_origin(&state.accounts, &headers) {
+        return cross_origin();
+    }
+    let account = match signed_in(&state.store, &headers).await {
+        Ok(Some((account, _))) => account,
+        Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => return failure(error),
+    };
+    let Some(code) = read_body(body)
+        .await
+        .and_then(|b| field(&b, "user_code"))
+        .and_then(|c| sync_store::devices::normalize_user_code(&c))
+    else {
+        return unknown_code();
+    };
+    match state.store.device_grant_waits(&code).await {
+        Ok(true) => {}
+        Ok(false) => return unknown_code(),
+        Err(error) => return failure(error),
+    }
+    let email = match state.store.account_email(account).await {
+        Ok(Some(email)) => email,
+        Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => return failure(error),
+    };
+    html(
+        StatusCode::OK,
+        &pages::DeviceConfirm {
+            email: &email,
+            code: &sync_store::devices::user_code_text(&code),
+        },
+    )
+}
+
+/// `POST /device/decide`: approves or refuses the code's sign-in.
+async fn device_decide<B: Backend>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !same_origin(&state.accounts, &headers) {
+        return cross_origin();
+    }
+    let account = match signed_in(&state.store, &headers).await {
+        Ok(Some((account, _))) => account,
+        Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => return failure(error),
+    };
+    let Some(body) = read_body(body).await else {
+        return unknown_code();
+    };
+    let (Some(code), Some(decision)) = (field(&body, "user_code"), field(&body, "decision")) else {
+        return unknown_code();
+    };
+    let approve = match decision.as_str() {
+        "approve" => true,
+        "deny" => false,
+        _ => return unknown_code(),
+    };
+    match state
+        .store
+        .decide_device_grant(account, &code, approve)
+        .await
+    {
+        Ok(true) if approve => message(
+            StatusCode::OK,
+            "Device signed in",
+            "Go back to Noura on your computer. You can close this page.",
+        ),
+        Ok(true) => message(
+            StatusCode::OK,
+            "Sign-in refused",
+            "Noura on that computer stays signed out.",
+        ),
+        Ok(false) => unknown_code(),
+        Err(error) => failure(error),
+    }
 }
 
 /// Sets the content security policy and the other page headers on every
