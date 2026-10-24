@@ -560,6 +560,47 @@ pub async fn new_desktop<B: Backend>(server: &Server<B>, account: Id, base: &str
     }
 }
 
+/// Approves a new device of `approver`'s account through the whole flow of
+/// §10, recording its head in `workspaces`, and returns its service.
+pub async fn approve<B: Backend>(
+    server: &Server<B>,
+    approver: &mut Desktop,
+    workspaces: &mut [app_core::sync::RemoteWorkspace],
+) -> Desktop {
+    let account = approver.credentials.account;
+    let mut new = new_desktop(server, account, &server.base).await;
+    let fingerprint = new.candidate.fingerprint();
+    let pending = approver
+        .service
+        .pending_devices()
+        .await
+        .expect("listed")
+        .into_iter()
+        .find(|p| p.fingerprint == fingerprint)
+        .expect("the request");
+    let mut offer = approver
+        .service
+        .offer_approval(&pending, workspaces)
+        .await
+        .expect("offered");
+    let app_core::sync::approval::CandidateStep::Code(code) =
+        new.candidate.poll().await.expect("polled")
+    else {
+        panic!("a code");
+    };
+    assert_eq!(
+        approver.service.approval_code(&mut offer).await.unwrap(),
+        Some(code)
+    );
+    new.candidate.confirm();
+    approver
+        .service
+        .confirm_approval(offer, workspaces)
+        .await
+        .expect("committed");
+    new.joined(&server.base).await
+}
+
 impl NewDesktop {
     /// The approved device's service, once its approval committed.
     pub async fn joined(mut self, base: &str) -> Desktop {

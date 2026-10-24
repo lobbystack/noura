@@ -17,6 +17,7 @@ pub mod account_heads;
 pub mod approval;
 pub mod device;
 pub mod heads;
+pub mod removal;
 mod routes;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -52,6 +52,16 @@ fn refusals_name(device: &Id) -> String {
     format!("noura.sync.v2.account-refusals.{}", device.to_hex())
 }
 
+/// The credential store items the kept heads of `device` use: its journal
+/// key, its own-account head and its refusals, which signing out deletes.
+pub fn device_items(device: &Id) -> Vec<String> {
+    vec![
+        journal_key_name(device),
+        own_head_name(device),
+        refusals_name(device),
+    ]
+}
+
 fn credential_error(error: impl std::fmt::Display) -> SyncError {
     SyncError::Invalid(format!("the credential store failed: {error}"))
 }

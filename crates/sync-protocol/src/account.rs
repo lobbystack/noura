@@ -394,6 +394,20 @@ impl AccountChain {
         Ok(cascade(&keep.iter().copied().collect()))
     }
 
+    /// The cards that a `remove` link of `target`, signed by `signer` and
+    /// keeping `keep`, would take down at the head: the target and, in
+    /// turn, every active card whose parent it removes, except the signer
+    /// and the devices `keep` names (§7). It fails as the link would.
+    pub fn removal(
+        &self,
+        signer: Id,
+        target: Id,
+        keep: &[Id],
+    ) -> Result<BTreeSet<Id>, AccountError> {
+        let head = self.head_seqno();
+        self.removal_set(head, signer, target, keep, head + 1)
+    }
+
     fn active_states(&self, seqno: u64) -> impl Iterator<Item = &CardState> {
         self.cards
             .values()
