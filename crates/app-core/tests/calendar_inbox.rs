@@ -26,9 +26,11 @@ fn app_on(fixture: &Fixture) -> App {
     fixture.app_with(system)
 }
 
-/// What Calendar's section shows: each list item's label and detail, or
-/// each line of text, once the section has drawn.
-fn section(app: &App) -> Option<(String, Vec<(String, Option<String>)>)> {
+/// A line of a section: an item's label and detail, or a line of text.
+type Line = (String, Option<String>);
+
+/// What Calendar's section shows, under its title, once it has drawn.
+fn section(app: &App) -> Option<(String, Vec<Line>)> {
     let section = app
         .inbox()
         .sections
@@ -40,7 +42,7 @@ fn section(app: &App) -> Option<(String, Vec<(String, Option<String>)>)> {
     Some((section.title, lines))
 }
 
-fn collect(node: &ViewNode, lines: &mut Vec<(String, Option<String>)>) {
+fn collect(node: &ViewNode, lines: &mut Vec<Line>) {
     match &node.kind {
         ViewKind::Text(text) => lines.push((text.clone(), None)),
         ViewKind::Item { label, detail, .. } => lines.push((label.clone(), detail.clone())),
@@ -51,7 +53,7 @@ fn collect(node: &ViewNode, lines: &mut Vec<(String, Option<String>)>) {
     }
 }
 
-fn line(label: &str, detail: &str) -> (String, Option<String>) {
+fn line(label: &str, detail: &str) -> Line {
     (label.to_owned(), Some(detail.to_owned()))
 }
 

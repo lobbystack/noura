@@ -100,10 +100,12 @@ fn week() -> (Fixture, Arc<FakeSystem>) {
     (fixture, system)
 }
 
-/// The grid laid out in the app's time zone, as the UI kit draws it: each
-/// day, with its all-day titles and its timed titles with their lane and
-/// how many lanes they share.
-type Days = Vec<(Date, Vec<String>, Vec<(String, usize, usize)>)>;
+/// The grid laid out in the app's time zone, as the UI kit draws it.
+type Days = Vec<Day>;
+
+/// A day of the grid: its date, its all-day titles, and its timed titles
+/// with their lane and how many lanes they share.
+type Day = (Date, Vec<String>, Vec<(String, usize, usize)>);
 
 fn laid_out(app: &App) -> Days {
     let (mode, date, shown) = grid(app);
@@ -139,7 +141,7 @@ fn laid_out(app: &App) -> Days {
         .collect()
 }
 
-fn on<'a>(days: &'a Days, date: &str) -> &'a (Date, Vec<String>, Vec<(String, usize, usize)>) {
+fn on<'a>(days: &'a Days, date: &str) -> &'a Day {
     let date: Date = date.parse().unwrap();
     days.iter()
         .find(|day| day.0 == date)

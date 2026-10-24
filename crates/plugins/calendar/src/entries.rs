@@ -116,7 +116,13 @@ impl Entries {
                         .map(|object| Object {
                             id: object.id,
                             object_type: object.object_type,
-                            title: object.title,
+                            // A grid entry and a list item need a label
+                            // with more than spaces.
+                            title: if object.title.trim().is_empty() {
+                                "Untitled".to_owned()
+                            } else {
+                                object.title
+                            },
                             properties: serde_json::from_str(&object.properties)
                                 .unwrap_or_default(),
                         }),
