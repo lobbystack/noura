@@ -128,12 +128,38 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
         .show(ui, |ui| {
             switcher(state, ui);
             ui.separator();
+            plugin_section(state, ui);
             tree::show(ui, &mut state.app, &mut state.tree);
         });
     // Save the width once a resize ends.
     let shown = panel.response.rect.width().round();
     if shown != width && !ui.input(|input| input.pointer.any_down()) {
         state.app.set_sidebar_width(shown);
+    }
+}
+
+/// The section the plugin page in the active tab adds to the sidebar,
+/// above the file tree, while the page shows. It scrolls on its own once
+/// it is taller than half the sidebar.
+fn plugin_section(state: &mut NouraUi, ui: &mut Ui) {
+    let Some(page_id) = state.app.active_tab().and_then(|tab| match tab.content() {
+        TabContent::Page { page_id, .. } if state.app.is_plugin_page(page_id) => {
+            Some(page_id.clone())
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    let drawn = ScrollArea::vertical()
+        .id_salt(("plugin-sidebar", &page_id))
+        .max_height(ui.available_height() / 2.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            crate::plugin_view::show_sidebar(ui, &mut state.app, state.window, &page_id)
+        })
+        .inner;
+    if drawn {
+        ui.separator();
     }
 }
 

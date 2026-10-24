@@ -1,0 +1,23 @@
+id = "tasks"
+name = "Tasks"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "tasks_plugin.wasm"
+platforms = ["desktop"]
+
+# Lists projects and their titles for the project picker and views.
+[[capabilities]]
+name = "workspace-read"
+
+# The task type and its properties panel.
+[[capabilities]]
+name = "object-types"
+
+# The Tasks page and its sidebar section.
+[[capabilities]]
+name = "views"
+
+# New task in the command palette, and create, update, complete and
+# reopen for other plugins.
+[[capabilities]]
+name = "commands"

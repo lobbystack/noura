@@ -9,16 +9,45 @@
 
 use std::{ops::Range, path::PathBuf};
 
-use jiff::{Timestamp, civil::Date, tz::TimeZone};
-use plugin_host::{Event, VirtualRow};
+use jiff::{civil::Date, tz::TimeZone};
+use plugin_host::{Event, Naming, ViewKind, ViewNode, VirtualRow};
 
 use super::{App, Change};
 use crate::{
-    AppError, Grant, NoticeKind, PluginInstall, PluginRow, PluginTool, PluginView, SettingsGroup,
-    ShippedPlugin, TabId,
-    plugins::{SETTINGS_PREFIX, is_plugin_page},
+    AppError, Grant, NoticeKind, OpenAs, PluginInstall, PluginRow, PluginTool, PluginView,
+    SettingsGroup, ShippedPlugin, TabId,
+    plugins::{Opening, SETTINGS_PREFIX, is_plugin_page},
     settings::settings_section,
 };
+
+/// Where a plugin's view shows, for what you type in its name fields.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PluginPlace {
+    /// The rail page with this ID.
+    Page(String),
+    /// The sidebar section of the rail page with this ID.
+    Sidebar(String),
+    /// The properties panel of the object open in this tab.
+    Panel(TabId),
+    /// A plugin's Inbox section.
+    Inbox { plugin: String, section: String },
+    /// A plugin's page in Settings, by its section ID.
+    Settings(String),
+}
+
+/// What you typed in a plugin's name field, until its plugin took the
+/// name and the field went away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameDraft {
+    pub place: PluginPlace,
+    /// The name field's node ID.
+    pub node: String,
+    /// The name the field started from.
+    pub started: String,
+    pub typed: String,
+    /// The name went to the plugin, which hasn't answered yet.
+    pub sent: bool,
+}
 
 impl App {
     /// The Plugins page's rows: every plugin installed on this device or
@@ -206,7 +235,7 @@ impl App {
 
     /// Today's date on this computer's clock, which a calendar grid marks.
     pub fn today(&self) -> Date {
-        Timestamp::now().to_zoned(self.system.time_zone()).date()
+        self.system.now().to_zoned(self.system.time_zone()).date()
     }
 
     /// The language and region, as a BCP 47 tag such as `fr-CA`, that a
@@ -229,8 +258,170 @@ impl App {
     /// notes take what it wrote once its answer arrives. A date or a date
     /// and time of the wrong form never reaches it.
     pub fn send_plugin_event(&mut self, page_id: &str, event: &Event) {
-        self.session.plugins().send_event(page_id, event);
+        self.forget_name_draft(&PluginPlace::Page(page_id.to_owned()), event);
+        self.session.plugins().send_event(page_id, event, self.key);
         self.plugins_changed();
+    }
+
+    /// What the section the plugin page `page_id` adds to the sidebar
+    /// shows, while its plugin runs: the view the plugin drew, or why it
+    /// couldn't be drawn. `None` when the page adds no section.
+    pub fn plugin_sidebar(&self, page_id: &str) -> Option<PluginView> {
+        self.session.plugins().sidebar_view(page_id)
+    }
+
+    /// Tell the plugin behind the page `page_id` about `event` in the
+    /// page's sidebar section, as [`Self::send_plugin_event`] does for the
+    /// page's view.
+    pub fn send_plugin_sidebar_event(&mut self, page_id: &str, event: &Event) {
+        self.forget_name_draft(&PluginPlace::Sidebar(page_id.to_owned()), event);
+        self.session
+            .plugins()
+            .send_sidebar_event(page_id, event, self.key);
+        self.plugins_changed();
+    }
+
+    /// Tell the plugin that draws the view at `place` about `event` there.
+    pub fn send_plugin_event_at(&mut self, place: &PluginPlace, event: &Event) {
+        match place {
+            PluginPlace::Page(page_id) => self.send_plugin_event(page_id, event),
+            PluginPlace::Sidebar(page_id) => self.send_plugin_sidebar_event(page_id, event),
+            PluginPlace::Panel(tab) => self.send_panel_event(*tab, event),
+            PluginPlace::Inbox { plugin, section } => {
+                self.send_inbox_event(plugin, section, event);
+            }
+            PluginPlace::Settings(section_id) => {
+                self.send_plugin_settings_event(section_id, event);
+            }
+        }
+    }
+
+    /// Keep what you typed in the name field `node_id` of the plugin view
+    /// at `place`, which started from `started`, so that a name still in
+    /// the field when the window closes reaches the plugin first.
+    pub fn set_plugin_name_draft(
+        &mut self,
+        place: PluginPlace,
+        node_id: &str,
+        started: &str,
+        typed: &str,
+    ) {
+        let draft = NameDraft {
+            place,
+            node: node_id.to_owned(),
+            started: started.to_owned(),
+            typed: typed.to_owned(),
+            sent: false,
+        };
+        match self
+            .name_drafts
+            .iter_mut()
+            .find(|held| held.place == draft.place && held.node == draft.node)
+        {
+            Some(held) => *held = draft,
+            None => self.name_drafts.push(draft),
+        }
+    }
+
+    /// Forget what you typed in the name field `node_id` at `place`, as
+    /// once the field sent its name or you cancelled it.
+    pub fn clear_plugin_name_draft(&mut self, place: &PluginPlace, node_id: &str) {
+        self.name_drafts
+            .retain(|draft| !(draft.place == *place && draft.node == node_id));
+    }
+
+    /// The name fields whose typing waits to reach their plugins.
+    pub fn plugin_name_drafts(&self) -> &[NameDraft] {
+        &self.name_drafts
+    }
+
+    /// A cancel from a name field ends what it held. A name it sent waits
+    /// for the plugin's answer: the field may stay with the name in it, as
+    /// after a create that failed.
+    fn forget_name_draft(&mut self, place: &PluginPlace, event: &Event) {
+        match event {
+            Event::Named(naming) => {
+                if let Some(draft) = self
+                    .name_drafts
+                    .iter_mut()
+                    .find(|draft| draft.place == *place && draft.node == naming.node)
+                {
+                    draft.sent = true;
+                }
+            }
+            Event::Cancelled(node) => {
+                let node = node.clone();
+                self.clear_plugin_name_draft(place, &node);
+            }
+            _ => {}
+        }
+    }
+
+    /// Once the plugins answered, a name that reached its plugin is done
+    /// when its field went away or starts from another name. When the
+    /// field still shows as it did, the name in it waits again to reach
+    /// the plugin if the window closes.
+    fn settle_name_drafts(&mut self) {
+        if !self.name_drafts.iter().any(|draft| draft.sent) {
+            return;
+        }
+        let drafts = std::mem::take(&mut self.name_drafts);
+        self.name_drafts = drafts
+            .into_iter()
+            .filter_map(|mut draft| {
+                if !draft.sent {
+                    return Some(draft);
+                }
+                let shows = self
+                    .plugin_view_at(&draft.place)
+                    .and_then(Result::ok)
+                    .is_some_and(|view| shows_name_field(view.root(), &draft.node, &draft.started));
+                draft.sent = false;
+                shows.then_some(draft)
+            })
+            .collect();
+    }
+
+    /// The view at `place`, while its plugin draws one there.
+    fn plugin_view_at(&self, place: &PluginPlace) -> Option<PluginView> {
+        match place {
+            PluginPlace::Page(page_id) => self.plugin_view(page_id),
+            PluginPlace::Sidebar(page_id) => self.plugin_sidebar(page_id),
+            PluginPlace::Panel(tab) => self.plugin_panel(*tab),
+            PluginPlace::Inbox { plugin, section } => self
+                .session
+                .plugins()
+                .inbox_sections()
+                .into_iter()
+                .find(|shown| shown.plugin_id == *plugin && shown.section_id == *section)
+                .map(|shown| shown.content),
+            PluginPlace::Settings(section_id) => self.plugin_settings_view(section_id),
+        }
+    }
+
+    /// Send each name still typed in a name field to its plugin, as when
+    /// the window closes. Returns whether any went, or one sent before
+    /// waits for its plugin's answer.
+    pub(super) fn commit_name_drafts(&mut self) -> bool {
+        let drafts = std::mem::take(&mut self.name_drafts);
+        let mut sent = false;
+        for draft in drafts {
+            if draft.sent {
+                sent = true;
+                continue;
+            }
+            let name = draft.typed.trim();
+            if name.is_empty() || name == draft.started.trim() {
+                continue;
+            }
+            let event = Event::Named(Naming {
+                node: draft.node.clone(),
+                name: name.to_owned(),
+            });
+            self.send_plugin_event_at(&draft.place, &event);
+            sent = true;
+        }
+        sent
     }
 
     /// The rows in `range` of the virtual list `node_id` in the plugin
@@ -265,7 +456,10 @@ impl App {
     /// Tell the plugin behind its page `section_id` in Settings about
     /// `event` there.
     pub fn send_plugin_settings_event(&mut self, section_id: &str, event: &Event) {
-        self.session.plugins().send_settings(section_id, event);
+        self.forget_name_draft(&PluginPlace::Settings(section_id.to_owned()), event);
+        self.session
+            .plugins()
+            .send_settings(section_id, event, self.key);
         self.plugins_changed();
     }
 
@@ -279,9 +473,14 @@ impl App {
     /// Tell the plugin `plugin_id` about `event` in its Inbox section
     /// `section_id`.
     pub fn send_inbox_event(&mut self, plugin_id: &str, section_id: &str, event: &Event) {
+        let place = PluginPlace::Inbox {
+            plugin: plugin_id.to_owned(),
+            section: section_id.to_owned(),
+        };
+        self.forget_name_draft(&place, event);
         self.session
             .plugins()
-            .send_inbox(plugin_id, section_id, event);
+            .send_inbox(plugin_id, section_id, event, self.key);
         self.plugins_changed();
     }
 
@@ -342,6 +541,7 @@ impl App {
     /// it wrote, as after [`Self::press_panel_button`]. A date or a date
     /// and time of the wrong form never reaches it.
     pub fn send_panel_event(&mut self, tab: TabId, event: &Event) {
+        self.forget_name_draft(&PluginPlace::Panel(tab), event);
         let Some(session) = self.notes.sessions.get(&tab) else {
             return;
         };
@@ -352,7 +552,7 @@ impl App {
         let (object_type, object_id) = (object_type.to_owned(), object_id.to_owned());
         self.session
             .plugins()
-            .send_panel(&object_type, &object_id, event);
+            .send_panel(&object_type, &object_id, event, self.key);
         self.plugins_changed();
     }
 
@@ -366,7 +566,7 @@ impl App {
     /// Take new plugin builds and the running plugins' answers, and show
     /// what the plugins add when it changed. Returns whether anything did.
     pub(super) fn poll_plugins(&mut self) -> bool {
-        let (version, pages, settings, acts) = {
+        let (version, pages, settings, acts, openings, working) = {
             let mut plugins = self.session.plugins();
             plugins.poll();
             (
@@ -374,24 +574,74 @@ impl App {
                 plugins.pages(),
                 plugins.settings_pages(),
                 plugins.acts(),
+                plugins.take_openings(self.key),
+                plugins.is_working(),
             )
         };
+        if !working {
+            self.settle_name_drafts();
+            self.names_sent_while_leaving();
+        }
         let acted = acts != self.plugin_acts_seen;
         if acted {
             // Open notes take what the plugins wrote.
             self.plugin_acts_seen = acts;
             self.check_notes_on_disk();
         }
+        let opened = !openings.is_empty();
         if version == self.plugins_seen {
-            return acted;
+            self.open_for_plugins(openings);
+            return acted || opened;
         }
         self.plugins_seen = version;
         self.show_plugin_pages(&pages);
+        self.open_for_plugins(openings);
         self.show_plugin_settings(&settings);
         self.listeners.emit(Change::Plugins);
         self.listeners.emit(Change::Commands);
         self.listeners.emit(Change::Inbox);
         true
+    }
+
+    /// Show what running plugins asked this window to show, oldest first,
+    /// once the pages they added are in the rail. An object Noura can't
+    /// find says so; a page the plugin doesn't add is passed over.
+    fn open_for_plugins(&mut self, openings: Vec<Opening>) {
+        if self.closed || self.is_leaving_window() {
+            return;
+        }
+        for opening in openings {
+            match opening {
+                Opening::Object { id, how } => self.open_object(&id, how),
+                Opening::Page(page_id) => {
+                    if self.rail.page(&page_id).is_some() {
+                        self.open_page(&page_id, OpenAs::Preview);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Open the object with the stable ID `id` as `how` says, wherever its
+    /// file is now.
+    fn open_object(&mut self, id: &str, how: OpenAs) {
+        let Some(workspace) = &self.workspace else {
+            return;
+        };
+        match workspace.engine().read_object(id) {
+            Ok(object) => self.open_file(&object.relative_path, how),
+            Err(error) => {
+                tracing::warn!(code = %error.code, "a plugin asked to open an object Noura can't read");
+                self.show_notice(
+                    "Couldn't open it",
+                    AppError::new(
+                        "object_not_found",
+                        "Noura couldn't find it in the workspace.",
+                    ),
+                    None,
+                );
+            }
+        }
     }
 
     /// Make the rail's plugin pages `pages`, as (page ID, title).
@@ -463,4 +713,15 @@ impl App {
             self.rail.unregister(&id);
         }
     }
+}
+
+/// Whether `node` or a node under it is the name field `id`, starting from
+/// `started`.
+fn shows_name_field(node: &ViewNode, id: &str, started: &str) -> bool {
+    if node.id == id {
+        return matches!(&node.kind, ViewKind::NameField { value, .. } if value == started);
+    }
+    node.children
+        .iter()
+        .any(|child| shows_name_field(child, id, started))
 }

@@ -7,8 +7,8 @@
 mod support;
 
 use plugin_host::{
-    CalendarMode, ColumnPress, Event, Field, Item, Move, PluginError, RunningPlugin, Services,
-    Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
+    CalendarMode, Check, ColumnPress, Event, Field, Item, Move, Naming, PluginError, RunningPlugin,
+    Services, Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -216,12 +216,15 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
         beds.kind,
         ViewKind::List {
             label: "Beds".into(),
-            reorder: false
+            reorder: false,
+            selected: None,
         }
     );
     let item = |label: &str, detail: Option<&str>| ViewKind::Item {
         label: label.into(),
         detail: detail.map(Into::into),
+        checked: None,
+        warning: None,
     };
     assert_eq!(
         kinds(&beds.children),
@@ -462,8 +465,116 @@ fn a_board_holds_labeled_columns_of_labeled_cards_with_menus() {
         queue.kind,
         ViewKind::List {
             label: "Queue".into(),
-            reorder: true
+            reorder: true,
+            selected: None,
         }
+    );
+}
+
+#[test]
+fn a_list_shows_its_selected_item_and_items_carry_checkboxes_and_warnings() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
+
+    let view =
+        View::from_nodes(instance.render("nodes:checklist").unwrap()).expect("the view is valid");
+
+    let chores = find(view.root(), "chores").unwrap();
+    assert_eq!(
+        chores.kind,
+        ViewKind::List {
+            label: "Chores".into(),
+            reorder: false,
+            selected: Some("mulch".into()),
+        }
+    );
+    let item = |label: &str, checked: Option<bool>, warning: Option<&str>| ViewKind::Item {
+        label: label.into(),
+        detail: None,
+        checked,
+        warning: warning.map(Into::into),
+    };
+    assert_eq!(
+        kinds(&chores.children),
+        [
+            ("weed", &item("Weed the beds", Some(false), Some("Overdue"))),
+            ("mulch", &item("Mulch", Some(true), None)),
+            // A warning of only spaces shows nothing.
+            ("plain", &item("Look around", None, None)),
+        ]
+    );
+    assert_eq!(
+        find(view.root(), "new-chore").unwrap().kind,
+        ViewKind::NameField {
+            label: "New chore name".into(),
+            value: String::new(),
+        }
+    );
+}
+
+#[test]
+fn a_selection_outside_the_list_a_card_checkbox_and_an_unlabeled_name_field_are_refused() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
+
+    for (case, reason) in [
+        (
+            "unknown-selection",
+            "The list chores selects missing, which isn't one of its items.",
+        ),
+        (
+            "card-with-checkbox",
+            "The card plan holds a checkbox or a warning, which only list items show.",
+        ),
+        (
+            "unlabeled-name-field",
+            "The name field new-chore has no label.",
+        ),
+        (
+            "name-field-with-children",
+            "The name field new-chore holds no other nodes.",
+        ),
+    ] {
+        let nodes = instance.render(&format!("nodes:{case}")).unwrap();
+        let error = View::from_nodes(nodes).expect_err(case);
+        assert_eq!(error.to_string(), reason, "{case}");
+    }
+}
+
+#[test]
+fn checks_names_and_cancels_reach_the_plugin_by_node_id() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
+
+    for event in [
+        Event::Checked(Check {
+            node: "chores".into(),
+            item: "weed".into(),
+            checked: true,
+        }),
+        Event::Named(Naming {
+            node: "new-chore".into(),
+            name: "Prune the roses".into(),
+        }),
+        Event::Cancelled("new-chore".into()),
+    ] {
+        instance.handle_event("checklist", &event).unwrap();
+    }
+
+    let nodes = instance.render("events").unwrap();
+    assert_eq!(
+        plugins::texts(&nodes),
+        [
+            "checklist Event::Checked(Check { node: \"chores\", item: \"weed\", checked: true })",
+            "checklist Event::Named(Naming { node: \"new-chore\", name: \"Prune the roses\" })",
+            "checklist Event::Cancelled(\"new-chore\")",
+        ]
     );
 }
 
@@ -680,7 +791,9 @@ fn a_virtual_list_fetches_only_the_rows_asked_for() {
             id: "seed-1".into(),
             item: Item {
                 label: "Seed 1".into(),
-                detail: Some("Batch 1".into())
+                detail: Some("Batch 1".into()),
+                checked: None,
+                warning: None,
             }
         }
     );
@@ -697,6 +810,8 @@ fn rows_that_break_the_rules_are_refused_with_a_reason() {
         item: Item {
             label: label.into(),
             detail: None,
+            checked: None,
+            warning: None,
         },
     };
 
@@ -827,14 +942,20 @@ const UNKNOWN_KIND: &str = r#"
       (data (i32.const 100) "root")
       (func (export "pages") (result i32) i32.const 200)
       (func (export "render") (param i32 i32) (result i32) i32.const 8)
+      (func (export "sidebar") (param i32 i32) (result i32) i32.const 200)
       (func (export "rows") (param i32 i32 i32 i32 i32 i32) (result i32) i32.const 200)
       (func (export "handle-event") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32))
       (func (export "realloc") (param i32 i32 i32 i32) (result i32) i32.const 1024))
     (core instance $i (instantiate $m))
-    (type $item' (record (field "label" string) (field "detail" (option string))))
+    (type $item' (record
+      (field "label" string) (field "detail" (option string)) (field "checked" (option bool))
+      (field "warning" (option string))))
     (export $item "item" (type $item'))
-    (type $item-list' (record (field "label" string) (field "reorder" bool)))
+    (type $item-list' (record
+      (field "label" string) (field "reorder" bool) (field "selected" (option string))))
     (export $item-list "item-list" (type $item-list'))
+    (type $name-field' (record (field "label" string) (field "value" string)))
+    (export $name-field "name-field" (type $name-field'))
     (type $virtual-list' (record (field "label" string) (field "rows" u32)))
     (export $virtual-list "virtual-list" (type $virtual-list'))
     (type $virtual-row' (record (field "id" string) (field "item" $item)))
@@ -873,7 +994,7 @@ const UNKNOWN_KIND: &str = r#"
       (case "markdown" string) (case "button" string)
       (case "list" $item-list) (case "item" $item) (case "virtual-list" $virtual-list)
       (case "table" $table) (case "row" (list string)) (case "form" $form)
-      (case "input" $input) (case "menu" string) (case "menu-item" $menu-item)
+      (case "input" $input) (case "name-field" $name-field) (case "menu" string) (case "menu-item" $menu-item)
       (case "separator") (case "board" string) (case "board-column" string)
       (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)))
     (export $node-kind "node-kind" (type $node-kind'))
@@ -893,10 +1014,15 @@ const UNKNOWN_KIND: &str = r#"
     (export $field "field" (type $field'))
     (type $submission' (record (field "node" string) (field "fields" (list $field))))
     (export $submission "submission" (type $submission'))
+    (type $check' (record (field "node" string) (field "item" string) (field "checked" bool)))
+    (export $check "check" (type $check'))
+    (type $naming' (record (field "node" string) (field "name" string)))
+    (export $naming "naming" (type $naming'))
     (type $event' (variant
       (case "pressed" string) (case "selected" $target) (case "activated" $target)
       (case "sorted" $column-press) (case "changed" $field)
-      (case "submitted" $submission) (case "chosen" string) (case "moved" $move)))
+      (case "submitted" $submission) (case "chosen" string) (case "moved" $move)
+      (case "checked" $check) (case "named" $naming) (case "cancelled" string)))
     (export $event "event" (type $event'))
     (func $pages (result (list $page))
       (canon lift (core func $i "pages") (memory (core memory $i "memory"))
@@ -906,6 +1032,10 @@ const UNKNOWN_KIND: &str = r#"
       (canon lift (core func $i "render") (memory (core memory $i "memory"))
         (realloc (core func $i "realloc"))))
     (export "render" (func $render))
+    (func $sidebar (param "page" string) (result (list $node))
+      (canon lift (core func $i "sidebar") (memory (core memory $i "memory"))
+        (realloc (core func $i "realloc"))))
+    (export "sidebar" (func $sidebar))
     (func $rows (param "page" string) (param "node" string) (param "start" u32)
       (param "count" u32) (result (list $virtual-row))
       (canon lift (core func $i "rows") (memory (core memory $i "memory"))
