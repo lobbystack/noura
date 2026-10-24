@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT head_seq FROM domains WHERE workspace = $1 AND domain = $2 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "head_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "head_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "196c4a3b95d5f77f8d978fce3ced0306e7afb6ed4c06c2c9e89335ed6ddd7be2"
+}

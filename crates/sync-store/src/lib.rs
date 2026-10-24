@@ -17,6 +17,7 @@
 
 mod create;
 mod hub;
+pub mod limiter;
 mod live;
 mod policy;
 mod pull;
@@ -26,8 +27,10 @@ mod reads;
 #[cfg(feature = "conformance")]
 pub mod conformance;
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sync_protocol::account::AccountChain;
@@ -42,6 +45,7 @@ use sync_protocol::records::{AccountLink, MAX_COVERS, MAX_RECIPIENTS, OpClass, R
 use sync_protocol::types::{Digest, Id};
 
 pub use hub::EventHub;
+pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
 
 /// The restore generation a new database starts at (§14). Restores raise it
@@ -248,7 +252,9 @@ pub struct DeleteRow {
 /// The locks a push takes, in the order of §15: the workspace's policy
 /// lock, shared without a policy change and exclusive with one, the key
 /// sequence row, the domains' head rows in domain-ID order and the blobs'
-/// rows in blob-ID order. SQLite's single writer stands in for all of them.
+/// rows in blob-ID order. SQLite's single writer stands in for all of them;
+/// PostgreSQL takes the policy lock as a transaction-level advisory lock in
+/// the one-key form.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LockPlan {
     /// The workspace.
@@ -261,6 +267,16 @@ pub struct LockPlan {
     pub domains: Vec<Id>,
     /// The blobs it lists, sorted.
     pub blobs: Vec<Id>,
+}
+
+/// The pushes a backend may commit together: those into one domain of one
+/// workspace that change no policy (§15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WriteGroup {
+    /// The workspace.
+    pub workspace: Id,
+    /// The one domain every push of the group writes.
+    pub domain: Id,
 }
 
 /// The reads a store transaction offers. Every read in one transaction sees
@@ -419,6 +435,20 @@ pub trait WriteTxn: ReadTxn {
     /// Takes the locks of §15 in their order, before any read the push's
     /// checks depend on.
     fn lock(&mut self, plan: &LockPlan) -> impl Future<Output = Result<()>> + Send;
+    /// Locks the account's chain row before an append reads the chain. An
+    /// append takes no workspace lock, so it never waits in a cycle with a
+    /// push (§15).
+    fn lock_account(&mut self, account: Id) -> impl Future<Output = Result<()>> + Send;
+    /// Takes a domain's pruning lock (§15), which one instance at a time
+    /// holds while it prunes the domain. In PostgreSQL it is an advisory
+    /// lock in the two-key form, keyed by the first 4 bytes of the
+    /// workspace ID and of the domain ID, so it never meets a policy lock,
+    /// and two domains whose prefixes collide only delay each other.
+    fn lock_pruning(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Stores a session.
     fn insert_session(
         &mut self,
@@ -563,6 +593,48 @@ pub trait Backend: Send + Sync + 'static {
     /// Runs `job` in a write transaction and returns once its writes are
     /// durable, or once it has rolled them back.
     fn write<R: Send + 'static>(&self, job: WriteJob<Self::Write, R>) -> BoxFut<'_, Result<R>>;
+
+    /// Runs a push's `job` like [`Backend::write`]. A backend may commit
+    /// queued jobs of one `group` in one transaction with a savepoint each,
+    /// so one job's failure rolls back only that job (§15).
+    fn write_grouped<R: Send + 'static>(
+        &self,
+        group: WriteGroup,
+        job: WriteJob<Self::Write, R>,
+    ) -> BoxFut<'_, Result<R>> {
+        let _ = group;
+        self.write(job)
+    }
+
+    /// Starts feeding `hub` the commits that other instances on the same
+    /// database announce. A database that one instance serves needs
+    /// nothing.
+    fn attach(&self, hub: EventHub) -> BoxFut<'_, Result<()>> {
+        let _ = hub;
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Tells the other instances on the same database that `workspace`'s
+    /// domains reached these heads. The store calls it only after the push
+    /// commits, and it returns at once: the announcement leaves from its own
+    /// statement outside the push's transaction, and a lost one costs at
+    /// most a pull's wait.
+    fn announce(&self, workspace: Id, heads: Vec<(Id, u64)>) {
+        let _ = (workspace, heads);
+    }
+
+    /// Whether write transactions run side by side, so the locks of §15
+    /// decide which one waits. SQLite's one writer runs them one at a time.
+    fn parallel_writes(&self) -> bool {
+        false
+    }
+
+    /// The limiter for this database's mode: counters in memory for one
+    /// instance, in the database for several.
+    fn limiter(&self) -> Arc<dyn Limiter>;
+
+    /// Finishes the queued writes and closes every connection.
+    fn close(&self) -> BoxFut<'_, ()>;
 }
 
 /// The protocol's state on a database: workspace creation, push and pull,
@@ -576,17 +648,21 @@ pub struct Store<B: Backend> {
 }
 
 impl<B: Backend> Store<B> {
-    /// A store on `backend`, which must hold a migrated database.
+    /// A store on `backend`, which must hold a migrated database. The
+    /// backend starts feeding the store's event hub the commits of other
+    /// instances.
     pub async fn open(backend: B) -> Result<Self> {
         let generation = backend
             .read(Box::new(|txn: &mut B::Read| {
                 Box::pin(async move { txn.restore_generation().await })
             }))
             .await?;
+        let hub = EventHub::default();
+        backend.attach(hub.clone()).await?;
         Ok(Self {
             backend,
             policies: PolicyCache::default(),
-            hub: EventHub::default(),
+            hub,
             generation,
             retained_bytes: DEFAULT_RETAINED_BYTES,
         })
@@ -747,16 +823,25 @@ impl<B: Backend> Store<B> {
         push::check_signatures(&ops, session, &chain)?;
         let cache = self.policies.clone();
         let generation = self.generation;
-        let response = self
-            .backend
-            .write(Box::new(move |txn: &mut B::Write| {
-                Box::pin(async move {
-                    push::commit(txn, &cache, generation, session, workspace, ops).await
-                })
-            }))
-            .await?;
+        let group = push::group(workspace, &ops);
+        let job: WriteJob<B::Write, PushResponse> = Box::new(move |txn: &mut B::Write| {
+            Box::pin(
+                async move { push::commit(txn, &cache, generation, session, workspace, ops).await },
+            )
+        });
+        let response = match group {
+            Some(group) => self.backend.write_grouped(group, job).await?,
+            None => self.backend.write(job).await?,
+        };
         if !response.receipts.is_empty() {
             self.hub.notify(workspace);
+            let mut heads: BTreeMap<Id, u64> = BTreeMap::new();
+            for receipt in response.receipts.iter() {
+                let head = heads.entry(receipt.domain).or_default();
+                *head = (*head).max(receipt.seq);
+            }
+            self.backend
+                .announce(workspace, heads.into_iter().collect());
         }
         Ok(response)
     }

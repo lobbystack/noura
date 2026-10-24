@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE workspaces SET policy_revision = $2, policy_head = $3 WHERE workspace = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c53c955da21279a82819d60dee7ab9bb22c81536f853968f8437408901f6e6a"
+}

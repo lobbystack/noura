@@ -51,6 +51,8 @@ pub(crate) async fn append_account_links(
         .first()
         .ok_or_else(|| refuse("bad_request", "no links"))?;
     let account = first.body.account;
+    // The account's chain row alone, before the chain is read (§15).
+    txn.lock_account(account).await?;
     let none = BTreeSet::new();
     let refusal = |e: sync_protocol::account::AccountError| refuse(e.server_code(), e.to_string());
     let (mut chain, rest, new_chain) = match policy::current_chain(txn, account).await? {

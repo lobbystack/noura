@@ -16,7 +16,9 @@ use sync_protocol::records::{Operation, Signed};
 use sync_protocol::types::{Digest, Id};
 
 use crate::policy::{self, PolicyCache};
-use crate::{ChainHeadRow, Error, LockPlan, Refusal, Result, Session, WriteTxn, refuse};
+use crate::{
+    ChainHeadRow, Error, LockPlan, Refusal, Result, Session, WriteGroup, WriteTxn, refuse,
+};
 
 /// Log entry record types (§15).
 pub(crate) const ENTRY_OPERATION: u8 = 1;
@@ -132,6 +134,16 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
         });
     }
     Ok(ops)
+}
+
+/// The group a push may commit with (§15): pushes whose operations all
+/// write one domain. A push carries operations only so far; once pushes
+/// carry policy changes, those run alone.
+pub(crate) fn group(workspace: Id, ops: &[PushedOp]) -> Option<WriteGroup> {
+    let domain = ops.first()?.op.body.domain;
+    ops.iter()
+        .all(|o| o.op.body.domain == domain)
+        .then_some(WriteGroup { workspace, domain })
 }
 
 /// Checks each operation's signature under the session device's card from

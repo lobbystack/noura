@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO accounts (account, genesis) VALUES ($1, $2)\n             ON CONFLICT (account) DO UPDATE SET genesis = excluded.genesis",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7c3f2dd421c556c0c6a066d71f2af16306eb66c5a2dd5fbd564042a4e45d9b3b"
+}

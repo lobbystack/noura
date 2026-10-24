@@ -710,6 +710,16 @@ impl WriteTxn for SqliteTxn {
         Ok(())
     }
 
+    async fn lock_account(&mut self, _account: Id) -> Result<()> {
+        // The one writer stands in for the account's chain row.
+        Ok(())
+    }
+
+    async fn lock_pruning(&mut self, _workspace: Id, _domain: Id) -> Result<()> {
+        // The one writer stands in for the pruning lock.
+        Ok(())
+    }
+
     async fn insert_session(&mut self, token_hash: Digest, session: Session) -> Result<()> {
         let hash = &token_hash.0[..];
         let account = &session.account.0[..];

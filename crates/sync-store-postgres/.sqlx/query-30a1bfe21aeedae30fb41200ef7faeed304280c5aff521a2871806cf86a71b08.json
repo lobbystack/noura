@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n                 SELECT 1 FROM covers\n                 WHERE workspace = $1 AND rid = $2 AND device = $3 AND counter >= $4 AND by_seq <= $5\n             ) AS \"covered!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "covered!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "30a1bfe21aeedae30fb41200ef7faeed304280c5aff521a2871806cf86a71b08"
+}

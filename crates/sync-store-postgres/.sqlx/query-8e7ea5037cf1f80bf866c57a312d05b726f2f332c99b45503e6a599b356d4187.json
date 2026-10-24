@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT o.device AS \"device!\", o.counter AS \"counter!\", o.seq AS \"seq!\",\n                      o.digest AS \"digest!\", o.is_delete AS \"is_delete!\",\n                      o.class AS \"class!\", o.weight AS \"weight!\"\n             FROM operations o\n             WHERE o.workspace = $1 AND o.rid = $2 AND o.seq <= $3 AND NOT o.dropped\n               AND NOT EXISTS (\n                 SELECT 1 FROM covers c\n                 WHERE c.workspace = o.workspace AND c.rid = o.rid AND c.device = o.device\n                   AND c.counter >= o.counter AND c.by_seq <= $3\n               )\n             ORDER BY o.seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "counter!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "counter"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "seq!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "digest!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "is_delete!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "is_delete"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "class!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "class"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "weight!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "weight"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8e7ea5037cf1f80bf866c57a312d05b726f2f332c99b45503e6a599b356d4187"
+}

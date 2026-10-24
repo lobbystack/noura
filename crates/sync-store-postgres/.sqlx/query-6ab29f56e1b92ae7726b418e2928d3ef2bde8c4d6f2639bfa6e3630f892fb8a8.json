@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO domains (workspace, domain, head_seq, epoch, epoch_digest, epoch_policy_revision)\n             VALUES ($1, $2, 0, 0, $3, 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6ab29f56e1b92ae7726b418e2928d3ef2bde8c4d6f2639bfa6e3630f892fb8a8"
+}

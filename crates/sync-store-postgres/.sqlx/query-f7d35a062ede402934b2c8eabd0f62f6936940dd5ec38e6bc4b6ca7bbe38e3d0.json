@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rate_counters (key, window_ends, used) VALUES ($1, $2, $3)\n             ON CONFLICT (key, window_ends) DO UPDATE SET used = rate_counters.used + excluded.used\n             WHERE rate_counters.used + excluded.used <= $4\n             RETURNING used",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "used",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rate_counters",
+            "name": "used"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f7d35a062ede402934b2c8eabd0f62f6936940dd5ec38e6bc4b6ca7bbe38e3d0"
+}

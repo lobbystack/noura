@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT genesis, seqno, link FROM account_links WHERE account = $1 ORDER BY genesis, seqno",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "genesis",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "genesis"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "seqno",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "seqno"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "link",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "link"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fce7ef3b986066d1d1bb1175d89f155814f6267bbbc5835aa992f984fb4b470f"
+}

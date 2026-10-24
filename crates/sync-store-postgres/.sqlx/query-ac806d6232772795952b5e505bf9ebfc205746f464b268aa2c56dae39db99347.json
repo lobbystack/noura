@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head\n             FROM workspaces WHERE workspace = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "owner"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "creation_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "creation_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "creation_response",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "creation_response"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "policy_revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "policy_revision"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "policy_head",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "policy_head"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ac806d6232772795952b5e505bf9ebfc205746f464b268aa2c56dae39db99347"
+}
