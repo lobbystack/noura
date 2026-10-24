@@ -224,8 +224,9 @@ fn a_document_writes_under_the_largest_client_id() {
     )
     .unwrap();
     writer.local(&op, true, 0).unwrap();
-    let update = writer.take_update().unwrap().expect("an update");
-    let payload = support::update_payload(536_870_911, &update);
+    let [update] = writer.take_updates().unwrap().try_into().expect("one update");
+    assert_eq!(update.load, 536_870_911);
+    let payload = support::update_payload(update.load, &update.bytes);
     let verdict = sandbox().verdict(&Record {
         payload: &payload,
         blob: None,
@@ -346,6 +347,10 @@ fn a_trap_during_integration_stops_the_lineage_and_rebuilds_the_last_good_state(
         assert!(note.is_stopped());
         assert_eq!(note.text().unwrap(), case["text"], "{name}");
         // Nothing more of the lineage goes out.
-        assert_eq!(note.take_update().unwrap(), None);
+        assert_eq!(note.take_updates().unwrap(), []);
+        assert!(matches!(
+            note.status(),
+            collab_sandbox::LineageStatus::Stopped(collab_sandbox::StopReason::Trap)
+        ));
     }
 }

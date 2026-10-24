@@ -3,7 +3,11 @@
 //!
 //! The check reads the bytes once and compares each token with its canonical
 //! form instead of building the value. It keeps an explicit stack, so nesting
-//! depth costs heap memory and never a deep call stack.
+//! depth costs heap memory and never a deep call stack. Strings outside
+//! object keys aren't collected, and a number with at most 15 significant
+//! digits and an exponent of at most 300 is checked by its digits alone, so
+//! the verdict's fuel per byte stays low for any property an honest note
+//! holds (`crates/collab-sandbox/tests/budget.rs` measures it).
 
 /// Whether `bytes` is the RFC 8785 canonical JSON of the value it holds.
 pub fn is_canonical(bytes: &[u8]) -> bool {
@@ -72,7 +76,7 @@ impl Checker<'_> {
                     b'{' => {
                         self.at += 1;
                         if self.eat(b'}').is_none() {
-                            let key = self.string()?;
+                            let key = self.key()?;
                             self.eat(b':')?;
                             stack.push(Frame::Object {
                                 last_key: Some(key),
@@ -80,9 +84,7 @@ impl Checker<'_> {
                             continue;
                         }
                     }
-                    b'"' => {
-                        self.string()?;
-                    }
+                    b'"' => self.string(None)?,
                     b't' => self.literal(b"true")?,
                     b'f' => self.literal(b"false")?,
                     b'n' => self.literal(b"null")?,
@@ -108,7 +110,7 @@ impl Checker<'_> {
                 Some(Frame::Object { last_key }) => match self.peek()? {
                     b',' => {
                         self.at += 1;
-                        let key = self.string()?;
+                        let key = self.key()?;
                         // Keys sort by UTF-16 code units, each above the last.
                         if last_key.as_ref().is_some_and(|last| *last >= key) {
                             return None;
@@ -132,16 +134,23 @@ impl Checker<'_> {
         (self.bytes.get(self.at..end)? == word).then(|| self.at = end)
     }
 
-    /// A string in canonical form, returning its UTF-16 code units.
-    fn string(&mut self) -> Option<Vec<u16>> {
-        self.eat(b'"')?;
+    /// An object key in canonical form, as UTF-16 code units.
+    fn key(&mut self) -> Option<Vec<u16>> {
         let mut units = Vec::new();
+        self.string(Some(&mut units))?;
+        Some(units)
+    }
+
+    /// A string in canonical form, pushing its UTF-16 code units to `units`
+    /// when given.
+    fn string(&mut self, mut units: Option<&mut Vec<u16>>) -> Option<()> {
+        self.eat(b'"')?;
         loop {
             let byte = self.peek()?;
-            match byte {
+            let unit = match byte {
                 b'"' => {
                     self.at += 1;
-                    return Some(units);
+                    return Some(());
                 }
                 b'\\' => {
                     self.at += 1;
@@ -175,13 +184,16 @@ impl Checker<'_> {
                         _ => return None,
                     };
                     self.at += 1;
-                    units.push(unit);
+                    unit
                 }
                 0x00..=0x1f => return None,
+                0x20..=0x7f => {
+                    self.at += 1;
+                    u16::from(byte)
+                }
                 _ => {
                     // One character: find its UTF-8 length from the lead byte.
                     let len = match byte {
-                        0x00..=0x7f => 1,
                         0xc2..=0xdf => 2,
                         0xe0..=0xef => 3,
                         0xf0..=0xf4 => 4,
@@ -192,10 +204,16 @@ impl Checker<'_> {
                         .ok()?
                         .chars()
                         .next()?;
-                    let mut buffer = [0u16; 2];
-                    units.extend_from_slice(c.encode_utf16(&mut buffer));
                     self.at = end;
+                    if let Some(units) = units.as_deref_mut() {
+                        let mut buffer = [0u16; 2];
+                        units.extend_from_slice(c.encode_utf16(&mut buffer));
+                    }
+                    continue;
                 }
+            };
+            if let Some(units) = units.as_deref_mut() {
+                units.push(unit);
             }
         }
     }
@@ -225,9 +243,15 @@ impl Checker<'_> {
             }
             self.digits();
         }
-        let text = std::str::from_utf8(&self.bytes[start..self.at]).ok()?;
-        let value: f64 = text.parse().ok()?;
-        (value.is_finite() && ecmascript_number(value) == text).then_some(())
+        let text = &self.bytes[start..self.at];
+        match short_number_is_canonical(text) {
+            Some(canonical) => canonical.then_some(()),
+            None => {
+                let text = std::str::from_utf8(text).ok()?;
+                let value: f64 = text.parse().ok()?;
+                (value.is_finite() && ecmascript_number(value) == text).then_some(())
+            }
+        }
     }
 
     fn digits(&mut self) {
@@ -235,6 +259,130 @@ impl Checker<'_> {
             self.at += 1;
         }
     }
+}
+
+/// The most significant digits a number may have for
+/// [`short_number_is_canonical`] to judge it: any decimal of 15 digits or
+/// fewer survives a round trip through a double, so its shortest digits are
+/// its own.
+const SHORT_DIGITS: usize = 15;
+/// The largest exponent magnitude [`short_number_is_canonical`] judges,
+/// which keeps it among normal doubles, far from overflow and from the
+/// subnormals that hold fewer than 15 digits.
+const SHORT_EXPONENT: i32 = 300;
+
+/// Whether `text`, a JSON number token, is the canonical form of its value,
+/// judged from its digits alone, or `None` when it has more than
+/// [`SHORT_DIGITS`] significant digits or an exponent past
+/// [`SHORT_EXPONENT`], which the full check judges.
+///
+/// The canonical form of a nonzero value with significant digits `d`, of
+/// which there are `k`, and decimal exponent `n` (the value is
+/// `0.d × 10^n`) is ECMAScript's: `d` and `n − k` zeros when `k ≤ n ≤ 21`,
+/// `d` with a point after `n` digits when `0 < n ≤ 21`, `0.`, `−n` zeros and
+/// `d` when `−6 < n ≤ 0`, and otherwise the first digit, the rest after a
+/// point when there is a rest, `e`, the sign of `n − 1` and its magnitude.
+/// Each form writes `d` without trailing zeros, which the first form adds
+/// back as its own.
+pub fn short_number_is_canonical(text: &[u8]) -> Option<bool> {
+    let (negative, body) = match text.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        _ => (false, text),
+    };
+    let (mantissa, exponent) = match body.iter().position(|byte| matches!(byte, b'e' | b'E')) {
+        Some(at) => (&body[..at], Some(&body[at + 1..])),
+        None => (body, None),
+    };
+    let (whole, fraction) = match mantissa.iter().position(|byte| *byte == b'.') {
+        Some(at) => (&mantissa[..at], &mantissa[at + 1..]),
+        None => (mantissa, &[][..]),
+    };
+    if exponent.is_none() && whole.len() <= SHORT_DIGITS {
+        // The common forms, without building the expected text. The token's
+        // grammar already rules out a leading zero before other digits.
+        if fraction.is_empty() {
+            // An integer: canonical unless it's -0.
+            return Some(!(negative && whole == b"0"));
+        }
+        let ends_in_zero = fraction.last() == Some(&b'0');
+        if whole != b"0" {
+            // `n` is the whole part's length, at most 15, so the form puts
+            // the point after it: canonical when no zero ends the fraction.
+            if whole.len() + fraction.len() <= SHORT_DIGITS {
+                return Some(!ends_in_zero);
+            }
+        } else if fraction.len() <= SHORT_DIGITS {
+            // 0.000ddd: canonical below six leading zeros, for a nonzero
+            // value whose last digit isn't a zero.
+            let zeros = fraction.iter().take_while(|digit| **digit == b'0').count();
+            return Some(!ends_in_zero && zeros < 6);
+        }
+    }
+    // The exponent as written, or 0.
+    let written = match exponent {
+        None => 0,
+        Some(exponent) => {
+            let (sign, digits) = match exponent.split_first() {
+                Some((b'+', rest)) => (1, rest),
+                Some((b'-', rest)) => (-1, rest),
+                _ => (1, exponent),
+            };
+            if digits.len() > 3 {
+                return None;
+            }
+            let magnitude = digits
+                .iter()
+                .fold(0i32, |value, digit| value * 10 + i32::from(digit - b'0'));
+            sign * magnitude
+        }
+    };
+    // The significant digits: every digit from the first nonzero one to the
+    // last nonzero one.
+    let all = || whole.iter().chain(fraction.iter());
+    let Some(first) = all().position(|digit| *digit != b'0') else {
+        // Zero: its one form is `0`.
+        return Some(text == b"0");
+    };
+    let nonzero = |digit: &u8| *digit != b'0';
+    let last = match fraction.iter().rposition(nonzero) {
+        Some(at) => whole.len() + at,
+        None => whole.iter().rposition(nonzero)?,
+    };
+    let k = last - first + 1;
+    if k > SHORT_DIGITS || written.abs() > SHORT_EXPONENT {
+        return None;
+    }
+    // The value is 0.d × 10^n.
+    let n = whole.len() as i32 - first as i32 + written;
+    let digits = || all().skip(first).take(k).copied();
+    let mut expected = Vec::with_capacity(text.len());
+    if negative {
+        expected.push(b'-');
+    }
+    let k = k as i32;
+    if k <= n && n <= 21 {
+        expected.extend(digits());
+        expected.extend(std::iter::repeat_n(b'0', (n - k) as usize));
+    } else if 0 < n && n <= 21 {
+        expected.extend(digits().take(n as usize));
+        expected.push(b'.');
+        expected.extend(digits().skip(n as usize));
+    } else if -6 < n && n <= 0 {
+        expected.extend_from_slice(b"0.");
+        expected.extend(std::iter::repeat_n(b'0', (-n) as usize));
+        expected.extend(digits());
+    } else {
+        expected.extend(digits().take(1));
+        if k > 1 {
+            expected.push(b'.');
+            expected.extend(digits().skip(1));
+        }
+        expected.push(b'e');
+        let e = n - 1;
+        expected.push(if e >= 0 { b'+' } else { b'-' });
+        expected.extend_from_slice(e.abs().to_string().as_bytes());
+    }
+    Some(expected == text)
 }
 
 /// ECMAScript's `Number.prototype.toString` of a finite `value`, which
@@ -360,5 +508,83 @@ mod tests {
             canonical_string("a\"\\\n\u{1}é"),
             "\"a\\\"\\\\\\n\\u0001é\""
         );
+    }
+
+    /// The full check of a number token, which the fast one must match.
+    fn full_check(text: &str) -> bool {
+        text.parse::<f64>()
+            .is_ok_and(|value| value.is_finite() && ecmascript_number(value) == text)
+    }
+
+    #[test]
+    fn the_short_number_check_agrees_with_the_full_one() {
+        let mut tokens: Vec<String> = Vec::new();
+        for sign in ["", "-"] {
+            for whole in ["0", "1", "10", "120", "999999999999999", "100000000000000000000"] {
+                for fraction in ["", ".5", ".05", ".50", ".0", ".000001", ".0000001", ".25"] {
+                    for exponent in [
+                        "", "e1", "e+1", "e-1", "e+20", "e+21", "e-6", "e-7", "e+300", "e-300",
+                        "e+07", "E+21",
+                    ] {
+                        tokens.push(format!("{sign}{whole}{fraction}{exponent}"));
+                    }
+                }
+            }
+        }
+        for token in [
+            "1e+21",
+            "1.5e+21",
+            "1e-7",
+            "1.25e-7",
+            "0.000001",
+            "123456789012345",
+            "1234567890123456",
+            "0.1",
+            "12.5",
+            "100",
+            "1e+2",
+            "0e+5",
+            "-0",
+            "0",
+        ] {
+            tokens.push(token.to_owned());
+        }
+        let mut judged = 0;
+        for token in &tokens {
+            if let Some(fast) = short_number_is_canonical(token.as_bytes()) {
+                judged += 1;
+                assert_eq!(fast, full_check(token), "{token}");
+            }
+        }
+        assert!(judged > tokens.len() / 2, "{judged} of {}", tokens.len());
+    }
+
+    #[test]
+    fn the_short_number_check_agrees_on_every_small_decimal() {
+        // Every token of up to four digits and a point, with exponents.
+        let mut count = 0;
+        for value in 0..10_000u32 {
+            let digits = format!("{value}");
+            for point in 0..=digits.len() {
+                let (whole, fraction) = digits.split_at(point);
+                let whole = if whole.is_empty() { "0" } else { whole };
+                if whole.len() > 1 && whole.starts_with('0') {
+                    continue;
+                }
+                let mantissa = if fraction.is_empty() {
+                    whole.to_owned()
+                } else {
+                    format!("{whole}.{fraction}")
+                };
+                for exponent in ["", "e+21", "e-7", "e+5", "e-3", "e+22"] {
+                    let token = format!("{mantissa}{exponent}");
+                    if let Some(fast) = short_number_is_canonical(token.as_bytes()) {
+                        assert_eq!(fast, full_check(&token), "{token}");
+                        count += 1;
+                    }
+                }
+            }
+        }
+        assert!(count > 100_000);
     }
 }

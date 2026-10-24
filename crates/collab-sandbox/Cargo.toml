@@ -13,6 +13,8 @@ pulley = ["plugin-host/pulley"]
 [dependencies]
 # Hashes the guest module the sandbox runs, against the pinned hash.
 blake3.workspace = true
+# The editor's side of a text-mode note, which SandboxDocument implements.
+editor-core = { version = "0.2.0", path = "../editor-core" }
 plugin-host = { version = "0.2.0", path = "../plugin-host" }
 # Builds the Wasmtime operator cost table from the costs the fixture records.
 serde_json.workspace = true

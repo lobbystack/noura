@@ -192,8 +192,39 @@ fn sandbox_error(failure: Failure) -> DocumentError {
 }
 
 /// Hands out the client ID for each load of a note's document, from the
-/// device's load reservation.
+/// device's load reservation: see
+/// [`LoadReservation::client_ids`](crate::LoadReservation::client_ids).
 pub type ClientIds = Box<dyn FnMut() -> Option<u64> + Send>;
+
+/// The low 29 bits of a client ID hold the load number (§22).
+const LOAD_MASK: u64 = (1 << 29) - 1;
+
+/// The changes this device made under one load, for a `text_update` that
+/// names that load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalUpdate {
+    /// The load the changes went in under: the `load` field of the
+    /// `text_update`.
+    pub load: u32,
+    /// The yrs update holding them.
+    pub bytes: Vec<u8>,
+}
+
+/// Where a note's lineage stands on this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineageStatus {
+    /// Records merge as they arrive.
+    Merging,
+    /// yrs holds updates whose dependencies haven't arrived, such as an
+    /// update that depends on an unreadable record: the device lists the
+    /// lineage for review as text until another record supplies them.
+    Pending,
+    /// A record stopped the lineage on this device. The note keeps its last
+    /// good state and waits for your choice; keeping that state writes a
+    /// `file` operation that covers every live operation of the note, which
+    /// ends the lineage, as a rebase from any device does.
+    Stopped(StopReason),
+}
 
 /// A text-mode note's document in the sandbox.
 pub struct Note {
@@ -207,10 +238,13 @@ pub struct Note {
     /// The yrs bytes of every record and local change merged, in order, to
     /// rebuild the document from.
     journal: Vec<Vec<u8>>,
-    /// Local changes not yet taken for a `text_update`.
-    unsent: Vec<Vec<u8>>,
-    stopped: bool,
+    /// Local changes not yet taken for a `text_update`, with the client ID
+    /// each went in under.
+    unsent: Vec<(u64, Vec<u8>)>,
+    stop: Option<StopReason>,
     pending: bool,
+    /// The client ID the document inserts under.
+    client: u64,
     client_ids: ClientIds,
 }
 
@@ -234,8 +268,9 @@ impl Note {
             deferred: VecDeque::new(),
             journal,
             unsent: Vec::new(),
-            stopped: false,
+            stop: None,
             pending,
+            client,
             client_ids,
         })
     }
@@ -252,7 +287,27 @@ impl Note {
 
     /// Whether a record stopped the lineage on this device.
     pub fn is_stopped(&self) -> bool {
-        self.stopped
+        self.stop.is_some()
+    }
+
+    /// Where the note's lineage stands on this device.
+    pub fn status(&self) -> LineageStatus {
+        match (self.stop, self.pending) {
+            (Some(reason), _) => LineageStatus::Stopped(reason),
+            (None, true) => LineageStatus::Pending,
+            (None, false) => LineageStatus::Merging,
+        }
+    }
+
+    /// The client ID the document inserts under now.
+    pub fn client_id(&self) -> u64 {
+        self.client
+    }
+
+    /// The load the document inserts under now, which a `text_update` of
+    /// its changes names.
+    pub fn load(&self) -> u32 {
+        (self.client & LOAD_MASK) as u32
     }
 
     /// Whether yrs holds updates whose dependencies haven't arrived.
@@ -348,7 +403,7 @@ impl Note {
         if verdict.outcome.is_err() {
             return effects;
         }
-        let Some(bytes) = record.yrs_bytes().filter(|_| !self.stopped) else {
+        let Some(bytes) = record.yrs_bytes().filter(|_| self.stop.is_none()) else {
             effects.events.push(Event::Skipped { id: record.id });
             return effects;
         };
@@ -381,7 +436,7 @@ impl Note {
             }
         };
         if let Some(reason) = stop {
-            self.stopped = true;
+            self.stop = Some(reason);
             effects.events.push(Event::Stopped {
                 id: record.id,
                 reason,
@@ -404,6 +459,7 @@ impl Note {
         self.guest = guest;
         self.len = len;
         self.pending = pending;
+        self.client = client;
         Ok(())
     }
 
@@ -411,7 +467,7 @@ impl Note {
     /// fails.
     fn recover(&mut self, failure: Failure) -> DocumentError {
         if self.rebuild().is_err() {
-            self.stopped = true;
+            self.stop.get_or_insert(StopReason::from_failure(&failure));
         }
         sandbox_error(failure)
     }
@@ -423,7 +479,7 @@ impl Note {
         let update = self.guest.output()?;
         if !update.is_empty() {
             self.journal.push(update.clone());
-            self.unsent.push(update);
+            self.unsent.push((self.client, update));
         }
         Ok(())
     }
@@ -465,7 +521,7 @@ impl Note {
             }
             Err(failure) => {
                 // The edit is in the editor but not in the document.
-                self.stopped = true;
+                self.stop = Some(StopReason::from_failure(&failure));
                 Err(self.recover(failure))
             }
         }
@@ -509,19 +565,41 @@ impl Note {
         result.map(|_| ()).map_err(|failure| self.recover(failure))
     }
 
-    /// The yrs update holding your changes since the last call, for a
-    /// `text_update`; `None` when there were none, or once the lineage
-    /// stopped.
-    pub fn take_update(&mut self) -> Result<Option<Vec<u8>>, DocumentError> {
+    /// Your changes since the last call, one update per load they went in
+    /// under, for the `text_update`s that carry them; empty when there were
+    /// none, or once the lineage stopped.
+    pub fn take_updates(&mut self) -> Result<Vec<LocalUpdate>, DocumentError> {
         let unsent = std::mem::take(&mut self.unsent);
-        if self.stopped || unsent.is_empty() {
-            return Ok(None);
+        if self.stop.is_some() {
+            return Ok(Vec::new());
         }
-        if unsent.len() == 1 {
-            return Ok(unsent.into_iter().next());
+        let mut updates = Vec::new();
+        let mut rest = unsent.as_slice();
+        while let Some((client, _)) = rest.first() {
+            let run = rest
+                .iter()
+                .take_while(|(other, _)| other == client)
+                .count();
+            let (group, tail) = rest.split_at(run);
+            rest = tail;
+            let bytes = match group {
+                [(_, update)] => update.clone(),
+                _ => self.merge(group.iter().map(|(_, update)| update.as_slice()))?,
+            };
+            updates.push(LocalUpdate {
+                load: (client & LOAD_MASK) as u32,
+                bytes,
+            });
         }
+        Ok(updates)
+    }
+
+    fn merge<'a>(
+        &mut self,
+        updates: impl Iterator<Item = &'a [u8]>,
+    ) -> Result<Vec<u8>, DocumentError> {
         let mut input = Vec::new();
-        for update in &unsent {
+        for update in updates {
             input.extend_from_slice(&(update.len() as u32).to_le_bytes());
             input.extend_from_slice(update);
         }
@@ -536,7 +614,7 @@ impl Note {
             }
             self.guest.output()
         })();
-        result.map(Some).map_err(|failure| self.recover(failure))
+        result.map_err(|failure| self.recover(failure))
     }
 
     fn read(&mut self, export: &str) -> Result<Vec<u8>, DocumentError> {

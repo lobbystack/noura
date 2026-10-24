@@ -1295,6 +1295,7 @@ name = "collab-sandbox"
 version = "0.2.0"
 dependencies = [
  "blake3",
+ "editor-core",
  "libc",
  "plugin-host",
  "proptest",

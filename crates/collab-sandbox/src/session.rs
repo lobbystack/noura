@@ -17,7 +17,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::Sandbox;
-use crate::note::{ClientIds, DocumentError, Effects, Event, Note, RemoteRecord};
+use crate::note::{
+    ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, RemoteRecord, StopReason,
+};
 use crate::op::{Mismatch, Op, transform};
 
 /// An edit, undo or redo from the editor.
@@ -68,7 +70,7 @@ enum Reply {
     Change(ServerMessage),
     Event(Event),
     Failed(DocumentError),
-    Update(Result<Option<Vec<u8>>, DocumentError>),
+    Update(Result<Vec<LocalUpdate>, DocumentError>),
     State(Result<Vec<u8>, DocumentError>),
     Text(Result<String, DocumentError>),
     Position(Result<Vec<u8>, DocumentError>),
@@ -137,6 +139,8 @@ pub struct NoteHandle {
     outgoing: VecDeque<(u64, Op)>,
     /// The editor's text length in UTF-16 units.
     len: u32,
+    /// Where the lineage stands, as the thread's events reported it.
+    status: LineageStatus,
     started: Instant,
     hold: Arc<Hold>,
     thread: Option<JoinHandle<()>>,
@@ -187,6 +191,7 @@ impl NoteHandle {
                 received: 0,
                 outgoing: VecDeque::new(),
                 len,
+                status: LineageStatus::Merging,
                 started: Instant::now(),
                 hold,
                 thread: Some(thread),
@@ -288,8 +293,30 @@ impl NoteHandle {
                 self.len = op.target_len();
                 changes.push(op);
             }
-            Reply::Event(event) => self.events.push(event),
-            Reply::Failed(error) => return Err(error.into()),
+            Reply::Event(event) => {
+                match event {
+                    Event::Stopped { reason, .. } => self.status = LineageStatus::Stopped(reason),
+                    Event::Pending(pending) => {
+                        if !matches!(self.status, LineageStatus::Stopped(_)) {
+                            self.status = if pending {
+                                LineageStatus::Pending
+                            } else {
+                                LineageStatus::Merging
+                            };
+                        }
+                    }
+                    _ => {}
+                }
+                self.events.push(event);
+            }
+            Reply::Failed(error) => {
+                if let DocumentError::Sandbox(_) = error
+                    && !matches!(self.status, LineageStatus::Stopped(_))
+                {
+                    self.status = LineageStatus::Stopped(StopReason::Trap);
+                }
+                return Err(error.into());
+            }
             _ => {}
         }
         Ok(())
@@ -343,9 +370,14 @@ impl NoteHandle {
         }
     }
 
-    /// The update holding your changes since the last call, for a
-    /// `text_update`.
-    pub fn take_update(&mut self) -> Result<Option<Vec<u8>>, HandleError> {
+    /// Where the note's lineage stands, as of the replies taken in so far.
+    pub fn status(&self) -> LineageStatus {
+        self.status
+    }
+
+    /// Your changes since the last call, one update per load, for the
+    /// `text_update`s that carry them.
+    pub fn take_updates(&mut self) -> Result<Vec<LocalUpdate>, HandleError> {
         self.send(Request::TakeUpdate)?;
         match self.wait_for(|reply| matches!(reply, Reply::Update(_)))? {
             Reply::Update(update) => Ok(update?),
@@ -500,7 +532,7 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, hold
                     reply = Some(Reply::Failed(error));
                 }
             }
-            Some(Request::TakeUpdate) => reply = Some(Reply::Update(note.take_update())),
+            Some(Request::TakeUpdate) => reply = Some(Reply::Update(note.take_updates())),
             Some(Request::State) => reply = Some(Reply::State(note.state())),
             Some(Request::Text) => reply = Some(Reply::Text(note.text())),
             Some(Request::EncodePosition { index, after }) => {
