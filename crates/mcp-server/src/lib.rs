@@ -1,633 +1,355 @@
-#![allow(
-    clippy::result_large_err,
-    reason = "MCP delegates to local-core and preserves its structured public errors"
-)]
+//! Noura's MCP server. An AI tool such as Claude Desktop or Cursor starts
+//! it with a workspace folder and talks to it over stdio.
+//!
+//! The kernel tools `workspace.search`, `workspace.read`, `notes.create`
+//! and `notes.update` adapt `app-core`'s workspace services, and each
+//! tool of a plugin the workspace enables becomes `<plugin>.<tool>`, such
+//! as `tasks.list`, which `app-core` runs through the plugin host with
+//! this device's approvals. The server adds no rules of its own: every
+//! change follows the app's file rules and is on disk before the tool
+//! answers. [`test_connection`] starts a configured command as an AI tool
+//! would, for Settings' Test connection.
 
-use std::sync::{Arc, Mutex};
+mod probe;
 
-use local_core::sync::{OsSyncCredentials, SyncAccountService};
-use local_core::{CreateObjectInput, ObjectFilter, ObjectPatch, SearchInput, WorkspaceEngine};
+use std::{ffi::OsString, future::Future, path::PathBuf, pin::Pin, sync::Arc};
+
+use app_core::{AgentWorkspace, AppError, Item, NoteChanges, PluginTool, SearchHit, SearchQuery};
 use rmcp::{
-    ServerHandler,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    ErrorData, ServerHandler,
+    handler::server::{
+        router::tool::{ToolRoute, ToolRouter},
+        tool::ToolCallContext,
+        wrapper::Parameters,
+    },
+    model::{CallToolResponse, CallToolResult, ContentBlock, JsonObject, Tool},
     schemars, tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
+use serde_json::{Value, json};
+
+pub use probe::{Answered, test_connection};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchParams {
+    /// The words to find. Every word must match, a partial word matches
+    /// the start of a word, and punctuation counts as plain text.
     pub query: String,
-    pub limit: Option<u32>,
+    /// Only items of this type, such as `note`, `task` or `project`.
+    #[serde(rename = "type")]
+    pub object_type: Option<String>,
+    /// Only files in this workspace folder and its subfolders, such as
+    /// `Notes/Ideas`.
+    pub folder: Option<String>,
+    /// Only notes with this tag.
+    pub tag: Option<String>,
 }
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReadParams {
-    pub id: String,
-}
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CreateParams {
-    pub title: String,
-    pub body: Option<String>,
-    pub relative_path: Option<String>,
-}
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct UpdateParams {
-    pub id: String,
-    pub title: Option<String>,
-    pub body: Option<String>,
-    pub properties: Option<serde_json::Map<String, serde_json::Value>>,
-    pub expected_revision: String,
-}
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TaskListParams {
-    pub status: Option<String>,
-    pub project: Option<String>,
-}
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TaskCreateParams {
-    pub title: String,
-    pub body: Option<String>,
-    pub relative_path: Option<String>,
-    pub status: Option<String>,
-    pub priority: Option<String>,
-    pub due: Option<String>,
-    pub project: Option<String>,
+    /// The stable ID of a note, task, project or other object.
+    pub id: Option<String>,
+    /// The workspace path of a Markdown or plain-text file, as search
+    /// returns it.
+    pub path: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateNoteParams {
+    /// The note's title, which names its file.
+    pub title: String,
+    /// The note's text.
+    pub body: Option<String>,
+    /// The workspace folder to put it in, such as `Notes/Ideas`. The top
+    /// of the workspace when left out.
+    pub folder: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateNoteParams {
+    /// The note's stable ID.
+    pub id: String,
+    /// The revision you read. A note that changed since stays as it is.
+    pub expected_revision: String,
+    /// A new title, which renames the note's file.
+    pub title: Option<String>,
+    /// The note's new text.
+    pub body: Option<String>,
+    /// Properties to set. A null value removes one.
+    pub properties: Option<serde_json::Map<String, Value>>,
+}
+
+/// The server for one workspace.
 #[derive(Clone)]
 pub struct NouraMcp {
-    engine: Arc<Mutex<WorkspaceEngine>>,
+    agent: Arc<AgentWorkspace>,
     tool_router: ToolRouter<Self>,
 }
+
 impl NouraMcp {
-    pub fn new(engine: WorkspaceEngine) -> Self {
-        Self {
-            engine: Arc::new(Mutex::new(engine)),
-            tool_router: Self::tool_router(),
+    /// The server for `agent`'s workspace: the kernel tools, then the
+    /// tools of the plugins that started. A plugin tool whose name a
+    /// kernel tool already uses is left out.
+    pub fn new(agent: Arc<AgentWorkspace>) -> Self {
+        let mut tool_router = Self::tool_router();
+        for tool in agent.plugin_tools() {
+            let name = format!("{}.{}", tool.plugin_id, tool.name);
+            if tool_router.has_route(&name) {
+                tracing::warn!(
+                    name,
+                    "a plugin tool has a kernel tool's name and was left out"
+                );
+                continue;
+            }
+            match plugin_route(name, tool) {
+                Some(route) => tool_router.add_route(route),
+                None => tracing::warn!("a plugin tool's schema isn't a JSON object"),
+            }
         }
-    }
-    fn with_engine<T>(
-        &self,
-        run: impl FnOnce(&WorkspaceEngine) -> local_core::Result<T>,
-    ) -> Result<T, String> {
-        let engine = self
-            .engine
-            .lock()
-            .map_err(|_| "workspace lock unavailable".to_owned())?;
-        run(&engine).map_err(|error| format!("{}: {}", error.code, error.message))
+        Self { agent, tool_router }
     }
 
-    pub async fn run_reconciliation(self) {
-        let mut last_periodic = std::time::Instant::now();
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-            let result = self.with_engine(|engine| {
-                engine.poll_external_changes(std::time::Duration::from_millis(25))?;
-                if last_periodic.elapsed() >= std::time::Duration::from_secs(60) {
-                    engine.reconcile()?;
-                    last_periodic = std::time::Instant::now();
-                }
-                Ok(())
-            });
-            if let Err(error) = result {
-                tracing::warn!(%error, "workspace reconciliation failed");
-            }
+    /// The names of the tools the server offers, sorted.
+    pub fn tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Run `work` against the workspace off the async threads, and answer
+    /// with its JSON or its error.
+    async fn run(
+        &self,
+        work: impl FnOnce(&AgentWorkspace) -> Result<Value, AppError> + Send + 'static,
+    ) -> Result<String, String> {
+        let agent = self.agent.clone();
+        match tokio::task::spawn_blocking(move || work(&agent)).await {
+            Ok(Ok(value)) => Ok(value.to_string()),
+            Ok(Err(error)) => Err(error_json(&error)),
+            Err(_) => Err(stopped()),
         }
     }
 }
 
-#[tool_router(router=tool_router)]
+#[tool_router(router = tool_router)]
 impl NouraMcp {
     #[tool(
         name = "workspace.search",
-        description = "Search workspace files and managed objects"
+        description = "Search the workspace's notes and other files. Each hit has the file's \
+                       path, title, type, folder and the text around the match."
     )]
     async fn workspace_search(
         &self,
         Parameters(input): Parameters<SearchParams>,
     ) -> Result<String, String> {
-        let values = self.with_engine(|engine| {
-            engine.search(&SearchInput {
-                query: input.query,
-                limit: input.limit,
-                ..SearchInput::default()
-            })
-        })?;
-        serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
+        let query = SearchQuery {
+            text: input.query,
+            object_type: input.object_type,
+            folder: input.folder.unwrap_or_default(),
+            tag: input.tag.unwrap_or_default(),
+        };
+        self.run(move |agent| {
+            let hits = agent.workspace().search(&query)?;
+            Ok(Value::Array(hits.iter().map(hit_json).collect()))
+        })
+        .await
     }
+
     #[tool(
         name = "workspace.read",
-        description = "Read a managed workspace object by stable ID"
+        description = "Read a note, task, project or other Markdown file by its stable ID or \
+                       its path: its properties, its text and the revision a change must name."
     )]
     async fn workspace_read(
         &self,
         Parameters(input): Parameters<ReadParams>,
     ) -> Result<String, String> {
-        let value = self
-            .with_engine(|engine| engine.get_object(&input.id))?
-            .ok_or_else(|| "object_not_found: The object does not exist".to_owned())?;
-        serde_json::to_string(&value).map_err(|_| "response serialization failed".into())
+        self.run(move |agent| {
+            let item = match (input.id, input.path) {
+                (Some(id), None) => agent.workspace().read_item(&id)?,
+                (None, Some(path)) => agent.workspace().read_item_at(&path)?,
+                _ => {
+                    return Err(AppError::new(
+                        "id_or_path_required",
+                        "Pass either id or path.",
+                    ));
+                }
+            };
+            Ok(item_json(&item))
+        })
+        .await
     }
-    #[tool(name = "notes.create", description = "Create a Markdown Note")]
+
+    #[tool(
+        name = "notes.create",
+        description = "Create a note with a title and text, in a workspace folder or at the \
+                       top of the workspace. The title names its file and must be free there."
+    )]
     async fn notes_create(
         &self,
-        Parameters(input): Parameters<CreateParams>,
+        Parameters(input): Parameters<CreateNoteParams>,
     ) -> Result<String, String> {
-        self.create(
-            "note",
-            input.title,
-            input.body,
-            input.relative_path,
-            std::collections::BTreeMap::new(),
-        )
+        self.run(move |agent| {
+            let note = agent.workspace().create_named_note(
+                input.folder.as_deref().unwrap_or_default(),
+                &input.title,
+                input.body.as_deref().unwrap_or_default(),
+            )?;
+            Ok(item_json(&note))
+        })
+        .await
     }
+
     #[tool(
         name = "notes.update",
-        description = "Update a Note after checking its content revision"
+        description = "Change a note's title, text or properties, by its stable ID. Pass the \
+                       revision you read: a note that changed since stays as it is."
     )]
     async fn notes_update(
         &self,
-        Parameters(input): Parameters<UpdateParams>,
+        Parameters(input): Parameters<UpdateNoteParams>,
     ) -> Result<String, String> {
-        self.update("note", input)
-    }
-    #[tool(
-        name = "tasks.list",
-        description = "List Tasks with optional status and Project filters"
-    )]
-    async fn tasks_list(
-        &self,
-        Parameters(input): Parameters<TaskListParams>,
-    ) -> Result<String, String> {
-        let filter = ObjectFilter {
-            object_type: Some("task".into()),
-            status: input.status,
-            project: input.project,
-            ..ObjectFilter::default()
+        let changes = NoteChanges {
+            title: input.title,
+            body: input.body,
+            properties: input.properties.unwrap_or_default().into_iter().collect(),
+            expected_revision: input.expected_revision,
         };
-        let values = self.with_engine(|engine| engine.query_objects_filtered(&filter))?;
-        serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
-    }
-    #[tool(name = "tasks.create", description = "Create a Markdown Task")]
-    async fn tasks_create(
-        &self,
-        Parameters(input): Parameters<TaskCreateParams>,
-    ) -> Result<String, String> {
-        let mut properties = std::collections::BTreeMap::new();
-        if let Some(value) = input.status {
-            properties.insert("status".into(), serde_json::json!(value));
-        }
-        if let Some(value) = input.priority {
-            properties.insert("priority".into(), serde_json::json!(value));
-        }
-        if let Some(value) = input.due {
-            properties.insert("due".into(), serde_json::json!(value));
-        }
-        if let Some(value) = input.project {
-            properties.insert("project".into(), serde_json::json!(value));
-        }
-        self.create(
-            "task",
-            input.title,
-            input.body,
-            input.relative_path,
-            properties,
-        )
-    }
-    #[tool(
-        name = "tasks.update",
-        description = "Update Task fields after checking its content revision"
-    )]
-    async fn tasks_update(
-        &self,
-        Parameters(input): Parameters<UpdateParams>,
-    ) -> Result<String, String> {
-        self.update("task", input)
-    }
-    #[tool(name = "projects.list", description = "List managed Projects")]
-    async fn projects_list(&self) -> Result<String, String> {
-        let filter = ObjectFilter {
-            object_type: Some("project".into()),
-            ..ObjectFilter::default()
-        };
-        let values = self.with_engine(|engine| engine.query_objects_filtered(&filter))?;
-        serde_json::to_string(&values).map_err(|_| "response serialization failed".into())
-    }
-
-    fn create(
-        &self,
-        object_type: &str,
-        title: String,
-        body: Option<String>,
-        relative_path: Option<String>,
-        properties: std::collections::BTreeMap<String, serde_json::Value>,
-    ) -> Result<String, String> {
-        let input = CreateObjectInput {
-            object_type: object_type.into(),
-            title,
-            body: body.unwrap_or_default(),
-            relative_path,
-            properties,
-        };
-        let value = self.with_engine(|engine| {
-            local_core::sync::route_create_object(
-                engine,
-                || SyncAccountService::default().connection(&OsSyncCredentials),
-                &OsSyncCredentials,
-                input,
-            )
-        })?;
-        serde_json::to_string(&value).map_err(|_| "response serialization failed".into())
-    }
-    fn update(&self, expected_type: &str, input: UpdateParams) -> Result<String, String> {
-        let properties = input.properties.unwrap_or_default().into_iter().collect();
-        let value = self.with_engine(|engine| {
-            let object = engine.get_object(&input.id)?.ok_or_else(|| {
-                local_core::CoreError::validation(
-                    "object_not_found",
-                    "The object does not exist",
-                    "mcp_update",
-                )
-            })?;
-            if object.object_type != expected_type {
-                return Err(local_core::CoreError::validation(
-                    "object_type_mismatch",
-                    "The object does not match this operation",
-                    "mcp_update",
-                ));
-            }
-            let patch = ObjectPatch {
-                title: input.title,
-                body: input.body,
-                properties,
-                remove_properties: Vec::new(),
-                expected_revision: input.expected_revision,
-            };
-            local_core::sync::route_update_object(
-                engine,
-                || SyncAccountService::default().connection(&OsSyncCredentials),
-                &OsSyncCredentials,
-                &input.id,
-                patch,
-                Some(expected_type),
-            )
-        })?;
-        serde_json::to_string(&value).map_err(|_| "response serialization failed".into())
+        self.run(move |agent| {
+            let note = agent.workspace().update_note(&input.id, &changes)?;
+            Ok(item_json(&note))
+        })
+        .await
     }
 }
 
-#[tool_handler(router=self.tool_router)]
+#[tool_handler(
+    router = self.tool_router,
+    name = "noura",
+    instructions = "Search, read and change the notes, tasks and projects of one Noura \
+                    workspace. Read an item before you change it, and pass the revision you \
+                    read. Your changes reach the files at once, without asking the person."
+)]
 impl ServerHandler for NouraMcp {}
 
-/// Serve the workspace at `workspace` over stdio until the client disconnects.
-/// Both the standalone `noura-mcp` binary and the desktop app's `mcp` mode use
-/// this, so external tools get the same services either way.
-pub async fn serve_stdio(workspace: String) -> Result<(), Box<dyn std::error::Error>> {
+type ToolFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>>;
+
+/// The route for a plugin's tool, named `name`, or `None` when its schema
+/// isn't a JSON object.
+fn plugin_route(name: String, tool: PluginTool) -> Option<ToolRoute<NouraMcp>> {
+    let schema: JsonObject = serde_json::from_str(&tool.input_schema).ok()?;
+    let PluginTool {
+        plugin_id,
+        name: tool_name,
+        description,
+        ..
+    } = tool;
+    let attr = Tool::new(name, description, Arc::new(schema));
+    Some(ToolRoute::new_dyn(
+        attr,
+        move |context: ToolCallContext<'_, NouraMcp>| -> ToolFuture<'_> {
+            let agent = context.service.agent.clone();
+            let arguments = Value::Object(context.arguments.unwrap_or_default()).to_string();
+            let (plugin_id, tool_name) = (plugin_id.clone(), tool_name.clone());
+            Box::pin(async move {
+                let answer = tokio::task::spawn_blocking(move || {
+                    agent.call_plugin_tool(&plugin_id, &tool_name, &arguments)
+                })
+                .await;
+                let result = match answer {
+                    Ok(Ok(answer)) => CallToolResult::success(vec![ContentBlock::text(answer)]),
+                    Ok(Err(error)) => {
+                        CallToolResult::error(vec![ContentBlock::text(error_json(&error))])
+                    }
+                    Err(_) => CallToolResult::error(vec![ContentBlock::text(stopped())]),
+                };
+                Ok(CallToolResponse::Complete(result))
+            })
+        },
+    ))
+}
+
+/// An error as the agent reads it: its stable code and a message.
+fn error_json(error: &AppError) -> String {
+    json!({ "code": error.code, "message": error.message }).to_string()
+}
+
+fn stopped() -> String {
+    json!({
+        "code": "tool_stopped",
+        "message": "The tool stopped before it answered. Nothing else changed.",
+    })
+    .to_string()
+}
+
+fn hit_json(hit: &SearchHit) -> Value {
+    json!({
+        "path": hit.relative_path,
+        "title": hit.title,
+        "type": hit.object_type,
+        "folder": hit.folder,
+        "snippet": hit.snippet,
+    })
+}
+
+fn item_json(item: &Item) -> Value {
+    json!({
+        "id": item.id,
+        "type": item.object_type,
+        "title": item.title,
+        "path": item.relative_path,
+        "revision": item.revision,
+        "properties": item.properties,
+        "body": item.body,
+    })
+}
+
+/// Serve the workspace in `folder`, with per-device state in `app_data`,
+/// over stdio until the AI tool disconnects. Both the desktop binary's
+/// `mcp` mode and the standalone `noura-mcp` binary use this.
+pub async fn serve_stdio(app_data: PathBuf, folder: PathBuf) -> Result<(), String> {
     use rmcp::ServiceExt;
-    let engine = WorkspaceEngine::open(workspace)?;
-    engine.set_system_trash(local_core::os_trash());
-    let handler = NouraMcp::new(engine);
-    tokio::spawn(handler.clone().run_reconciliation());
-    let server = handler.serve(rmcp::transport::stdio()).await?;
-    server.waiting().await?;
+    let agent = tokio::task::spawn_blocking(move || AgentWorkspace::open(app_data, &folder))
+        .await
+        .map_err(|_| "Noura stopped while it opened the workspace.".to_owned())?
+        .map_err(|error| error.message)?;
+    let server = NouraMcp::new(Arc::new(agent))
+        .serve(rmcp::transport::stdio())
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "the MCP connection didn't start");
+            "The AI tool didn't start an MCP connection.".to_owned()
+        })?;
+    server.waiting().await.map_err(|error| {
+        tracing::warn!(%error, "the MCP connection ended with an error");
+        "The MCP connection ended with an error.".to_owned()
+    })?;
     Ok(())
 }
 
-/// Read `--workspace <path>` from command-line arguments.
-pub fn workspace_argument(arguments: &[String]) -> Option<String> {
-    arguments
-        .windows(2)
-        .find(|pair| pair[0] == "--workspace")
-        .map(|pair| pair[1].clone())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use local_core::sync::{
-        AccessMember, AccessObject, AccessPolicy, DeviceKeys, DocumentDescriptor, DocumentMode,
-        SyncCredentials, WorkspaceRole,
-    };
-    use tempfile::tempdir;
-
-    #[derive(Default)]
-    struct Memory(std::sync::Mutex<std::collections::BTreeMap<String, String>>);
-    impl SyncCredentials for Memory {
-        fn read(&self, key: &str) -> local_core::Result<zeroize::Zeroizing<String>> {
-            self.0
-                .lock()
-                .unwrap()
-                .get(key)
-                .cloned()
-                .map(zeroize::Zeroizing::new)
-                .ok_or_else(|| local_core::CoreError::validation("test_missing", "missing", "test"))
-        }
-        fn write(&self, key: &str, value: &str) -> local_core::Result<()> {
-            self.0.lock().unwrap().insert(key.into(), value.into());
-            Ok(())
-        }
-    }
-
-    /// A note whose signed access policy makes it a collaborative text document.
-    fn collaborative_note(engine: &WorkspaceEngine) -> (String, String) {
-        let note = engine
-            .create_object(CreateObjectInput {
-                object_type: "note".into(),
-                title: "Shared".into(),
-                body: "Body".into(),
-                relative_path: Some("note.md".into()),
-                properties: std::collections::BTreeMap::new(),
-            })
-            .unwrap();
-        let device = DeviceKeys::create(&Memory::default()).unwrap();
-        let policy = AccessPolicy::sign(
-            &engine.manifest().id,
-            "1",
-            None,
-            &device,
-            vec![AccessMember {
-                account_id: "owner".into(),
-                role: WorkspaceRole::Owner,
-            }],
-            vec![AccessObject {
-                object_id: note.value.id.clone(),
-                epoch: 2,
-                grants: vec![],
-                envelopes: vec![],
-                document: Some(DocumentDescriptor {
-                    generation: "generation-one".into(),
-                    mode: DocumentMode::Text,
-                }),
-            }],
-        )
-        .unwrap();
-        engine
-            .sync_accept_access_policy("0", None, &policy)
-            .unwrap();
-        (note.value.id, note.revision)
-    }
-
-    #[tokio::test]
-    async fn updating_a_collaborative_note_with_sync_off_writes_locally() {
-        let workspace = tempdir().unwrap();
-        let app_data = tempdir().unwrap();
-        let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "MCP", app_data.path())
-                .unwrap();
-        let (id, revision) = collaborative_note(&engine);
-        assert!(engine.collaboration_object_is_active(&id).unwrap());
-        assert!(!engine.sync_plugin_enabled());
-        let server = NouraMcp::new(engine);
-        let output = server
-            .notes_update(Parameters(UpdateParams {
-                id: id.clone(),
-                title: None,
-                body: Some("Edited through MCP\n".into()),
-                properties: None,
-                expected_revision: revision,
-            }))
-            .await
-            .unwrap();
-        let result: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(result["value"]["body"], "Edited through MCP\n");
-        let on_disk = std::fs::read_to_string(workspace.path().join("note.md")).unwrap();
-        assert!(on_disk.contains("Edited through MCP"));
-    }
-    #[test]
-    fn tool_catalog_exposes_the_initial_shared_service_adapters() {
-        let workspace = tempdir().unwrap();
-        let app_data = tempdir().unwrap();
-        let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "MCP", app_data.path())
-                .unwrap();
-        let server = NouraMcp::new(engine);
-        let names = server
-            .tool_router
-            .list_all()
-            .into_iter()
-            .map(|tool| tool.name.into_owned())
-            .collect::<Vec<_>>();
-        assert!(names.contains(&"workspace.search".to_owned()));
-        assert!(names.contains(&"notes.create".to_owned()));
-        assert!(names.contains(&"tasks.update".to_owned()));
-        assert!(names.contains(&"projects.list".to_owned()));
-    }
-
-    #[tokio::test]
-    async fn task_update_rejects_a_note_id() {
-        let workspace = tempdir().unwrap();
-        let app_data = tempdir().unwrap();
-        let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "MCP", app_data.path())
-                .unwrap();
-        let note = engine
-            .create_object(CreateObjectInput {
-                object_type: "note".into(),
-                title: "Note".into(),
-                body: String::new(),
-                relative_path: Some("note.md".into()),
-                properties: std::collections::BTreeMap::new(),
-            })
-            .unwrap();
-        let server = NouraMcp::new(engine);
-        let error = server
-            .tasks_update(Parameters(UpdateParams {
-                id: note.value.id,
-                title: Some("Wrong adapter".into()),
-                body: None,
-                properties: None,
-                expected_revision: note.revision,
-            }))
-            .await
-            .unwrap_err();
-        assert!(error.starts_with("object_type_mismatch:"));
-    }
-
-    #[tokio::test]
-    async fn task_create_writes_a_durable_project_task() {
-        let workspace = tempdir().unwrap();
-        let app_data = tempdir().unwrap();
-        let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "MCP", app_data.path())
-                .unwrap();
-        let project = engine
-            .create_object(CreateObjectInput {
-                object_type: "project".into(),
-                title: "Demo".into(),
-                body: String::new(),
-                relative_path: None,
-                properties: std::collections::BTreeMap::new(),
-            })
-            .unwrap()
-            .value;
-        let server = NouraMcp::new(engine);
-
-        let output = server
-            .tasks_create(Parameters(TaskCreateParams {
-                title: "Verify board refresh".into(),
-                body: Some("- Accepts external edits without data loss".into()),
-                relative_path: None,
-                status: Some("todo".into()),
-                priority: Some("high".into()),
-                due: None,
-                project: Some(project.id.clone()),
-            }))
-            .await
-            .unwrap();
-        let result: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let task = &result["value"];
-        let id = task["id"].as_str().unwrap();
-        let relative_path = task["relativePath"].as_str().unwrap();
-
-        assert!(workspace.path().join(relative_path).is_file());
-        let stored = server
-            .with_engine(|engine| engine.get_object(id))
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.properties["priority"], "high");
-        assert_eq!(stored.properties["project"], project.id);
-        assert_eq!(stored.body, "- Accepts external edits without data loss");
-    }
-
-    #[tokio::test]
-    async fn local_app_and_mcp_share_canonical_files_and_rebuilt_projections() {
-        // A workspace under the current directory keeps notify's reported path
-        // representation identical on macOS (`/var` can otherwise become
-        // `/private/var` and fail a lexical strip_prefix in the test fixture).
-        let workspace = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let app_data = tempdir().unwrap();
-        let mcp_data = tempdir().unwrap();
-        let bootstrap_engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Local alpha", app_data.path())
-                .unwrap();
-        let project = bootstrap_engine
-            .create_object(CreateObjectInput {
-                object_type: "project".into(),
-                title: "Alpha project".into(),
-                body: "Canonical project body".into(),
-                relative_path: Some("projects/alpha/project.md".into()),
-                properties: std::collections::BTreeMap::from([(
-                    "status".into(),
-                    serde_json::json!("active"),
-                )]),
-            })
-            .unwrap()
-            .value;
-        let first_task = bootstrap_engine
-            .create_object(CreateObjectInput {
-                object_type: "task".into(),
-                title: "Initial local task".into(),
-                body: "Created by the desktop engine".into(),
-                relative_path: Some("projects/alpha/tasks/initial.md".into()),
-                properties: std::collections::BTreeMap::from([
-                    ("status".into(), serde_json::json!("todo")),
-                    ("priority".into(), serde_json::json!("medium")),
-                    ("due".into(), serde_json::json!("2026-09-15")),
-                    ("project".into(), serde_json::json!(project.id.clone())),
-                ]),
-            })
-            .unwrap();
-
-        let project_bytes =
-            std::fs::read_to_string(workspace.path().join(&project.relative_path)).unwrap();
-        let task_bytes =
-            std::fs::read_to_string(workspace.path().join(&first_task.value.relative_path))
-                .unwrap();
-        assert!(project_bytes.contains(&format!("id: {}", project.id)));
-        assert!(project_bytes.contains("Canonical project body"));
-        assert!(task_bytes.contains(&format!("project: {}", project.id)));
-        assert!(task_bytes.contains("due: 2026-09-15"));
-
-        drop(bootstrap_engine);
-        let app_engine =
-            WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
-
-        let mcp_engine =
-            WorkspaceEngine::open_with_app_data(workspace.path(), mcp_data.path()).unwrap();
-        let server = NouraMcp::new(mcp_engine);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let updated = server
-            .tasks_update(Parameters(UpdateParams {
-                id: first_task.value.id.clone(),
-                title: Some("MCP revised task".into()),
-                body: Some("Updated through the shared MCP adapter".into()),
-                properties: Some(serde_json::Map::from_iter([(
-                    "status".into(),
-                    serde_json::json!("in-progress"),
-                )])),
-                expected_revision: first_task.revision,
-            }))
-            .await
-            .unwrap();
-        let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
-        assert_eq!(updated["value"]["title"], "MCP revised task");
-
-        let created = server
-            .tasks_create(Parameters(TaskCreateParams {
-                title: "MCP follow-up".into(),
-                body: Some("Second canonical task from MCP".into()),
-                relative_path: Some("projects/alpha/tasks/follow-up.md".into()),
-                status: Some("todo".into()),
-                priority: Some("high".into()),
-                due: Some("2026-09-16".into()),
-                project: Some(project.id.clone()),
-            }))
-            .await
-            .unwrap();
-        let created: serde_json::Value = serde_json::from_str(&created).unwrap();
-        let second_id = created["value"]["id"].as_str().unwrap().to_owned();
-
-        let listed = server
-            .tasks_list(Parameters(TaskListParams {
-                status: Some("todo".into()),
-                project: Some(project.id.clone()),
-            }))
-            .await
-            .unwrap();
-        let listed: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0]["id"], second_id);
-
-        let mut reconciled_paths = Vec::new();
-        for _ in 0..10 {
-            reconciled_paths.extend(
-                app_engine
-                    .poll_external_changes(std::time::Duration::from_millis(50))
-                    .unwrap(),
-            );
-            let tasks = app_engine.query_objects(Some("task")).unwrap();
-            if tasks.len() == 2 && tasks.iter().any(|task| task.title == "MCP revised task") {
-                break;
+/// The workspace folder in `--workspace <path>`, the only argument the
+/// server takes, read without assuming the path is UTF-8.
+pub fn workspace_argument(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Result<PathBuf, String> {
+    use lexopt::prelude::*;
+    let usage = || "Usage: noura mcp --workspace <folder>".to_owned();
+    let mut parser = lexopt::Parser::from_args(arguments);
+    let mut workspace = None;
+    while let Some(argument) = parser.next().map_err(|error| error.to_string())? {
+        match argument {
+            Long("workspace") => {
+                let value = parser.value().map_err(|_| usage())?;
+                workspace = Some(PathBuf::from(value));
             }
+            _ => return Err(usage()),
         }
-        // Some sandboxed test hosts suppress native filesystem notifications.
-        // The app's focus recovery performs this same full-file reconciliation.
-        if reconciled_paths.is_empty() {
-            app_engine.reconcile().unwrap();
-        }
-
-        let tasks = app_engine.query_objects(Some("task")).unwrap();
-        assert_eq!(tasks.len(), 2);
-        let revised = tasks
-            .iter()
-            .find(|task| task.id == first_task.value.id)
-            .unwrap();
-        assert_eq!(revised.title, "MCP revised task");
-        assert_eq!(revised.properties["status"], "in-progress");
-        assert_eq!(revised.properties["project"], project.id);
-        let follow_up = tasks.iter().find(|task| task.id == second_id).unwrap();
-        assert_eq!(follow_up.properties["status"], "todo");
-        assert_eq!(follow_up.properties["priority"], "high");
-        assert_eq!(follow_up.properties["project"], project.id);
-
-        let search = app_engine
-            .search(&SearchInput {
-                query: "MCP".into(),
-                ..SearchInput::default()
-            })
-            .unwrap();
-        assert_eq!(search.len(), 2);
-        let calendar = app_engine.calendar("2026-09-15", "2026-09-17").unwrap();
-        assert_eq!(calendar.len(), 2);
-        assert!(calendar.iter().any(|entry| entry.source_id == second_id));
     }
+    workspace.ok_or_else(usage)
 }
