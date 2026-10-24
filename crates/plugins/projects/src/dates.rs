@@ -90,7 +90,11 @@ impl Month {
     fn of(now: &Now) -> Option<Self> {
         let first = now.today.first_of_month();
         let next = first.checked_add(1.month()).ok()?;
-        let at = |day: Date| day.to_zoned(now.zone.clone()).ok().map(|day| day.timestamp());
+        let at = |day: Date| {
+            day.to_zoned(now.zone.clone())
+                .ok()
+                .map(|day| day.timestamp())
+        };
         Some(Self {
             first,
             next,
@@ -183,9 +187,6 @@ pub(crate) fn when(value: &str, now: &Now) -> Option<String> {
     if value.len() == 10 {
         return value.parse::<Date>().ok().map(day_name);
     }
-    let at = value
-        .parse::<Timestamp>()
-        .ok()?
-        .to_zoned(now.zone.clone());
+    let at = value.parse::<Timestamp>().ok()?.to_zoned(now.zone.clone());
     Some(format!("{}, {}", day_name(at.date()), at.strftime("%H:%M")))
 }

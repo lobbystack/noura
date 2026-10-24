@@ -152,8 +152,7 @@ fn text(input: &Map<String, Value>, key: &str) -> Result<Option<String>, String>
 
 /// A project as the commands answer with it.
 fn project_json(project: &Object) -> Value {
-    let properties: Value =
-        serde_json::from_str(&project.properties).unwrap_or_else(|_| json!({}));
+    let properties: Value = serde_json::from_str(&project.properties).unwrap_or_else(|_| json!({}));
     json!({
         "id": project.id,
         "title": project.title,
@@ -222,10 +221,6 @@ fn failure(error: &Error) -> String {
             json!({}),
         ),
         Error::Failed(message) => refusal("failed", message, json!({})),
-        _ => refusal(
-            "failed",
-            "Noura couldn't change the project.",
-            json!({}),
-        ),
+        _ => refusal("failed", "Noura couldn't change the project.", json!({})),
     }
 }

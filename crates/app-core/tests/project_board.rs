@@ -37,7 +37,10 @@ fn garden() -> Fixture {
         ("tasks/Water.md", &task(B, "todo", "kanban_order: a0\n")),
         ("tasks/Mulch.md", &task(C, "todo", "")),
         ("tasks/Prune.md", &task(D, "todo", "kanban_order: a0\n")),
-        ("tasks/Rake.md", &task(E, "in-progress", "kanban_order: V\n")),
+        (
+            "tasks/Rake.md",
+            &task(E, "in-progress", "kanban_order: V\n"),
+        ),
         ("tasks/Plant.md", &task(F, "done", "")),
         (
             "tasks/Paint.md",
@@ -69,7 +72,10 @@ fn column(label: &str, cards: &[&str]) -> (String, Vec<String>) {
 struct Opened {
     app: App,
     tab: TabId,
-    _plugins: (support::plugins::PluginFolder, support::plugins::PluginFolder),
+    _plugins: (
+        support::plugins::PluginFolder,
+        support::plugins::PluginFolder,
+    ),
 }
 
 fn opened(fixture: &Fixture) -> Option<Opened> {
@@ -200,7 +206,10 @@ fn a_drag_within_a_column_writes_only_the_cards_order_and_to_another_column_its_
         Some("in-progress".into())
     );
     assert!(key(&fixture, "tasks/Water.md").as_str() > "V");
-    assert_eq!(columns(&app, tab)[1], column("In progress", &["Rake", "Water"]));
+    assert_eq!(
+        columns(&app, tab)[1],
+        column("In progress", &["Rake", "Water"])
+    );
     // The page doesn't say anything went wrong.
     assert_eq!(text_of(projects::panel(&app, tab).root(), "notice"), None);
 }
@@ -308,11 +317,9 @@ fn board_order_survives_reopening_the_workspace_without_its_index() {
 
     let mut app = fixture.app();
     support::plugins::wait_until(&mut app, "Tasks and Projects run", |app| {
-        ["tasks", "projects"].iter().all(|id| {
-            app.plugins()
-                .iter()
-                .any(|row| row.id == *id && row.running)
-        })
+        ["tasks", "projects"]
+            .iter()
+            .all(|id| app.plugins().iter().any(|row| row.id == *id && row.running))
     });
     let tab = open_from_tree(&mut app, "projects/Garden/Garden.md");
     projects::panel_with(&mut app, tab, "board");
@@ -367,9 +374,9 @@ fn a_move_against_a_stale_revision_changes_nothing_and_reloads_the_board() {
 
 fn name_field_shows(app: &App, tab: TabId) -> bool {
     let view = projects::panel(app, tab);
-    find(view.root(), "new-task-name").is_some_and(|node| {
-        matches!(&node.kind, ViewKind::NameField { label, .. } if label == "New task name")
-    })
+    find(view.root(), "new-task-name").is_some_and(
+        |node| matches!(&node.kind, ViewKind::NameField { label, .. } if label == "New task name"),
+    )
 }
 
 #[test]
@@ -389,7 +396,11 @@ fn add_task_names_a_task_first_and_creates_it_in_the_project_through_tasks() {
     support::settle(&mut app);
     assert!(name_field_shows(&app, tab));
     // Escape creates nothing.
-    send_panel(&mut app, tab, PluginEvent::Cancelled("new-task-name".into()));
+    send_panel(
+        &mut app,
+        tab,
+        PluginEvent::Cancelled("new-task-name".into()),
+    );
     assert!(!name_field_shows(&app, tab));
     assert_eq!(fixture.snapshot(), before);
 
@@ -409,7 +420,10 @@ fn add_task_names_a_task_first_and_creates_it_in_the_project_through_tasks() {
         ["tasks/Sow beans.md"]
     );
     let sown = fixture.read("tasks/Sow beans.md");
-    assert_eq!(property(&sown, "project"), Some(format!("project_{H}").into()));
+    assert_eq!(
+        property(&sown, "project"),
+        Some(format!("project_{H}").into())
+    );
     assert_eq!(property(&sown, "status"), Some("todo".into()));
     assert_eq!(property(&sown, "priority"), Some("medium".into()));
     assert!(!name_field_shows(&app, tab));

@@ -39,7 +39,12 @@ impl Task {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let property = |key: &str| properties.get(key).and_then(Value::as_str).map(str::to_owned);
+        let property = |key: &str| {
+            properties
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
         let id = text("id")?;
         Some(Self {
             title: text("title").unwrap_or_else(|| id.clone()),
@@ -84,9 +89,9 @@ fn call(command: &str, input: &Value) -> Result<Value, Refused> {
         Err(Error::Busy(_)) => Err(Refused::Other(
             "Tasks is busy. Try again in a moment.".to_owned(),
         )),
-        Err(Error::CapabilityNotDeclared(_) | Error::TargetNotDeclared(_)) => Err(
-            Refused::Other("Projects isn't allowed to use the Tasks commands.".to_owned()),
-        ),
+        Err(Error::CapabilityNotDeclared(_) | Error::TargetNotDeclared(_)) => Err(Refused::Other(
+            "Projects isn't allowed to use the Tasks commands.".to_owned(),
+        )),
         Err(_) => Err(Refused::Other("Tasks couldn't do it.".to_owned())),
     }
 }
@@ -103,7 +108,11 @@ pub(crate) fn list(project: Option<&str>) -> Result<Vec<Task>, Refused> {
 
 /// Create a task titled `title` with `properties`.
 pub(crate) fn create(title: &str, properties: Value) -> Result<(), Refused> {
-    call("create", &json!({ "title": title, "properties": properties })).map(|_| ())
+    call(
+        "create",
+        &json!({ "title": title, "properties": properties }),
+    )
+    .map(|_| ())
 }
 
 /// Set `properties` of the task `id`, whose file the board read at

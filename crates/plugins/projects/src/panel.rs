@@ -320,7 +320,10 @@ fn notes_and_files(view: &mut View, project: &Project) {
             view.text(
                 notes_section,
                 "notes-problem",
-                &format!("Noura couldn't list the project's folder: {}", reason(&error)),
+                &format!(
+                    "Noura couldn't list the project's folder: {}",
+                    reason(&error)
+                ),
             );
             return;
         }

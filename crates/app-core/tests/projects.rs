@@ -35,7 +35,10 @@ fn garden() -> Fixture {
             ),
         ),
         ("projects/Garden/Soil.md", &note(A, "Loam.\n")),
-        ("projects/Garden/research/Compost.md", &note(B, "Turn it.\n")),
+        (
+            "projects/Garden/research/Compost.md",
+            &note(B, "Turn it.\n"),
+        ),
         ("projects/Garden/plan.pdf", b"%PDF-1.4\n"),
         ("projects/Garden/Sketch.md", b"A plain sketch.\n"),
         ("projects/Garden/Prune.md", &task(C, "done", "", &garden)),
@@ -345,8 +348,14 @@ fn with_tasks_off_a_project_opens_with_its_status_and_overview_and_says_tasks_is
         find(view.root(), "status").map(|node| &node.kind),
         Some(ViewKind::Input { value: InputValue::Choice(Some(status)), .. }) if status == "active"
     ));
-    assert_eq!(text_of(view.root(), "board-off").as_deref(), Some(TASKS_OFF));
-    assert_eq!(text_of(view.root(), "tasks-off").as_deref(), Some(TASKS_OFF));
+    assert_eq!(
+        text_of(view.root(), "board-off").as_deref(),
+        Some(TASKS_OFF)
+    );
+    assert_eq!(
+        text_of(view.root(), "tasks-off").as_deref(),
+        Some(TASKS_OFF)
+    );
     assert_eq!(
         text_of(view.root(), "dated-off").as_deref(),
         Some("Tasks is off, so this list leaves out the project's tasks.")
