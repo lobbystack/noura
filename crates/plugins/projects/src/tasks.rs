@@ -2,6 +2,8 @@
 //! Tasks plugin's commands. It never writes a task file itself: the host
 //! refuses Projects any write to an object of another plugin's type.
 
+use std::collections::BTreeSet;
+
 use plugin_sdk::{Error, command_calls};
 use serde_json::{Map, Value, json};
 
@@ -82,7 +84,7 @@ fn call(command: &str, input: &Value) -> Result<Value, Refused> {
             }
             let message = answer["message"]
                 .as_str()
-                .unwrap_or("Tasks couldn't do it.")
+                .unwrap_or("Tasks couldn't finish the change.")
                 .to_owned();
             Err(Refused::Other(message))
         }
@@ -92,17 +94,28 @@ fn call(command: &str, input: &Value) -> Result<Value, Refused> {
         Err(Error::CapabilityNotDeclared(_) | Error::TargetNotDeclared(_)) => Err(Refused::Other(
             "Projects isn't allowed to use the Tasks commands.".to_owned(),
         )),
-        Err(_) => Err(Refused::Other("Tasks couldn't do it.".to_owned())),
+        Err(_) => Err(Refused::Other(
+            "Tasks couldn't finish the change.".to_owned(),
+        )),
     }
 }
 
-/// Every task, or the tasks whose project is the project `project`.
+/// Every task, or the tasks whose project is the project `project`, each
+/// stable ID once, as Tasks first lists it: two cards with one node ID
+/// would stop the board from drawing.
 pub(crate) fn list(project: Option<&str>) -> Result<Vec<Task>, Refused> {
     let input = project.map_or_else(|| json!({}), |project| json!({ "project": project }));
     let answer = call("list", &input)?;
+    let mut seen = BTreeSet::new();
     Ok(answer["tasks"]
         .as_array()
-        .map(|tasks| tasks.iter().filter_map(Task::of).collect())
+        .map(|tasks| {
+            tasks
+                .iter()
+                .filter_map(Task::of)
+                .filter(|task| seen.insert(task.id.clone()))
+                .collect()
+        })
         .unwrap_or_default())
 }
 

@@ -380,6 +380,31 @@ fn with_tasks_off_a_project_opens_with_its_status_and_overview_and_says_tasks_is
 }
 
 #[test]
+fn a_note_copied_outside_noura_shows_once_in_its_project() {
+    let fixture = garden();
+    // A copy made in Finder holds the note's stable ID too.
+    support::write(
+        &fixture.root,
+        "projects/Garden/Soil copy.md",
+        &fixture.read("projects/Garden/Soil.md"),
+    );
+    let mut app = fixture.app();
+    let (Some(_tasks), Some(_projects)) = (with_tasks(&mut app), with_projects(&mut app)) else {
+        return;
+    };
+
+    let tab = open_from_tree(&mut app, "projects/Garden/Garden.md");
+    let view = projects::panel_with(&mut app, tab, "notes");
+
+    let notes: Vec<String> = items(view.root(), "notes")
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    assert_eq!(notes, [format!("note:note_{B}"), format!("note:note_{A}")]);
+    assert!(find(view.root(), "board").is_some());
+}
+
+#[test]
 fn the_project_page_shows_tasks_and_files_that_change_outside_noura() {
     let fixture = garden();
     let mut app = fixture.app();

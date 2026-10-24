@@ -21,7 +21,10 @@ mod panel;
 mod project;
 mod tasks;
 
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
+};
 
 use plugin_sdk::{
     Command, Error, Event, Node, ObjectType, Page, Plugin, View,
@@ -114,7 +117,9 @@ impl Plugin for Projects {
     }
 }
 
-/// Every project in the workspace, by title, then stable ID.
+/// Every project in the workspace, by title, then stable ID, then path,
+/// each stable ID once: two items with one node ID would stop the page
+/// from drawing.
 fn projects() -> Result<Vec<Project>, Error> {
     let mut projects: Vec<Project> = objects::list(PROJECT)?.iter().map(Project::of).collect();
     projects.sort_by(|a, b| {
@@ -123,7 +128,10 @@ fn projects() -> Result<Vec<Project>, Error> {
             .cmp(&b.title.to_lowercase())
             .then_with(|| a.title.cmp(&b.title))
             .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.path.cmp(&b.path))
     });
+    let mut seen = BTreeSet::new();
+    projects.retain(|project| seen.insert(project.id.clone()));
     Ok(projects)
 }
 

@@ -7,6 +7,8 @@
 //! `update` command, with the revision the board drew and an order key
 //! between the card's new neighbors.
 
+use std::collections::BTreeSet;
+
 use plugin_sdk::{
     Error, Event, Node, Value, View,
     navigation::{self, Placement},
@@ -337,7 +339,13 @@ fn notes_and_files(view: &mut View, project: &Project) {
     let is_note = |entry: &workspace::Entry| {
         entry.object_type.as_deref() == Some("note") && entry.object_id.is_some()
     };
-    let notes: Vec<&workspace::Entry> = entries.iter().filter(|entry| is_note(entry)).collect();
+    // Two notes with one stable ID, as after copying a note outside
+    // Noura, show once, at the path that sorts first.
+    let mut seen = BTreeSet::new();
+    let notes: Vec<&workspace::Entry> = entries
+        .iter()
+        .filter(|entry| is_note(entry) && seen.insert(entry.object_id.clone()))
+        .collect();
     if notes.is_empty() {
         view.text(
             notes_section,
@@ -518,7 +526,7 @@ fn delete(project: &str) {
         Err(error) => {
             let notice = match error {
                 Error::RevisionConflict(_) => {
-                    "The project changed elsewhere, so it wasn't deleted. Showing the latest version."
+                    "The project changed elsewhere, so Noura kept it. Showing the latest version."
                         .to_owned()
                 }
                 other => format!("Couldn't delete the project: {}", reason(&other)),
