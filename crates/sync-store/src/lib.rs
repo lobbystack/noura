@@ -1519,13 +1519,46 @@ impl<B: Backend> Store<B> {
         recipient: Id,
     ) -> Result<KeysResponse> {
         let cache = self.policies.clone();
-        self.backend
+        let (response, acknowledged) = self
+            .backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move {
-                    reads::current_keys(txn, &cache, session, workspace, recipient).await
+                    let response =
+                        reads::current_keys(txn, &cache, session, workspace, recipient).await?;
+                    // The fetch hands the device every answer to its
+                    // requests, which acknowledges them (§9).
+                    let acknowledged = reads::acknowledged_rewraps(
+                        txn,
+                        workspace,
+                        recipient,
+                        response.head_key_seq,
+                    )
+                    .await?;
+                    Ok((response, acknowledged))
                 })
             }))
-            .await
+            .await?;
+        if !acknowledged.is_empty() {
+            self.backend
+                .write(Box::new(move |txn: &mut B::Write| {
+                    Box::pin(async move {
+                        txn.lock(&LockPlan {
+                            workspace: Some(workspace),
+                            policy_exclusive: false,
+                            key_sequence: true,
+                            domains: Vec::new(),
+                            blobs: Vec::new(),
+                        })
+                        .await?;
+                        for request in acknowledged {
+                            txn.close_rewrap(workspace, &request).await?;
+                        }
+                        Ok(())
+                    })
+                }))
+                .await?;
+        }
+        Ok(response)
     }
 
     /// `POST /v2/workspaces/{w}/domains/{d}/rewrap`.
