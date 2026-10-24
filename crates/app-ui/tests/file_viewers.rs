@@ -458,6 +458,57 @@ fn a_pdf_embedded_in_a_note_shows_its_page_and_opens_in_a_tab_at_that_page() {
 }
 
 #[test]
+fn a_click_on_a_page_link_in_a_note_opens_the_pdf_at_that_page() {
+    let note = "See [the summary](Docs/text.pdf#page=2), [the end](text.pdf#page=9) \
+                and [the start](text.pdf#page=x).\n";
+    for (needle, label) in [
+        ("the summary", "Page 2 of 3"),
+        ("the end", "Page 3 of 3"),
+        ("the start", "Page 1 of 3"),
+    ] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Garden");
+        let mut harness = workspace(
+            app_data.path(),
+            &folder,
+            &[
+                ("Docs/text.pdf", &pdf("text.pdf")),
+                ("Reading.md", note.as_bytes()),
+            ],
+        );
+        open(&mut harness, "Reading");
+
+        let pos = support::point_at(&harness, needle, 1);
+        harness.event(Event::PointerMoved(pos));
+        harness.run_steps(3);
+        for pressed in [true, false] {
+            harness.event(Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            harness.run_steps(1);
+        }
+        harness.run_steps(4);
+
+        let app = harness.state().app();
+        let tab = app.active_tab().expect("the link opened a tab");
+        assert_eq!(
+            tab.file().map(|file| file.relative_path.as_str()),
+            Some("Docs/text.pdf"),
+            "{needle:?}"
+        );
+        wait_until(&mut harness, label, |harness| shows_page(harness, label));
+        assert_eq!(
+            std::fs::read_to_string(folder.join("Reading.md")).unwrap(),
+            note
+        );
+    }
+}
+
+#[test]
 fn an_image_opens_in_a_viewer_labelled_with_its_file_name() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();

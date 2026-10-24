@@ -486,7 +486,7 @@ fn a_link_with_a_page_number_opens_the_pdf_at_that_page_and_leaves_the_note_alon
     app.keep_tab(note);
 
     // The PDF opens on its thread and shows the page once it can.
-    app.open_note_link(note, "Docs/text.pdf#page=2", OpenAs::Preview);
+    app.follow_note_link(note, "Docs/text.pdf#page=2", OpenAs::Preview);
     let tab = app.active_tab().unwrap().id();
     assert_ne!(tab, note);
     assert_eq!(app.pdf(tab).unwrap().path(), "Docs/text.pdf");
@@ -505,13 +505,13 @@ fn a_link_with_a_page_number_opens_the_pdf_at_that_page_and_leaves_the_note_alon
         ("text.pdf", 1),
     ] {
         app.activate_tab(note);
-        app.open_note_link(note, target, OpenAs::Preview);
+        app.follow_note_link(note, target, OpenAs::Preview);
         assert_eq!(app.active_tab().unwrap().id(), tab, "{target}");
         assert_eq!(page(&app, tab), expected, "{target}");
     }
 
     app.activate_tab(note);
-    app.open_note_link(note, "Missing.pdf#page=2", OpenAs::Preview);
+    app.follow_note_link(note, "Missing.pdf#page=2", OpenAs::Preview);
     assert_eq!(app.active_tab().unwrap().id(), note);
     support::settle_saves(&mut app);
     assert_eq!(fixture.read("Reading.md"), READING);

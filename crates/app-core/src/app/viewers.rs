@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 use super::{App, Change};
 use crate::{
-    AppError, ImageView, OpenAs, PdfView, TabId,
-    files::shown_name,
-    pdf::{PdfSession, is_pdf, page_in_link},
+    AppError, ImageView, OpenAs, PdfView, Platform, TabId, files::shown_name, pdf::PdfSession,
+    viewers::could_run_code,
 };
 
 impl App {
@@ -158,22 +157,6 @@ impl App {
         }
     }
 
-    /// Open the workspace file that the link `target`, written in the note
-    /// in the tab `tab`, leads to, as `how` says. A PDF opens at the page
-    /// its `#page=` fragment names: page 1 for none or an invalid page,
-    /// the last page for one past the end. Following a link writes
-    /// nothing.
-    pub fn open_note_link(&mut self, tab: TabId, target: &str, how: OpenAs) {
-        let Some(path) = self.note_links(tab).and_then(|links| links.resolve(target)) else {
-            return;
-        };
-        if is_pdf(&path) {
-            self.open_pdf_page(&path, page_in_link(target), how);
-        } else {
-            self.open_file(&path, how);
-        }
-    }
-
     /// Hand the file at `relative_path`, which opens in no tab, to the
     /// system's default app.
     pub(super) fn open_with_system(&mut self, relative_path: &str) {
@@ -230,14 +213,31 @@ impl App {
 
 impl crate::Workspace {
     /// Hand the file at `relative_path` to the app the system opens its
-    /// type with. The file must be in the workspace, off links.
+    /// type with. The file must be in the workspace, off links, and must
+    /// not be an app, script, installer or shortcut, since its default
+    /// app would run code someone else wrote.
     pub(crate) fn open_with_system(&self, relative_path: &str) -> Result<(), AppError> {
         let path = self
             .engine()
             .resolve_managed_path(relative_path, "file_open")
             .map_err(|error| AppError::from_change(error, relative_path))?;
         match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_file() => {}
+            Ok(metadata) if metadata.is_file() => {
+                if could_run_code(&path, &metadata) {
+                    let file_manager = match self.system().platform() {
+                        Platform::MacOs => "Finder",
+                        Platform::Windows => "Explorer",
+                        Platform::Linux => "your file manager",
+                    };
+                    return Err(AppError::new(
+                        "open_not_allowed",
+                        format!(
+                            "Noura doesn't open apps or scripts. Show the file in \
+                             {file_manager} and open it there."
+                        ),
+                    ));
+                }
+            }
             _ => {
                 return Err(AppError::new(
                     "file_missing",

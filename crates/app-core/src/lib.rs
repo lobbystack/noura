@@ -80,8 +80,7 @@ pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use links::{
     EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, ImageVersion, LINK_SUGGESTION_LIMIT, LinkSuggestion,
     MAX_IMAGE_BYTES, NoteEmbed, NoteEmbedState, NoteImage, NoteLinks, PdfEmbedState,
-    is_external_link, is_image,
-    is_remote_image,
+    is_external_link, is_image, is_remote_image,
 };
 pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]

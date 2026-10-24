@@ -32,6 +32,113 @@ pub(crate) fn opens_in_tab(path: &str) -> bool {
     opens_in_editor(path) || is_pdf(path) || is_image(path)
 }
 
+/// Extensions the system would run, install or follow elsewhere rather
+/// than show. Handing one from a workspace someone else wrote to the
+/// default app would run their code. Ported from the legacy app's
+/// `src-tauri/src/file_actions.rs`, with the macOS location files, Java
+/// Web Start, configuration profiles and the Windows app installers added.
+const RUNNABLE_EXTENSIONS: &[&str] = &[
+    "app",
+    "appimage",
+    "applescript",
+    "application",
+    "appx",
+    "appxbundle",
+    "bash",
+    "bat",
+    "bin",
+    "cmd",
+    "com",
+    "command",
+    "cpl",
+    "csh",
+    "deb",
+    "desktop",
+    "dmg",
+    "exe",
+    "fileloc",
+    "fish",
+    "gadget",
+    "hta",
+    "inetloc",
+    "inf",
+    "ins",
+    "jar",
+    "jnlp",
+    "js",
+    "jse",
+    "ksh",
+    "lnk",
+    "mobileconfig",
+    "mpkg",
+    "msc",
+    "msi",
+    "msix",
+    "msixbundle",
+    "msp",
+    "pif",
+    "pkg",
+    "ps1",
+    "psm1",
+    "py",
+    "pyw",
+    "rb",
+    "reg",
+    "rpm",
+    "run",
+    "scf",
+    "scpt",
+    "scptd",
+    "scr",
+    "sh",
+    "shortcut",
+    "terminal",
+    "tool",
+    "url",
+    "vb",
+    "vbe",
+    "vbs",
+    "webloc",
+    "workflow",
+    "ws",
+    "wsc",
+    "wsf",
+    "wsh",
+    "zsh",
+];
+
+/// Whether the system's default app could run code from the file at
+/// `path`, whose own metadata, not its link's, is `metadata`: an app,
+/// script, installer or shortcut by its extension, or, on Unix, a file
+/// anyone may execute, which macOS opens in Terminal and runs.
+pub(crate) fn could_run_code(path: &std::path::Path, metadata: &std::fs::Metadata) -> bool {
+    let name = path.file_name().map(|name| name.to_string_lossy());
+    // Windows drops the dots and spaces that end a name when it opens the
+    // file, so `setup.exe.` runs as `setup.exe`.
+    // A name that is all extension, such as `.command`, counts as one.
+    let extension = name.as_deref().and_then(|name| {
+        let name = name.trim_end_matches(['.', ' ']);
+        name.rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+    });
+    if extension
+        .as_deref()
+        .is_some_and(|extension| RUNNABLE_EXTENSIONS.contains(&extension))
+    {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 != 0 {
+            return true;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = metadata;
+    false
+}
+
 /// Where an image tab stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageState {
@@ -275,5 +382,56 @@ impl Viewers {
     pub(crate) fn clear(&mut self) {
         self.pdfs.clear();
         self.images.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::could_run_code;
+
+    fn runs(directory: &std::path::Path, name: &str) -> bool {
+        let path = directory.join(name);
+        std::fs::write(&path, "x").unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        could_run_code(&path, &metadata)
+    }
+
+    #[test]
+    fn apps_scripts_installers_and_shortcuts_could_run_code() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in [
+            "setup.EXE",
+            "run.bat",
+            "install.command",
+            "tool.jar",
+            "Tool.app.zip.js",
+            "Profile.mobileconfig",
+            "home.fileloc",
+            ".command",
+            "setup.exe.",
+            "setup.exe . .",
+        ] {
+            assert!(runs(directory.path(), name), "{name}");
+        }
+        for name in ["report.pdf", "photo.JPG", "data.csv", "archive.zip", "song"] {
+            assert!(!runs(directory.path(), name), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_anyone_may_execute_could_run_code() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("script");
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        for mode in [0o700, 0o710, 0o701] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            assert!(could_run_code(&path, &metadata), "{mode:o}");
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        assert!(!could_run_code(&path, &metadata));
     }
 }
