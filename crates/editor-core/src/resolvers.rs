@@ -35,6 +35,25 @@ pub trait LinkResolver: Send {
 
     /// How a wikilink draws.
     fn wikilink_state(&self, title: &str) -> LinkState;
+
+    /// The note an `![[target]]` embed shows, or `None` when the target
+    /// names no note. Answering reads the note and writes nothing.
+    fn embed(&self, _target: &str) -> Option<EmbeddedNote> {
+        None
+    }
+
+    /// Changes whenever an answer could change, as when files appear,
+    /// move or change.
+    fn seq(&self) -> u64 {
+        0
+    }
+}
+
+/// What an embedded note shows: its title and the start of its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbeddedNote {
+    pub title: String,
+    pub text: String,
 }
 
 /// A resolver that finds nothing: every link and wikilink leads nowhere.

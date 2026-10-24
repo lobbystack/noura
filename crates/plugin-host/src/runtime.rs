@@ -49,8 +49,14 @@ pub struct Limits {
     /// The most memory the instance's store may hold, in bytes: its linear
     /// memories plus its table elements.
     pub memory_bytes: usize,
-    /// How long one call into the plugin may run.
+    /// How long one call into the plugin may run, counting only the
+    /// plugin's own work.
     pub call_deadline: Duration,
+    /// How long one call may take in all, time spent waiting for the
+    /// network or for another plugin included. This bounds a plugin that
+    /// waits in a loop. The host checks it when the call deadline passes,
+    /// so it fires no sooner than that.
+    pub max_call_time: Duration,
 }
 
 impl Default for Limits {
@@ -58,6 +64,7 @@ impl Default for Limits {
         Self {
             memory_bytes: 256 << 20,
             call_deadline: Duration::from_secs(1),
+            max_call_time: Duration::from_secs(120),
         }
     }
 }

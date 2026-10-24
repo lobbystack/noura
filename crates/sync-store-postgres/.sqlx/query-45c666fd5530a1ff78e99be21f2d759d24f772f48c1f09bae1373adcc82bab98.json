@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT counter, digest, seq, policy_revision, generation FROM chain_heads\n             WHERE workspace = $1 AND domain = $2 AND device = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "counter",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "counter"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "policy_revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "policy_revision"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "45c666fd5530a1ff78e99be21f2d759d24f772f48c1f09bae1373adcc82bab98"
+}

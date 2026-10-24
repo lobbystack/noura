@@ -20,7 +20,10 @@ impl App {
                 .iter()
                 .map(|problem| Attention::of(problem, platform))
                 .collect(),
-            sections: self.inbox_sections.ordered(&self.rail.ordered()),
+            sections: self.inbox_sections.ordered(
+                &self.rail.ordered(),
+                self.session.plugins().inbox_sections(),
+            ),
             recent: RecentNote::list(&self.recent),
         }
     }
@@ -36,7 +39,8 @@ impl App {
 
     /// Add the Inbox section of the plugin `plugin_id`, headed `title`,
     /// while the plugin is on, or replace the one it has. `provider` fills
-    /// it now and again whenever the files change. The section takes the
+    /// it with lines of text now and again whenever the files change.
+    /// Running plugins add theirs through the `inbox-sections` capability. The section takes the
     /// place of the plugin's rail page `page_id` among the sections, and a
     /// plugin without a page puts its section after the others. A section
     /// that fails shows why in its own place.
@@ -59,8 +63,11 @@ impl App {
         }
     }
 
-    /// Fill the plugin sections again after the files changed.
+    /// Fill the plugin sections again after the files changed. Running
+    /// plugins draw their views again on their own threads, once for each
+    /// listing of the files.
     pub(super) fn reload_inbox_sections(&mut self) {
+        self.session.plugins().files_changed(self.listing_seen);
         if self.inbox_sections.reload() {
             self.listeners.emit(Change::Inbox);
         }

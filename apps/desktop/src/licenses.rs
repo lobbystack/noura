@@ -1,4 +1,5 @@
-//! The third-party license list each package ships. CI generates it with
+//! The third-party license list each package ships, and where a package
+//! keeps the plugins that ship with Noura. CI generates the list with
 //! cargo-about from the crates this binary links, and cargo-packager puts
 //! it among the app's resources.
 
@@ -29,6 +30,15 @@ pub fn bundled_licenses() -> Option<PathBuf> {
     let executable = std::env::current_exe().ok()?;
     let path = resources_dir(&executable, std::env::consts::OS)?.join(LICENSES_FILE);
     path.is_file().then_some(path)
+}
+
+/// The folder of plugins that ship with this copy of Noura, `plugins`
+/// among its resources, one plugin per subfolder. Builds without one ship
+/// no plugins.
+pub fn bundled_plugins() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let folder = resources_dir(&executable, std::env::consts::OS)?.join("plugins");
+    folder.is_dir().then_some(folder)
 }
 
 #[cfg(test)]

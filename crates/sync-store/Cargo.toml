@@ -12,6 +12,7 @@ rust-version.workspace = true
 conformance = ["dep:serde", "dep:serde_json", "dep:sync-key-envelope"]
 
 [dependencies]
+hashlink.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope", optional = true }

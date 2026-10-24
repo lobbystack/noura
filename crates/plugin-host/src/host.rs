@@ -24,8 +24,7 @@ use wasmtime::Engine;
 use wasmtime::component::Component;
 
 use crate::{
-    Capability, InstallError, InstallErrorCode, PluginError, PluginInstance, PluginManifest,
-    Services, WorkspaceReads,
+    Capability, InstallError, InstallErrorCode, PluginManifest, RunningPlugin, Services,
     manifest::read_manifest_bytes,
     runtime::{self, Backend, EpochTicker, Limits},
 };
@@ -360,48 +359,25 @@ impl PluginHost {
         ids
     }
 
-    /// Start a loaded plugin in a new store. It may use the capabilities
-    /// its manifest declares that `approved` holds; a call that needs any
-    /// other capability fails without reaching `workspace`.
+    /// Start a loaded plugin. It may use what its manifest declares and
+    /// `approved` holds; a call that needs anything else fails without
+    /// reaching `services`. Its code first runs, in a store of its own, on
+    /// its first call.
     pub fn start(
         &self,
         loaded: &LoadedPlugin,
         approved: &[Capability],
-        workspace: Option<Arc<dyn WorkspaceReads>>,
-    ) -> Result<PluginInstance, PluginError> {
-        self.start_with(
-            loaded,
-            approved,
-            Services {
-                workspace,
-                ..Services::default()
-            },
-        )
-    }
-
-    /// [`Self::start`], with every service the capability interfaces call.
-    pub fn start_with(
-        &self,
-        loaded: &LoadedPlugin,
-        approved: &[Capability],
         services: Services,
-    ) -> Result<PluginInstance, PluginError> {
-        let granted = loaded
-            .manifest
-            .capabilities
-            .iter()
-            .filter(|capability| approved.contains(capability))
-            .cloned()
-            .collect();
-        PluginInstance::start(
-            &self.engine,
-            &self.epochs,
+    ) -> Arc<RunningPlugin> {
+        Arc::new(RunningPlugin::new(
+            loaded.manifest.clone(),
+            loaded.component.clone(),
+            self.engine.clone(),
+            self.epochs.clone(),
             self.limits,
-            &loaded.component,
-            &loaded.manifest.id,
-            granted,
+            approved,
             services,
-        )
+        ))
     }
 
     fn is_installed(&self, id: &str) -> bool {

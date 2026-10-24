@@ -13,6 +13,11 @@ pulley = ["wasmtime/pulley"]
 [dependencies]
 # Names each component's bytes in the compiled code cache.
 blake3.workspace = true
+# Plugins' network requests go through its web access boundary.
+local-core = { version = "0.2.0", path = "../local-core" }
+# Waits a bounded time for a plugin that another plugin's command call
+# needs.
+parking_lot.workspace = true
 semver.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -35,6 +40,7 @@ windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_Syst
 egui = { workspace = true, features = ["default_fonts"] }
 egui_kittest.workspace = true
 libc.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 wasmtime = { workspace = true, features = ["wat"] }
 # Writes hand-made test components as WebAssembly binaries.

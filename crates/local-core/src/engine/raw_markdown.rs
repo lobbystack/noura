@@ -154,6 +154,30 @@ impl WorkspaceEngine {
         })
     }
 
+    /// The start of the Markdown file at `relative_path`: at most
+    /// `max_bytes` of it, cut back to a whole character, as
+    /// [`read_raw_markdown`](Self::read_raw_markdown) gives its body, with
+    /// the same path checks. A note embed shows only its start, so it reads
+    /// no more.
+    pub fn read_raw_markdown_start(&self, relative_path: &str, max_bytes: usize) -> Result<String> {
+        const OPERATION: &str = "raw_markdown_read";
+        let path = validate_raw_markdown_path(&self.root, relative_path)?;
+        ensure_downloaded(&path, relative_path, OPERATION)?;
+        let file = std::fs::File::open(&path)
+            .map_err(|error| CoreError::io(error, OPERATION, Some(relative_path)))?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, max_bytes as u64), &mut bytes)
+            .map_err(|error| CoreError::io(error, OPERATION, Some(relative_path)))?;
+        // Bytes that only end too soon belong to a character the limit cut.
+        if let Err(error) = std::str::from_utf8(&bytes)
+            && error.error_len().is_none()
+        {
+            bytes.truncate(error.valid_up_to());
+        }
+        let (body, _) = split_raw_bytes(&bytes)?;
+        Ok(body)
+    }
+
     pub fn resolve_markdown_link(
         &self,
         source_relative_path: &str,

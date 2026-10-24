@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT workspace, role FROM members WHERE account = $1 ORDER BY workspace",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "role"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a0e173df5be38eb99ed5f3b7a2f998c01c0c053dee5b35aaa8c8399f4bc3ba31"
+}

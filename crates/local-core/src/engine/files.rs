@@ -4,8 +4,6 @@
 use super::*;
 
 impl WorkspaceEngine {
-    /// Read one non-Markdown file (image or other asset) for inline preview.
-    /// Workspace containment is validated; total size is capped by the caller.
     pub fn inspect_pdf(&self, relative_path: &str) -> Result<crate::PdfInfo> {
         crate::pdf::inspect(&self.root, &self.manifest().id, relative_path)
     }
@@ -14,34 +12,75 @@ impl WorkspaceEngine {
         crate::pdf::read_range(&self.root, &self.manifest().id, input)
     }
 
+    /// Read one non-Markdown file (image or other asset) for inline preview.
+    /// Workspace containment is validated; total size is capped by the caller.
     pub fn read_local_asset(
         &self,
         source_relative_path: &str,
         target: &str,
         max_bytes: i64,
     ) -> Result<(String, Vec<u8>)> {
+        let operation = "raw_asset_read";
+        let (relative_path, path, metadata) =
+            self.local_asset(source_relative_path, target, operation)?;
+        if metadata.len() as i64 > max_bytes {
+            return Err(CoreError::validation(
+                "asset_too_large",
+                "The local asset exceeds the preview size limit",
+                operation,
+            ));
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CoreError::io(error, operation, Some(&relative_path)))?;
+        Ok((relative_path, bytes))
+    }
+
+    /// The size in bytes and the modification time of the local asset that
+    /// `target` names from the note at `source_relative_path`, after the
+    /// checks [`Self::read_local_asset`] makes, without reading the file. A
+    /// note compares them with an earlier answer to tell whether the asset
+    /// changed since it read it.
+    pub fn local_asset_version(
+        &self,
+        source_relative_path: &str,
+        target: &str,
+    ) -> Result<(String, u64, Option<std::time::SystemTime>)> {
+        let operation = "raw_asset_version";
+        let (relative_path, _, metadata) =
+            self.local_asset(source_relative_path, target, operation)?;
+        if !metadata.is_file() {
+            return Err(CoreError::validation(
+                "invalid_asset_path",
+                "The local asset is not a file",
+                operation,
+            ));
+        }
+        Ok((relative_path, metadata.len(), metadata.modified().ok()))
+    }
+
+    /// The workspace path, the path on disk and the metadata of the local
+    /// asset that `target` names from the note at `source_relative_path`.
+    /// The asset must stay inside the workspace, off links, and be
+    /// downloaded, and Markdown is no asset.
+    fn local_asset(
+        &self,
+        source_relative_path: &str,
+        target: &str,
+        operation: &'static str,
+    ) -> Result<(String, PathBuf, std::fs::Metadata)> {
         let relative_path = resolve_markdown_target(source_relative_path, target, false)?;
         if relative_path.to_ascii_lowercase().ends_with(".md") {
             return Err(CoreError::validation(
                 "invalid_asset_path",
                 "Markdown content is read through raw Markdown operations",
-                "raw_asset_read",
+                operation,
             ));
         }
-        let path = resolve_for_write(&self.root, &relative_path, "raw_asset_read")?;
-        ensure_downloaded(&path, &relative_path, "raw_asset_read")?;
+        let path = resolve_for_write(&self.root, &relative_path, operation)?;
+        ensure_downloaded(&path, &relative_path, operation)?;
         let metadata = std::fs::metadata(&path)
-            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(&relative_path)))?;
-        if metadata.len() as i64 > max_bytes {
-            return Err(CoreError::validation(
-                "asset_too_large",
-                "The local asset exceeds the preview size limit",
-                "raw_asset_read",
-            ));
-        }
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CoreError::io(error, "raw_asset_read", Some(&relative_path)))?;
-        Ok((relative_path, bytes))
+            .map_err(|error| CoreError::io(error, operation, Some(&relative_path)))?;
+        Ok((relative_path, path, metadata))
     }
 
     /// Create a folder and the folders above it. Every new folder's entry is

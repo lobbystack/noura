@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rate_counters WHERE window_ends <= $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b2b69e8bc4d3b65da76573ccc980d20698c4d24b2af0ea095ab9d099f94855af"
+}

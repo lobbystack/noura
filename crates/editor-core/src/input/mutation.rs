@@ -362,30 +362,9 @@ impl<'ast> MdDoc {
                 //         self.appearance.base_font_size.map(|size| size - 1.)
                 // }
             }
-            Event::ToggleFold { node: at } => {
-                let unapply = at.is_none().then(|| self.unapply_fold(root));
-                for node in root.descendants() {
-                    let targeted = |selected: bool| match at {
-                        Some(range) => self.node_range(node) == range,
-                        None => selected,
-                    };
-                    let contents = if matches!(node.data().value, NodeValue::Heading(_))
-                        && targeted(self.selected_block(node))
-                    {
-                        self.heading_contents(node)
-                    } else if matches!(
-                        node.data().value,
-                        NodeValue::Item(_) | NodeValue::TaskItem(_)
-                    ) && targeted(self.selected_fold_item(node))
-                    {
-                        self.item_contents(node)
-                    } else {
-                        continue;
-                    };
-                    let unapply = unapply.unwrap_or_else(|| self.fold(node).is_some());
-                    self.apply_fold(node, contents, unapply);
-                }
-            }
+            // Lockbook folded sections by writing a marker into the note.
+            // Noura writes nothing to fold, so folding does nothing.
+            Event::ToggleFold { .. } | Event::Unfold { .. } => {}
             Event::ToggleSpoiler { node: range } => {
                 let Some(node) = root
                     .descendants()
@@ -451,16 +430,6 @@ impl<'ast> MdDoc {
                 };
                 response |= self.calc_operations(root, event, operations, layout);
             }
-            Event::Unfold { tag } => {
-                // Only a tag that folds a section; anything else at this
-                // range is text the user wrote.
-                if self.active_fold_at_tag(tag).is_some() {
-                    operations.push(Operation::Replace(Replace {
-                        range: tag,
-                        text: String::new(),
-                    }));
-                }
-            }
         }
 
         response
@@ -479,6 +448,9 @@ impl<'ast> MdDoc {
 
         match style {
             NodeValue::Document | NodeValue::Paragraph => {}
+            // The parser reads `__` as strong, so underline is the `<u>` tag,
+            // as in today's editor.
+            NodeValue::Underline => self.toggle_underline(range, operations),
             _ if style.is_inline() => {
                 let unapply = self.unapply_inline(root, range, &style);
 
@@ -833,6 +805,49 @@ impl<'ast> MdDoc {
 
     #[allow(clippy::collapsible_else_if)]
     /// Applies or unapplies `style` to `cursor`, splitting or joining surrounding styles as necessary.
+    /// Wraps `range` in `<u>` and `</u>`, or takes them off when they
+    /// surround it or open and close it, as today's editor's Mod-U does.
+    fn toggle_underline(&self, range: (Grapheme, Grapheme), operations: &mut Vec<Operation>) {
+        const OPEN: &str = "<u>";
+        const CLOSE: &str = "</u>";
+        let open = Graphemes(OPEN.len());
+        let close = Graphemes(CLOSE.len());
+        let (start, end) = range;
+        let last = self.buffer.current.segs.last_cursor_position();
+        let remove = |range: (Grapheme, Grapheme)| {
+            Operation::Replace(Replace {
+                range,
+                text: String::new(),
+            })
+        };
+        if end.0 - start.0 >= OPEN.len() + CLOSE.len()
+            && &self.buffer[(start, start + open)] == OPEN
+            && &self.buffer[(end - close, end)] == CLOSE
+        {
+            operations.push(remove((start, start + open)));
+            operations.push(Operation::Select(range));
+            operations.push(remove((end - close, end)));
+        } else if start.0 >= OPEN.len()
+            && end + close <= last
+            && &self.buffer[(start - open, start)] == OPEN
+            && &self.buffer[(end, end + close)] == CLOSE
+        {
+            operations.push(remove((start - open, start)));
+            operations.push(Operation::Select(range));
+            operations.push(remove((end, end + close)));
+        } else {
+            operations.push(Operation::Replace(Replace {
+                range: start.into_range(),
+                text: OPEN.into(),
+            }));
+            operations.push(Operation::Select(range));
+            operations.push(Operation::Replace(Replace {
+                range: end.into_range(),
+                text: CLOSE.into(),
+            }));
+        }
+    }
+
     fn apply_inline_style(
         &self,
         root: &'ast AstNode<'ast>,

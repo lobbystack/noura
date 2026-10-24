@@ -1,10 +1,12 @@
-//! The sync service against the real server on SQLite (seam 4): one client
-//! creates a workspace and pushes an encrypted v2 operation, and a fresh
-//! client with the same device credentials fetches the policy and keys,
-//! pulls the operation, checks its signature and chain, and decrypts it.
+//! The sync service against the real server on SQLite and on PostgreSQL
+//! (seam 4): one client creates a workspace and pushes an encrypted v2
+//! operation, and a fresh client with the same device credentials fetches
+//! the policy and keys, pulls the operation, checks its signature and
+//! chain, and decrypts it.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use app_core::sync::{DeviceCredentials, SyncError, SyncService};
@@ -13,19 +15,83 @@ use sync_protocol::codec::Encode;
 use sync_protocol::messages::LimitsResponse;
 use sync_protocol::records::AccountHead;
 use sync_protocol::types::{Id, to_base64url};
-use sync_store::Session;
+use sync_store::{Backend, Session, Store};
+use sync_store_postgres::testing::{Cluster, TestDatabase};
 
-async fn server() -> (String, DeviceCredentials, tempfile::TempDir) {
+/// Where the server keeps its state, kept alive for the test.
+enum Database {
+    /// The data directory holds the SQLite database.
+    Sqlite(tempfile::TempDir),
+    /// A PostgreSQL database.
+    Postgres(TestDatabase),
+}
+
+impl Database {
+    /// The files that hold what the server stored.
+    async fn files(&self) -> Vec<PathBuf> {
+        match self {
+            Database::Sqlite(dir) => {
+                let data = dir.path().join("data");
+                vec![data.join(DATABASE), data.join(format!("{DATABASE}-wal"))]
+            }
+            Database::Postgres(database) => {
+                // A checkpoint writes every page to the data files.
+                database.cluster.execute("CHECKPOINT").await;
+                database.cluster.data_dir().map_or_else(Vec::new, files)
+            }
+        }
+    }
+}
+
+/// Every file under `dir`.
+fn files(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+async fn sqlite() -> (Store<sync_store_sqlite::SqliteBackend>, Database) {
     let dir = tempfile::tempdir().expect("temporary directory");
     let data = dir.path().join("data");
     sync_server::migrate(&data).await.expect("migrated");
     let store = sync_server::open_store(&sync_server::Config {
         data_dir: data,
         listen: "127.0.0.1:0".parse().expect("an address"),
+        postgres: None,
     })
     .await
     .expect("the store opens");
+    (store, Database::Sqlite(dir))
+}
 
+async fn postgres() -> (Store<sync_store_postgres::PgBackend>, Database) {
+    let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
+        .database()
+        .await;
+    let postgres = sync_server::Postgres {
+        url: database.url.clone(),
+        secret: Some(sync_protocol::types::SecretKey::random().expect("random")),
+    };
+    sync_server::postgres::migrate(&postgres)
+        .await
+        .expect("migrated");
+    let store = sync_server::postgres::open_store(&postgres)
+        .await
+        .expect("the store opens");
+    (store, Database::Postgres(database))
+}
+
+async fn server<B: Backend>(store: Store<B>) -> (String, DeviceCredentials) {
     // Until ticket 46 adds sign-in and the chain routes, the account chain
     // and the session go straight into the store.
     let account = Id::random().expect("random");
@@ -61,12 +127,22 @@ async fn server() -> (String, DeviceCredentials, tempfile::TempDir) {
             head: genesis.digest(),
         },
     };
-    (format!("http://{address}"), credentials, dir)
+    (format!("http://{address}"), credentials)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
-    let (base, credentials, dir) = server().await;
+    let (store, database) = sqlite().await;
+    push_and_pull(server(store).await, database).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fresh_client_pulls_and_decrypts_what_another_pushed_on_postgres() {
+    let (store, database) = postgres().await;
+    push_and_pull(server(store).await, database).await;
+}
+
+async fn push_and_pull((base, credentials): (String, DeviceCredentials), database: Database) {
     let note = b"# Field notes\n\nThe first synced note.\n";
 
     let mut writer = SyncService::connect(&base, credentials.clone())
@@ -110,16 +186,18 @@ async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
 
     // The server stored ciphertext: neither the note, its path nor the
     // workspace name appears in its database.
-    let database = std::fs::read(dir.path().join("data").join(DATABASE)).expect("the database");
-    let wal = std::fs::read(dir.path().join("data").join(format!("{}-wal", DATABASE)))
-        .unwrap_or_default();
-    for plaintext in [
-        &b"The first synced note"[..],
-        b"Notes/First.md",
-        b"Field notes",
-    ] {
-        for bytes in [&database, &wal] {
-            assert!(!bytes.windows(plaintext.len()).any(|w| w == plaintext));
+    for file in database.files().await {
+        let bytes = std::fs::read(&file).unwrap_or_default();
+        for plaintext in [
+            &b"The first synced note"[..],
+            b"Notes/First.md",
+            b"Field notes",
+        ] {
+            assert!(
+                !bytes.windows(plaintext.len()).any(|w| w == plaintext),
+                "{} holds plaintext",
+                file.display()
+            );
         }
     }
 }

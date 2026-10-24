@@ -4,7 +4,7 @@
 
 mod support;
 
-use plugin_host::{CodeSource, InstallErrorCode, PluginHost};
+use plugin_host::{CodeSource, InstallErrorCode, PluginHost, Services};
 use support::plugins::{self, HELLO_MANIFEST};
 
 struct Setup {
@@ -21,7 +21,7 @@ impl Setup {
     }
 
     fn host(&self) -> PluginHost {
-        PluginHost::new(self.library.path()).expect("the host starts")
+        plugins::host(self.library.path())
     }
 
     /// Everything in the library folder, by name.
@@ -77,9 +77,11 @@ fn installing_compiles_once_and_a_second_start_runs_the_cached_code() {
     let host = setup.host();
     let loaded = host.load("hello").expect("the plugin loads");
     assert_eq!(loaded.source(), CodeSource::Cache);
-    let mut instance = host
-        .start(&loaded, &loaded.manifest().capabilities, None)
-        .expect("the plugin starts");
+    let instance = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services::default(),
+    );
     let pages = instance.pages().expect("the plugin lists its pages");
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].title, "Hello");
@@ -151,9 +153,11 @@ fn a_changed_component_compiles_again_and_runs_the_new_code() {
     let host = setup.host();
     let loaded = host.load("hello").expect("the plugin loads");
     assert_eq!(loaded.source(), CodeSource::Cache);
-    let mut instance = host
-        .start(&loaded, &loaded.manifest().capabilities, None)
-        .unwrap();
+    let instance = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services::default(),
+    );
     assert_eq!(instance.pages().unwrap()[0].title, "Probe");
     // Only the new build's compiled code stays cached.
     let cached: Vec<_> = setup
@@ -189,9 +193,11 @@ fn a_new_build_replaces_a_running_plugin_that_holds_no_library_file_open() {
     let host = setup.host();
     let loaded = host.load("hello").unwrap();
     assert_eq!(loaded.source(), CodeSource::Cache);
-    let mut running = host
-        .start(&loaded, &loaded.manifest().capabilities, None)
-        .unwrap();
+    let running = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services::default(),
+    );
     #[cfg(target_os = "linux")]
     assert_eq!(open_files_under(setup.library.path()), Vec::<String>::new());
 
@@ -203,9 +209,11 @@ fn a_new_build_replaces_a_running_plugin_that_holds_no_library_file_open() {
     // The old build keeps running from memory until it stops.
     assert_eq!(running.pages().unwrap()[0].title, "Hello");
     let loaded = host.load("hello").unwrap();
-    let mut new = host
-        .start(&loaded, &loaded.manifest().capabilities, None)
-        .unwrap();
+    let new = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services::default(),
+    );
     assert_eq!(new.pages().unwrap()[0].title, "Probe");
 }
 

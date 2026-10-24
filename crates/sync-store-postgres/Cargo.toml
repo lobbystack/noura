@@ -5,5 +5,22 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Throwaway PostgreSQL clusters for tests, from the local `initdb` and
+# `pg_ctl`, or databases on the server that NOURA_TEST_POSTGRES_URL names.
+testing = []
+
 [dependencies]
-sqlx = { workspace = true, features = ["postgres"] }
+# Compile-checked queries read the offline data in `.sqlx`, so builds need
+# no database; scripts/sqlx-prepare.sh regenerates and checks it. rustls with
+# ring and the bundled web PKI roots reaches a server that requires TLS from
+# the static Linux binary.
+sqlx = { workspace = true, features = ["postgres", "macros", "migrate", "tls-rustls-ring-webpki"] }
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+sync-store = { version = "0.2.0", path = "../sync-store" }
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+
+[dev-dependencies]
+sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
+sync-store-postgres = { version = "0.2.0", path = ".", features = ["testing"] }
+tokio.workspace = true

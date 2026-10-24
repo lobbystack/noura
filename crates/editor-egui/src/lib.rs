@@ -74,6 +74,11 @@ pub struct PaintedSpan {
     pub rect: Rect,
     /// Whether the span drew text, as opposed to spacing or an image.
     pub glyphs: bool,
+    /// Whether the span drew its source as written, as opposed to text in
+    /// its place, such as a callout's label.
+    pub shown_as_written: bool,
+    /// The text the span drew.
+    pub text: String,
     /// Whether a line runs under the text, as under underlined text or an
     /// input method's marked text.
     pub underlined: bool,
@@ -635,15 +640,33 @@ impl Editor {
             .renderer
             .fragments
             .iter()
-            .map(|fragment| PaintedSpan {
-                source_range: fragment.source_range,
-                rect: fragment.rect,
-                glyphs: matches!(fragment.content, FragmentContent::Glyphs { .. }),
-                underlined: fragment
-                    .style_stack
-                    .last()
-                    .is_some_and(|style| style.format.underline),
-                misspelled: fragment.style_stack.iter().any(|style| style.misspelled),
+            .map(|fragment| {
+                let text = match &fragment.content {
+                    FragmentContent::Glyphs { buffer, .. } => buffer
+                        .read()
+                        .map(|buffer| {
+                            buffer
+                                .lines
+                                .iter()
+                                .map(|line| line.text())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                PaintedSpan {
+                    source_range: fragment.source_range,
+                    rect: fragment.rect,
+                    glyphs: matches!(fragment.content, FragmentContent::Glyphs { .. }),
+                    shown_as_written: !fragment.atomic,
+                    text,
+                    underlined: fragment
+                        .style_stack
+                        .last()
+                        .is_some_and(|style| style.format.underline),
+                    misspelled: fragment.style_stack.iter().any(|style| style.misspelled),
+                }
             })
             .collect()
     }
@@ -764,7 +787,7 @@ impl Editor {
             self.edit.renderer.layout_cache.clear();
         }
 
-        let embeds_seq = self.edit.renderer.embeds.seq();
+        let embeds_seq = self.edit.renderer.content_seq();
         let embeds_updated = embeds_seq != self.embeds_seq;
         self.embeds_seq = embeds_seq;
 

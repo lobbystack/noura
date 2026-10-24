@@ -62,6 +62,8 @@ pub struct MdDoc {
     pub ws_seq: Arc<AtomicU64>,
     /// Caches of values derived from the text and reveal state.
     pub cache: TextCache,
+    /// Code highlights worked out for the current text.
+    pub highlight_cache: RefCell<crate::highlight::HighlightCache>,
 
     // reveal inputs
     /// The selection that reveals syntax, or `None` while the editor isn't
@@ -182,6 +184,7 @@ impl MdDoc {
             bounds_seq: 0,
             ws_seq,
             cache: Default::default(),
+            highlight_cache: Default::default(),
             reveal_selection: None,
             entered_atom: None,
             find_current_match: None,
@@ -302,9 +305,7 @@ impl MdDoc {
     pub fn reparse<'a>(&mut self, arena: &'a Arena<'a>) -> &'a AstNode<'a> {
         self.cache.ensure_text_consistent(self.text_seq);
 
-        let options = Self::comrak_options();
-        let text_with_newline = self.buffer.current.text_with("\n");
-        let root = comrak::parse_document(arena, &text_with_newline, &options);
+        let root = self.parse(arena);
         self.ensure_bounds(root);
         root
     }
@@ -322,11 +323,16 @@ impl MdDoc {
         let ast = match self.ast.take() {
             Some(ast) if ast.text_seq() == self.text_seq => ast,
             Some(mut ast) if self.reparses_in_place(&ast) => {
-                let reparsed = ast.update(
+                let Some(reparsed) = crate::lookahead::update_ast(
+                    &mut ast,
                     self.buffer.current.text_with("\n"),
                     &Self::comrak_options(),
                     self.text_seq,
-                );
+                ) else {
+                    // The edit reaches `$$` math past the lookahead, which
+                    // only a full parse reads.
+                    return self.take_full_ast();
+                };
                 let from_bounds_seq = self.bounds_seq;
                 ast.with_root(|root| self.update_bounds(root, &reparsed));
                 self.last_block_edit = Some(BlockEdit {
@@ -359,7 +365,7 @@ impl MdDoc {
             Some(ast) if ast.text_seq() == self.text_seq => ast,
             _ => {
                 self.stats.full_parses += 1;
-                Ast::parse(
+                crate::lookahead::parse_ast(
                     self.buffer.current.text_with("\n"),
                     &Self::comrak_options(),
                     self.text_seq,
@@ -371,14 +377,12 @@ impl MdDoc {
     }
 
     /// Whether an edit to the text `ast` parsed can reparse in place: the
-    /// note is large, the bounds are `ast`'s, and no fold tag, which hides
-    /// blocks far from it, is in the text.
+    /// note is large and the bounds are `ast`'s. Nothing folds, so no edit
+    /// hides or shows blocks far from it, whatever fold markers a file
+    /// holds as text.
     fn reparses_in_place(&self, ast: &Ast) -> bool {
         self.buffer.current.len_bytes() >= self.large_note_bytes
             && self.bounds.text_seq == ast.text_seq()
-            && !self.bounds.has_fold_tags
-            && memchr::memmem::find(self.text().as_bytes(), crate::fold::FOLD_TAG.as_bytes())
-                .is_none()
     }
 
     /// Takes in a finished background parse of the current text, or drops
@@ -480,13 +484,13 @@ impl MdDoc {
         // Bounds depend only on text. Skip rebuild + bump bounds_seq
         // when text hasn't changed.
         if self.bounds.text_seq != self.text_seq {
-            self.bounds.has_fold_tags =
-                memchr::memmem::find(self.text().as_bytes(), crate::fold::FOLD_TAG.as_bytes())
-                    .is_some();
             self.bounds.inline_paragraphs.clear();
             self.calc_source_lines();
             self.calc_fold_bounds(root);
+            self.bounds.has_folds = !self.bounds.folds.is_empty();
             self.calc_atom_bounds(root);
+            self.calc_inline_spans(root);
+            self.bounds.frontmatter = self.frontmatter_range();
             // Populate before compute_bounds: pre_spacing_lines (called
             // from compute_bounds_block_pre_spacing) queries
             // hidden_by_fold, which expects every node already cached.
@@ -505,30 +509,37 @@ impl MdDoc {
         }
     }
 
+    /// How the editor parses notes. The extensions on are the syntax
+    /// today's editor draws. Lockbook's others (spoilers, emoji
+    /// shortcodes, superscript, subscript, `__` as underline, code math)
+    /// stay off, so their text shows as written.
     pub fn comrak_options() -> Options<'static> {
         let mut options = Options::default();
         options.parse.smart = true;
-        options.parse.ignore_setext = true;
-        options.extension.alerts = true;
+        options.parse.ignore_setext = false;
+        // Callouts of any type are quotes the editor reads itself; comrak's
+        // alerts know only GitHub's five types.
+        options.extension.alerts = false;
         options.extension.autolink = true;
         options.extension.description_lists = false;
         options.extension.footnotes = false;
-        options.extension.front_matter_delimiter = Some("---".to_string());
+        // The editor reads frontmatter itself; see `crate::lookahead`.
+        options.extension.front_matter_delimiter = None;
         options.extension.greentext = false;
         options.extension.header_ids = None; // intended for HTML renderers
         options.extension.highlight = true;
-        options.extension.math_code = true; // rendered as code for now
-        options.extension.math_dollars = true; // rendered as code for now
+        options.extension.math_code = false;
+        options.extension.math_dollars = true;
         options.extension.multiline_block_quotes = false;
-        options.extension.shortcodes = true;
-        options.extension.spoiler = true;
+        options.extension.shortcodes = false;
+        options.extension.spoiler = false;
         options.extension.strikethrough = true;
-        options.extension.subscript = true;
-        options.extension.superscript = true;
+        options.extension.subscript = false;
+        options.extension.superscript = false;
         options.extension.table = true;
         options.extension.tagfilter = false; // intended for HTML renderers
         options.extension.tasklist = true;
-        options.extension.underline = true;
+        options.extension.underline = false; // `__` is strong, as CommonMark reads it
         options.extension.wikilinks_title_after_pipe = true; // matches obsidian
         options.extension.wikilinks_title_before_pipe = false; // would not match obsidian
         options.render.escaped_char_spans = true;

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO server (id, restore_generation, secret_check) VALUES (1, $1, $2)\n         ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "15c6b69d47c1556b50f07feb41da19742b070c9b361268dd9833a333c6736e5e"
+}
