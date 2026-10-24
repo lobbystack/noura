@@ -140,7 +140,8 @@ pub struct World<B: Backend> {
     pub epoch_key: SecretKey,
 }
 
-fn head_of(links: &[Signed<AccountLink>]) -> AccountHead {
+/// The head of an account chain's links.
+pub fn head_of(links: &[Signed<AccountLink>]) -> AccountHead {
     let last = links.last().expect("a chain has links");
     AccountHead {
         account: last.body.account,
