@@ -37,10 +37,7 @@ impl Database {
             Database::Postgres(database) => {
                 // A checkpoint writes every page to the data files.
                 database.cluster.execute("CHECKPOINT").await;
-                database
-                    .cluster
-                    .data_dir()
-                    .map_or_else(Vec::new, |dir| files(dir))
+                database.cluster.data_dir().map_or_else(Vec::new, files)
             }
         }
     }
