@@ -1,6 +1,7 @@
 // Packages a plugin for release: a zip archive holding the manifest and
-// the component, which Noura installs. Noura compiles the component itself
-// on each device, so the archive holds no compiled code.
+// the component, which Noura installs from a release on GitHub. Noura
+// compiles the component itself on each device, so the archive holds no
+// compiled code.
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { zipSync } from 'fflate';
@@ -13,9 +14,15 @@ export interface Packed extends Built {
 	archive: string;
 }
 
+/**
+ * How a release archive's name ends: Noura installs the one file of a
+ * GitHub release whose name ends so.
+ */
+export const ARCHIVE_SUFFIX = '.noura-plugin.zip';
+
 /** The archive's file name: the plugin's ID and version. */
 export function archiveName(id: string, version: string): string {
-	return `${id}-${version}.zip`;
+	return `${id}-${version}${ARCHIVE_SUFFIX}`;
 }
 
 /**

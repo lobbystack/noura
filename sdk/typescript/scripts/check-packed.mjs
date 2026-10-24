@@ -65,7 +65,10 @@ try {
 	npm(['run', 'check'], project);
 	npm(['test'], project);
 	npm(['run', 'package'], project);
-	for (const file of ['dist/plugin.wasm', 'dist/word-count-0.1.0.zip']) {
+	for (const file of [
+		'dist/plugin.wasm',
+		'dist/word-count-0.1.0.noura-plugin.zip',
+	]) {
 		if (!existsSync(join(project, file))) {
 			throw new Error(`The packed kit didn't write ${file}.`);
 		}

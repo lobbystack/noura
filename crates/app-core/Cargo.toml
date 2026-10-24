@@ -6,9 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-# Lets tests force the native watcher to fail or deliver chosen events.
-# Never enabled in a shipped build; the tests turn it on below.
-test-hooks = ["local-core/test-hooks"]
+# Lets tests force the native watcher to fail or deliver chosen events, and
+# download plugin releases from a stand-in for GitHub. Never enabled in a
+# shipped build; the tests turn it on below.
+test-hooks = ["local-core/test-hooks", "plugin-host/test-hooks"]
 
 [dependencies]
 # Finds the workspace's names in log lines for Copy diagnostics.

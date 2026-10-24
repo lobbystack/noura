@@ -9,4 +9,4 @@ export {
 	readManifest,
 } from './manifest.js';
 export { ENGINE_NAMES, plain } from './output.js';
-export { type Packed, archiveName, pack } from './pack.js';
+export { ARCHIVE_SUFFIX, type Packed, archiveName, pack } from './pack.js';

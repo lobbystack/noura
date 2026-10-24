@@ -206,6 +206,11 @@ export class RealHost {
 		return this.request('heldTypes');
 	}
 
+	/** How the name of a release archive on GitHub ends, for Noura to install it. */
+	archiveSuffix(): Promise<string> {
+		return this.request('archiveSuffix');
+	}
+
 	async close(): Promise<void> {
 		this.child.stdin.end();
 		await new Promise((stopped) => this.child.once('exit', stopped));

@@ -338,28 +338,13 @@ pub(crate) fn read_manifest_bytes(
         Err(error) => return Err(InstallError::storage("read plugin.toml", &error)),
     };
     if metadata.len() > MAX_MANIFEST_BYTES {
-        return Err(manifest_too_large());
+        return Err(InstallError::new(
+            InstallErrorCode::InvalidManifest,
+            format!("{MANIFEST_FILE} is larger than 64 KB."),
+        ));
     }
     let bytes =
         std::fs::read(&path).map_err(|error| InstallError::storage("read plugin.toml", &error))?;
-    parse_manifest_bytes(bytes)
-}
-
-/// The refusal of a manifest larger than [`MAX_MANIFEST_BYTES`].
-pub(crate) fn manifest_too_large() -> InstallError {
-    InstallError::new(
-        InstallErrorCode::InvalidManifest,
-        format!("{MANIFEST_FILE} is larger than 64 KB."),
-    )
-}
-
-/// Check and parse a manifest's bytes, read from a folder or an archive.
-pub(crate) fn parse_manifest_bytes(
-    bytes: Vec<u8>,
-) -> Result<(PluginManifest, Vec<u8>), InstallError> {
-    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-        return Err(manifest_too_large());
-    }
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         InstallError::new(
             InstallErrorCode::InvalidManifest,
@@ -679,8 +664,9 @@ pub fn valid_command_id(id: &str) -> bool {
     valid_plugin_id(id)
 }
 
-/// Whether a manifest's entry path names a file inside the plugin's
-/// folder: relative, with `/` between its parts and no `.` or `..`.
+/// Whether a manifest's entry path, or an archive entry's, names a file
+/// inside the plugin's folder: relative, with `/` between its parts and no
+/// `.` or `..`.
 pub(crate) fn stays_inside(entry: &str) -> bool {
     !entry.is_empty()
         && !entry.contains('\\')

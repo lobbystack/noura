@@ -2,6 +2,7 @@
 // installs and runs the plugin from it.
 import { readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { ARCHIVE_SUFFIX } from '@noura/plugin-cli';
 import { unzipSync } from 'fflate';
 import { expect, test } from 'vitest';
 
@@ -16,10 +17,10 @@ test('one command writes an archive of the manifest and the component', async ()
 		const output = await succeed('noura-plugin', ['package'], project);
 
 		expect(output).toContain(
-			'Wrote the release archive dist/word-count-0.1.0.zip.',
+			'Wrote the release archive dist/word-count-0.1.0.noura-plugin.zip.',
 		);
 		const archive = unzipSync(
-			await readFile(join(project, 'dist/word-count-0.1.0.zip')),
+			await readFile(join(project, 'dist/word-count-0.1.0.noura-plugin.zip')),
 		);
 		expect(Object.keys(archive).sort()).toEqual([
 			'dist/plugin.wasm',
@@ -34,13 +35,26 @@ test('one command writes an archive of the manifest and the component', async ()
 	});
 });
 
+test('the archive’s name ends as Noura looks for on a GitHub release', async (context) => {
+	const host = await RealHost.start();
+	if (!host) return context.skip();
+	try {
+		expect(await host.archiveSuffix()).toBe(ARCHIVE_SUFFIX);
+	} finally {
+		await host.close();
+	}
+});
+
 test('Noura installs the archive and runs the plugin from it', async () => {
 	await inTemporaryFolder(async (folder) => {
 		await succeed('create-noura-plugin', ['word-count'], folder);
 		const project = join(folder, 'word-count');
 		await succeed('noura-plugin', ['package'], project);
-		const archive = join(folder, 'word-count-0.1.0.zip');
-		await rename(join(project, 'dist/word-count-0.1.0.zip'), archive);
+		const archive = join(folder, 'word-count-0.1.0.noura-plugin.zip');
+		await rename(
+			join(project, 'dist/word-count-0.1.0.noura-plugin.zip'),
+			archive,
+		);
 		// Nothing of the project is left: the archive holds the plugin.
 		await rm(project, { recursive: true });
 

@@ -169,12 +169,14 @@ The mock host doesn't check views against Noura's drawing rules or properties ag
 
 ## Package it for release
 
-`npm run package` runs `noura-plugin package`. It builds the plugin, then writes its release archive next to the component, `dist/<id>-<version>.zip` for the template.
+`npm run package` runs `noura-plugin package`. It builds the plugin, then writes its release archive next to the component, `dist/<id>-<version>.noura-plugin.zip` for the template.
 
 The release archive is a zip file that holds:
 
 - `plugin.toml` at its root.
 - The component, at the path the manifest's `entry` names.
+
+To publish the plugin, attach the archive to a release on GitHub. In Noura, you paste the release's address under Install from GitHub in Settings > Plugins. Noura downloads the one file of the release whose name ends in `.noura-plugin.zip`, up to 10 MB, and lists what the plugin asks for before it installs anything.
 
 Noura reads only those two files and installs nothing from an archive that holds a link, a path that leaves the plugin's folder or two entries with one path. It compiles the component itself on each device, and refuses a component compiled elsewhere, so the archive holds no compiled code.
 

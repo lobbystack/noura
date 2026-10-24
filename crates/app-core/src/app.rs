@@ -262,6 +262,8 @@ pub struct App {
     settings: Option<Settings>,
     /// The plugin install dialog, while it is open.
     plugin_install: Option<PluginInstall>,
+    /// Brings the install dialog of a release that is downloading.
+    plugin_download: Option<Receiver<PluginInstall>>,
     /// Settings' sections, in the order they registered.
     settings_sections: Vec<SettingsSection>,
     /// The system's apps that open at login.
@@ -385,6 +387,7 @@ impl App {
             ignored_files: None,
             settings: None,
             plugin_install: None,
+            plugin_download: None,
             settings_sections: kernel_sections(),
             login_item: Arc::new(NoLoginItem),
             log_folder: crate::log_folder(&session.app_data),
@@ -521,6 +524,7 @@ impl App {
         self.viewers.clear();
         self.leaving = None;
         self.plugin_install = None;
+        self.plugin_download = None;
         self.listeners.emit(Change::Screen);
     }
 

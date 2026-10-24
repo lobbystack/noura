@@ -110,6 +110,9 @@ impl Session {
                     .map(|(object_type, plugin)| ((*object_type).to_owned(), json!(plugin)))
                     .collect::<serde_json::Map<_, _>>(),
             }),
+            // How the name of a release archive on GitHub ends, which the
+            // kit's package command must match.
+            "archiveSuffix" => json!(plugin_host::ARCHIVE_SUFFIX),
             "settle" => Value::Null,
             other => return Err(format!("The host has no request {other}.")),
         };

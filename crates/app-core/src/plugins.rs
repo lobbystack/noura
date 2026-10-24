@@ -1,14 +1,17 @@
-//! The plugins service: installs plugins from folders and release archives
-//! once you approve their capabilities, keeps those approvals in this
-//! device's app data,
-//! turns plugins on and off in the open workspace's manifest, runs the
-//! ones that are on, and reloads a plugin when a new build lands in its
-//! folder.
+//! The plugins service: installs plugins from folders and from releases
+//! on GitHub once you approve their capabilities, keeps those approvals in
+//! this device's app data, turns plugins on and off in the open
+//! workspace's manifest, runs the ones that are on, reloads a plugin when
+//! a new build lands in its folder, and checks GitHub for a newer release
+//! when you ask.
 //!
 //! Every window shares one service. Installing a plugin from a folder is
 //! Noura's dev mode: the folder stays where it is, and the service copies
 //! each build into the plugin host's library, which compiles it on this
-//! device. Approvals never come from workspace files, so a workspace that
+//! device. A release on GitHub downloads on a thread of its own, and its
+//! archive goes through the same library. A newer release always waits
+//! for you, and one that asks for more lists what it adds. Approvals
+//! never come from workspace files, so a workspace that
 //! lists a plugin as enabled runs none of its code on a device where you
 //! haven't installed and approved it. The plugins that ship with Noura
 //! wait for one approval on this device's first-run screen.
@@ -36,9 +39,10 @@ use std::{
 
 use local_core::HostRequests;
 use plugin_host::{
-    Candidate, Capability, DeviceClock, Event, Grant, InstallError, Navigation, Node, NodeKind,
-    ObjectTypes, PluginHost, PluginManifest, Router, RunningPlugin, Services, Surface, Value, View,
-    ViewError, ViewKind, ViewNode, VirtualRow, WorkspaceObjects, WorkspaceReads, check_rows,
+    Archive, Candidate, Capability, DeviceClock, Event, Grant, InstallError, Navigation, Node,
+    NodeKind, ObjectTypes, PluginHost, PluginManifest, ReleaseUrl, Releases, Router, RunningPlugin,
+    Services, Surface, Value, View, ViewError, ViewKind, ViewNode, VirtualRow, WorkspaceObjects,
+    WorkspaceReads, check_rows,
 };
 use serde::{Deserialize, Serialize};
 
@@ -121,7 +125,7 @@ pub struct PluginRow {
     /// The manifest's name, or the ID when it isn't installed here.
     pub name: String,
     pub version: Option<String>,
-    /// The folder or release archive it was installed from.
+    /// The folder it was installed from.
     pub folder: Option<String>,
     /// What it may use on this device: each capability, network host and
     /// command target it declares that you approved.
@@ -140,37 +144,97 @@ pub struct PluginRow {
     pub failed: bool,
     /// Why it isn't running or its last reload failed.
     pub problem: Option<String>,
-    /// What a new build in its folder adds, which waits for your approval
-    /// before the build runs. Empty when no build waits.
+    /// What a new build adds, which waits for your approval before the
+    /// build runs. Empty when no build waits, or when the waiting build
+    /// adds nothing.
     pub update: Vec<CapabilityLine>,
+    /// The release page on GitHub it was installed from.
+    pub release: Option<String>,
+    /// The version of a new build that waits for you to install it.
+    pub newer: Option<String>,
+    /// Where checking GitHub for a newer release stands.
+    pub update_check: Option<UpdateCheck>,
 }
 
-/// The install dialog: a plugin folder or release archive, read and
+/// Where checking GitHub for a newer release of a plugin stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateCheck {
+    /// Noura is downloading the newest release.
+    Checking,
+    /// No release is newer than the installed version, given here.
+    Newest(String),
+    /// The check failed, for this reason. The installed version stays.
+    Failed(String),
+}
+
+/// The install dialog: a plugin folder or a release on GitHub, read and
 /// compiled but not run, with the capabilities it asks for, or why Noura
 /// won't install it.
 #[derive(Clone)]
 pub struct PluginInstall {
-    /// The folder or the archive you chose.
-    pub folder: String,
+    /// The folder you chose, or the release's page on GitHub.
+    pub source: String,
+    /// It comes from a release on GitHub, a source nobody reviewed.
+    pub from_github: bool,
+    /// Noura is downloading the release. Nothing else is known yet.
+    pub downloading: bool,
     pub id: String,
     pub name: String,
     pub version: String,
     /// Every capability, network host and command target the manifest
     /// declares, in its order.
     pub capabilities: Vec<CapabilityLine>,
-    /// Why the folder can't be installed. Nothing installs while it is
+    /// Why the plugin can't be installed. Nothing installs while it is
     /// set.
     pub problem: Option<String>,
     candidate: Option<Candidate>,
-    /// `folder` names a release archive.
-    archive: bool,
+}
+
+impl PluginInstall {
+    /// A dialog that says why Noura won't install from `source`.
+    fn refused(source: String, from_github: bool, problem: String) -> Self {
+        Self {
+            source,
+            from_github,
+            downloading: false,
+            id: String::new(),
+            name: String::new(),
+            version: String::new(),
+            capabilities: Vec::new(),
+            problem: Some(problem),
+            candidate: None,
+        }
+    }
+
+    /// The dialog of a release whose download stopped without an answer.
+    pub(crate) fn download_stopped(source: String) -> Self {
+        let problem = "The download stopped before it finished. Try again.".to_owned();
+        Self::refused(source, true, problem)
+    }
+
+    /// A dialog that shows what `candidate`, from `source`, asks for.
+    fn ready(source: String, from_github: bool, candidate: Candidate) -> Self {
+        let manifest = candidate.manifest();
+        Self {
+            source,
+            from_github,
+            downloading: false,
+            id: manifest.id.clone(),
+            name: manifest.name.clone(),
+            version: manifest.version.to_string(),
+            capabilities: lines(&manifest.capabilities),
+            problem: None,
+            candidate: Some(candidate),
+        }
+    }
 }
 
 impl std::fmt::Debug for PluginInstall {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PluginInstall")
-            .field("folder", &self.folder)
+            .field("source", &self.source)
+            .field("downloading", &self.downloading)
             .field("id", &self.id)
             .field("capabilities", &self.capabilities)
             .field("problem", &self.problem)
@@ -215,28 +279,19 @@ pub(crate) struct PluginSection {
 /// This device's record of an installed plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Record {
-    folder: String,
+    /// The folder it was installed from, which Noura watches for new
+    /// builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
+    /// The page of the release on GitHub it was installed from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    release: Option<String>,
     /// What you approved. A plugin may use what it declares and this
     /// holds.
     approved: Vec<Capability>,
     /// It ships with Noura, and you approved it on the first-run screen.
     #[serde(default)]
     shipped: bool,
-    /// `folder` names the release archive it came from, which holds one
-    /// build, so nothing watches it for new ones.
-    #[serde(default)]
-    archive: bool,
-}
-
-/// Where an installed plugin came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Source {
-    /// A folder, which Noura watches for new builds.
-    Folder,
-    /// A release archive.
-    Archive,
-    /// The folder of the plugins that ship with Noura.
-    Shipped,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -356,6 +411,28 @@ impl Rows {
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// A new build of an installed plugin that waits for you: from its folder,
+/// when it adds capabilities, or from a newer release on GitHub.
+#[derive(Clone)]
+struct Offer {
+    candidate: Candidate,
+    /// The page of the release it comes from, for one from GitHub.
+    release: Option<String>,
+}
+
+/// What checking GitHub for a newer release of a plugin found.
+struct Checked {
+    id: String,
+    found: Result<Found, InstallError>,
+}
+
+enum Found {
+    /// No release is newer than the installed version.
+    Newest,
+    /// This newer release, read and compiled.
+    Newer(Box<Offer>),
+}
+
 /// A tool call checked against the tool's schema, ready to run off the
 /// service's lock.
 pub(crate) struct ToolCall {
@@ -410,8 +487,14 @@ pub(crate) struct Plugins {
     generations: u64,
     outcomes: (Sender<Outcome>, Receiver<Outcome>),
     problems: BTreeMap<String, String>,
-    /// New builds that wait for your approval of what they add.
-    updates: BTreeMap<String, Candidate>,
+    /// New builds that wait for you to approve them.
+    updates: BTreeMap<String, Offer>,
+    /// Downloads plugin releases from GitHub.
+    releases: Arc<Releases>,
+    /// What each check for a newer release found, as it finishes.
+    checks: (Sender<Checked>, Receiver<Checked>),
+    /// Where each plugin's last check for a newer release stands.
+    update_checks: BTreeMap<String, UpdateCheck>,
     watchers: BTreeMap<String, Watcher>,
     reload_sender: Sender<Reload>,
     reloads: Receiver<Reload>,
@@ -461,6 +544,9 @@ impl Plugins {
             outcomes: channel(),
             problems: BTreeMap::new(),
             updates: BTreeMap::new(),
+            releases: Arc::new(Releases::github()),
+            checks: channel(),
+            update_checks: BTreeMap::new(),
             watchers: BTreeMap::new(),
             reload_sender,
             reloads,
@@ -476,6 +562,13 @@ impl Plugins {
 
     pub(crate) fn set_wake(&mut self, wake: Wake) {
         self.wake = Some(wake);
+    }
+
+    /// Send release downloads through `transport` in place of the
+    /// network, as tests do with a stand-in for GitHub.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn set_release_transport(&mut self, transport: Arc<dyn local_core::WebTransport>) {
+        self.releases = Arc::new(Releases::with_transport(transport));
     }
 
     /// Give the plugins this clock and time zone, from the next start on.
@@ -520,6 +613,13 @@ impl Plugins {
     /// taken yet.
     pub(crate) fn is_working(&self) -> bool {
         self.running.values().any(|running| running.outstanding > 0)
+    }
+
+    /// Whether a check for a newer release runs.
+    pub(crate) fn is_checking(&self) -> bool {
+        self.update_checks
+            .values()
+            .any(|check| *check == UpdateCheck::Checking)
     }
 
     /// Change the records and save them. Returns the error to show when
@@ -570,8 +670,8 @@ impl Plugins {
             match host.installed(&id) {
                 Ok((manifest, digest)) => {
                     self.manifests.insert(id.clone(), manifest);
-                    if !record.archive {
-                        self.watch(&id, &record.folder, digest);
+                    if let Some(folder) = &record.folder {
+                        self.watch(&id, folder, digest);
                     }
                 }
                 Err(error) => {
@@ -612,10 +712,12 @@ impl Plugins {
                     (None, Some(record)) => (lines(&record.approved), Vec::new()),
                     _ => (Vec::new(), Vec::new()),
                 };
-                let update = match (self.updates.get(id), manifest) {
-                    (Some(candidate), Some(manifest)) => {
-                        lines_beyond(&candidate.manifest().capabilities, &manifest.capabilities)
-                    }
+                let offer = self.updates.get(id).filter(|_| manifest.is_some());
+                let update = match (offer, manifest) {
+                    (Some(offer), Some(manifest)) => lines_beyond(
+                        &offer.candidate.manifest().capabilities,
+                        &manifest.capabilities,
+                    ),
                     _ => Vec::new(),
                 };
                 let running = self.running.get(id);
@@ -623,7 +725,10 @@ impl Plugins {
                     id: id.clone(),
                     name: manifest.map_or_else(|| id.clone(), |manifest| manifest.name.clone()),
                     version: manifest.map(|manifest| manifest.version.to_string()),
-                    folder: record.map(|record| record.folder.clone()),
+                    folder: record.and_then(|record| record.folder.clone()),
+                    release: record.and_then(|record| record.release.clone()),
+                    newer: offer.map(|offer| offer.candidate.manifest().version.to_string()),
+                    update_check: self.update_checks.get(id).cloned(),
                     approved,
                     revoked,
                     installed: record.is_some(),
@@ -790,55 +895,96 @@ impl Plugins {
     /// Read the plugin folder `folder` for the install dialog, without
     /// running any of its code.
     pub(crate) fn review(&mut self, folder: &Path) -> PluginInstall {
-        self.review_source(folder, false)
-    }
-
-    /// Read the release archive `archive` for the install dialog, as
-    /// [`Self::review`] reads a folder.
-    pub(crate) fn review_archive(&mut self, archive: &Path) -> PluginInstall {
-        self.review_source(archive, true)
-    }
-
-    fn review_source(&mut self, source: &Path, archive: bool) -> PluginInstall {
-        let shown = source.to_string_lossy().into_owned();
-        let refused = |problem: String| PluginInstall {
-            folder: shown.clone(),
-            id: String::new(),
-            name: String::new(),
-            version: String::new(),
-            capabilities: Vec::new(),
-            problem: Some(problem),
-            candidate: None,
-            archive,
-        };
-        let Some(path) = source.to_str() else {
-            return refused(AppError::unsupported_path().message);
+        let shown = folder.to_string_lossy().into_owned();
+        let Some(path) = folder.to_str() else {
+            return PluginInstall::refused(shown, false, AppError::unsupported_path().message);
         };
         let host = match self.host() {
             Ok(host) => host,
-            Err(error) => return refused(error.message),
+            Err(error) => return PluginInstall::refused(shown, false, error.message),
         };
-        let inspected = if archive {
-            host.inspect_archive(source)
-        } else {
-            host.inspect(source)
-        };
-        match inspected {
-            Ok(candidate) => {
-                let manifest = candidate.manifest();
-                PluginInstall {
-                    folder: path.to_owned(),
-                    id: manifest.id.clone(),
-                    name: manifest.name.clone(),
-                    version: manifest.version.to_string(),
-                    capabilities: lines(&manifest.capabilities),
-                    problem: None,
-                    candidate: Some(candidate),
-                    archive,
-                }
-            }
-            Err(error) => refused(error.message),
+        match host.inspect(folder) {
+            Ok(candidate) => PluginInstall::ready(path.to_owned(), false, candidate),
+            Err(error) => PluginInstall::refused(shown, false, error.message),
         }
+    }
+
+    /// Read the release archive file `archive`, as `noura-plugin package`
+    /// writes it, for the install dialog, without running any of its code.
+    /// It goes through the same checks as a release downloaded from GitHub.
+    pub(crate) fn review_archive(&mut self, archive: &Path) -> PluginInstall {
+        let shown = archive.to_string_lossy().into_owned();
+        let Some(path) = archive.to_str() else {
+            return PluginInstall::refused(shown, false, AppError::unsupported_path().message);
+        };
+        let host = match self.host() {
+            Ok(host) => host,
+            Err(error) => return PluginInstall::refused(shown, false, error.message),
+        };
+        let bytes = match read_archive_file(archive) {
+            Ok(bytes) => bytes,
+            Err(problem) => return PluginInstall::refused(shown, false, problem),
+        };
+        match Archive::read(&bytes).and_then(|archive| host.inspect_archive(archive)) {
+            Ok(candidate) => PluginInstall::ready(path.to_owned(), false, candidate),
+            Err(error) => PluginInstall::refused(shown, false, error.message),
+        }
+    }
+
+    /// Start reading the release at `address` on GitHub for the install
+    /// dialog. An address that isn't a release on GitHub is refused at
+    /// once, and nothing is fetched. Otherwise the dialog says the release
+    /// is downloading, and the receiver gets the dialog to show once the
+    /// download is read and compiled. None of the plugin's code runs.
+    pub(crate) fn review_release(
+        &mut self,
+        address: &str,
+    ) -> (PluginInstall, Option<Receiver<PluginInstall>>) {
+        let shown = address.trim().to_owned();
+        let release = match ReleaseUrl::parse(address) {
+            Ok(release) => release,
+            Err(error) => return (PluginInstall::refused(shown, true, error.message), None),
+        };
+        let host = match self.host() {
+            Ok(host) => host,
+            Err(error) => return (PluginInstall::refused(shown, true, error.message), None),
+        };
+        let page = release.page();
+        let releases = self.releases.clone();
+        let wake = self.wake.clone();
+        let (sender, receiver) = channel();
+        let downloading = page.clone();
+        let spawned = std::thread::Builder::new()
+            .name("plugin-download".into())
+            .spawn(move || {
+                let review = releases
+                    .download(&release)
+                    .and_then(|downloaded| {
+                        let archive = Archive::read(&downloaded.archive)?;
+                        let candidate = host.inspect_archive(archive)?;
+                        Ok(PluginInstall::ready(downloaded.page, true, candidate))
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(code = error.code.as_str(), "a plugin release was refused");
+                        PluginInstall::refused(downloading, true, error.message)
+                    });
+                if sender.send(review).is_ok()
+                    && let Some(wake) = wake
+                {
+                    wake();
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "a plugin download didn't start");
+            let problem = "Noura couldn't start the download.".to_owned();
+            return (PluginInstall::refused(page, true, problem), None);
+        }
+        let waiting = PluginInstall {
+            downloading: true,
+            problem: None,
+            ..PluginInstall::refused(page, true, String::new())
+        };
+        (waiting, Some(receiver))
     }
 
     /// Install the plugin the dialog shows, approving every capability it
@@ -850,30 +996,34 @@ impl Plugins {
                 install.problem.clone().unwrap_or_default(),
             ));
         };
-        let source = if install.archive {
-            Source::Archive
+        let source = Some(install.source.as_str());
+        if install.from_github {
+            self.install_candidate(candidate, None, source, false)
+        } else if candidate.folder().is_some() {
+            self.install_candidate(candidate, source, None, false)
         } else {
-            Source::Folder
-        };
-        self.install_candidate(candidate, &install.folder, source)
+            // A release archive from a file holds one build, so there is
+            // no folder to watch and no release to check.
+            self.install_candidate(candidate, None, None, false)
+        }
     }
 
     fn install_candidate(
         &mut self,
         candidate: &Candidate,
-        folder: &str,
-        source: Source,
+        folder: Option<&str>,
+        release: Option<&str>,
+        shipped: bool,
     ) -> Result<(), AppError> {
-        let shipped = source == Source::Shipped;
         let host = self.host()?;
         host.install(candidate)
             .map_err(|error| from_install(&error))?;
         let id = candidate.manifest().id.clone();
         let record = Record {
-            folder: folder.to_owned(),
+            folder: folder.map(str::to_owned),
+            release: release.map(str::to_owned),
             approved: candidate.manifest().capabilities.clone(),
             shipped,
-            archive: source == Source::Archive,
         };
         if let Err(error) = self.save_records(|records| {
             records.plugins.insert(id.clone(), record);
@@ -886,9 +1036,7 @@ impl Plugins {
         }
         self.manifests
             .insert(id.clone(), candidate.manifest().clone());
-        // An archive holds one build, so only a folder is watched for new
-        // ones.
-        if source != Source::Archive {
+        if let Some(folder) = folder {
             self.watch(&id, folder, candidate.digest());
         }
         if self.enabled().contains(&id) {
@@ -932,6 +1080,7 @@ impl Plugins {
         self.stop(id);
         self.watchers.remove(id);
         self.updates.remove(id);
+        self.update_checks.remove(id);
         self.problems.remove(id);
         self.manifests.remove(id);
         self.save_records(|records| {
@@ -942,36 +1091,153 @@ impl Plugins {
         removed
     }
 
-    /// Approve what a waiting build adds, and run it.
+    /// Approve what a waiting build adds, install it and run it. When the
+    /// install fails, the installed build and your approvals stay as they
+    /// were.
     pub(crate) fn approve_update(&mut self, id: &str) -> Result<(), AppError> {
-        let Some(candidate) = self.updates.remove(id) else {
+        let Some(offer) = self.updates.get(id).cloned() else {
             return Err(no_update());
         };
         if !self.records.plugins.contains_key(id) {
+            self.updates.remove(id);
             return Err(AppError::new(
                 "plugin_not_installed",
                 "This plugin isn't installed on this device.",
             ));
         }
-        let added = self.added(id, &candidate);
-        self.save_records(|records| {
-            if let Some(record) = records.plugins.get_mut(id) {
-                Capability::approve(&mut record.approved, &added);
+        let added = self.added(id, &offer.candidate);
+        match self.apply(id, &offer.candidate, &added, offer.release.as_deref()) {
+            Ok(()) => {
+                self.updates.remove(id);
+                self.update_checks.remove(id);
+                Ok(())
             }
-        })?;
-        self.apply(id, &candidate).inspect_err(|error| {
-            self.failed_update(id, error);
-        })
+            // A release from GitHub keeps waiting, so you can try again.
+            Err(error) if offer.release.is_some() => Err(error),
+            Err(error) => {
+                self.updates.remove(id);
+                self.failed_update(id, &error);
+                Err(error)
+            }
+        }
     }
 
     /// Keep the installed build of the plugin `id` and drop the waiting
-    /// one. Its folder offers a build again once it changes.
+    /// one. Its folder offers a build again once it changes, and Check for
+    /// updates offers a release again.
     pub(crate) fn decline_update(&mut self, id: &str) -> Result<(), AppError> {
         if self.updates.remove(id).is_none() {
             return Err(no_update());
         }
         self.changed();
         Ok(())
+    }
+
+    /// Start checking GitHub for a release of the plugin `id` newer than
+    /// the installed one. The plugin's row says how it went once
+    /// [`Self::poll`] takes the answer; a newer release waits there for
+    /// you.
+    pub(crate) fn check_update(&mut self, id: &str) -> Result<(), AppError> {
+        let Some(record) = self.records.plugins.get(id) else {
+            return Err(AppError::new(
+                "plugin_not_installed",
+                "This plugin isn't installed on this device.",
+            ));
+        };
+        let Some(page) = record.release.clone() else {
+            return Err(AppError::new(
+                "plugin_not_from_github",
+                "Only plugins installed from GitHub can check for updates there.",
+            ));
+        };
+        if self.update_checks.get(id) == Some(&UpdateCheck::Checking) {
+            return Ok(());
+        }
+        let release = ReleaseUrl::parse(&page)
+            .map_err(|error| from_install(&error))?
+            .latest();
+        let host = self.host()?;
+        let Some(installed) = self
+            .manifests
+            .get(id)
+            .map(|manifest| manifest.version.clone())
+        else {
+            return Err(AppError::new(
+                "plugin_not_installed",
+                "This plugin isn't installed on this device.",
+            ));
+        };
+        let releases = self.releases.clone();
+        let sender = self.checks.0.clone();
+        let wake = self.wake.clone();
+        let plugin = id.to_owned();
+        std::thread::Builder::new()
+            .name("plugin-update-check".into())
+            .spawn(move || {
+                let found = releases.download(&release).and_then(|downloaded| {
+                    let archive = Archive::read(&downloaded.archive)?;
+                    let manifest = archive.manifest();
+                    if manifest.id == plugin && manifest.version <= installed {
+                        return Ok(Found::Newest);
+                    }
+                    let candidate = host.inspect_archive_update(&plugin, archive)?;
+                    Ok(Found::Newer(Box::new(Offer {
+                        candidate,
+                        release: Some(downloaded.page),
+                    })))
+                });
+                let checked = Checked { id: plugin, found };
+                if sender.send(checked).is_ok()
+                    && let Some(wake) = wake
+                {
+                    wake();
+                }
+            })
+            .map_err(|error| {
+                tracing::warn!(%error, "a check for plugin updates didn't start");
+                AppError::new(
+                    "plugin_check_failed",
+                    "Noura couldn't start checking for updates.",
+                )
+            })?;
+        self.update_checks
+            .insert(id.to_owned(), UpdateCheck::Checking);
+        self.changed();
+        Ok(())
+    }
+
+    /// Show what a check for a newer release found. A newer release waits
+    /// for you; anything else leaves the installed version as it is.
+    fn take_check(&mut self, checked: Checked) {
+        let id = checked.id;
+        let Some(installed) = self
+            .manifests
+            .get(&id)
+            .filter(|_| self.records.plugins.contains_key(&id))
+            .map(|manifest| manifest.version.clone())
+        else {
+            self.update_checks.remove(&id);
+            return;
+        };
+        let check = match checked.found {
+            Ok(Found::Newer(offer)) if offer.candidate.manifest().version > installed => {
+                self.updates.insert(id.clone(), *offer);
+                None
+            }
+            Ok(_) => Some(UpdateCheck::Newest(installed.to_string())),
+            Err(error) => {
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    "a check for plugin updates failed"
+                );
+                Some(UpdateCheck::Failed(error.message))
+            }
+        };
+        match check {
+            Some(check) => self.update_checks.insert(id, check),
+            None => self.update_checks.remove(&id),
+        };
+        self.changed();
     }
 
     /// What `candidate` declares that the installed build of `id` doesn't.
@@ -1097,11 +1363,15 @@ impl Plugins {
                 Ok(candidate) => {
                     if self.added(&reload.id, &candidate).is_empty() {
                         self.updates.remove(&reload.id);
-                        if let Err(error) = self.apply(&reload.id, &candidate) {
+                        if let Err(error) = self.apply(&reload.id, &candidate, &[], None) {
                             self.failed_update(&reload.id, &error);
                         }
                     } else {
-                        self.updates.insert(reload.id.clone(), candidate);
+                        let offer = Offer {
+                            candidate,
+                            release: None,
+                        };
+                        self.updates.insert(reload.id.clone(), offer);
                     }
                 }
                 Err(error) => {
@@ -1112,6 +1382,9 @@ impl Plugins {
                 }
             }
             self.changed();
+        }
+        while let Ok(checked) = self.checks.1.try_recv() {
+            self.take_check(checked);
         }
         while let Ok(outcome) = self.outcomes.1.try_recv() {
             self.take(outcome);
@@ -1228,21 +1501,34 @@ impl Plugins {
         self.changed();
     }
 
-    /// Install `candidate` over the plugin `id`, and run it in place of the
-    /// old build when the plugin is running. What you approved for
-    /// capabilities the new build no longer declares goes.
-    fn apply(&mut self, id: &str, candidate: &Candidate) -> Result<(), AppError> {
+    /// Install `candidate` over the plugin `id`, approve `added` for it,
+    /// and run it in place of the old build when the plugin is running.
+    /// What you approved for capabilities the new build no longer declares
+    /// goes. A build from GitHub records `release`, its release page.
+    /// Approvals change only once the new build installed.
+    fn apply(
+        &mut self,
+        id: &str,
+        candidate: &Candidate,
+        added: &[Capability],
+        release: Option<&str>,
+    ) -> Result<(), AppError> {
         let host = self.host()?;
         host.update(candidate)
             .map_err(|error| from_install(&error))?;
         let declared = candidate.manifest().capabilities.clone();
-        let pruned = self.save_records(|records| {
+        let saved = self.save_records(|records| {
             if let Some(record) = records.plugins.get_mut(id) {
+                Capability::approve(&mut record.approved, added);
                 record.approved = Capability::granted(&declared, &record.approved);
+                if let Some(release) = release {
+                    record.release = Some(release.to_owned());
+                }
             }
         });
-        if let Err(error) = pruned {
-            tracing::warn!(code = %error.code, "approvals for removed capabilities stayed");
+        if let Err(error) = saved {
+            // The new build runs with what you approved before.
+            tracing::warn!(code = %error.code, "the approvals of a new build weren't saved");
         }
         self.manifests
             .insert(id.to_owned(), candidate.manifest().clone());
@@ -1743,7 +2029,7 @@ impl Plugins {
                     let candidate = host
                         .inspect(&folder)
                         .map_err(|error| from_install(&error))?;
-                    self.install_candidate(&candidate, path, Source::Shipped)
+                    self.install_candidate(&candidate, Some(path), None, true)
                 });
             if let Err(error) = installed {
                 tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
@@ -1871,6 +2157,33 @@ fn from_install(error: &InstallError) -> AppError {
         "a plugin couldn't be installed or loaded"
     );
     AppError::new(error.code.as_str(), error.message.clone())
+}
+
+/// The bytes of the release archive file `archive`, refused past the size
+/// a release download may have.
+fn read_archive_file(archive: &Path) -> Result<Vec<u8>, String> {
+    let unreadable = |error: std::io::Error| {
+        tracing::warn!(%error, "a plugin archive file didn't read");
+        "Noura couldn't read the archive.".to_owned()
+    };
+    let too_large = || {
+        format!(
+            "The archive is larger than {} MB.",
+            plugin_host::MAX_ARCHIVE_BYTES >> 20
+        )
+    };
+    let file = std::fs::File::open(archive).map_err(unreadable)?;
+    let limit = plugin_host::MAX_ARCHIVE_BYTES as u64;
+    if file.metadata().map_err(unreadable)?.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit + 1), &mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

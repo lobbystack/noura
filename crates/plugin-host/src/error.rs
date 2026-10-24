@@ -18,12 +18,8 @@ pub enum InstallErrorCode {
     AlreadyInstalled,
     /// The entry component's path leaves the plugin's folder.
     EntryOutsideFolder,
-    /// The entry component isn't in the folder or the archive.
+    /// The entry component isn't in the folder.
     EntryMissing,
-    /// The release archive isn't a zip archive Noura can read, or holds a
-    /// link, a path that leaves the plugin's folder, or a file too large
-    /// to install.
-    InvalidArchive,
     /// The entry holds code compiled elsewhere, which the host never runs.
     PrecompiledCode,
     /// The entry isn't a valid WebAssembly component.
@@ -37,6 +33,25 @@ pub enum InstallErrorCode {
     UnsupportedPath,
     /// The host couldn't read or write the plugin's files.
     Storage,
+    /// The address isn't one of a release on GitHub.
+    NotAGitHubRelease,
+    /// GitHub has no release at the address.
+    ReleaseNotFound,
+    /// The release carries no plugin archive, or more than one.
+    NoPluginArchive,
+    /// The release or its archive couldn't be downloaded.
+    DownloadFailed,
+    /// The downloaded archive doesn't match the size or digest GitHub
+    /// lists for it.
+    DownloadCorrupt,
+    /// The archive isn't a zip archive Noura can read, or is too large.
+    InvalidArchive,
+    /// An entry's path in the archive leaves the plugin's folder.
+    ArchiveEntryOutside,
+    /// The archive holds a symbolic link.
+    ArchiveLink,
+    /// An update holds another plugin than the one it updates.
+    DifferentPlugin,
 }
 
 impl InstallErrorCode {
@@ -51,13 +66,21 @@ impl InstallErrorCode {
             Self::AlreadyInstalled => "already_installed",
             Self::EntryOutsideFolder => "entry_outside_folder",
             Self::EntryMissing => "entry_missing",
-            Self::InvalidArchive => "invalid_archive",
             Self::PrecompiledCode => "precompiled_code",
             Self::NotAComponent => "not_a_component",
             Self::ForbiddenImport => "forbidden_import",
             Self::NotInstalled => "not_installed",
             Self::UnsupportedPath => "unsupported_path",
             Self::Storage => "plugin_storage",
+            Self::NotAGitHubRelease => "not_a_github_release",
+            Self::ReleaseNotFound => "release_not_found",
+            Self::NoPluginArchive => "no_plugin_archive",
+            Self::DownloadFailed => "download_failed",
+            Self::DownloadCorrupt => "download_corrupt",
+            Self::InvalidArchive => "invalid_archive",
+            Self::ArchiveEntryOutside => "archive_entry_outside",
+            Self::ArchiveLink => "archive_link",
+            Self::DifferentPlugin => "different_plugin",
         }
     }
 }

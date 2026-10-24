@@ -25,7 +25,7 @@ The test runs the built plugin against a mock of Noura, which answers as Noura d
 npm run package
 ```
 
-This writes the release archive `dist/{{id}}-0.1.0.zip`, which holds `plugin.toml` and the component. Noura compiles the component itself on each device that installs the plugin, so the archive holds no compiled code.
+This writes the release archive `dist/{{id}}-0.1.0.noura-plugin.zip`, which holds `plugin.toml` and the component. Attach it to a release on GitHub, and anyone can install the plugin by pasting the release's address in Noura's Settings > Plugins. Noura compiles the component itself on each device that installs the plugin, so the archive holds no compiled code.
 
 ## Files
 

@@ -119,7 +119,8 @@ fn the_install_dialog_lists_every_capability_before_any_code_runs() {
     assert_eq!(review.name, "Hello");
     assert_eq!(review.id, "hello");
     assert_eq!(review.version, "0.1.0");
-    assert_eq!(review.folder, folder.path().to_str().unwrap());
+    assert_eq!(review.source, folder.path().to_str().unwrap());
+    assert!(!review.from_github);
     assert_eq!(review.capabilities, hello_capabilities());
     // Nothing is installed or running yet.
     assert!(installed(&app).is_empty());
@@ -201,6 +202,9 @@ fn approving_installs_the_plugin_on_this_device_and_changes_no_workspace_file() 
             failed: false,
             problem: None,
             update: Vec::new(),
+            release: None,
+            newer: None,
+            update_check: None,
         }]
     );
     assert_eq!(everything(&fixture), before);
@@ -361,6 +365,9 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
             failed: false,
             problem: None,
             update: Vec::new(),
+            release: None,
+            newer: None,
+            update_check: None,
         }
     );
     assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
@@ -445,7 +452,8 @@ fn a_release_archive_installs_and_runs_without_the_archive_or_a_watch_on_it() {
     let review = app.plugin_install().expect("the install dialog opens");
     assert_eq!(review.problem, None);
     assert_eq!(review.id, "hello");
-    assert_eq!(review.folder, archive.to_str().unwrap());
+    assert_eq!(review.source, archive.to_str().unwrap());
+    assert!(!review.from_github);
     assert_eq!(review.capabilities, hello_capabilities());
     assert!(installed(&app).is_empty());
     assert!(app.approve_plugin_install());
@@ -486,6 +494,32 @@ fn a_release_archive_installs_and_runs_without_the_archive_or_a_watch_on_it() {
     let rows = installed(&app);
     assert!(row(&rows, "hello").running);
     assert_eq!(row(&rows, "hello").problem, None);
+    // It came from neither a folder Noura watches nor a release to check.
+    assert_eq!(row(&rows, "hello").folder, None);
+    assert_eq!(row(&rows, "hello").release, None);
+}
+
+#[test]
+fn an_archive_file_larger_than_a_release_download_installs_nothing() {
+    let downloads = tempfile::tempdir().unwrap();
+    let archive = downloads.path().join("large.noura-plugin.zip");
+    // A sparse file: only its size is read.
+    std::fs::File::create(&archive)
+        .unwrap()
+        .set_len(plugin_host::MAX_ARCHIVE_BYTES as u64 + 1)
+        .unwrap();
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+
+    app.review_plugin_archive(archive);
+
+    let review = app.plugin_install().expect("the install dialog opens");
+    assert!(
+        review.problem.as_deref().unwrap().contains("larger than"),
+        "{review:?}"
+    );
+    assert!(!app.approve_plugin_install());
+    assert!(installed(&app).is_empty());
 }
 
 #[test]

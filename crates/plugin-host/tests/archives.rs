@@ -1,52 +1,15 @@
-//! Seam 3: installing plugins from release archives, the zip files the
-//! TypeScript author kit's package command writes. The host reads the
-//! manifest and the component from the archive, compiles the component
-//! itself, and refuses an archive that holds anything else it can't trust.
+//! Seam 3: release archives as the TypeScript author kit's package command
+//! lays them out, with the component under `dist/`, and the hostile
+//! archives `releases.rs` doesn't cover: a manifest past its size limit, a
+//! file larger than its headers say, and one path held twice.
 
 mod support;
 
 use std::io::Write;
 
-use plugin_host::{InstallErrorCode, PluginHost, Services};
+use plugin_host::{Archive, InstallErrorCode, PluginHost, Services};
 use support::plugins::{self, HELLO_MANIFEST};
 use zip::write::{SimpleFileOptions, ZipWriter};
-
-struct Setup {
-    folder: tempfile::TempDir,
-    library: tempfile::TempDir,
-}
-
-impl Setup {
-    fn new() -> Self {
-        Self {
-            folder: tempfile::tempdir().unwrap(),
-            library: tempfile::tempdir().unwrap(),
-        }
-    }
-
-    fn host(&self) -> PluginHost {
-        plugins::host(self.library.path())
-    }
-
-    /// Write an archive holding `entries`, as (name, bytes), and return
-    /// its path.
-    fn archive(&self, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
-        self.write(&zip_bytes(entries))
-    }
-
-    /// Write `bytes` as the archive and return its path.
-    fn write(&self, bytes: &[u8]) -> std::path::PathBuf {
-        let path = self.folder.path().join("plugin-0.1.0.zip");
-        std::fs::write(&path, bytes).unwrap();
-        path
-    }
-
-    fn library_is_empty(&self) -> bool {
-        std::fs::read_dir(self.library.path())
-            .map(|mut entries| entries.next().is_none())
-            .unwrap_or(true)
-    }
-}
 
 /// A zip archive holding `entries`, as (name, bytes), deflated.
 fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -92,22 +55,32 @@ fn manifest_in_dist() -> String {
     )
 }
 
+/// What the host says about the archive `bytes`, which mustn't install.
+fn refusal(host: &PluginHost, bytes: &[u8]) -> plugin_host::InstallError {
+    Archive::read(bytes)
+        .and_then(|archive| host.inspect_archive(archive))
+        .err()
+        .expect("the archive is refused")
+}
+
 #[test]
-fn an_archive_installs_and_runs_like_a_folder() {
+fn an_archive_laid_out_as_the_kit_packages_it_installs_and_runs_like_a_folder() {
     let Some(hello) = plugins::built("hello_plugin") else {
         return;
     };
-    let setup = Setup::new();
+    let library = tempfile::tempdir().unwrap();
     let manifest = manifest_in_dist();
-    let archive = setup.archive(&[
+    let bytes = zip_bytes(&[
         ("plugin.toml", manifest.as_bytes()),
         ("dist/hello_plugin.wasm", &hello),
     ]);
-    let host = setup.host();
+    let host = plugins::host(library.path());
 
-    let candidate = host.inspect_archive(&archive).expect("the archive reads");
+    let candidate = host
+        .inspect_archive(Archive::read(&bytes).expect("the archive reads"))
+        .expect("the component compiles");
     assert_eq!(candidate.manifest().id, "hello");
-    assert_eq!(candidate.folder(), archive);
+    assert_eq!(candidate.folder(), None);
     host.install(&candidate).expect("the plugin installs");
 
     let loaded = host.load("hello").expect("the plugin loads");
@@ -118,6 +91,10 @@ fn an_archive_installs_and_runs_like_a_folder() {
     );
     let pages = running.pages().expect("the plugin lists its pages");
     assert_eq!(pages[0].title, "Hello");
+
+    // The same archive again names a plugin that is installed already.
+    let error = refusal(&host, &bytes);
+    assert_eq!(error.code, InstallErrorCode::AlreadyInstalled);
 }
 
 #[test]
@@ -125,194 +102,56 @@ fn an_archive_and_a_folder_with_the_same_build_have_the_same_digest() {
     let Some(hello) = plugins::built("hello_plugin") else {
         return;
     };
-    let setup = Setup::new();
+    let library = tempfile::tempdir().unwrap();
     let manifest = manifest_in_dist();
-    let archive = setup.archive(&[
+    let bytes = zip_bytes(&[
         ("plugin.toml", manifest.as_bytes()),
         ("dist/hello_plugin.wasm", &hello),
     ]);
     let folder = tempfile::tempdir().unwrap();
     plugins::write_folder(folder.path(), &manifest, "dist/hello_plugin.wasm", &hello);
-    let host = setup.host();
+    let host = plugins::host(library.path());
 
     assert_eq!(
-        host.inspect_archive(&archive).unwrap().digest(),
+        host.inspect_archive(Archive::read(&bytes).unwrap())
+            .unwrap()
+            .digest(),
         host.inspect(folder.path()).unwrap().digest()
     );
 }
 
 #[test]
-fn an_archive_without_a_manifest_installs_nothing() {
-    let setup = Setup::new();
-    let archive = setup.archive(&[("hello_plugin.wasm", b"\0asm")]);
-
-    let error = setup.host().inspect_archive(&archive).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::ManifestMissing);
-    assert!(setup.library_is_empty());
-}
-
-#[test]
-fn an_archive_without_the_entry_component_installs_nothing() {
-    let setup = Setup::new();
-    let archive = setup.archive(&[("plugin.toml", HELLO_MANIFEST.as_bytes())]);
-
-    let error = setup.host().inspect_archive(&archive).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::EntryMissing);
-}
-
-#[test]
-fn an_archive_whose_entries_leave_the_plugin_folder_installs_nothing() {
-    let Some(hello) = plugins::built("hello_plugin") else {
-        return;
-    };
-    for escaping in [
-        "../outside.wasm",
-        "/absolute.wasm",
-        "dist/../../outside.wasm",
-    ] {
-        let setup = Setup::new();
-        let archive = setup.archive(&[
-            ("plugin.toml", HELLO_MANIFEST.as_bytes()),
-            ("hello_plugin.wasm", &hello),
-            (escaping, b"\0asm"),
-        ]);
-
-        let error = setup.host().inspect_archive(&archive).err().unwrap();
-
-        assert_eq!(error.code, InstallErrorCode::InvalidArchive, "{escaping}");
-        assert!(error.message.contains(escaping), "{}", error.message);
-        assert!(setup.library_is_empty());
-    }
-}
-
-#[test]
-fn an_archive_holding_a_symbolic_link_installs_nothing() {
-    let setup = Setup::new();
-    let path = setup.folder.path().join("linked.zip");
-    let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
-    zip.start_file("plugin.toml", SimpleFileOptions::default())
-        .unwrap();
-    zip.write_all(HELLO_MANIFEST.as_bytes()).unwrap();
-    zip.add_symlink(
-        "hello_plugin.wasm",
-        "/etc/passwd",
-        SimpleFileOptions::default(),
-    )
-    .unwrap();
-    zip.finish().unwrap();
-
-    let error = setup.host().inspect_archive(&path).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
-    assert!(error.message.contains("link"), "{}", error.message);
-}
-
-#[test]
-fn an_archive_that_offers_precompiled_code_installs_nothing() {
-    let Some(hello) = plugins::built("hello_plugin") else {
-        return;
-    };
-    let mut config = wasmtime::Config::new();
-    config.wasm_component_model(true);
-    let precompiled = wasmtime::Engine::new(&config)
-        .unwrap()
-        .precompile_component(&hello)
-        .unwrap();
-    let setup = Setup::new();
-    let archive = setup.archive(&[
-        ("plugin.toml", HELLO_MANIFEST.as_bytes()),
-        ("hello_plugin.wasm", &precompiled),
-    ]);
-
-    let error = setup.host().inspect_archive(&archive).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::PrecompiledCode);
-    assert!(setup.library_is_empty());
-}
-
-#[test]
-fn a_file_that_isnt_a_zip_archive_installs_nothing() {
-    let setup = Setup::new();
-    let path = setup.folder.path().join("plugin.zip");
-    std::fs::write(&path, b"not a zip archive").unwrap();
-
-    let error = setup.host().inspect_archive(&path).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
-}
-
-#[test]
-fn an_archive_for_an_installed_plugin_says_so() {
-    let Some(hello) = plugins::built("hello_plugin") else {
-        return;
-    };
-    let setup = Setup::new();
-    let archive = setup.archive(&[
-        ("plugin.toml", HELLO_MANIFEST.as_bytes()),
-        ("hello_plugin.wasm", &hello),
-    ]);
-    let host = setup.host();
-    host.install(&host.inspect_archive(&archive).unwrap())
-        .unwrap();
-
-    let error = host.inspect_archive(&archive).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::AlreadyInstalled);
-}
-
-#[test]
 fn an_archive_whose_manifest_is_over_64_kb_installs_nothing() {
-    let setup = Setup::new();
+    let library = tempfile::tempdir().unwrap();
     let manifest = format!("{HELLO_MANIFEST}\n# {}\n", "x".repeat(64 << 10));
-    let archive = setup.archive(&[
+    let bytes = zip_bytes(&[
         ("plugin.toml", manifest.as_bytes()),
         ("hello_plugin.wasm", b"\0asm"),
     ]);
 
-    let error = setup.host().inspect_archive(&archive).err().unwrap();
+    let error = refusal(&plugins::host(library.path()), &bytes);
 
-    assert_eq!(error.code, InstallErrorCode::InvalidManifest);
+    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
     assert!(error.message.contains("64 KB"), "{}", error.message);
-    assert!(setup.library_is_empty());
 }
 
 #[test]
-fn a_file_larger_than_its_header_says_stops_the_read_and_installs_nothing() {
-    let setup = Setup::new();
+fn a_file_larger_than_its_headers_say_stops_the_read_and_installs_nothing() {
+    let library = tempfile::tempdir().unwrap();
     let manifest = format!("{HELLO_MANIFEST}\n# {}\n", "x".repeat(64 << 10));
-    let mut zip = zip_bytes(&[
+    let mut bytes = zip_bytes(&[
         ("plugin.toml", manifest.as_bytes()),
         ("hello_plugin.wasm", b"\0asm"),
     ]);
     // Both headers claim the manifest holds 100 bytes.
-    edit_headers(&mut zip, "plugin.toml", |zip, size, _| {
+    edit_headers(&mut bytes, "plugin.toml", |zip, size, _| {
         zip[size..size + 4].copy_from_slice(&100u32.to_le_bytes());
     });
-    let archive = setup.write(&zip);
 
-    let error = setup.host().inspect_archive(&archive).err().unwrap();
+    let error = refusal(&plugins::host(library.path()), &bytes);
 
     assert_eq!(error.code, InstallErrorCode::InvalidArchive);
     assert!(error.message.contains("plugin.toml"), "{}", error.message);
-    assert!(setup.library_is_empty());
-}
-
-#[test]
-fn an_archive_over_80_mb_installs_nothing_and_isnt_read() {
-    let setup = Setup::new();
-    let path = setup.folder.path().join("large.zip");
-    // A sparse file: its size is all the host looks at.
-    std::fs::File::create(&path)
-        .unwrap()
-        .set_len((80 << 20) + 1)
-        .unwrap();
-
-    let error = setup.host().inspect_archive(&path).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
-    assert!(error.message.contains("80 MB"), "{}", error.message);
 }
 
 #[test]
@@ -320,28 +159,27 @@ fn an_archive_that_holds_one_path_twice_installs_nothing() {
     let Some(hello) = plugins::built("hello_plugin") else {
         return;
     };
-    let setup = Setup::new();
+    let library = tempfile::tempdir().unwrap();
+    let host = plugins::host(library.path());
     // The writer refuses a name twice, so the second entry's name is
-    // edited to the first's afterwards.
-    let mut zip = zip_bytes(&[
+    // edited to the first's afterwards. The archive's index keeps one of
+    // the two, so only its headers show the other.
+    let mut bytes = zip_bytes(&[
         ("plugin.toml", HELLO_MANIFEST.as_bytes()),
         ("hello_plugin.wasm", &hello),
         ("hello_plugin.wasX", b"\0asm"),
     ]);
-    edit_headers(&mut zip, "hello_plugin.wasX", |zip, _, name| {
+    edit_headers(&mut bytes, "hello_plugin.wasX", |zip, _, name| {
         zip[name + "hello_plugin.was".len()] = b'm';
     });
-    let archive = setup.write(&zip);
 
-    let error = setup.host().inspect_archive(&archive).err().unwrap();
-
-    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
-    assert!(error.message.contains("two entries"), "{}", error.message);
-    assert!(setup.library_is_empty());
+    assert_eq!(
+        refusal(&host, &bytes).code,
+        InstallErrorCode::InvalidArchive
+    );
 
     // A folder entry with the component's path holds it twice too.
-    let path = setup.folder.path().join("folder.zip");
-    let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
+    let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
     zip.start_file("plugin.toml", SimpleFileOptions::default())
         .unwrap();
     zip.write_all(HELLO_MANIFEST.as_bytes()).unwrap();
@@ -350,11 +188,11 @@ fn an_archive_that_holds_one_path_twice_installs_nothing() {
     zip.write_all(&hello).unwrap();
     zip.add_directory("hello_plugin.wasm", SimpleFileOptions::default())
         .unwrap();
-    zip.finish().unwrap();
+    let bytes = zip.finish().unwrap().into_inner();
 
-    let error = setup.host().inspect_archive(&path).err().unwrap();
+    let error = refusal(&host, &bytes);
 
     assert_eq!(error.code, InstallErrorCode::InvalidArchive);
     assert!(error.message.contains("twice"), "{}", error.message);
-    assert!(setup.library_is_empty());
+    assert!(host.installed_ids().is_empty());
 }
