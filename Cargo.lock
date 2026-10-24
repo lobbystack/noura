@@ -316,6 +316,8 @@ dependencies = [
  "sync-protocol",
  "sync-server",
  "sync-store",
+ "sync-store-postgres",
+ "sync-store-sqlite",
  "sys-locale",
  "tempfile",
  "thiserror 2.0.20",
