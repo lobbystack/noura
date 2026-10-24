@@ -12,8 +12,20 @@ use sync_protocol::codec::{Bytes, Encode, Sorted, Text};
 use sync_protocol::records::{Content, Meta, Payload, PayloadKind};
 use sync_protocol::types::{Id, from_hex};
 
-/// The sandbox on Cranelift, compiled once per test binary.
+/// The sandbox on the backend this run tests, which
+/// `NOURA_SANDBOX_BACKEND` names: see [`collab_sandbox::test_backend`].
+/// Every test that runs one sandbox runs it, so a run per backend runs the
+/// whole suite on each.
 pub fn sandbox() -> &'static Sandbox {
+    match collab_sandbox::test_backend() {
+        Backend::Cranelift => cranelift(),
+        #[cfg(feature = "pulley")]
+        Backend::Pulley => pulley(),
+    }
+}
+
+/// The sandbox on Cranelift, compiled once per test binary.
+pub fn cranelift() -> &'static Sandbox {
     static SANDBOX: OnceLock<Sandbox> = OnceLock::new();
     SANDBOX.get_or_init(|| Sandbox::new(Backend::Cranelift).expect("the sandbox starts"))
 }
@@ -25,10 +37,11 @@ pub fn pulley() -> &'static Sandbox {
     SANDBOX.get_or_init(|| Sandbox::new(Backend::Pulley).expect("the sandbox starts"))
 }
 
-/// Every backend this build runs, by name.
+/// Every backend this build runs, by name, for the tests that compare
+/// their verdicts and fuel.
 pub fn backends() -> Vec<(&'static str, &'static Sandbox)> {
     #[allow(unused_mut)]
-    let mut all = vec![("cranelift", sandbox())];
+    let mut all = vec![("cranelift", cranelift())];
     #[cfg(feature = "pulley")]
     all.push(("pulley", pulley()));
     all
@@ -323,6 +336,24 @@ pub fn outside_yrs(updates: &[Vec<u8>]) -> Vec<String> {
             text.get_string(&doc.transact())
         })
         .collect()
+}
+
+/// yrs outside the sandbox, as [`outside_yrs`] runs it: the document that
+/// `updates` give an empty one, encoded as a snapshot holds it.
+pub fn outside_state(updates: &[Vec<u8>]) -> Vec<u8> {
+    use yrs::updates::decoder::Decode as _;
+    use yrs::{OffsetKind, Options, ReadTxn, StateVector, Transact};
+    let mut options = Options::with_client_id(yrs::block::ClientID::new(1));
+    options.offset_kind = OffsetKind::Utf16;
+    let doc = yrs::Doc::with_options(options);
+    doc.get_or_insert_text("content");
+    for update in updates {
+        doc.transact_mut()
+            .apply_update(yrs::Update::decode_v1(update).expect("a yrs update"))
+            .expect("yrs applies it");
+    }
+    doc.transact()
+        .encode_state_as_update_v1(&StateVector::default())
 }
 
 /// `client` inserting `text` between the elements `origin` and `right`, as

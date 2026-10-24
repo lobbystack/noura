@@ -1032,11 +1032,9 @@ impl<'doc> TransactionMut<'doc> {
             if before_clock != clock {
                 let blocks = self.store.blocks.get_client_mut(client).unwrap();
                 let first_change = blocks.find_pivot(before_clock).unwrap().max(1);
-                let mut i = blocks.len() - 1;
-                while i >= first_change {
-                    blocks.squash_left(i);
-                    i -= 1;
-                }
+                // Noura patch (docs/provenance/yrs.md): one pass from the left, in time
+                // linear in the blocks it squashes.
+                blocks.squash_run(first_change);
             }
         }
 

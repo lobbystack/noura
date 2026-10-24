@@ -11,6 +11,11 @@
 //! didn't make, and never sends them back as its own. Undo and redo go to the
 //! document, whose undo tracks only this device's edits, so undo never takes
 //! back a collaborator's text.
+//!
+//! A text-mode note's file follows the document's merged changes, which the
+//! sandbox hands to the sync client, not [`MdDoc::take_changes`]: those
+//! carry your edits before they merge, while a slow record holds the
+//! document and the file at their last merged state.
 
 use ropey::Rope;
 
@@ -43,6 +48,14 @@ pub trait CollabDocument: Send {
 
     /// Asks the document to reapply your last undone step.
     fn redo(&mut self);
+
+    /// Whether undo has a step of yours to take back, as the document last
+    /// reported it.
+    fn can_undo(&self) -> bool;
+
+    /// Whether redo has a step of yours to reapply, as the document last
+    /// reported it.
+    fn can_redo(&self) -> bool;
 
     /// The changes the document made since the last call: collaborators'
     /// edits, undo and redo, in order, each against the editor's text once
@@ -96,6 +109,25 @@ impl MdDoc {
     /// Whether the note is in text mode.
     pub fn in_text_mode(&self) -> bool {
         self.text_mode.is_some()
+    }
+
+    /// Whether undo has something to take back: in text mode, one of your
+    /// steps in the document, whose undo the buffer's history doesn't
+    /// hold.
+    pub fn can_undo(&self) -> bool {
+        match &self.text_mode {
+            Some(mode) => mode.document.can_undo(),
+            None => self.buffer.can_undo(),
+        }
+    }
+
+    /// Whether redo has something to reapply: in text mode, one of your
+    /// undone steps in the document.
+    pub fn can_redo(&self) -> bool {
+        match &self.text_mode {
+            Some(mode) => mode.document.can_redo(),
+            None => self.buffer.can_redo(),
+        }
     }
 
     /// Sends the edits the buffer applied since the last call to the

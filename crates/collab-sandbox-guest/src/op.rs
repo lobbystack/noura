@@ -55,6 +55,17 @@ impl Op {
             .sum()
     }
 
+    /// How many UTF-16 units the change deletes.
+    pub fn deleted_len(&self) -> u64 {
+        self.0
+            .iter()
+            .map(|component| match component {
+                Component::Delete(n) => u64::from(*n),
+                _ => 0,
+            })
+            .sum()
+    }
+
     /// The encoding the host reads.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();

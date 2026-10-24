@@ -20,8 +20,10 @@
 //! responsive while a slow record decodes, and [`SandboxDocument`] hands it
 //! to `editor-core` as the note's document. The sync client reaches the
 //! note through a [`SharedNote`], whose calls wait without holding up the
-//! editor. Each load of a document inserts
-//! under a client ID from the device's [`LoadReservation`].
+//! editor, and the note's file follows the changes the document merged,
+//! which [`SharedNote::take_merged_changes`] hands over. Each load of a
+//! document inserts under a client ID from the device's
+//! [`LoadReservation`].
 
 mod allowance;
 mod editor;
@@ -46,7 +48,7 @@ pub use plugin_host::Backend;
 pub use reservation::{
     LOAD_BLOCK, LoadReservation, MemoryReservation, ReservationError, ReservationStore,
 };
-pub use session::{HandleError, NoteHandle, SharedNote};
+pub use session::{HandleError, NoteHandle, Opening, SharedNote};
 pub use verdict::{
     Record, Unreadable, VERDICT_BASE_FUEL, VERDICT_FUEL_PER_BYTE, VERDICT_MEMORY_BYTES, Verdict,
     verdict_budget,
@@ -60,7 +62,7 @@ pub static GUEST_MODULE: &[u8] = include_bytes!("../guest/collab_sandbox_guest.w
 /// The BLAKE3 hash of [`GUEST_MODULE`], as `sync-v2-collaboration.json`
 /// records it. The sandbox refuses to run any other module.
 pub const GUEST_MODULE_HASH: &str =
-    "e49035f63dce3ca80df115f942e6a73a884e14cd046b86db263a938d315a17c1";
+    "15fad030d53a85ef0ccc5bcea2fdc54636fbd44993197a2e6489d715b42fb450";
 
 /// The operators that cost no fuel. Every other operator costs one unit,
 /// as `sync-v2-collaboration.json` records.
@@ -95,6 +97,27 @@ pub const VARIABLE_COSTS: [(&str, u8); 16] = [
     ("table_grow_per_element", 1),
     ("table_init_per_element", 1),
 ];
+
+/// The backend the sandbox's own tests run on: the one
+/// `NOURA_SANDBOX_BACKEND` names, `cranelift` when it's unset, or `pulley`
+/// in a build with the `pulley` feature. `scripts/check-collab-sandbox.sh
+/// backends` runs every test once per backend.
+///
+/// # Panics
+///
+/// When the variable names a backend this build doesn't run.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_backend() -> Backend {
+    match std::env::var("NOURA_SANDBOX_BACKEND").as_deref() {
+        Err(_) | Ok("" | "cranelift") => Backend::Cranelift,
+        #[cfg(feature = "pulley")]
+        Ok("pulley") => Backend::Pulley,
+        Ok(other) => panic!(
+            "NOURA_SANDBOX_BACKEND={other} names no backend this build runs: \
+             use cranelift, or pulley with --features pulley"
+        ),
+    }
+}
 
 /// Why the sandbox can't start.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

@@ -868,7 +868,10 @@ impl ItemPtr {
             && self.moved == other.moved
             && self.content.try_squash(&other.content)
         {
-            self.len = self.content.len(OffsetKind::Utf16);
+            // Noura patch (docs/provenance/yrs.md): the squashed content
+            // holds both items' units, so its length is the sum of theirs,
+            // without counting the joined string's units again.
+            self.len += other.len;
             if let Some(mut right_right) = other.right {
                 right_right.left = Some(*self);
             }
@@ -1442,7 +1445,13 @@ impl Item {
     }
 
     pub fn content_len(&self, kind: OffsetKind) -> u32 {
-        self.content.len(kind)
+        // Noura patch (docs/provenance/yrs.md): a string item's length in
+        // UTF-16 units is its clock length, which yrs keeps equal to it, so
+        // counting the string's units again costs a walk over its text.
+        match (&self.content, kind) {
+            (ItemContent::String(_), OffsetKind::Utf16) => self.len,
+            _ => self.content.len(kind),
+        }
     }
 
     /// Returns an ID of the last element that can be considered a part of this item.

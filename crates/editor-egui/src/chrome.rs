@@ -528,8 +528,8 @@ impl Editor {
                     }
                 }
                 ui.separator();
-                let buffer = &self.edit.renderer.buffer;
-                let (can_undo, can_redo) = (buffer.can_undo(), buffer.can_redo());
+                let doc = &self.edit.renderer;
+                let (can_undo, can_redo) = (doc.can_undo(), doc.can_redo());
                 for (tool, enabled) in [
                     (tool(Command::Undo, Icon::Undo, "Undo"), can_undo),
                     (tool(Command::Redo, Icon::Redo, "Redo"), can_redo),

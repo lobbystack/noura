@@ -8,9 +8,14 @@
 #   `small-client`, which crates/local-core keeps for its v1 sync code, nor
 #   `sync` (§3);
 # - guest: the guest's own unit tests pass natively;
-# - backends: the sandbox's tests, its fixtures and near-limit records
-#   included, pass on Pulley as well as Cranelift, with the same verdicts and
-#   fuel;
+# - audit: the crates the guest's own lockfile picks, which ship inside the
+#   module, pass the workspace's advisory and license policy, and the fuzz
+#   crate's pass its advisories (it never ships, so its libFuzzer's NCSA
+#   license needs no approval);
+# - backends: the sandbox's whole test suite passes once on Cranelift and
+#   once on Pulley, as NOURA_SANDBOX_BACKEND picks, and in each run the
+#   fixtures and near-limit records reach the same verdicts and fuel on
+#   both;
 # - release: the previous Noura release reaches the same verdicts and fuel on
 #   the current fixture's cases, skipped while no release holds the sandbox.
 #
@@ -23,7 +28,7 @@ cd "$(dirname "$0")/.."
 repo="$PWD"
 checks=("$@")
 if [ "${#checks[@]}" -eq 0 ]; then
-  checks=(module features guest backends release)
+  checks=(module features guest audit backends release)
 fi
 
 module=crates/collab-sandbox/guest/collab_sandbox_guest.wasm
@@ -65,11 +70,25 @@ for check in "${checks[@]}"; do
         fail=1
       fi
       ;;
-    backends)
-      if ! cargo test --locked --package collab-sandbox --features pulley; then
-        echo "error: the sandbox's tests failed on Cranelift or Pulley"
+    audit)
+      if ! (cd crates/collab-sandbox-guest && cargo deny --locked check advisories licenses); then
+        echo "error: the guest's crates fail the advisory or license policy"
         fail=1
       fi
+      if ! (cd crates/collab-sandbox/fuzz && cargo deny --locked check advisories); then
+        echo "error: the fuzz crate's crates have an unpatched advisory"
+        fail=1
+      fi
+      ;;
+    backends)
+      for backend in cranelift pulley; do
+        echo "collab-sandbox tests on $backend"
+        if ! NOURA_SANDBOX_BACKEND="$backend" cargo test --locked --package collab-sandbox \
+          --features pulley; then
+          echo "error: the sandbox's tests failed on $backend"
+          fail=1
+        fi
+      done
       ;;
     release)
       # The newest release tag below HEAD's own, or the commit that

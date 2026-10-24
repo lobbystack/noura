@@ -399,3 +399,96 @@ fn the_budget_sits_far_above_every_legitimate_record() {
         serde_json::to_string_pretty(&table).unwrap()
     );
 }
+
+/// The fuel a keystroke appended by card 2 costs its writer's allowance on
+/// a note whose first document holds `text`.
+fn keystroke_fuel(text: &str) -> u64 {
+    let first = sandbox().first_document(text).unwrap();
+    let mut note = note(3, vec![first]);
+    let units = text.encode_utf16().count() as u64;
+    let typed = support::insert_between(client(2, 1), 0, Some((0, units - 1)), None, "b");
+    let effects = note.receive(
+        support::update_record(1, 2, 3, 1, &typed),
+        std::time::Instant::now(),
+    );
+    let fuel = effects
+        .events
+        .iter()
+        .find_map(|event| match event {
+            collab_sandbox::Event::Merged { fuel, .. } => Some(*fuel),
+            _ => None,
+        })
+        .expect("the keystroke merges");
+    assert_eq!(note.text().unwrap(), format!("{text}b"));
+    fuel
+}
+
+/// A keystroke on a long note costs its writer's allowance about what it
+/// costs on a short one. The integration's check of the text's size copies
+/// the text only once a bound on its UTF-8 length passes 8 MiB, which a
+/// note of 3,000,000 ASCII characters doesn't reach, so honest typists on
+/// a note between 2.8 and 4 MiB aren't deferred.
+#[test]
+fn a_keystroke_on_a_long_note_costs_its_writer_little() {
+    let short = keystroke_fuel("aaa");
+    let long = keystroke_fuel(&"a".repeat(3_000_000));
+    eprintln!("keystroke fuel: {short} on a short note, {long} on a 3,000,000-character one");
+    assert!(
+        long < short + 500_000,
+        "{long} fuel on the long note against {short} on the short one"
+    );
+}
+
+/// Ten thousand keystrokes between two takes, as typing offline leaves
+/// them, merge into one update that the verdict reads well inside its
+/// budget and another device integrates for little fuel, into the document
+/// yrs outside the sandbox builds from it. Each keystroke stays its own
+/// struct in the update, and yrs joins them as it integrates them.
+#[test]
+fn ten_thousand_keystrokes_merge_into_one_readable_update() {
+    let first = sandbox().first_document("x").unwrap();
+    let mut typist = note(1, vec![first.clone()]);
+    for i in 0..10_000u32 {
+        let typed = Op::from_splices(
+            i + 1,
+            &[Splice {
+                start: i,
+                removed: 0,
+                inserted: "a".into(),
+            }],
+        )
+        .unwrap();
+        typist.local(&typed, true, u64::from(i) * 1_000).unwrap();
+    }
+    let updates = typist.take_updates().unwrap();
+    assert_eq!(updates.len(), 1);
+    let update = &updates[0];
+    let record = support::update_record(1, 1, 3, update.load, &update.bytes);
+    let verdict = sandbox().verdict(&Record {
+        payload: &record.payload,
+        blob: None,
+        card_index: 1,
+        card_count: 3,
+    });
+    assert_eq!(verdict.outcome, Ok(()));
+    assert!(verdict.fuel * 5 <= verdict_budget(record.payload.len() as u64));
+    let mut reader = note(3, vec![first.clone()]);
+    let effects = reader.receive(record, std::time::Instant::now());
+    let fuel = effects
+        .events
+        .iter()
+        .find_map(|event| match event {
+            collab_sandbox::Event::Merged { fuel, .. } => Some(*fuel),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the update merges: {:?}", effects.events));
+    eprintln!("ten thousand keystrokes: {fuel} fuel to integrate");
+    // yrs joining the structs one by one from the right would copy the
+    // joined text at each step, about 150,000,000 fuel.
+    assert!(fuel < 50_000_000, "{fuel} fuel");
+    assert_eq!(reader.text().unwrap(), typist.text().unwrap());
+    assert_eq!(
+        reader.state().unwrap(),
+        support::outside_state(&[first, update.bytes.clone()])
+    );
+}

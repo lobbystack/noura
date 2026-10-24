@@ -246,6 +246,17 @@ pub extern "C" fn doc_redo(now_high: u32, now_low: u32) -> u32 {
     }
 }
 
+/// Whether undo and redo have a step of yours: bit 0 for undo, bit 1 for
+/// redo, or `u32::MAX` before `doc_open`.
+#[unsafe(no_mangle)]
+pub extern "C" fn doc_undo_state() -> u32 {
+    with_note(|note| {
+        let (undo, redo) = note.undo_state();
+        u32::from(undo) | (u32::from(redo) << 1)
+    })
+    .unwrap_or(u32::MAX)
+}
+
 /// Ends the current undo step.
 #[unsafe(no_mangle)]
 pub extern "C" fn doc_end_undo_step() -> u32 {

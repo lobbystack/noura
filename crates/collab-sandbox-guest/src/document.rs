@@ -102,6 +102,10 @@ pub struct Note {
     _updates: Subscription,
     /// An upper bound on the encoded document's length.
     size_bound: u64,
+    /// An upper bound on the text's length in UTF-8 bytes, so a record
+    /// costs a copy of the whole text only when the bound passes
+    /// [`MAX_TEXT_BYTES`].
+    text_bound: u64,
 }
 
 impl Note {
@@ -153,11 +157,21 @@ impl Note {
             _text_events: text_events,
             _updates: updates,
             size_bound: 0,
+            text_bound: 0,
         })
     }
 
     fn take_op(&self) -> Op {
         std::mem::take(&mut self.collected.borrow_mut().op)
+    }
+
+    /// Moves the text's bound past `op`: its inserted bytes, less one byte
+    /// for each UTF-16 unit it deletes, which took at least one.
+    fn bound_text(&mut self, op: &Op) {
+        self.text_bound = self
+            .text_bound
+            .saturating_add(op.byte_len() as u64)
+            .saturating_sub(op.deleted_len());
     }
 
     /// Merges a record's yrs bytes, which passed the verdict, as a remote
@@ -172,6 +186,7 @@ impl Note {
             .size_bound
             .saturating_add(GROWTH_PER_BYTE.saturating_mul(bytes.len() as u64));
         let op = self.take_op();
+        self.bound_text(&op);
         Ok((op, self.status()))
     }
 
@@ -183,10 +198,13 @@ impl Note {
         }
         // UTF-8 takes at most three bytes per UTF-16 unit.
         let units = u64::from(self.text.len(&txn));
-        if units.saturating_mul(3) > MAX_TEXT_BYTES
-            && self.text.get_string(&txn).len() as u64 > MAX_TEXT_BYTES
-        {
-            status |= status::TEXT_TOO_LARGE;
+        self.text_bound = self.text_bound.min(units.saturating_mul(3));
+        if self.text_bound > MAX_TEXT_BYTES {
+            let bytes = self.text.get_string(&txn).len() as u64;
+            self.text_bound = bytes;
+            if bytes > MAX_TEXT_BYTES {
+                status |= status::TEXT_TOO_LARGE;
+            }
         }
         if self.size_bound > MAX_DOCUMENT_BYTES {
             let size = txn.encode_state_as_update_v1(&StateVector::default()).len() as u64;
@@ -227,6 +245,7 @@ impl Note {
         }
         // Your own edits are already in the editor.
         self.take_op();
+        self.bound_text(op);
         self.size_bound = self
             .size_bound
             .saturating_add(GROWTH_PER_BYTE.saturating_mul(op.byte_len() as u64));
@@ -237,14 +256,24 @@ impl Note {
     pub fn undo(&mut self, now: u64) -> Op {
         NOW.with(|cell| cell.set(now));
         self.undo.undo_blocking();
-        self.take_op()
+        let op = self.take_op();
+        self.bound_text(&op);
+        op
     }
 
     /// Reapplies your last undone step. Returns the text change it made.
     pub fn redo(&mut self, now: u64) -> Op {
         NOW.with(|cell| cell.set(now));
         self.undo.redo_blocking();
-        self.take_op()
+        let op = self.take_op();
+        self.bound_text(&op);
+        op
+    }
+
+    /// Whether undo and redo have a step of yours to take back or
+    /// reapply.
+    pub fn undo_state(&self) -> (bool, bool) {
+        (self.undo.can_undo(), self.undo.can_redo())
     }
 
     /// Ends the current undo step, so the next local edit starts another.
@@ -312,8 +341,30 @@ impl Note {
 }
 
 /// Merges updates into one, as `merge_updates` in lib.rs passes them.
+///
+/// yrs merges many updates at once in time quadratic in their number, so a
+/// device that typed ten thousand keystrokes between two takes would run out
+/// of fuel merging them. Merging them two at a time, in rounds, gives the
+/// same update in time proportional to their size times the number of
+/// rounds.
 pub fn merge(updates: &[&[u8]]) -> Result<Vec<u8>, DocError> {
-    yrs::merge_updates_v1(updates).map_err(|_| DocError::Update)
+    if updates.len() <= 2 {
+        return yrs::merge_updates_v1(updates).map_err(|_| DocError::Update);
+    }
+    let mut round: Vec<Vec<u8>> = updates
+        .chunks(2)
+        .map(|pair| yrs::merge_updates_v1(pair).map_err(|_| DocError::Update))
+        .collect::<Result<_, _>>()?;
+    while round.len() > 1 {
+        round = round
+            .chunks(2)
+            .map(|pair| {
+                let pair: Vec<&[u8]> = pair.iter().map(Vec::as_slice).collect();
+                yrs::merge_updates_v1(&pair).map_err(|_| DocError::Update)
+            })
+            .collect::<Result<_, _>>()?;
+    }
+    Ok(round.pop().unwrap_or_default())
 }
 
 fn new_doc(client: u64) -> Doc {
@@ -415,6 +466,82 @@ mod tests {
         ("delete_from_the_low_half", "000100010202", "a\u{FFFD}"),
         ("delete_to_the_high_half", "000100010101", "a\u{FFFD}b"),
     ];
+
+    /// The text's bound never falls below its UTF-8 length, through
+    /// records, your edits, undo and redo, so a text past 8 MiB of UTF-8
+    /// always stops, while a long ASCII text never costs a copy of itself.
+    #[test]
+    fn the_text_bound_holds_the_utf8_length() {
+        let mut note = Note::new(3 << 29 | 1).unwrap();
+        note.integrate(&first_document("aé中😀")).unwrap();
+        let bounded = |note: &Note| note.text_bound >= note.text().len() as u64;
+        assert!(bounded(&note));
+        let mut edits = Vec::new();
+        for (at, removed, inserted) in [(0, 0, "😀😀"), (2, 3, "中"), (0, 6, ""), (1, 0, "é")]
+        {
+            let mut op = Op::default();
+            op.push(Component::Retain(at));
+            op.push(Component::Delete(removed));
+            op.push(Component::Insert(inserted.into()));
+            edits.push(op);
+        }
+        for (step, op) in edits.iter().enumerate() {
+            note.local(op, true, step as u64 * 1_000).unwrap();
+            assert!(bounded(&note), "after edit {step}: {:?}", note.text());
+        }
+        for step in 0..4 {
+            note.undo(10_000 + step * 1_000);
+            assert!(bounded(&note), "after undo {step}");
+        }
+        for step in 0..4 {
+            note.redo(20_000 + step * 1_000);
+            assert!(bounded(&note), "after redo {step}");
+        }
+
+        let units = (MAX_TEXT_BYTES / 3 + 1_000) as usize;
+        let mut ascii = Note::new(3 << 29 | 1).unwrap();
+        let (_, status) = ascii
+            .integrate(&first_document(&"a".repeat(units)))
+            .unwrap();
+        assert_eq!(status & status::TEXT_TOO_LARGE, 0);
+        assert_eq!(ascii.text_bound, units as u64, "no copy of the text");
+        let mut wide = Note::new(3 << 29 | 1).unwrap();
+        let (_, status) = wide
+            .integrate(&first_document(&"中".repeat(units)))
+            .unwrap();
+        assert_ne!(status & status::TEXT_TOO_LARGE, 0);
+    }
+
+    /// Merging in rounds of two gives the update one merge of them all
+    /// gives, for typing, deletions and undo.
+    #[test]
+    fn a_merge_in_rounds_is_one_merge() {
+        let mut note = Note::new(3 << 29 | 1).unwrap();
+        note.integrate(&first_document("x")).unwrap();
+        let mut updates = Vec::new();
+        for i in 0..301u32 {
+            let mut op = Op::default();
+            if i % 7 == 6 {
+                op.push(Component::Retain(i / 2));
+                op.push(Component::Delete(2));
+            } else {
+                op.push(Component::Retain(note.len() / 2));
+                op.push(Component::Insert(["a", "é", "😀"][i as usize % 3].into()));
+            }
+            note.local(&op, true, u64::from(i) * 1_000).unwrap();
+            if i % 50 == 49 {
+                note.undo(u64::from(i) * 1_000 + 1);
+            }
+            updates.extend(note.take_update().unwrap());
+        }
+        let refs: Vec<&[u8]> = updates.iter().map(Vec::as_slice).collect();
+        let merged = merge(&refs).unwrap();
+        assert_eq!(merged, yrs::merge_updates_v1(&refs).unwrap());
+        let mut reader = Note::new(4 << 29 | 1).unwrap();
+        reader.integrate(&first_document("x")).unwrap();
+        reader.integrate(&merged).unwrap();
+        assert_eq!(reader.text(), note.text());
+    }
 
     #[test]
     fn a_split_surrogate_pair_reaches_the_change_as_u_fffd() {

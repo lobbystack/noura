@@ -216,6 +216,59 @@ impl ClientBlockList {
         }
     }
 
+    /// Noura patch (docs/provenance/yrs.md): squashes each block from `first` to the end
+    /// into its left neighbor where it can, as calling [Self::squash_left] from the last
+    /// index down to `first` does, but from left to right, and removes the squashed blocks
+    /// in one pass. Squashing from the right copies the content joined so far into each
+    /// next block on the left, which costs time quadratic in the length of a run of
+    /// squashable blocks; squashing from the left appends each block's content once.
+    pub(crate) fn squash_run(&mut self, first: usize) {
+        if first == 0 || first >= self.list.len() {
+            return;
+        }
+        let mut target = first - 1;
+        let mut squashed = vec![false; self.list.len() - first];
+        for index in first..self.list.len() {
+            let (l, r) = self.list.split_at_mut(index);
+            let merged = match (&mut l[target], &mut r[0]) {
+                (BlockCell::GC(left), BlockCell::GC(right)) => {
+                    left.end = right.end;
+                    true
+                }
+                (BlockCell::Block(left), BlockCell::Block(right)) => {
+                    let mut left = ItemPtr::from(left);
+                    let right = ItemPtr::from(right);
+                    if left.try_squash(right) {
+                        if let Some(key) = right.parent_sub.as_deref() {
+                            if let TypePtr::Branch(mut parent) = right.parent {
+                                if let Some(e) = parent.map.get_mut(key) {
+                                    if right == *e {
+                                        *e = ItemPtr::from(left);
+                                    }
+                                }
+                            }
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if merged {
+                squashed[index - first] = true;
+            } else {
+                target = index;
+            }
+        }
+        let mut index = 0;
+        self.list.retain(|_| {
+            let keep = index < first || !squashed[index - first];
+            index += 1;
+            keep
+        });
+    }
+
     /// Attempts to squash block at a given `index` with a corresponding block on its left side.
     /// If this succeeds, block under a given `index` will be removed, and its contents will be
     /// squashed into its left neighbor. In such case a squash result will be returned in order to

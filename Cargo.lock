@@ -1367,6 +1367,7 @@ version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "collab-sandbox",
  "editor-core",
  "libc",
  "plugin-host",

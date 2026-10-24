@@ -58,6 +58,9 @@ jobs:
             done
           done
           echo "found=$found" >> "$GITHUB_OUTPUT"
+      # GitHub starts no workflow for a pull request that this job's own
+      # token opens, so the pull request's body asks for a push to start
+      # its CI.
       - name: Keep the crashing inputs as regression cases
         if: steps.run.outputs.found == '1'
         shell: bash
@@ -73,7 +76,7 @@ jobs:
           git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "$branch"
           gh pr create --base main --head "$branch" \
             --title "Fuzz regressions from run $GITHUB_RUN_ID" \
-            --body "The nightly fuzz run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID crashed the collaboration sandbox. This adds the inputs to crates/collab-sandbox/fuzz/regressions, so crates/collab-sandbox/tests/fuzz.rs fails on them until the sandbox handles them."
+            --body "The nightly fuzz run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID crashed the collaboration sandbox. This adds the inputs to crates/collab-sandbox/fuzz/regressions, so crates/collab-sandbox/tests/fuzz.rs fails on them until the sandbox handles them. GitHub runs no CI on a pull request that a workflow opens with its own token: push a commit to $branch, or close and reopen this pull request, to start it."
       - name: Fail on a crash
         if: steps.run.outputs.found == '1'
         run: exit 1

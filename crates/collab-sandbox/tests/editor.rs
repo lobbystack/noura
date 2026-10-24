@@ -1,8 +1,9 @@
 //! Seam 2: `editor-core` with a text-mode note whose document lives in the
 //! collaboration sandbox. Keystrokes, input method composition, outside
 //! edits and remote yrs records go in, and the tests check the editor's
-//! text, selection and change events, which are what the file gets, against
-//! yrs outside the sandbox and the Yjs and yrs interop fixtures.
+//! text, selection and change events, and the document's merged changes,
+//! which are what the file gets, against yrs outside the sandbox and the
+//! Yjs and yrs interop fixtures.
 
 mod support;
 
@@ -30,11 +31,12 @@ fn g(offset: usize) -> Grapheme {
     Grapheme(offset)
 }
 
-/// An editor on a text-mode note, and the sync client's side of its
-/// document.
+/// An editor on a text-mode note, the sync client's side of its document,
+/// and the note's file body, which follows the document's merged changes.
 struct Editor {
     doc: MdDoc,
     note: SharedNote,
+    file: String,
 }
 
 /// A device whose card has index `card` in the workspace, with load numbers
@@ -57,7 +59,11 @@ fn open_on(journal: Vec<Vec<u8>>, client_ids: collab_sandbox::ClientIds) -> Edit
     let document = SandboxDocument::new(handle);
     let note = document.handle();
     doc.enter_text_mode(Box::new(document));
-    Editor { doc, note }
+    Editor {
+        doc,
+        note,
+        file: text,
+    }
 }
 
 impl Editor {
@@ -124,10 +130,22 @@ impl Editor {
         assert_eq!(self.note.take_errors(), []);
     }
 
-    /// The document's text in the sandbox: what the file holds.
+    /// The document's text in the sandbox, once the file caught up with
+    /// it: the file holds the same text.
     fn merged(&mut self) -> String {
         self.doc.sync_text_mode();
-        self.note.merged_text().unwrap()
+        let merged = self.note.merged_text().unwrap();
+        assert_eq!(self.file(), merged, "the file follows the document");
+        merged
+    }
+
+    /// The file body after the document's merged changes since the last
+    /// call, which this takes without waiting for the sandbox.
+    fn file(&mut self) -> &str {
+        for op in self.note.take_merged_changes() {
+            self.file = op.apply(&self.file).expect("a change fits the file");
+        }
+        &self.file
     }
 
     fn updates(&mut self) -> Vec<LocalUpdate> {
@@ -340,9 +358,11 @@ fn an_outside_edit_reaches_the_document_but_undo_skips_it() {
 #[test]
 fn undo_and_redo_take_back_only_your_own_edits() {
     let mut editor = open(vec![insert(0, 0, "base")]);
+    assert!(!editor.doc.can_undo() && !editor.doc.can_redo());
     editor.caret(4);
     editor.type_text(" mine");
     editor.settle();
+    assert!(editor.doc.can_undo() && !editor.doc.can_redo());
 
     // A collaborator writes after the "b" while you type.
     let theirs = insert_between(
@@ -360,16 +380,20 @@ fn undo_and_redo_take_back_only_your_own_edits() {
     editor.settle();
     assert_eq!(editor.doc.text(), "btheirs ase");
     assert_eq!(editor.merged(), "btheirs ase");
+    // The editor's toolbar asks the document, whose undo holds only yours.
+    assert!(!editor.doc.can_undo() && editor.doc.can_redo());
 
     editor.redo();
     editor.settle();
     assert_eq!(editor.doc.text(), "btheirs ase mine");
+    assert!(editor.doc.can_undo() && !editor.doc.can_redo());
 
     // Undo with nothing of yours left to undo changes nothing.
     editor.undo();
     editor.undo();
     editor.settle();
     assert_eq!(editor.doc.text(), "btheirs ase");
+    assert!(!editor.doc.can_undo());
 }
 
 #[test]
@@ -606,9 +630,12 @@ fn a_trap_during_integration_stops_the_lineage_at_its_last_good_state() {
         let expected = format!("{}!", case["text"].as_str().unwrap());
         assert_eq!(editor.merged(), expected);
         assert_eq!(editor.doc.text(), expected);
-        // The device writes nothing more for the lineage.
+        // The device writes nothing more for the lineage, and the file
+        // keeps the last good state while the note waits for your choice.
         editor.type_text("?");
         assert_eq!(editor.updates(), []);
+        editor.settle();
+        assert_eq!(editor.file(), expected);
     }
 }
 
@@ -673,9 +700,14 @@ fn an_overdrawn_writer_waits_while_others_keep_merging() {
 fn the_note_stays_editable_while_a_slow_record_decodes() {
     let mut editor = open(vec![insert(0, 0, "ab")]);
     editor.caret(2);
+    editor.type_text("!");
+    editor.backspace();
+    assert_eq!(editor.merged(), "ab");
+    let _ = editor.doc.take_changes();
     // The sandbox's thread stands still, as it does while a large record
     // decodes.
     editor.note.hold(true);
+    let release = watchdog(&editor.note, Duration::from_secs(10));
     let theirs = insert_between(support::client(2, 1), 0, Some((0, 0)), Some((0, 1)), "R");
     editor.receive(update_record(1, 2, 3, 1, &theirs));
     editor.type_text("cd");
@@ -686,13 +718,63 @@ fn the_note_stays_editable_while_a_slow_record_decodes() {
     editor.backspace();
     editor.doc.sync_text_mode();
     assert_eq!(editor.doc.text(), "abc");
+    // The editor's change events carry your queued edits, but the file
+    // keeps its last merged state until they merge.
+    let queued: Vec<String> = editor
+        .doc
+        .take_changes()
+        .into_iter()
+        .map(|c| c.text)
+        .collect();
+    assert_eq!(queued, ["c", "d", ""]);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(editor.file(), "ab");
 
-    // Once the record decodes, your edits apply after it.
+    // Once the record decodes, your edits apply after it, and the file
+    // catches up in the same order.
+    let _ = release.send(());
     editor.note.hold(false);
     editor.settle();
     assert_eq!(editor.doc.text(), "aRbc");
     assert_eq!(editor.merged(), "aRbc");
+    assert_eq!(editor.file(), "aRbc");
     assert_eq!(editor.doc.selection(), (g(4), g(4)));
+}
+
+#[test]
+fn a_note_opens_without_waiting_for_its_journal() {
+    // The journal loads on the note's thread, which here waits for the test
+    // to hand it its load number, as a costly journal keeps it busy.
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    let mut ids = device(3, MemoryReservation::default());
+    let client_ids: collab_sandbox::ClientIds = Box::new(move || {
+        let _ = released
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10));
+        ids()
+    });
+    let started = Instant::now();
+    let mut opening = NoteHandle::start(sandbox(), vec![insert(0, 0, "ab")], client_ids);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(opening.poll().is_none(), "the journal still loads");
+    release.send(()).unwrap();
+    let (handle, text) = opening.wait().unwrap();
+    assert_eq!(text, "ab");
+    assert_eq!(handle.len(), 2);
+
+    // A failed load, here for want of a load number, reports through poll,
+    // once.
+    let mut opening = NoteHandle::start(sandbox(), vec![], Box::new(|| None));
+    let failed = loop {
+        if let Some(result) = opening.poll() {
+            break result;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(matches!(failed, Err(HandleError::Document(_))));
+    assert!(matches!(opening.poll(), Some(Err(HandleError::Closed))));
 }
 
 #[test]

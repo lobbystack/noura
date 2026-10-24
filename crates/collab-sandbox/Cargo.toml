@@ -9,6 +9,10 @@ rust-version.workspace = true
 # Runs the sandbox on Wasmtime's Pulley interpreter as well as Cranelift.
 # Verdicts and fuel counts must agree on both.
 pulley = ["plugin-host/pulley"]
+# The hooks the sandbox's own tests drive: a writer's balance, the thread's
+# clock, a held thread, a trapping integration and the backend a run tests.
+# The app never turns it on.
+test-support = []
 
 [dependencies]
 # Hashes the guest module the sandbox runs, against the pinned hash.
@@ -23,6 +27,8 @@ thiserror.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
+# The sandbox itself with its test hooks, for the integration tests.
+collab-sandbox = { version = "0.2.0", path = ".", features = ["test-support"] }
 # The Yjs and yrs interop fixtures hold their updates in base64.
 base64.workspace = true
 # The limits test maps its large blocks itself, to measure memory in use.

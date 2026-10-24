@@ -73,6 +73,14 @@ impl CollabDocument for SandboxDocument {
         self.record(result);
     }
 
+    fn can_undo(&self) -> bool {
+        self.handle.can_undo()
+    }
+
+    fn can_redo(&self) -> bool {
+        self.handle.can_redo()
+    }
+
     fn poll(&mut self) -> Vec<Utf16Splice> {
         self.handle
             .poll()

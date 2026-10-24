@@ -142,7 +142,7 @@ mod tests {
     use super::*;
 
     fn try_instantiate(wat: &str) -> Result<Guest, Failure> {
-        let sandbox = Sandbox::new(plugin_host::Backend::Cranelift).expect("sandbox");
+        let sandbox = Sandbox::new(crate::test_backend()).expect("sandbox");
         let module = Module::new(sandbox.engine(), wat).expect("module compiles");
         Guest::instantiate(sandbox.engine(), &module, 1 << 20, 1_000_000)
     }

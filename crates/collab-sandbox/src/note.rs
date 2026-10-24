@@ -211,9 +211,10 @@ pub struct LocalUpdate {
 }
 
 /// Where a note's lineage stands on this device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LineageStatus {
     /// Records merge as they arrive.
+    #[default]
     Merging,
     /// yrs holds updates whose dependencies haven't arrived, such as an
     /// update that depends on an unreadable record: the device lists the
@@ -249,7 +250,8 @@ pub struct Note {
     /// The client ID the document inserts under.
     client: u64,
     client_ids: ClientIds,
-    /// Whether the next integration traps, as tests ask.
+    /// Whether the next integration traps, as tests ask; always false
+    /// outside them.
     trap_next: bool,
 }
 
@@ -328,6 +330,7 @@ impl Note {
     }
 
     /// Sets a writer's balance, as the fixtures' base states do.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_balance(&mut self, writer: u32, balance: i64, now: Instant) {
         self.allowances
             .insert(writer, Allowance::with_balance(balance, now));
@@ -566,6 +569,19 @@ impl Note {
         self.undo_or_redo("doc_redo", now)
     }
 
+    /// Whether undo has a step of yours to take back, and redo one to
+    /// reapply.
+    pub fn undo_state(&mut self) -> Result<(bool, bool), DocumentError> {
+        self.guest.begin(LOCAL_FUEL);
+        match self.guest.call::<(), u32>("doc_undo_state", ()) {
+            Ok(bits) if bits <= 3 => Ok((bits & 1 != 0, bits & 2 != 0)),
+            Ok(bits) => Err(DocumentError::Sandbox(format!(
+                "doc_undo_state returned {bits}"
+            ))),
+            Err(failure) => Err(self.recover(failure)),
+        }
+    }
+
     /// Ends the current undo step, so your next edit starts another.
     pub fn end_undo_step(&mut self) -> Result<(), DocumentError> {
         self.guest.begin(LOCAL_FUEL);
@@ -576,6 +592,8 @@ impl Note {
     /// Your changes since the last call, one update per load they went in
     /// under, for the `text_update`s that carry them; empty when there were
     /// none, or once the lineage stopped.
+    ///
+    /// When merging them fails, they stay for the next call.
     pub fn take_updates(&mut self) -> Result<Vec<LocalUpdate>, DocumentError> {
         let unsent = std::mem::take(&mut self.unsent);
         if self.stop.is_some() {
@@ -589,7 +607,15 @@ impl Note {
             rest = tail;
             let bytes = match group {
                 [(_, update)] => update.clone(),
-                _ => self.merge(group.iter().map(|(_, update)| update.as_slice()))?,
+                _ => match self.merge(group.iter().map(|(_, update)| update.as_slice())) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        // Keep them ahead of any change made after this call.
+                        let later = std::mem::replace(&mut self.unsent, unsent);
+                        self.unsent.extend(later);
+                        return Err(error);
+                    }
+                },
             };
             updates.push(LocalUpdate {
                 load: (client & LOAD_MASK) as u32,
@@ -689,7 +715,7 @@ impl Note {
     /// Makes the instance trap while it integrates the next record that
     /// passes the verdict, as the fixtures' trap cases ask: a bug in the
     /// guest, such as a panic in its yrs, would trap the same way.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn trap_next_integration(&mut self) {
         self.trap_next = true;
     }

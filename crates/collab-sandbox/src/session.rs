@@ -10,11 +10,18 @@
 //! two-party Jupiter protocol: each message names how many of the other
 //! side's messages its sender had taken in.
 //!
+//! The file follows the document, never the editor: the thread publishes
+//! each change the document merges, in the order it merges them, and
+//! [`SharedNote::take_merged_changes`] hands them over. Your edits join
+//! that stream only once they merge after the records ahead of them, so
+//! while a slow record decodes the file keeps its last merged state.
+//!
 //! The editor's side, [`NoteHandle`], never waits for the thread, and
-//! dropping it doesn't either. The sync client's side, [`SharedNote`], waits
-//! for each answer on a channel of its own and holds no lock the editor
-//! takes, so a call that waits behind a slow record holds up only the
-//! thread that made it.
+//! dropping it doesn't either; [`NoteHandle::start`] loads the journal
+//! without waiting, for the UI thread. The sync client's side,
+//! [`SharedNote`], waits for each answer on a channel of its own and holds
+//! no lock the editor takes, so a call that waits behind a slow record
+//! holds up only the thread that made it.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -77,13 +84,16 @@ enum Request {
     Flush(Sender<()>),
     /// Moves the thread's clock forward, as tests do to stand in for the
     /// refills that time brings.
+    #[cfg(any(test, feature = "test-support"))]
     Advance(Duration),
     /// Sets a writer's allowance balance, as the fixtures' base states do.
+    #[cfg(any(test, feature = "test-support"))]
     SetBalance {
         writer: u32,
         balance: i64,
     },
     /// Makes the next integration trap, as the fixtures' trap cases ask.
+    #[cfg(any(test, feature = "test-support"))]
     TrapNext,
     /// Judges the records after it with another module, as the fixtures'
     /// verdict trap cases ask.
@@ -126,6 +136,7 @@ struct Hold {
 }
 
 impl Hold {
+    #[cfg(any(test, feature = "test-support"))]
     fn set(&self, held: bool) {
         *lock(&self.held) = held;
         self.changed.notify_all();
@@ -144,11 +155,18 @@ impl Hold {
 
 /// What both sides read without waiting for the thread. The thread holds
 /// each lock only to copy a value in or out.
+#[derive(Default)]
 struct Shared {
     /// Where the lineage stands, as of the last request the thread handled.
     status: Mutex<LineageStatus>,
     /// The events the thread reported and nobody took yet.
     events: Mutex<Vec<Event>>,
+    /// The changes the document merged and nobody took yet, in the order it
+    /// merged them: what the file gets.
+    merged: Mutex<Vec<Op>>,
+    /// Whether undo and redo have a step of yours, as of the last request
+    /// the thread handled.
+    undo: Mutex<(bool, bool)>,
     /// The errors the editor's calls met and nobody took yet.
     errors: Mutex<Vec<HandleError>>,
     hold: Hold,
@@ -177,24 +195,29 @@ pub struct NoteHandle {
 impl NoteHandle {
     /// Opens a note's document on a new thread from the records the journal
     /// holds for its lineage, and returns the handle with the note's text.
-    /// This call waits until the journal loads.
+    /// This call waits until the journal loads, which a journal of costly
+    /// records can make take minutes, so the UI thread never makes it: it
+    /// calls [`Self::start`] and polls.
     pub fn open(
         sandbox: &Sandbox,
         journal: Vec<Vec<u8>>,
         client_ids: ClientIds,
     ) -> Result<(Self, String), HandleError> {
+        Self::start(sandbox, journal, client_ids).wait()
+    }
+
+    /// Starts loading a note's document on a new thread from the records
+    /// the journal holds for its lineage, without waiting for it. The note
+    /// shows its file, which holds the last merged state, until
+    /// [`Opening::poll`] hands over the handle and the document's text.
+    pub fn start(sandbox: &Sandbox, journal: Vec<Vec<u8>>, client_ids: ClientIds) -> Opening {
         let (requests, inbox) = mpsc::channel();
         let (outbox, replies) = mpsc::channel();
         let (opened_tx, opened) = mpsc::channel();
-        let shared = Arc::new(Shared {
-            status: Mutex::new(LineageStatus::Merging),
-            events: Mutex::default(),
-            errors: Mutex::default(),
-            hold: Hold::default(),
-        });
+        let shared = Arc::new(Shared::default());
         let sandbox = sandbox.clone();
         let thread_shared = shared.clone();
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("collab-sandbox".into())
             .spawn(move || {
                 let mut note = match Note::open(&sandbox, journal, client_ids) {
@@ -211,22 +234,24 @@ impl NoteHandle {
                     return;
                 }
                 serve(note, &inbox, &outbox, &thread_shared);
-            })
-            .map_err(|_| HandleError::Closed)?;
-        let (text, len) = opened.recv().map_err(|_| HandleError::Closed)??;
-        Ok((
-            Self {
-                shared: SharedNote { requests, shared },
-                replies,
-                sent: 0,
-                received: 0,
-                outgoing: VecDeque::new(),
-                len,
-                broken: false,
-                started: Instant::now(),
-            },
-            text,
-        ))
+            });
+        Opening {
+            parts: Some((SharedNote { requests, shared }, replies)),
+            opened: spawned.ok().map(|_| opened),
+        }
+    }
+
+    fn with(shared: SharedNote, replies: Receiver<Reply>, len: u32) -> Self {
+        Self {
+            shared,
+            replies,
+            sent: 0,
+            received: 0,
+            outgoing: VecDeque::new(),
+            len,
+            broken: false,
+            started: Instant::now(),
+        }
     }
 
     /// The sync client's side of the note.
@@ -385,6 +410,19 @@ impl NoteHandle {
     pub fn status(&self) -> LineageStatus {
         self.shared.status()
     }
+
+    /// Whether undo has a step of yours to take back, as of the last
+    /// request the thread handled: an edit still in its queue doesn't count
+    /// yet.
+    pub fn can_undo(&self) -> bool {
+        lock(&self.shared.shared.undo).0
+    }
+
+    /// Whether redo has a step of yours to reapply, as of the last request
+    /// the thread handled.
+    pub fn can_redo(&self) -> bool {
+        lock(&self.shared.shared.undo).1
+    }
 }
 
 impl Drop for NoteHandle {
@@ -392,6 +430,64 @@ impl Drop for NoteHandle {
     /// waiting for that work.
     fn drop(&mut self) {
         let _ = self.shared.send(Request::Close);
+    }
+}
+
+/// A note whose document is loading on its own thread: see
+/// [`NoteHandle::start`].
+pub struct Opening {
+    /// The sides of the note, until the load ends.
+    parts: Option<(SharedNote, Receiver<Reply>)>,
+    /// Where the thread sends the note's text once the journal loads; none
+    /// when the thread didn't start.
+    opened: Option<Receiver<Result<(String, u32), DocumentError>>>,
+}
+
+type Opened = Result<(NoteHandle, String), HandleError>;
+
+impl Opening {
+    /// The handle and the document's text once the journal loaded, without
+    /// waiting: `None` while it still loads, and an error when it failed.
+    /// After it returns `Some`, it returns [`HandleError::Closed`].
+    pub fn poll(&mut self) -> Option<Opened> {
+        let result = match &self.opened {
+            None => Err(HandleError::Closed),
+            Some(opened) => match opened.try_recv() {
+                Ok(result) => result.map_err(HandleError::from),
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => Err(HandleError::Closed),
+            },
+        };
+        Some(self.finish(result))
+    }
+
+    /// Waits until the journal loaded, then returns the handle and the
+    /// document's text.
+    pub fn wait(mut self) -> Opened {
+        let result = match &self.opened {
+            None => Err(HandleError::Closed),
+            Some(opened) => match opened.recv() {
+                Ok(result) => result.map_err(HandleError::from),
+                Err(_) => Err(HandleError::Closed),
+            },
+        };
+        self.finish(result)
+    }
+
+    fn finish(&mut self, result: Result<(String, u32), HandleError>) -> Opened {
+        self.opened = None;
+        let (text, len) = result?;
+        let (shared, replies) = self.parts.take().ok_or(HandleError::Closed)?;
+        Ok((NoteHandle::with(shared, replies, len), text))
+    }
+}
+
+impl Drop for Opening {
+    /// Ends the thread once the journal loads, when nobody took the note.
+    fn drop(&mut self) {
+        if let Some((shared, _)) = &self.parts {
+            let _ = shared.send(Request::Close);
+        }
     }
 }
 
@@ -432,10 +528,25 @@ impl SharedNote {
         self.ask(Request::State)
     }
 
-    /// The document's merged text: what the file holds once the thread
-    /// catches up.
+    /// The document's merged text, once the thread handled everything sent
+    /// before this call, which it waits for. The file follows
+    /// [`Self::take_merged_changes`] instead, which never waits.
     pub fn merged_text(&self) -> Result<String, HandleError> {
         self.ask(Request::Text)
+    }
+
+    /// The changes the note's document merged since the last call, in the
+    /// order it merged them, each against the text the one before it left:
+    /// collaborators' records, undo and redo, and your edits once they merge
+    /// after the records ahead of them. They are what the file gets:
+    /// applied in turn to the body the note opened with, they give the
+    /// document's merged text, so while a slow record decodes the file
+    /// keeps its last merged state even as you type. The editor's own
+    /// change events carry your edits before they merge, so they never
+    /// feed a text-mode note's file. Once a record stops the lineage, no
+    /// change follows and the file keeps its last good state.
+    pub fn take_merged_changes(&self) -> Vec<Op> {
+        std::mem::take(&mut *lock(&self.shared.merged))
     }
 
     /// The relative position of the document's UTF-16 offset `index`.
@@ -464,18 +575,20 @@ impl SharedNote {
     /// Moves the thread's clock forward by `by`, running the deferred
     /// records whose writers' allowances refill by then, as tests do in
     /// place of waiting.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn advance_clock(&self, by: Duration) -> Result<(), HandleError> {
         self.send(Request::Advance(by))
     }
 
     /// Sets a writer's allowance balance, as the fixtures' base states do.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_balance(&self, writer: u32, balance: i64) -> Result<(), HandleError> {
         self.send(Request::SetBalance { writer, balance })
     }
 
     /// Makes the instance trap while it integrates the next record that
     /// passes the verdict, as the fixtures' trap cases ask.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn trap_next_integration(&self) -> Result<(), HandleError> {
         self.send(Request::TrapNext)
     }
@@ -488,7 +601,7 @@ impl SharedNote {
 
     /// Pauses the thread before its next request while `held`, as tests do
     /// to stand in for a record that takes long to decode.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn hold(&self, held: bool) {
         self.shared.hold.set(held);
     }
@@ -565,6 +678,7 @@ fn answer<T: 'static>(answer: Answer<T>, result: Result<T, DocumentError>) -> Op
 fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shared: &Shared) {
     let mut server = Server::default();
     // How far tests moved the clock forward.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
     let mut skew = Duration::ZERO;
     loop {
         let request = match note.next_wake() {
@@ -581,11 +695,16 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shar
             },
         };
         shared.hold.wait();
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(Request::Advance(by)) = &request {
             skew += *by;
         }
         let now = Instant::now() + skew;
+        // A stopped lineage's file keeps its last good state.
+        let stopped = note.is_stopped();
         let mut effects = Effects::default();
+        // Your edit, as the document merged it.
+        let mut merged_edit = None;
         let mut failed = None;
         let mut reply: Option<Respond> = None;
         match request {
@@ -600,8 +719,11 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shar
                 let result = server
                     .take_in(message)
                     .map_err(DocumentError::from)
-                    .and_then(|op| note.local(&op, undoable, at));
-                failed = result.err();
+                    .and_then(|op| note.local(&op, undoable, at).map(|()| op));
+                match result {
+                    Ok(op) => merged_edit = Some(op),
+                    Err(error) => failed = Some(error),
+                }
             }
             Some(Request::Undo { message, at }) => {
                 let _ = server.take_in(message);
@@ -634,11 +756,21 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shar
                     let _ = to.send(());
                 }))
             }
+            #[cfg(any(test, feature = "test-support"))]
             Some(Request::Advance(_)) => effects = note.wake(now),
+            #[cfg(any(test, feature = "test-support"))]
             Some(Request::SetBalance { writer, balance }) => note.set_balance(writer, balance, now),
+            #[cfg(any(test, feature = "test-support"))]
             Some(Request::TrapNext) => note.trap_next_integration(),
             #[cfg(test)]
             Some(Request::Verdicts(sandbox)) => note.judge_with(sandbox),
+        }
+        if !stopped {
+            let merged = merged_edit.iter().chain(&effects.changes);
+            let merged: Vec<Op> = merged.filter(|op| !op.is_identity()).cloned().collect();
+            if !merged.is_empty() {
+                lock(&shared.merged).extend(merged);
+            }
         }
         for op in effects.changes {
             if !op.is_identity() && outbox.send(Reply::Change(server.send_out(op))).is_err() {
@@ -656,6 +788,9 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shar
         // The status goes before the answer, so a caller that waits for its
         // answer sees the status the call left.
         *lock(&shared.status) = note.status();
+        if let Ok(undo) = note.undo_state() {
+            *lock(&shared.undo) = undo;
+        }
         if let Some(reply) = reply {
             reply();
         }
@@ -675,12 +810,7 @@ mod tests {
         let handle = NoteHandle {
             shared: SharedNote {
                 requests,
-                shared: Arc::new(Shared {
-                    status: Mutex::new(LineageStatus::Merging),
-                    events: Mutex::default(),
-                    errors: Mutex::default(),
-                    hold: Hold::default(),
-                }),
+                shared: Arc::default(),
             },
             replies,
             sent: 0,

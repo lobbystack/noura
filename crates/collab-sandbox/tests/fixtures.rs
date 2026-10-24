@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use collab_sandbox::{
     ALLOWANCE_FUEL, Event, FREE_OPERATORS, GUEST_MODULE, GUEST_MODULE_HASH, INTEGRATION_FUEL_LIMIT,
-    Record, RemoteRecord, Unreadable, VARIABLE_COSTS, VERDICT_BASE_FUEL, VERDICT_FUEL_PER_BYTE,
-    VERDICT_MEMORY_BYTES, operator_costs,
+    REFILL_PERIOD, Record, RemoteRecord, Unreadable, VARIABLE_COSTS, VERDICT_BASE_FUEL,
+    VERDICT_FUEL_PER_BYTE, VERDICT_MEMORY_BYTES, operator_costs,
 };
 use serde_json::{Value, json};
 use support::{cases, client_ids, fixture, hex, note, sandbox};
@@ -48,6 +48,112 @@ fn the_budget_and_limits_are_the_fixtures() {
     assert_eq!(integration["allowance_fuel"], ALLOWANCE_FUEL);
     assert_eq!(integration["refill_seconds"], 60);
     assert_eq!(integration["record_fuel_limit"], INTEGRATION_FUEL_LIMIT);
+}
+
+/// `n` as the spec writes it, with a comma between each group of three
+/// digits.
+fn spelled(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// The section of `spec` under `heading`, up to the next section.
+fn section<'a>(spec: &'a str, heading: &str) -> &'a str {
+    let start = spec
+        .find(heading)
+        .unwrap_or_else(|| panic!("{heading} in the spec"));
+    let rest = &spec[start + heading.len()..];
+    &rest[..rest.find("\n## ").unwrap_or(rest.len())]
+}
+
+/// The budget and the integration limits as sync-v2.md's text states them,
+/// in §22 and in the table of §27, so a change to the constants fails
+/// until the spec's text changes with them, as well as the fixture.
+#[test]
+fn the_budget_and_limits_are_the_spec_text() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/workspace-format/sync-v2.md");
+    let spec = std::fs::read_to_string(path).unwrap();
+    let collaboration = section(&spec, "## 22. Live collaboration");
+    let limits = section(&spec, "## 27. Limits");
+    let base = spelled(VERDICT_BASE_FUEL);
+    let per_byte = spelled(VERDICT_FUEL_PER_BYTE);
+    let memory = VERDICT_MEMORY_BYTES >> 20;
+    let allowance = spelled(ALLOWANCE_FUEL as u64);
+    let record = spelled(INTEGRATION_FUEL_LIMIT);
+    let integration = &fixture()["sandbox"]["integration"];
+    let document = integration["document_bytes"].as_u64().unwrap() >> 20;
+    let text = integration["text_bytes"].as_u64().unwrap() >> 20;
+    assert_eq!(REFILL_PERIOD, Duration::from_secs(60));
+    for (section, name, sentence) in [
+        (
+            collaboration,
+            "§22",
+            format!(
+                "with a fuel budget of {base} units plus {per_byte} per byte of the \
+                 record's decrypted payload"
+            ),
+        ),
+        (
+            collaboration,
+            "§22",
+            format!("and {memory} MiB of linear memory"),
+        ),
+        (
+            collaboration,
+            "§22",
+            format!(
+                "Each writer holds an allowance per note of {allowance} fuel units, \
+                 refilled each minute up to that amount"
+            ),
+        ),
+        (
+            collaboration,
+            "§22",
+            format!(
+                "When one record's integration alone passes {record} units, or would take \
+                 the document past {document} MiB or its text past {text} MiB"
+            ),
+        ),
+        (
+            limits,
+            "§27",
+            format!(
+                "| Collaboration sandbox verdict, per record | {base} fuel units plus \
+                 {per_byte} per byte of the decrypted payload and blob file, {memory} MiB of \
+                 memory, one pinned guest module |"
+            ),
+        ),
+        (
+            limits,
+            "§27",
+            format!(
+                "| Collaboration sandbox allowance | {allowance} fuel units per writer and \
+                 note, refilled each minute and overdrawn as debt; {record} for one record's \
+                 integration |"
+            ),
+        ),
+        (
+            limits,
+            "§27",
+            format!(
+                "a record that jumps past {text} MiB of text or {document} MiB of document \
+                 stops the lineage on that device |"
+            ),
+        ),
+    ] {
+        assert!(
+            section.contains(&sentence),
+            "{name} of sync-v2.md doesn't say: {sentence}"
+        );
+    }
 }
 
 #[test]
