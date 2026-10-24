@@ -133,6 +133,41 @@ fn a_file_no_app_opens_says_so_and_opens_no_tab() {
 }
 
 #[test]
+fn a_saved_tab_of_a_file_that_opens_in_no_tab_stays_closed_at_the_next_launch() {
+    let fixture = Fixture::new(&[("Plan.md", b"# Plan\n"), ("archive.zip", b"PK")]);
+    let workspace_id = fixture.app().workspace().unwrap().id().to_owned();
+    // A tab an older version saved for the archive, beside the note's.
+    let view_state = fixture
+        .app_data
+        .path()
+        .join("workspaces")
+        .join(&workspace_id)
+        .join("view-state.json");
+    std::fs::write(
+        &view_state,
+        r#"{"version":2,"windows":[{"tabs":[{"file":"archive.zip"},{"file":"Plan.md"}],"active":0,"expandedFolders":[]}],"railOrder":[]}"#,
+    )
+    .unwrap();
+    let system = FakeSystem::new();
+
+    let app = fixture.app_with(system.clone());
+
+    let paths: Vec<&str> = app
+        .tabs()
+        .iter()
+        .filter_map(|tab| tab.file().map(|file| file.relative_path.as_str()))
+        .collect();
+    assert_eq!(paths, ["Plan.md"]);
+    assert_eq!(
+        app.active_tab()
+            .and_then(|tab| tab.file())
+            .map(|file| file.relative_path.as_str()),
+        Some("Plan.md")
+    );
+    assert_eq!(system.calls(), []);
+}
+
+#[test]
 fn replacing_an_open_image_on_disk_shows_the_new_file() {
     let fixture = Fixture::new(&[("map.png", b"first map")]);
     let mut app = fixture.app();
