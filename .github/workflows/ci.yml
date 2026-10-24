@@ -287,7 +287,9 @@ jobs:
   # The store conformance suite, the server's PostgreSQL mode tests and the
   # tracer on a PostgreSQL service, as a hosted deployment runs it, then the
   # push soak for five minutes. Tests that need a cluster of their own, such
-  # as one that requires TLS, start it with the runner's PostgreSQL.
+  # as one that requires TLS, start it with the runner's PostgreSQL. The job
+  # builds dependencies optimized, the crypto crates among them, so a debug
+  # build of the server keeps the soak's rate on a shared runner.
   postgres:
     runs-on: ubuntu-latest
     services:
@@ -300,19 +302,38 @@ jobs:
           --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       NOURA_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432
+      DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
+      TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # The tests run several instances at once, each with 32 request
+      # connections, as the local test clusters allow with 500.
+      - name: Raise the service's connection limit
+        env:
+          SERVICE: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$SERVICE" psql -U postgres -c "ALTER SYSTEM SET max_connections = 500"
+          docker restart "$SERVICE"
+          for _ in $(seq 1 30); do
+            if docker exec "$SERVICE" pg_isready -U postgres; then
+              docker exec "$SERVICE" psql -U postgres -tAc "SHOW max_connections"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The PostgreSQL service didn't come back after its restart."
+          exit 1
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: postgres }
-      - run: cargo test --locked -p sync-store-postgres -p sync-server
-      - run: cargo test --locked -p app-core --test sync
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync
       - name: Run the push soak for five minutes
-        run: cargo test --locked -p sync-server --test soak -- --nocapture
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-server --test soak -- --nocapture
         env:
           NOURA_SOAK_SECONDS: '300'
 
