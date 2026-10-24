@@ -615,16 +615,10 @@ impl<'ast> MdRender {
     }
 
     /// An estimate counts characters rather than laying text out, so the
-    /// syntax the caret reveals doesn't change it; only a fold the reveal
-    /// state opens does. Without fold tags, moving the caret keeps every
-    /// estimate.
+    /// syntax the caret reveals doesn't change it, and nothing folds, so
+    /// moving the caret keeps every estimate.
     fn approx_deps(&self) -> HeightDeps {
-        let reveal = if self.bounds.has_fold_tags {
-            self.reveal_seq
-        } else {
-            0
-        };
-        [self.width_seq, self.embeds.seq(), reveal]
+        [self.width_seq, self.embeds.seq(), 0]
     }
 
     pub fn get_cached_node_height(&self, node: &'ast AstNode<'ast>) -> Option<f32> {

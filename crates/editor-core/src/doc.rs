@@ -366,14 +366,12 @@ impl MdDoc {
     }
 
     /// Whether an edit to the text `ast` parsed can reparse in place: the
-    /// note is large, the bounds are `ast`'s, and no fold tag, which hides
-    /// blocks far from it, is in the text.
+    /// note is large and the bounds are `ast`'s. Nothing folds, so no edit
+    /// hides or shows blocks far from it, whatever fold markers a file
+    /// holds as text.
     fn reparses_in_place(&self, ast: &Ast) -> bool {
         self.buffer.current.len_bytes() >= self.large_note_bytes
             && self.bounds.text_seq == ast.text_seq()
-            && !self.bounds.has_fold_tags
-            && memchr::memmem::find(self.text().as_bytes(), crate::fold::FOLD_TAG.as_bytes())
-                .is_none()
     }
 
     /// Takes in a finished background parse of the current text, or drops
@@ -475,12 +473,10 @@ impl MdDoc {
         // Bounds depend only on text. Skip rebuild + bump bounds_seq
         // when text hasn't changed.
         if self.bounds.text_seq != self.text_seq {
-            self.bounds.has_fold_tags =
-                memchr::memmem::find(self.text().as_bytes(), crate::fold::FOLD_TAG.as_bytes())
-                    .is_some();
             self.bounds.inline_paragraphs.clear();
             self.calc_source_lines();
             self.calc_fold_bounds(root);
+            self.bounds.has_folds = !self.bounds.folds.is_empty();
             self.calc_atom_bounds(root);
             self.calc_inline_spans(root);
             self.bounds.frontmatter = self.frontmatter_range();

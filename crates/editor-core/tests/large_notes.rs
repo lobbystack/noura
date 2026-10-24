@@ -294,6 +294,153 @@ fn an_edit_beside_display_math_past_the_lookahead_parses_the_whole_note() {
     assert!(doc.parse_stats().full_parses > opened.full_parses);
 }
 
+#[test]
+fn edits_away_from_display_math_past_the_lookahead_reparse_in_place() {
+    let filler = "word ".repeat(60 * 1024);
+    let rest: String = (0..200).map(|n| format!("Paragraph {n}.\n\n")).collect();
+    let note = format!("# Title\n\n$$ {filler} $$ end.\n\n{rest}");
+    let mut doc = MdDoc::new(&note);
+    doc.set_large_note_bytes(0);
+    doc.hold_background_parses(true);
+    caret_at(&mut doc, 0);
+    let opened = doc.parse_stats();
+
+    // In the heading before the math, in the paragraph after it, and far
+    // past it.
+    for (anchor, typed) in [
+        ("# Ti", "abc"),
+        ("Paragraph 0", "y"),
+        ("Paragraph 150", "z"),
+    ] {
+        let at = after(&doc, anchor);
+        caret_at(&mut doc, at);
+        type_text(&mut doc, typed);
+        assert_matches_fresh_parse(&mut doc);
+    }
+    let stats = doc.parse_stats();
+    assert_eq!(stats.full_parses, opened.full_parses, "{stats:?}");
+    assert_eq!(stats.in_place, 5, "{stats:?}");
+}
+
+#[test]
+fn joining_a_paragraph_onto_display_math_past_the_lookahead_reads_it_again() {
+    let filler = "word ".repeat(60 * 1024);
+    let rest: String = (0..50).map(|n| format!("Paragraph {n}.\n\n")).collect();
+    let backspace = Event::Delete {
+        region: Region::SelectionOrAdvance {
+            advance: editor_core::input::Advance::By(editor_core::input::Increment::Char),
+            backwards: true,
+        },
+    };
+    let typing = Event::Replace {
+        region: Region::Selection,
+        text: "y".into(),
+        advance_cursor: true,
+    };
+    // Once the paragraphs join, the intro's `$$` pairs with the one that
+    // opened the distant math, or its backtick opens a code span that
+    // takes the math in. Backspace at the math's line joins them, and so
+    // does typing on the empty line above it.
+    for (intro, anchor, event, joined, reads_as) in [
+        (
+            "$$ x",
+            "Intro $$ x\n\n",
+            &backspace,
+            "Intro $$ x\n$$ word",
+            "math",
+        ),
+        (
+            "$$ x",
+            "Intro $$ x\n",
+            &typing,
+            "Intro $$ x\ny\n$$ word",
+            "math",
+        ),
+        (
+            "`x",
+            "Intro `x\n\n",
+            &backspace,
+            "Intro `x\n$$ word",
+            "code",
+        ),
+        ("`x", "Intro `x\n", &typing, "Intro `x\ny\n$$ word", "code"),
+    ] {
+        let note = format!("{rest}Intro {intro}\n\n$$ {filler} $$ end` here.\n\n{rest}");
+        let mut doc = MdDoc::new(&note);
+        doc.set_large_note_bytes(0);
+        doc.hold_background_parses(true);
+        let reads = |doc: &mut MdDoc| {
+            doc.with_ast(|_, root| {
+                root.descendants()
+                    .any(|node| match &node.data.borrow().value {
+                        NodeValue::Math(_) => reads_as == "math",
+                        NodeValue::Code(_) => reads_as == "code",
+                        _ => false,
+                    })
+            })
+        };
+        assert!(!reads(&mut doc), "{intro}");
+
+        let at = after(&doc, anchor);
+        caret_at(&mut doc, at);
+        doc.apply([event.clone()], &NoLayout);
+
+        assert!(doc.text().contains(joined), "{intro}");
+        assert_matches_fresh_parse(&mut doc);
+        assert!(reads(&mut doc), "the joined paragraph reads as {reads_as}");
+    }
+}
+
+#[test]
+fn a_table_that_takes_the_closing_line_of_display_math_past_the_lookahead_reads_it_again() {
+    // A delimiter row under the paragraph's last line makes that line a
+    // table's header, so the math loses its closing signs.
+    let filler = "word ".repeat(60 * 1024);
+    let rest: String = (0..50).map(|n| format!("Paragraph {n}.\n\n")).collect();
+    let note = format!("{rest}$$ {filler}\nx $$ | y\n\n{rest}");
+    let mut doc = MdDoc::new(&note);
+    doc.set_large_note_bytes(0);
+    doc.hold_background_parses(true);
+    let at = after(&doc, "x $$ | y");
+    caret_at(&mut doc, at);
+    doc.apply([Event::Newline { shift: false }], &NoLayout);
+    type_text(&mut doc, "|---|---|");
+
+    assert!(doc.text().contains("x $$ | y\n|---|---|\n"));
+    assert_matches_fresh_parse(&mut doc);
+    let table = doc.with_ast(|_, root| {
+        root.children()
+            .any(|node| matches!(node.data.borrow().value, NodeValue::Table(_)))
+    });
+    assert!(table);
+}
+
+#[test]
+fn a_lockbook_fold_marker_in_the_text_keeps_edits_in_place() {
+    // Nothing folds, so a marker a file already holds is text like any
+    // other and doesn't make each edit parse the whole note.
+    let mut note = String::from("# Plans <!-- {\"fold\":true} -->\n\n");
+    for n in 0..300 {
+        note.push_str(&format!("Paragraph {n}.\n\n"));
+    }
+    let mut doc = MdDoc::new(&note);
+    doc.set_large_note_bytes(0);
+    doc.hold_background_parses(true);
+    caret_at(&mut doc, 0);
+    let opened = doc.parse_stats();
+
+    for (anchor, typed) in [("# Pl", "x"), ("Paragraph 150", "y")] {
+        let at = after(&doc, anchor);
+        caret_at(&mut doc, at);
+        type_text(&mut doc, typed);
+        assert_matches_fresh_parse(&mut doc);
+    }
+    let stats = doc.parse_stats();
+    assert_eq!(stats.full_parses, opened.full_parses, "{stats:?}");
+    assert_eq!(stats.in_place, 2, "{stats:?}");
+    assert!(doc.bounds.folds.is_empty());
+}
+
 /// A note of blocks that commonly sit side by side.
 fn note() -> impl Strategy<Value = String> {
     let block = prop_oneof![

@@ -14,8 +14,9 @@ use crate::offset_types::{Grapheme, RangeExt as _};
 impl MdDoc {
     /// Brings bounds built for the text before an edit up to date with
     /// `root`, the parse [`crate::Ast::update`] left after reparsing
-    /// `reparsed`. The note must hold no fold tags.
+    /// `reparsed`. The fold bounds stay as they are, as nothing folds.
     pub(crate) fn update_bounds<'a>(&mut self, root: &'a AstNode<'a>, reparsed: &Reparsed) {
+        debug_assert!(self.bounds.folds.is_empty() && !self.bounds.has_folds);
         let old_total = self.bounds.source_lines.last().map_or(0, |line| line.1.0);
         let new_total = self.last_cursor_position().0;
         let delta = new_total as isize - old_total as isize;

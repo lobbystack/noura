@@ -215,7 +215,7 @@ impl<'ast> MdDoc {
     }
 
     pub fn hidden_by_fold(&self, node: &'ast AstNode<'ast>) -> bool {
-        if !self.bounds.has_fold_tags {
+        if !self.bounds.has_folds {
             return false;
         }
         self.get_cached_hidden_by_fold(node)
@@ -233,7 +233,7 @@ impl<'ast> MdDoc {
             return;
         }
         self.cache.hidden_by_fold_deps.set(Some(deps));
-        if !self.bounds.has_fold_tags {
+        if !self.bounds.has_folds {
             return;
         }
 

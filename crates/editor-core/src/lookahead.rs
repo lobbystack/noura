@@ -15,7 +15,7 @@ use std::ops::Range;
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{Arena, Options};
 
-use crate::ast::{Ast, Reparsed};
+use crate::ast::{Ast, Reparsed, common_prefix, common_suffix};
 use crate::doc::MdDoc;
 
 /// How far a construct's closing line may sit from its start, in bytes.
@@ -219,12 +219,13 @@ fn line_starts(text: &str) -> Vec<usize> {
 }
 
 /// The display math in `nodes` and everything inside them whose closing
-/// `$$` sits past the lookahead, by the byte offset of its opening `$$`.
-/// `line_start` gives where each 0-based line starts.
+/// `$$` sits past the lookahead, as byte ranges from its opening `$$`
+/// through its closing one. `line_start` gives where each 0-based line
+/// starts.
 fn distant_display_math<'a>(
     nodes: impl IntoIterator<Item = &'a AstNode<'a>>,
     line_start: impl Fn(usize) -> Option<usize>,
-) -> Vec<usize> {
+) -> Vec<Range<usize>> {
     let byte = |line: usize, column: usize| {
         line_start(line.saturating_sub(1)).map_or(0, |start| start + column.saturating_sub(1))
     };
@@ -242,7 +243,7 @@ fn distant_display_math<'a>(
             let sourcepos = data.sourcepos;
             let start = byte(sourcepos.start.line, sourcepos.start.column);
             let end = byte(sourcepos.end.line, sourcepos.end.column);
-            (end.saturating_sub(start) > LOOKAHEAD).then_some(start)
+            (end.saturating_sub(start) > LOOKAHEAD).then_some(start..end + 1)
         })
         .collect()
 }
@@ -259,12 +260,12 @@ fn comrak_source(mut text: String) -> String {
     text
 }
 
-/// `text` with the `$$` at each of `starts` turned into a stand-in comrak
-/// reads as plain text; the editor draws the note's own `$$` there.
-fn unpair(text: String, starts: Vec<usize>) -> String {
+/// `text` with the opening `$$` of each of `math` turned into a stand-in
+/// comrak reads as plain text; the editor draws the note's own `$$` there.
+fn unpair(text: String, math: &[Range<usize>]) -> String {
     let mut bytes = text.into_bytes();
-    for start in starts {
-        bytes[start..start + 2].copy_from_slice(b"\x01\x01");
+    for math in math {
+        bytes[math.start..math.start + 2].copy_from_slice(b"\x01\x01");
     }
     String::from_utf8(bytes).expect("ASCII stand-ins keep the text UTF-8")
 }
@@ -278,29 +279,49 @@ const DISTANT_MATH_PASSES: usize = 4;
 /// past the lookahead reads as ordinary Markdown.
 pub(crate) fn parse_ast(text: String, options: &Options, text_seq: u64) -> Ast {
     let mut ast = Ast::parse(comrak_source(text), options, text_seq);
+    let mut unpaired = Vec::new();
     for _ in 0..DISTANT_MATH_PASSES {
         let distant =
             ast.with_root(|root| distant_display_math([root], |line| ast.line_start(line)));
         if distant.is_empty() {
             break;
         }
-        let text = unpair(ast.source().to_owned(), distant);
+        let text = unpair(ast.source().to_owned(), &distant);
+        unpaired.extend(distant);
         ast = Ast::parse(text, options, text_seq);
     }
+    unpaired.sort_unstable_by_key(|math| math.start);
+    ast.set_distant_math(unpaired);
     ast
 }
 
 /// Brings `ast` up to date with a note's `text` through [`Ast::update`],
-/// or returns `None` when the blocks it reparsed hold `$$` math whose
-/// closing signs sit past the lookahead, which only a full parse reads
-/// ([`parse_ast`]). `ast` is then a partial parse to throw away.
+/// or returns `None` when only a full parse ([`parse_ast`]) reads the
+/// result right: the edit reaches `$$` math whose closing signs sit past
+/// the lookahead, or the blocks it reparsed hold new such math. `ast` is
+/// then a partial parse to throw away.
 pub(crate) fn update_ast(
     ast: &mut Ast,
     text: String,
     options: &Options,
     text_seq: u64,
 ) -> Option<Reparsed> {
-    let reparsed = ast.update(comrak_source(text), options, text_seq);
+    let source = comrak_source(text);
+    let carried = carry_distant_math(ast, &source)?;
+    let math: Vec<Range<usize>> = carried.iter().map(|(math, _)| math.clone()).collect();
+    let reparsed = ast.update(unpair(source, &math), options, text_seq);
+    // The signs pair as before only while the block that holds them
+    // starts where it did and still takes in the closing ones. A paragraph
+    // that took in the lines above it, as when the empty line between
+    // them goes, can pair them anew, and one whose last line turned into
+    // a table's header lost them.
+    let held = carried.iter().all(|(math, start)| {
+        holding_block(ast, math.start)
+            .is_some_and(|block| block.start == *start && block.end >= math.end)
+    });
+    if !held {
+        return None;
+    }
     let distant = ast.with_root(|root| {
         let blocks = root
             .children()
@@ -308,7 +329,76 @@ pub(crate) fn update_ast(
             .take(reparsed.blocks.len());
         distant_display_math(blocks, |line| ast.line_start(line))
     });
-    distant.is_empty().then_some(reparsed)
+    if !distant.is_empty() {
+        return None;
+    }
+    ast.set_distant_math(math);
+    Some(reparsed)
+}
+
+/// Where the distant math `ast` reads as text sits in `source`, the new
+/// text comrak parses, with where the innermost block that holds it
+/// starts there, or `None` when an edit reaches it. Math before the edit
+/// stays put. Math after it moves by the bytes the edit added, when the
+/// edit ends before its block: what comes before the math in its block
+/// decides how its signs pair.
+fn carry_distant_math(ast: &Ast, source: &str) -> Option<Vec<(Range<usize>, usize)>> {
+    let distant = ast.distant_math();
+    if distant.is_empty() {
+        return Some(Vec::new());
+    }
+    // The text before the edit as comrak would read it without stand-ins.
+    let mut old = ast.source().as_bytes().to_vec();
+    for math in distant {
+        old[math.start..math.start + 2].copy_from_slice(b"$$");
+    }
+    let new = source.as_bytes();
+    let prefix = common_prefix(&old, new);
+    let suffix = common_suffix(&old[prefix..], &new[prefix..]);
+    let old_end = old.len() - suffix;
+    let delta = new.len() as isize - old.len() as isize;
+    let moved = |at: usize| (at as isize + delta) as usize;
+    distant
+        .iter()
+        .map(|math| {
+            let block = holding_block(ast, math.start)?;
+            // A byte right after the closing signs can still change how
+            // they close, as a third `$` does.
+            if math.end < prefix {
+                Some((math.clone(), block.start))
+            } else if old_end < block.start {
+                Some((moved(math.start)..moved(math.end), moved(block.start)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The byte range of the innermost block of `ast` that holds byte `at`.
+fn holding_block(ast: &Ast, at: usize) -> Option<Range<usize>> {
+    let byte = |line: usize, column: usize| {
+        ast.line_start(line.saturating_sub(1))
+            .map(|start| start + column.saturating_sub(1))
+    };
+    ast.with_root(|root| {
+        let mut holder = None;
+        let mut node = root;
+        while let Some((child, range)) = node.children().find_map(|child| {
+            let data = child.data.borrow();
+            if !data.value.block() {
+                return None;
+            }
+            let pos = data.sourcepos;
+            let range =
+                byte(pos.start.line, pos.start.column)?..byte(pos.end.line, pos.end.column)? + 1;
+            range.contains(&at).then_some((child, range))
+        }) {
+            holder = Some(range);
+            node = child;
+        }
+        holder
+    })
 }
 
 impl MdDoc {
@@ -324,7 +414,7 @@ impl MdDoc {
             if distant.is_empty() {
                 break;
             }
-            text = unpair(text, distant);
+            text = unpair(text, &distant);
             root = comrak::parse_document(arena, &text, &options);
         }
         root

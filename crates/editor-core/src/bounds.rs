@@ -70,9 +70,10 @@ pub struct Bounds {
     /// closes within the lookahead.
     pub frontmatter: Option<(Grapheme, Grapheme)>,
 
-    /// Whether the text holds a fold tag. Without one nothing folds, so
-    /// no node needs to know whether a fold hides it.
-    pub has_fold_tags: bool,
+    /// Whether a section is folded. Nothing folds
+    /// ([`MdDoc::foldable`](crate::MdDoc::foldable)), so this stays false
+    /// and no node needs to know whether a fold hides it.
+    pub has_folds: bool,
 }
 
 /// Tag + hidden-contents ranges of one actively folded section. Both act
@@ -107,7 +108,7 @@ impl Bounds {
     /// the wrap lines, which come from layout.
     pub fn same_text_bounds(&self, other: &Bounds) -> bool {
         self.text_seq == other.text_seq
-            && self.has_fold_tags == other.has_fold_tags
+            && self.has_folds == other.has_folds
             && self.source_lines == other.source_lines
             && self.words == other.words
             && self.inline_paragraphs == other.inline_paragraphs
@@ -130,7 +131,7 @@ impl Default for Bounds {
             images: Vec::default(),
             spans: Vec::default(),
             frontmatter: None,
-            has_fold_tags: false,
+            has_folds: false,
         }
     }
 }
