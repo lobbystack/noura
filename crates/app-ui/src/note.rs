@@ -756,7 +756,8 @@ fn plugin_panel(ui: &mut Ui, app: &mut App, window: Id, tab: TabId, view: &Plugi
         .accessibility_role(Role::Group)
         .accessibility_label("Properties");
     ui.scope_builder(builder, |ui| {
-        ScrollArea::vertical()
+        // A wide view, such as a project's board, scrolls sideways.
+        ScrollArea::both()
             .id_salt(("note-plugin-panel-scroll", tab))
             .show(ui, |ui| {
                 crate::plugin_view::show_panel(ui, app, window, tab, view);

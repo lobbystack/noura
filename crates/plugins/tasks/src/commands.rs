@@ -1,12 +1,16 @@
 //! The commands Tasks offers other plugins: `create`, `update`,
-//! `complete` and `reopen`. Each takes a JSON object and answers with the
-//! task as its file holds it afterwards:
+//! `complete`, `reopen` and `list`. Each takes a JSON object. The first
+//! four answer with the task as its file holds it afterwards:
 //!
 //! - `create`: `title`, and optionally `properties` and `body`.
 //! - `update`: `id`, `expected_revision`, and `properties` to set, a
 //!   `null` clearing one, and optionally a new `body`.
 //! - `complete` and `reopen`: `id` and `expected_revision`. They mark the
 //!   task done, or back to todo.
+//!
+//! `list` takes an optional `project`, a project's stable ID, and answers
+//! with `tasks`: every task, or the tasks of that project, each without
+//! its body. It writes nothing.
 //!
 //! `properties` holds only task fields: `status`, `priority`, `project`,
 //! `due` and `kanban_order`. A command that fails answers with a JSON
@@ -34,6 +38,9 @@ pub(crate) fn run(id: &str, input: &str) -> Result<String, String> {
             json!({}),
         ));
     };
+    if id == "list" {
+        return list(input).map(|tasks| json!({ "tasks": tasks }).to_string());
+    }
     let task = match id {
         "create" => create(input),
         "update" => update(input),
@@ -48,6 +55,28 @@ pub(crate) fn run(id: &str, input: &str) -> Result<String, String> {
         }
     }?;
     Ok(task_json(&task).to_string())
+}
+
+/// Every task, or the tasks of the project `input` names, each as the
+/// commands answer with it, without its body.
+fn list(input: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    let project = text(input, "project")?;
+    let tasks = objects::list(TASK).map_err(|error| failure(&error))?;
+    Ok(tasks
+        .iter()
+        .map(task_json)
+        .filter(|task| {
+            project
+                .as_deref()
+                .is_none_or(|project| task["properties"]["project"] == project)
+        })
+        .map(|mut task| {
+            if let Some(task) = task.as_object_mut() {
+                task.remove("body");
+            }
+            task
+        })
+        .collect())
 }
 
 fn create(input: &Map<String, Value>) -> Result<Object, String> {

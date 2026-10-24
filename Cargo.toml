@@ -19,6 +19,7 @@ members = [
     "crates/plugin-sdk",
     "crates/plugins/calendar",
     "crates/plugins/hello",
+    "crates/plugins/projects",
     "crates/plugins/tasks",
     "crates/spell-check",
     "crates/sync-key-envelope",
