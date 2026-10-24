@@ -8,9 +8,10 @@
 //! - `complete` and `reopen`: `id` and `expected_revision`. They mark the
 //!   task done, or back to todo.
 //!
-//! `list` takes an optional `project`, a project's stable ID, and answers
-//! with `tasks`: every task, or the tasks of that project, each without
-//! its body. It writes nothing.
+//! `list` takes an optional `project`, a project's stable ID, and an
+//! optional `status`, and answers with `tasks`: every task, or the tasks
+//! of that project or with that status, each without its body. It writes
+//! nothing.
 //!
 //! `properties` holds only task fields: `status`, `priority`, `project`,
 //! `due` and `kanban_order`. A command that fails answers with a JSON
@@ -57,10 +58,11 @@ pub(crate) fn run(id: &str, input: &str) -> Result<String, String> {
     Ok(task_json(&task).to_string())
 }
 
-/// Every task, or the tasks of the project `input` names, each as the
-/// commands answer with it, without its body.
+/// Every task, or the tasks of the project and with the status `input`
+/// names, each as the commands answer with it, without its body.
 fn list(input: &Map<String, Value>) -> Result<Vec<Value>, String> {
     let project = text(input, "project")?;
+    let status = text(input, "status")?;
     let tasks = objects::list(TASK).map_err(|error| failure(&error))?;
     Ok(tasks
         .iter()
@@ -69,6 +71,9 @@ fn list(input: &Map<String, Value>) -> Result<Vec<Value>, String> {
             project
                 .as_deref()
                 .is_none_or(|project| task["properties"]["project"] == project)
+                && status
+                    .as_deref()
+                    .is_none_or(|status| task["properties"]["status"] == status)
         })
         .map(|mut task| {
             if let Some(task) = task.as_object_mut() {

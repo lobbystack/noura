@@ -513,6 +513,10 @@ pub(crate) struct Plugins {
     wake: Option<Wake>,
     /// Counts the changes the windows show: plugins, pages and views.
     version: u64,
+    /// It serves an AI tool outside Noura. The app installs, updates and
+    /// removes plugins and watches their folders, so this service leaves
+    /// the library and the folders alone.
+    agent: bool,
 }
 
 impl Plugins {
@@ -557,6 +561,18 @@ impl Plugins {
             openings: Openings::default(),
             wake: None,
             version: 0,
+            agent: false,
+        }
+    }
+
+    /// The service for an AI tool outside Noura, such as the MCP server,
+    /// which runs beside the app on the same app data. It reads this
+    /// device's install records and approvals, and never changes the
+    /// library or watches plugin folders.
+    pub(crate) fn for_agent(app_data: &Path) -> Self {
+        Self {
+            agent: true,
+            ..Self::new(app_data)
         }
     }
 
@@ -651,11 +667,23 @@ impl Plugins {
         if let Some(host) = &self.host {
             return Ok(host.clone());
         }
-        let host = Arc::new(
-            PluginHost::new(self.app_data.join(LIBRARY)).map_err(|error| from_install(&error))?,
-        );
+        let library = self.app_data.join(LIBRARY);
+        let host = if self.agent {
+            PluginHost::shared(library)
+        } else {
+            PluginHost::new(library)
+        };
+        let host = Arc::new(host.map_err(|error| from_install(&error))?);
         self.host = Some(host.clone());
         let records = self.records.plugins.clone();
+        if self.agent {
+            for id in records.keys() {
+                if let Ok((manifest, _)) = host.installed(id) {
+                    self.manifests.insert(id.clone(), manifest);
+                }
+            }
+            return Ok(host);
+        }
         for id in host.installed_ids() {
             if !records.contains_key(&id)
                 && let Err(error) = host.uninstall(&id)
@@ -1869,6 +1897,66 @@ impl Plugins {
             name: name.to_owned(),
             arguments: arguments.to_owned(),
         })
+    }
+
+    /// A call for an AI tool outside Noura to the tool `name` of the
+    /// plugin `plugin`, as [`Self::tool_call`] makes one. The plugin must
+    /// still be on in the workspace's manifest on disk and still hold the
+    /// `tools` capability in this device's approvals, which the app may
+    /// have changed since this service started it. A plugin turned off
+    /// since stops here, and one whose approvals changed runs with what
+    /// you approve now.
+    pub(crate) fn agent_tool_call(
+        &mut self,
+        plugin: &str,
+        name: &str,
+        arguments: &str,
+    ) -> Result<ToolCall, AppError> {
+        let shown = self
+            .manifests
+            .get(plugin)
+            .map_or_else(|| plugin.to_owned(), |manifest| manifest.name.clone());
+        let workspace = self
+            .workspace
+            .clone()
+            .ok_or_else(|| AppError::new("no_workspace", "No workspace is open for this tool."))?;
+        let manifest = workspace.engine().read_manifest().map_err(|error| {
+            AppError::from_core(error, workspace.root(), crate::error::Access::ReadWorkspace)
+        })?;
+        if !manifest.enabled_plugins.iter().any(|id| id == plugin) {
+            self.stop(plugin);
+            return Err(AppError::new(
+                "plugin_disabled",
+                format!(
+                    "You turned {shown} off in this workspace after this connection \
+                     started, so Noura didn't run its tool. Nothing changed."
+                ),
+            ));
+        }
+        self.records = self.store.load();
+        let Some(record) = self.records.plugins.get(plugin) else {
+            self.stop(plugin);
+            return Err(AppError::new(
+                "plugin_not_installed",
+                format!(
+                    "{shown} isn't installed on this device anymore, so Noura didn't run its \
+                     tool. Nothing changed."
+                ),
+            ));
+        };
+        if let Some(running) = self.running.get(plugin) {
+            running.plugin.set_approved(&record.approved);
+            if !Capability::holds(&running.plugin.granted(), "tools") {
+                return Err(AppError::new(
+                    "plugin_tools_revoked",
+                    format!(
+                        "You took back {shown}'s permission to offer tools on this device, \
+                         so Noura didn't run its tool. Nothing changed."
+                    ),
+                ));
+            }
+        }
+        self.tool_call(plugin, name, arguments)
     }
 
     /// Draw the plugin `id`'s views again, as after another caller ran it.

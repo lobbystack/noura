@@ -123,18 +123,33 @@ impl PluginHost {
         backend: Backend,
         limits: Limits,
     ) -> Result<Self, InstallError> {
+        let host = Self::start_host(library.into(), backend, limits)?;
+        host.remove_leftover_work();
+        Ok(host)
+    }
+
+    /// A host on Cranelift for a library another process installs into,
+    /// as the MCP server runs beside the app. It leaves the work folders
+    /// of installs in progress alone, and only loads what is installed.
+    pub fn shared(library: impl Into<PathBuf>) -> Result<Self, InstallError> {
+        Self::start_host(library.into(), Backend::Cranelift, Limits::default())
+    }
+
+    fn start_host(
+        library: PathBuf,
+        backend: Backend,
+        limits: Limits,
+    ) -> Result<Self, InstallError> {
         let engine = runtime::engine(backend)
             .map_err(|error| InstallError::storage("start the plugin host", &error))?;
         let epochs = EpochTicker::start(engine.clone())
             .map_err(|error| InstallError::storage("start the plugin host", &error))?;
-        let host = Self {
+        Ok(Self {
             engine,
             limits,
             epochs: Arc::new(epochs),
-            library: library.into(),
-        };
-        host.remove_leftover_work();
-        Ok(host)
+            library,
+        })
     }
 
     /// Read the plugin folder `folder` and compile its component, without

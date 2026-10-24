@@ -17,6 +17,7 @@
 //! and off per workspace and runs them through `plugin-host`, each on a
 //! thread of its own.
 
+mod agent;
 mod app;
 mod calendar_grid;
 mod commands;
@@ -25,6 +26,7 @@ mod error;
 mod files;
 mod ignored;
 mod inbox;
+mod items;
 mod keys;
 mod layout;
 mod links;
@@ -57,6 +59,7 @@ mod watch;
 mod workspace;
 mod writes;
 
+pub use agent::AgentWorkspace;
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
     Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
@@ -75,6 +78,7 @@ pub use inbox::{
     Attention, FileLink, Inbox, InboxSection, InboxSectionProvider, LinkAction, RECENT_NOTES,
     RecentNote,
 };
+pub use items::{Item, NoteChanges};
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use links::{

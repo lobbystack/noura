@@ -22,3 +22,7 @@ name = "views"
 [[capabilities]]
 name = "commands"
 targets = ["tasks"]
+
+# List, create and update projects for AI assistants through MCP.
+[[capabilities]]
+name = "tools"

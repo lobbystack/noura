@@ -3,11 +3,9 @@
 //! returns.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
 };
-
-use local_core::CreateObjectInput;
 
 use crate::{
     AppError, Workspace,
@@ -35,17 +33,7 @@ impl Workspace {
     pub fn create_note(&self, folder: &str) -> Result<String, AppError> {
         let directory = self.folder_path(folder)?;
         let name = free_name(&directory, UNTITLED, ".md");
-        let relative_path = join(folder, &name);
-        self.engine()
-            .create_object(CreateObjectInput {
-                object_type: "note".to_owned(),
-                title: name.trim_end_matches(".md").to_owned(),
-                body: String::new(),
-                relative_path: Some(relative_path.clone()),
-                properties: BTreeMap::new(),
-            })
-            .map_err(|error| AppError::from_change(error, &relative_path))?;
-        Ok(relative_path)
+        self.create_note_file(folder, &name, "")
     }
 
     /// Create a folder named Untitled, or Untitled 1 and so on, in `folder`.
@@ -293,7 +281,7 @@ impl Workspace {
     /// The folder at `folder` on disk: the workspace folder for "", or a
     /// folder inside the workspace that isn't a link and isn't in a linked
     /// folder.
-    fn folder_path(&self, folder: &str) -> Result<PathBuf, AppError> {
+    pub(crate) fn folder_path(&self, folder: &str) -> Result<PathBuf, AppError> {
         if folder.is_empty() {
             return Ok(self.engine().root().to_owned());
         }
@@ -317,7 +305,7 @@ const IN_THIS_FOLDER: &str = "in this folder";
 /// The error for a name something in the destination folder already uses.
 /// `place` says where: "in this folder", "in “Docs”" or "at the top of
 /// the workspace".
-fn name_taken(name: &str, place: &str) -> AppError {
+pub(crate) fn name_taken(name: &str, place: &str) -> AppError {
     AppError::new(
         "name_taken",
         format!("Something named \u{201c}{name}\u{201d} is already {place}."),
@@ -337,7 +325,7 @@ fn or_taken(error: AppError, name: &str, place: &str) -> AppError {
 
 /// Why Noura refuses `name` for a file or folder. These are the names
 /// Windows, macOS and Obsidian refuse, so a workspace stays portable.
-fn name_problem(name: &str) -> Result<(), AppError> {
+pub(crate) fn name_problem(name: &str) -> Result<(), AppError> {
     let problem = if name.is_empty() {
         "Enter a name."
     } else if name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
