@@ -235,16 +235,7 @@ impl WorkspaceEngine {
         let operation = "file_read";
         let path = resolve_for_write(&self.root, relative_path, operation)?;
         ensure_downloaded(&path, relative_path, operation)?;
-        let not_found = || {
-            let mut error = CoreError::new(
-                "file_not_found",
-                ErrorCategory::Filesystem,
-                "The file doesn't exist",
-                operation,
-            );
-            error.path = Some(relative_path.to_owned());
-            error
-        };
+        let not_found = || file_not_found(relative_path, operation);
         let metadata = match std::fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => return Err(not_found()),
@@ -262,6 +253,27 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, Some(relative_path)))?;
         let revision = markdown::revision(&bytes);
         Ok((bytes, revision))
+    }
+
+    /// The size in bytes and the modification time of the file at
+    /// `relative_path`, after the checks [`Self::read_file`] makes, without
+    /// reading it. A viewer compares them with an earlier answer to tell
+    /// whether another app replaced the file since it read it.
+    pub fn file_version(
+        &self,
+        relative_path: &str,
+    ) -> Result<(u64, Option<std::time::SystemTime>)> {
+        let operation = "file_version";
+        let path = resolve_for_write(&self.root, relative_path, operation)?;
+        ensure_downloaded(&path, relative_path, operation)?;
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => Ok((metadata.len(), metadata.modified().ok())),
+            Ok(_) => Err(file_not_found(relative_path, operation)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(file_not_found(relative_path, operation))
+            }
+            Err(error) => Err(CoreError::io(error, operation, Some(relative_path))),
+        }
     }
 
     pub fn list_non_managed_markdown(&self) -> Result<Vec<UnmanagedFile>> {
@@ -405,4 +417,16 @@ impl WorkspaceEngine {
         std::fs::remove_dir(path)
             .map_err(|error| CoreError::io(error, "folder_remove", Some(relative_path)))
     }
+}
+
+/// The error for a read of `relative_path` that finds no file there.
+fn file_not_found(relative_path: &str, operation: &str) -> CoreError {
+    let mut error = CoreError::new(
+        "file_not_found",
+        ErrorCategory::Filesystem,
+        "The file doesn't exist",
+        operation,
+    );
+    error.path = Some(relative_path.to_owned());
+    error
 }

@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use local_core::WorkspaceEngine;
 
-use crate::FileTree;
+use crate::pdf::{EmbedProblem, PdfPicture, draw_page_once, is_pdf, page_in_link};
 use crate::remote_images::{RemoteImageState, RemoteImages};
 use crate::watch::Snapshot;
+use crate::{EMBED_WIDTH, FileTree};
 
 /// How much of an embedded note's text an embed shows, in characters.
 pub const EMBED_PREVIEW_CHARS: usize = 800;
@@ -31,6 +32,7 @@ const EMBED_READ_BYTES: usize = 256 * 1024 + 4 * EMBED_PREVIEW_CHARS;
 pub(crate) struct LinkFiles {
     index: Arc<RwLock<Arc<LinkIndex>>>,
     embeds: Arc<Embeds>,
+    pdfs: Arc<PdfEmbeds>,
 }
 
 impl LinkFiles {
@@ -50,13 +52,18 @@ impl LinkFiles {
                 Some((entry.relative_path.clone(), revision))
             })
             .collect();
-        // A note that left the workspace takes what its embeds showed
-        // with it.
+        // A note or PDF that left the workspace takes what its embeds
+        // showed with it.
         self.embeds
             .notes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|path, _| index.paths.contains(path));
+        self.pdfs
+            .pages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|(path, _), _| index.paths.contains(path));
         *current = Arc::new(index);
     }
 
@@ -126,6 +133,40 @@ struct EmbedRead {
     shown: Option<Option<NoteEmbed>>,
     /// A read runs on another thread.
     reading: bool,
+}
+
+/// What the PDF embeds drawn so far show, kept across listings.
+#[derive(Default)]
+struct PdfEmbeds {
+    /// Each embed by the PDF's path and the page its link names.
+    pages: Mutex<HashMap<(String, Option<u32>), PdfEmbedDraw>>,
+    /// Counts the drawings finished so far.
+    drawn: AtomicU64,
+}
+
+/// What one PDF embed shows, and which version of the file it drew.
+struct PdfEmbedDraw {
+    /// The listing the newest check or drawing started under.
+    listing: u64,
+    /// The size and modification time of the file the drawing came from.
+    stamp: Option<(u64, Option<std::time::SystemTime>)>,
+    /// `None` until the first drawing ends.
+    shown: Option<PdfEmbedState>,
+    /// A check or drawing runs on another thread.
+    busy: bool,
+}
+
+/// What an embed of a PDF in a note shows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PdfEmbedState {
+    /// The page draws on another thread.
+    Drawing,
+    /// The page the embed's link names, drawn [`EMBED_WIDTH`] pixels wide.
+    ///
+    /// [`EMBED_WIDTH`]: crate::EMBED_WIDTH
+    Drawn(PdfPicture),
+    /// The PDF shows no page, for this reason.
+    Problem(EmbedProblem),
 }
 
 /// The largest workspace image a note draws, in bytes, as today's app.
@@ -265,6 +306,82 @@ impl NoteLinks {
     /// Changes whenever an embedded note's read finishes.
     pub fn embeds_seq(&self) -> u64 {
         self.files.embeds.read.load(Ordering::SeqCst)
+    }
+
+    /// Changes whenever a PDF embed's page finishes drawing.
+    pub fn pdf_embeds_seq(&self) -> u64 {
+        self.files.pdfs.drawn.load(Ordering::SeqCst)
+    }
+
+    /// The workspace PDF that `target` leads to, and the page its
+    /// `#page=` fragment names: `None` for none, or for one that isn't a
+    /// whole number from 1. `None` altogether when `target` names no PDF
+    /// in the workspace.
+    pub fn pdf_link(&self, target: &str) -> Option<(String, Option<u32>)> {
+        let path = self.resolve(target)?;
+        is_pdf(&path).then(|| (path, page_in_link(target)))
+    }
+
+    /// What an `![[file.pdf#page=2]]` embed shows: the page its fragment
+    /// names, page 1 for none or an invalid one, or the last page for one
+    /// past the end. `None` when `target` names no PDF in the workspace.
+    /// The first ask starts drawing the page on another thread and answers
+    /// [`Drawing`](PdfEmbedState::Drawing) until it ends; `drawn` runs when
+    /// it ends. After a newer listing of the files, the next ask checks the
+    /// file and draws it again if another app replaced it, and answers
+    /// with the last drawing meanwhile. Embedding writes nothing.
+    pub fn pdf_embed(
+        &self,
+        target: &str,
+        drawn: impl FnOnce() + Send + 'static,
+    ) -> Option<PdfEmbedState> {
+        let listing = self.files.get().seq;
+        let (path, asked) = self.pdf_link(target)?;
+        let pdfs = Arc::clone(&self.files.pdfs);
+        let mut pages = pdfs
+            .pages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let key = (path.clone(), asked);
+        let embed = pages.entry(key.clone()).or_insert_with(|| PdfEmbedDraw {
+            listing,
+            stamp: None,
+            shown: None,
+            busy: false,
+        });
+        if (embed.shown.is_none() || embed.listing != listing) && !embed.busy {
+            embed.listing = listing;
+            embed.busy = true;
+            let known = embed.shown.is_some().then_some(embed.stamp);
+            let engine = Arc::clone(&self.engine);
+            let pdfs = Arc::clone(&pdfs);
+            std::thread::spawn(move || {
+                // The version comes first, so a write during the drawing
+                // makes the next check differ.
+                let stamp = engine.file_version(&path).ok();
+                let shown = (known != Some(stamp)).then(|| {
+                    match draw_page_once(&engine, &path, asked, EMBED_WIDTH) {
+                        Ok(picture) => PdfEmbedState::Drawn(picture),
+                        Err(problem) => PdfEmbedState::Problem(problem),
+                    }
+                });
+                if let Some(embed) = pdfs
+                    .pages
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_mut(&key)
+                {
+                    embed.busy = false;
+                    if let Some(shown) = shown {
+                        embed.stamp = stamp;
+                        embed.shown = Some(shown);
+                    }
+                }
+                pdfs.drawn.fetch_add(1, Ordering::SeqCst);
+                drawn();
+            });
+        }
+        Some(embed.shown.clone().unwrap_or(PdfEmbedState::Drawing))
     }
 
     /// The workspace file `target` leads to, or `None` when it names no

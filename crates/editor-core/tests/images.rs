@@ -54,10 +54,31 @@ fn embeds_name_images_in_the_formats_today_s_app_shows() {
         let text = format!("![[{name}]]\n");
         assert_eq!(images(&text).len(), 1, "{name}");
     }
-    for name in ["a.pdf", "a.txt", "a.png.md", "a"] {
+    for name in ["a.txt", "a.png.md", "a.pdf.md", "a", ".pdf"] {
         let text = format!("![[{name}]]\n");
         assert_eq!(images(&text).len(), 0, "{name}");
     }
+}
+
+#[test]
+fn an_embed_of_a_pdf_draws_inline_as_the_page_its_fragment_names() {
+    let text = "![[lecture.pdf#page=7]]\n\nInline ![[Scans/Old.PDF|400]] end\n";
+
+    assert_eq!(
+        described(text),
+        vec![
+            (
+                "![[lecture.pdf#page=7]]",
+                "lecture.pdf#page=7".to_string(),
+                None
+            ),
+            (
+                "![[Scans/Old.PDF|400]]",
+                "Scans/Old.PDF".to_string(),
+                Some(400)
+            ),
+        ]
+    );
 }
 
 #[test]

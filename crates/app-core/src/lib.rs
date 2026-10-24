@@ -32,6 +32,7 @@ mod menus;
 mod notes;
 mod objects;
 mod operations;
+mod pdf;
 mod plugin_inputs;
 mod plugin_objects;
 mod plugins;
@@ -50,6 +51,7 @@ mod system;
 mod tabs;
 mod updates;
 mod view_state;
+mod viewers;
 mod watch;
 mod workspace;
 mod writes;
@@ -76,7 +78,8 @@ pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use links::{
     EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, ImageVersion, MAX_IMAGE_BYTES, NoteEmbed,
-    NoteEmbedState, NoteImage, NoteLinks, is_external_link, is_image, is_remote_image,
+    NoteEmbedState, NoteImage, NoteLinks, PdfEmbedState, is_external_link, is_image,
+    is_remote_image,
 };
 pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]
@@ -89,6 +92,12 @@ pub use notes::{
 };
 pub use objects::ObjectRef;
 pub use operations::Imported;
+#[cfg(feature = "test-hooks")]
+pub use pdf::PdfRenderHold;
+pub use pdf::{
+    EMBED_WIDTH, EmbedProblem, MAX_PDF_BYTES, PdfMatch, PdfPicture, PdfSearch, PdfState, PdfView,
+    PdfZoom, THUMBNAIL_WIDTH, ZOOM_STEPS,
+};
 pub use plugin_host::{
     CalendarMode, Choice, Column, ColumnPress, Event as PluginEvent, Field, Move as PluginMove,
     SortOrder, Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
@@ -113,6 +122,7 @@ pub use updates::{
     FIRST_UPDATE_CHECK, PendingUpdate, UPDATE_CHECK_INTERVAL, UpdateError, UpdateErrorKind,
     UpdateSource, UpdateStatus, Updates,
 };
+pub use viewers::{ImageState, ImageView};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
 pub use writes::{PendingWork, PendingWrite, PendingWrites, WriteFailure};

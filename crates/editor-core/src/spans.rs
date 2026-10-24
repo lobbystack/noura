@@ -39,7 +39,8 @@ pub enum SpanKind {
         alone: bool,
     },
     /// `![[image.png|300]]`, drawn inline as the image, `width` points
-    /// wide when it says.
+    /// wide when it says. `![[file.pdf#page=2]]` draws inline as the page
+    /// the embedding app draws for it.
     ImageEmbed { target: String, width: Option<u32> },
 }
 
@@ -167,6 +168,14 @@ pub fn is_image_target(target: &str) -> bool {
     })
 }
 
+/// Whether `target`, its `#page=` part aside, names a PDF, which an embed
+/// draws inline as one of its pages.
+pub fn is_pdf_target(target: &str) -> bool {
+    let path = target.split('#').next().unwrap_or(target);
+    path.rsplit_once('.')
+        .is_some_and(|(name, extension)| !name.is_empty() && extension.eq_ignore_ascii_case("pdf"))
+}
+
 /// The width `![[image.png|300]]` or `|300x200` asks for, in points.
 fn image_width(alias: &str) -> Option<u32> {
     let width = alias.split_once('x').map_or(alias, |(width, _)| width);
@@ -197,7 +206,7 @@ fn embeds(text: &str) -> Vec<Found> {
             Some((target, alias)) => (target.trim(), Some(alias.trim().to_string())),
             None => (inner.trim(), None),
         };
-        let kind = if is_image_target(target) {
+        let kind = if is_image_target(target) || is_pdf_target(target) {
             SpanKind::ImageEmbed {
                 target: target.to_string(),
                 width: alias.as_deref().and_then(image_width),
