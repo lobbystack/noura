@@ -4,6 +4,7 @@
 
 pub mod calendar;
 pub mod plugins;
+pub mod projects;
 pub mod recipes;
 pub mod tasks;
 

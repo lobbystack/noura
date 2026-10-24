@@ -5,8 +5,8 @@
 //! and a list of tasks you check off, each with a menu to open, rename,
 //! check off or trash it. New task names a task before its file exists.
 //! The Inbox's Due today section lists what is due by tonight and adds a
-//! task due today in one step. Other plugins change tasks through its
-//! `create`, `update`, `complete` and `reopen` commands, which
+//! task due today in one step. Other plugins list and change tasks through
+//! its `create`, `update`, `complete`, `reopen` and `list` commands, which
 //! [`commands`] documents.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
@@ -155,6 +155,7 @@ impl Plugin for Tasks {
             offered("update", "Update a task"),
             offered("complete", "Complete a task"),
             offered("reopen", "Reopen a task"),
+            offered("list", "List tasks"),
         ]
     }
 

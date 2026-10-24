@@ -9,6 +9,8 @@
 //! - `read-object:<id>`: read an object by its stable ID.
 //! - `read-object-at:<path>`: read the object in the file at a path.
 //! - `create-object:<type>:<title>`: create an object with an empty body.
+//! - `update-object:<id>:<revision>:<properties>`: set the properties,
+//!   a JSON object, of the object with that ID and revision.
 //! - `fetch:<url>`: send a GET request to `url`.
 //! - `call:<plugin>/<command>:<input>`: run another plugin's command.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
@@ -133,6 +135,8 @@ impl Plugin for Probe {
             vec![object_text(workspace::read_object_at(path))]
         } else if let Some(object) = page.strip_prefix("create-object:") {
             vec![create_object(object)]
+        } else if let Some(update) = page.strip_prefix("update-object:") {
+            vec![update_object(update)]
         } else if let Some(url) = page.strip_prefix("fetch:") {
             vec![fetch(url)]
         } else if let Some(call) = page.strip_prefix("call:") {
@@ -370,6 +374,24 @@ fn create_object(object: &str) -> String {
         properties: "{}".to_owned(),
     }) {
         Ok(object) => format!("object {}", object.id),
+        Err(error) => describe(&error),
+    }
+}
+
+fn update_object(update: &str) -> String {
+    let mut parts = update.splitn(3, ':');
+    let (id, revision, properties) = (
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or("{}"),
+    );
+    let changes = objects::Changes {
+        body: None,
+        properties: properties.to_owned(),
+        remove: Vec::new(),
+    };
+    match objects::update(id, revision, &changes) {
+        Ok(object) => format!("object {} revision {}", object.id, object.revision),
         Err(error) => describe(&error),
     }
 }
