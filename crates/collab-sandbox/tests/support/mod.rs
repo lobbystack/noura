@@ -179,3 +179,163 @@ pub fn insert_after(client: u64, clock: u64, origin: (u64, u64), text: &str) -> 
         .var(0)
         .0
 }
+
+/// A lib0 v1 reader, for rewriting fixtures.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl Reader<'_> {
+    fn byte(&mut self) -> u8 {
+        let byte = self.bytes[self.at];
+        self.at += 1;
+        byte
+    }
+
+    fn var(&mut self) -> u64 {
+        let mut value = 0;
+        let mut shift = 0;
+        loop {
+            let byte = self.byte();
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return value;
+            }
+            shift += 7;
+        }
+    }
+
+    fn string(&mut self) -> String {
+        let len = self.var() as usize;
+        let text = std::str::from_utf8(&self.bytes[self.at..self.at + len])
+            .expect("UTF-8")
+            .to_owned();
+        self.at += len;
+        text
+    }
+}
+
+/// `update`, a yrs update of strings and deletions in `content`, with every
+/// client ID passed through `map`. A map that keeps the order of client IDs
+/// keeps the order yrs gives concurrent inserts.
+pub fn remap_clients(update: &[u8], map: impl Fn(u64) -> u64) -> Vec<u8> {
+    let mut r = Reader {
+        bytes: update,
+        at: 0,
+    };
+    let mut w = Lib0::default();
+    let clients = r.var();
+    w = w.var(clients);
+    for _ in 0..clients {
+        let structs = r.var();
+        let client = r.var();
+        let clock = r.var();
+        w = w.var(structs).var(map(client)).var(clock);
+        for _ in 0..structs {
+            let info = r.byte();
+            w = w.raw(&[info]);
+            match info & 0x1f {
+                0 | 10 => w = w.var(r.var()),
+                content => {
+                    for flag in [0x80, 0x40] {
+                        if info & flag != 0 {
+                            let (client, clock) = (r.var(), r.var());
+                            w = w.var(map(client)).var(clock);
+                        }
+                    }
+                    if info & 0xc0 == 0 {
+                        let marker = r.var();
+                        assert_eq!(marker, 1, "a root parent");
+                        w = w.var(marker).string(&r.string());
+                    }
+                    w = match content {
+                        1 => w.var(r.var()),
+                        4 => w.string(&r.string()),
+                        other => panic!("content {other} in a text fixture"),
+                    };
+                }
+            }
+        }
+    }
+    let clients = r.var();
+    w = w.var(clients);
+    for _ in 0..clients {
+        let client = r.var();
+        let ranges = r.var();
+        w = w.var(map(client)).var(ranges);
+        for _ in 0..ranges {
+            w = w.var(r.var()).var(r.var());
+        }
+    }
+    assert_eq!(r.at, update.len(), "the whole update");
+    w.0
+}
+
+/// A `text_update` by `load` of an unmanaged note at `Notes/Plan.md`.
+pub fn update_record(id: u64, card: u32, card_count: u32, load: u32, yrs: &[u8]) -> collab_sandbox::RemoteRecord {
+    collab_sandbox::RemoteRecord {
+        id,
+        writer: card,
+        card_count,
+        payload: update_payload(load, yrs),
+        blob: None,
+    }
+}
+
+/// A `text_snapshot` of an unmanaged note at `Notes/Plan.md`.
+pub fn snapshot_record(id: u64, card: u32, card_count: u32, yrs: &[u8]) -> collab_sandbox::RemoteRecord {
+    collab_sandbox::RemoteRecord {
+        id,
+        writer: card,
+        card_count,
+        payload: snapshot_payload(yrs),
+        blob: None,
+    }
+}
+
+/// yrs outside the sandbox, with the workspace's `small-client` build:
+/// `updates` applied in turn to an empty document, and the text after each.
+pub fn outside_yrs(updates: &[Vec<u8>]) -> Vec<String> {
+    use yrs::updates::decoder::Decode as _;
+    use yrs::{GetString, OffsetKind, Options, Transact};
+    let mut options = Options::with_client_id(yrs::block::ClientID::new(1));
+    options.offset_kind = OffsetKind::Utf16;
+    let doc = yrs::Doc::with_options(options);
+    let text = doc.get_or_insert_text("content");
+    updates
+        .iter()
+        .map(|update| {
+            doc.transact_mut()
+                .apply_update(yrs::Update::decode_v1(update).expect("a yrs update"))
+                .expect("yrs applies it");
+            text.get_string(&doc.transact())
+        })
+        .collect()
+}
+
+/// `client` inserting `text` between the elements `origin` and `right`, as
+/// an honest writer inserts inside a text: with both neighbours as origins.
+pub fn insert_between(
+    client: u64,
+    clock: u64,
+    origin: Option<(u64, u64)>,
+    right: Option<(u64, u64)>,
+    text: &str,
+) -> Vec<u8> {
+    let mut info = 4u8;
+    if origin.is_some() {
+        info |= 0x80;
+    }
+    if right.is_some() {
+        info |= 0x40;
+    }
+    let mut w = Lib0::default().var(1).var(1).var(client).var(clock).raw(&[info]);
+    for (client, clock) in [origin, right].into_iter().flatten() {
+        w = w.var(client).var(clock);
+    }
+    if origin.is_none() && right.is_none() {
+        w = w.var(1).string("content");
+    }
+    w.string(text).var(0).0
+}

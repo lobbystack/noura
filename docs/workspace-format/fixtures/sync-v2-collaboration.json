@@ -1197,6 +1197,43 @@
 				}
 			],
 			"text": "xa"
+		},
+		{
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "pending",
+			"name": "an_update_waits_for_the_rewrite_of_an_unreadable_one",
+			"steps": [
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000a2e2e2f506c616e2e6d64010000001001018180808004008400000361626300"
+					},
+					"status": "merging",
+					"text": "x"
+				},
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d640100000012010181808080040384818080800402016400"
+					},
+					"status": "pending",
+					"text": "x"
+				},
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 3,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001001018180808004008400000361626300"
+					},
+					"status": "merging",
+					"text": "xabcd"
+				}
+			]
 		}
 	],
 	"description": "Text mode (sync-v2.md §22): the text lineage ID derived from the rid, the base operation's digest and the first document's bytes; yrs client IDs from a card index and a load number; and the collaboration sandbox: the guest module's hash, the verdict budget and the Wasmtime operator costs it assumes, the raw lib0 checks and the verdict on each record's yrs bytes and meta entries, surrogate pairs split into U+FFFD, client IDs past 32 bits, and writer allowances.",
@@ -1212,7 +1249,7 @@
 			"text_bytes": 8388608
 		},
 		"module": {
-			"blake3": "93725e2763ff482e8bd9e8b4e4443508bbe95a1e7a37919f00a605eb2dd2021a",
+			"blake3": "3e3b21481105aefed54186fec86e57d9b61046fad237c0826cb5347386c4b12e",
 			"path": "crates/collab-sandbox/guest/collab_sandbox_guest.wasm"
 		},
 		"operator_costs": {

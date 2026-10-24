@@ -78,8 +78,11 @@ thread_local! {
 struct HostClock;
 
 impl Clock for HostClock {
+    /// The host's time plus one: yrs's undo manager reads a last change at
+    /// time 0 as no change at all, so an edit at the host's time 0 would
+    /// never group with the next one.
     fn now(&self) -> u64 {
-        NOW.with(Cell::get)
+        NOW.with(Cell::get).saturating_add(1)
     }
 }
 

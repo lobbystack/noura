@@ -1033,6 +1033,43 @@ fn traps(f: &mut Fixture) {
     }));
 }
 
+/// An update that depends on an unreadable record stays pending in yrs, and
+/// the device lists the lineage for review as text, until another record
+/// supplies what it depends on: here the signer's rewrite of the record with
+/// a valid path, as after an epoch replacement (§9).
+fn pending(f: &mut Fixture) {
+    let base = insert(0, 0, "x");
+    let record = |id: u64, path: &str, yrs: Vec<u8>| {
+        json!({
+            "id": id,
+            "card_index": 2,
+            "card_count": 2,
+            "payload": to_hex(&update_payload(
+                "",
+                1,
+                vec![meta("path", 0, Some(path))],
+                inline(yrs),
+            )),
+        })
+    };
+    let abc = insert_between(OTHER, 0, Some((0, 0)), None, "abc");
+    let d = insert_between(OTHER, 3, Some((OTHER, 2)), None, "d");
+    f.case(json!({
+        "kind": "pending",
+        "name": "an_update_waits_for_the_rewrite_of_an_unreadable_one",
+        "base": to_hex(&base),
+        "steps": [
+            // Unreadable for its path: neither its body nor its entries
+            // reach the note.
+            {"receive": record(1, "../Plan.md", abc.clone()), "text": "x", "status": "merging"},
+            // Depends on the unreadable record's clocks: yrs holds it.
+            {"receive": record(2, "Notes/Plan.md", d), "text": "x", "status": "pending"},
+            // The rewrite supplies them, and the held update merges.
+            {"receive": record(3, "Notes/Plan.md", abc), "text": "xabcd", "status": "merging"},
+        ],
+    }));
+}
+
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-collaboration.json",
@@ -1133,5 +1170,6 @@ pub fn fixture() -> Fixture {
     surrogates(&mut f);
     allowances(&mut f);
     traps(&mut f);
+    pending(&mut f);
     f
 }

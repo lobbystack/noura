@@ -63,6 +63,14 @@ enum Request {
     },
     DecodePosition(Vec<u8>),
     Flush,
+    /// Moves the thread's clock forward, as tests do to stand in for the
+    /// refills that time brings.
+    Advance(Duration),
+    /// Sets a writer's allowance balance, as the fixtures' base states do.
+    SetBalance {
+        writer: u32,
+        balance: i64,
+    },
 }
 
 enum Reply {
@@ -338,9 +346,28 @@ impl NoteHandle {
     /// Waits until the thread has handled everything sent so far, then
     /// returns the changes to apply, as [`Self::poll`] does.
     pub fn flush(&mut self) -> Result<Vec<Op>, HandleError> {
+        self.settle()?;
+        self.poll()
+    }
+
+    /// Waits until the thread has handled everything sent so far, and keeps
+    /// the changes it sent for the next [`Self::poll`].
+    pub fn settle(&mut self) -> Result<(), HandleError> {
         self.send(Request::Flush)?;
         self.wait_for(|reply| matches!(reply, Reply::Flushed))?;
-        self.poll()
+        Ok(())
+    }
+
+    /// Moves the thread's clock forward by `by`, running the deferred
+    /// records whose writers' allowances refill by then, as tests do in
+    /// place of waiting.
+    pub fn advance_clock(&mut self, by: Duration) -> Result<(), HandleError> {
+        self.send(Request::Advance(by))
+    }
+
+    /// Sets a writer's allowance balance, as the fixtures' base states do.
+    pub fn set_balance(&mut self, writer: u32, balance: i64) -> Result<(), HandleError> {
+        self.send(Request::SetBalance { writer, balance })
     }
 
     /// Waits up to `timeout` for a change or an event.
@@ -481,9 +508,11 @@ impl Server {
 
 fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, hold: &Hold) {
     let mut server = Server::default();
+    // How far tests moved the clock forward.
+    let mut skew = Duration::ZERO;
     loop {
         let request = match note.next_wake() {
-            Some(at) => match inbox.recv_timeout(at.saturating_duration_since(Instant::now())) {
+            Some(at) => match inbox.recv_timeout(at.saturating_duration_since(Instant::now() + skew)) {
                 Ok(request) => Some(request),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -494,7 +523,10 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, hold
             },
         };
         hold.wait();
-        let now = Instant::now();
+        if let Some(Request::Advance(by)) = &request {
+            skew += *by;
+        }
+        let now = Instant::now() + skew;
         let mut effects = Effects::default();
         let mut reply = None;
         match request {
@@ -542,6 +574,8 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, hold
                 reply = Some(Reply::Offset(note.decode_position(&bytes)))
             }
             Some(Request::Flush) => reply = Some(Reply::Flushed),
+            Some(Request::Advance(_)) => effects = note.wake(now),
+            Some(Request::SetBalance { writer, balance }) => note.set_balance(writer, balance, now),
         }
         for op in effects.changes {
             if !op.is_identity() && outbox.send(Reply::Change(server.send_out(op))).is_err() {

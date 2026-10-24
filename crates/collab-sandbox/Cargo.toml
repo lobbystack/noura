@@ -23,6 +23,8 @@ thiserror.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
+# The Yjs and yrs interop fixtures hold their updates in base64.
+base64.workspace = true
 # The limits test maps its large blocks itself, to measure memory in use.
 libc.workspace = true
 proptest.workspace = true
