@@ -22,7 +22,8 @@
 //!   `call:<plugin>/<command>:<input>` runs that command instead, and
 //!   shows as `<page> call` and what came back. A press on
 //!   `open-object:<id>:<preview or new-tab>` or `open-page:<page>` asks
-//!   Noura to open it, and shows as `<page> open` and what came back.
+//!   Noura to open it, and one on `trash-object:<id>` to move the object
+//!   to the trash; each shows as `<page> open` and what came back.
 //!
 //! - `opens`: ask Noura to open the page `events` while drawing, and say
 //!   what came back as `draw open <answer>`.
@@ -288,9 +289,12 @@ fn record(event: String) {
 }
 
 /// Ask Noura to open what `node` names, `open-object:<id>:<placement>` or
-/// `open-page:<page>`, and say what came back. `None` for any other node.
+/// `open-page:<page>`, or to trash `trash-object:<id>`, and say what came
+/// back. `None` for any other node.
 fn open(node: &str) -> Option<String> {
-    let answer = if let Some(rest) = node.strip_prefix("open-object:") {
+    let answer = if let Some(id) = node.strip_prefix("trash-object:") {
+        navigation::trash_object(id)
+    } else if let Some(rest) = node.strip_prefix("open-object:") {
         let (id, placement) = rest.rsplit_once(':').unwrap_or((rest, "preview"));
         let placement = if placement == "new-tab" {
             navigation::Placement::NewTab
@@ -521,6 +525,12 @@ fn broken(case: &str) -> Vec<Node> {
             root(&[1]),
             node("beds", item_list("Beds"), &[2]),
             node("inner", NodeKind::Panel(None), &[]),
+        ],
+        "text-in-item" => vec![
+            root(&[1]),
+            node("beds", item_list("Beds"), &[2]),
+            node("north", item("North bed"), &[3]),
+            node("note", NodeKind::Text("Sunny".into()), &[]),
         ],
         "two-menus" => vec![
             root(&[1]),

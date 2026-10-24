@@ -14,8 +14,9 @@
 //!
 //! An item may carry a checkbox, which a click on it or the space bar on
 //! its row checks or unchecks, and a warning after its label, which
-//! screen readers read with the label. A list follows the item the plugin
-//! shows selected whenever the plugin draws another one.
+//! screen readers read with the label. An item may show a name field in
+//! its place, as for a rename. A list follows the item the plugin shows
+//! selected whenever the plugin draws another one.
 
 use std::ops::Range;
 
@@ -120,6 +121,8 @@ struct Row<'a> {
     warning: Option<String>,
     cells: Vec<String>,
     menu: Option<&'a ViewNode>,
+    /// The name field the item shows in its place, as for a rename.
+    name_field: Option<&'a ViewNode>,
 }
 
 impl<'a> Row<'a> {
@@ -135,6 +138,10 @@ impl<'a> Row<'a> {
                 .children
                 .iter()
                 .find(|child| matches!(child.kind, ViewKind::Menu { .. })),
+            name_field: node
+                .children
+                .iter()
+                .find(|child| matches!(child.kind, ViewKind::NameField { .. })),
         };
         match &node.kind {
             ViewKind::Item {
@@ -211,6 +218,7 @@ impl<'a> Source<'a> {
                                 .filter(|warning| !warning.trim().is_empty()),
                             cells: Vec::new(),
                             menu: None,
+                            name_field: None,
                         })
                     })
                     .collect())
@@ -646,6 +654,17 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
         if let Some(columns) = columns {
             cells(ui, rect, id, row, columns, &palette);
         }
+        // The background goes first, so the checkbox and a name field show
+        // on a selected or hovered row.
+        paint_row(
+            ui,
+            rect,
+            &response,
+            row,
+            is_selected,
+            columns.is_some(),
+            &palette,
+        );
         if let Some(checked) = row.checked {
             let flip = Some(index) == toggle;
             if checkbox(ui, rect, id, row, checked, &palette) || flip {
@@ -656,15 +675,9 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
                 }));
             }
         }
-        paint_row(
-            ui,
-            rect,
-            &response,
-            row,
-            is_selected,
-            columns.is_some(),
-            &palette,
-        );
+        if let Some(field) = row.name_field {
+            name_field_in(ui, rect, row, field, kit);
+        }
         if response.clicked() {
             clicked = Some(index);
         }
@@ -918,7 +931,25 @@ fn checkbox(
     response.clicked()
 }
 
-/// A row's background, focus ring and, for a list, its label and detail.
+/// The name field an item shows in its place, after its checkbox.
+fn name_field_in(ui: &mut Ui, rect: Rect, row: &Row, field: &ViewNode, kit: &mut Kit) {
+    let ViewKind::NameField { label, value } = &field.kind else {
+        return;
+    };
+    let start = if row.checked.is_some() { 32.0 } else { 4.0 };
+    let area = Rect::from_min_max(
+        pos2(rect.left() + start, rect.top()),
+        pos2(rect.right() - 4.0, rect.bottom()),
+    );
+    let builder = UiBuilder::new()
+        .id_salt(("name-field", &row.id))
+        .max_rect(area);
+    let mut field_ui = ui.new_child(builder);
+    super::form::name_field(&mut field_ui, field, label, value, kit);
+}
+
+/// A row's background, focus ring and, for a list, its label and detail,
+/// unless a name field shows in the item's place.
 fn paint_row(
     ui: &Ui,
     rect: Rect,
@@ -949,6 +980,9 @@ fn paint_row(
             [rect.left_bottom(), rect.right_bottom()],
             Stroke::new(1.0, palette.border),
         );
+        return;
+    }
+    if row.name_field.is_some() {
         return;
     }
     let detail = row

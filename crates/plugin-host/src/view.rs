@@ -72,8 +72,9 @@ pub enum ViewKind {
         selected: Option<String>,
         opens_on_click: bool,
     },
-    /// An item of a list, which may hold a menu, with a checkbox when
-    /// `checked` is set and a warning after its label when `warning` is.
+    /// An item of a list, which may hold a menu, or a name field that
+    /// shows in its place, with a checkbox when `checked` is set and a
+    /// warning after its label when `warning` is.
     Item {
         label: String,
         detail: Option<String>,
@@ -518,8 +519,9 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
 
 /// The nodes `parent` may hold: blocks in a panel or a form, items in a
 /// list, rows in a table with one cell per column, columns in a board and
-/// cards in a column, items and separators in a menu, and at most one
-/// menu on an item, a row, a card or a button.
+/// cards in a column, items and separators in a menu, at most one menu on
+/// a row, a card or a button, and at most one menu or name field on an
+/// item.
 fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
     let id = &parent.id;
     let kind = kind_name(&parent.kind);
@@ -605,7 +607,25 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
-        NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_) => {
+        // An item may hold a name field in its place instead, as for a
+        // rename.
+        NodeKind::Item(_) => {
+            if parent.children.len() > 1 {
+                return misplaced(format!(
+                    "The item {id} holds more than one menu or name field."
+                ));
+            }
+            for child in children {
+                if !matches!(child.kind, NodeKind::Menu(_) | NodeKind::NameField(_)) {
+                    return misplaced(format!(
+                        "The item {id} holds {}, which isn't a menu or a name field.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
+        NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_) => {
             if parent.children.len() > 1 {
                 return misplaced(format!("The {kind} {id} holds more than one menu."));
             }

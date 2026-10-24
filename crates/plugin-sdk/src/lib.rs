@@ -99,10 +99,11 @@ pub mod clock {
 }
 
 /// Opening an object in the note editor, or one of the plugin's own
-/// pages, in the window you acted in. Needs the `views` capability, and
-/// works only in answer to something you did.
+/// pages, in the window you acted in, and moving an object of the
+/// plugin's own types to the trash there. Needs the `views` capability,
+/// and works only in answer to something you did.
 pub mod navigation {
-    pub use crate::noura::plugin::navigation::{Placement, open_object, open_page};
+    pub use crate::noura::plugin::navigation::{Placement, open_object, open_page, trash_object};
 }
 
 /// What a plugin adds to Noura. Noura calls each method only when the
@@ -580,8 +581,9 @@ impl View {
     }
 
     /// Add a field that names something, holding `value`: empty for
-    /// something new, the current name for a rename. It takes the
-    /// keyboard when it appears. Enter or leaving it sends
+    /// something new, the current name for a rename. Its parent is a
+    /// panel or a form, or a list item it shows in place of, as for a
+    /// rename. It takes the keyboard when it appears. Enter or leaving it sends
     /// [`Event::Named`] with a new name, and Escape, or leaving it empty
     /// or unchanged, sends [`Event::Cancelled`].
     pub fn name_field(&mut self, parent: u32, id: &str, label: &str, value: &str) -> u32 {

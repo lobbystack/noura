@@ -106,7 +106,14 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
             "panel-in-list",
             "The list beds holds inner, which isn't an item.",
         ),
-        ("two-menus", "The item north holds more than one menu."),
+        (
+            "two-menus",
+            "The item north holds more than one menu or name field.",
+        ),
+        (
+            "text-in-item",
+            "The item north holds note, which isn't a menu or a name field.",
+        ),
         (
             "menu-in-panel",
             "The menu loose isn't on an item, a row, a card or a button.",
