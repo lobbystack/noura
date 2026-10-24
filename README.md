@@ -63,6 +63,8 @@ rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.127 --locked
 ```
 
+To build the Rust crates on an Intel or AMD computer, install [NASM](https://nasm.us) 2.14 or newer and put it on your `PATH`. rav1d, the AVIF decoder in `crates/app-ui`, assembles its x86 code with it. Install it with `brew install nasm`, `sudo apt-get install nasm` or `choco install nasm`. Apple silicon Macs and other ARM computers don't need it.
+
 Run the development checks from the repository root:
 
 ```sh

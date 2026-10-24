@@ -7,29 +7,58 @@
 //!   may read.
 //! - `read-file:<path>`: read a file.
 //! - `read-object:<id>`: read an object by its stable ID.
+//! - `create-object:<type>:<title>`: create an object with an empty body.
+//! - `fetch:<url>`: send a GET request to `url`.
+//! - `call:<plugin>/<command>:<input>`: run another plugin's command.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
 //! - `markdown:deep`: Markdown nodes with emphasis, quotes and lists
 //!   nested a hundred thousand deep.
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
-//! - `events`: the events the plugin received, oldest first: a press as
-//!   `<page> pressed <node>`, any other event in its debug form.
+//! - `events`: the events, commands and tool calls the plugin received,
+//!   oldest first: a press as `<page> pressed <node>`, any other event in
+//!   its debug form. A press on a node whose ID is
+//!   `call:<plugin>/<command>:<input>` runs that command instead, and
+//!   shows as `<page> call` and what came back.
 //! - anything else: a panel with a line of text and a button.
 //!
 //! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
-//! `markdown:deep`, titled Deep, and `nodes:cycle`, titled Broken. The first shares the hello plugin's page
-//! ID, so a test can swap one build for the other under an open page.
+//! `markdown:deep`, titled Deep, `nodes:cycle`, titled Broken, and
+//! `events`. The first shares the hello plugin's page ID, so a test can
+//! swap one build for the other under an open page.
+//!
+//! It offers the commands `say-hello`, in the command palette;
+//! `describe`, which other plugins may call and which lists the workspace
+//! with the probe's own capabilities; and `relay`, which other plugins may
+//! call with `<plugin>/<command>:<input>` to run a command in turn. It adds
+//! an Inbox section, `probe`, a page in Settings with a button that counts
+//! presses, and a tool, `echo`, whose schema asks for a `text` string.
 
 use std::sync::Mutex;
 
 use plugin_sdk::{
-    Calendar, CalendarEntry, CalendarMode, Choice, Column, Error, Event, Input, Item, ItemList,
-    MenuItem, Node, NodeKind, Page, Plugin, Table, Value, View, VirtualList, VirtualRow, workspace,
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, Command, Error, Event, InboxSection,
+    Input, Item, ItemList, MenuItem, Node, NodeKind, Page, Plugin, Table, Tool, Value, View,
+    VirtualList, VirtualRow, command_calls, network, objects, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// An event as the `events` page lists it: a press as `pressed <node>`,
+/// any other event in its debug form.
+fn event_text(event: &Event) -> String {
+    match event {
+        Event::Pressed(node) => format!("pressed {node}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// How often the button on the Settings page was pressed.
+static SETTINGS_PRESSES: Mutex<u32> = Mutex::new(0);
+
 const MARKDOWN: &str = "# Tomatoes\n\nGrow **tomatoes** in *full sun*. Read [the guide](https://example.com/guide).\n\n![A ripe tomato](https://example.com/tomato.png)\n\n- Water daily\n- Pick when red\n";
+
+const ECHO_SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}"#;
 
 struct Probe;
 
@@ -56,6 +85,10 @@ impl Plugin for Probe {
                 id: "nodes:cycle".into(),
                 title: "Broken".into(),
             },
+            Page {
+                id: "events".into(),
+                title: "Events".into(),
+            },
         ]
     }
 
@@ -79,6 +112,12 @@ impl Plugin for Probe {
             vec![read_file(path)]
         } else if let Some(id) = page.strip_prefix("read-object:") {
             vec![read_object(id)]
+        } else if let Some(object) = page.strip_prefix("create-object:") {
+            vec![create_object(object)]
+        } else if let Some(url) = page.strip_prefix("fetch:") {
+            vec![fetch(url)]
+        } else if let Some(call) = page.strip_prefix("call:") {
+            vec![relay(call)]
         } else if page == "events" {
             EVENTS.lock().unwrap().clone()
         } else {
@@ -87,11 +126,7 @@ impl Plugin for Probe {
             view.button(View::ROOT, "press", "Press");
             return view.into_nodes();
         };
-        let mut view = View::panel("root", Some("Probe"));
-        for (index, line) in lines.iter().enumerate() {
-            view.text(View::ROOT, &format!("line-{index}"), line);
-        }
-        view.into_nodes()
+        lines_view(&lines)
     }
 
     fn rows(_page: String, _node: String, _start: u32, _count: u32) -> Vec<VirtualRow> {
@@ -99,12 +134,120 @@ impl Plugin for Probe {
     }
 
     fn handle_event(page: String, event: Event) {
-        let what = match event {
-            Event::Pressed(node) => format!("pressed {node}"),
-            other => format!("{other:?}"),
-        };
-        EVENTS.lock().unwrap().push(format!("{page} {what}"));
+        if let Event::Pressed(node) = &event
+            && let Some(call) = node.strip_prefix("call:")
+        {
+            record(format!("{page} call {}", relay(call)));
+            return;
+        }
+        record(format!("{page} {}", event_text(&event)));
     }
+
+    fn commands() -> Vec<Command> {
+        vec![
+            Command {
+                id: "say-hello".into(),
+                title: "Say hello".into(),
+                palette: true,
+                plugins: false,
+            },
+            Command {
+                id: "describe".into(),
+                title: "Describe the workspace".into(),
+                palette: false,
+                plugins: true,
+            },
+            Command {
+                id: "relay".into(),
+                title: "Relay a command".into(),
+                palette: false,
+                plugins: true,
+            },
+        ]
+    }
+
+    fn run_command(id: String, input: String) -> Result<String, String> {
+        record(format!("command {id} {input}").trim_end().to_owned());
+        match id.as_str() {
+            "say-hello" => Ok("hello".into()),
+            "describe" => Ok(match workspace::list_entries() {
+                Ok(entries) => format!("probe read {} entries", entries.len()),
+                Err(error) => describe(&error),
+            }),
+            "relay" => Ok(relay(&input)),
+            _ => Err(format!("The probe has no command {id}.")),
+        }
+    }
+
+    fn inbox_sections() -> Vec<InboxSection> {
+        vec![InboxSection {
+            id: "probe".into(),
+            title: "Probe section".into(),
+        }]
+    }
+
+    fn render_inbox_section(section: String) -> Vec<Node> {
+        let mut view = View::panel("root", None);
+        view.text(
+            View::ROOT,
+            "line",
+            &format!("Section {section} is running."),
+        );
+        view.button(View::ROOT, "press", "Press in the section");
+        view.into_nodes()
+    }
+
+    fn handle_inbox_event(section: String, event: Event) {
+        record(format!("inbox {section} {}", event_text(&event)));
+    }
+
+    fn settings_page() -> Option<String> {
+        Some("Probe settings".into())
+    }
+
+    fn render_settings() -> Vec<Node> {
+        let presses = *SETTINGS_PRESSES.lock().unwrap();
+        let mut view = View::panel("root", Some("Probe settings"));
+        view.text(View::ROOT, "presses", &format!("Pressed {presses} times"));
+        view.button(View::ROOT, "count", "Count a press");
+        view.into_nodes()
+    }
+
+    fn handle_settings_event(event: Event) {
+        if matches!(&event, Event::Pressed(node) if node == "count") {
+            *SETTINGS_PRESSES.lock().unwrap() += 1;
+        }
+        record(format!("settings {}", event_text(&event)));
+    }
+
+    fn tools() -> Vec<Tool> {
+        vec![Tool {
+            name: "echo".into(),
+            description: "Repeats the text it gets.".into(),
+            input_schema: ECHO_SCHEMA.into(),
+        }]
+    }
+
+    fn call_tool(name: String, arguments: String) -> Result<String, String> {
+        record(format!("tool {name} {arguments}"));
+        match name.as_str() {
+            "echo" => Ok(arguments),
+            _ => Err(format!("The probe has no tool {name}.")),
+        }
+    }
+}
+
+fn record(event: String) {
+    EVENTS.lock().unwrap().push(event);
+}
+
+/// A panel with one text node per line.
+fn lines_view(lines: &[String]) -> Vec<Node> {
+    let mut view = View::panel("root", Some("Probe"));
+    for (index, line) in lines.iter().enumerate() {
+        view.text(View::ROOT, &format!("line-{index}"), line);
+    }
+    view.into_nodes()
 }
 
 /// Markdown nested far deeper than anyone writes by hand, one node per
@@ -144,6 +287,20 @@ fn read_file(path: &str) -> String {
     }
 }
 
+fn create_object(object: &str) -> String {
+    let (object_type, title) = object.split_once(':').unwrap_or((object, ""));
+    match objects::create(&objects::NewObject {
+        object_type: object_type.to_owned(),
+        title: title.to_owned(),
+        path: None,
+        body: String::new(),
+        properties: "{}".to_owned(),
+    }) {
+        Ok(object) => format!("object {}", object.id),
+        Err(error) => describe(&error),
+    }
+}
+
 fn read_object(id: &str) -> String {
     match workspace::read_object(id) {
         Ok(object) => format!(
@@ -155,6 +312,36 @@ fn read_object(id: &str) -> String {
             object.revision,
             object.body.trim()
         ),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Send a GET request and say what came back.
+fn fetch(url: &str) -> String {
+    let request = network::Request {
+        method: network::Method::Get,
+        url: url.to_owned(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    };
+    match network::fetch(&request) {
+        Ok(response) => format!(
+            "status {} url {} body {}",
+            response.status,
+            response.url,
+            String::from_utf8_lossy(&response.body)
+        ),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Run the command `<plugin>/<command>:<input>` names, and say what came
+/// back.
+fn relay(call: &str) -> String {
+    let (target, input) = call.split_once(':').unwrap_or((call, ""));
+    let (plugin, command) = target.split_once('/').unwrap_or((target, ""));
+    match command_calls::call(plugin, command, input) {
+        Ok(answer) => format!("answer {answer}"),
         Err(error) => describe(&error),
     }
 }
@@ -210,6 +397,10 @@ fn describe(error: &Error) -> String {
         Error::InvalidPath(path) => format!("error invalid-path {path}"),
         Error::NotFound(what) => format!("error not-found {what}"),
         Error::Failed(message) => format!("error failed {message}"),
+        Error::NetworkRefused(reason) => format!("error network-refused {reason}"),
+        Error::TargetNotDeclared(target) => format!("error target-not-declared {target}"),
+        Error::TargetUnavailable(target) => format!("error target-unavailable {target}"),
+        Error::Busy(plugin) => format!("error busy {plugin}"),
         other => format!("error {other:?}"),
     }
 }

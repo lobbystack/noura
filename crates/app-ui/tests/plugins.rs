@@ -210,6 +210,8 @@ fn the_hello_page_shows_the_file_count_and_its_button_counts_from_the_keyboard()
     harness.run();
     harness.key_press(Key::Enter);
     harness.run();
+    // The plugin hears the press on its own thread.
+    settle(harness);
 
     let panel = harness.get_by_role_and_label(Role::Group, "Hello");
     assert_eq!(labels(&panel), ["This workspace has 2 files.", "Count: 1"]);

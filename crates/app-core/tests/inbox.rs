@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use app_core::{App, AppError, Change, InboxSectionProvider, LinkAction};
+use app_core::{App, AppError, Change, InboxSectionProvider, LinkAction, ViewKind};
 use support::Fixture;
 
 /// Give the file at `relative` the modification time `seconds` after the
@@ -361,12 +361,24 @@ fn showing(lines: &[&str]) -> Arc<dyn InboxSectionProvider> {
     Arc::new(move || Ok(lines.clone()))
 }
 
-/// The plugin sections as (title, what they show).
+/// The plugin sections as (title, the lines of text they show).
 fn sections(app: &App) -> Vec<(String, Result<Vec<String>, String>)> {
     app.inbox()
         .sections
         .into_iter()
-        .map(|section| (section.title, section.content))
+        .map(|section| {
+            let lines = section.content.map(|view| {
+                view.root()
+                    .children
+                    .iter()
+                    .filter_map(|node| match &node.kind {
+                        ViewKind::Text(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            (section.title, lines)
+        })
         .collect()
 }
 

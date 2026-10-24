@@ -1,6 +1,9 @@
 //! A workspace with the kit test plugin installed and on, and the steps
-//! the UI kit tests take in it: opening one of its pages, pressing keys
-//! and reading what the plugin says the last event was.
+//! the UI kit tests take in it: opening one of its pages, pressing keys,
+//! waiting for the plugin's answers and reading what the plugin says the
+//! last event was.
+
+use std::time::{Duration, Instant};
 
 use egui::{Key, Modifiers, accesskit::Role};
 use egui_kittest::{
@@ -34,22 +37,48 @@ pub fn opened(kit: &[u8]) -> Opened {
     }
 }
 
-pub fn open_page<S>(harness: &mut Harness<'static, S>, title: &str) {
+/// A harness state that says whether the window it draws waits for
+/// background work, such as a plugin's answer.
+pub trait Busy {
+    fn busy(&self) -> bool;
+}
+
+impl Busy for app_ui::NouraUi {
+    fn busy(&self) -> bool {
+        self.is_busy()
+    }
+}
+
+/// Run frames until the window settles. Plugins answer on their own
+/// threads, so this also waits, frame by frame, until their answers
+/// arrive.
+pub fn run<S: Busy>(harness: &mut Harness<'static, S>) {
+    harness.run();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while harness.state().busy() {
+        assert!(Instant::now() < deadline, "background work never finished");
+        std::thread::sleep(Duration::from_millis(5));
+        harness.step();
+    }
+    harness.run();
+}
+
+pub fn open_page<S: Busy>(harness: &mut Harness<'static, S>, title: &str) {
     harness
         .get_by_role_and_label(Role::Navigation, "Pages")
         .get_by_role_and_label(Role::Link, title)
         .click();
-    harness.run();
+    run(harness);
 }
 
-pub fn press<S>(harness: &mut Harness<'static, S>, key: Key) {
+pub fn press<S: Busy>(harness: &mut Harness<'static, S>, key: Key) {
     harness.key_press(key);
-    harness.run();
+    run(harness);
 }
 
-pub fn press_with<S>(harness: &mut Harness<'static, S>, modifiers: Modifiers, key: Key) {
+pub fn press_with<S: Busy>(harness: &mut Harness<'static, S>, modifiers: Modifiers, key: Key) {
     harness.key_press_modifiers(modifiers, key);
-    harness.run();
+    run(harness);
 }
 
 /// What the plugin says the last event was.

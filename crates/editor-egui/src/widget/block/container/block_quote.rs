@@ -56,10 +56,21 @@ impl<'ast> MdRender {
 
         // when revealed, the raw `>` prefix occupies this column instead
         if !self.reveal(node) {
+            let color = match self.callout(node) {
+                Some(callout) => {
+                    // A callout draws on a tint of its color.
+                    let color = self.callout_color(callout.family());
+                    let tint = Rect::from_min_size(top_left, Vec2::new(self.width(node), height));
+                    ui.painter()
+                        .rect_filled(tint, 2., color.gamma_multiply(0.08));
+                    color
+                }
+                None => self.ctx.get_lb_theme().neutral_bg_tertiary(),
+            };
             ui.painter().vline(
                 annotation_space.center().x,
                 annotation_space.y_range(),
-                Stroke::new(3_f32, self.ctx.get_lb_theme().neutral_bg_tertiary()),
+                Stroke::new(3_f32, color),
             );
         }
 

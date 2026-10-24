@@ -9,7 +9,9 @@ mod support;
 use egui::{Key, Modifiers, accesskit::Role};
 use egui_kittest::kittest::Queryable;
 use support::{
-    kit::{Ui, focused, is_selected, labels, last_event, open_page, opened, press, press_with},
+    kit::{
+        Ui, focused, is_selected, labels, last_event, open_page, opened, press, press_with, run,
+    },
     plugins,
 };
 
@@ -21,12 +23,12 @@ fn grid(harness: &Ui) -> egui_kittest::Node<'_> {
 /// pointer can reach it below the window's fold.
 fn scroll_to(harness: &mut Ui, label: &str) {
     harness.get_by_label(label).scroll_to_me();
-    harness.run();
+    run(harness);
 }
 
 fn press_button(harness: &mut Ui, label: &str) {
     harness.get_by_role_and_label(Role::Button, label).click();
-    harness.run();
+    run(harness);
 }
 
 /// The labels of the entries in the grid's cell `cell`.
@@ -213,7 +215,7 @@ fn entries_take_the_keyboard_and_send_select_and_open_events_by_node_id() {
 
     scroll_to(harness, "Standup, 9:00 AM–9:30 AM");
     harness.get_by_label("Standup, 9:00 AM–9:30 AM").click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "selected standup in schedule");
     assert!(entry(harness, "Standup, 9:00 AM–9:30 AM"));
     press(harness, Key::Enter);
@@ -270,7 +272,7 @@ fn entries_take_the_keyboard_and_send_select_and_open_events_by_node_id() {
         .center();
     harness.input_mut().events.extend(double_click(review));
     harness.step();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "activated review in schedule");
     assert!(entry(harness, "Review, 9:15 AM–10:00 AM"));
 }

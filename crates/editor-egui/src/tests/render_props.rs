@@ -492,11 +492,14 @@ fn drag_never_reveals_check_md(md: &str, width: f32) -> Result<(), &'static str>
         r.reveal_selection = Some(rng);
         for node in &containers {
             if r.reveal(node) {
-                // ignore unsupported / spec-edge containers handled raw
+                // ignore unsupported / spec-edge containers handled raw,
+                // and callouts, which show their source wherever the caret
+                // lands in them
                 if matches!(
                     node.data.borrow().value,
                     NodeValue::Table(_) | NodeValue::TableRow(_)
-                ) {
+                ) || r.callout(node).is_some()
+                {
                     continue;
                 }
                 eprintln!("drag hit-test {p:?} -> selection {rng:?} revealed a container");

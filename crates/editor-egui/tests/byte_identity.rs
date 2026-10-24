@@ -102,12 +102,11 @@ fn open_display_close(note: &str) -> Outcome {
 
 /// Callouts after frontmatter that holds a lone carriage return, and
 /// callouts near other unusual line endings. comrak's front matter
-/// extension counts the frontmatter's lines by LF alone, while the rest of
-/// comrak and editor-core's source lines also end a line at a lone CR, so
-/// the editor reads every construct after such frontmatter one line off
-/// until ticket 18 replaces that detection. A callout there used to panic
-/// in `alert_type_title_ranges`; it now draws its whole first line as its
-/// title, the note keeps its bytes, and the generators produce such notes.
+/// extension counted the frontmatter's lines by LF alone, while the rest
+/// of comrak and editor-core's source lines also end a line at a lone CR,
+/// so the editor read every construct after such frontmatter one line off
+/// and a callout there panicked. The editor now reads frontmatter itself,
+/// these notes keep their bytes, and the generators produce such notes.
 #[test]
 fn callouts_after_unusual_line_endings_keep_their_bytes() {
     for note in [
@@ -128,7 +127,7 @@ fn callouts_after_unusual_line_endings_keep_their_bytes() {
 /// Typing can bring a note shown in the live preview into that class:
 /// `---` and a line break at its start turn a first line that holds a lone
 /// carriage return into frontmatter. The editor draws the callout after it
-/// from the wrong line, without a panic.
+/// without a panic.
 #[test]
 fn typing_a_note_into_misread_frontmatter_draws_without_a_panic() {
     use editor_egui::input::{Event, Location, Region};

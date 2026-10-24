@@ -12,9 +12,10 @@
 //! zoom, in this device's app data. One command registry feeds the key
 //! handling, the command palette, the native menus and the shortcuts
 //! list. Settings lists its sections from one list that later areas
-//! extend. The plugins service installs plugins from folders, keeps this
-//! device's approvals, turns plugins on and off per workspace and runs
-//! them through `plugin-host`.
+//! extend. The plugins service installs plugins from folders and the ones
+//! that ship with Noura, keeps this device's approvals, turns plugins on
+//! and off per workspace and runs them through `plugin-host`, each on a
+//! thread of its own.
 
 mod app;
 mod calendar_grid;
@@ -26,6 +27,7 @@ mod ignored;
 mod inbox;
 mod keys;
 mod layout;
+mod links;
 mod login;
 mod menus;
 mod notes;
@@ -39,6 +41,7 @@ mod problems;
 mod quick_open;
 mod rail;
 mod recents;
+mod remote_images;
 mod saves;
 mod search;
 mod session;
@@ -73,6 +76,11 @@ pub use inbox::{
 };
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+pub use links::{
+    EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, ImageVersion, MAX_IMAGE_BYTES, NoteEmbed,
+    NoteEmbedState, NoteImage, NoteLinks, is_external_link, is_image, is_remote_image,
+};
+pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
@@ -84,16 +92,20 @@ pub use notes::{
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use plugin_host::{
-    CalendarMode, Choice, Column, ColumnPress, Event as PluginEvent, Field, Move as PluginMove,
-    SortOrder, Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
+    CalendarMode, Choice, Column, ColumnPress, Event as PluginEvent, Field, Grant,
+    Move as PluginMove, SortOrder, Submission, Target, Value as InputValue, View, ViewKind,
+    ViewNode, VirtualRow,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
-pub use plugins::{CapabilityLine, PluginInstall, PluginRow, PluginView};
+pub use plugins::{
+    CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, ShippedPlugin,
+};
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use remote_images::RemoteImageState;
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
 pub use settings::{

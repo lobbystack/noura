@@ -34,10 +34,41 @@ fn a_manifest_declares_its_identity_entry_capabilities_and_platforms() {
                 hosts: vec!["api.weather.example".into(), "tiles.weather.example".into()],
             },
             Capability::Commands {
-                targets: vec!["tasks/create-task".into()],
+                targets: vec!["calendar".into(), "tasks/create-task".into()],
             },
+            Capability::InboxSections,
+            Capability::Settings,
+            Capability::Tools,
         ]
     );
+}
+
+#[test]
+fn commands_need_no_targets() {
+    let manifest = read_manifest(&fixture("commands-only")).expect("the manifest reads");
+
+    assert_eq!(
+        manifest.capabilities,
+        [Capability::Commands {
+            targets: Vec::new()
+        }]
+    );
+}
+
+#[test]
+fn a_command_target_names_a_plugin_or_one_of_its_commands() {
+    let (code, message) = refusal("bad-target");
+
+    assert_eq!(code, InstallErrorCode::InvalidManifest);
+    assert!(message.contains("tasks/Create Task"), "{message}");
+}
+
+#[test]
+fn a_network_host_on_the_local_network_is_refused() {
+    let (code, message) = refusal("local-host");
+
+    assert_eq!(code, InstallErrorCode::InvalidManifest);
+    assert!(message.contains("printer.local"), "{message}");
 }
 
 #[test]

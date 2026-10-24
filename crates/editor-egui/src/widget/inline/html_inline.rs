@@ -30,20 +30,12 @@ impl<'ast> MdRender {
             self.layout_fold_chip(layout, node.parent().unwrap(), fold, node_range);
             return;
         }
-        // Regular html inline (`<sup>` etc.): reveal source when the
-        // cursor is on the range, collapse to an anchor otherwise.
-        if self.range_revealed(node_range, true) {
-            layout.push_source(
-                node_range,
-                &self.buffer[node_range],
-                self.text_format_syntax(),
-            );
-        } else {
-            layout.push_override(
-                node_range,
-                "",
-                self.text_format_html_inline(node.parent().unwrap()),
-            );
-        }
+        // HTML the editor doesn't draw (`<span>`, `<!-- -->` and the like)
+        // stays visible as the text you wrote, as today's editor shows it.
+        layout.push_source(
+            node_range,
+            &self.buffer[node_range],
+            self.text_format_syntax(),
+        );
     }
 }

@@ -105,12 +105,34 @@ pub fn manifest(id: &str, entry: &str, capabilities: &[&str]) -> String {
     text
 }
 
+/// A plugin folder for the component built from the crate whose library
+/// is `library`, such as `probe_plugin`, with the ID `id` and these
+/// capabilities, or `None` when it isn't built.
+pub fn folder_for(library: &str, id: &str, capabilities: &[&str]) -> Option<PluginFolder> {
+    built(library).map(|component| {
+        PluginFolder::new(
+            &manifest(id, "plugin.wasm", capabilities),
+            "plugin.wasm",
+            &component,
+        )
+    })
+}
+
+/// Install the plugin in `folder`, approving every capability it
+/// declares, turn it on in the open workspace, and wait until it drew.
+pub fn install_and_enable(app: &mut App, folder: &Path, id: &str) {
+    install(app, folder);
+    assert!(app.set_plugin_enabled(id, true), "{id} turns on");
+    super::settle(app);
+}
+
 /// Install the plugin in `folder`, approving every capability it declares.
 pub fn install(app: &mut App, folder: &Path) {
     app.review_plugin_folder(folder.to_owned());
     let review = app.plugin_install().expect("the install dialog opens");
     assert_eq!(review.problem, None, "the folder is refused");
     assert!(app.approve_plugin_install(), "the plugin installs");
+    super::settle(app);
 }
 
 /// The text of each text node in a plugin page's view, top to bottom, or
@@ -157,7 +179,7 @@ pub fn files_under(folder: &Path) -> Vec<String> {
 pub fn wait_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        app.poll();
+        super::settle(app);
         if done(app) {
             return;
         }
