@@ -1,0 +1,32 @@
+{
+	"name": "@noura/create-plugin",
+	"version": "0.1.0",
+	"description": "Starts a TypeScript plugin for Noura: a manifest, typed interfaces, an example and its test.",
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=22"
+	},
+	"bin": {
+		"create-noura-plugin": "./dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist/",
+		"template/"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lobbystack/noura.git",
+		"directory": "sdk/typescript/packages/create-plugin"
+	},
+	"scripts": {
+		"build": "tsc -p .",
+		"prepack": "npm run build"
+	}
+}
