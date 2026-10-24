@@ -45,6 +45,14 @@ impl Archive {
             tracing::warn!(%error, "a plugin archive didn't read");
             invalid("The file isn't a zip archive that Noura can read.".to_owned())
         })?;
+        // Entries with one name share one place in the archive's index, so
+        // the loop below would see only one of them. This check refuses
+        // them, a local header that disagrees with the central directory,
+        // and entries whose data overlap.
+        zip.validate_header_consistency().map_err(|error| {
+            tracing::warn!(%error, "a plugin archive's headers disagree");
+            invalid("The archive is damaged or holds two entries with one path.".to_owned())
+        })?;
         let mut names = HashSet::new();
         for index in 0..zip.len() {
             let entry = zip.by_index_raw(index).map_err(|error| {

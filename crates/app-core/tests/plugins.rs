@@ -423,7 +423,10 @@ fn write_archive(path: &std::path::Path, manifest: &str, entry: &str, component:
 
 #[test]
 fn a_release_archive_installs_and_runs_without_the_archive_or_a_watch_on_it() {
-    let Some(hello) = plugins::built("hello_plugin") else {
+    let (Some(hello), Some(probe)) = (
+        plugins::built("hello_plugin"),
+        plugins::built("probe_plugin"),
+    ) else {
         return;
     };
     let downloads = tempfile::tempdir().unwrap();
@@ -449,17 +452,37 @@ fn a_release_archive_installs_and_runs_without_the_archive_or_a_watch_on_it() {
     assert!(app.set_plugin_enabled("hello", true));
     settle(&mut app);
     assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
+    app.open_page(HELLO_PAGE, OpenAs::Kept);
+    settle(&mut app);
+    let shown = plugins::texts(&app, HELLO_PAGE);
+    assert!(shown.is_ok(), "{shown:?}");
 
-    // The installed copy runs on, and Noura never reads the archive again
-    // for new builds.
+    // A new build written over the archive changes nothing: Noura runs
+    // the copy it installed and doesn't watch the archive. A folder
+    // install reloads a new build well within this wait.
+    write_archive(
+        &archive,
+        plugins::HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &probe,
+    );
+    let waited = std::time::Instant::now();
+    while waited.elapsed() < std::time::Duration::from_millis(1_500) {
+        settle(&mut app);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(plugins::texts(&app, HELLO_PAGE), shown);
+
+    // The installed copy runs on after a relaunch without the archive.
     std::fs::remove_file(&archive).unwrap();
     drop(app);
     let mut app = fixture.app();
     plugins::wait_until(&mut app, "the plugin runs again", |app| {
         rail_titles(app).contains(&"Hello".to_owned())
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    app.open_page(HELLO_PAGE, OpenAs::Kept);
     settle(&mut app);
+    assert_eq!(plugins::texts(&app, HELLO_PAGE), shown);
     let rows = installed(&app);
     assert!(row(&rows, "hello").running);
     assert_eq!(row(&rows, "hello").problem, None);

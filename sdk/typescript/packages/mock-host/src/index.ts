@@ -18,7 +18,7 @@ import {
 import { type Exports, type Loaded, load } from './component.js';
 import { type MockObject, MockWorkspace } from './workspace.js';
 
-export type { MockObject } from './workspace.js';
+export type { MockObject, ReadObject } from './workspace.js';
 
 /** A node of a view as a tree: each node holds its children. */
 export interface ViewNode {
@@ -106,11 +106,26 @@ interface Interfaces {
 	'noura:plugin/navigation': typeof import('noura:plugin/navigation@0.1.0');
 }
 
-/** The kernel's own object types, which no plugin registers. */
-const KERNEL_TYPES = ['note', 'workspace', 'project', 'chat', 'chat-message'];
+/**
+ * The object types Noura keeps for itself, which no plugin registers. The
+ * kit's tests check that this list matches plugin-host's.
+ */
+export const KERNEL_TYPES: readonly string[] = [
+	'note',
+	'workspace',
+	'chat',
+	'chat-message',
+];
 
-/** Types held for one plugin, by the plugin's ID. */
-const PLUGIN_TYPES: Record<string, string> = { task: 'tasks' };
+/**
+ * Object types Noura holds for one plugin, by that plugin's ID, which no
+ * other plugin registers. The kit's tests check that this list matches
+ * plugin-host's.
+ */
+export const PLUGIN_TYPES: Readonly<Record<string, string>> = {
+	task: 'tasks',
+	project: 'projects',
+};
 
 function refused(capability: string): never {
 	throw { tag: 'capability-not-declared', val: capability };
@@ -300,6 +315,7 @@ export class MockHost {
 				listEntries: () => workspace().listEntries(),
 				readFile: (path: string) => workspace().readFile(path),
 				readObject: (id: string) => workspace().readObject(id),
+				readObjectAt: (path: string) => workspace().readObjectAt(path),
 			},
 			'noura:plugin/objects': {
 				create: (object: Parameters<MockWorkspace['create']>[0]) =>

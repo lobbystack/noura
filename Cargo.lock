@@ -5560,6 +5560,7 @@ name = "kit-host"
 version = "0.2.0"
 dependencies = [
  "app-core",
+ "plugin-host",
  "serde_json",
 ]
 

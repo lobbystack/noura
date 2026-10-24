@@ -14,7 +14,24 @@ import { openPage } from 'noura:plugin/navigation@0.1.0';
 import { fetch } from 'noura:plugin/network@0.1.0';
 import { create, list, update } from 'noura:plugin/objects@0.1.0';
 import type { Event, Node, NodeKind } from 'noura:plugin/ui@0.1.0';
-import { listEntries, readFile } from 'noura:plugin/workspace@0.1.0';
+import {
+	type Object as WorkspaceObject,
+	listEntries,
+	readFile,
+	readObject,
+	readObjectAt,
+} from 'noura:plugin/workspace@0.1.0';
+
+/** The note that `Shared/Kept.md` holds, and no other file. */
+const KEPT = 'note_01j9qv6m0000000000000000aa';
+/** The note that `Shared/Draft.md` and its copy both hold. */
+const SHARED = 'note_01j9qv6m0000000000000000bb';
+
+/** An object without its revision, whose form differs from host to host. */
+function summary(object: WorkspaceObject) {
+	const { id, objectType, title, path, body, properties } = object;
+	return { id, objectType, title, path, body, properties };
+}
 
 /** What each call does, with a summary of its answer that is the same on any host. */
 const CALLS: Record<string, () => unknown> = {
@@ -27,6 +44,22 @@ const CALLS: Record<string, () => unknown> = {
 			)
 			.sort(),
 	'read-file': () => new TextDecoder().decode(readFile('Plan.md').bytes),
+	'list-object-entries': () =>
+		listEntries()
+			.flatMap((entry) =>
+				entry.tag === 'ok' && entry.val.objectId
+					? [`${entry.val.path} ${entry.val.objectType} ${entry.val.objectId}`]
+					: [],
+			)
+			.sort(),
+	'read-object': () => summary(readObject(KEPT)),
+	'read-object-shared': () => summary(readObject(SHARED)),
+	'read-object-missing': () =>
+		summary(readObject('note_01j9qv6m0000000000000000cc')),
+	'read-object-at': () => summary(readObjectAt('Shared/Draft copy.md')),
+	'read-object-at-plain': () => summary(readObjectAt('Plan.md')),
+	'read-object-at-missing': () => summary(readObjectAt('Missing.md')),
+	'read-object-at-outside': () => summary(readObjectAt('../Outside.md')),
 	'read-missing': () => readFile('Missing.md').path,
 	'read-outside': () => readFile('../Outside.md').path,
 	fetch: () => get('https://example.com/'),

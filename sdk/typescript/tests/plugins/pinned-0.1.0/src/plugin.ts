@@ -30,6 +30,7 @@ import {
 	listEntries,
 	readFile,
 	readObject,
+	readObjectAt,
 } from 'noura:plugin/workspace@0.1.0';
 
 /** Every import, so a build against an interface that lost one fails. */
@@ -49,6 +50,7 @@ export const IMPORTS = [
 	listEntries,
 	readFile,
 	readObject,
+	readObjectAt,
 ];
 
 function text(id: string, value: string): Node[] {
@@ -71,9 +73,13 @@ function check(): string {
 		properties: '{}',
 		remove: [],
 	});
+	const readBack =
+		readObjectAt(updated.path).id === updated.id &&
+		readObject(updated.id).path === updated.path;
 	remove(updated.id, updated.revision);
 	return JSON.stringify({
 		entries,
+		readBack,
 		plan: new TextDecoder().decode(readFile('Plan.md').bytes),
 		pins: list('pin').length,
 		clock: now().instant.endsWith('Z'),

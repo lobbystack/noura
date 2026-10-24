@@ -5,12 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
 	CapabilityError,
+	KERNEL_TYPES,
 	type MockHost,
+	PLUGIN_TYPES,
 	createMockHost,
 } from '@noura/mock-host';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 
 import { buildTestPlugin } from './support/kit.js';
+import { RealHost } from './support/real-host.js';
 
 let folder = '';
 let project = '';
@@ -68,6 +71,19 @@ test('the objects the plugin writes show in the mock workspace', async () => {
 	expect(
 		host.objects().map((object) => [object.objectType, object.path]),
 	).toContainEqual(['probe-note', 'probe-notes/Probe.md']);
+});
+
+test('the mock host keeps from plugins the object types the real host keeps', async (context) => {
+	const real = await RealHost.start();
+	if (!real) return context.skip();
+	try {
+		expect(await real.heldTypes()).toEqual({
+			kernel: [...KERNEL_TYPES],
+			plugins: { ...PLUGIN_TYPES },
+		});
+	} finally {
+		await real.close();
+	}
 });
 
 test('a press that opens a page shows in the openings', async () => {

@@ -6,11 +6,12 @@ The `workspace` interface reads the files, folders and objects in the open works
 
 - `listEntries()`: every file and folder, by workspace-relative path with `/` between its parts. An entry is a result: a name that a string can't hold, such as one that isn't valid UTF-8, comes back as the `unsupported-path` error in its place.
 - `readFile(path)`: a file's bytes and the revision of those bytes. A path that leaves the workspace or names `.noura` throws `invalid-path`, and a missing file throws `not-found`.
-- `readObject(id)`: a Noura object by its stable ID, wherever its file is now. The ID stays the same when you move or rename the file.
+- `readObject(id)`: a Noura object by its stable ID, wherever its file is now. The ID stays the same when you move or rename the file. When two files hold the ID, as after a copy made in another app, it throws `identity-conflict` with the ID.
+- `readObjectAt(path)`: the object that the file at `path` holds, even when another file holds the same ID. A missing file, or one that holds no object, throws `not-found` with the path.
 
 ## Example
 
-This plugin adds a page that lists the Markdown files in the workspace, each with its first line. Its manifest declares `workspace-read` for the reads and `views` for the page:
+This plugin adds a page that lists the Markdown files in the workspace. Each shows the type of the object it holds, or its first line when it holds none. Its manifest declares `workspace-read` for the reads and `views` for the page:
 
 ```toml
 id = "example-workspace"
@@ -27,18 +28,31 @@ name = "workspace-read"
 name = "views"
 ```
 
-`render` lists the entries, keeps the Markdown files and reads the first line of each:
+`render` lists the entries, keeps the Markdown files and describes each one. A call that fails throws an error whose `payload` is the error Noura gave:
 
 ```ts
 import type { ViewExports } from '@noura/plugin-types';
 import type { Node, NodeKind } from 'noura:plugin/ui@0.1.0';
-import { listEntries, readFile } from 'noura:plugin/workspace@0.1.0';
+import {
+	listEntries,
+	readFile,
+	readObjectAt,
+} from 'noura:plugin/workspace@0.1.0';
 
 function node(id: string, kind: NodeKind, children: number[] = []): Node {
 	return { id, kind, children: new Uint32Array(children) };
 }
 
-function firstLine(path: string): string {
+/** The type of the object the file holds, or its first line. */
+function describe(path: string): string {
+	try {
+		return `A ${readObjectAt(path).objectType}`;
+	} catch (error) {
+		const tag = (error as { payload?: { tag: string } }).payload?.tag;
+		if (tag !== 'not-found') {
+			throw error;
+		}
+	}
 	const text = new TextDecoder().decode(readFile(path).bytes);
 	return text.split('\n')[0]?.trim() || '(empty)';
 }
@@ -67,7 +81,7 @@ export const view: ViewExports = {
 			...paths.map((path) =>
 				node(path, {
 					tag: 'item',
-					val: { label: path, detail: firstLine(path) },
+					val: { label: path, detail: describe(path) },
 				}),
 			),
 		];

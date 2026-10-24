@@ -312,4 +312,7 @@ jobs:
       - name: Check that the reference matches the WIT
         run: |
           scripts/plugin-reference.sh
+          # Mark new pages, such as one for a new interface version, so
+          # the diff shows them too.
+          git add --intent-to-add -- docs/plugins/reference
           git diff --exit-code -- docs/plugins/reference

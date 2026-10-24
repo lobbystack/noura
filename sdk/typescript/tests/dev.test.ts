@@ -1,6 +1,6 @@
 // Seam 5: dev mode builds the plugin again on each save, and Noura, which
 // installed the folder, reloads it.
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
 
@@ -93,6 +93,61 @@ test('a save that breaks the build says why and keeps watching', async () => {
 			await writeFile(source, text);
 
 			await dev.waitFor(/^Built Word count/, 2);
+		} finally {
+			await dev.stop();
+		}
+	});
+});
+
+test('a build that can’t write the component says why and keeps watching', async () => {
+	await inTemporaryFolder(async (folder) => {
+		await succeed('create-noura-plugin', ['word-count'], folder);
+		const project = join(folder, 'word-count');
+		// A file where the component's folder goes.
+		await writeFile(join(project, 'dist'), 'not a folder');
+		const dev = start('noura-plugin', ['dev'], project);
+		try {
+			await dev.waitFor(/^Waiting for changes/);
+			expect(dev.output()).toMatch(/^The build failed: /m);
+
+			await rm(join(project, 'dist'));
+			const source = join(project, 'src/plugin.ts');
+			await writeFile(source, await readFile(source, 'utf8'));
+
+			await dev.waitFor(/^Built Word count/);
+		} finally {
+			await dev.stop();
+		}
+	});
+});
+
+test('an entry inside src is refused, so a build never starts the next one', async () => {
+	await inTemporaryFolder(async (folder) => {
+		await succeed('create-noura-plugin', ['word-count'], folder);
+		const project = join(folder, 'word-count');
+		const manifest = join(project, 'plugin.toml');
+		const text = await readFile(manifest, 'utf8');
+		await writeFile(
+			manifest,
+			text.replace('entry = "dist/plugin.wasm"', 'entry = "src/plugin.wasm"'),
+		);
+		const dev = start('noura-plugin', ['dev'], project);
+		try {
+			await dev.waitFor(/^Waiting for changes/);
+			expect(dev.output()).toMatch(
+				/^The entry src\/plugin\.wasm in plugin\.toml is inside src/m,
+			);
+
+			await writeFile(manifest, text);
+
+			await dev.waitFor(/^Built Word count/);
+			await new Promise((wait) => setTimeout(wait, 1_000));
+			expect(
+				dev
+					.output()
+					.split('\n')
+					.filter((line) => /^(Built|The entry)/.test(line)),
+			).toHaveLength(2);
 		} finally {
 			await dev.stop();
 		}

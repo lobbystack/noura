@@ -6,7 +6,7 @@ Objects of a plugin's types open in Noura's note editor. The plugin draws the pr
 
 ## Functions
 
-- `types()`: the types the plugin registers when it starts. A type's name is a lowercase letter followed by lowercase letters or hyphens. Its schema lists its properties as JSON. Noura keeps its own types, such as `note`, and holds `task` for the Tasks plugin.
+- `types()`: the types the plugin registers when it starts. A type's name is a lowercase letter followed by lowercase letters or hyphens. Its schema lists its properties as JSON. Noura keeps its own types, such as `note`, holds `task` for the Tasks plugin and holds `project` for the Projects plugin.
 - `renderPanel(object)`: the [nodes](ui.md) of the properties panel for the object with this ID. A panel can't hold a virtual list.
 - `handlePanelEvent(object, event)`: something you did in an object's panel. Noura draws the panel again afterwards.
 

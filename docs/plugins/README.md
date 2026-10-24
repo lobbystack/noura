@@ -9,7 +9,7 @@ The kit is four npm packages:
 - `@noura/plugin-types`: the TypeScript types of Noura's plugin interface, generated from its WIT.
 - `@noura/mock-host`: a mock of Noura that runs a built plugin in your tests.
 
-The kit needs Node 22 or later.
+The kit needs Node 22.12 or later. CI tests it on Node 24.
 
 ## Start a plugin
 
@@ -150,7 +150,7 @@ test('the page counts the files', async () => {
 
 The mock host implements every interface of `noura:plugin` from the same WIT the plugin builds against, and refuses each call the manifest doesn't declare with the error Noura gives. Its options fill in what it can't reach:
 
-- `files`: the workspace's files, by path.
+- `files`: the workspace's files, by path. A Markdown file with an `id` and a `type` in its frontmatter is an object, and `workspace` reads it as Noura does. The `objects` interface sees only the objects the plugin writes.
 - `clock`: what `now()` reads.
 - `fetch`: answers to the requests that pass the manifest's hosts.
 - `commands`: other plugins' commands, by `plugin/command`.

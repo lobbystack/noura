@@ -101,6 +101,15 @@ impl Session {
                     Err(error) => json!({ "failure": error.message }),
                 }
             }
+            // The object types the host keeps from plugins, which the mock
+            // host's lists must match.
+            "heldTypes" => json!({
+                "kernel": plugin_host::KERNEL_TYPES,
+                "plugins": plugin_host::PLUGIN_TYPES
+                    .iter()
+                    .map(|(object_type, plugin)| ((*object_type).to_owned(), json!(plugin)))
+                    .collect::<serde_json::Map<_, _>>(),
+            }),
             "settle" => Value::Null,
             other => return Err(format!("The host has no request {other}.")),
         };

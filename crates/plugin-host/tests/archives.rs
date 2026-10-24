@@ -31,13 +31,13 @@ impl Setup {
     /// Write an archive holding `entries`, as (name, bytes), and return
     /// its path.
     fn archive(&self, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
+        self.write(&zip_bytes(entries))
+    }
+
+    /// Write `bytes` as the archive and return its path.
+    fn write(&self, bytes: &[u8]) -> std::path::PathBuf {
         let path = self.folder.path().join("plugin-0.1.0.zip");
-        let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
-        for (name, bytes) in entries {
-            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
-            zip.write_all(bytes).unwrap();
-        }
-        zip.finish().unwrap();
+        std::fs::write(&path, bytes).unwrap();
         path
     }
 
@@ -46,6 +46,41 @@ impl Setup {
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(true)
     }
+}
+
+/// A zip archive holding `entries`, as (name, bytes), deflated.
+fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, bytes) in entries {
+        zip.start_file(*name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// Apply `patch` to the local header and the central directory header of
+/// the entry `name` in `zip`, each given as the offset of its size field
+/// and of its name, as a hostile archive's author would edit them.
+fn edit_headers(zip: &mut [u8], name: &str, patch: impl Fn(&mut [u8], usize, usize)) {
+    let mut edited = 0;
+    let mut at = 0;
+    while at + 46 <= zip.len() {
+        // A local header holds its uncompressed size at 22 and its name at
+        // 30, and a central directory header at 24 and 46.
+        let fields = match zip[at..at + 4] {
+            [0x50, 0x4b, 0x03, 0x04] => Some((at + 22, at + 30)),
+            [0x50, 0x4b, 0x01, 0x02] => Some((at + 24, at + 46)),
+            _ => None,
+        };
+        if let Some((size, named)) = fields
+            && zip[named..].starts_with(name.as_bytes())
+        {
+            patch(zip, size, named);
+            edited += 1;
+        }
+        at += 1;
+    }
+    assert_eq!(edited, 2, "both headers of {name}");
 }
 
 /// The hello plugin's manifest with its component under `dist/`, as the
@@ -225,4 +260,101 @@ fn an_archive_for_an_installed_plugin_says_so() {
     let error = host.inspect_archive(&archive).err().unwrap();
 
     assert_eq!(error.code, InstallErrorCode::AlreadyInstalled);
+}
+
+#[test]
+fn an_archive_whose_manifest_is_over_64_kb_installs_nothing() {
+    let setup = Setup::new();
+    let manifest = format!("{HELLO_MANIFEST}\n# {}\n", "x".repeat(64 << 10));
+    let archive = setup.archive(&[
+        ("plugin.toml", manifest.as_bytes()),
+        ("hello_plugin.wasm", b"\0asm"),
+    ]);
+
+    let error = setup.host().inspect_archive(&archive).err().unwrap();
+
+    assert_eq!(error.code, InstallErrorCode::InvalidManifest);
+    assert!(error.message.contains("64 KB"), "{}", error.message);
+    assert!(setup.library_is_empty());
+}
+
+#[test]
+fn a_file_larger_than_its_header_says_stops_the_read_and_installs_nothing() {
+    let setup = Setup::new();
+    let manifest = format!("{HELLO_MANIFEST}\n# {}\n", "x".repeat(64 << 10));
+    let mut zip = zip_bytes(&[
+        ("plugin.toml", manifest.as_bytes()),
+        ("hello_plugin.wasm", b"\0asm"),
+    ]);
+    // Both headers claim the manifest holds 100 bytes.
+    edit_headers(&mut zip, "plugin.toml", |zip, size, _| {
+        zip[size..size + 4].copy_from_slice(&100u32.to_le_bytes());
+    });
+    let archive = setup.write(&zip);
+
+    let error = setup.host().inspect_archive(&archive).err().unwrap();
+
+    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
+    assert!(error.message.contains("plugin.toml"), "{}", error.message);
+    assert!(setup.library_is_empty());
+}
+
+#[test]
+fn an_archive_over_80_mb_installs_nothing_and_isnt_read() {
+    let setup = Setup::new();
+    let path = setup.folder.path().join("large.zip");
+    // A sparse file: its size is all the host looks at.
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len((80 << 20) + 1)
+        .unwrap();
+
+    let error = setup.host().inspect_archive(&path).err().unwrap();
+
+    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
+    assert!(error.message.contains("80 MB"), "{}", error.message);
+}
+
+#[test]
+fn an_archive_that_holds_one_path_twice_installs_nothing() {
+    let Some(hello) = plugins::built("hello_plugin") else {
+        return;
+    };
+    let setup = Setup::new();
+    // The writer refuses a name twice, so the second entry's name is
+    // edited to the first's afterwards.
+    let mut zip = zip_bytes(&[
+        ("plugin.toml", HELLO_MANIFEST.as_bytes()),
+        ("hello_plugin.wasm", &hello),
+        ("hello_plugin.wasX", b"\0asm"),
+    ]);
+    edit_headers(&mut zip, "hello_plugin.wasX", |zip, _, name| {
+        zip[name + "hello_plugin.was".len()] = b'm';
+    });
+    let archive = setup.write(&zip);
+
+    let error = setup.host().inspect_archive(&archive).err().unwrap();
+
+    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
+    assert!(error.message.contains("two entries"), "{}", error.message);
+    assert!(setup.library_is_empty());
+
+    // A folder entry with the component's path holds it twice too.
+    let path = setup.folder.path().join("folder.zip");
+    let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
+    zip.start_file("plugin.toml", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(HELLO_MANIFEST.as_bytes()).unwrap();
+    zip.start_file("hello_plugin.wasm", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(&hello).unwrap();
+    zip.add_directory("hello_plugin.wasm", SimpleFileOptions::default())
+        .unwrap();
+    zip.finish().unwrap();
+
+    let error = setup.host().inspect_archive(&path).err().unwrap();
+
+    assert_eq!(error.code, InstallErrorCode::InvalidArchive);
+    assert!(error.message.contains("twice"), "{}", error.message);
+    assert!(setup.library_is_empty());
 }

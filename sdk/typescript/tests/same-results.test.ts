@@ -9,7 +9,18 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { type Host, mockHost, realHost } from './support/hosts.js';
 import { buildTestPlugin } from './support/kit.js';
 
-const FILES = { 'Plan.md': 'plan', 'Notes/Idea.md': 'idea' };
+const KEPT = 'note_01j9qv6m0000000000000000aa';
+const SHARED = 'note_01j9qv6m0000000000000000bb';
+const DRAFT = `---\nid: ${SHARED}\ntype: note\nstatus: draft\n---\nThe draft.\n`;
+
+const FILES = {
+	'Plan.md': 'plan',
+	'Notes/Idea.md': 'idea',
+	'Shared/Kept.md': `---\nid: ${KEPT}\ntype: note\n---\nKept.\n`,
+	// A copy made in another app keeps the ID of the note it copies.
+	'Shared/Draft.md': DRAFT,
+	'Shared/Draft copy.md': DRAFT,
+};
 
 /** The hosts each step runs on. The real host drops out when it isn't built. */
 const HOSTS: [string, (folder: string) => Promise<Host | undefined>][] = [
@@ -109,6 +120,12 @@ describe.each(HOSTS)(
 			expect(await probe(host, 'list-entries')).toEqual(
 				denied('workspace-read'),
 			);
+			expect(await probe(host, 'read-object')).toEqual(
+				denied('workspace-read'),
+			);
+			expect(await probe(host, 'read-object-at')).toEqual(
+				denied('workspace-read'),
+			);
 			expect(await probe(host, 'fetch')).toEqual(denied('network'));
 			expect(await probe(host, 'call-command')).toEqual(denied('commands'));
 			expect(await probe(host, 'create-object')).toEqual(
@@ -158,7 +175,65 @@ describe.each(HOSTS)(
 			if (!host) return context.skip();
 			expect(await probe(host, 'read-file')).toEqual({ ok: 'plan' });
 			expect(await probe(host, 'list-entries')).toEqual({
-				ok: ['file Notes/Idea.md', 'file Plan.md', 'folder Notes'],
+				ok: [
+					'file Notes/Idea.md',
+					'file Plan.md',
+					'file Shared/Draft copy.md',
+					'file Shared/Draft.md',
+					'file Shared/Kept.md',
+					'folder Notes',
+					'folder Shared',
+				],
+			});
+		});
+
+		test('reads objects by ID and by path, and refuses an ID two files hold', async (context) => {
+			if (!host) return context.skip();
+			expect(await probe(host, 'list-object-entries')).toEqual({
+				ok: [
+					`Shared/Draft copy.md note ${SHARED}`,
+					`Shared/Draft.md note ${SHARED}`,
+					`Shared/Kept.md note ${KEPT}`,
+				],
+			});
+			expect(await probe(host, 'read-object')).toEqual({
+				ok: {
+					id: KEPT,
+					objectType: 'note',
+					title: 'Kept',
+					path: 'Shared/Kept.md',
+					body: 'Kept.\n',
+					properties: '{}',
+				},
+			});
+			expect(await probe(host, 'read-object-shared')).toEqual({
+				error: { tag: 'identity-conflict', val: SHARED },
+			});
+			expect(await probe(host, 'read-object-missing')).toEqual({
+				error: { tag: 'not-found', val: 'note_01j9qv6m0000000000000000cc' },
+			});
+			expect(await probe(host, 'read-object-at')).toEqual({
+				ok: {
+					id: SHARED,
+					objectType: 'note',
+					title: 'Draft copy',
+					path: 'Shared/Draft copy.md',
+					body: 'The draft.\n',
+					properties: '{"status":"draft"}',
+				},
+			});
+		});
+
+		test('reading the object at a path that holds none fails as Noura says', async (context) => {
+			if (!host) return context.skip();
+			expect(await probe(host, 'read-object-at-plain')).toEqual({
+				error: { tag: 'not-found', val: 'Plan.md' },
+			});
+			expect(await probe(host, 'read-object-at-missing')).toEqual({
+				error: { tag: 'not-found', val: 'Missing.md' },
+			});
+			expect(await probe(host, 'read-object-at-outside')).toEqual({
+				error: { tag: 'invalid-path', val: '../Outside.md' },
 			});
 		});
 

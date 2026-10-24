@@ -13,4 +13,5 @@ path = "src/main.rs"
 
 [dependencies]
 app-core = { version = "0.2.0", path = "../app-core" }
+plugin-host = { version = "0.2.0", path = "../plugin-host" }
 serde_json.workspace = true

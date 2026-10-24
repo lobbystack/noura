@@ -201,6 +201,11 @@ export class RealHost {
 		});
 	}
 
+	/** The object types the host keeps from plugins: its own, and those it holds for one plugin, by that plugin's ID. */
+	heldTypes(): Promise<{ kernel: string[]; plugins: Record<string, string> }> {
+		return this.request('heldTypes');
+	}
+
 	async close(): Promise<void> {
 		this.child.stdin.end();
 		await new Promise((stopped) => this.child.once('exit', stopped));

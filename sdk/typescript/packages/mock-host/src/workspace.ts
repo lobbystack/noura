@@ -1,8 +1,12 @@
 // The mock host's workspace: files and folders by path, and the objects of
 // the plugin's own types, all in memory. It answers the `workspace` and
 // `objects` interfaces with the errors Noura gives, though it doesn't check
-// properties against the types' schemas.
+// properties against the types' schemas. A Markdown file you seed whose
+// frontmatter holds an `id` and a `type` is an object that `workspace`
+// reads, as in Noura; the `objects` interface works on the objects the
+// plugin writes.
 import { createHash, randomBytes } from 'node:crypto';
+import { parse as parseYaml } from 'yaml';
 
 /** A WIT `error` variant from noura:plugin/types, which a call throws. */
 export type HostError = { tag: string; val?: unknown };
@@ -23,6 +27,17 @@ export interface MockObject {
 	revision: string;
 	created?: string;
 	updated?: string;
+}
+
+/** An object as the `workspace` interface reads it. */
+export interface ReadObject {
+	id: string;
+	objectType: string;
+	title: string;
+	path: string;
+	body: string;
+	properties: string;
+	revision: string;
 }
 
 export interface NewObject {
@@ -81,9 +96,9 @@ function properties(text: string): Record<string, unknown> {
 	return refuse('failed', 'Properties must be a JSON object.');
 }
 
-/** A ULID: the time in milliseconds, then randomness, in Crockford's base 32. */
+/** A ULID in lowercase, as Noura writes stable IDs: the time in milliseconds, then randomness, in Crockford's base 32. */
 function ulid(): string {
-	const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+	const alphabet = '0123456789abcdefghjkmnpqrstvwxyz';
 	let time = Date.now();
 	let head = '';
 	for (let i = 0; i < 10; i += 1) {
@@ -100,8 +115,103 @@ function instant(): string {
 	return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+/** A file's title: its name without the extension. */
 function titleOf(path: string): string {
-	return (path.split('/').pop() ?? path).replace(/\.md$/, '');
+	const name = path.split('/').pop() ?? path;
+	const dot = name.lastIndexOf('.');
+	return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/** Whether Noura indexes the file at `path` for the objects it holds. */
+function isMarkdown(path: string): boolean {
+	return path.endsWith('.md');
+}
+
+/** Whether `id` is a stable ID of the type `objectType`: the type, `_` and a lowercase ULID. */
+function validId(id: string, objectType: string): boolean {
+	return (
+		/^[a-z][a-z-]*$/.test(objectType) &&
+		id.startsWith(`${objectType}_`) &&
+		/^[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(id.slice(objectType.length + 1))
+	);
+}
+
+/**
+ * The object the file `bytes` at `path` holds, read as Noura reads
+ * Markdown: frontmatter between `---` lines whose `id` and `type` name a
+ * stable ID. A file without one holds no object.
+ */
+function parseObject(path: string, bytes: Uint8Array): ReadObject | undefined {
+	let text: string;
+	try {
+		text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+			bytes,
+		);
+	} catch {
+		return undefined;
+	}
+	text = text.replace(/^\uFEFF/, '').replaceAll('\r\n', '\n');
+	if (!text.startsWith('---\n')) {
+		return undefined;
+	}
+	const close = text.indexOf('\n---\n', 4);
+	if (close === -1) {
+		return undefined;
+	}
+	let frontmatter: unknown;
+	try {
+		frontmatter = parseYaml(text.slice(4, close + 1));
+	} catch {
+		return undefined;
+	}
+	if (
+		!frontmatter ||
+		typeof frontmatter !== 'object' ||
+		Array.isArray(frontmatter)
+	) {
+		return undefined;
+	}
+	const {
+		id,
+		type: objectType,
+		created: _created,
+		updated: _updated,
+		...rest
+	} = frontmatter as Record<string, unknown>;
+	if (
+		typeof id !== 'string' ||
+		typeof objectType !== 'string' ||
+		!validId(id, objectType)
+	) {
+		return undefined;
+	}
+	const properties = Object.fromEntries(
+		Object.keys(rest)
+			.sort()
+			.map((name) => [name, rest[name]]),
+	);
+	return {
+		id,
+		objectType,
+		title: titleOf(path),
+		path,
+		body: text.slice(close + '\n---\n'.length).replace(/\r+\n/g, '\n'),
+		properties: JSON.stringify(properties),
+		revision: revisionOf(bytes),
+	};
+}
+
+/** `object` as the `workspace` interface reads it. */
+function readable(object: MockObject): ReadObject {
+	const { id, objectType, title, path, body, properties, revision } = object;
+	return { id, objectType, title, path, body, properties, revision };
+}
+
+/** Where a new object titled `name` goes without a path, as Noura names it. */
+function defaultPath(objectType: string, name: string): string {
+	return objectType === 'project'
+		? `projects/${name}/${name}.md`
+		: `${objectType}s/${name}.md`;
 }
 
 export class MockWorkspace {
@@ -150,7 +260,14 @@ export class MockWorkspace {
 		};
 		for (const [path, bytes] of this.files) {
 			addFolders(path);
-			entries.set(path, { path, kind: 'file', revision: revisionOf(bytes) });
+			const object = isMarkdown(path) ? parseObject(path, bytes) : undefined;
+			entries.set(path, {
+				path,
+				kind: 'file',
+				objectId: object?.id,
+				objectType: object?.objectType,
+				revision: revisionOf(bytes),
+			});
 		}
 		for (const object of this.objects.values()) {
 			addFolders(object.path);
@@ -187,26 +304,40 @@ export class MockWorkspace {
 		return refuse('not-found', path);
 	}
 
-	readObject(id: string) {
-		const object = this.objects.get(id) ?? refuse('not-found', id);
-		const {
-			id: objectId,
-			objectType,
-			title,
-			path,
-			body,
-			properties: props,
-			revision,
-		} = object;
-		return {
-			id: objectId,
-			objectType,
-			title,
-			path,
-			body,
-			properties: props,
-			revision,
-		};
+	/** The plugin's own objects and the seeded Markdown files that hold the ID `id`. */
+	private holding(id: string): ReadObject[] {
+		const found = [...this.objects.values()]
+			.filter((object) => object.id === id)
+			.map(readable);
+		for (const [path, bytes] of this.files) {
+			const object = isMarkdown(path) ? parseObject(path, bytes) : undefined;
+			if (object?.id === id) {
+				found.push(object);
+			}
+		}
+		return found;
+	}
+
+	/** The object with the stable ID `id`, refused when more than one file holds it. */
+	readObject(id: string): ReadObject {
+		const found = this.holding(id);
+		if (found.length > 1) {
+			refuse('identity-conflict', id);
+		}
+		return found[0] ?? refuse('not-found', id);
+	}
+
+	/** The object the file at `path` holds, whichever other file shares its ID. */
+	readObjectAt(path: string): ReadObject {
+		checkPath(path);
+		const own = [...this.objects.values()].find(
+			(object) => object.path === path,
+		);
+		if (own) {
+			return readable(own);
+		}
+		const bytes = this.files.get(path) ?? refuse('not-found', path);
+		return parseObject(path, bytes) ?? refuse('not-found', path);
 	}
 
 	create(object: NewObject): MockObject {
@@ -220,10 +351,10 @@ export class MockWorkspace {
 				refuse('already-exists', path);
 			}
 		} else {
-			const folder = `${object.objectType}s`;
-			path = `${folder}/${object.title}.md`;
-			for (let number = 2; this.taken(path); number += 1) {
-				path = `${folder}/${object.title} ${number}.md`;
+			const title = object.title.trim() || 'Untitled';
+			path = defaultPath(object.objectType, title);
+			for (let number = 1; this.taken(path); number += 1) {
+				path = defaultPath(object.objectType, `${title} ${number}`);
 			}
 			checkPath(path);
 		}

@@ -221,6 +221,21 @@ The object with this stable ID, wherever its file is now.
 
 - <a id="read_object.0"></a> result<[`object`](#object), [`error`](#error)>
 
+#### <a id="read_object_at"></a>`read-object-at: func`
+
+The object the file at a workspace-relative path holds. It reads a
+file whose ID another file shares too, as after a copy in another app,
+which `read-object` refuses. A file that holds no object returns
+`not-found`.
+
+##### Params
+
+- <a id="read_object_at.path"></a>`path`: `string`
+
+##### Return values
+
+- <a id="read_object_at.0"></a> result<[`object`](#object), [`error`](#error)>
+
 ## <a id="noura_plugin_objects_0_1_0"></a>Import interface noura:plugin/objects@0.1.0
 
 Objects of the types the plugin registered: Markdown files in the
@@ -295,7 +310,8 @@ A new object.
   <p>Where to write the file, relative to the workspace, ending in `.md`.
   Without it the file goes in a folder named after the type, as
   `recipes/<title>.md` for `recipe`, with a number added when the
-  name is taken.
+  name is taken. A project gets a folder of its own there, as
+  `projects/<title>/<title>.md`.
 
 - <a id="new_object.body"></a>`body`: `string`
   <p>The Markdown after the frontmatter.
@@ -1282,8 +1298,8 @@ draws the plugin's views again afterwards.
 - <a id="object_type.name"></a>`name`: `string`
   <p>A lowercase letter followed by lowercase letters or hyphens. Noura
   keeps its own types, such as `note`, holds `task` for the Tasks
-  plugin, and a type another running plugin registered stays that
-  plugin's.
+  plugin and `project` for the Projects plugin, and a type another
+  running plugin registered stays that plugin's.
 
 - <a id="object_type.schema"></a>`schema`: `string`
   <p>The type's properties in the workspace format's schema
