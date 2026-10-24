@@ -30,6 +30,8 @@ mod menus;
 mod notes;
 mod objects;
 mod operations;
+mod plugin_inputs;
+mod plugin_objects;
 mod plugins;
 mod preferences;
 mod problems;
@@ -78,7 +80,11 @@ pub use notes::{
 };
 pub use objects::ObjectRef;
 pub use operations::Imported;
-pub use plugin_host::{View, ViewKind, ViewNode};
+pub use plugin_host::{
+    Choice, Column, ColumnPress, Event as PluginEvent, Field, SortOrder, Submission, Target,
+    Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
+};
+pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{CapabilityLine, PluginInstall, PluginRow, PluginView};
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;

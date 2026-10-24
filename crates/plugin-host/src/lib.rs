@@ -6,13 +6,15 @@
 //! component on this device and keeps it in its library, and starts each
 //! plugin in its own store with the capabilities you approved. The
 //! services behind the capability interfaces, such as [`WorkspaceReads`],
-//! come from the app.
+//! come from the app. Object types that plugins register go in one
+//! [`ObjectTypes`] registry per workspace.
 
 mod error;
 mod host;
 mod instance;
 mod manifest;
 mod memory;
+mod object_types;
 mod runtime;
 mod services;
 pub mod trial;
@@ -20,14 +22,20 @@ mod view;
 
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
-pub use instance::{Event, Node, NodeKind, Page, PluginError, PluginInstance};
+pub use instance::{
+    Choice, Column, ColumnPress, Event, Field, Form, Input, Item, MenuItem, Node, NodeKind,
+    ObjectType, Page, PluginError, PluginInstance, Registration, Services, SortOrder, Submission,
+    Table, Target, Value, VirtualList, VirtualRow,
+};
 pub use manifest::{
     Capability, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
     valid_plugin_id,
 };
 pub use memory::{process_memory, release_free_memory};
+pub use object_types::{KERNEL_TYPES, ObjectTypes, TypeError};
 pub use runtime::{Backend, Limits, StoreLimiter, wasmtime_config};
 pub use services::{
-    Entry, EntryKind, FileRead, Listed, ObjectRead, ServiceError, WorkspacePath, WorkspaceReads,
+    Entry, EntryKind, FileRead, Listed, NewObject, ObjectChanges, ObjectRead, ObjectRecord,
+    PropertyProblem, ServiceError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
 };
-pub use view::{MAX_DEPTH, MAX_NODES, View, ViewError, ViewKind, ViewNode};
+pub use view::{MAX_DEPTH, MAX_NODES, MAX_ROWS, View, ViewError, ViewKind, ViewNode, check_rows};

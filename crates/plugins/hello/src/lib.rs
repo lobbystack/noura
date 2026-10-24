@@ -30,11 +30,8 @@ impl Plugin for Hello {
     }
 
     fn handle_event(_page: String, event: Event) {
-        match event {
-            Event::Pressed(node) if node == "add-one" => {
-                COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            Event::Pressed(_) => {}
+        if matches!(event, Event::Pressed(node) if node == "add-one") {
+            COUNT.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

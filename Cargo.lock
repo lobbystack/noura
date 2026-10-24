@@ -315,6 +315,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "windows-sys 0.61.2",
+ "workspace-format",
 ]
 
 [[package]]
@@ -4584,6 +4585,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kit-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+]
+
+[[package]]
 name = "kittest"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6110,6 +6118,7 @@ dependencies = [
  "libc",
  "semver",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.8+spec-1.1.0",
@@ -6117,6 +6126,7 @@ dependencies = [
  "wasmtime",
  "wat",
  "windows-sys 0.61.2",
+ "workspace-format",
 ]
 
 [[package]]
@@ -6682,6 +6692,14 @@ dependencies = [
  "bytemuck",
  "font-types 0.12.7",
  "once_cell",
+]
+
+[[package]]
+name = "recipes-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+ "serde_json",
 ]
 
 [[package]]

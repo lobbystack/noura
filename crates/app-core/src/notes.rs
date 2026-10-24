@@ -487,6 +487,18 @@ impl NoteSession {
         self.managed.as_ref().map(|managed| managed.id.as_str())
     }
 
+    /// The type of a managed note, such as `note` or a plugin's type.
+    pub fn object_type(&self) -> Option<&str> {
+        self.managed
+            .as_ref()
+            .map(|managed| managed.object_type.as_str())
+    }
+
+    /// The revision of the file as Noura last read or saved it.
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+
     /// Whether the note has edits that aren't on disk yet, counting a save
     /// that's still running.
     pub fn is_unsaved(&self) -> bool {

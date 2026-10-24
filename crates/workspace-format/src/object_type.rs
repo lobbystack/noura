@@ -9,8 +9,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    FormatError, WorkspaceObject, is_managed_property, serialize_envelope, serialize_object,
-    valid_date_value, valid_object_id, valid_object_type,
+    FormatError, WorkspaceObject, is_managed_property, rewrite_envelope, serialize_envelope,
+    serialize_object, serialize_object_over, valid_date_value, valid_object_id, valid_object_type,
 };
 
 /// The properties an object type declares, in canonical order.
@@ -172,15 +172,41 @@ impl ObjectTypeRegistry {
     /// built-in order. It writes the properties as they are, without
     /// checking them or adding defaults.
     pub fn serialize(&self, object: &WorkspaceObject) -> Result<Vec<u8>, FormatError> {
-        let Some(schema) = self.types.get(&object.object_type) else {
+        let Some(declared) = self.declared(&object.object_type) else {
             return serialize_object(object);
         };
-        let declared: Vec<&str> = schema
-            .properties
-            .iter()
-            .map(|declaration| declaration.name.as_str())
-            .collect();
         serialize_envelope(object, &declared)
+    }
+
+    /// Serializes `object` over `existing`, the bytes its file holds now,
+    /// as `serialize_object_over` does, but a changed frontmatter takes
+    /// [`Self::serialize`]'s canonical order. The parts nobody changed keep
+    /// their bytes, and so do the file's byte-order mark and line endings.
+    pub fn serialize_over(
+        &self,
+        existing: &[u8],
+        object: &WorkspaceObject,
+    ) -> Result<Vec<u8>, FormatError> {
+        let Some(declared) = self.declared(&object.object_type) else {
+            return serialize_object_over(existing, object);
+        };
+        rewrite_envelope(existing, object, &declared)
+    }
+
+    /// Whether `object_type` has a registered schema.
+    pub fn contains(&self, object_type: &str) -> bool {
+        self.types.contains_key(object_type)
+    }
+
+    /// The names a registered type declares, in declared order.
+    fn declared(&self, object_type: &str) -> Option<Vec<&str>> {
+        self.types.get(object_type).map(|schema| {
+            schema
+                .properties
+                .iter()
+                .map(|declaration| declaration.name.as_str())
+                .collect()
+        })
     }
 }
 

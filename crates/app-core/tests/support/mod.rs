@@ -3,6 +3,7 @@
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
 pub mod plugins;
+pub mod recipes;
 
 use std::{
     io,
@@ -274,6 +275,20 @@ pub fn race<T: Send>(
         lock.unlock().unwrap();
         running.join().unwrap()
     })
+}
+
+/// The workspace's index files in the app data folder: the database
+/// first, then its write-ahead log and shared memory.
+pub fn index_files(fixture: &Fixture, app: &App) -> Vec<PathBuf> {
+    let folder = fixture
+        .app_data
+        .path()
+        .join("workspaces")
+        .join(app.workspace().unwrap().id());
+    ["index.sqlite", "index.sqlite-wal", "index.sqlite-shm"]
+        .into_iter()
+        .map(|name| folder.join(name))
+        .collect()
 }
 
 /// Poll until every note save finishes.
