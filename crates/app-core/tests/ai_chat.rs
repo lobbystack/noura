@@ -368,5 +368,15 @@ fn a_failed_answer_shows_a_public_reason_and_records_its_code() {
         frontmatter_value(answer, "error_code").as_deref(),
         Some("provider_request_failed")
     );
+    // Nothing the provider said, sent or was sent reaches the page or the
+    // chat's files.
+    for raw in ["bad key", "authorization", "sk-raw-key"] {
+        assert!(
+            ai::lines(&chat.app).iter().all(|line| !line.contains(raw)),
+            "{raw}"
+        );
+        assert!(files.iter().all(|text| !text.contains(raw)), "{raw}");
+    }
+    assert!(ai::RAW_FAILURE.contains("sk-raw-key"));
     let _ = chat.requests();
 }

@@ -199,6 +199,13 @@ fn a_key_reaches_only_the_credential_store_and_the_provider() {
     assert_eq!(found, Vec::<std::path::PathBuf>::new());
     let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
     assert!(!log.contains(KEY), "{log}");
+    // Nor does what the provider answered when it failed.
+    assert!(!log.contains("sk-raw-key"), "{log}");
+    let mut found = Vec::new();
+    for folder in [fixture.app_data.path(), fixture.root.as_path()] {
+        files_holding(folder, b"sk-raw-key", &mut found);
+    }
+    assert_eq!(found, Vec::<std::path::PathBuf>::new());
 
     // Removing the key takes it out of the store.
     let mut app = fixture.app_with(system.clone());

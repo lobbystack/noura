@@ -25,6 +25,10 @@ pub const PAGE: &str = "plugin:ai:ai";
 /// The AI plugin's manifest, as its crate ships it.
 pub const MANIFEST: &str = include_str!("../../../plugins/ai/plugin.toml");
 
+/// What the fake provider's failure carries: a provider's own answer, a
+/// header and a key, none of which may reach a plugin or a file.
+pub const RAW_FAILURE: &str = "HTTP 401 {\"error\":\"bad key\"} authorization: Bearer sk-raw-key";
+
 /// What a request carried to the fake provider.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -160,12 +164,16 @@ impl AiStreamer for FakeProvider {
                         }
                         Say::Fail => {
                             guard.ended = true;
-                            Err(CoreError::new(
+                            // A careless client could pass along what the
+                            // provider answered, its headers and the key.
+                            let mut error = CoreError::new(
                                 "provider_request_failed",
                                 ErrorCategory::Provider,
-                                "The AI provider request failed",
+                                RAW_FAILURE,
                                 "ai_stream",
-                            ))
+                            );
+                            error.details = Some(serde_json::json!({ "body": RAW_FAILURE }));
+                            Err(error)
                         }
                     };
                     Some((event, (receiver, guard)))
