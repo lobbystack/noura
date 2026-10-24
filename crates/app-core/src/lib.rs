@@ -89,6 +89,17 @@ pub use local_core::WatchFault;
 pub use local_core::{
     AI_PROVIDER_KINDS, AiStreamer, CredentialStore, MemoryCredentials, RemoteImage,
 };
+
+/// What a client passes to [`App::set_ai_client`] talks to providers in
+/// these terms. Noura uses `genai`'s client unless a client sets another,
+/// as tests do with a fake provider.
+pub mod ai_client {
+    pub use local_core::{
+        AiContentPart, AiProviderConfig, AiProviderEventStream, AiProviderStreamEvent,
+        AiStopReason, AiStreamer, AiToolCall, AiTransportMessage, AiUsage, CoreError,
+        ErrorCategory, ResolvedAiStreamRequest, Result,
+    };
+}
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use notes::{

@@ -351,6 +351,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
+ "futures",
  "icu_calendar",
  "icu_datetime",
  "icu_locale_core",

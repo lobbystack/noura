@@ -30,6 +30,8 @@ pub(crate) struct SettingsView {
     return_focus: Option<Id>,
     /// The name being typed in Name and location, once you start typing.
     name: Option<String>,
+    /// The AI providers section.
+    ai: crate::ai::AiSettingsView,
 }
 
 /// Draw Settings while it is open in the window whose ID salt is
@@ -155,6 +157,7 @@ fn content(
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
         settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
+        settings_section::AI => crate::ai::settings(ui, app, &mut view.ai),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
         id if app.is_plugin_settings(id) => crate::plugin_view::show_settings(ui, app, window, id),
