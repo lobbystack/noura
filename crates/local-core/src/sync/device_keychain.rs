@@ -9,8 +9,9 @@
 //! off, so neither iCloud Keychain nor a migration or backup restore to
 //! another Mac carries it. The data protection keychain needs the app's
 //! keychain access group, which the signed app bundle carries. On Windows
-//! the items are Credential Manager entries, which DPAPI binds to this
-//! user on this machine. On Linux they are Secret Service items, and a
+//! the items are Credential Manager entries with local-machine persistence,
+//! which DPAPI encrypts for this user and no roaming profile carries. On
+//! Linux they are Secret Service items, and a
 //! copied home folder carries them to another machine: the Secret Service
 //! has no item that stays on one device, so the app documents that limit.
 
@@ -90,8 +91,29 @@ mod platform {
     use super::{DEVICE_SERVICE, unavailable};
     use crate::Result;
 
+    /// The item for `reference`. Building keyring's entry first sets up the
+    /// platform store. On Windows the entry is then rebuilt with local
+    /// persistence, so the Credential Manager keeps it on this machine and
+    /// a roaming profile doesn't carry it, as keyring's default enterprise
+    /// persistence would.
     fn entry(reference: &str) -> Result<keyring::Entry> {
-        keyring::Entry::new(DEVICE_SERVICE, reference).map_err(|_| unavailable())
+        let entry = keyring::Entry::new(DEVICE_SERVICE, reference).map_err(|_| unavailable())?;
+        #[cfg(windows)]
+        let entry = on_this_machine(entry, reference)?;
+        Ok(entry)
+    }
+
+    /// The Credential Manager entry for `reference` with local-machine
+    /// persistence, once `_store_ready` set up the store.
+    #[cfg(windows)]
+    fn on_this_machine(_store_ready: keyring::Entry, reference: &str) -> Result<keyring::Entry> {
+        let inner = keyring_core::Entry::new_with_modifiers(
+            DEVICE_SERVICE,
+            reference,
+            &std::collections::HashMap::from([("persistence", "local")]),
+        )
+        .map_err(|_| unavailable())?;
+        Ok(keyring::Entry { inner })
     }
 
     pub fn read(reference: &str) -> Result<Option<Vec<u8>>> {

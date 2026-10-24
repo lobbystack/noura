@@ -6190,6 +6190,7 @@ dependencies = [
  "ignore",
  "jiff",
  "keyring",
+ "keyring-core",
  "libc",
  "notify",
  "parking_lot",
