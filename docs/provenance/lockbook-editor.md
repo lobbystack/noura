@@ -43,6 +43,7 @@ Paths on the left are relative to `libs/content/workspace/src/`.
 | `resolvers/link.rs` (the `LinkResolver` trait and `LinkState`) | `crates/editor-core/src/resolvers.rs`, rewritten for the embedding app |
 | `test_utils/prop.rs`, `byte_source.rs`, `shrink.rs` | `crates/editor-egui/src/tests/test_utils/` |
 | `tab/markdown_editor/widget/find.rs` (added by ticket 19) | `crates/editor-core/src/find.rs` (matches, the current match, stepping and replacing) and the find bar in `crates/editor-egui/src/chrome.rs` |
+| `tab/markdown_editor/widget/link_completions.rs` (added by ticket 20): the wikilink mode | `crates/editor-core/src/links.rs` (finding the `[[` query at the caret, from `detect_wikilink` and `query_range`, and the edit a picked file makes) and the list in `crates/editor-egui/src/completion.rs` (its state, keys and place under the caret) |
 
 ## Files adapted from lb-rs (BSD-3-Clause)
 
@@ -113,6 +114,8 @@ Ticket 18 changed the fork so notes from Obsidian-style workspaces read as they 
 
 Ticket 19 removed Lockbook's Tab handling and the flattening of non-breaking spaces on paste.
 
+Ticket 20 changed how links open. A click on a drawn link opens it, as in the legacy app, where Lockbook asked for Cmd-click on the desktop. Cmd-click, Ctrl-click off Apple platforms and a middle-click ask for a new tab. Alt-Enter opens the link at the caret. The editor reports each link you open with its target as the note writes it, and the embedding app finds where it leads. Ticket 20 removed `open_link` and the `OpenedLink` variants that carried a resolved target.
+
 ## Left behind
 
 | Source | Reason |
@@ -123,7 +126,8 @@ Ticket 19 removed Lockbook's Tab handling and the flattening of non-breaking spa
 | `lb-rs/src/model/text/units.rs`, except `measure_replace` and `last_grapheme` | Codepoint units and strict byte conversions the editor doesn't call |
 | `tab/markdown_editor/assets/placeholders.tmTheme` | Syntax highlighting stays out until ticket 18 |
 | `tab/markdown_editor/widget/inline/link/card.rs`, `widget/inline/link/meta.rs` | Link cards fetch web pages |
-| `tab/markdown_editor/widget/toolbar.rs`, `widget/emoji_completions.rs`, `widget/link_completions.rs` | Chrome around the editor that later tickets rebuild for Noura. The toolbar is the phone toolbar, with Lockbook's actions and its style tokens; Noura's desktop toolbar in `crates/editor-egui/src/chrome.rs` is new code laid out like the legacy app's. Link completions also listed files through `lb-rs`, and belong to ticket 20 |
+| `tab/markdown_editor/widget/toolbar.rs`, `widget/emoji_completions.rs` | Chrome around the editor that later tickets rebuild for Noura. The toolbar is the phone toolbar, with Lockbook's actions and its style tokens; Noura's desktop toolbar in `crates/editor-egui/src/chrome.rs` is new code laid out like the legacy app's |
+| `tab/markdown_editor/widget/link_completions.rs`, except the wikilink mode | Completing Markdown and image links and their destinations, the Cmd-1 to Cmd-7 picks, the nucleo path index over `lb-rs`'s file cache and the glyphon labels. Noura completes `[[` only, as the legacy app did, `app-core` ranks the files, and egui's own widgets draw the list |
 | `tab/markdown_editor/commands.rs` | Platform commands for the iOS and Android hosts |
 | `tab/markdown_editor/input/events.rs` | `MdEdit::drain_workspace_events` took Markdown edits, Undo and Redo from Lockbook's workspace event queue. The fork has no such queue: the embedding app passes events to `Editor::push_event` |
 | `tab/markdown_editor/md_label.rs` | A read-only Markdown label for Lockbook's chat and search previews |
@@ -148,7 +152,7 @@ These 52 didn't come along:
 | `tests/link_card.rs`: all 15 tests (`angle_bracket_autolink_is_not_a_card`, `bare_url_alone_on_a_line_is_a_card`, `bare_url_in_a_sentence_is_not_a_card`, `bare_url_under_a_heading_is_a_card`, `cached_metadata_renders_a_card`, `capsule_selection_rects_hug_pill`, `enter_atom_reveals_link_card_source`, `labeled_link_is_not_a_card`, `previews_off_does_not_fetch_autolink_titles`, `rate_limited_meta_degrades_and_gates_refetch`, `setting_mirrors_onto_renderer_each_frame`, `two_urls_on_one_line_are_not_cards`, `url_in_a_container_block_is_not_a_card`, `url_in_list_renders_no_card_even_when_cached`, `wrapped_capsule_edge_carets`) | Link cards and capsules came out with network fetching |
 | `widget/inline/link/meta.rs`: `description_absent_is_none`, `falls_back_to_html_title`, `favicon_falls_back_to_origin_root`, `full_card_metadata`, `no_title_yields_none`, `prefers_open_graph_over_html_title`, `real_titles_are_not_junk`, `site_name_falls_back_to_host_without_www`, `twitter_card_fallbacks`, `wall_titles_and_markers_are_junk` | They test scraping fetched pages for link cards |
 | `widget/emoji_completions.rs`: `colon_after_space_or_start_does_trigger`, `colon_after_word_does_not_trigger`, `empty_note_has_no_in_doc_recents`, `in_doc_recents_first_appearance_and_cap`, `parse_shortcode_token` | The emoji completion popup stayed behind |
-| `widget/link_completions.rs`: `destination_completion_replaces_link_keeping_title`, `destination_context_detected_and_title_kept`, `list_markers_hold_the_popup`, `out_of_scope_links_insert_the_external_url`, `path_query_matches_folder_and_leaf`, `wikilink_completions_resolve_back` | Link completions stayed behind; they need `lb-rs`'s file cache |
+| `widget/link_completions.rs`: `destination_completion_replaces_link_keeping_title`, `destination_context_detected_and_title_kept`, `list_markers_hold_the_popup`, `out_of_scope_links_insert_the_external_url`, `path_query_matches_folder_and_leaf`, `wikilink_completions_resolve_back` | They test the Markdown link modes, which stayed behind, and build their files with `lb-rs`'s file cache. Ticket 20 tests the `[[` query and the inserted text in `crates/editor-core/tests/link_completion.rs`, and `app-core`'s `every_suggestion_links_to_its_own_file` does the job of `wikilink_completions_resolve_back` |
 | `tests/regressions.rs`: `find_esc_closes_widget` | It tested Lockbook's find bar; `crates/editor-egui/tests/editing_commands.rs` checks that Escape closes Noura's |
 | `tests/regressions.rs`: `icon_glyphs_skip_emoji_font` | The icon fonts and Twemoji routing came out with `lb-fonts` |
 | `tests/regressions.rs`: `layout_cache_consistent_under_link_title` | Link titles came from fetched metadata |

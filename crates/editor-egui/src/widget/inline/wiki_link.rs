@@ -19,13 +19,8 @@ impl<'ast> MdRender {
         let node_range = self.node_range(node);
         let state = self.link_state_for_wikilink(&url);
         let fmt = self.text_format_link(parent, state);
-        // Read-only views have no cursor to place, so a plain click follows
-        // the link; the editor requires cmd, and touch taps select the link
-        // and pop the menu — unless revealed, when taps place the cursor.
         let revealed = self.range_revealed_interior(node_range);
-        let clickable = self.readonly
-            || self.ctx.input(|i| i.modifiers.command)
-            || (self.touch_mode && !revealed);
+        let clickable = self.link_clickable(revealed);
         let salt = Self::link_interaction_id_salt(node_range);
         let sense = self.link_sense(clickable);
         if let Some(sense) = sense {

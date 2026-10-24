@@ -44,6 +44,8 @@ pub(crate) struct Chrome {
     selection_toolbar: Option<Rect>,
     /// Where the text drew, below the toolbar and the find bar.
     pub text_rect: Option<Rect>,
+    /// The files typing `[[` offers.
+    pub(crate) completion: crate::completion::LinkCompletion,
 }
 
 impl Chrome {

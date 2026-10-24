@@ -21,6 +21,7 @@ use widget::block::LayoutCache;
 pub use editor_core::{bounds, commands, keymap};
 mod accesskit;
 mod chrome;
+mod completion;
 pub mod fold;
 pub mod fonts;
 mod ime;
@@ -743,10 +744,12 @@ impl Editor {
     }
 
     /// Draws the note: the formatting toolbar and the find bar when they
-    /// show, the text below them, and the selection toolbar over the text.
+    /// show, the text below them, and over the text the files typing `[[`
+    /// offers and the selection toolbar.
     pub fn show(&mut self, ui: &mut Ui) -> Response {
         let ctx = ui.ctx().clone();
         self.handle_find_key(&ctx);
+        self.handle_completion_keys(&ctx);
         self.show_toolbar(ui);
         if self.find_open() {
             self.show_find_bar(ui);
@@ -756,6 +759,8 @@ impl Editor {
         let resp = ui
             .scope_builder(UiBuilder::new().max_rect(rest), |ui| self.show_text(ui))
             .inner;
+        self.update_completion(resp.text_updated);
+        self.show_completion(&ctx);
         self.show_selection_toolbar(&ctx);
         resp
     }

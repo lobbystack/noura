@@ -76,6 +76,8 @@ pub(crate) struct LinkIndex {
     seq: u64,
     paths: HashSet<String>,
     by_name: HashMap<String, Vec<String>>,
+    /// How many files show each name in the file tree, by lowercase name.
+    shown_names: HashMap<String, usize>,
     /// Each indexed file's revision.
     revisions: HashMap<String, String>,
 }
@@ -85,6 +87,7 @@ impl LinkIndex {
         let mut index = Self::default();
         for file in files {
             let name = file.rsplit('/').next().unwrap_or(file).to_lowercase();
+            *index.shown_names.entry(shown_lowercase(file)).or_default() += 1;
             index.by_name.entry(name).or_default().push(file.to_owned());
             index.paths.insert(file.to_owned());
         }
@@ -209,6 +212,27 @@ fn embed_title(path: &str) -> String {
     )
 }
 
+/// How many files typing `[[` suggests at most.
+pub const LINK_SUGGESTION_LIMIT: usize = 10;
+
+/// A workspace file that typing `[[` in a note offers to link to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkSuggestion {
+    /// The name the file tree shows: Markdown files appear without `.md`.
+    pub name: String,
+    /// The folder that holds the file, `""` at the top of the workspace,
+    /// when another file shows the same name.
+    pub folder: Option<String>,
+    /// What picking the file puts between `[[` and `]]`: its name, or for
+    /// a name another file shares, its path. Neither keeps `.md`.
+    pub link: String,
+}
+
+/// The name the file tree shows for the file at `path`, in lowercase.
+fn shown_lowercase(path: &str) -> String {
+    embed_title(path).to_lowercase()
+}
+
 /// What the links in one note lead to. A note's editor holds one and asks
 /// it about each link and embed it draws; it reads the workspace's newest
 /// listing, so links follow files as they appear, move and go.
@@ -271,6 +295,62 @@ impl NoteLinks {
     /// file in the workspace. A `#heading` part is ignored.
     pub fn resolve(&self, target: &str) -> Option<String> {
         resolve_link_path(&self.source, target, &self.files.get())
+    }
+
+    /// The workspace files that typing `[[typed` suggests, best first, as
+    /// quick open ranks them: names before paths, an exact name before a
+    /// name that starts with what you typed. Nothing typed lists files by
+    /// name. At most [`LINK_SUGGESTION_LIMIT`].
+    pub fn suggest(&self, typed: &str) -> Vec<LinkSuggestion> {
+        let index = self.files.get();
+        let paths: Vec<String> = if typed.trim().is_empty() {
+            let mut paths: Vec<(String, &String)> = index
+                .paths
+                .iter()
+                .map(|path| (crate::files::sort_key(&embed_title(path)), path))
+                .collect();
+            paths.sort();
+            paths.into_iter().map(|(_, path)| path.clone()).collect()
+        } else {
+            crate::quick_open::rank(index.paths.iter().map(String::as_str), typed)
+                .into_iter()
+                .map(|found| found.relative_path)
+                .collect()
+        };
+        paths
+            .into_iter()
+            .take(LINK_SUGGESTION_LIMIT)
+            .map(|path| self.suggestion(&index, &path))
+            .collect()
+    }
+
+    /// How `[[` offers the file at `path`. A shared name links by path,
+    /// from the top of the workspace when the path alone would lead to
+    /// another file from this note.
+    fn suggestion(&self, index: &LinkIndex, path: &str) -> LinkSuggestion {
+        let name = embed_title(path);
+        let shared = index
+            .shown_names
+            .get(&name.to_lowercase())
+            .is_some_and(|count| *count > 1);
+        let link = if shared {
+            let without_md = if crate::notes::is_markdown(path) {
+                &path[..path.len() - 3]
+            } else {
+                path
+            };
+            match resolve_link_path(&self.source, without_md, index) {
+                Some(found) if found == path => without_md.to_owned(),
+                _ => format!("/{without_md}"),
+            }
+        } else {
+            name.clone()
+        };
+        LinkSuggestion {
+            folder: shared.then(|| folder_of(path).to_owned()),
+            name,
+            link,
+        }
     }
 
     /// What an `![[target]]` embed shows when `target` names a Markdown
@@ -394,7 +474,7 @@ impl NoteLinks {
 /// `target` without its `#heading` or `#^block` part, percent-decoded as
 /// Markdown links write spaces. A target that doesn't decode stays as
 /// written.
-fn link_path(target: &str) -> String {
+pub(crate) fn link_path(target: &str) -> String {
     let raw = target.split('#').next().unwrap_or_default().trim();
     percent_decode(raw).unwrap_or_else(|| raw.to_owned())
 }

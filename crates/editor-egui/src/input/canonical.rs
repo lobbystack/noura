@@ -103,7 +103,8 @@ impl<'ast> MdEdit {
                 .memory_mut(|memory| memory.move_focus(direction));
             return None;
         }
-        if self.renderer.readonly {
+        // Opening a link changes nothing, so it works in a read-only note.
+        if self.renderer.readonly && command != keymap::Command::OpenLink {
             return None;
         }
         command.event()

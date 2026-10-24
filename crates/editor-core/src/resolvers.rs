@@ -42,11 +42,30 @@ pub trait LinkResolver: Send {
         None
     }
 
+    /// The files to offer when `[[typed` is being typed, best first. The
+    /// editor lists them and puts the picked one's
+    /// [`link`](LinkSuggestion::link) in place of what's typed.
+    fn suggest(&self, _typed: &str) -> Vec<LinkSuggestion> {
+        Vec::new()
+    }
+
     /// Changes whenever an answer could change, as when files appear,
     /// move or change.
     fn seq(&self) -> u64 {
         0
     }
+}
+
+/// A file typing `[[` offers to link to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkSuggestion {
+    /// What the list shows for the file.
+    pub name: String,
+    /// The folder the list shows beside the name, when it has to tell
+    /// files of the same name apart. `""` is the top of the workspace.
+    pub folder: Option<String>,
+    /// What picking the file puts between `[[` and `]]`.
+    pub link: String,
 }
 
 /// What an embedded note shows: its title and the start of its text.
@@ -85,29 +104,16 @@ impl LinkResolver for NotFound {
     }
 }
 
-/// The outcome of the user opening a link. The embedding app acts on it.
+/// A link the user opened. The embedding app finds where it leads and
+/// follows it; the editor opens and creates nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OpenedLink {
-    /// Open this workspace file.
-    File(String),
-    /// Hand this address to the operating system.
-    External(String),
-    /// The link leads nowhere. Nothing was opened or created.
-    NotFound { target: String },
-}
-
-/// Resolves a link the user opened. `wikilink` marks a `[[target]]` link.
-pub fn open_link(resolver: &dyn LinkResolver, target: &str, wikilink: bool) -> OpenedLink {
-    let resolved = if wikilink {
-        resolver.resolve_wikilink(target).map(ResolvedLink::File)
-    } else {
-        resolver.resolve_link(target)
-    };
-    match resolved {
-        Some(ResolvedLink::File(file)) => OpenedLink::File(file),
-        Some(ResolvedLink::External(url)) => OpenedLink::External(url),
-        None => OpenedLink::NotFound {
-            target: target.into(),
-        },
-    }
+pub struct OpenedLink {
+    /// The link's target as the note writes it: a wikilink's target, or a
+    /// Markdown link's destination.
+    pub target: String,
+    /// Whether it's a `[[target]]` link.
+    pub wikilink: bool,
+    /// Whether to open it in a new tab and keep the current one, as
+    /// Cmd-click, Ctrl-click and a middle-click ask.
+    pub new_tab: bool,
 }
