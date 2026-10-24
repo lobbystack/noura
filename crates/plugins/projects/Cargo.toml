@@ -1,0 +1,22 @@
+[package]
+name = "projects-plugin"
+description = "The Projects plugin: the project object type, its page with the project's tasks, board, notes, files and dated work, the Projects page and the commands other plugins call."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# This month's dated work in the device's time zone. Plugins get no file
+# access, so the time zone database is compiled in instead of read from
+# the system, and nothing reads the system's clock or zone.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
+plugin-sdk = { version = "0.2.0", path = "../../plugin-sdk" }
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

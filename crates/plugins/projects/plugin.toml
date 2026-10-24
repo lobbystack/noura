@@ -1,0 +1,24 @@
+id = "projects"
+name = "Projects"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "projects_plugin.wasm"
+platforms = ["desktop"]
+
+# Lists the notes and files in each project's folder.
+[[capabilities]]
+name = "workspace-read"
+
+# The project type and its properties panel.
+[[capabilities]]
+name = "object-types"
+
+# The Projects page.
+[[capabilities]]
+name = "views"
+
+# Create and update for other plugins, and the Tasks commands that list,
+# add and move a project's tasks.
+[[capabilities]]
+name = "commands"
+targets = ["tasks"]

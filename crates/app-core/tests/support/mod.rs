@@ -2,7 +2,9 @@
 
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
+pub mod calendar;
 pub mod plugins;
+pub mod projects;
 pub mod recipes;
 pub mod tasks;
 

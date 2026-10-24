@@ -119,6 +119,12 @@ interface workspace {
 
   // The object with this stable ID, wherever its file is now.
   read-object: func(id: string) -> result<object, error>;
+
+  // The object the file at a workspace-relative path holds. It reads a
+  // file whose ID another file shares too, as after a copy in another app,
+  // which `read-object` refuses. A file that holds no object returns
+  // `not-found`.
+  read-object-at: func(path: string) -> result<object, error>;
 }
 
 // Requests to the HTTPS hosts the manifest's `network` capability lists.
@@ -748,7 +754,8 @@ interface objects {
     // Where to write the file, relative to the workspace, ending in `.md`.
     // Without it the file goes in a folder named after the type, as
     // `recipes/<title>.md` for `recipe`, with a number added when the
-    // name is taken.
+    // name is taken. A project gets a folder of its own there, as
+    // `projects/<title>/<title>.md`.
     path: option<string>,
     // The Markdown after the frontmatter.
     body: string,
@@ -801,8 +808,8 @@ interface object-types {
   record object-type {
     // A lowercase letter followed by lowercase letters or hyphens. Noura
     // keeps its own types, such as `note`, holds `task` for the Tasks
-    // plugin, and a type another running plugin registered stays that
-    // plugin's.
+    // plugin and `project` for the Projects plugin, and a type another
+    // running plugin registered stays that plugin's.
     name: string,
     // The type's properties in the workspace format's schema
     // declaration, as JSON.

@@ -915,6 +915,10 @@ impl Plugins {
         } else {
             self.stop(id);
             self.problems.remove(id);
+            // What the other plugins show may come from this one's
+            // commands, as a project's tasks come from Tasks. A plugin
+            // that starts has them draw again once it registered.
+            self.draw_again(Some(id));
         }
         self.changed();
         Ok(())
@@ -1129,6 +1133,7 @@ impl Plugins {
             return;
         };
         running.outstanding = running.outstanding.saturating_sub(1);
+        let started = outcome.registrations.is_some();
         if let Some(registrations) = outcome.registrations {
             running.registrations = registrations;
         }
@@ -1200,6 +1205,12 @@ impl Plugins {
                 outcome.id.clone(),
                 "It failed too often and stopped for this session.".to_owned(),
             );
+        }
+        // The plugin registered its types and commands, so what the other
+        // plugins show from its commands, as a project's tasks from Tasks,
+        // may change.
+        if started {
+            self.draw_again(Some(&outcome.id));
         }
         self.changed();
     }
@@ -1469,14 +1480,32 @@ impl Plugins {
     }
 
     /// The files changed, as the listing `listing` shows: each running
-    /// plugin draws its views again, once per listing.
+    /// plugin draws its views again, once per listing, and its properties
+    /// panels the next time they show, since a panel may show other files
+    /// than its object's, as a project's shows its tasks.
     pub(crate) fn files_changed(&mut self, listing: u64) {
         if listing <= self.listing_drawn {
             return;
         }
         self.listing_drawn = listing;
-        let ids: Vec<String> = self.running.keys().cloned().collect();
+        self.draw_again(None);
+    }
+
+    /// Have each running plugin but `except` draw its views again, and
+    /// its properties panels the next time they show.
+    fn draw_again(&mut self, except: Option<&str>) {
+        let ids: Vec<String> = self
+            .running
+            .keys()
+            .filter(|id| Some(id.as_str()) != except)
+            .cloned()
+            .collect();
         for id in ids {
+            if let Some(running) = self.running.get_mut(&id) {
+                for panel in running.panels.values_mut() {
+                    panel.drawn = Drawn::Nothing;
+                }
+            }
             self.send(&id, Job::Redraw);
         }
     }

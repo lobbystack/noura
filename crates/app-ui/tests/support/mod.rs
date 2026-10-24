@@ -122,10 +122,12 @@ pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
 /// trashed items land in the workspace's trash folder, where tests can
 /// find them. Its clock says 9 am until a test sets another hour, in
 /// Toronto's time zone, and it formats dates and times in US English.
+/// Plugins read this computer's clock until a test stops it.
 pub struct FakeSystem {
     platform: Platform,
     pub calls: Mutex<Vec<String>>,
     hour: AtomicU8,
+    now: Mutex<Option<jiff::Timestamp>>,
 }
 
 impl FakeSystem {
@@ -134,6 +136,7 @@ impl FakeSystem {
             platform,
             calls: Mutex::new(Vec::new()),
             hour: AtomicU8::new(9),
+            now: Mutex::new(None),
         })
     }
 
@@ -144,6 +147,11 @@ impl FakeSystem {
     /// Set the system's clock to `hour` o'clock.
     pub fn set_hour(&self, hour: u8) {
         self.hour.store(hour, Ordering::SeqCst);
+    }
+
+    /// Stop the clock plugins read at `instant`, an RFC 3339 instant.
+    pub fn set_now(&self, instant: &str) {
+        *self.now.lock().unwrap() = Some(instant.parse().unwrap());
     }
 
     fn record(&self, call: String) {
@@ -196,6 +204,13 @@ impl System for FakeSystem {
 
     fn local_hour(&self) -> u8 {
         self.hour.load(Ordering::SeqCst)
+    }
+
+    fn now(&self) -> jiff::Timestamp {
+        self.now
+            .lock()
+            .unwrap()
+            .unwrap_or_else(jiff::Timestamp::now)
     }
 
     /// Toronto's rules, whatever zone the machine running the tests is in.
