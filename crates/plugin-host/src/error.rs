@@ -18,8 +18,12 @@ pub enum InstallErrorCode {
     AlreadyInstalled,
     /// The entry component's path leaves the plugin's folder.
     EntryOutsideFolder,
-    /// The entry component isn't in the folder.
+    /// The entry component isn't in the folder or the archive.
     EntryMissing,
+    /// The release archive isn't a zip archive Noura can read, or holds a
+    /// link, a path that leaves the plugin's folder, or a file too large
+    /// to install.
+    InvalidArchive,
     /// The entry holds code compiled elsewhere, which the host never runs.
     PrecompiledCode,
     /// The entry isn't a valid WebAssembly component.
@@ -47,6 +51,7 @@ impl InstallErrorCode {
             Self::AlreadyInstalled => "already_installed",
             Self::EntryOutsideFolder => "entry_outside_folder",
             Self::EntryMissing => "entry_missing",
+            Self::InvalidArchive => "invalid_archive",
             Self::PrecompiledCode => "precompiled_code",
             Self::NotAComponent => "not_a_component",
             Self::ForbiddenImport => "forbidden_import",

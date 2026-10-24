@@ -65,6 +65,16 @@ impl App {
         self.listeners.emit(Change::Plugins);
     }
 
+    /// Open the install dialog for the plugin in the release archive
+    /// `archive`, a zip file holding its manifest and component, as
+    /// [`Self::review_plugin_folder`] does for a folder. Noura compiles the
+    /// component itself and never reads the archive again for new builds.
+    pub fn review_plugin_archive(&mut self, archive: PathBuf) {
+        let review = self.session.plugins().review_archive(&archive);
+        self.plugin_install = Some(review);
+        self.listeners.emit(Change::Plugins);
+    }
+
     /// The install dialog, while it is open.
     pub fn plugin_install(&self) -> Option<&PluginInstall> {
         self.plugin_install.as_ref()

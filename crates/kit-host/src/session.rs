@@ -44,6 +44,11 @@ impl Session {
                 self.app.review_plugin_folder(folder);
                 self.approve()?
             }
+            "installArchive" => {
+                let archive = PathBuf::from(text(request, "archive")?);
+                self.app.review_plugin_archive(archive);
+                self.approve()?
+            }
             "plugin" => {
                 let id = text(request, "plugin")?;
                 self.row(id).map_or(Value::Null, |row| plugin_row(&row))

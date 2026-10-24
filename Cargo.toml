@@ -195,6 +195,9 @@ url = "2"
 # Generates plugin-sdk's Rust bindings for `noura:plugin`.
 wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
 libc = "0.2"
+# Reads plugin release archives. Only deflate, the compression the author
+# kit's archives use, so none of the other codecs build.
+zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
 # ISpellChecker, the Windows spell checking API, which windows-sys leaves out
 # because it is COM.
 windows = "0.62.2"

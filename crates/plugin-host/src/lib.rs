@@ -12,6 +12,7 @@
 //! Object types that plugins register go in one [`ObjectTypes`] registry
 //! per workspace.
 
+mod archive;
 mod error;
 mod host;
 mod instance;

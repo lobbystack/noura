@@ -49,6 +49,8 @@ serde_yaml_ng.workspace = true
 tempfile.workspace = true
 # A test reads every log line to check that a PDF's password stays out.
 tracing-subscriber.workspace = true
+# Writes plugin release archives for the install tests.
+zip.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

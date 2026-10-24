@@ -25,7 +25,8 @@ use wasmtime::component::Component;
 
 use crate::{
     Capability, InstallError, InstallErrorCode, PluginManifest, RunningPlugin, Services,
-    manifest::read_manifest_bytes,
+    archive::Archive,
+    manifest::{parse_manifest_bytes, read_manifest_bytes},
     runtime::{self, Backend, EpochTicker, Limits},
 };
 
@@ -53,11 +54,13 @@ pub struct PluginHost {
     library: PathBuf,
 }
 
-/// A plugin folder the host read and compiled in memory, waiting for you
-/// to approve its capabilities. Dropping it leaves nothing behind.
+/// A plugin folder or release archive the host read and compiled in
+/// memory, waiting for you to approve its capabilities. Dropping it leaves
+/// nothing behind.
 #[derive(Clone)]
 pub struct Candidate {
     manifest: PluginManifest,
+    /// The folder or the archive it came from.
     folder: PathBuf,
     manifest_bytes: Vec<u8>,
     component_bytes: Vec<u8>,
@@ -69,7 +72,7 @@ impl Candidate {
         &self.manifest
     }
 
-    /// The folder it came from.
+    /// The folder or the release archive it came from.
     pub fn folder(&self) -> &Path {
         &self.folder
     }
@@ -144,13 +147,7 @@ impl PluginHost {
     pub fn inspect(&self, folder: &Path) -> Result<Candidate, InstallError> {
         let (manifest, manifest_bytes) = read_manifest_bytes(folder)?;
         if self.is_installed(&manifest.id) {
-            return Err(InstallError::new(
-                InstallErrorCode::AlreadyInstalled,
-                format!(
-                    "A plugin with the ID {} is installed already. Uninstall it first.",
-                    manifest.id
-                ),
-            ));
+            return Err(already_installed(&manifest.id));
         }
         self.candidate(folder, manifest, manifest_bytes)
     }
@@ -209,6 +206,20 @@ impl PluginHost {
         Ok((manifest, manifest_bytes, component_bytes))
     }
 
+    /// Read the release archive `archive`, a zip file holding the
+    /// manifest and the component, and compile its component, as
+    /// [`Self::inspect`] does for a folder. Refuses a plugin whose ID is
+    /// installed already.
+    pub fn inspect_archive(&self, archive: &Path) -> Result<Candidate, InstallError> {
+        let mut zip = Archive::open(archive)?;
+        let (manifest, manifest_bytes) = parse_manifest_bytes(zip.manifest()?)?;
+        if self.is_installed(&manifest.id) {
+            return Err(already_installed(&manifest.id));
+        }
+        let component_bytes = zip.component(&manifest.entry, MAX_COMPONENT_BYTES)?;
+        self.candidate_from(archive, manifest, manifest_bytes, component_bytes)
+    }
+
     fn candidate(
         &self,
         folder: &Path,
@@ -217,6 +228,18 @@ impl PluginHost {
     ) -> Result<Candidate, InstallError> {
         let entry = resolve_entry(folder, &manifest.entry)?;
         let component_bytes = read_component(&entry, &manifest.entry)?;
+        self.candidate_from(folder, manifest, manifest_bytes, component_bytes)
+    }
+
+    /// A candidate from the manifest and component read at `source`, a
+    /// folder or an archive, once its component compiled.
+    fn candidate_from(
+        &self,
+        source: &Path,
+        manifest: PluginManifest,
+        manifest_bytes: Vec<u8>,
+        component_bytes: Vec<u8>,
+    ) -> Result<Candidate, InstallError> {
         if Engine::detect_precompiled(&component_bytes).is_some() {
             return Err(InstallError::new(
                 InstallErrorCode::PrecompiledCode,
@@ -230,7 +253,7 @@ impl PluginHost {
         let component = self.compile(&component_bytes, &manifest.entry)?;
         Ok(Candidate {
             manifest,
-            folder: folder.to_owned(),
+            folder: source.to_owned(),
             manifest_bytes,
             component_bytes,
             component,
@@ -262,10 +285,7 @@ impl PluginHost {
     pub fn install(&self, candidate: &Candidate) -> Result<(), InstallError> {
         let id = &candidate.manifest.id;
         if self.is_installed(id) {
-            return Err(InstallError::new(
-                InstallErrorCode::AlreadyInstalled,
-                format!("A plugin with the ID {id} is installed already. Uninstall it first."),
-            ));
+            return Err(already_installed(id));
         }
         let work = self.write_work_folder(candidate)?;
         std::fs::rename(&work, self.library.join(id)).map_err(|error| {
@@ -503,6 +523,13 @@ impl PluginHost {
             }
         }
     }
+}
+
+fn already_installed(id: &str) -> InstallError {
+    InstallError::new(
+        InstallErrorCode::AlreadyInstalled,
+        format!("A plugin with the ID {id} is installed already. Uninstall it first."),
+    )
 }
 
 fn not_installed(id: &str) -> InstallError {

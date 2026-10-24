@@ -31,6 +31,8 @@ wasmtime.workspace = true
 # The workspace format's date and date-time rules, which input values
 # follow, and the envelope and schemas of the object types plugins register.
 workspace-format = { version = "0.2.0", path = "../workspace-format" }
+# Release archives: a manifest and a component in one zip file.
+zip.workspace = true
 
 [dev-dependencies]
 egui = { workspace = true, features = ["default_fonts"] }

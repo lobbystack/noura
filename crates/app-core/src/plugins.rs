@@ -1,5 +1,6 @@
-//! The plugins service: installs plugins from folders once you approve
-//! their capabilities, keeps those approvals in this device's app data,
+//! The plugins service: installs plugins from folders and release archives
+//! once you approve their capabilities, keeps those approvals in this
+//! device's app data,
 //! turns plugins on and off in the open workspace's manifest, runs the
 //! ones that are on, and reloads a plugin when a new build lands in its
 //! folder.
@@ -120,7 +121,7 @@ pub struct PluginRow {
     /// The manifest's name, or the ID when it isn't installed here.
     pub name: String,
     pub version: Option<String>,
-    /// The folder it was installed from.
+    /// The folder or release archive it was installed from.
     pub folder: Option<String>,
     /// What it may use on this device: each capability, network host and
     /// command target it declares that you approved.
@@ -144,11 +145,12 @@ pub struct PluginRow {
     pub update: Vec<CapabilityLine>,
 }
 
-/// The install dialog: a plugin folder, read and compiled but not run,
-/// with the capabilities it asks for, or why Noura won't install it.
+/// The install dialog: a plugin folder or release archive, read and
+/// compiled but not run, with the capabilities it asks for, or why Noura
+/// won't install it.
 #[derive(Clone)]
 pub struct PluginInstall {
-    /// The folder you chose.
+    /// The folder or the archive you chose.
     pub folder: String,
     pub id: String,
     pub name: String,
@@ -160,6 +162,8 @@ pub struct PluginInstall {
     /// set.
     pub problem: Option<String>,
     candidate: Option<Candidate>,
+    /// `folder` names a release archive.
+    archive: bool,
 }
 
 impl std::fmt::Debug for PluginInstall {
@@ -218,6 +222,21 @@ struct Record {
     /// It ships with Noura, and you approved it on the first-run screen.
     #[serde(default)]
     shipped: bool,
+    /// `folder` names the release archive it came from, which holds one
+    /// build, so nothing watches it for new ones.
+    #[serde(default)]
+    archive: bool,
+}
+
+/// Where an installed plugin came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// A folder, which Noura watches for new builds.
+    Folder,
+    /// A release archive.
+    Archive,
+    /// The folder of the plugins that ship with Noura.
+    Shipped,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -551,7 +570,9 @@ impl Plugins {
             match host.installed(&id) {
                 Ok((manifest, digest)) => {
                     self.manifests.insert(id.clone(), manifest);
-                    self.watch(&id, &record.folder, digest);
+                    if !record.archive {
+                        self.watch(&id, &record.folder, digest);
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -769,7 +790,17 @@ impl Plugins {
     /// Read the plugin folder `folder` for the install dialog, without
     /// running any of its code.
     pub(crate) fn review(&mut self, folder: &Path) -> PluginInstall {
-        let shown = folder.to_string_lossy().into_owned();
+        self.review_source(folder, false)
+    }
+
+    /// Read the release archive `archive` for the install dialog, as
+    /// [`Self::review`] reads a folder.
+    pub(crate) fn review_archive(&mut self, archive: &Path) -> PluginInstall {
+        self.review_source(archive, true)
+    }
+
+    fn review_source(&mut self, source: &Path, archive: bool) -> PluginInstall {
+        let shown = source.to_string_lossy().into_owned();
         let refused = |problem: String| PluginInstall {
             folder: shown.clone(),
             id: String::new(),
@@ -778,15 +809,21 @@ impl Plugins {
             capabilities: Vec::new(),
             problem: Some(problem),
             candidate: None,
+            archive,
         };
-        let Some(path) = folder.to_str() else {
+        let Some(path) = source.to_str() else {
             return refused(AppError::unsupported_path().message);
         };
         let host = match self.host() {
             Ok(host) => host,
             Err(error) => return refused(error.message),
         };
-        match host.inspect(folder) {
+        let inspected = if archive {
+            host.inspect_archive(source)
+        } else {
+            host.inspect(source)
+        };
+        match inspected {
             Ok(candidate) => {
                 let manifest = candidate.manifest();
                 PluginInstall {
@@ -797,6 +834,7 @@ impl Plugins {
                     capabilities: lines(&manifest.capabilities),
                     problem: None,
                     candidate: Some(candidate),
+                    archive,
                 }
             }
             Err(error) => refused(error.message),
@@ -812,15 +850,21 @@ impl Plugins {
                 install.problem.clone().unwrap_or_default(),
             ));
         };
-        self.install_candidate(candidate, &install.folder, false)
+        let source = if install.archive {
+            Source::Archive
+        } else {
+            Source::Folder
+        };
+        self.install_candidate(candidate, &install.folder, source)
     }
 
     fn install_candidate(
         &mut self,
         candidate: &Candidate,
         folder: &str,
-        shipped: bool,
+        source: Source,
     ) -> Result<(), AppError> {
+        let shipped = source == Source::Shipped;
         let host = self.host()?;
         host.install(candidate)
             .map_err(|error| from_install(&error))?;
@@ -829,6 +873,7 @@ impl Plugins {
             folder: folder.to_owned(),
             approved: candidate.manifest().capabilities.clone(),
             shipped,
+            archive: source == Source::Archive,
         };
         if let Err(error) = self.save_records(|records| {
             records.plugins.insert(id.clone(), record);
@@ -841,7 +886,11 @@ impl Plugins {
         }
         self.manifests
             .insert(id.clone(), candidate.manifest().clone());
-        self.watch(&id, folder, candidate.digest());
+        // An archive holds one build, so only a folder is watched for new
+        // ones.
+        if source != Source::Archive {
+            self.watch(&id, folder, candidate.digest());
+        }
         if self.enabled().contains(&id) {
             self.start(&id);
         }
@@ -1665,7 +1714,7 @@ impl Plugins {
                     let candidate = host
                         .inspect(&folder)
                         .map_err(|error| from_install(&error))?;
-                    self.install_candidate(&candidate, path, true)
+                    self.install_candidate(&candidate, path, Source::Shipped)
                 });
             if let Err(error) = installed {
                 tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
