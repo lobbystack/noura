@@ -1,9 +1,10 @@
 //! The editor's link lookups, answered from the note's links in
-//! `app-core`: web addresses lead out of Noura, and every other target
-//! resolves in the workspace or leads nowhere.
+//! `app-core`: web addresses lead out of Noura, in wikilinks too, every
+//! other target resolves in the workspace or leads nowhere, and `[[`
+//! suggests the workspace's files.
 
 use app_core::{NoteEmbedState, NoteLinks, is_external_link};
-use editor_egui::resolvers::{EmbeddedNote, LinkResolver, LinkState, ResolvedLink};
+use editor_egui::resolvers::{EmbeddedNote, LinkResolver, LinkState, LinkSuggestion, ResolvedLink};
 
 /// What a link that names no file in the workspace says.
 const NOT_IN_WORKSPACE: &str = "No file in this workspace matches this link.";
@@ -36,12 +37,15 @@ impl LinkResolver for WorkspaceLinks {
         }
     }
 
+    /// A wikilink to a web address opens it in the browser, as a click on
+    /// it does, so it draws as a link that leads somewhere.
     fn wikilink_state(&self, title: &str) -> LinkState {
-        match self.resolve_wikilink(title) {
-            Some(_) => LinkState::Normal,
-            None => LinkState::Broken {
+        if self.links.leads_somewhere(title) {
+            LinkState::Normal
+        } else {
+            LinkState::Broken {
                 message: NOT_IN_WORKSPACE.into(),
-            },
+            }
         }
     }
 
@@ -58,6 +62,19 @@ impl LinkResolver for WorkspaceLinks {
                 text: note.text,
             }),
         }
+    }
+
+    /// The workspace files `app-core` suggests for what's typed.
+    fn suggest(&self, typed: &str) -> Vec<LinkSuggestion> {
+        self.links
+            .suggest(typed)
+            .into_iter()
+            .map(|found| LinkSuggestion {
+                name: found.name,
+                folder: found.folder,
+                link: found.link,
+            })
+            .collect()
     }
 
     fn seq(&self) -> u64 {

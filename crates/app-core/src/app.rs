@@ -42,6 +42,7 @@ mod file_actions;
 mod finder;
 mod ignored_files;
 mod inbox;
+mod links;
 mod notes;
 mod palette;
 mod plugins;
