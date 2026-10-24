@@ -14,13 +14,17 @@ use app_core::sync::device::{DeviceSignIn, Joined, Pause, SignInEnd, StoredDevic
 use sync_store::Backend;
 use sync_support::{MemorySecrets, Server};
 
+/// What runs before the poll that follows a wait: it may start a task the
+/// wait then finishes.
+type OnWait = Box<dyn FnMut(usize) -> Option<tokio::task::JoinHandle<()>> + Send>;
+
 /// Waits by moving the server's clock, so each poll arrives on time, and
 /// runs `on_wait` before the poll that follows the wait with that index.
 struct ServerClock<B: Backend> {
     server: Arc<sync_store::Store<B>>,
     advance: bool,
     waits: Mutex<Vec<u64>>,
-    on_wait: Mutex<Box<dyn FnMut(usize) -> Option<tokio::task::JoinHandle<()>> + Send>>,
+    on_wait: Mutex<OnWait>,
 }
 
 impl<B: Backend> ServerClock<B> {

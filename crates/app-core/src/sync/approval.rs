@@ -195,7 +195,7 @@ impl Candidate {
             .ok_or_else(|| SyncError::Invalid("the credential store lost the device".into()))?;
         stored.reference_head = Some(approver_head);
         stored.save(store)?;
-        Ok(stored.credentials()?)
+        stored.credentials()
     }
 }
 

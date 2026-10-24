@@ -15,13 +15,15 @@ use serde::{Deserialize, Serialize};
 use sync_protocol::types::Id;
 
 use super::{
-    AccountAction, AccountBackend, AccountPhase, AccountScreen, ApprovalView, DeviceEntry, KitView,
-    RecoveryView, RemovalView, RequestEntry, SignOutView, SignedInView, fingerprint,
+    AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
+    DeviceEntry, KitView, RecoveryView, RemovalView, RequestEntry, SignOutView, SignedInView,
+    fingerprint,
 };
 use crate::sync::approval::{Candidate, CandidateStep, OutstandingOffer, PendingDevice};
 use crate::sync::device::{DeviceSignIn, Joined, SignedIn, StoredDevice, join, server_address};
 use crate::sync::device_list::{AddedBy, DeviceAlert};
 use crate::sync::recovery::{Recovery, open_kit};
+use crate::sync::upkeep::Upkeep;
 use crate::sync::{DeviceCredentials, KeptHeads, RemoteWorkspace, Secrets, SyncError, SyncService};
 
 /// The file in the app's data folder that remembers the server address.
@@ -94,6 +96,7 @@ impl LiveAccount {
             offer: None,
             recovery: None,
             last_refresh: None,
+            upkeep: Upkeep::default(),
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -160,6 +163,7 @@ struct Driver {
     offer: Option<OutstandingOffer>,
     recovery: Option<Recovery>,
     last_refresh: Option<Instant>,
+    upkeep: Upkeep,
 }
 
 /// What a failed action tells you.
@@ -340,29 +344,36 @@ impl Driver {
         let alerts = list
             .alerts
             .iter()
-            .map(|alert| match alert {
-                DeviceAlert::UnknownCard { card, .. } => format!(
-                    "A device that nobody approved signed in to your account: {}.",
-                    fingerprint(&card.fingerprint())
-                ),
-                DeviceAlert::UnverifiedWorkspace { .. } => {
-                    "Noura can't verify one of your workspaces on this server.".to_owned()
-                }
-                DeviceAlert::Link {
-                    kind,
-                    signer,
-                    card,
-                    recovery,
-                    ..
-                } => format!(
-                    "Device {} changed your account ({kind}) for {} {}.",
-                    short(signer),
-                    if *recovery { "recovery kit" } else { "device" },
-                    fingerprint(&card.fingerprint())
-                ),
-                DeviceAlert::PolicyChange { kind, signer, .. } => {
-                    format!("Device {} changed a workspace ({kind}).", short(signer))
-                }
+            .map(|alert| {
+                let text = match alert {
+                    DeviceAlert::UnknownCard { card, .. } => format!(
+                        "A device that nobody approved signed in to your account: {}.",
+                        fingerprint(&card.fingerprint())
+                    ),
+                    DeviceAlert::UnverifiedWorkspace { .. } => {
+                        "Noura can't verify one of your workspaces on this server.".to_owned()
+                    }
+                    DeviceAlert::Link {
+                        kind,
+                        signer,
+                        card,
+                        recovery,
+                        ..
+                    } => format!(
+                        "Device {} changed your account ({kind}) for {} {}.",
+                        short(signer),
+                        if *recovery { "recovery kit" } else { "device" },
+                        fingerprint(&card.fingerprint())
+                    ),
+                    DeviceAlert::PolicyChange { kind, signer, .. } => {
+                        format!("Device {} changed a workspace ({kind}).", short(signer))
+                    }
+                };
+                let end_sessions = match alert {
+                    DeviceAlert::UnknownCard { card, .. } => Some(card.device),
+                    _ => None,
+                };
+                AlertEntry { text, end_sessions }
             })
             .collect();
         let account_fingerprint = fingerprint(&list.account_fingerprint);
@@ -377,7 +388,7 @@ impl Driver {
             screen.busy = false;
             let mut view = match std::mem::take(&mut screen.phase) {
                 AccountPhase::SignedIn(view) => view,
-                _ => SignedInView::default(),
+                _ => Box::default(),
             };
             view.account_fingerprint = account_fingerprint;
             view.devices = devices;
@@ -641,10 +652,10 @@ impl Driver {
                 self.service = Some(service);
                 self.workspaces = workspaces;
                 self.shared.update(|screen| {
-                    screen.phase = AccountPhase::SignedIn(SignedInView {
+                    screen.phase = AccountPhase::SignedIn(Box::new(SignedInView {
                         offer_kit: true,
                         ..SignedInView::default()
-                    });
+                    }));
                 });
                 self.refresh().await?;
             }
@@ -738,8 +749,40 @@ impl Driver {
             .is_none_or(|at| at.elapsed() > Duration::from_secs(10));
         if self.service.is_some() && self.offer.is_none() && stale {
             self.refresh().await?;
+            self.keep_up().await;
         }
         Ok(())
+    }
+
+    /// The key upkeep that waits its turn (§8, §9): later heads of member
+    /// accounts, pending rotations and re-wrap requests in each workspace,
+    /// each carried out once its random wait passes. A failure waits for
+    /// the next round and goes to the diagnostic log.
+    async fn keep_up(&mut self) {
+        let Some(service) = self.service.as_mut() else {
+            return;
+        };
+        let mut waiting = Vec::new();
+        for remote in self.workspaces.iter_mut() {
+            match service.upkeep_waiting(remote).await {
+                Ok(tasks) => waiting.extend(tasks),
+                Err(error) => {
+                    tracing::warn!(kind = ?error.code(), "key upkeep couldn't read a workspace");
+                }
+            }
+        }
+        for task in self.upkeep.plan(waiting, Instant::now()) {
+            let Some(remote) = self
+                .workspaces
+                .iter_mut()
+                .find(|remote| remote.workspace == task.workspace())
+            else {
+                continue;
+            };
+            if let Err(error) = service.run_upkeep(remote, &task).await {
+                tracing::warn!(kind = ?error.code(), "key upkeep failed");
+            }
+        }
     }
 
     /// After the browser sign-in: the first device of an account starts its

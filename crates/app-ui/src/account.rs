@@ -262,7 +262,12 @@ fn signed_in_section(
         fingerprint_line(ui, &view.account_fingerprint);
     });
     for warning in &view.alerts {
-        alert(ui, warning);
+        alert(ui, &warning.text);
+        if let Some(device) = warning.end_sessions
+            && ui.button("Sign that device out").clicked()
+        {
+            actions.push(AccountAction::EndSessions(device));
+        }
     }
     if !view.requests.is_empty() || view.approval.is_some() {
         group(ui, "New devices", |ui| match &view.approval {

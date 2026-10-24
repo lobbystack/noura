@@ -9,8 +9,8 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use app_core::account::{
-    AccountAction, AccountBackend, AccountPhase, AccountScreen, ApprovalView, DeviceEntry, Id,
-    KitView, RequestEntry, SignOutView, SignedInView,
+    AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
+    DeviceEntry, Id, KitView, RequestEntry, SignOutView, SignedInView,
 };
 use app_core::sync::recovery::KIT_WARNING;
 use app_core::{App, settings_section};
@@ -83,7 +83,7 @@ fn harness_with(
 fn signed_in(view: SignedInView) -> AccountScreen {
     AccountScreen {
         server: "https://sync.example.com".into(),
-        phase: AccountPhase::SignedIn(view),
+        phase: AccountPhase::SignedIn(Box::new(view)),
         ..AccountScreen::default()
     }
 }
@@ -176,6 +176,45 @@ fn signed_in_shows_the_account_its_devices_and_their_actions() {
     assert_eq!(
         account.taken(),
         vec![AccountAction::Remove(Id([2; 16])), AccountAction::SignOut]
+    );
+    assert!(harness.unnamed_widgets().is_empty());
+}
+
+#[test]
+fn the_device_list_alerts_and_signs_out_a_device_nobody_approved() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let unknown = format!("A device that nobody approved signed in to your account: {PHONE}.");
+    let changed = "Device 1111 2222 changed a workspace (set_role).";
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        alerts: vec![
+            AlertEntry {
+                text: unknown.clone(),
+                end_sessions: Some(Id([9; 16])),
+            },
+            AlertEntry {
+                text: changed.into(),
+                end_sessions: None,
+            },
+        ],
+        ..SignedInView::default()
+    }));
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_role_and_label(Role::Alert, &unknown);
+    harness.get_by_role_and_label(Role::Alert, changed);
+    let sign_outs = harness
+        .query_all_by_role_and_label(Role::Button, "Sign that device out")
+        .count();
+    assert_eq!(sign_outs, 1, "only the unknown card's alert offers it");
+    harness
+        .get_by_role_and_label(Role::Button, "Sign that device out")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(
+        account.taken(),
+        vec![AccountAction::EndSessions(Id([9; 16]))]
     );
     assert!(harness.unnamed_widgets().is_empty());
 }

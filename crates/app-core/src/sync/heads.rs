@@ -19,7 +19,7 @@ use sync_key_envelope::v2::{EnvelopeHeader, wrap};
 use sync_protocol::codec::{Encode, Nested, Sorted};
 use sync_protocol::crypto::random_nonce;
 use sync_protocol::keys::{EpochParams, build_epoch};
-use sync_protocol::messages::{KeyRecord, MAX_BODY, RecordRef};
+use sync_protocol::messages::{KeyRecord, MAX_BODY, RecordRef, RewrapRequest};
 use sync_protocol::policy::{AccountChains, Snapshot};
 use sync_protocol::records::{
     AccountHead, Envelope, EpochBundle, PolicyChange, PolicyKind, Signed,
@@ -513,47 +513,82 @@ impl SyncService {
         &mut self,
         remote: &mut RemoteWorkspace,
     ) -> Result<Vec<RewrapAnswer>, SyncError> {
+        let mut answers = Vec::new();
+        for request in self.open_rewraps(remote).await? {
+            answers.push(self.answer_rewrap(remote, &request).await?);
+        }
+        Ok(answers)
+    }
+
+    /// The open re-wrap requests of the workspace domain's current epoch
+    /// that this device may answer: another device's, which its verified
+    /// policy lets read the domain (§9).
+    pub async fn open_rewraps(
+        &mut self,
+        remote: &RemoteWorkspace,
+    ) -> Result<Vec<RewrapRequest>, SyncError> {
         let device = self.credentials.keys.device();
         let current = self.client.current_keys(remote.workspace, device).await?;
         let epoch = remote.epoch();
-        let mut answers = Vec::new();
-        for entry in current.entries.0 {
-            let KeyRecord::Rewrap(request) = entry.record else {
-                continue;
-            };
-            let snapshot = remote.policy.head_snapshot();
-            let authorized = request.device != device
-                && request.epoch == epoch
-                && snapshot.can_read(&request.device, &remote.domain);
-            if !authorized {
-                continue;
-            }
-            let card = &snapshot.devices[&request.device].card;
-            let envelope = wrap(
-                &EnvelopeHeader {
-                    workspace: remote.workspace,
-                    domain: remote.domain,
-                    epoch,
-                    wrapping_device: device,
-                },
-                &remote.key,
-                card,
-                &self.credentials.keys,
-            )
-            .map_err(|e| SyncError::Invalid(e.to_string()))?;
-            match self
-                .client
-                .push(remote.workspace, vec![RecordRef::Envelope(envelope)])
-                .await
-            {
-                Ok(_) => answers.push(RewrapAnswer::Answered(request.device)),
-                Err(SyncError::Refused { code, .. }) if code == "forbidden" => {
-                    answers.push(RewrapAnswer::Refused(request.device))
+        let snapshot = remote.policy.head_snapshot();
+        Ok(current
+            .entries
+            .0
+            .into_iter()
+            .filter_map(|entry| match entry.record {
+                KeyRecord::Rewrap(request)
+                    if request.device != device
+                        && request.epoch == epoch
+                        && snapshot.can_read(&request.device, &remote.domain) =>
+                {
+                    Some(request)
                 }
-                Err(error) => return Err(error),
-            }
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// Wraps the verified key of the domain's current epoch for the device
+    /// that posted `request` and pushes the envelope alone (§9).
+    pub async fn answer_rewrap(
+        &mut self,
+        remote: &RemoteWorkspace,
+        request: &RewrapRequest,
+    ) -> Result<RewrapAnswer, SyncError> {
+        // The device holds the verified key of the current epoch alone; an
+        // older request closed when the next epoch committed.
+        if request.epoch != remote.epoch() {
+            return Ok(RewrapAnswer::Refused(request.device));
         }
-        Ok(answers)
+        let snapshot = remote.policy.head_snapshot();
+        let card = &snapshot
+            .devices
+            .get(&request.device)
+            .ok_or(SyncError::Check("sync_policy_unauthorized"))?
+            .card;
+        let envelope = wrap(
+            &EnvelopeHeader {
+                workspace: remote.workspace,
+                domain: remote.domain,
+                epoch: request.epoch,
+                wrapping_device: self.credentials.keys.device(),
+            },
+            &remote.key,
+            card,
+            &self.credentials.keys,
+        )
+        .map_err(|e| SyncError::Invalid(e.to_string()))?;
+        match self
+            .client
+            .push(remote.workspace, vec![RecordRef::Envelope(envelope)])
+            .await
+        {
+            Ok(_) => Ok(RewrapAnswer::Answered(request.device)),
+            Err(SyncError::Refused { code, .. }) if code == "forbidden" => {
+                Ok(RewrapAnswer::Refused(request.device))
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

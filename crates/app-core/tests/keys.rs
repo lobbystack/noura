@@ -9,9 +9,11 @@
 mod sync_support;
 
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 use app_core::sync::SyncError;
 use app_core::sync::heads::RewrapAnswer;
+use app_core::sync::upkeep::{KEY_HOLDER_WAIT, Task, Upkeep};
 use sync_protocol::codec::{Decode, Encode};
 use sync_protocol::keys::{EpochParams, build_epoch};
 use sync_protocol::messages::{KeyRecord, KeysResponse};
@@ -65,6 +67,112 @@ async fn a_rewrap_reaches_the_readers_and_closes_once_fetched() {
             .iter()
             .any(|e| matches!(e.record, KeyRecord::Rewrap(_))),
         "the requester's fetch closed the request"
+    );
+}
+
+/// The upkeep that waits its turn (§8, §9): a head of the device's own
+/// account falls due within 60 seconds and a re-wrap answer within 60, and
+/// once a removal's rotation committed, another key holder finds no
+/// rotation pending and skips it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upkeep_waits_its_turn_then_records_heads_and_answers_rewraps() {
+    let server = Server::start().await;
+    let mut laptop = first_desktop(&server, "cy@example.com").await;
+    let mut workspace = laptop.service.create_workspace("Notes").await.unwrap();
+    let mut phone = approve(&server, &mut laptop, std::slice::from_mut(&mut workspace)).await;
+    let mut remote = phone
+        .service
+        .open_workspace(workspace.workspace)
+        .await
+        .unwrap();
+    assert!(
+        laptop
+            .service
+            .upkeep_waiting(&mut workspace)
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing waits"
+    );
+
+    // A tablet joins the chain while the workspace lags behind, and the
+    // phone asks for a re-wrap.
+    let mut none = Vec::new();
+    let tablet = approve(&server, &mut laptop, &mut none).await;
+    phone.service.request_rewrap(&remote).await.unwrap();
+    let id = workspace.workspace;
+    let epoch = workspace.epoch();
+    let waiting = laptop.service.upkeep_waiting(&mut workspace).await.unwrap();
+    assert_eq!(
+        waiting,
+        vec![
+            (
+                Task::Head {
+                    workspace: id,
+                    account: laptop.credentials.account,
+                },
+                Duration::ZERO..Duration::from_secs(60),
+            ),
+            (
+                Task::Rewrap {
+                    workspace: id,
+                    device: phone.id(),
+                    epoch,
+                },
+                KEY_HOLDER_WAIT,
+            ),
+        ]
+    );
+    let mut upkeep = Upkeep::default();
+    let start = Instant::now();
+    let mut due: BTreeSet<Task> = upkeep.plan(waiting.clone(), start).into_iter().collect();
+    due.extend(upkeep.plan(waiting, start + Duration::from_secs(60)));
+    assert_eq!(due.len(), 2, "each falls due within its 60 seconds");
+    for task in &due {
+        laptop
+            .service
+            .run_upkeep(&mut workspace, task)
+            .await
+            .expect("ran");
+    }
+    assert!(
+        workspace
+            .policy()
+            .head_snapshot()
+            .devices
+            .contains_key(&tablet.id()),
+        "the head is recorded"
+    );
+    phone
+        .service
+        .refresh_keys(&mut remote)
+        .await
+        .expect("the re-wrapped envelope");
+
+    // The laptop removes the tablet: its upkeep records the head and
+    // rotates, so the phone, which holds the key too, has nothing to do.
+    let chain = laptop.service.own_chain().await.unwrap();
+    let removal = sync_key_envelope::v2::next_link(
+        &laptop.credentials.keys,
+        &chain.head(),
+        LinkKind::Remove {
+            device: tablet.id(),
+            keep: Default::default(),
+        },
+    );
+    laptop.service.append_links(vec![removal]).await.unwrap();
+    let waiting = laptop.service.upkeep_waiting(&mut workspace).await.unwrap();
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    laptop
+        .service
+        .run_upkeep(&mut workspace, &waiting[0].0)
+        .await
+        .expect("recorded and rotated");
+    assert!(workspace.epoch() > epoch, "the removal rotated the domain");
+    let waiting = phone.service.upkeep_waiting(&mut remote).await.unwrap();
+    assert!(
+        waiting.is_empty(),
+        "the rotation committed, so none is pending: {waiting:?}"
     );
 }
 

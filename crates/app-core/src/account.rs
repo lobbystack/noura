@@ -66,7 +66,7 @@ pub enum AccountPhase {
     /// the kit (§12).
     Recovering(RecoveryView),
     /// The account on this computer.
-    SignedIn(SignedInView),
+    SignedIn(Box<SignedInView>),
     /// A device of your account removed this one (§7).
     Removed {
         /// The fingerprint of the device that removed it.
@@ -82,7 +82,7 @@ pub struct SignedInView {
     /// The account's devices, this one first, then removed ones.
     pub devices: Vec<DeviceEntry>,
     /// What the device list warns you about.
-    pub alerts: Vec<String>,
+    pub alerts: Vec<AlertEntry>,
     /// New devices of your account that wait for approval.
     pub requests: Vec<RequestEntry>,
     /// The approval in progress on this device.
@@ -113,6 +113,16 @@ pub struct DeviceEntry {
     pub recovery: bool,
     /// Whether a link removed it.
     pub removed: bool,
+}
+
+/// One warning of the device list (§7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlertEntry {
+    /// What it says.
+    pub text: String,
+    /// The enrolled card it names when your chain doesn't list it, whose
+    /// sessions any device of yours can end.
+    pub end_sessions: Option<Id>,
 }
 
 /// A new device's approval request.

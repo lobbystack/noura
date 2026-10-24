@@ -21,6 +21,7 @@ pub mod heads;
 pub mod recovery;
 pub mod removal;
 mod routes;
+pub mod upkeep;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
