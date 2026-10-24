@@ -31,7 +31,6 @@ mod view;
 
 pub use archive::{ARCHIVE_SUFFIX, Archive};
 pub use error::{InstallError, InstallErrorCode};
-pub use release::{MAX_ARCHIVE_BYTES, Release, ReleaseUrl, Releases};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::{
     Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, Command, Event,
@@ -44,6 +43,7 @@ pub use manifest::{
     valid_command_id, valid_plugin_id,
 };
 pub use object_types::{KERNEL_TYPES, ObjectTypes, PLUGIN_TYPES, TypeError};
+pub use release::{MAX_ARCHIVE_BYTES, Release, ReleaseUrl, Releases};
 pub use running::{
     CalledListener, FAILURE_WINDOW, Health, MAX_FAILURES, Router, RunningPlugin, Surface,
 };

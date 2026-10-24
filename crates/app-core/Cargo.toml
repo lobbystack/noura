@@ -6,9 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-# Lets tests force the native watcher to fail or deliver chosen events.
-# Never enabled in a shipped build; the tests turn it on below.
-test-hooks = ["local-core/test-hooks"]
+# Lets tests force the native watcher to fail or deliver chosen events, and
+# download plugin releases from a stand-in for GitHub. Never enabled in a
+# shipped build; the tests turn it on below.
+test-hooks = ["local-core/test-hooks", "plugin-host/test-hooks"]
 
 [dependencies]
 # Finds the workspace's names in log lines for Copy diagnostics.
@@ -41,8 +42,6 @@ zeroize.workspace = true
 app-core = { path = ".", features = ["test-hooks"] }
 # The tests record which folders each change syncs.
 local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
-# The tests download plugin releases from a stand-in for GitHub.
-plugin-host = { version = "0.2.0", path = "../plugin-host", features = ["test-hooks"] }
 # Search treats arbitrary typed text as plain words.
 proptest.workspace = true
 # The tests stop the index from accepting writes.

@@ -7,12 +7,12 @@ mod support;
 
 use std::sync::Arc;
 
+use app_core::fake_github::{Entry, FakeGitHub, archive};
 use egui::accesskit::Role;
 use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use plugin_host::fake_github::{Entry, FakeGitHub, archive};
 use support::{FakePicker, create_workspace, harness_registering, plugins, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
@@ -117,7 +117,10 @@ fn the_install_dialog_shows_the_release_with_a_warning_and_cancel_installs_nothi
         "Add commands to the command palette and offer them to other plugins.",
         "Run the add command of the tasks plugin.",
     ] {
-        assert!(shown.iter().any(|label| label == expected), "{expected}: {shown:?}");
+        assert!(
+            shown.iter().any(|label| label == expected),
+            "{expected}: {shown:?}"
+        );
     }
     let cancel = install.get_by_role_and_label(Role::Button, "Cancel");
     assert!(cancel.is_focused(), "the keyboard starts on Cancel");
@@ -137,7 +140,13 @@ fn the_install_dialog_shows_the_release_with_a_warning_and_cancel_installs_nothi
             .iter()
             .any(|row| row.installed)
     );
-    assert!(!opened.app_data.path().join("plugins/installed.json").exists());
+    assert!(
+        !opened
+            .app_data
+            .path()
+            .join("plugins/installed.json")
+            .exists()
+    );
 }
 
 #[test]

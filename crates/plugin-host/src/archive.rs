@@ -64,8 +64,8 @@ impl Archive {
             )));
         }
         check_entries(&mut zip)?;
-        let manifest_bytes = read_entry(&mut zip, MANIFEST_FILE, MAX_MANIFEST_BYTES)?
-            .ok_or_else(|| {
+        let manifest_bytes =
+            read_entry(&mut zip, MANIFEST_FILE, MAX_MANIFEST_BYTES)?.ok_or_else(|| {
                 InstallError::new(
                     InstallErrorCode::ManifestMissing,
                     format!("The archive has no {MANIFEST_FILE} at its top, so it isn't a plugin."),

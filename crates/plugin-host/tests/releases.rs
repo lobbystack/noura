@@ -191,7 +191,11 @@ fn a_redirect_off_https_or_off_github_is_refused_before_it_is_followed() {
             setup.github.requests()
         );
         assert!(
-            !setup.github.lookups().iter().any(|host| host.contains("example")),
+            !setup
+                .github
+                .lookups()
+                .iter()
+                .any(|host| host.contains("example")),
             "{:?}",
             setup.github.lookups()
         );
@@ -279,7 +283,10 @@ fn the_host_compiles_an_archives_component_itself_and_runs_the_cached_code() {
     setup.github.publish_archive(
         REPOSITORY,
         "v0.1.0",
-        plugin_archive(&probe_manifest("probe", "0.1.0", &["name = \"views\""]), &probe),
+        plugin_archive(
+            &probe_manifest("probe", "0.1.0", &["name = \"views\""]),
+            &probe,
+        ),
     );
     let host = setup.host();
 
@@ -293,7 +300,11 @@ fn the_host_compiles_an_archives_component_itself_and_runs_the_cached_code() {
     let host = setup.host();
     let loaded = host.load("probe").expect("the plugin loads");
     assert_eq!(loaded.source(), CodeSource::Cache);
-    let running = host.start(&loaded, &loaded.manifest().capabilities, Services::default());
+    let running = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services::default(),
+    );
     assert_eq!(running.pages().unwrap()[0].title, "Probe");
 }
 
@@ -351,8 +362,12 @@ fn compiled_code_planted_in_an_archive_never_loads() {
     assert_eq!(error.code, InstallErrorCode::PrecompiledCode);
     assert!(setup.library_files().is_empty());
 
-    host.install(&host.inspect_archive(setup.archive(RELEASE).unwrap()).unwrap())
-        .unwrap();
+    host.install(
+        &host
+            .inspect_archive(setup.archive(RELEASE).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
 
     let files = setup.library_files();
     assert_eq!(files.len(), 3, "{files:?}");
@@ -372,7 +387,11 @@ fn compiled_code_planted_in_an_archive_never_loads() {
     let host = setup.host();
     let loaded = host.load("probe").unwrap();
     assert_eq!(loaded.source(), CodeSource::Cache);
-    let running = host.start(&loaded, &loaded.manifest().capabilities, Services::default());
+    let running = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services::default(),
+    );
     assert_eq!(running.pages().unwrap()[0].title, "Probe");
 }
 
@@ -395,8 +414,12 @@ fn a_plugin_from_an_archive_runs_with_exactly_the_approved_capabilities() {
         ),
     );
     let host = setup.host();
-    host.install(&host.inspect_archive(setup.archive(RELEASE).unwrap()).unwrap())
-        .unwrap();
+    host.install(
+        &host
+            .inspect_archive(setup.archive(RELEASE).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     let loaded = host.load("probe").unwrap();
     let workspace = Arc::new(FakeWorkspace::default());
     let reads: Arc<dyn WorkspaceReads> = workspace.clone();
@@ -504,7 +527,10 @@ fn a_hostile_or_broken_archive_installs_nothing_and_says_why() {
                 Entry::File(
                     "plugin.toml",
                     probe_manifest("probe", "0.1.0", &[])
-                        .replace("interface-version = \"0.1.0\"", "interface-version = \"9.0.0\"")
+                        .replace(
+                            "interface-version = \"0.1.0\"",
+                            "interface-version = \"9.0.0\"",
+                        )
                         .as_bytes(),
                 ),
                 Entry::File("plugin.wasm", b"\0asm"),
@@ -524,9 +550,11 @@ fn a_hostile_or_broken_archive_installs_nothing_and_says_why() {
     ];
     for (case, bytes, code) in cases {
         let setup = Setup::new();
-        setup
-            .github
-            .publish(REPOSITORY, "v0.1.0", vec![("probe.noura-plugin.zip".into(), bytes)]);
+        setup.github.publish(
+            REPOSITORY,
+            "v0.1.0",
+            vec![("probe.noura-plugin.zip".into(), bytes)],
+        );
         let host = setup.host();
 
         let error = setup
@@ -550,7 +578,10 @@ fn a_refusal_says_why_in_words() {
         vec![(
             "probe.noura-plugin.zip".into(),
             archive(&[
-                Entry::File("plugin.toml", probe_manifest("probe", "0.1.0", &[]).as_bytes()),
+                Entry::File(
+                    "plugin.toml",
+                    probe_manifest("probe", "0.1.0", &[]).as_bytes(),
+                ),
                 Entry::Link("plugin.wasm", "/usr/lib/plugin.wasm"),
             ]),
         )],
@@ -583,8 +614,12 @@ fn an_update_that_holds_another_plugin_is_refused() {
         plugin_archive(&probe_manifest("intruder", "0.2.0", &[]), &probe),
     );
     let host = setup.host();
-    host.install(&host.inspect_archive(setup.archive(RELEASE).unwrap()).unwrap())
-        .unwrap();
+    host.install(
+        &host
+            .inspect_archive(setup.archive(RELEASE).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     let before = setup.library_files();
 
     let error = host
@@ -601,5 +636,8 @@ fn an_update_that_holds_another_plugin_is_refused() {
     assert!(error.message.contains("intruder"), "{}", error.message);
     assert_eq!(setup.library_files(), before);
     assert_eq!(host.installed_ids(), ["probe"]);
-    assert_eq!(host.load("probe").unwrap().manifest().version.to_string(), "0.1.0");
+    assert_eq!(
+        host.load("probe").unwrap().manifest().version.to_string(),
+        "0.1.0"
+    );
 }

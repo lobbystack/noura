@@ -7,8 +7,8 @@ mod support;
 
 use std::sync::Arc;
 
+use app_core::fake_github::{Entry, FakeGitHub, archive};
 use app_core::{App, CapabilityLine, Grant, PluginRow, UpdateCheck};
-use plugin_host::fake_github::{Entry, FakeGitHub, archive};
 use support::{Fixture, plugins, settle};
 
 const REPOSITORY: &str = "maker/probe-plugin";
@@ -55,7 +55,9 @@ fn review(app: &mut App, url: &str) {
     app.review_plugin_release(url);
     settle(app);
     assert!(
-        !app.plugin_install().expect("the dialog is open").downloading,
+        !app.plugin_install()
+            .expect("the dialog is open")
+            .downloading,
         "the download never finished"
     );
 }
@@ -190,14 +192,20 @@ fn the_install_dialog_shows_the_release_and_its_capabilities_before_anything_ins
     let mut app = app_on(&fixture, &github);
 
     app.review_plugin_release(RELEASE);
-    let waiting = app.plugin_install().expect("the dialog opens at once").clone();
+    let waiting = app
+        .plugin_install()
+        .expect("the dialog opens at once")
+        .clone();
     assert!(waiting.downloading);
     assert_eq!(waiting.source, RELEASE);
     settle(&mut app);
 
     let review = app.plugin_install().expect("the dialog is open");
     assert_eq!(review.problem, None);
-    assert!(review.from_github, "the dialog warns of the unreviewed source");
+    assert!(
+        review.from_github,
+        "the dialog warns of the unreviewed source"
+    );
     assert_eq!(review.name, "Probe");
     assert_eq!(review.version, "0.1.0");
     assert_eq!(review.source, RELEASE);

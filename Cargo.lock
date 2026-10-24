@@ -346,7 +346,6 @@ dependencies = [
  "icu_time",
  "image",
  "jiff",
- "plugin-host",
  "rav1d",
  "resvg",
  "rusqlite",

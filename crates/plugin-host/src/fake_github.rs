@@ -36,8 +36,7 @@ pub enum Entry<'a> {
 /// A zip archive holding `entries`, deflated.
 pub fn archive(entries: &[Entry<'_>]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options =
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for entry in entries {
         match entry {
             Entry::File(name, bytes) => {
@@ -160,20 +159,19 @@ impl FakeGitHub {
                 let Some((repository, which)) = rest.split_once("/releases/") else {
                     return status(404);
                 };
-                let release = match which {
-                    "latest" => state
-                        .releases
-                        .iter()
-                        .rev()
-                        .find(|release| release.repository == repository && !release.draft),
-                    tag => tag.strip_prefix("tags/").and_then(|tag| {
-                        state
+                let release =
+                    match which {
+                        "latest" => state
                             .releases
                             .iter()
                             .rev()
-                            .find(|release| release.repository == repository && release.tag == tag)
-                    }),
-                };
+                            .find(|release| release.repository == repository && !release.draft),
+                        tag => tag.strip_prefix("tags/").and_then(|tag| {
+                            state.releases.iter().rev().find(|release| {
+                                release.repository == repository && release.tag == tag
+                            })
+                        }),
+                    };
                 match release {
                     Some(release) => json(&details(release)),
                     None => status(404),

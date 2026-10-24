@@ -139,9 +139,7 @@ fn valid_owner(owner: &str) -> bool {
     !owner.is_empty()
         && owner.len() <= 39
         && !owner.starts_with('-')
-        && owner
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// A GitHub repository name: letters, digits, `.`, `-` and `_`, up to 100
@@ -194,11 +192,10 @@ struct Asset {
 impl Releases {
     /// Downloads over HTTPS on this device's network.
     pub fn github() -> Self {
-        let requests = HostRequests::https_with(limits())
-            .unwrap_or_else(|error| {
-                tracing::warn!(code = %error.code, "release download limits were refused");
-                HostRequests::https()
-            });
+        let requests = HostRequests::https_with(limits()).unwrap_or_else(|error| {
+            tracing::warn!(code = %error.code, "release download limits were refused");
+            HostRequests::https()
+        });
         Self { requests }
     }
 
@@ -212,11 +209,7 @@ impl Releases {
 
     /// Download the plugin archive of `release`.
     pub fn download(&self, release: &ReleaseUrl) -> Result<Release, InstallError> {
-        let response = self.get(
-            &release.api(),
-            &[API_HOST],
-            "application/vnd.github+json",
-        )?;
+        let response = self.get(&release.api(), &[API_HOST], "application/vnd.github+json")?;
         match response.status {
             200 => {}
             404 => return Err(not_found(release)),
@@ -286,7 +279,10 @@ impl Releases {
         check_download(asset, &download.body)?;
         let page = ReleaseUrl::parse(&details.html_url)
             .ok()
-            .filter(|page| page.repository().eq_ignore_ascii_case(&release.repository()))
+            .filter(|page| {
+                page.repository()
+                    .eq_ignore_ascii_case(&release.repository())
+            })
             .map_or_else(|| release.page(), |page| page.page());
         Ok(Release {
             tag: details.tag_name,

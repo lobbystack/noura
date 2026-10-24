@@ -40,9 +40,9 @@ use std::{
 use local_core::HostRequests;
 use plugin_host::{
     Archive, Candidate, Capability, DeviceClock, Event, Grant, InstallError, Navigation, Node,
-    NodeKind, ObjectTypes, PluginHost, PluginManifest, ReleaseUrl, Releases, Router,
-    RunningPlugin, Services, Surface, Value, View, ViewError, ViewKind, ViewNode, VirtualRow,
-    WorkspaceObjects, WorkspaceReads, check_rows,
+    NodeKind, ObjectTypes, PluginHost, PluginManifest, ReleaseUrl, Releases, Router, RunningPlugin,
+    Services, Surface, Value, View, ViewError, ViewKind, ViewNode, VirtualRow, WorkspaceObjects,
+    WorkspaceReads, check_rows,
 };
 use serde::{Deserialize, Serialize};
 
@@ -430,7 +430,7 @@ enum Found {
     /// No release is newer than the installed version.
     Newest,
     /// This newer release, read and compiled.
-    Newer { candidate: Candidate, page: String },
+    Newer(Box<Offer>),
 }
 
 /// A tool call checked against the tool's schema, ready to run off the
@@ -1127,7 +1127,10 @@ impl Plugins {
             .map_err(|error| from_install(&error))?
             .latest();
         let host = self.host()?;
-        let Some(installed) = self.manifests.get(id).map(|manifest| manifest.version.clone())
+        let Some(installed) = self
+            .manifests
+            .get(id)
+            .map(|manifest| manifest.version.clone())
         else {
             return Err(AppError::new(
                 "plugin_not_installed",
@@ -1148,10 +1151,10 @@ impl Plugins {
                         return Ok(Found::Newest);
                     }
                     let candidate = host.inspect_archive_update(&plugin, archive)?;
-                    Ok(Found::Newer {
+                    Ok(Found::Newer(Box::new(Offer {
                         candidate,
-                        page: downloaded.page,
-                    })
+                        release: Some(downloaded.page),
+                    })))
                 });
                 let checked = Checked { id: plugin, found };
                 if sender.send(checked).is_ok()
@@ -1187,19 +1190,16 @@ impl Plugins {
             return;
         };
         let check = match checked.found {
-            Ok(Found::Newer { candidate, page }) if candidate.manifest().version > installed => {
-                self.updates.insert(
-                    id.clone(),
-                    Offer {
-                        candidate,
-                        release: Some(page),
-                    },
-                );
+            Ok(Found::Newer(offer)) if offer.candidate.manifest().version > installed => {
+                self.updates.insert(id.clone(), *offer);
                 None
             }
             Ok(_) => Some(UpdateCheck::Newest(installed.to_string())),
             Err(error) => {
-                tracing::warn!(code = error.code.as_str(), "a check for plugin updates failed");
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    "a check for plugin updates failed"
+                );
                 Some(UpdateCheck::Failed(error.message))
             }
         };

@@ -99,6 +99,10 @@ pub use pdf::{
 };
 #[cfg(feature = "test-hooks")]
 pub use pdf::{PdfDrawFailure, PdfRenderHold};
+/// A stand-in for GitHub's release servers, for
+/// [`App::set_plugin_release_transport`].
+#[cfg(feature = "test-hooks")]
+pub use plugin_host::fake_github;
 pub use plugin_host::{
     CalendarMode, Check as PluginCheck, Choice, Column, ColumnPress, Event as PluginEvent, Field,
     Grant, Move as PluginMove, Naming as PluginNaming, SortOrder, Submission, Target,
