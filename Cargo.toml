@@ -18,6 +18,7 @@ members = [
     "crates/plugin-host/test-plugins/recipes",
     "crates/plugin-host/test-plugins/uses-files",
     "crates/plugin-sdk",
+    "crates/plugins/calendar",
     "crates/plugins/hello",
     "crates/plugins/tasks",
     "crates/spell-check",
@@ -125,6 +126,11 @@ glyphon = "0.12"
 fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
+# Renders PDF pages, reads their text and unlocks password-protected PDFs, in
+# Rust on the CPU. Apache-2.0 OR MIT. It embeds PDFium's Foxit fonts for the
+# standard PDF fonts and Adobe's CMaps, both BSD-3-Clause; see
+# THIRD_PARTY_NOTICES.md.
+hayro = "0.8.0"
 hkdf = "=0.12.4"
 hmac = "=0.12.1"
 # Bounds the sync server's caches of verified policy and account chains,

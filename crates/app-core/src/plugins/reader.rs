@@ -2,7 +2,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use local_core::{CoreError, WorkspaceEntryKind};
+use local_core::{CoreError, ParsedMarkdown, WorkspaceEntryKind, WorkspaceObject, parse_markdown};
 use plugin_host::{
     Entry, EntryKind, FileRead, Listed, ObjectRead, ServiceError, WorkspacePath, WorkspaceReads,
 };
@@ -66,22 +66,41 @@ impl WorkspaceReads for WorkspaceReader {
             .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
         let path =
             WorkspacePath::new(&object.relative_path).map_err(|_| ServiceError::UnsupportedPath)?;
-        // An object's title is its file name without the extension.
-        let title = Path::new(&object.relative_path)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default()
-            .to_owned();
-        Ok(ObjectRead {
-            id: object.id,
-            object_type: object.object_type,
-            title,
-            path,
-            body: object.body,
-            properties: serde_json::to_string(&object.properties)
-                .unwrap_or_else(|_| "{}".to_owned()),
-            revision: object.revision,
-        })
+        Ok(object_read(object, path))
+    }
+
+    fn read_object_at(&self, path: &WorkspacePath) -> Result<ObjectRead, ServiceError> {
+        let (bytes, revision) = self
+            .0
+            .engine()
+            .read_file(path.as_str(), MAX_READ_BYTES)
+            .map_err(|error| service_error(&error, path.as_str()))?;
+        match parse_markdown(path.as_str(), &bytes) {
+            ParsedMarkdown::Managed(object) => Ok(object_read(
+                WorkspaceObject { revision, ..object },
+                path.clone(),
+            )),
+            _ => Err(ServiceError::NotFound(path.to_string())),
+        }
+    }
+}
+
+/// An object as a plugin reads it, from its file at `path`.
+fn object_read(object: WorkspaceObject, path: WorkspacePath) -> ObjectRead {
+    // An object's title is its file name without the extension.
+    let title = Path::new(path.as_str())
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    ObjectRead {
+        id: object.id,
+        object_type: object.object_type,
+        title,
+        path,
+        body: object.body,
+        properties: serde_json::to_string(&object.properties).unwrap_or_else(|_| "{}".to_owned()),
+        revision: object.revision,
     }
 }
 

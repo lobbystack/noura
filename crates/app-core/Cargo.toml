@@ -15,6 +15,9 @@ test-hooks = ["local-core/test-hooks"]
 aho-corasick.workspace = true
 atomic-write-file.workspace = true
 directories.workspace = true
+# Draws the pages of PDFs, finds their text and unlocks them, on each PDF
+# tab's own thread.
+hayro.workspace = true
 # Tells a calendar date property from text shaped like one, and reads this
 # computer's clock in its time zone for the Inbox's greeting.
 jiff.workspace = true
@@ -36,6 +39,8 @@ unicode-normalization.workspace = true
 # The workspace format's date and date-time rules, which plugin input
 # values follow.
 workspace-format = { version = "0.2.0", path = "../workspace-format" }
+# Wipes a PDF's password from memory once the PDF opens or refuses it.
+zeroize.workspace = true
 
 [dev-dependencies]
 app-core = { path = ".", features = ["test-hooks"] }
@@ -56,8 +61,8 @@ sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", feat
 sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
 tempfile.workspace = true
 tokio.workspace = true
-# The in-memory credential store of the sync tests.
-zeroize.workspace = true
+# A test reads every log line to check that a PDF's password stays out.
+tracing-subscriber.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

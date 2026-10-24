@@ -2,6 +2,7 @@
 
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
+pub mod calendar;
 pub mod plugins;
 pub mod recipes;
 pub mod tasks;
@@ -359,7 +360,7 @@ pub fn hold_writes(fixture: &Fixture, app: &App) -> std::fs::File {
 pub fn open_from_tree(app: &mut App, relative_path: &str) -> app_core::TabId {
     select(app, relative_path);
     let row = app.tree().unwrap().focused().unwrap();
-    app.activate_tree_row(row, app_core::OpenAs::Preview);
+    app.click_tree_row(row, app_core::OpenAs::Preview);
     let tab = app.active_tab().unwrap();
     assert_eq!(
         tab.file().map(|file| file.relative_path.as_str()),

@@ -155,6 +155,39 @@ The desktop app decodes AVIF images in notes with these crates. Noura uses them 
 
 `avif-parse`, which reads the AVIF file around the AV1 data, uses the Mozilla Public License 2.0 and appears in the MPL-2.0 list below.
 
+## hayro 0.8.0 (PDF rendering)
+
+The desktop app opens, draws, searches and unlocks PDFs with Laurenz Stampfl's `hayro`, `hayro-interpret` and `hayro-syntax` 0.8.0, and the crates they bring, under the MIT option of their `Apache-2.0 OR MIT` licenses. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.txt` file in each desktop package carries their full license texts.
+
+`hayro-interpret` builds in two sets of files whose licenses differ from the crate's own:
+
+- PDFium's Foxit fonts, which stand in for the standard PDF fonts a PDF doesn't embed, under the BSD 3-Clause License. Original code copyright 2014 Foxit Software Inc.
+- An ICC profile for CMYK colors from Compact-ICC-Profiles, under CC0-1.0, which asks for no notice.
+
+`hayro-cmap` builds in Adobe's CMap resources under the BSD 3-Clause License. Both notices follow.
+
+Copyright 1990-2023 Adobe. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+Neither the name of Adobe nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Copyright 2014 PDFium Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+- Neither the name of Google Inc. nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 ## Lockbook Markdown editor
 
 The editor in `crates/editor-core` and `crates/editor-egui` adapts Lockbook's Markdown editor, which its authors dedicated to the public domain under the Unlicense. The Unlicense asks for no notice. [The Lockbook editor provenance record](docs/provenance/lockbook-editor.md) lists the files taken and the changes made.

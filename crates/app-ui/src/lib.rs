@@ -9,6 +9,7 @@ mod dates;
 mod finder;
 mod ignored_files;
 mod image_decoders;
+mod image_view;
 mod inbox;
 mod keys;
 mod markdown;
@@ -16,6 +17,7 @@ mod note;
 mod note_images;
 mod note_links;
 mod palette;
+mod pdf_view;
 mod plugin_view;
 mod plugins;
 mod rail;
@@ -74,6 +76,10 @@ pub struct NouraUi {
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
     notes: note::NoteView,
+    /// The PDF tabs' fields and pictures.
+    pdfs: pdf_view::PdfViews,
+    /// The image tabs' bytes in egui.
+    images: image_view::ImageViews,
     /// Keys typed in the same frame as the shortcut that opened the
     /// palette, for the palette's field on the next frame.
     type_ahead: Vec<Event>,
@@ -100,6 +106,8 @@ impl NouraUi {
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
+            pdfs: pdf_view::PdfViews::default(),
+            images: image_view::ImageViews::default(),
             type_ahead: Vec::new(),
             shown_tab: None,
             started: false,
@@ -286,6 +294,8 @@ impl NouraUi {
                 .request_repaint_after(due.saturating_duration_since(now));
         }
         self.notes.retain(&self.app);
+        self.pdfs.retain(&self.app);
+        self.images.retain(ui.ctx(), &self.app);
         if self.app.is_busy() || self.app.is_plugin_work_pending() {
             // The change stream wakes the window when the work finishes;
             // this also keeps the loading spinner turning.
