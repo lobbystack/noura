@@ -357,3 +357,39 @@ fn a_trap_during_integration_stops_the_lineage_and_rebuilds_the_last_good_state(
         ));
     }
 }
+
+/// Bytes a limit case gives as a prefix, a unit repeated and a suffix.
+fn expand(recipe: &Value) -> Vec<u8> {
+    let unit = hex(&recipe["unit"]);
+    let count = recipe["count"].as_u64().unwrap() as usize;
+    let mut bytes = hex(&recipe["prefix"]);
+    bytes.extend_from_slice(&unit.repeat(count));
+    bytes.extend_from_slice(&hex(&recipe["suffix"]));
+    bytes
+}
+
+/// Records at the verdict's fuel and memory limits reach the fixture's
+/// verdict, with the same fuel, on every backend.
+#[test]
+fn records_at_the_verdicts_limits_reach_the_same_verdict_and_fuel_on_every_backend() {
+    let limit_cases = cases("verdict_limit");
+    assert_eq!(limit_cases.len(), 5);
+    for case in limit_cases {
+        let name = &case["name"];
+        let payload = expand(&case["payload"]);
+        let blob = (!case["blob"].is_null()).then(|| expand(&case["blob"]));
+        let record = Record {
+            payload: &payload,
+            blob: blob.as_deref(),
+            card_index: case["card_index"].as_u64().unwrap() as u32,
+            card_count: case["card_count"].as_u64().unwrap() as u32,
+        };
+        for (backend, sandbox) in support::backends() {
+            let started = Instant::now();
+            let verdict = sandbox.verdict(&record);
+            eprintln!("{name} on {backend}: {:?}", started.elapsed());
+            assert_eq!(code(verdict.outcome), case["expect"], "{name} on {backend}");
+            assert_eq!(verdict.fuel, case["fuel"], "{name} fuel on {backend}");
+        }
+    }
+}

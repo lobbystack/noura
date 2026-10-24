@@ -182,6 +182,8 @@ pub struct Verdict {
     pub outcome: Result<(), Unreadable>,
     /// The fuel the verdict used.
     pub fuel: u64,
+    /// The linear memory the verdict's instance held at its end, in bytes.
+    pub memory: u64,
 }
 
 impl Sandbox {
@@ -191,6 +193,7 @@ impl Sandbox {
         let budget = verdict_budget((record.payload.len() + blob_len) as u64);
         // An instance that fails to start spent what it was given.
         let mut fuel = budget;
+        let mut memory = 0;
         let outcome = (|| {
             let mut guest = Guest::new(self, VERDICT_MEMORY_BYTES, budget)?;
             let result = (|| {
@@ -213,6 +216,7 @@ impl Sandbox {
                 )
             })();
             fuel = guest.used();
+            memory = guest.memory_bytes() as u64;
             result
         })();
         let outcome = match outcome {
@@ -222,6 +226,10 @@ impl Sandbox {
             Err(Failure::Memory) => Err(Unreadable::Memory),
             Err(Failure::Trap(_)) => Err(Unreadable::Trap),
         };
-        Verdict { outcome, fuel }
+        Verdict {
+            outcome,
+            fuel,
+            memory,
+        }
     }
 }

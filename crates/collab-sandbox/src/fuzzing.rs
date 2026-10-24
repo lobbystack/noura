@@ -185,16 +185,21 @@ fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event]) {
     assert_eq!(booted_text.encode_utf16().count(), booted.len() as usize);
 }
 
-/// The same as [`record`], with `data` written under card 1's first load
-/// when it parses as a struct section: the suite turns random bytes into
-/// updates yrs reads that far, which reach integration far more often.
+/// The same as [`record`] on [`writer_yrs`] of `data`.
 pub fn writer_record(sandbox: &Sandbox, data: &[u8]) -> usize {
+    record(sandbox, &writer_yrs(data))
+}
+
+/// `data` as the struct section of card 1's first load: one client's run
+/// with a struct count from the first byte, the writer's client ID and
+/// clock 0, then the rest of `data` as its structs. Random bytes this way
+/// become updates yrs reads that far, which reach integration far more
+/// often.
+pub fn writer_yrs(data: &[u8]) -> Vec<u8> {
     let mut yrs = Vec::with_capacity(data.len() + 8);
-    let mut value = WRITER;
-    // One client's run: a struct count from the first byte, then the
-    // writer's client ID and clock 0, then the data as its structs.
     yrs.push(1);
     yrs.push(data.first().map_or(1, |count| count % 8 + 1));
+    let mut value = WRITER;
     loop {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
@@ -206,5 +211,5 @@ pub fn writer_record(sandbox: &Sandbox, data: &[u8]) -> usize {
     }
     yrs.push(0);
     yrs.extend_from_slice(data.get(1..).unwrap_or_default());
-    record(sandbox, &yrs)
+    yrs
 }

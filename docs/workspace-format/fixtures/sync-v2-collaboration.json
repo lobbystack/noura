@@ -1320,6 +1320,101 @@
 				}
 			],
 			"text": "xAB"
+		},
+		{
+			"blob": null,
+			"card_count": 1,
+			"card_index": 1,
+			"expect": null,
+			"fuel": 51388122,
+			"kind": "verdict_limit",
+			"name": "fuel_near_limit_subnormal_numbers",
+			"payload": {
+				"count": 9999,
+				"prefix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010006703a6c697374000000000000000001000111715b",
+				"suffix": "35652d3332345d01000000020000",
+				"unit": "35652d3332342c"
+			}
+		},
+		{
+			"blob": {
+				"count": 535625667,
+				"prefix": "010181808080020000",
+				"suffix": "",
+				"unit": "00"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": "gc_struct",
+			"fuel": 535696910,
+			"kind": "verdict_limit",
+			"name": "memory_near_limit_input",
+			"payload": {
+				"count": 1,
+				"prefix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a000000001fec",
+				"suffix": "dcaccc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000001fecffcc",
+				"unit": "ff"
+			}
+		},
+		{
+			"blob": {
+				"count": 535625668,
+				"prefix": "010181808080020000",
+				"suffix": "",
+				"unit": "00"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": "memory",
+			"fuel": 66435,
+			"kind": "verdict_limit",
+			"name": "memory_over_limit_input",
+			"payload": {
+				"count": 1,
+				"prefix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a000000001fec",
+				"suffix": "ddaccc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000001fecffcd",
+				"unit": "ff"
+			}
+		},
+		{
+			"blob": {
+				"count": 262144000,
+				"prefix": "0101818080800200040107636f6e74656e748080807d",
+				"suffix": "00",
+				"unit": "61"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": null,
+			"fuel": 10485836141,
+			"kind": "verdict_limit",
+			"name": "memory_near_limit_decoded",
+			"payload": {
+				"count": 0,
+				"prefix": "",
+				"suffix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a000000000fa00027accc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000000fa00017",
+				"unit": "ff"
+			}
+		},
+		{
+			"blob": {
+				"count": 272629760,
+				"prefix": "0101818080800200040107636f6e74656e748080808201",
+				"suffix": "00",
+				"unit": "61"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": "memory",
+			"fuel": 5861613861,
+			"kind": "verdict_limit",
+			"name": "memory_over_limit_decoded",
+			"payload": {
+				"count": 0,
+				"prefix": "",
+				"suffix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a0000000010400028accc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a0000000010400018",
+				"unit": "ff"
+			}
 		}
 	],
 	"description": "Text mode (sync-v2.md §22): the text lineage ID derived from the rid, the base operation's digest and the first document's bytes; yrs client IDs from a card index and a load number; and the collaboration sandbox: the guest module's hash, the verdict budget and the Wasmtime operator costs it assumes, the raw lib0 checks and the verdict on each record's yrs bytes and meta entries, surrogate pairs split into U+FFFD, client IDs past 32 bits, and writer allowances.",
@@ -1374,6 +1469,82 @@
 			"counted_bytes": "the decrypted payload without its padding, and the blob's file",
 			"epoch_interruption": false,
 			"fuel_per_byte": 1000,
+			"measured": {
+				"largest_fuel_per_byte": "149.8, a 16 MiB snapshot of scattered typing",
+				"records": [
+					{
+						"bytes": 85,
+						"fuel": 73962,
+						"memory_bytes": 1179648,
+						"record": "typing one character",
+						"reference_seconds": 0.0001
+					},
+					{
+						"bytes": 200091,
+						"fuel": 8275346,
+						"memory_bytes": 1900544,
+						"record": "pasting 200,000 ASCII characters",
+						"reference_seconds": 0.0003
+					},
+					{
+						"bytes": 180091,
+						"fuel": 14205195,
+						"memory_bytes": 1703936,
+						"record": "pasting 60,000 CJK characters",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 200091,
+						"fuel": 14875195,
+						"memory_bytes": 1900544,
+						"record": "pasting 50,000 emoji",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 145316,
+						"fuel": 18447385,
+						"memory_bytes": 2818048,
+						"record": "a snapshot after 20,000 scattered keystrokes",
+						"reference_seconds": 0.001
+					},
+					{
+						"bytes": 232643,
+						"fuel": 30744974,
+						"memory_bytes": 3735552,
+						"record": "a snapshot after 20,000 keystrokes and deletions",
+						"reference_seconds": 0.0017
+					},
+					{
+						"bytes": 37986,
+						"fuel": 5588268,
+						"memory_bytes": 1703936,
+						"record": "a snapshot of 64 writers",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 71819,
+						"fuel": 7344297,
+						"memory_bytes": 1572864,
+						"record": "deleting every other character of 40,000",
+						"reference_seconds": 0.0003
+					},
+					{
+						"bytes": 137131,
+						"fuel": 9791593,
+						"memory_bytes": 1441792,
+						"record": "a managed note with a large frontmatter",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 18837030,
+						"fuel": 2822065529,
+						"memory_bytes": 248774656,
+						"record": "a 16 MiB snapshot of scattered typing",
+						"reference_seconds": 0.1631
+					}
+				],
+				"reference_machine": "Apple M4 Pro, 24 GB, macOS 27.0.1, Cranelift"
+			},
 			"memory_bytes": 536870912
 		}
 	}

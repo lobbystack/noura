@@ -29,6 +29,7 @@ members = [
 # The legacy Tauri app is a read-only behavior reference. It builds from the
 # `legacy-reference` tag, not from this workspace.
 exclude = [
+    "crates/collab-sandbox/fuzz",
     "crates/collab-sandbox-guest",
     "crates/workspace-format-wasm",
     "src-tauri",
