@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod accounts;
 pub mod data;
 pub mod http;
 pub mod logs;
@@ -23,8 +24,27 @@ use sync_store::{Backend, Limiter, Store};
 use sync_store_sqlite::SqliteBackend;
 use tokio::net::TcpListener;
 
+pub use accounts::{Accounts, Allowlist, MailTransport, PublicOrigin};
 pub use data::{CommandError, Migrated, check_ready, migrate};
+pub use http::AppState;
 pub use postgres::Postgres;
+
+/// How `serve` sends mail.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum MailConfig {
+    /// No transport: sign-up and email sign-in can't work.
+    #[default]
+    None,
+    /// SMTP through lettre, at this URL.
+    Smtp(String),
+    /// Resend's HTTPS API with this key, at its endpoint or another one.
+    Resend {
+        /// The API key.
+        api_key: String,
+        /// Another endpoint than Resend's, such as a relay.
+        endpoint: Option<String>,
+    },
+}
 
 /// What `serve` runs with.
 #[derive(Clone, Debug)]
@@ -34,38 +54,127 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// The address to listen on.
     pub listen: SocketAddr,
+    /// The public origin, such as `https://sync.noura.app`. Without one,
+    /// a server on a loopback address serves `http://localhost:{port}`.
+    pub origin: Option<String>,
+    /// The comma-separated email allowlist; empty admits nobody.
+    pub allowed_emails: String,
+    /// The sender of sign-in mail.
+    pub mail_from: String,
+    /// The mail transport.
+    pub mail: MailConfig,
+    /// The account-web build: `account_web.js`, `account_web_bg.wasm` and
+    /// `THIRD_PARTY_NOTICES.txt`.
+    pub account_web: Option<PathBuf>,
     /// The PostgreSQL database to use instead of SQLite.
     pub postgres: Option<Postgres>,
 }
 
-/// Opens the SQLite store in a ready data directory.
+impl Config {
+    /// A configuration with no origin, allowlist or mail.
+    pub fn new(data_dir: PathBuf, listen: SocketAddr) -> Self {
+        Self {
+            data_dir,
+            listen,
+            origin: None,
+            allowed_emails: String::new(),
+            mail_from: "Noura <noura@localhost>".into(),
+            mail: MailConfig::None,
+            account_web: None,
+            postgres: None,
+        }
+    }
+}
+
+/// Opens the SQLite store in a ready data directory, with the server secret
+/// that account IDs derive from.
 pub async fn open_store(config: &Config) -> Result<Store<SqliteBackend>, CommandError> {
     check_ready(&config.data_dir).await?;
+    let secret = data::read_secret(&config.data_dir.join(data::SECRET_FILE))?
+        .ok_or_else(|| CommandError("the data directory holds no server secret".into()))?;
     let backend = SqliteBackend::open(&data::database_path(&config.data_dir))
         .await
         .map_err(|e| CommandError(format!("can't open the database: {e}")))?;
-    Store::open(backend)
+    Ok(Store::open(backend)
         .await
-        .map_err(|e| CommandError(format!("can't open the store: {e}")))
+        .map_err(|e| CommandError(format!("can't open the store: {e}")))?
+        .with_secret(secret))
 }
 
-/// Serves `store` on `listener` until `shutdown` resolves.
+/// The public origin `serve` uses: the configured one, which must be HTTPS
+/// except on loopback, or `http://localhost:{port}` on a loopback address.
+pub fn public_origin(
+    configured: Option<&str>,
+    bound: SocketAddr,
+) -> Result<PublicOrigin, CommandError> {
+    match configured {
+        Some(origin) => PublicOrigin::parse(origin).map_err(CommandError),
+        None if bound.ip().is_loopback() => {
+            PublicOrigin::parse(&format!("http://localhost:{}", bound.port())).map_err(CommandError)
+        }
+        None => Err(CommandError(
+            "set NOURA_PUBLIC_ORIGIN to the server's HTTPS origin, such as https://sync.example.com"
+                .into(),
+        )),
+    }
+}
+
+/// The account pages for `config` at `origin`.
+pub fn accounts_for(config: &Config, origin: PublicOrigin) -> Result<Accounts, CommandError> {
+    let mailer: Box<dyn MailTransport> = match &config.mail {
+        MailConfig::None => Box::new(accounts::NoMail),
+        MailConfig::Smtp(url) => {
+            Box::new(accounts::mail::Smtp::from_url(url).map_err(|e| CommandError(e.to_string()))?)
+        }
+        MailConfig::Resend { api_key, endpoint } => Box::new(accounts::mail::Resend::new(
+            api_key.clone(),
+            endpoint.clone(),
+        )),
+    };
+    Ok(Accounts::new(
+        origin,
+        Allowlist::parse(&config.allowed_emails),
+        config.mail_from.clone(),
+        mailer,
+        config.account_web.clone(),
+    ))
+}
+
+/// Serves `state` on `listener` until `shutdown` resolves.
 pub async fn serve_on<B: Backend>(
-    store: Arc<Store<B>>,
+    state: AppState<B>,
     listener: TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    axum::serve(listener, http::router(store))
+    axum::serve(listener, http::router(state))
         .with_graceful_shutdown(shutdown)
         .await
 }
 
 /// Serves `store` on a new listener at `address` in the background, for
-/// tests, and returns the bound address.
+/// tests, with account pages at `http://localhost:{port}` that admit no
+/// sign-up, and returns the bound address.
 pub async fn spawn<B: Backend>(store: Arc<Store<B>>, address: &str) -> std::io::Result<SocketAddr> {
+    spawn_with(store, address, Accounts::local).await
+}
+
+/// Serves `store` on a new listener at `address` in the background, with
+/// the account pages `accounts` builds for the origin
+/// `http://localhost:{port}`, and returns the bound address.
+pub async fn spawn_with<B: Backend>(
+    store: Arc<Store<B>>,
+    address: &str,
+    accounts: impl FnOnce(PublicOrigin) -> Accounts,
+) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(address).await?;
     let bound = listener.local_addr()?;
-    tokio::spawn(serve_on(store, listener, std::future::pending()));
+    let origin = PublicOrigin::parse(&format!("http://localhost:{}", bound.port()))
+        .map_err(std::io::Error::other)?;
+    let state = AppState {
+        store,
+        accounts: Arc::new(accounts(origin)),
+    };
+    tokio::spawn(serve_on(state, listener, std::future::pending()));
     Ok(bound)
 }
 
@@ -87,9 +196,9 @@ async fn shutdown_signal() {
     }
 }
 
-/// `sync-server serve`: refuses a database that isn't ready, then serves
-/// until it gets an interrupt or a terminate signal, and closes the
-/// database.
+/// `sync-server serve`: refuses a database that isn't ready or a public
+/// origin that isn't HTTPS away from loopback, then serves until it gets an
+/// interrupt or a terminate signal, and closes the database.
 pub async fn serve(config: Config) -> Result<(), CommandError> {
     match &config.postgres {
         None => run(Arc::new(open_store(&config).await?), &config).await,
@@ -98,20 +207,33 @@ pub async fn serve(config: Config) -> Result<(), CommandError> {
 }
 
 async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), CommandError> {
-    let log_dir = config.data_dir.join(data::LOG_DIR);
-    logs::init(&log_dir).map_err(|e| CommandError(format!("can't open the log: {e}")))?;
-    let pruning = logs::spawn_pruning(log_dir, logs::PRUNE_PERIOD);
-    let counters = spawn_counter_pruning(store.backend().limiter());
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|e| CommandError(format!("can't listen on {}: {e}", config.listen)))?;
     let bound = listener
         .local_addr()
         .map_err(|e| CommandError(e.to_string()))?;
+    let origin = public_origin(config.origin.as_deref(), bound)?;
+    let accounts = accounts_for(config, origin)?;
+    if !accounts.has_passkeys() {
+        eprintln!(
+            "sync-server: passkeys need a domain name in the public origin; the pages offer email links alone"
+        );
+    }
+    let log_dir = config.data_dir.join(data::LOG_DIR);
+    logs::init(&log_dir).map_err(|e| CommandError(format!("can't open the log: {e}")))?;
+    let pruning = logs::spawn_pruning(log_dir, logs::PRUNE_PERIOD);
+    let counters = spawn_counter_pruning(store.backend().limiter());
+    let expiry = accounts::spawn_expiry(store.clone());
     tracing::info!("serving");
     eprintln!("sync-server listening on {bound}");
-    let served = serve_on(store.clone(), listener, shutdown_signal()).await;
+    let state = AppState {
+        store: store.clone(),
+        accounts: Arc::new(accounts),
+    };
+    let served = serve_on(state, listener, shutdown_signal()).await;
     pruning.abort();
+    expiry.abort();
     counters.abort();
     store.backend().close().await;
     tracing::info!("stopped");

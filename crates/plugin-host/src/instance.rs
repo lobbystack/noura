@@ -12,8 +12,8 @@ use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
     Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation, NewObject,
-    ObjectChanges, ObjectRecord, ObjectTypes, PropertyProblem, Router, ServiceError, TypeError,
-    WorkspaceObjects, WorkspacePath, WorkspaceReads,
+    ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PropertyProblem, Router, ServiceError,
+    TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -281,15 +281,27 @@ impl workspace::Host for HostState {
 
     fn read_object(&mut self, id: String) -> Result<workspace::Object, types::Error> {
         let object = self.workspace()?.read_object(&id).map_err(wit_error)?;
-        Ok(workspace::Object {
-            id: object.id,
-            object_type: object.object_type,
-            title: object.title,
-            path: object.path.as_str().to_owned(),
-            body: object.body,
-            properties: object.properties,
-            revision: object.revision,
-        })
+        Ok(object_of(object))
+    }
+
+    fn read_object_at(&mut self, path: String) -> Result<workspace::Object, types::Error> {
+        let workspace = self.workspace()?;
+        let path = WorkspacePath::new(&path).map_err(wit_error)?;
+        let object = workspace.read_object_at(&path).map_err(wit_error)?;
+        Ok(object_of(object))
+    }
+}
+
+/// An object read from the workspace, as it crosses the boundary.
+fn object_of(object: ObjectRead) -> workspace::Object {
+    workspace::Object {
+        id: object.id,
+        object_type: object.object_type,
+        title: object.title,
+        path: object.path.as_str().to_owned(),
+        body: object.body,
+        properties: object.properties,
+        revision: object.revision,
     }
 }
 
@@ -396,6 +408,12 @@ impl navigation::Host for HostState {
 
     fn open_page(&mut self, page: String) -> Result<(), types::Error> {
         self.navigation()?.open_page(&page).map_err(wit_error)
+    }
+
+    fn trash_object(&mut self, id: String) -> Result<(), types::Error> {
+        // Only objects of the plugin's own types, as for its writes.
+        self.objects_for(&id)?;
+        self.navigation()?.trash_object(&id).map_err(wit_error)
     }
 }
 

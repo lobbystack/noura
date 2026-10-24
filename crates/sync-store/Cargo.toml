@@ -9,13 +9,14 @@ rust-version.workspace = true
 # The store conformance suite, which each store's tests run through
 # `conformance_tests!`. It builds signed records with sync-key-envelope and
 # reads the fixtures in docs/workspace-format/fixtures.
-conformance = ["dep:serde", "dep:serde_json", "dep:sync-key-envelope"]
+conformance = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 hashlink.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope", optional = true }
+# Verifies recovery proofs (§12).
+sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
 sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros"] }

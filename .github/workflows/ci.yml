@@ -435,6 +435,32 @@ jobs:
         shell: bash
         run: scripts/check-collab-sandbox.sh module features guest release
 
+  account-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: account-web }
+      # The wasm-bindgen command-line tool at the version Cargo.lock pins.
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: wasm-bindgen@0.2.127 }
+      - run: cargo clippy -p account-web --lib --target wasm32-unknown-unknown --locked -- -D warnings
+      # The module and its notice, as the sync server serves them.
+      - run: scripts/build-account-web.sh --debug
+      # Chrome with a virtual WebAuthn authenticator signs up with a
+      # passkey, adds another and signs in with each through the module.
+      - name: Run account-web's browser test
+        run: cargo test -p account-web --test browser --locked -- --ignored
+        env:
+          NOURA_CHROME: /usr/bin/google-chrome
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

@@ -94,7 +94,8 @@ impl App {
     }
 
     /// Copy the file at `relative_path` next to itself, then select the
-    /// copy and open it in a kept tab.
+    /// copy and open it in a kept tab. A copy that opens in no tab, such as
+    /// an archive, stays selected in the tree, and no other app opens it.
     pub fn duplicate(&mut self, relative_path: &str) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
@@ -108,7 +109,9 @@ impl App {
             Ok(copy) => {
                 self.refresh_tree(None);
                 self.select(&copy);
-                self.open_file(&copy, OpenAs::Kept);
+                if crate::viewers::opens_in_tab(&copy) {
+                    self.open_file(&copy, OpenAs::Kept);
+                }
             }
             Err(error) => {
                 let title = format!("Couldn't duplicate {}", self.quoted(relative_path));
@@ -298,6 +301,13 @@ impl App {
     /// went to. The tabs of the item and of everything inside it close,
     /// and the next row becomes current.
     pub fn trash(&mut self, relative_path: &str) {
+        self.trash_item(relative_path, true);
+    }
+
+    /// Move the item at `relative_path` to the trash, as [`Self::trash`]
+    /// does. With `next_row`, the row after it becomes current in the
+    /// tree.
+    pub(super) fn trash_item(&mut self, relative_path: &str, next_row: bool) {
         // A new action replaces the last one's notice.
         self.dismiss_notice();
         if !self.save_before(relative_path, "moving it to the trash") {
@@ -307,7 +317,9 @@ impl App {
             return;
         };
         let quoted = self.quoted(relative_path);
-        let next = self.row_after_removing(relative_path);
+        let next = next_row
+            .then(|| self.row_after_removing(relative_path))
+            .flatten();
         match workspace.trash(relative_path) {
             Ok(place) => {
                 self.writes.forget(relative_path);

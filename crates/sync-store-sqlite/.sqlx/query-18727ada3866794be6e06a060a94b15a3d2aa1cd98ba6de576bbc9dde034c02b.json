@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO pending_passkeys (token_hash, email, credential_id, passkey, expires_at)\n             VALUES (?1, ?2, ?3, ?4, ?5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "18727ada3866794be6e06a060a94b15a3d2aa1cd98ba6de576bbc9dde034c02b"
+}

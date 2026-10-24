@@ -421,6 +421,11 @@ impl AccountChain {
         *self.digests.last().expect("a chain has a genesis")
     }
 
+    /// The digest of each link, in seqno order from the genesis.
+    pub fn link_digests(&self) -> &[Digest] {
+        &self.digests
+    }
+
     /// The current head.
     pub fn head(&self) -> AccountHead {
         self.head_at(self.head_seqno()).expect("the head exists")
@@ -555,4 +560,103 @@ impl KeptHead {
         }
         Ok(())
     }
+
+    /// Judges a chain a server serves under this kept genesis, from its
+    /// genesis (§7). The links up to the kept seqno must be the ones the
+    /// device accepted, ending at the kept head; each later link must have
+    /// the seqno one above the head before it and name that head's digest
+    /// in `previous`, and follow every rule of §7 under the cards active
+    /// there. A chain that stops short of the kept head, or a link whose
+    /// `previous` names another digest at any seqno, doesn't extend the
+    /// kept head: [`ChainRefusal::Forked`]. A later link that breaks any
+    /// other rule: [`ChainRefusal::Unauthorized`]. `listed_elsewhere`
+    /// holds the device IDs the account's other chains listed.
+    pub fn judge(
+        &self,
+        served: &[Signed<AccountLink>],
+        listed_elsewhere: &BTreeSet<Id>,
+    ) -> Result<AccountChain, ChainRefusal> {
+        let kept = usize::try_from(self.seqno).map_err(|_| ChainRefusal::Forked)?;
+        if kept == 0 || served.len() < kept {
+            return Err(ChainRefusal::Forked);
+        }
+        let (held, later) = served.split_at(kept);
+        let chain =
+            AccountChain::verify(held, listed_elsewhere).map_err(|_| ChainRefusal::Forked)?;
+        if chain.genesis() != self.genesis || chain.head_digest() != self.head {
+            return Err(ChainRefusal::Forked);
+        }
+        self.extend(&chain, later, listed_elsewhere)
+    }
+
+    /// Takes the links a server serves after this kept head onto `held`,
+    /// the chain the device verified up to it, by the rules of
+    /// [`KeptHead::judge`].
+    pub fn extend(
+        &self,
+        held: &AccountChain,
+        later: &[Signed<AccountLink>],
+        listed_elsewhere: &BTreeSet<Id>,
+    ) -> Result<AccountChain, ChainRefusal> {
+        if held.genesis() != self.genesis
+            || held.head_seqno() != self.seqno
+            || held.head_digest() != self.head
+        {
+            return Err(ChainRefusal::Forked);
+        }
+        let mut chain = held.clone();
+        for link in later {
+            if link.body.previous != chain.head_digest() {
+                return Err(ChainRefusal::Forked);
+            }
+            chain
+                .append(link, listed_elsewhere)
+                .map_err(ChainRefusal::Unauthorized)?;
+        }
+        Ok(chain)
+    }
+}
+
+/// Why a device refuses an account chain under a genesis it keeps (§7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ChainRefusal {
+    /// The chain doesn't extend the kept head: it stops short of it, holds
+    /// other links up to it, or a link names another `previous`.
+    #[error("the account chain doesn't extend the kept head")]
+    Forked,
+    /// A link after the kept head breaks a rule of §7.
+    #[error("{0}")]
+    Unauthorized(AccountError),
+}
+
+impl ChainRefusal {
+    /// The client's report: `sync_account_forked` or
+    /// `sync_account_unauthorized`.
+    pub fn client_code(&self) -> &'static str {
+        match self {
+            ChainRefusal::Forked => "sync_account_forked",
+            ChainRefusal::Unauthorized(error) => error.client_code(),
+        }
+    }
+
+    /// The workspaces a refusal stops (§7): every workspace when the chain
+    /// is the device's own account's, else every workspace the device
+    /// shares with that account. Both refusals stop the same ones.
+    pub fn stops(&self, own_account: bool) -> Stops {
+        if own_account {
+            Stops::EveryWorkspace
+        } else {
+            Stops::SharedWithAccount
+        }
+    }
+}
+
+/// The workspaces a device stops when it refuses an account's chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stops {
+    /// Every workspace the device shares with the account.
+    SharedWithAccount,
+    /// Every workspace, for the device's own account.
+    EveryWorkspace,
 }

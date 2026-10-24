@@ -18,22 +18,25 @@ use crate::{
     rail::FILES_PAGE,
     tabs::{Followed, Restored, TabContent},
     view_state::StoredWindow,
+    viewers::opens_in_tab,
     watch::Snapshot,
 };
 
 impl App {
     /// Show a file in a tab: its own tab when it has one, otherwise as
-    /// `how` says.
+    /// `how` says. Notes, text and code files, PDFs and images open in a
+    /// tab; any other file goes to the system's default app.
     pub fn open_file(&mut self, relative_path: &str, how: OpenAs) {
         if self.workspace.is_none() {
             return;
         }
-        self.save_leaving_note();
         let Some(workspace) = &self.workspace else {
             return;
         };
         match workspace.open_file(relative_path) {
+            Ok(_) if !opens_in_tab(relative_path) => self.open_with_system(relative_path),
             Ok(file) => {
+                self.save_leaving_note();
                 let object_id = self
                     .tree
                     .as_ref()
@@ -262,8 +265,20 @@ impl App {
     }
 
     /// A click on the tree's `row`: open a file as `how` says, or open or
-    /// close a folder.
-    pub fn activate_tree_row(&mut self, row: usize, how: OpenAs) {
+    /// close a folder. A file that opens in no tab only becomes the
+    /// current row, as in the legacy tree, so a click never starts another
+    /// app: a double-click, Enter or Space hands it to the default app.
+    pub fn click_tree_row(&mut self, row: usize, how: OpenAs) {
+        let Some(tree) = &mut self.tree else {
+            return;
+        };
+        if let Some(entry) = tree.rows().get(row)
+            && entry.kind == crate::EntryKind::File
+            && !opens_in_tab(&entry.relative_path)
+        {
+            tree.set_focus(row);
+            return;
+        }
         if let Some(TreeAction::OpenFile { relative_path }) =
             self.change_tree(|tree| tree.activate(row))
         {
@@ -450,6 +465,7 @@ impl App {
         self.follow_files();
         self.retry_unreadable_notes();
         self.check_notes_on_disk();
+        self.check_viewers_on_disk();
         if folders_changed {
             self.save_view();
         }
@@ -523,6 +539,7 @@ impl App {
     /// whether what the window shows changed too.
     pub(super) fn tabs_changed(&mut self, document: bool) {
         self.sync_notes();
+        self.sync_viewers();
         self.listeners.emit(Change::Tabs);
         if document {
             self.listeners.emit(Change::Document);
@@ -564,6 +581,7 @@ impl App {
         let Some(workspace) = &self.workspace else {
             self.tabs.restore(Vec::new(), None);
             self.sync_notes();
+            self.sync_viewers();
             return;
         };
         if let Some(tree) = &mut self.tree {
@@ -578,6 +596,10 @@ impl App {
                         // A managed note moved while Noura was closed
                         // comes back at its new path.
                         let path = tree.follow(&path, tab.object_id.as_deref())?;
+                        // A file that opens in no tab stays closed.
+                        if !opens_in_tab(&path) {
+                            return None;
+                        }
                         let file = workspace.open_file(&path).ok()?;
                         let object_id = tree.object_id(&path).map(str::to_owned);
                         Some(TabContent::File { file, object_id })
@@ -606,6 +628,7 @@ impl App {
             .collect();
         self.tabs.restore(restored, stored.active);
         self.sync_notes();
+        self.sync_viewers();
         // The session saves this window with the others from now on.
         self.keep_view(false);
     }

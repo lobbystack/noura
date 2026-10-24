@@ -36,9 +36,11 @@ pub mod context {
     pub const ACCOUNT_ID: &str = "noura.sync.v2 account id";
     /// The server secret's key check.
     pub const SECRET_CHECK: &str = "noura.sync.v2 secret check";
+    /// The passkey user handle key, from the server's secret.
+    pub const PASSKEY_USER: &str = "noura.sync.v2 passkey user";
 
     /// Every context, in the order of §32.
-    pub const ALL: [&str; 12] = [
+    pub const ALL: [&str; 13] = [
         OPERATION_KEY,
         LINEAGE_KEY,
         KEY_CHECK,
@@ -51,6 +53,7 @@ pub mod context {
         BLOB_NONCE,
         ACCOUNT_ID,
         SECRET_CHECK,
+        PASSKEY_USER,
     ];
 }
 

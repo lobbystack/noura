@@ -205,6 +205,11 @@
 			"context": "noura.sync.v2 secret check",
 			"input": "64746be024ebd9f4d4466ac13fa84ba4b231f4f88a684104022c94885825c492",
 			"output": "6fd6ec4e08ce38fe2886657d719e3fab254aa4c0c13c8d1325df5caf92372b04"
+		},
+		{
+			"context": "noura.sync.v2 passkey user",
+			"input": "64746be024ebd9f4d4466ac13fa84ba4b231f4f88a684104022c94885825c492",
+			"output": "a82f1ca0745adbe4031c923f5712541ea5f687dad187be139d1d130020706c74"
 		}
 	],
 	"description": "Binary encoding of sync protocol v2 (sync-v2.md §4, §15, §23, §26): tags, derive_key contexts, decoding rules and field limits, every message body, error codes and details, pull pages and realtime frames.",

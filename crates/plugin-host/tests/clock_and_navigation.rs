@@ -58,6 +58,10 @@ impl Navigation for Opener {
     fn open_page(&self, page: &str) -> Result<(), ServiceError> {
         self.answer(format!("page {page}"))
     }
+
+    fn trash_object(&self, id: &str) -> Result<(), ServiceError> {
+        self.answer(format!("trash {id}"))
+    }
 }
 
 /// The probe with `views`, using `services`, and the folders it lives in.
@@ -146,6 +150,32 @@ fn a_plugin_asks_the_app_to_open_objects_and_its_own_pages() {
     assert_eq!(
         plugins::texts(&plugin.render("events").unwrap()),
         ["hello open ok", "hello open ok", "hello open ok"]
+    );
+}
+
+#[test]
+fn a_plugin_moves_only_objects_of_its_own_types_to_the_trash() {
+    let opener = Arc::new(Opener::default());
+    let navigation: Arc<dyn Navigation> = opener.clone();
+    let Some((plugin, _folders)) = probe_with(Services {
+        navigation: Some(navigation),
+        ..Services::default()
+    }) else {
+        return;
+    };
+
+    // The probe registers no types, so even a task isn't its own.
+    plugin
+        .handle_event(
+            "hello",
+            &Event::Pressed("trash-object:task_01jbcdefghjkmnpqrstvwxyz0a".into()),
+        )
+        .unwrap();
+
+    assert!(opener.opened.lock().unwrap().is_empty());
+    assert_eq!(
+        plugins::texts(&plugin.render("events").unwrap()),
+        ["hello open error capability-not-declared object-types"]
     );
 }
 

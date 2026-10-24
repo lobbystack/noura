@@ -122,10 +122,12 @@ pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
 /// trashed items land in the workspace's trash folder, where tests can
 /// find them. Its clock says 9 am until a test sets another hour, in
 /// Toronto's time zone, and it formats dates and times in US English.
+/// Plugins read this computer's clock until a test stops it.
 pub struct FakeSystem {
     platform: Platform,
     pub calls: Mutex<Vec<String>>,
     hour: AtomicU8,
+    now: Mutex<Option<jiff::Timestamp>>,
 }
 
 impl FakeSystem {
@@ -134,6 +136,7 @@ impl FakeSystem {
             platform,
             calls: Mutex::new(Vec::new()),
             hour: AtomicU8::new(9),
+            now: Mutex::new(None),
         })
     }
 
@@ -144,6 +147,11 @@ impl FakeSystem {
     /// Set the system's clock to `hour` o'clock.
     pub fn set_hour(&self, hour: u8) {
         self.hour.store(hour, Ordering::SeqCst);
+    }
+
+    /// Stop the clock plugins read at `instant`, an RFC 3339 instant.
+    pub fn set_now(&self, instant: &str) {
+        *self.now.lock().unwrap() = Some(instant.parse().unwrap());
     }
 
     fn record(&self, call: String) {
@@ -198,6 +206,13 @@ impl System for FakeSystem {
         self.hour.load(Ordering::SeqCst)
     }
 
+    fn now(&self) -> jiff::Timestamp {
+        self.now
+            .lock()
+            .unwrap()
+            .unwrap_or_else(jiff::Timestamp::now)
+    }
+
     /// Toronto's rules, whatever zone the machine running the tests is in.
     fn time_zone(&self) -> jiff::tz::TimeZone {
         jiff::tz::TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").expect("a valid POSIX time zone")
@@ -231,4 +246,45 @@ pub fn create_workspace(app_data: &Path, name: &str, folder: &Path) -> String {
         .unwrap()
         .id()
         .to_owned()
+}
+
+/// Where the `nth` character of the first `needle` in the note drew, from
+/// the text runs the editor reports to assistive technology.
+pub fn point_at(harness: &Harness<'static, NouraUi>, needle: &str, nth: usize) -> egui::Pos2 {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let note = harness.get_by_role_and_label(Role::MultilineTextInput, "Note text");
+    let text = note.value().expect("the note reports its text");
+    let target = text.find(needle).expect("the note holds the needle")
+        + needle
+            .char_indices()
+            .nth(nth)
+            .expect("the needle is long enough")
+            .0;
+    let mut run_start = 0;
+    for run in note.children() {
+        let run = run.accesskit_node();
+        let data = run.data();
+        if data.role() != Role::TextRun {
+            continue;
+        }
+        let value = data.value().unwrap_or_default();
+        let mut at = run_start;
+        for (index, length) in data.character_lengths().iter().enumerate() {
+            if target < at + usize::from(*length) {
+                let bounds = data.bounds().expect("the run drew");
+                let left = data.character_positions().expect("the run drew")[index];
+                let width = data.character_widths().expect("the run drew")[index];
+                assert!(width > 0.0, "{needle:?} drew nothing at {nth}");
+                return egui::Pos2::new(
+                    bounds.x0 as f32 + left + width / 2.0,
+                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                );
+            }
+            at += usize::from(*length);
+        }
+        run_start += value.len();
+    }
+    panic!("no text run holds {needle:?}");
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT account, device FROM sessions WHERE token_hash = ?1",
+  "query": "SELECT account, device, recovery FROM sessions WHERE token_hash = ?1",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "device"
           }
         }
+      },
+      {
+        "name": "recovery",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "recovery"
+          }
+        }
       }
     ],
     "parameters": {
@@ -31,8 +42,9 @@
     },
     "nullable": [
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "b6731db30b741b2da82ee7ab245fe9e649af7844ea0790712a1e80064ccfadf7"
+  "hash": "039f13e9ca0766eff2012b5ac5837ea020116e79f97038d3b4047e03672d8526"
 }

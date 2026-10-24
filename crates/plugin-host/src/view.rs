@@ -9,7 +9,8 @@
 //! form, a virtual list too long to draw, a board without columns, a
 //! calendar date or an entry's start or end of the wrong form, a list that
 //! selects an item it doesn't hold, a card with a checkbox or a warning,
-//! or a view too large or deep to draw. [`check_rows`] does the same for
+//! a form that requires anything but a text input inside it, or a view
+//! too large or deep to draw. [`check_rows`] does the same for
 //! the rows of a virtual list.
 
 use std::collections::HashSet;
@@ -63,14 +64,17 @@ pub enum ViewKind {
     },
     /// A list whose children are its items. With `reorder`, you can drag
     /// them to new positions. `selected` names the item the plugin shows
-    /// selected, one of its children.
+    /// selected, one of its children. With `opens_on_click`, one click
+    /// opens an item, as a link does.
     List {
         label: String,
         reorder: bool,
         selected: Option<String>,
+        opens_on_click: bool,
     },
-    /// An item of a list, which may hold a menu, with a checkbox when
-    /// `checked` is set and a warning after its label when `warning` is.
+    /// An item of a list, which may hold a menu, or a name field that
+    /// shows in its place, with a checkbox when `checked` is set and a
+    /// warning after its label when `warning` is.
     Item {
         label: String,
         detail: Option<String>,
@@ -92,10 +96,13 @@ pub enum ViewKind {
     Row {
         cells: Vec<String>,
     },
-    /// Its children, top to bottom, then a submit button labeled `submit`.
+    /// Its children, top to bottom, then a submit button labeled `submit`,
+    /// which waits until each text input `required` names, all inside
+    /// the form, holds more than spaces.
     Form {
         label: String,
         submit: String,
+        required: Vec<String>,
     },
     /// An input. A date holds `YYYY-MM-DD` and a date and time RFC 3339
     /// with an offset; a choice input's value names one of its `choices`.
@@ -512,8 +519,9 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
 
 /// The nodes `parent` may hold: blocks in a panel or a form, items in a
 /// list, rows in a table with one cell per column, columns in a board and
-/// cards in a column, items and separators in a menu, and at most one
-/// menu on an item, a row, a card or a button.
+/// cards in a column, items and separators in a menu, at most one menu on
+/// a row, a card or a button, and at most one menu or name field on an
+/// item.
 fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
     let id = &parent.id;
     let kind = kind_name(&parent.kind);
@@ -599,7 +607,25 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
-        NodeKind::Item(_) | NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_) => {
+        // An item may hold a name field in its place instead, as for a
+        // rename.
+        NodeKind::Item(_) => {
+            if parent.children.len() > 1 {
+                return misplaced(format!(
+                    "The item {id} holds more than one menu or name field."
+                ));
+            }
+            for child in children {
+                if !matches!(child.kind, NodeKind::Menu(_) | NodeKind::NameField(_)) {
+                    return misplaced(format!(
+                        "The item {id} holds {}, which isn't a menu or a name field.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
+        NodeKind::Row(_) | NodeKind::Card(_) | NodeKind::Button(_) => {
             if parent.children.len() > 1 {
                 return misplaced(format!("The {kind} {id} holds more than one menu."));
             }
@@ -691,6 +717,7 @@ fn build(
             label: list.label.clone(),
             reorder: list.reorder,
             selected: list.selected.clone(),
+            opens_on_click: list.opens_on_click,
         },
         NodeKind::Item(item) => ViewKind::Item {
             label: item.label.clone(),
@@ -712,6 +739,7 @@ fn build(
         NodeKind::Form(form) => ViewKind::Form {
             label: form.label.clone(),
             submit: form.submit.clone(),
+            required: form.required.clone(),
         },
         NodeKind::Input(input) => ViewKind::Input {
             label: input.label.clone(),
@@ -751,14 +779,40 @@ fn build(
             end: entry.end.clone(),
         },
     };
-    let children = node
+    let children: Vec<ViewNode> = node
         .children
         .iter()
         .map(|&child| build(nodes, child as usize, seen, depth + 1, in_form || is_form))
         .collect::<Result<_, _>>()?;
+    if let ViewKind::Form { required, .. } = &kind {
+        check_required(&node.id, required, &children)?;
+    }
     Ok(ViewNode {
         id: node.id.clone(),
         kind,
         children,
     })
+}
+
+/// Each input a form requires is a text input inside it.
+fn check_required(form: &str, required: &[String], children: &[ViewNode]) -> Result<(), ViewError> {
+    fn holds_text_input(nodes: &[ViewNode], id: &str) -> bool {
+        nodes.iter().any(|node| {
+            (node.id == id
+                && matches!(
+                    node.kind,
+                    ViewKind::Input {
+                        value: Value::Text(_) | Value::Multiline(_),
+                        ..
+                    }
+                ))
+                || holds_text_input(&node.children, id)
+        })
+    }
+    match required.iter().find(|id| !holds_text_input(children, id)) {
+        Some(id) => Err(ViewError::Invalid(format!(
+            "The form {form} requires {id}, which isn't a text input inside it."
+        ))),
+        None => Ok(()),
+    }
 }

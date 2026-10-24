@@ -151,7 +151,7 @@ fn expanded(app: &App, relative_path: &str) -> Option<bool> {
 /// Open or close the folder at `relative_path`, as a click does.
 fn click(app: &mut App, relative_path: &str) {
     let row = row(app, relative_path);
-    app.activate_tree_row(row, OpenAs::Preview);
+    app.click_tree_row(row, OpenAs::Preview);
 }
 
 #[test]

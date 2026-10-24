@@ -4,3 +4,47 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+[lib]
+# The cdylib is the WebAssembly module scripts/build-account-web.sh builds;
+# the rlib lets the native tests reach the routes it calls.
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = [
+    "CredentialCreationOptions",
+    "CredentialRequestOptions",
+    "CredentialsContainer",
+    "Document",
+    "DomStringMap",
+    "DomTokenList",
+    "Element",
+    "Event",
+    "EventTarget",
+    "Headers",
+    "HtmlElement",
+    "HtmlFormElement",
+    "HtmlInputElement",
+    "Location",
+    "Navigator",
+    "NodeList",
+    "PublicKeyCredential",
+    "Request",
+    "RequestCredentials",
+    "RequestInit",
+    "Response",
+    "Window",
+] }
+webauthn-rs-proto = { workspace = true, features = ["wasm"] }
+
+[dev-dependencies]
+chromiumoxide = { version = "0.9.1", default-features = false }
+futures-util = "0.3"
+serde.workspace = true
+sync-server = { version = "0.2.0", path = "../sync-server" }
+tempfile.workspace = true
+tokio.workspace = true

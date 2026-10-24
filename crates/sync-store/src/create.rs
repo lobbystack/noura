@@ -307,8 +307,7 @@ pub(crate) async fn commit(
 
     // Commit: the domain's log starts with the genesis entry, then epoch 1.
     txn.insert_domain(workspace, domain).await?;
-    txn.insert_policy_change(workspace, 1, genesis_digest, &genesis.to_bytes())
-        .await?;
+    crate::policy::store_change(txn, workspace, &genesis).await?;
     for (account, member) in &snapshot.members {
         txn.upsert_member(workspace, *account, member.role.code())
             .await?;

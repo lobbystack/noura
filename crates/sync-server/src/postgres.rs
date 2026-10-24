@@ -191,13 +191,16 @@ pub async fn check_ready(postgres: &Postgres) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// Opens the store on a ready PostgreSQL database.
+/// Opens the store on a ready PostgreSQL database, with the server secret
+/// that account IDs derive from.
 pub async fn open_store(postgres: &Postgres) -> Result<Store<PgBackend>, CommandError> {
     check_ready(postgres).await?;
+    let secret = the_secret(postgres)?.clone();
     let backend = PgBackend::open(&postgres.url)
         .await
         .map_err(|e| fail(format!("can't open the database: {e}")))?;
-    Store::open(backend)
+    Ok(Store::open(backend)
         .await
-        .map_err(|e| fail(format!("can't open the store: {e}")))
+        .map_err(|e| fail(format!("can't open the store: {e}")))?
+        .with_secret(secret))
 }

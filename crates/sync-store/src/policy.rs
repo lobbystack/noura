@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use hashlink::LruCache;
 
 use sync_protocol::account::AccountChain;
-use sync_protocol::codec::Decode;
+use sync_protocol::codec::{Decode, Encode};
 use sync_protocol::policy::{AccountChains, PolicyChain};
 use sync_protocol::records::{AccountHead, AccountLink, PolicyChange, Signed};
 use sync_protocol::types::{Digest, Id};
 
-use crate::{Error, ReadTxn, Result, WorkspaceRow};
+use crate::{Error, ReadTxn, Result, WorkspaceRow, WriteTxn};
 
 /// The most chains each cache keeps; the least recently used one goes
 /// first, so a server with many accounts and workspaces keeps the busy
@@ -72,6 +72,27 @@ impl PolicyCache {
     pub(crate) fn put(&self, chain: Arc<PolicyChain>) {
         self.chains.put(chain.workspace(), chain);
     }
+}
+
+/// Stores a policy change of `workspace` and records the accounts whose
+/// heads it records, which the chain read route serves to the workspace's
+/// devices (§7). Every path that commits a policy change goes through
+/// here: workspace creation now, and the policy pushes of tickets 47 and
+/// 50 once they land.
+pub(crate) async fn store_change(
+    txn: &mut impl WriteTxn,
+    workspace: Id,
+    change: &Signed<PolicyChange>,
+) -> Result<()> {
+    txn.insert_policy_change(
+        workspace,
+        change.body.revision,
+        change.digest(),
+        &change.to_bytes(),
+    )
+    .await?;
+    let recorded: Vec<Id> = change.body.heads.iter().map(|h| h.account).collect();
+    txn.record_accounts(workspace, &recorded).await
 }
 
 /// A workspace's row and its verified policy chain at the head the

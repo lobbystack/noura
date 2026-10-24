@@ -193,6 +193,18 @@ impl WorkspaceReads for FakeWorkspace {
             .cloned()
             .ok_or_else(|| ServiceError::NotFound(id.to_owned()))
     }
+
+    fn read_object_at(&self, path: &WorkspacePath) -> Result<ObjectRead, ServiceError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("read-object-at {path}"));
+        self.objects
+            .iter()
+            .find(|object| &object.path == path)
+            .cloned()
+            .ok_or_else(|| ServiceError::NotFound(path.to_string()))
+    }
 }
 
 /// An object service that keeps objects in memory, answers every write

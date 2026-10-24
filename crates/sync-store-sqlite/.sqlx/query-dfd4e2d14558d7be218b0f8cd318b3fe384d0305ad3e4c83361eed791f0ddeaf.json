@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE passkeys SET passkey = ?2 WHERE credential_id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "dfd4e2d14558d7be218b0f8cd318b3fe384d0305ad3e4c83361eed791f0ddeaf"
+}

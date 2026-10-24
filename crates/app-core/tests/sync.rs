@@ -1,153 +1,39 @@
 //! The sync service against the real server on SQLite and on PostgreSQL
 //! (seam 4): one client creates a workspace and pushes an encrypted v2
-//! operation, and a fresh client with the same device credentials fetches
-//! the policy and keys, pulls the operation, checks its signature and
-//! chain, and decrypts it.
+//! operation, and a fresh client with the same device credentials takes its
+//! account chain from the server, fetches the policy and keys, pulls the
+//! operation, checks its signature and chain, and decrypts it.
+
+mod sync_support;
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use app_core::sync::{DeviceCredentials, SyncError, SyncService};
+use app_core::sync::{DeviceCredentials, KeptHeads, SyncError, SyncService};
 use sync_key_envelope::v2::{DeviceKeys, genesis_link};
 use sync_protocol::codec::Encode;
 use sync_protocol::messages::LimitsResponse;
 use sync_protocol::records::AccountHead;
 use sync_protocol::types::{Id, to_base64url};
-use sync_store::{Backend, Session, Store};
-use sync_store_postgres::testing::{Cluster, TestDatabase};
-
-/// Where the server keeps its state, kept alive for the test.
-enum Database {
-    /// The data directory holds the SQLite database.
-    Sqlite(tempfile::TempDir),
-    /// A PostgreSQL database.
-    Postgres(TestDatabase),
-}
-
-impl Database {
-    /// The files that hold what the server stored.
-    async fn files(&self) -> Vec<PathBuf> {
-        match self {
-            Database::Sqlite(dir) => {
-                let data = dir.path().join("data");
-                vec![data.join(DATABASE), data.join(format!("{DATABASE}-wal"))]
-            }
-            Database::Postgres(database) => {
-                // A checkpoint writes every page to the data files.
-                database.cluster.execute("CHECKPOINT").await;
-                database.cluster.data_dir().map_or_else(Vec::new, files)
-            }
-        }
-    }
-}
-
-/// Every file under `dir`.
-fn files(dir: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut stack = vec![dir.to_owned()];
-    while let Some(next) = stack.pop() {
-        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                found.push(path);
-            }
-        }
-    }
-    found
-}
-
-async fn sqlite() -> (Store<sync_store_sqlite::SqliteBackend>, Database) {
-    let dir = tempfile::tempdir().expect("temporary directory");
-    let data = dir.path().join("data");
-    sync_server::migrate(&data).await.expect("migrated");
-    let store = sync_server::open_store(&sync_server::Config {
-        data_dir: data,
-        listen: "127.0.0.1:0".parse().expect("an address"),
-        postgres: None,
-    })
-    .await
-    .expect("the store opens");
-    (store, Database::Sqlite(dir))
-}
-
-async fn postgres() -> (Store<sync_store_postgres::PgBackend>, Database) {
-    let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
-        .database()
-        .await;
-    let postgres = sync_server::Postgres {
-        url: database.url.clone(),
-        secret: Some(sync_protocol::types::SecretKey::random().expect("random")),
-    };
-    sync_server::postgres::migrate(&postgres)
-        .await
-        .expect("migrated");
-    let store = sync_server::postgres::open_store(&postgres)
-        .await
-        .expect("the store opens");
-    (store, Database::Postgres(database))
-}
-
-async fn server<B: Backend>(store: Store<B>) -> (String, DeviceCredentials) {
-    // Until ticket 46 adds sign-in and the chain routes, the account chain
-    // and the session go straight into the store.
-    let account = Id::random().expect("random");
-    let keys = DeviceKeys::generate().expect("random");
-    let genesis = genesis_link(&keys, account);
-    store
-        .append_account_links(vec![genesis.clone()])
-        .await
-        .expect("the chain is stored");
-    let token: [u8; 32] = sync_protocol::crypto::random_array().expect("random");
-    store
-        .create_session(
-            token,
-            Session {
-                account,
-                device: keys.device(),
-            },
-        )
-        .await
-        .expect("the session is stored");
-    let address = sync_server::spawn(Arc::new(store), "127.0.0.1:0")
-        .await
-        .expect("serving");
-    let credentials = DeviceCredentials {
-        account,
-        keys,
-        session_token: to_base64url(&token),
-        account_chain: vec![genesis.clone()],
-        reference_head: AccountHead {
-            account,
-            genesis: genesis.digest(),
-            seqno: 1,
-            head: genesis.digest(),
-        },
-    };
-    (format!("http://{address}"), credentials)
-}
+use sync_store::Backend;
+use sync_support::{Account, MemorySecrets, Server};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
-    let (store, database) = sqlite().await;
-    push_and_pull(server(store).await, database).await;
+    push_and_pull(Server::start().await).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fresh_client_pulls_and_decrypts_what_another_pushed_on_postgres() {
-    let (store, database) = postgres().await;
-    push_and_pull(server(store).await, database).await;
+    push_and_pull(Server::start_postgres().await).await;
 }
 
-async fn push_and_pull((base, credentials): (String, DeviceCredentials), database: Database) {
+async fn push_and_pull<B: Backend>(server: Server<B>) {
+    let account = Account::new(&server).await;
+    let device = &account.devices[0];
     let note = b"# Field notes\n\nThe first synced note.\n";
 
-    let mut writer = SyncService::connect(&base, credentials.clone())
-        .await
-        .expect("connects");
+    let mut writer = device.connect(&server.base, account.reference()).await;
     let mut created = writer
         .create_workspace("Field notes")
         .await
@@ -159,9 +45,18 @@ async fn push_and_pull((base, credentials): (String, DeviceCredentials), databas
     assert_eq!(receipt.domain, created.domain);
     assert_eq!(receipt.seq, 3, "after the genesis and epoch entries");
 
-    let mut reader = SyncService::connect(&base, credentials.clone())
-        .await
-        .expect("connects");
+    // A fresh client: the same device credentials, no kept heads yet.
+    let fresh = tempfile::tempdir().unwrap();
+    let secrets = std::sync::Arc::new(MemorySecrets::default());
+    let heads = KeptHeads::open(fresh.path(), account.id, device.id(), &*secrets).unwrap();
+    let mut reader = SyncService::connect(
+        &server.base,
+        device.credentials(account.reference()),
+        heads,
+        secrets,
+    )
+    .await
+    .expect("connects");
     let mut remote = reader
         .open_workspace(created.workspace)
         .await
@@ -175,7 +70,7 @@ async fn push_and_pull((base, credentials): (String, DeviceCredentials), databas
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "Notes/First.md");
     assert_eq!(files[0].bytes, note);
-    assert_eq!(files[0].device, credentials.keys.device());
+    assert_eq!(files[0].device, device.id());
     assert!(
         reader
             .pull_files(&mut remote)
@@ -183,10 +78,15 @@ async fn push_and_pull((base, credentials): (String, DeviceCredentials), databas
             .expect("a second pull")
             .is_empty()
     );
+    // The reader keeps its account's head now.
+    assert_eq!(
+        reader.kept_heads().kept_of(&account.id),
+        vec![account.head()]
+    );
 
     // The server stored ciphertext: neither the note, its path nor the
     // workspace name appears in its database.
-    for file in database.files().await {
+    for file in server.stored_files().await {
         let bytes = std::fs::read(&file).unwrap_or_default();
         for plaintext in [
             &b"The first synced note"[..],
@@ -201,9 +101,6 @@ async fn push_and_pull((base, credentials): (String, DeviceCredentials), databas
         }
     }
 }
-
-/// The database file in the server's data directory.
-const DATABASE: &str = "sync.sqlite3";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_client_refuses_a_server_without_protocol_2() {
@@ -235,11 +132,11 @@ async fn the_client_refuses_a_server_without_protocol_2() {
     let keys = DeviceKeys::generate().expect("random");
     let account = Id::random().expect("random");
     let genesis = genesis_link(&keys, account);
+    let device = keys.device();
     let credentials = DeviceCredentials {
         account,
         keys,
         session_token: to_base64url(&[1; 32]),
-        account_chain: vec![genesis.clone()],
         reference_head: AccountHead {
             account,
             genesis: genesis.digest(),
@@ -247,7 +144,11 @@ async fn the_client_refuses_a_server_without_protocol_2() {
             head: genesis.digest(),
         },
     };
-    let result = SyncService::connect(&format!("http://{address}"), credentials).await;
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = std::sync::Arc::new(MemorySecrets::default());
+    let heads = KeptHeads::open(dir.path(), account, device, &*secrets).unwrap();
+    let result =
+        SyncService::connect(&format!("http://{address}"), credentials, heads, secrets).await;
     assert!(
         matches!(result, Err(SyncError::ProtocolUnsupported(1))),
         "the client refuses a v1 server"

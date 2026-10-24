@@ -55,6 +55,9 @@ struct Kit<'a> {
     events: Vec<PluginEvent>,
     /// The link clicked in a Markdown node.
     link: Option<String>,
+    /// Enter left a single-line text input this frame, which submits the
+    /// form around it.
+    entered: bool,
 }
 
 impl Kit<'_> {
@@ -196,6 +199,7 @@ fn draw(
         app,
         events: Vec::new(),
         link: None,
+        entered: false,
     };
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
@@ -267,7 +271,16 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             label,
             reorder,
             selected,
-        } => rows::list(ui, node, (label, *reorder, selected.as_deref()), kit),
+            opens_on_click,
+        } => {
+            let options = rows::ListOptions {
+                label,
+                reorder: *reorder,
+                selected: selected.as_deref(),
+                opens_on_click: *opens_on_click,
+            };
+            rows::list(ui, node, &options, kit);
+        }
         ViewKind::Board { label } => board::board(ui, node, label, kit),
         ViewKind::Calendar { label, mode, date } => {
             calendar::calendar(ui, node, label, *mode, date, kit);
@@ -276,7 +289,11 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             rows::virtual_list(ui, node, label, *rows, kit);
         }
         ViewKind::Table { label, columns } => rows::table(ui, node, label, columns, kit),
-        ViewKind::Form { label, submit } => form::form(ui, node, label, submit, kit),
+        ViewKind::Form {
+            label,
+            submit,
+            required,
+        } => form::form(ui, node, (label, submit, required), kit),
         ViewKind::Input { .. } => form::input(ui, node, kit),
         ViewKind::NameField { label, value } => form::name_field(ui, node, label, value, kit),
         // Their list, table, board or menu draws them.

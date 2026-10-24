@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT credential_id, account, passkey FROM passkeys WHERE credential_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "credential_id",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "passkeys",
+            "name": "credential_id"
+          }
+        }
+      },
+      {
+        "name": "account",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "passkeys",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "passkey",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "passkeys",
+            "name": "passkey"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1ea8bf3a43a10fad9d11d3b9e048ecefc8be776d54abd8d88b147d6aae5f6761"
+}

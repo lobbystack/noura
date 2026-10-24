@@ -18,6 +18,8 @@ The browser viewer uses Marked (MIT), DOMPurify (the Apache-2.0 option of its du
 
 The v2 sync server (`sync-server`, `sync-store`, `sync-store-sqlite` and `sync-store-postgres`) uses axum (MIT), sqlx (MIT/Apache-2.0) with the SQLite it bundles (public domain) and its PostgreSQL driver, tokio and tracing (MIT), jiff (MIT/Unlicense), and hashlink (MIT/Apache-2.0) for its caches of verified chains. It reaches PostgreSQL over TLS through rustls (Apache-2.0/ISC/MIT) with ring (Apache-2.0 and ISC) and the Mozilla root certificates in `webpki-roots` (CDLA-Permissive-2.0). These are dependencies, not copied donor implementations. Atuin's server (MIT) served as a layout reference for running SQLite and PostgreSQL from one binary, and noura copied none of its code.
 
+The sync server's account pages run passkey ceremonies with `webauthn-rs`, `webauthn-rs-core`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5 from https://github.com/kanidm/webauthn-rs, under MPL-2.0, unmodified, and render askama templates (MIT/Apache-2.0); they send mail with lettre (MIT) or Resend's API. `account-web`, the WebAssembly module those pages load, holds `webauthn-rs-proto` and `base64urlsafedata` 0.5.5 under MPL-2.0, unmodified, with wasm-bindgen, js-sys and web-sys (MIT/Apache-2.0). The module ships with `crates/account-web/THIRD_PARTY_NOTICES.txt`, which names those crates and carries the MPL-2.0 text, and the server serves it beside the module at `/account/assets/THIRD_PARTY_NOTICES.txt`. The server's tests sign up with passkey-rs (`passkey-client` and `passkey-authenticator`, MIT/Apache-2.0), and account-web's browser test drives Chrome through chromiumoxide (MIT/Apache-2.0). These are dependencies, not copied donor implementations.
+
 Sync protocol v2 (`sync-protocol` and `sync-key-envelope`) uses ed25519-dalek 3 and x25519-dalek 3 (BSD-3-Clause), hpke with x-wing and ml-kem, chacha20poly1305, aead-stream and getrandom (MIT/Apache-2.0), and blake3 (CC0-1.0/Apache-2.0). These are dependencies, not copied donor implementations. Its tests read one draft-ietf-hpke-pq vector taken from the `hpke` package and the Wycheproof sets through the `wycheproof` crate (Apache-2.0); see `docs/provenance/sync-v2-test-vectors.md`.
 
 The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3 device fingerprints and attachment content revisions, and `@noble/ciphers` (MIT) for the ChaCha20-Poly1305 primitive inside the byte-compatible `age` attachment stream; the Rust side uses the `blake3` and `age` crates. These are dependencies, not copied donor implementations.
@@ -152,6 +154,39 @@ The desktop app decodes AVIF images in notes with these crates. Noura uses them 
 - `yuv` 0.8.19, under the BSD 3-Clause option of its `BSD-3-Clause OR Apache-2.0` license: Copyright (c) Radzivon Bartoshyk
 
 `avif-parse`, which reads the AVIF file around the AV1 data, uses the Mozilla Public License 2.0 and appears in the MPL-2.0 list below.
+
+## hayro 0.8.0 (PDF rendering)
+
+The desktop app opens, draws, searches and unlocks PDFs with Laurenz Stampfl's `hayro`, `hayro-interpret` and `hayro-syntax` 0.8.0, and the crates they bring, under the MIT option of their `Apache-2.0 OR MIT` licenses. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.txt` file in each desktop package carries their full license texts.
+
+`hayro-interpret` builds in two sets of files whose licenses differ from the crate's own:
+
+- PDFium's Foxit fonts, which stand in for the standard PDF fonts a PDF doesn't embed, under the BSD 3-Clause License. Original code copyright 2014 Foxit Software Inc.
+- An ICC profile for CMYK colors from Compact-ICC-Profiles, under CC0-1.0, which asks for no notice.
+
+`hayro-cmap` builds in Adobe's CMap resources under the BSD 3-Clause License. Both notices follow.
+
+Copyright 1990-2023 Adobe. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+Neither the name of Adobe nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Copyright 2014 PDFium Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+- Neither the name of Google Inc. nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Lockbook Markdown editor
 

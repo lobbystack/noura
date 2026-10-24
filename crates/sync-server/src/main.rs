@@ -3,6 +3,7 @@
 //! ```text
 //! sync-server migrate     [--data DIR] [--database-url URL]
 //! sync-server serve       [--data DIR] [--database-url URL] [--listen ADDRESS]
+//!                         [--origin ORIGIN]
 //! sync-server healthcheck [--listen ADDRESS]
 //! sync-server version
 //! ```
@@ -12,6 +13,17 @@
 //! URL the server runs on SQLite in the data directory. With one it runs on
 //! that PostgreSQL database and reads the server secret from
 //! `NOURA_SERVER_SECRET` or from the file `NOURA_SERVER_SECRET_FILE` names.
+//! `serve` also reads:
+//!
+//! - `NOURA_PUBLIC_ORIGIN` (or `--origin`): the HTTPS origin people reach the
+//!   server at. A server on a loopback address defaults to
+//!   `http://localhost:{port}`.
+//! - `NOURA_ALLOWED_EMAILS`: the comma-separated addresses that may sign up.
+//!   Empty admits nobody.
+//! - `NOURA_MAIL_FROM`: the sender of sign-in mail.
+//! - `NOURA_SMTP_URL`, or `NOURA_RESEND_API_KEY` with an optional
+//!   `NOURA_RESEND_ENDPOINT`: how the server sends mail.
+//! - `NOURA_ACCOUNT_WEB_DIR`: the account-web build the pages load.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,13 +32,19 @@ use std::process::ExitCode;
 use sync_server::postgres::{SECRET_FILE_VARIABLE, SECRET_VARIABLE, secret_from};
 
 const USAGE: &str = "usage: sync-server <migrate|serve|healthcheck|version> [--data DIR] \
-                     [--database-url URL] [--listen ADDRESS]";
+                     [--database-url URL] [--listen ADDRESS] [--origin ORIGIN]";
+
+/// A set, non-empty environment variable.
+fn env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
 
 struct Arguments {
     command: String,
     data_dir: PathBuf,
     database_url: Option<String>,
     listen: String,
+    origin: Option<String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -38,6 +56,7 @@ fn arguments() -> Result<Arguments, String> {
         .ok()
         .filter(|url| !url.is_empty());
     let mut listen = std::env::var("NOURA_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
+    let mut origin = env("NOURA_PUBLIC_ORIGIN");
     while let Some(flag) = args.next() {
         let value = args
             .next()
@@ -46,6 +65,7 @@ fn arguments() -> Result<Arguments, String> {
             "--data" => data_dir = PathBuf::from(value),
             "--database-url" => database_url = Some(value),
             "--listen" => listen = value,
+            "--origin" => origin = Some(value),
             _ => return Err(format!("unknown option {flag}\n{USAGE}")),
         }
     }
@@ -54,6 +74,7 @@ fn arguments() -> Result<Arguments, String> {
         data_dir,
         database_url,
         listen,
+        origin,
     })
 }
 
@@ -106,12 +127,25 @@ fn migrate(arguments: Arguments) -> Result<(), String> {
 fn serve(arguments: Arguments) -> Result<(), String> {
     let listen = listen_address(&arguments.listen)?;
     let database = postgres(arguments.database_url)?;
+    let mail = match (env("NOURA_SMTP_URL"), env("NOURA_RESEND_API_KEY")) {
+        (Some(url), _) => sync_server::MailConfig::Smtp(url),
+        (None, Some(api_key)) => sync_server::MailConfig::Resend {
+            api_key,
+            endpoint: env("NOURA_RESEND_ENDPOINT"),
+        },
+        (None, None) => sync_server::MailConfig::None,
+    };
+    let mut config = sync_server::Config::new(arguments.data_dir, listen);
+    config.postgres = database;
+    config.origin = arguments.origin;
+    config.allowed_emails = env("NOURA_ALLOWED_EMAILS").unwrap_or_default();
+    if let Some(from) = env("NOURA_MAIL_FROM") {
+        config.mail_from = from;
+    }
+    config.mail = mail;
+    config.account_web = env("NOURA_ACCOUNT_WEB_DIR").map(PathBuf::from);
     runtime()
-        .block_on(sync_server::serve(sync_server::Config {
-            data_dir: arguments.data_dir,
-            listen,
-            postgres: database,
-        }))
+        .block_on(sync_server::serve(config))
         .map_err(|e| e.to_string())
 }
 

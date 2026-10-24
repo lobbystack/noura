@@ -5,7 +5,7 @@
 
 mod support;
 
-use app_core::{App, OpenAs};
+use app_core::{App, OpenAs, TreeKey};
 use support::{Call, FakeSystem, Fixture, notice, open_from_tree};
 
 const FILES: &[(&str, &[u8])] = &[
@@ -109,14 +109,19 @@ fn a_link_to_any_workspace_file_opens_it_the_way_the_tree_does() {
         ("archive.zip", "Data/archive.zip"),
     ] {
         for how in [OpenAs::Preview, OpenAs::Kept] {
-            // A click on the file's row, from the note's preview tab.
+            // A click on the file's row, from the note's preview tab. A
+            // click only selects a file that opens in no tab, and Enter
+            // then opens it.
             let tree = Fixture::new(FILES);
             let tree_system = FakeSystem::new();
             let mut by_tree = tree.app_with(tree_system.clone());
             open_from_tree(&mut by_tree, "Inbox.md");
             support::select(&mut by_tree, path);
             let row = by_tree.tree().unwrap().focused().unwrap();
-            by_tree.activate_tree_row(row, how);
+            by_tree.click_tree_row(row, how);
+            if path == "Data/archive.zip" {
+                by_tree.press_tree_key(TreeKey::Enter);
+            }
 
             // The link, from the same tab.
             let linked = Fixture::new(FILES);
@@ -130,7 +135,13 @@ fn a_link_to_any_workspace_file_opens_it_the_way_the_tree_does() {
                 outcome(&by_tree, &tree_system, &tree),
                 "{target:?} as {how:?}"
             );
-            assert_eq!(active(&by_link).as_deref(), Some(path), "{target:?}");
+            // The archive goes to the default app and the note stays.
+            let shown = if path == "Data/archive.zip" {
+                "Inbox.md"
+            } else {
+                path
+            };
+            assert_eq!(active(&by_link).as_deref(), Some(shown), "{target:?}");
         }
     }
 }

@@ -765,12 +765,13 @@ fn moving_a_file_to_the_trash_from_the_tree_closes_its_tab() {
 
 #[test]
 fn a_file_that_ignored_files_hides_closes_its_tab() {
-    let (_app_data, _folder, mut app) = opened(&["A.md", "scratch.tmp"]);
+    let (_app_data, _folder, mut app) = opened(&["A.md", "scratch.log"]);
     app.open_file("A.md", OpenAs::Kept);
-    app.open_file("scratch.tmp", OpenAs::Kept);
+    app.open_file("scratch.log", OpenAs::Kept);
+    assert_eq!(paths(&app), ["A.md", "scratch.log"]);
 
     app.open_ignored_files();
-    assert!(app.add_ignored("*.tmp"));
+    assert!(app.add_ignored("*.log"));
 
     assert_eq!(paths(&app), ["A.md"]);
     assert_eq!(active(&app).as_deref(), Some("A"));

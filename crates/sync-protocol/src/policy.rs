@@ -767,6 +767,96 @@ impl PolicyChain {
     }
 }
 
+impl PolicyChain {
+    /// Whether this verified log names `account`'s chain under `genesis` at
+    /// a place where a chain the device doesn't keep may enter (§7): in the
+    /// genesis, in an `add_member` that adds the account, or in an
+    /// `accept_reset` that accepts it. An `account_heads` change never
+    /// brings a new chain in.
+    pub fn names_genesis(&self, account: &Id, genesis: &Digest) -> bool {
+        self.changes.iter().any(|change| {
+            let body = &change.body;
+            let anchors = match &body.kind {
+                PolicyKind::Genesis { .. } => true,
+                PolicyKind::AddMember { account: added, .. }
+                | PolicyKind::AcceptReset { account: added } => added == account,
+                _ => false,
+            };
+            anchors
+                && body
+                    .heads
+                    .iter()
+                    .any(|h| h.account == *account && h.genesis == *genesis)
+        })
+    }
+
+    /// Every account head the changes up to `revision` record, in order.
+    pub fn recorded_heads(&self, revision: u64) -> impl Iterator<Item = &AccountHead> {
+        self.changes
+            .iter()
+            .take_while(move |c| c.body.revision <= revision)
+            .flat_map(|c| c.body.heads.iter())
+    }
+
+    /// Whether the sessions of `reader_account` read, in full, the current
+    /// chain of an account whose approval request names an invitation to
+    /// this workspace (§7): whether that account belongs to the workspace.
+    pub fn reads_invitees(&self, reader_account: &Id) -> bool {
+        self.head_snapshot().role(reader_account).is_some()
+    }
+
+    /// The highest seqno of `account`'s chain under `genesis` that a
+    /// session reads through this workspace (§7), or none. `reader` holds
+    /// the session's device and any recovery identity it proved, of the
+    /// account `reader_account`; `head_seqno` is the chain's head.
+    ///
+    /// The workspace's devices read every chain the policy records in its
+    /// heads, up to the latest head recorded on it, and in full the chain
+    /// the policy names for a current member, whether it's the account's
+    /// current chain or one a reset retired before the workspace accepted
+    /// it. A device whose account `remove_member` removed reads the policy
+    /// up to that change, and these chains up to the heads recorded by
+    /// then.
+    pub fn chain_read_bound(
+        &self,
+        reader: &[Id],
+        reader_account: &Id,
+        account: &Id,
+        genesis: &Digest,
+        head_seqno: u64,
+    ) -> Option<u64> {
+        let head = self.head_snapshot();
+        let active = reader.iter().any(|device| head.is_device(device));
+        let limit = if active {
+            head.revision
+        } else {
+            (2..=head.revision).rev().find(|&revision| {
+                let removes = self.change(revision).is_some_and(|c| {
+                    matches!(c.body.kind, PolicyKind::RemoveMember { account: removed } if removed == *reader_account)
+                });
+                removes
+                    && self
+                        .at(revision - 1)
+                        .is_some_and(|before| reader.iter().any(|d| before.is_device(d)))
+            })?
+        };
+        let recorded = self
+            .recorded_heads(limit)
+            .filter(|h| h.account == *account && h.genesis == *genesis)
+            .map(|h| h.seqno)
+            .max()?;
+        let named = head
+            .members
+            .get(account)
+            .is_some_and(|member| member.head.genesis == *genesis);
+        Some(if active && named {
+            head_seqno
+        } else {
+            recorded
+        })
+    }
+}
+
 fn check_signer(
     change: &Signed<PolicyChange>,
     chain: &AccountChain,

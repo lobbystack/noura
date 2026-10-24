@@ -428,6 +428,100 @@ pub fn fixture() -> Fixture {
         "recorded": serde_json::to_value(fork.head()).unwrap(),
         "expect": "sync_account_forked",
     }));
+
+    // Links a device takes after its kept head: a `previous` that names
+    // another digest at any seqno is a fork, and any other broken rule is
+    // unauthorized; both stop the workspaces the device shares with the
+    // account, or every workspace for its own.
+    let extend = |f: &mut Fixture,
+                  name: &str,
+                  served: &Chain,
+                  own: bool,
+                  outcome: &str,
+                  head_seqno: Option<usize>| {
+        let stops = match (outcome, own) {
+            ("ok", _) => Value::Null,
+            (_, true) => json!("every_workspace"),
+            (_, false) => json!("shared_with_account"),
+        };
+        f.case(json!({
+            "kind": "kept_head_extend",
+            "name": name,
+            "links": links(served),
+            "kept": kept_value,
+            "own_account": own,
+            "expect": {"outcome": outcome, "head_seqno": head_seqno, "stops": stops},
+        }));
+    };
+    extend(
+        &mut f,
+        "links_that_extend_the_kept_head",
+        &kept_chain,
+        false,
+        "ok",
+        Some(3),
+    );
+    let mut other_previous = kept_chain.clone();
+    other_previous.links[2] = resign(&kept_chain.links[2], &c.laptop, |b| {
+        b.previous = Digest([1; 32])
+    });
+    extend(
+        &mut f,
+        "a_link_after_the_kept_head_naming_another_previous",
+        &other_previous,
+        false,
+        "sync_account_forked",
+        None,
+    );
+    extend(
+        &mut f,
+        "the_own_accounts_link_after_the_kept_head_naming_another_previous",
+        &other_previous,
+        true,
+        "sync_account_forked",
+        None,
+    );
+    let mut later = kept_chain.clone();
+    later.add_device(&c.laptop, &c.watch);
+    later.links[3] = resign(&later.links[3], &c.laptop, |b| b.previous = Digest([2; 32]));
+    extend(
+        &mut f,
+        "a_later_link_naming_another_previous",
+        &later,
+        false,
+        "sync_account_forked",
+        None,
+    );
+    let mut unauthorized = kept_chain.clone();
+    unauthorized.links[2] = resign(&kept_chain.links[2], &c.watch, |b| {
+        b.signer = c.watch.device()
+    });
+    extend(
+        &mut f,
+        "a_link_after_the_kept_head_from_a_card_that_isnt_active",
+        &unauthorized,
+        false,
+        "sync_account_unauthorized",
+        None,
+    );
+    extend(
+        &mut f,
+        "the_own_accounts_link_after_the_kept_head_from_a_card_that_isnt_active",
+        &unauthorized,
+        true,
+        "sync_account_unauthorized",
+        None,
+    );
+    let mut skips = kept_chain.clone();
+    skips.links[2] = resign(&kept_chain.links[2], &c.laptop, |b| b.seqno = 4);
+    extend(
+        &mut f,
+        "a_link_after_the_kept_head_that_skips_a_seqno",
+        &skips,
+        false,
+        "sync_account_unauthorized",
+        None,
+    );
     let _ = id_offer();
     f
 }

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT email FROM account_emails WHERE account = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "email",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_emails",
+            "name": "email"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9da4820b13e4d10c156a6c4d53a56aed198ab6451c434e82ee2d9bf5f91634c6"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace FROM recorded_accounts WHERE account = ?1 ORDER BY workspace",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "recorded_accounts",
+            "name": "workspace"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7197d1d65a19f0552aa1c316f871baaff5064b90b0b9a25dcc9bcd124c668ea5"
+}

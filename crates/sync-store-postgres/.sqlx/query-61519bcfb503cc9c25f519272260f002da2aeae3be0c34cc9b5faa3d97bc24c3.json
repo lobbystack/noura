@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT workspace FROM recorded_accounts WHERE account = $1 ORDER BY workspace",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "recorded_accounts",
+            "name": "workspace"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "61519bcfb503cc9c25f519272260f002da2aeae3be0c34cc9b5faa3d97bc24c3"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO cards (device, account, card) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "9533d886903635c4696bad962f1e0d68057165faf46b88898b126e82724c64a5"
+}

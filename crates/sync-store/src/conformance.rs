@@ -59,6 +59,13 @@ macro_rules! conformance_tests {
             keys_and_epochs_serve_records_without_recipients,
             pruning_lock_meets_no_policy_lock,
             creations_at_once_keep_the_workspace_limit,
+            account_chain_appends_check_who_sends_them,
+            enrolled_cards_bind_again_but_never_a_removed_id,
+            sign_in_rows_work_once_and_expire,
+            chain_reads_follow_the_policy,
+            a_retired_chain_the_workspace_names_reads_in_full,
+            recovery_proofs_consume_their_challenge,
+            approval_requests_open_the_invitees_chain,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -83,6 +90,8 @@ macro_rules! instance_tests {
             removal_races_pushes,
             pushes_into_several_domains_race_policy_changes,
             limits_hold_across_instances,
+            geneses_at_once_start_one_chain,
+            enrollments_at_once_take_one_card,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -292,6 +301,7 @@ impl<B: Backend> World<B> {
             let session = Session {
                 account,
                 device: key.device(),
+                recovery: None,
             };
             let token = random_token();
             store
@@ -521,8 +531,7 @@ pub async fn inject_change<B: Backend>(
                     blobs: Vec::new(),
                 })
                 .await?;
-                txn.insert_policy_change(workspace, revision, digest, &change.to_bytes())
-                    .await?;
+                crate::policy::store_change(txn, workspace, &change).await?;
                 txn.set_policy_head(workspace, revision, digest).await?;
                 if let Some((domain, _)) = &new_domain {
                     txn.insert_domain(workspace, *domain).await?;
@@ -798,6 +807,7 @@ pub async fn creation_retries_and_conflicts<B: Backend>(store: Store<B>) {
     let session = Session {
         account,
         device: keys[0].device(),
+        recovery: None,
     };
     let cards = vec![keys[0].card(account)];
     let (body, genesis, _) = creation(&keys[0], &links, &cards);
@@ -847,6 +857,7 @@ pub async fn domain_ids_belong_to_their_workspace<B: Backend>(store: Store<B>) {
     let session = Session {
         account,
         device: keys[0].device(),
+        recovery: None,
     };
     let cards = vec![keys[0].card(account)];
     let shared = Id::random().expect("random");
@@ -880,6 +891,7 @@ pub async fn creation_checks_heads_signatures_and_recipients<B: Backend>(store: 
     let session = Session {
         account,
         device: keys[0].device(),
+        recovery: None,
     };
     let cards: Vec<Card> = keys.iter().map(|k| k.card(account)).collect();
 
@@ -927,6 +939,7 @@ pub async fn creation_checks_heads_signatures_and_recipients<B: Backend>(store: 
     let other = Session {
         account,
         device: keys[1].device(),
+        recovery: None,
     };
     assert_eq!(
         push_failure(store.create_workspace(other, body).await),
@@ -1151,6 +1164,7 @@ pub async fn operation_checks_answer_their_codes<B: Backend>(store: Store<B>) {
     let session = Session {
         account: stranger,
         device: keys[0].device(),
+        recovery: None,
     };
     let op = Signed::sign(
         Operation {
@@ -1382,6 +1396,7 @@ pub async fn policy_regression_and_stale_revisions<B: Backend>(store: Store<B>) 
     let session = Session {
         account: world.account,
         device: keys.device(),
+        recovery: None,
     };
     let token = random_token();
     world
@@ -2565,6 +2580,748 @@ pub async fn limits_hold_across_instances<B: Backend>(first: Arc<Store<B>>, seco
         0,
         "nothing ended is left"
     );
+}
+
+fn head_link(links: &[Signed<AccountLink>]) -> AccountHead {
+    head_of(links)
+}
+
+fn add_device(
+    signer: &DeviceKeys,
+    links: &[Signed<AccountLink>],
+    new: &Card,
+) -> Signed<AccountLink> {
+    next_link(
+        signer,
+        &head_link(links),
+        LinkKind::AddDevice {
+            card: Nested(new.clone()),
+            offer: Digest([9; 32]),
+        },
+    )
+}
+
+/// `POST /v2/accounts/chain` (§7): a link comes from a session of its
+/// signer and adds only a card a session of the account enrolled; a link
+/// after a stale head gets `account_conflict`; and links commit all or
+/// none.
+pub async fn account_chain_appends_check_who_sends_them<B: Backend>(store: Store<B>) {
+    let account = Id::random().expect("random");
+    let laptop = DeviceKeys::generate().expect("random");
+    let phone = DeviceKeys::generate().expect("random");
+    let laptop_session = Session::new(account, laptop.device());
+    let phone_session = Session::new(account, phone.device());
+    let genesis = genesis_link(&laptop, account);
+    assert_eq!(
+        refusal(
+            store
+                .append_chain(laptop_session, vec![genesis.clone()])
+                .await
+        )
+        .code,
+        "forbidden",
+        "the genesis card isn't enrolled"
+    );
+    store
+        .enroll_card(laptop.card(account))
+        .await
+        .expect("enrolled");
+    assert_eq!(
+        refusal(
+            store
+                .append_chain(phone_session, vec![genesis.clone()])
+                .await
+        )
+        .code,
+        "forbidden",
+        "another device's session"
+    );
+    let head = store
+        .append_chain(laptop_session, vec![genesis.clone()])
+        .await
+        .expect("the genesis");
+    assert_eq!(head.seqno, 1);
+    let mut links = vec![genesis];
+    let add = add_device(&laptop, &links, &phone.card(account));
+    assert_eq!(
+        refusal(store.append_chain(laptop_session, vec![add.clone()]).await).code,
+        "forbidden",
+        "the phone's card isn't enrolled"
+    );
+    store
+        .enroll_card(phone.card(account))
+        .await
+        .expect("enrolled");
+    // All or none: the add and a stale link after it store neither.
+    let stale = add_device(&laptop, &links, &phone.card(account));
+    assert_eq!(
+        refusal(
+            store
+                .append_chain(laptop_session, vec![add.clone(), stale])
+                .await
+        )
+        .code,
+        "account_conflict"
+    );
+    assert_eq!(
+        store
+            .append_chain(laptop_session, vec![add.clone()])
+            .await
+            .expect("the add")
+            .seqno,
+        2
+    );
+    links.push(add);
+    let again = genesis_link(&phone, account);
+    assert_eq!(
+        refusal(store.append_chain(phone_session, vec![again]).await).code,
+        "forbidden",
+        "the account already has a chain"
+    );
+    let chains = store
+        .read_chains(
+            phone_session,
+            sync_protocol::messages::ChainsRequest {
+                cursors: List(vec![sync_protocol::messages::ChainCursor {
+                    account,
+                    genesis: None,
+                    after: 0,
+                }]),
+            },
+        )
+        .await
+        .expect("its own chain");
+    let served: Vec<_> = chains.pages.0[0]
+        .links
+        .0
+        .iter()
+        .map(|l| l.0.clone())
+        .collect();
+    assert_eq!(served, links);
+}
+
+/// Enrolled cards (§7): the same card binds again byte for byte, and a
+/// device ID that a link of its account removed never enrolls again, with
+/// any bytes.
+pub async fn enrolled_cards_bind_again_but_never_a_removed_id<B: Backend>(store: Store<B>) {
+    let (account, keys, links) = account(2);
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
+    store
+        .enroll_card(keys[1].card(account))
+        .await
+        .expect("enrolled");
+    store
+        .enroll_card(keys[1].card(account))
+        .await
+        .expect("the same bytes again");
+    let other = Id::random().expect("random");
+    assert_eq!(
+        refusal(store.enroll_card(keys[1].card(other)).await).code,
+        "id_conflict"
+    );
+    let remove = next_link(
+        &keys[0],
+        &head_of(&links),
+        LinkKind::Remove {
+            device: keys[1].device(),
+            keep: Sorted::default(),
+        },
+    );
+    store
+        .append_account_links(vec![remove])
+        .await
+        .expect("removed");
+    assert_eq!(
+        refusal(store.enroll_card(keys[1].card(account)).await).code,
+        "id_conflict"
+    );
+}
+
+/// Sign-in rows (§7, §29): a magic link, a passkey that waits for its
+/// email, a ceremony and an enrollment challenge each work once, expire 10
+/// minutes after the store issued them, and go when the store deletes
+/// expired rows; a web session lasts until its end, with no expiry.
+pub async fn sign_in_rows_work_once_and_expire<B: Backend>(store: Store<B>) {
+    let store = store.with_secret(SecretKey([0x5e; 32]));
+    let email = "ada@example.com";
+    let link = store.issue_magic_link(email).await.expect("a link");
+    let (account, session) = store
+        .sign_in_with_magic_link(&link)
+        .await
+        .expect("used")
+        .expect("a current link");
+    assert_eq!(account, store.account_id(email).expect("an ID"));
+    assert_eq!(
+        store.account_email(account).await.expect("read"),
+        Some(email.into())
+    );
+    assert_eq!(
+        store.sign_in_with_magic_link(&link).await.expect("used"),
+        None
+    );
+    assert_eq!(
+        store.web_session(&session).await.expect("read"),
+        Some(account)
+    );
+    store.clock().advance(Duration::from_secs(365 * 24 * 3600));
+    assert_eq!(
+        store.web_session(&session).await.expect("read"),
+        Some(account)
+    );
+    store.end_web_session(&session).await.expect("ended");
+    assert_eq!(store.web_session(&session).await.expect("read"), None);
+
+    let late = store.issue_magic_link(email).await.expect("a link");
+    store.clock().advance(Duration::from_secs(600));
+    assert_eq!(
+        store.sign_in_with_magic_link(&late).await.expect("used"),
+        None
+    );
+
+    // A held passkey confirms only for an email without an account.
+    let existing = store
+        .hold_passkey(email, vec![9], b"{}".to_vec())
+        .await
+        .expect("held");
+    assert_eq!(
+        store.confirm_passkey(&existing).await.expect("refused"),
+        None
+    );
+    assert!(store.passkeys(account).await.expect("read").is_empty());
+    let carol = "carol@example.com";
+    let held = store
+        .hold_passkey(carol, vec![1, 2, 3], b"{}".to_vec())
+        .await
+        .expect("held");
+    let (confirmed, _) = store
+        .confirm_passkey(&held)
+        .await
+        .expect("confirmed")
+        .expect("a current confirmation");
+    assert_eq!(confirmed, store.account_id(carol).expect("an ID"));
+    assert_eq!(store.passkeys(confirmed).await.expect("read").len(), 1);
+    assert_eq!(store.confirm_passkey(&held).await.expect("used"), None);
+    // A credential ID that another passkey holds doesn't confirm, and
+    // leaves no account behind.
+    let bob = "bob@example.com";
+    let taken = store
+        .hold_passkey(bob, vec![1, 2, 3], b"{}".to_vec())
+        .await
+        .expect("held");
+    assert_eq!(store.confirm_passkey(&taken).await.expect("refused"), None);
+    let bob_account = store.account_id(bob).expect("an ID");
+    assert_eq!(store.account_email(bob_account).await.expect("read"), None);
+
+    let ceremony = store
+        .begin_ceremony(
+            crate::CeremonyKind::SignIn,
+            Some(account),
+            None,
+            b"state".to_vec(),
+        )
+        .await
+        .expect("begun");
+    assert!(
+        store
+            .finish_ceremony(ceremony, crate::CeremonyKind::SignUp)
+            .await
+            .expect("read")
+            .is_none(),
+        "another kind takes the row and finds nothing"
+    );
+    let ceremony = store
+        .begin_ceremony(
+            crate::CeremonyKind::SignIn,
+            Some(account),
+            None,
+            b"state".to_vec(),
+        )
+        .await
+        .expect("begun");
+    let row = store
+        .finish_ceremony(ceremony, crate::CeremonyKind::SignIn)
+        .await
+        .expect("read")
+        .expect("a current ceremony");
+    assert_eq!(row.state, b"state");
+    assert!(
+        store
+            .finish_ceremony(ceremony, crate::CeremonyKind::SignIn)
+            .await
+            .expect("read")
+            .is_none()
+    );
+
+    // Every kind of row goes 10 minutes after its issue.
+    store.issue_magic_link(email).await.expect("a link");
+    store
+        .hold_passkey(email, vec![4], b"{}".to_vec())
+        .await
+        .expect("held");
+    store
+        .begin_ceremony(
+            crate::CeremonyKind::SignUp,
+            None,
+            Some(email.into()),
+            Vec::new(),
+        )
+        .await
+        .expect("begun");
+    store
+        .challenge(Session::new(account, Id::random().expect("random")))
+        .await
+        .expect("a challenge");
+    store.clock().advance(Duration::from_secs(599));
+    assert_eq!(store.delete_expired().await.expect("swept"), 0);
+    store.clock().advance(Duration::from_secs(1));
+    assert_eq!(store.delete_expired().await.expect("swept"), 4);
+}
+
+/// `POST /v2/accounts/chains` (§7): a member's current chain in full to
+/// the workspace's devices, a removed member's chain up to its last
+/// recorded head, the remover's chain to the removed member up to its
+/// removal, and nothing to an account that shares no workspace.
+pub async fn chain_reads_follow_the_policy<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let (member, member_keys, member_links) = account(2);
+    world
+        .store
+        .append_account_links(member_links.clone())
+        .await
+        .expect("chain");
+    let member_session = Session::new(member, member_keys[0].device());
+    let shared = world.store.clone();
+    let read = |session: Session, account: Id| {
+        let store = shared.clone();
+        async move {
+            store
+                .read_chains(
+                    session,
+                    sync_protocol::messages::ChainsRequest {
+                        cursors: List(vec![sync_protocol::messages::ChainCursor {
+                            account,
+                            genesis: None,
+                            after: 0,
+                        }]),
+                    },
+                )
+                .await
+                .map(|r| r.pages.0[0].head_seqno)
+        }
+    };
+    let owner = world.devices[0].session;
+    assert_eq!(refusal(read(owner, member).await).code, "not_found");
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), head_of(&member_links[..1])],
+        PolicyKind::AddMember {
+            account: member,
+            role: sync_protocol::records::Role::Editor,
+            invitation: Id::random().expect("random"),
+        },
+    );
+    world.inject_policy(add, vec![world.domain], None).await;
+    assert_eq!(read(owner, member).await.expect("in full"), 2);
+    assert_eq!(
+        read(member_session, world.account).await.expect("recorded"),
+        1
+    );
+    let remove = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::RemoveMember { account: member },
+    );
+    world.inject_policy(remove, vec![world.domain], None).await;
+    assert_eq!(read(owner, member).await.expect("as recorded"), 1);
+    let stranger = DeviceKeys::generate().expect("random");
+    let link = next_link(
+        &world.devices[0].keys,
+        &head_of(&world.links),
+        LinkKind::AddDevice {
+            card: Nested(stranger.card(world.account)),
+            offer: Digest([9; 32]),
+        },
+    );
+    world
+        .store
+        .append_account_links(vec![link.clone()])
+        .await
+        .expect("grown");
+    world.links.push(link);
+    let heads = world.change(0, vec![head_of(&world.links)], PolicyKind::AccountHeads);
+    world.inject_policy(heads, vec![world.domain], None).await;
+    assert_eq!(
+        read(member_session, world.account)
+            .await
+            .expect("to its removal"),
+        1
+    );
+    assert_eq!(read(owner, world.account).await.expect("its own"), 2);
+}
+
+/// A chain that a reset retired while a workspace still names it for a
+/// current member reaches that workspace's devices in full, as it did while
+/// it was current, until the workspace accepts the reset (§7). The new
+/// chain, which the workspace doesn't record yet, reads not at all through
+/// it.
+pub async fn a_retired_chain_the_workspace_names_reads_in_full<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let (member, _, member_links) = account(2);
+    world
+        .store
+        .append_account_links(member_links.clone())
+        .await
+        .expect("chain");
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), head_of(&member_links[..1])],
+        PolicyKind::AddMember {
+            account: member,
+            role: sync_protocol::records::Role::Editor,
+            invitation: Id::random().expect("random"),
+        },
+    );
+    world.inject_policy(add, vec![world.domain], None).await;
+    let owner = world.devices[0].session;
+    let shared = world.store.clone();
+    let read = |genesis: Digest| {
+        let store = shared.clone();
+        async move {
+            store
+                .read_chains(
+                    owner,
+                    sync_protocol::messages::ChainsRequest {
+                        cursors: List(vec![sync_protocol::messages::ChainCursor {
+                            account: member,
+                            genesis: Some(genesis),
+                            after: 0,
+                        }]),
+                    },
+                )
+                .await
+                .map(|r| (r.pages.0[0].status, r.pages.0[0].head_seqno))
+        }
+    };
+    let old = member_links[0].digest();
+    assert_eq!(
+        read(old).await.expect("in full"),
+        (sync_protocol::messages::ChainStatus::Current, 2)
+    );
+
+    // A reset: a new genesis becomes the member's current chain.
+    let reset = genesis_link(&DeviceKeys::generate().expect("random"), member);
+    let row = crate::LinkRow {
+        genesis: reset.digest(),
+        seqno: 1,
+        link: reset.to_bytes(),
+    };
+    let new = reset.digest();
+    world
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                txn.insert_account_link(member, &row, new).await?;
+                txn.set_current_genesis(member, new).await
+            })
+        }))
+        .await
+        .expect("reset");
+    assert_eq!(
+        read(old)
+            .await
+            .expect("in full while the workspace names it"),
+        (sync_protocol::messages::ChainStatus::Retired, 2)
+    );
+    assert_eq!(refusal(read(new).await).code, "not_found");
+}
+
+/// `POST /v2/recovery` (§12): a proof from the active recovery identity for
+/// the session's enrolled card, at the server's origin, consumes a current
+/// challenge once and lets the session read the identity's envelopes.
+pub async fn recovery_proofs_consume_their_challenge<B: Backend>(store: Store<B>) {
+    let (account, keys, mut links) = account(1);
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
+    let kit = DeviceKeys::generate().expect("random");
+    let add = next_link(
+        &keys[0],
+        &head_of(&links),
+        LinkKind::AddRecovery {
+            card: Nested(kit.card(account)),
+        },
+    );
+    store
+        .append_account_links(vec![add.clone()])
+        .await
+        .expect("kit");
+    links.push(add);
+    let phone = DeviceKeys::generate().expect("random");
+    store
+        .enroll_card(phone.card(account))
+        .await
+        .expect("enrolled");
+    let token = random_token();
+    let session = Session::new(account, phone.device());
+    store.create_session(token, session).await.expect("session");
+    let hash = sync_protocol::crypto::hash(&token);
+    let origin = "https://sync.example.com";
+    let challenge = store
+        .challenge(session)
+        .await
+        .expect("a challenge")
+        .challenge;
+    let proof =
+        sync_key_envelope::v2::recovery_proof(&kit, origin, &phone.card(account), challenge);
+    assert_eq!(
+        refusal(
+            store
+                .prove_recovery(session, hash, "https://elsewhere.example", proof.clone())
+                .await
+        )
+        .code,
+        "origin_mismatch"
+    );
+    store
+        .prove_recovery(session, hash, origin, proof.clone())
+        .await
+        .expect("proven");
+    assert_eq!(
+        refusal(store.prove_recovery(session, hash, origin, proof).await).code,
+        "challenge_invalid"
+    );
+    let proven = store
+        .session(&sync_protocol::types::to_base64url(&token))
+        .await
+        .expect("the session");
+    assert_eq!(proven.recovery, Some(kit.device()));
+}
+
+/// Reads the current chain of `account` as `session` and returns the
+/// served head seqno.
+async fn served_seqno<B: Backend>(
+    store: &Store<B>,
+    session: Session,
+    account: Id,
+) -> crate::Result<u64> {
+    store
+        .read_chains(
+            session,
+            sync_protocol::messages::ChainsRequest {
+                cursors: List(vec![sync_protocol::messages::ChainCursor {
+                    account,
+                    genesis: None,
+                    after: 0,
+                }]),
+            },
+        )
+        .await
+        .map(|r| r.pages.0[0].head_seqno)
+}
+
+/// Approval requests (§7, §10): while an account's approval request that
+/// names an invitation to a workspace waits, the sessions of that
+/// workspace's member accounts read the account's current chain in full,
+/// and nobody else reads it through the request. A request that names no
+/// invitation, or an invitation to another workspace, opens nothing, and
+/// neither does an expired one, which the store deletes.
+pub async fn approval_requests_open_the_invitees_chain<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let (invitee, invitee_keys, invitee_links) = account(2);
+    world
+        .store
+        .append_account_links(invitee_links)
+        .await
+        .expect("chain");
+    let (outsider, outsider_keys, outsider_links) = account(1);
+    world
+        .store
+        .append_account_links(outsider_links)
+        .await
+        .expect("chain");
+    let store = &world.store;
+    let owner = world.devices[0].session;
+    let outsider = Session::new(outsider, outsider_keys[0].device());
+    let request = Session::new(invitee, invitee_keys[1].device());
+    assert_eq!(
+        refusal(served_seqno(store, owner, invitee).await).code,
+        "not_found"
+    );
+    store
+        .store_approval_request(request, Digest([1; 32]), None)
+        .await
+        .expect("stored");
+    let elsewhere = (Id::random().expect("random"), Id::random().expect("random"));
+    store
+        .store_approval_request(request, Digest([2; 32]), Some(elsewhere))
+        .await
+        .expect("stored");
+    assert_eq!(
+        refusal(served_seqno(store, owner, invitee).await).code,
+        "not_found",
+        "no request names an invitation to the owner's workspace"
+    );
+    let invitation = Id::random().expect("random");
+    store
+        .store_approval_request(
+            request,
+            Digest([3; 32]),
+            Some((invitation, world.workspace)),
+        )
+        .await
+        .expect("stored");
+    assert_eq!(
+        served_seqno(store, owner, invitee).await.expect("in full"),
+        2
+    );
+    assert_eq!(
+        refusal(served_seqno(store, outsider, invitee).await).code,
+        "not_found",
+        "the outsider's account doesn't belong to the workspace"
+    );
+    store
+        .clock()
+        .advance(Duration::from_secs(crate::SIGN_IN_TTL));
+    assert_eq!(
+        refusal(served_seqno(store, owner, invitee).await).code,
+        "not_found",
+        "the request expired"
+    );
+    assert_eq!(store.delete_expired().await.expect("deleted"), 3);
+}
+
+/// Two geneses for one new account at once, through two instances (§7,
+/// §15): one starts the account's chain, and the other gets `forbidden`,
+/// as it would after the first committed.
+pub async fn geneses_at_once_start_one_chain<B: Backend>(
+    first: Arc<Store<B>>,
+    second: Arc<Store<B>>,
+) {
+    for _ in 0..8 {
+        let account = Id::random().expect("random");
+        let keys = [
+            DeviceKeys::generate().expect("random"),
+            DeviceKeys::generate().expect("random"),
+        ];
+        for key in &keys {
+            first
+                .enroll_card(key.card(account))
+                .await
+                .expect("enrolled");
+        }
+        let geneses: Vec<Signed<AccountLink>> =
+            keys.iter().map(|k| genesis_link(k, account)).collect();
+        let tasks: Vec<_> = [first.clone(), second.clone()]
+            .into_iter()
+            .zip(keys.iter().zip(&geneses))
+            .map(|(store, (key, genesis))| {
+                let session = Session::new(account, key.device());
+                let genesis = genesis.clone();
+                tokio::spawn(async move { store.append_chain(session, vec![genesis]).await })
+            })
+            .collect();
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("the append ends"));
+        }
+        let winner = results
+            .iter()
+            .position(|r| r.is_ok())
+            .expect("one genesis starts the chain");
+        let loser = 1 - winner;
+        assert_eq!(
+            refusal(results.swap_remove(loser)).code,
+            "forbidden",
+            "the later genesis"
+        );
+        let session = Session::new(account, keys[winner].device());
+        let page = first
+            .read_chains(
+                session,
+                sync_protocol::messages::ChainsRequest {
+                    cursors: List(vec![sync_protocol::messages::ChainCursor {
+                        account,
+                        genesis: None,
+                        after: 0,
+                    }]),
+                },
+            )
+            .await
+            .expect("its own chain");
+        let page = &page.pages.0[0];
+        assert_eq!(page.genesis, geneses[winner].digest());
+        assert_eq!(page.head_seqno, 1);
+        assert_eq!(
+            refusal(
+                second
+                    .read_chains(
+                        session,
+                        sync_protocol::messages::ChainsRequest {
+                            cursors: List(vec![sync_protocol::messages::ChainCursor {
+                                account,
+                                genesis: Some(geneses[loser].digest()),
+                                after: 0,
+                            }]),
+                        },
+                    )
+                    .await
+            )
+            .code,
+            "not_found",
+            "the store kept no link of the later genesis"
+        );
+    }
+}
+
+/// Enrollments of one device ID at once, through two instances, for
+/// accounts without a chain (§7): the same card enrolls on both, and of two
+/// accounts' cards one enrolls and the other gets `id_conflict`, never
+/// `internal`.
+pub async fn enrollments_at_once_take_one_card<B: Backend>(
+    first: Arc<Store<B>>,
+    second: Arc<Store<B>>,
+) {
+    for _ in 0..8 {
+        let keys = DeviceKeys::generate().expect("random");
+        let account = Id::random().expect("random");
+        let card = keys.card(account);
+        let tasks: Vec<_> = [first.clone(), second.clone()]
+            .into_iter()
+            .map(|store| {
+                let card = card.clone();
+                tokio::spawn(async move { store.enroll_card(card).await })
+            })
+            .collect();
+        for task in tasks {
+            task.await
+                .expect("the enrollment ends")
+                .expect("the same card enrolls twice");
+        }
+
+        let keys = DeviceKeys::generate().expect("random");
+        let cards = [
+            keys.card(Id::random().expect("random")),
+            keys.card(Id::random().expect("random")),
+        ];
+        let tasks: Vec<_> = [first.clone(), second.clone()]
+            .into_iter()
+            .zip(cards)
+            .map(|(store, card)| tokio::spawn(async move { store.enroll_card(card).await }))
+            .collect();
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("the enrollment ends"));
+        }
+        let enrolled = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(enrolled, 1, "one card takes the device ID");
+        let loser = results.into_iter().find(|r| r.is_err()).expect("a refusal");
+        assert_eq!(refusal(loser).code, "id_conflict");
+    }
 }
 
 /// The access list naming `account` as a manager.

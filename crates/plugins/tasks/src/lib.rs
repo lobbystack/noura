@@ -2,15 +2,19 @@
 //! fields, draws a task's properties panel beside its body in the note
 //! editor, and adds the Tasks page: the views Today, Upcoming, All and
 //! Completed and one per project and per folder in the sidebar, filters,
-//! and a list of tasks you check off. New task names a task before its
-//! file exists. Other plugins change tasks through its `create`,
-//! `update`, `complete` and `reopen` commands, which [`commands`]
-//! documents.
+//! and a list of tasks you check off, each with a menu to open, rename,
+//! check off or trash it. New task names a task before its file exists.
+//! The Inbox's Due today section lists what is due by tonight and adds a
+//! task due today in one step. Other plugins change tasks through its
+//! `create`, `update`, `complete` and `reopen` commands, which
+//! [`commands`] documents.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `tasks_plugin.wasm`.
 
 mod commands;
+mod inbox;
+mod menus;
 mod task;
 mod views;
 
@@ -21,7 +25,7 @@ use std::{
 
 use jiff::civil::Date;
 use plugin_sdk::{
-    Command, Error, Event, Node, ObjectType, Page, Plugin, Value, View,
+    Command, Error, Event, InboxSection, Node, ObjectType, Page, Plugin, Value, View,
     navigation::{self, Placement},
     objects::{self, Changes, NewObject},
     workspace,
@@ -37,8 +41,9 @@ const PAGE: &str = "tasks";
 /// What a list shows when a write met a file that changed since.
 const CHANGED_ELSEWHERE: &str = "It changed elsewhere. Showing the latest version.";
 
-/// The most tasks one list draws. A view holds at most 10,000 nodes.
-const MOST_SHOWN: usize = 5_000;
+/// The most tasks one list draws. A view holds at most 10,000 nodes, and
+/// each task's row takes nine with its menu.
+const MOST_SHOWN: usize = 1_000;
 
 /// What the page and the panels show, between calls.
 struct State {
@@ -59,6 +64,18 @@ struct State {
     panels: BTreeMap<String, String>,
     /// What each task's panel says about its last change.
     panel_notices: BTreeMap<String, String>,
+    /// The revision of each task as the Inbox's Due today drew it.
+    due_listed: BTreeMap<String, String>,
+    /// What Due today says about the last change from it.
+    due_notice: Option<String>,
+    /// The task whose row shows the rename field.
+    renaming: Option<String>,
+    /// Why the last rename didn't go in, while the field stays open.
+    rename_problem: Option<String>,
+    /// How many tasks Due today's field added, which names its next field.
+    added: u32,
+    /// Why the last task the field added couldn't be created.
+    add_problem: Option<String>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -71,6 +88,12 @@ static STATE: Mutex<State> = Mutex::new(State {
     listed: BTreeMap::new(),
     panels: BTreeMap::new(),
     panel_notices: BTreeMap::new(),
+    due_listed: BTreeMap::new(),
+    due_notice: None,
+    renaming: None,
+    rename_problem: None,
+    added: 0,
+    add_problem: None,
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -133,6 +156,18 @@ impl Plugin for Tasks {
             offered("complete", "Complete a task"),
             offered("reopen", "Reopen a task"),
         ]
+    }
+
+    fn inbox_sections() -> Vec<InboxSection> {
+        inbox::sections()
+    }
+
+    fn render_inbox_section(_section: String) -> Vec<Node> {
+        inbox::render()
+    }
+
+    fn handle_inbox_event(_section: String, event: Event) {
+        inbox::handle(event);
     }
 
     fn run_command(id: String, input: String) -> Result<String, String> {
@@ -244,6 +279,9 @@ fn page() -> Vec<Node> {
     if let Some(notice) = &state.notice {
         view.text(View::ROOT, "notice", notice);
     }
+    if let Some(problem) = &state.rename_problem {
+        view.text(View::ROOT, "rename-problem", problem);
+    }
     filters(&mut view, &state.filters, &projects, &folders(&all));
     let mut shown: Vec<Task> = all
         .into_iter()
@@ -254,6 +292,16 @@ fn page() -> Vec<Node> {
         .iter()
         .map(|task| (task.id.clone(), task.revision.clone()))
         .collect();
+    // A rename ends when its task leaves the list.
+    if let Some(renaming) = &state.renaming
+        && !shown
+            .iter()
+            .take(MOST_SHOWN)
+            .any(|task| task.id == *renaming)
+    {
+        state.renaming = None;
+        state.rename_problem = None;
+    }
     if shown.is_empty() {
         view.text(View::ROOT, "empty", "No tasks here");
         return view.into_nodes();
@@ -269,6 +317,8 @@ fn page() -> Vec<Node> {
         if views::overdue(task, &now) {
             view.warn(item, "Overdue");
         }
+        let renaming = state.renaming.as_deref() == Some(task.id.as_str());
+        menus::add(&mut view, item, task, renaming);
     }
     if let Some(selected) = state.selected.as_ref().filter(|selected| {
         shown
@@ -480,6 +530,9 @@ fn handle(event: Event) {
             state.naming = false;
             state.naming_problem = None;
         }
+        Event::Named(naming) if naming.node == menus::RENAME => menus::rename(&naming.name),
+        Event::Cancelled(node) if node == menus::RENAME => menus::stop_renaming(),
+        Event::Chosen(node) => menus::choose(&node),
         Event::Selected(target) | Event::Activated(target) if target.node != "tasks" => {
             choose(&target.item);
         }
@@ -594,21 +647,27 @@ fn complete(id: &str, done: bool) {
     let Some(revision) = state().listed.get(id).cloned() else {
         return;
     };
+    state().notice = set_done(id, &revision, done);
+}
+
+/// Mark the task `id` done, or back to todo, against `revision`, and say
+/// what the list should tell you: nothing when it worked.
+fn set_done(id: &str, revision: &str, done: bool) -> Option<String> {
     let status = if done { "done" } else { "todo" };
     let written = objects::update(
         id,
-        &revision,
+        revision,
         &Changes {
             body: None,
             properties: json!({ "status": status }).to_string(),
             remove: Vec::new(),
         },
     );
-    state().notice = match written {
+    match written {
         Ok(_) => None,
         Err(Error::RevisionConflict(_)) => Some(CHANGED_ELSEWHERE.to_owned()),
         Err(error) => Some(format!("Couldn't change the task: {}", reason(&error))),
-    };
+    }
 }
 
 /// A task's properties panel: status, priority, due date and project.

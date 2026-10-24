@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO sessions (token_hash, account, device) VALUES ($1, $2, $3)",
+  "query": "INSERT INTO cards (device, account, card) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
   "describe": {
     "columns": [],
     "parameters": {
@@ -12,5 +12,5 @@
     },
     "nullable": []
   },
-  "hash": "4c27eb6a6795a94de1a851da93b686c74c6cca3164a09cc85a8eed1dd4e9a0e7"
+  "hash": "9ccf1f229bacb21d6742eec066f4c6731e1218fdc828750c1ad6ac607a0a465e"
 }
