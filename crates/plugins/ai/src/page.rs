@@ -42,8 +42,11 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             messages = read;
         }
         Some(Err(error)) => {
-            // The chat went, as when its folder moved to the trash.
-            state.chat = None;
+            // A chat that went, as when its folder moved to the trash,
+            // leaves a new chat in its place.
+            if matches!(error, plugin_sdk::Error::NotFound(_)) {
+                state.chat = None;
+            }
             view.text(View::ROOT, "title", NEW_CHAT);
             view.text(View::ROOT, "chat-problem", &reason(&error));
         }

@@ -987,10 +987,14 @@ impl Ai {
 
     fn chats(&self) -> Result<Vec<AiChat>, ServiceError> {
         let engine = self.engine()?;
+        let mut seen = std::collections::HashSet::new();
         Ok(engine
             .list_chats()
             .map_err(service_error)?
             .into_iter()
+            // Two files with one ID, as after a copy in another app, list
+            // as one chat.
+            .filter(|chat| seen.insert(chat.id.clone()))
             .map(|chat| AiChat {
                 id: chat.id,
                 title: chat.title,
@@ -1293,6 +1297,7 @@ fn error_code(error: &CoreError) -> String {
 fn chat_error(error: CoreError, id: &str) -> ServiceError {
     match error.code.as_str() {
         "chat_not_found" | "invalid_chat_id" => ServiceError::NotFound(id.to_owned()),
+        "identity_conflict" => ServiceError::IdentityConflict(id.to_owned()),
         _ => service_error(error),
     }
 }

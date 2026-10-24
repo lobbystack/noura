@@ -148,6 +148,9 @@ fn reason(error: &Error) -> String {
         Error::RevisionConflict(_) => {
             "The chat changed elsewhere. Showing the latest version.".to_owned()
         }
+        Error::IdentityConflict(_) => "This chat is in more than one file, as after a copy in \
+            another app, so it takes no messages until you remove the copy."
+            .to_owned(),
         Error::Failed(message) => message.clone(),
         _ => "Noura couldn't do that.".to_owned(),
     }

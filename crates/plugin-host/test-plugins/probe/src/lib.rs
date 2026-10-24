@@ -19,7 +19,8 @@
 //!   `echo` tool, `ai:answer-tools:<run>:<content>`, which answers each
 //!   call of the run with `content`, `ai:read-run:<id>` and `ai:stop:<id>`:
 //!   call the host AI interface, one line per provider, chat, message or
-//!   run.
+//!   run. A press on a node whose ID is `ai:<call>` makes the call too, and
+//!   the `events` page shows each line as `<page> ai <line>`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
@@ -189,6 +190,14 @@ impl Plugin for Probe {
             && let Some(call) = node.strip_prefix("call:")
         {
             record(format!("{page} call {}", relay(call)));
+            return;
+        }
+        if let Event::Pressed(node) = &event
+            && let Some(call) = node.strip_prefix("ai:")
+        {
+            for line in ai_call(call) {
+                record(format!("{page} ai {line}"));
+            }
             return;
         }
         if let Event::Pressed(node) = &event
