@@ -68,8 +68,31 @@ pub enum Capability {
     ObjectTypes,
     /// Connect to these hosts.
     Network { hosts: Vec<String> },
-    /// Run these commands of other plugins.
-    Commands { targets: Vec<String> },
+    /// Add commands to the command palette and offer them to other
+    /// plugins, and run these commands of other plugins: a plugin's ID for
+    /// every command it offers, or `plugin/command` for one.
+    Commands {
+        #[serde(default)]
+        targets: Vec<String>,
+    },
+    /// Add sections to the Inbox.
+    InboxSections,
+    /// Add a page to Settings.
+    Settings,
+    /// Offer tools that AI assistants call through MCP.
+    Tools,
+}
+
+/// One thing you approved for a plugin that you can revoke on its own: a
+/// capability, or one host or command target of one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Grant {
+    /// A whole capability, by the name the manifest uses.
+    Capability(String),
+    /// One host of the `network` capability.
+    Host(String),
+    /// One target of the `commands` capability.
+    Target(String),
 }
 
 impl Capability {
@@ -81,23 +104,215 @@ impl Capability {
             Self::ObjectTypes => "object-types",
             Self::Network { .. } => "network",
             Self::Commands { .. } => "commands",
+            Self::InboxSections => "inbox-sections",
+            Self::Settings => "settings",
+            Self::Tools => "tools",
         }
     }
 
     /// What approving it lets the plugin do, in plain words.
     pub fn description(&self) -> String {
+        self.grants()
+            .into_iter()
+            .map(|(_, description)| description)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// What you approve with it, one grant at a time: each host and each
+    /// command target on its own, each with what it lets the plugin do.
+    pub fn grants(&self) -> Vec<(Grant, String)> {
+        let whole = |description: &str| {
+            vec![(
+                Grant::Capability(self.name().to_owned()),
+                description.to_owned(),
+            )]
+        };
         match self {
-            Self::WorkspaceRead => "Read the files and folders in your workspace.".to_owned(),
-            Self::Views => "Add pages to the rail and show panels in them.".to_owned(),
-            Self::ObjectTypes => "Add its own kinds of objects, show their properties beside \
-                                  them, and create, change, move and delete them."
-                .to_owned(),
-            Self::Network { hosts } => format!("Connect to {}.", hosts.join(", ")),
+            Self::WorkspaceRead => whole("Read the files and folders in your workspace."),
+            Self::Views => whole("Add pages to the rail and show panels in them."),
+            Self::ObjectTypes => whole(
+                "Add its own kinds of objects, show their properties beside them, and create, \
+                 change, move and delete them.",
+            ),
+            Self::Network { hosts } => hosts
+                .iter()
+                .map(|host| (Grant::Host(host.clone()), format!("Connect to {host}.")))
+                .collect(),
             Self::Commands { targets } => {
-                format!("Run commands of other plugins: {}.", targets.join(", "))
+                let mut grants =
+                    whole("Add commands to the command palette and offer them to other plugins.");
+                grants.extend(targets.iter().map(|target| {
+                    let description = match target.split_once('/') {
+                        Some((plugin, command)) => {
+                            format!("Run the {command} command of the {plugin} plugin.")
+                        }
+                        None => format!("Run the commands the {target} plugin offers."),
+                    };
+                    (Grant::Target(target.clone()), description)
+                }));
+                grants
+            }
+            Self::InboxSections => whole("Add sections to the Inbox."),
+            Self::Settings => whole("Add a page to Settings."),
+            Self::Tools => whole("Offer tools that AI assistants can use."),
+        }
+    }
+
+    /// Whether `capabilities` holds the capability called `name`.
+    pub fn holds(capabilities: &[Self], name: &str) -> bool {
+        capabilities
+            .iter()
+            .any(|capability| capability.name() == name)
+    }
+
+    /// The hosts `capabilities` lets a plugin connect to.
+    pub fn hosts(capabilities: &[Self]) -> Vec<String> {
+        capabilities
+            .iter()
+            .flat_map(|capability| match capability {
+                Self::Network { hosts } => hosts.clone(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Whether `capabilities` lets a plugin run the command `command` of
+    /// the plugin `plugin`: a target names the command or its plugin.
+    pub fn allows_target(capabilities: &[Self], plugin: &str, command: &str) -> bool {
+        capabilities.iter().any(|capability| match capability {
+            Self::Commands { targets } => {
+                targets.iter().any(|target| match target.split_once('/') {
+                    Some((p, c)) => p == plugin && c == command,
+                    None => target == plugin,
+                })
+            }
+            _ => false,
+        })
+    }
+
+    /// What `update` declares that `installed` doesn't: whole
+    /// capabilities, and the hosts and command targets the installed build
+    /// doesn't list. An update that only removes adds nothing.
+    pub fn added(installed: &[Self], update: &[Self]) -> Vec<Self> {
+        update
+            .iter()
+            .filter_map(|capability| {
+                let Some(known) = installed
+                    .iter()
+                    .find(|known| known.name() == capability.name())
+                else {
+                    return Some(capability.clone());
+                };
+                match (capability, known) {
+                    (Self::Network { hosts }, Self::Network { hosts: known }) => {
+                        let hosts = missing(hosts, known);
+                        (!hosts.is_empty()).then_some(Self::Network { hosts })
+                    }
+                    (Self::Commands { targets }, Self::Commands { targets: known }) => {
+                        let targets = missing(targets, known);
+                        (!targets.is_empty()).then_some(Self::Commands { targets })
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// What a plugin that declares `declared` may use once you approved
+    /// `approved`: the capabilities in both, each with the hosts and
+    /// targets in both. A network capability left without hosts goes.
+    pub fn granted(declared: &[Self], approved: &[Self]) -> Vec<Self> {
+        declared
+            .iter()
+            .filter_map(|capability| {
+                let known = approved
+                    .iter()
+                    .find(|known| known.name() == capability.name())?;
+                match (capability, known) {
+                    (Self::Network { hosts }, Self::Network { hosts: known }) => {
+                        let hosts = shared(hosts, known);
+                        (!hosts.is_empty()).then_some(Self::Network { hosts })
+                    }
+                    (Self::Commands { targets }, Self::Commands { targets: known }) => {
+                        Some(Self::Commands {
+                            targets: shared(targets, known),
+                        })
+                    }
+                    _ => Some(capability.clone()),
+                }
+            })
+            .collect()
+    }
+
+    /// Add `more` to `approved`, merging hosts and targets into the
+    /// capabilities approved already.
+    pub fn approve(approved: &mut Vec<Self>, more: &[Self]) {
+        for capability in more {
+            let Some(known) = approved
+                .iter_mut()
+                .find(|known| known.name() == capability.name())
+            else {
+                approved.push(capability.clone());
+                continue;
+            };
+            match (capability, known) {
+                (Self::Network { hosts: values }, Self::Network { hosts: known })
+                | (Self::Commands { targets: values }, Self::Commands { targets: known }) => {
+                    for value in values {
+                        if !known.contains(value) {
+                            known.push(value.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
+
+    /// Take `grant` out of `approved`. Revoking the last host takes the
+    /// network capability with it; the commands capability stays without
+    /// targets.
+    pub fn revoke(approved: &mut Vec<Self>, grant: &Grant) {
+        match grant {
+            Grant::Capability(name) => approved.retain(|capability| capability.name() != name),
+            Grant::Host(host) => {
+                for capability in approved.iter_mut() {
+                    if let Self::Network { hosts } = capability {
+                        hosts.retain(|known| known != host);
+                    }
+                }
+                approved.retain(
+                    |capability| !matches!(capability, Self::Network { hosts } if hosts.is_empty()),
+                );
+            }
+            Grant::Target(target) => {
+                for capability in approved.iter_mut() {
+                    if let Self::Commands { targets } = capability {
+                        targets.retain(|known| known != target);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The values in `values` that `known` lacks.
+fn missing(values: &[String], known: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .filter(|value| !known.contains(value))
+        .cloned()
+        .collect()
+}
+
+/// The values in both lists, in the order of `values`.
+fn shared(values: &[String], known: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .filter(|value| known.contains(value))
+        .cloned()
+        .collect()
 }
 
 /// Read and check the manifest in `folder`. The entry component's path
@@ -309,14 +524,20 @@ impl RawCapability {
                 hosts: values(self.hosts.as_ref(), &self.name, text, "hosts", valid_host)?,
             }),
             "commands" => Ok(Capability::Commands {
-                targets: values(
-                    self.targets.as_ref(),
-                    &self.name,
-                    text,
-                    "targets",
-                    valid_target,
-                )?,
+                targets: match &self.targets {
+                    Some(_) => values(
+                        self.targets.as_ref(),
+                        &self.name,
+                        text,
+                        "targets",
+                        valid_target,
+                    )?,
+                    None => Vec::new(),
+                },
             }),
+            "inbox-sections" => Ok(Capability::InboxSections),
+            "settings" => Ok(Capability::Settings),
+            "tools" => Ok(Capability::Tools),
             other => Err(located(
                 InstallErrorCode::UnknownCapability,
                 text,
@@ -410,9 +631,14 @@ pub fn valid_plugin_id(id: &str) -> bool {
 }
 
 /// A host name such as `api.example.com`: lowercase letters, digits,
-/// hyphens and dots, with no empty label.
+/// hyphens and dots, with no empty label. A name on the local network,
+/// such as `localhost`, `printer.local` or one without a dot, is never a
+/// valid host: the web access boundary refuses them all.
 fn valid_host(host: &str) -> bool {
     host.len() <= 253
+        && host.contains('.')
+        && !host.ends_with(".local")
+        && !host.ends_with(".localhost")
         && host.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
@@ -424,11 +650,18 @@ fn valid_host(host: &str) -> bool {
         })
 }
 
-/// A command target: text without spaces or control characters.
+/// A command target: a plugin's ID, for every command that plugin offers,
+/// or `plugin/command` for one.
 fn valid_target(target: &str) -> bool {
-    !target.is_empty()
-        && target.len() <= 200
-        && !target.chars().any(|c| c.is_whitespace() || c.is_control())
+    match target.split_once('/') {
+        Some((plugin, command)) => valid_plugin_id(plugin) && valid_command_id(command),
+        None => valid_plugin_id(target),
+    }
+}
+
+/// Whether `id` can name a plugin's command: the rules of a plugin ID.
+pub fn valid_command_id(id: &str) -> bool {
+    valid_plugin_id(id)
 }
 
 /// Whether a manifest's entry path names a file inside the plugin's

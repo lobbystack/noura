@@ -6,12 +6,16 @@
 
 mod support;
 
+use std::ops::Range;
+
 use app_core::{
-    App, Field, InputValue, PluginEvent, Submission, date_time_fields, date_time_value, date_value,
+    App, Field, InputValue, PluginEvent, Submission, VirtualRow, date_time_fields, date_time_value,
+    date_value,
 };
 use support::{
     Fixture,
     plugins::{self, PluginFolder},
+    settle,
 };
 
 const FORM: &str = "plugin:kit:form";
@@ -31,7 +35,34 @@ fn with_kit() -> Option<(Fixture, App, PluginFolder)> {
     let mut app = fixture.app();
     plugins::install(&mut app, folder.path());
     assert!(app.set_plugin_enabled("kit", true));
+    settle(&mut app);
     Some((fixture, app, folder))
+}
+
+/// Send `event` on `page` and wait for the plugin to answer on its
+/// thread.
+fn send(app: &mut App, page: &str, event: &PluginEvent) {
+    app.send_plugin_event(page, event);
+    settle(app);
+}
+
+/// Press `node` on `page` and wait for the plugin to draw again.
+fn press(app: &mut App, page: &str, node: &str) {
+    app.press_plugin_button(page, node);
+    settle(app);
+}
+
+/// The rows in `range` of the virtual list `node` on `page`, once the
+/// plugin returned the rows Noura asked it for on its thread.
+fn rows(
+    app: &mut App,
+    page: &str,
+    node: &str,
+    range: Range<u32>,
+) -> Result<Vec<Option<VirtualRow>>, String> {
+    app.plugin_rows(page, node, range.clone())?;
+    settle(app);
+    app.plugin_rows(page, node, range)
 }
 
 /// What the kit plugin says the last event was on `page`.
@@ -80,16 +111,18 @@ fn a_change_or_a_submit_with_a_date_of_the_wrong_form_never_reaches_the_plugin()
             ],
         }),
     ] {
-        app.send_plugin_event(FORM, &refused);
+        send(&mut app, FORM, &refused);
         assert_eq!(last_event(&app, FORM), "none", "{refused:?}");
     }
 
-    app.send_plugin_event(
+    send(
+        &mut app,
         FORM,
         &changed("sown", InputValue::Date(Some("2026-10-21".into()))),
     );
     assert_eq!(last_event(&app, FORM), "changed sown date 2026-10-21");
-    app.send_plugin_event(
+    send(
+        &mut app,
         FORM,
         &changed(
             "transplant",
@@ -100,9 +133,10 @@ fn a_change_or_a_submit_with_a_date_of_the_wrong_form_never_reaches_the_plugin()
         last_event(&app, FORM),
         "changed transplant date-time 2026-10-21T10:15:00+02:00"
     );
-    app.send_plugin_event(FORM, &changed("sown", InputValue::Date(None)));
+    send(&mut app, FORM, &changed("sown", InputValue::Date(None)));
     assert_eq!(last_event(&app, FORM), "changed sown date none");
-    app.send_plugin_event(
+    send(
+        &mut app,
         FORM,
         &PluginEvent::Submitted(Submission {
             node: "new-plant".into(),
@@ -125,8 +159,8 @@ fn a_change_or_a_submit_with_a_date_of_the_wrong_form_never_reaches_the_plugin()
 
 /// Each row in `range` of the Seeds list as `label (detail)`, which names
 /// the fetch that returned it.
-fn seeds(app: &mut App, range: std::ops::Range<u32>) -> Vec<String> {
-    app.plugin_rows(SEEDS, "seeds", range)
+fn seeds(app: &mut App, range: Range<u32>) -> Vec<String> {
+    rows(app, SEEDS, "seeds", range)
         .expect("the rows show")
         .into_iter()
         .map(|row| {
@@ -146,6 +180,12 @@ fn a_virtual_list_fetches_its_rows_in_batches_of_64_once_until_the_page_draws_ag
         return;
     };
 
+    // The plugin fetches rows on its own thread, so none show until it
+    // answers.
+    assert_eq!(
+        app.plugin_rows(SEEDS, "seeds", 0..3),
+        Ok(vec![None, None, None])
+    );
     let first = seeds(&mut app, 0..3);
     assert_eq!(
         first,
@@ -172,7 +212,7 @@ fn a_virtual_list_fetches_its_rows_in_batches_of_64_once_until_the_page_draws_ag
     assert_eq!(seeds(&mut app, 10_000..10_010), Vec::<String>::new());
 
     // A redraw asks for the rows again.
-    app.press_plugin_button(SEEDS, "anything");
+    press(&mut app, SEEDS, "anything");
     assert_eq!(seeds(&mut app, 0..1), ["Seed 1 (Batch 4)"]);
 
     assert_eq!(
@@ -196,27 +236,27 @@ fn rows_that_break_the_rules_show_why_until_the_page_draws_again() {
     };
 
     assert_eq!(
-        app.plugin_rows(BROKEN_ROWS, "broken", 0..10).err(),
+        rows(&mut app, BROKEN_ROWS, "broken", 0..10).err(),
         Some(reason.clone())
     );
     // The reason stays without asking the plugin again, even for rows of
     // another batch.
     assert_eq!(
-        app.plugin_rows(BROKEN_ROWS, "broken", 64..70).err(),
+        rows(&mut app, BROKEN_ROWS, "broken", 64..70).err(),
         Some(reason.clone())
     );
     // The plugin's other lists and pages keep working.
     assert_eq!(seeds(&mut app, 0..1), ["Seed 1 (Batch 1)"]);
-    app.press_plugin_button(FORM, "anything");
+    press(&mut app, FORM, "anything");
     assert_eq!(last_event(&app, FORM), "pressed anything");
     assert_eq!(asked(&app), "0 to 63");
 
     // A redraw asks again.
     assert_eq!(
-        app.plugin_rows(BROKEN_ROWS, "broken", 0..10).err(),
+        rows(&mut app, BROKEN_ROWS, "broken", 0..10).err(),
         Some(reason)
     );
-    app.press_plugin_button(BROKEN_ROWS, "anything");
+    press(&mut app, BROKEN_ROWS, "anything");
     assert_eq!(asked(&app), "0 to 63, 0 to 63");
 }
 
@@ -227,7 +267,7 @@ fn a_row_id_that_repeats_one_from_another_batch_shows_why_until_the_page_draws_a
     };
     let reason = "Two rows have the ID repeated-0. Each row needs its own ID.".to_owned();
     let labels = |app: &mut App, range| {
-        app.plugin_rows(BROKEN_ROWS, "repeated", range).map(|rows| {
+        rows(app, BROKEN_ROWS, "repeated", range).map(|rows| {
             rows.into_iter()
                 .map(|row| row.expect("the plugin returned the row").item.label)
                 .collect::<Vec<_>>()
@@ -245,7 +285,7 @@ fn a_row_id_that_repeats_one_from_another_batch_shows_why_until_the_page_draws_a
 
     // A redraw asks again, and the later batch alone holds no repeat
     // until the first comes back.
-    app.press_plugin_button(BROKEN_ROWS, "anything");
+    press(&mut app, BROKEN_ROWS, "anything");
     assert_eq!(labels(&mut app, 80..81), Ok(vec!["Repeated 80".to_owned()]));
     assert_eq!(labels(&mut app, 0..2), Err(reason));
 }

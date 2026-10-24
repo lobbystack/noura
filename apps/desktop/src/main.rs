@@ -186,6 +186,9 @@ fn main() -> eframe::Result {
                 if let Some(list) = licenses::bundled_licenses() {
                     app.set_third_party_licenses(list);
                 }
+                if let Some(plugins) = licenses::bundled_plugins() {
+                    app.set_shipped_plugins(plugins);
+                }
                 let quit = QuitRequest::default();
                 let updates = set_up_updates(
                     &mut app,

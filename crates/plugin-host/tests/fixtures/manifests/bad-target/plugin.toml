@@ -1,0 +1,10 @@
+id = "bad-target"
+name = "Bad target"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "plugin.wasm"
+platforms = ["desktop"]
+
+[[capabilities]]
+name = "commands"
+targets = ["tasks/Create Task"]
