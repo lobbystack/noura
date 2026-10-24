@@ -1485,6 +1485,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "calendar-plugin"
+version = "0.2.0"
+dependencies = [
+ "jiff",
+ "plugin-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "calendrical_calculations"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -7,6 +7,7 @@
 //!   may read.
 //! - `read-file:<path>`: read a file.
 //! - `read-object:<id>`: read an object by its stable ID.
+//! - `read-object-at:<path>`: read the object in the file at a path.
 //! - `create-object:<type>:<title>`: create an object with an empty body.
 //! - `fetch:<url>`: send a GET request to `url`.
 //! - `call:<plugin>/<command>:<input>`: run another plugin's command.
@@ -118,6 +119,8 @@ impl Plugin for Probe {
             vec![read_file(path)]
         } else if let Some(id) = page.strip_prefix("read-object:") {
             vec![read_object(id)]
+        } else if let Some(path) = page.strip_prefix("read-object-at:") {
+            vec![object_text(workspace::read_object_at(path))]
         } else if let Some(object) = page.strip_prefix("create-object:") {
             vec![create_object(object)]
         } else if let Some(url) = page.strip_prefix("fetch:") {
@@ -347,7 +350,11 @@ fn create_object(object: &str) -> String {
 }
 
 fn read_object(id: &str) -> String {
-    match workspace::read_object(id) {
+    object_text(workspace::read_object(id))
+}
+
+fn object_text(read: Result<workspace::Object, Error>) -> String {
+    match read {
         Ok(object) => format!(
             "object {} type {} title {} path {} revision {} body {}",
             object.id,

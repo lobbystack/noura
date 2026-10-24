@@ -122,6 +122,10 @@ pub trait WorkspaceReads: Send + Sync {
 
     /// The object with the stable ID `id`.
     fn read_object(&self, id: &str) -> Result<ObjectRead, ServiceError>;
+
+    /// The object the file at `path` holds, even when another file holds
+    /// the same ID. A file that holds no object is `NotFound`.
+    fn read_object_at(&self, path: &WorkspacePath) -> Result<ObjectRead, ServiceError>;
 }
 
 /// A property whose value doesn't fit its object type's schema.
