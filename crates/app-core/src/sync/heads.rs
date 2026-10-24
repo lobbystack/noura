@@ -348,7 +348,13 @@ impl SyncService {
         let Some(added) = next.new_readers.get(&domain) else {
             return Ok(Vec::new());
         };
-        if !before.can_read(&device, &domain) {
+        // A recovering device wraps with the keys its proven recovery
+        // identity reads (§12).
+        let identity_reads = self
+            .recovery
+            .as_ref()
+            .is_some_and(|identity| before.can_read(&identity.device(), &domain));
+        if !before.can_read(&device, &domain) && !identity_reads {
             return if next.rotations.contains(&domain) {
                 Ok(Vec::new())
             } else {

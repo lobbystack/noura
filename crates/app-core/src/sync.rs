@@ -18,6 +18,7 @@ pub mod approval;
 pub mod device;
 pub mod device_list;
 pub mod heads;
+pub mod recovery;
 pub mod removal;
 mod routes;
 
@@ -79,6 +80,12 @@ pub enum SyncError {
     /// A sign-in through the browser ended without a session (§7).
     #[error("{0}")]
     SignIn(device::SignInEnd),
+    /// A device removed the recovery kit's identity, so the kit can't
+    /// recover; you reset your devices instead (§12).
+    #[error(
+        "A device removed this recovery kit, so it can't recover your account. Reset your devices to start over."
+    )]
+    KitRevoked,
 }
 
 impl SyncError {
@@ -409,6 +416,35 @@ impl RemoteWorkspace {
     pub fn holds_key(&self, epoch: u64) -> bool {
         self.keys.contains_key(&epoch)
     }
+
+    /// A workspace whose policy and keys the device verified, before it
+    /// pulls anything.
+    pub(crate) fn from_parts(
+        workspace: Id,
+        domain: Id,
+        policy: PolicyChain,
+        epochs: EpochChain,
+        keys: BTreeMap<u64, SecretKey>,
+    ) -> Result<Self, SyncError> {
+        let key = epochs
+            .latest()
+            .and_then(|latest| keys.get(&latest.record.body.epoch).cloned())
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        Ok(Self {
+            workspace,
+            domain,
+            policy,
+            epochs,
+            key,
+            keys,
+            own_head: (0, Digest::ZERO),
+            cursor: 0,
+            judge: LogJudge::new(domain),
+            verifier: ChainVerifier::new(),
+            live: LiveSet::new(),
+            last: BTreeMap::new(),
+        })
+    }
 }
 
 /// A file a pulled operation carries.
@@ -437,6 +473,9 @@ pub struct SyncService {
     /// The digest of the one approval offer this device keeps outstanding
     /// (§10).
     outstanding: Option<Digest>,
+    /// The recovery identity a recovery proved, until the recovered device
+    /// is active in each workspace (§12).
+    recovery: Option<DeviceKeys>,
 }
 
 impl SyncService {
@@ -456,6 +495,7 @@ impl SyncService {
             heads,
             secrets,
             outstanding: None,
+            recovery: None,
         })
     }
 
@@ -1205,10 +1245,12 @@ fn check_and_open(
 ) -> Result<Option<RemoteFile>, SyncError> {
     let body = &op.body;
     let policy = &remote.policy;
+    // The signer's card at the record's policy revision: a device removed
+    // since wrote it while it was a device of the workspace, and the judge
+    // below checks its write access at its position.
     let device = policy
-        .head_snapshot()
-        .devices
-        .get(&body.device)
+        .at(body.policy_revision)
+        .and_then(|snapshot| snapshot.devices.get(&body.device))
         .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
     op.verify(&device.card.signing_public)
         .map_err(|_| SyncError::Check("sync_writer_not_authorized"))?;
