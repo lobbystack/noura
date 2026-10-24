@@ -146,6 +146,39 @@
 			"card_index": 1,
 			"expect": "varint_range",
 			"kind": "verdict",
+			"name": "client_id_2_pow_53_plus_own",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000190101818080808280801000040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101818080808280801000040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "origin_client_2_pow_53_plus_own",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001601018180808002018481808080828080100002686900",
+			"record": "text_update",
+			"yrs": "01018180808002018481808080828080100002686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "delete_set_client_2_pow_53_plus_own",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000d00018180808082808010010001",
+			"record": "text_update",
+			"yrs": "00018180808082808010010001"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
 			"name": "count_2_pow_32",
 			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000058080808010",
 			"record": "text_update",
@@ -491,6 +524,30 @@
 			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000f0101818080800200a4000002686900",
 			"record": "text_update",
 			"yrs": "0101818080800200a4000002686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "payload",
+			"kind": "verdict",
+			"name": "update_load_0",
+			"note": "sync-protocol's payload decoder refuses the load, so the verdict's structured error is `payload`",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000000000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "payload",
+			"kind": "verdict",
+			"name": "update_load_2_pow_29",
+			"note": "sync-protocol's payload decoder refuses the load, so the verdict's structured error is `payload`",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9220000000000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e7402686900"
 		},
 		{
 			"blob": null,
@@ -1430,7 +1487,7 @@
 			"text_bytes": 8388608
 		},
 		"module": {
-			"blake3": "63fb156ebb56211e6c180b807c5fe0ea1f345d4b9cd6484c844e0421230a6006",
+			"blake3": "e49035f63dce3ca80df115f942e6a73a884e14cd046b86db263a938d315a17c1",
 			"path": "crates/collab-sandbox/guest/collab_sandbox_guest.wasm"
 		},
 		"operator_costs": {
@@ -1471,6 +1528,7 @@
 			"fuel_per_byte": 1000,
 			"measured": {
 				"largest_fuel_per_byte": "149.8, a 16 MiB snapshot of scattered typing",
+				"largest_memory": "434,176,000 bytes of the 536,870,912, a snapshot just under the 32 MiB stop",
 				"records": [
 					{
 						"bytes": 85,
@@ -1541,6 +1599,13 @@
 						"memory_bytes": 248774656,
 						"record": "a 16 MiB snapshot of scattered typing",
 						"reference_seconds": 0.1631
+					},
+					{
+						"bytes": 33494308,
+						"fuel": 4961043936,
+						"memory_bytes": 434176000,
+						"record": "a 32 MiB snapshot of scattered typing",
+						"reference_seconds": 0.2754
 					}
 				],
 				"reference_machine": "Apple M4 Pro, 24 GB, macOS 27.0.1, Cranelift"

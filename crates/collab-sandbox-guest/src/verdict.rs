@@ -58,6 +58,9 @@ pub fn judge(record: &Record<'_>) -> Result<(), Unreadable> {
         _ => return Err(Unreadable::Blob),
     };
 
+    // sync-protocol's payload decoder already refuses such a load, so the
+    // record comes out as `Payload` above; this keeps the rule if that
+    // decoder ever stops checking it.
     if let Some(load) = load
         && !(1..=MAX_LOAD).contains(&load)
     {

@@ -18,7 +18,9 @@
 //!
 //! [`NoteHandle`] runs a [`Note`] off the calling thread, so the editor stays
 //! responsive while a slow record decodes, and [`SandboxDocument`] hands it
-//! to `editor-core` as the note's document. Each load of a document inserts
+//! to `editor-core` as the note's document. The sync client reaches the
+//! note through a [`SharedNote`], whose calls wait without holding up the
+//! editor. Each load of a document inserts
 //! under a client ID from the device's [`LoadReservation`].
 
 mod allowance;
@@ -35,7 +37,7 @@ mod verdict;
 use std::sync::Arc;
 
 pub use allowance::{ALLOWANCE_FUEL, REFILL_PERIOD};
-pub use editor::{SandboxDocument, SharedNote};
+pub use editor::SandboxDocument;
 pub use note::{
     ClientIds, DocumentError, Effects, Event, INTEGRATION_FUEL_LIMIT, INTEGRATION_MEMORY_BYTES,
     LineageStatus, LocalUpdate, Note, RemoteRecord, StopReason,
@@ -44,7 +46,7 @@ pub use plugin_host::Backend;
 pub use reservation::{
     LOAD_BLOCK, LoadReservation, MemoryReservation, ReservationError, ReservationStore,
 };
-pub use session::{HandleError, NoteHandle};
+pub use session::{HandleError, NoteHandle, SharedNote};
 pub use verdict::{
     Record, Unreadable, VERDICT_BASE_FUEL, VERDICT_FUEL_PER_BYTE, VERDICT_MEMORY_BYTES, Verdict,
     verdict_budget,
@@ -58,7 +60,7 @@ pub static GUEST_MODULE: &[u8] = include_bytes!("../guest/collab_sandbox_guest.w
 /// The BLAKE3 hash of [`GUEST_MODULE`], as `sync-v2-collaboration.json`
 /// records it. The sandbox refuses to run any other module.
 pub const GUEST_MODULE_HASH: &str =
-    "63fb156ebb56211e6c180b807c5fe0ea1f345d4b9cd6484c844e0421230a6006";
+    "e49035f63dce3ca80df115f942e6a73a884e14cd046b86db263a938d315a17c1";
 
 /// The operators that cost no fuel. Every other operator costs one unit,
 /// as `sync-v2-collaboration.json` records.

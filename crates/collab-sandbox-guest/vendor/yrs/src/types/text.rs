@@ -1302,6 +1302,21 @@ impl TextEvent {
                 }
             }
 
+            /// Noura patch (docs/provenance/yrs.md): deletes one unit and
+            /// inserts U+FFFD in its place.
+            fn replace_unit(&mut self) {
+                if self.action != Some(Action::Delete) {
+                    self.add_op();
+                    self.action = Some(Action::Delete);
+                }
+                self.delete += 1;
+                self.add_op();
+                self.action = Some(Action::Insert);
+                self.insert_string
+                    .get_or_insert_with(String::default)
+                    .push('\u{FFFD}');
+            }
+
             fn finish(mut self) -> Vec<Delta> {
                 while let Some(last) = self.delta.pop() {
                     match last {
@@ -1365,11 +1380,31 @@ impl TextEvent {
                         let content_len = item.content_len(encoding);
                         asm.delete += content_len;
                     } else if !item.is_deleted() {
-                        if asm.action != Some(Action::Retain) {
-                            asm.add_op();
-                            asm.action = Some(Action::Retain);
+                        // Noura patch (docs/provenance/yrs.md): a unit that a
+                        // split inside a surrogate pair turned into U+FFFD in
+                        // this transaction changed, so the delta deletes it
+                        // and inserts U+FFFD instead of retaining it.
+                        let len = item.content_len(encoding);
+                        let first = len > 0
+                            && s.as_str().starts_with('\u{FFFD}')
+                            && crate::block::split_surrogate(&item.id);
+                        let last = len > 1
+                            && s.as_str().ends_with('\u{FFFD}')
+                            && crate::block::split_surrogate(&item.last_id());
+                        if first {
+                            asm.replace_unit();
                         }
-                        asm.retain += item.content_len(encoding);
+                        let middle = len - u32::from(first) - u32::from(last);
+                        if middle > 0 {
+                            if asm.action != Some(Action::Retain) {
+                                asm.add_op();
+                                asm.action = Some(Action::Retain);
+                            }
+                            asm.retain += middle;
+                        }
+                        if last {
+                            asm.replace_unit();
+                        }
                     }
                 }
                 ItemContent::Format(key, value) => {

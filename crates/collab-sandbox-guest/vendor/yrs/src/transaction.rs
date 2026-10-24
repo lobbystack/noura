@@ -495,6 +495,8 @@ impl<'doc> TransactionMut<'doc> {
         origin: Option<Origin>,
     ) -> Self {
         let begin_timestamp = store.blocks.get_state_vector();
+        // Noura patch (docs/provenance/yrs.md).
+        crate::block::clear_surrogate_splits();
         TransactionMut {
             store,
             doc,

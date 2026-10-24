@@ -302,7 +302,8 @@ fn run<S: Strategy>(
 ) where
     S::Value: std::fmt::Debug,
 {
-    // The scheduled job's longer runs set NOURA_FUZZ_SCALE.
+    // NOURA_FUZZ_SCALE multiplies the cases for a longer run by hand; the
+    // scheduled job runs the cargo-fuzz targets instead.
     let scale: u32 = std::env::var("NOURA_FUZZ_SCALE")
         .ok()
         .and_then(|scale| scale.parse().ok())

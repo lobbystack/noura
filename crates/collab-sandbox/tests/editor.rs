@@ -6,14 +6,16 @@
 
 mod support;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use collab_sandbox::{
-    Event as SandboxEvent, LineageStatus, LoadReservation, LocalUpdate, MemoryReservation,
-    NoteHandle, Record, RemoteRecord, ReservationStore, SandboxDocument, SharedNote, StopReason,
+    Event as SandboxEvent, HandleError, LineageStatus, LoadReservation, LocalUpdate,
+    MemoryReservation, NoteHandle, Record, RemoteRecord, ReservationStore, SandboxDocument,
+    SharedNote, StopReason,
 };
 use editor_core::MdDoc;
 use editor_core::input::{Advance, Event, Increment, Location, NoLayout, Region};
@@ -110,14 +112,14 @@ impl Editor {
 
     /// Hands the sandbox a remote record.
     fn receive(&mut self, record: RemoteRecord) {
-        self.note.lock().receive(record).unwrap();
+        self.note.receive(record).unwrap();
     }
 
     /// Waits for the sandbox to catch up and applies what it sent, as a
     /// frame does.
     fn settle(&mut self) {
         self.doc.sync_text_mode();
-        self.note.lock().settle().unwrap();
+        self.note.settle().unwrap();
         self.doc.sync_text_mode();
         assert_eq!(self.note.take_errors(), []);
     }
@@ -125,20 +127,20 @@ impl Editor {
     /// The document's text in the sandbox: what the file holds.
     fn merged(&mut self) -> String {
         self.doc.sync_text_mode();
-        self.note.lock().merged_text().unwrap()
+        self.note.merged_text().unwrap()
     }
 
     fn updates(&mut self) -> Vec<LocalUpdate> {
         self.doc.sync_text_mode();
-        self.note.lock().take_updates().unwrap()
+        self.note.take_updates().unwrap()
     }
 
     fn events(&mut self) -> Vec<SandboxEvent> {
-        self.note.lock().take_events()
+        self.note.take_events()
     }
 
     fn status(&mut self) -> LineageStatus {
-        self.note.lock().status()
+        self.note.status()
     }
 }
 
@@ -454,7 +456,7 @@ fn client_ids_past_32_bits_round_trip_through_the_editor() {
         reader.settle();
         assert_eq!(reader.doc.text(), "wide");
         // A device booted from the reader's document holds it too.
-        let state = reader.note.lock().state().unwrap();
+        let state = reader.note.state().unwrap();
         let booted = open(vec![state]);
         assert_eq!(booted.doc.text(), "wide");
     }
@@ -478,7 +480,7 @@ fn client_ids_past_32_bits_round_trip_through_the_editor() {
 #[test]
 fn relative_positions_encode_and_decode_in_the_sandbox() {
     let mut editor = open(vec![insert(0, 0, "hello world")]);
-    let position = editor.note.lock().encode_position(6, true).unwrap();
+    let position = editor.note.encode_position(6, true).unwrap();
     // "say " right before the "h".
     let theirs = Lib0::default()
         .var(1)
@@ -494,14 +496,8 @@ fn relative_positions_encode_and_decode_in_the_sandbox() {
     editor.receive(update_record(1, 2, 3, 1, &theirs));
     editor.settle();
     assert_eq!(editor.doc.text(), "say hello world");
-    assert_eq!(editor.note.lock().decode_position(position).unwrap(), 10);
-    assert!(
-        editor
-            .note
-            .lock()
-            .decode_position(vec![0xff, 0xff])
-            .is_err()
-    );
+    assert_eq!(editor.note.decode_position(position).unwrap(), 10);
+    assert!(editor.note.decode_position(vec![0xff, 0xff]).is_err());
 }
 
 #[test]
@@ -583,7 +579,7 @@ fn a_trap_during_integration_stops_the_lineage_at_its_last_good_state() {
         for step in case["steps"].as_array().unwrap() {
             let receive = &step["receive"];
             if step["trap"] == true {
-                editor.note.lock().trap_next_integration().unwrap();
+                editor.note.trap_next_integration().unwrap();
             }
             editor.receive(RemoteRecord {
                 id: receive["id"].as_u64().unwrap(),
@@ -624,7 +620,6 @@ fn an_overdrawn_writer_waits_while_others_keep_merging() {
         for (writer, balance) in case["balances"].as_object().unwrap() {
             editor
                 .note
-                .lock()
                 .set_balance(writer.parse().unwrap(), balance.as_i64().unwrap())
                 .unwrap();
         }
@@ -655,7 +650,6 @@ fn an_overdrawn_writer_waits_while_others_keep_merging() {
                 let at = step["after_seconds"].as_u64().unwrap();
                 editor
                     .note
-                    .lock()
                     .advance_clock(Duration::from_secs(at - elapsed))
                     .unwrap();
                 elapsed = at;
@@ -681,7 +675,7 @@ fn the_note_stays_editable_while_a_slow_record_decodes() {
     editor.caret(2);
     // The sandbox's thread stands still, as it does while a large record
     // decodes.
-    editor.note.lock().hold(true);
+    editor.note.hold(true);
     let theirs = insert_between(support::client(2, 1), 0, Some((0, 0)), Some((0, 1)), "R");
     editor.receive(update_record(1, 2, 3, 1, &theirs));
     editor.type_text("cd");
@@ -694,7 +688,7 @@ fn the_note_stays_editable_while_a_slow_record_decodes() {
     assert_eq!(editor.doc.text(), "abc");
 
     // Once the record decodes, your edits apply after it.
-    editor.note.lock().hold(false);
+    editor.note.hold(false);
     editor.settle();
     assert_eq!(editor.doc.text(), "aRbc");
     assert_eq!(editor.merged(), "aRbc");
@@ -725,4 +719,137 @@ fn a_hostile_update_meets_the_editor_only_after_the_verdict() {
         event,
         SandboxEvent::Verdict { verdict, .. } if verdict.outcome == Err(collab_sandbox::Unreadable::MapKey)
     )));
+}
+
+#[test]
+fn surrogate_splits_reach_the_editor_as_they_reach_the_document() {
+    let surrogates = cases("surrogate");
+    assert_eq!(surrogates.len(), 5);
+    for case in surrogates {
+        let name = &case["name"];
+        let expected = case["text"].as_str().unwrap();
+        let mut editor = open(vec![hex(&case["base"])]);
+        assert_eq!(editor.doc.text(), "a😀b", "{name}");
+        // The caret after the "a", before the pair the record splits.
+        editor.caret(1);
+        editor.receive(RemoteRecord {
+            id: 1,
+            writer: case["card_index"].as_u64().unwrap() as u32,
+            card_count: case["card_count"].as_u64().unwrap() as u32,
+            payload: hex(&case["payload"]),
+            blob: None,
+        });
+        editor.settle();
+        assert_eq!(editor.doc.text(), expected, "{name}");
+        assert_eq!(editor.merged(), expected, "{name}");
+        assert_eq!(editor.doc.selection(), (g(1), g(1)), "{name}");
+
+        // Keystrokes after the split land where the document puts them.
+        editor.type_text("Y");
+        let end = editor.doc.text().chars().count();
+        editor.caret(end);
+        editor.type_text("Z");
+        editor.settle();
+        let typed = format!("aY{}Z", &expected[1..]);
+        assert_eq!(editor.doc.text(), typed, "{name}");
+        assert_eq!(editor.merged(), typed, "{name}");
+        editor.undo();
+        editor.settle();
+        assert_eq!(editor.doc.text(), expected, "{name}");
+        assert_eq!(editor.merged(), expected, "{name}");
+    }
+}
+
+/// Releases the note's thread after `after` unless told not to first, so a
+/// test that would wait forever on a held thread fails instead.
+fn watchdog(note: &SharedNote, after: Duration) -> std::sync::mpsc::Sender<()> {
+    let (cancel, cancelled) = std::sync::mpsc::channel::<()>();
+    let note = note.clone();
+    std::thread::spawn(move || {
+        if cancelled.recv_timeout(after).is_err() {
+            note.hold(false);
+        }
+    });
+    cancel
+}
+
+#[test]
+fn the_sync_client_waits_for_a_slow_record_without_holding_up_the_editor() {
+    let mut editor = open(vec![insert(0, 0, "ab")]);
+    editor.caret(2);
+    editor.type_text("!");
+    editor.settle();
+    // The sandbox's thread stands still, as it does while a large record
+    // decodes, with a record ahead of everything else.
+    editor.note.hold(true);
+    let release = watchdog(&editor.note, Duration::from_secs(10));
+    let theirs = insert_between(support::client(2, 1), 0, Some((0, 0)), Some((0, 1)), "R");
+    editor.receive(update_record(1, 2, 3, 1, &theirs));
+
+    // The sync client asks for your updates, a position for presence and
+    // the merged text, each of which waits for the thread.
+    let done = Arc::new(AtomicBool::new(false));
+    let asking = {
+        let note = editor.note.clone();
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let updates = note.take_updates();
+            let position = note.encode_position(0, true);
+            let text = note.merged_text();
+            done.store(true, Ordering::SeqCst);
+            (updates, position, text)
+        })
+    };
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Meanwhile the editor takes keystrokes and frames without waiting.
+    let started = Instant::now();
+    editor.type_text("cd");
+    editor.doc.sync_text_mode();
+    editor.backspace();
+    editor.doc.sync_text_mode();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the editor waited {:?} for the sandbox",
+        started.elapsed()
+    );
+    assert!(
+        !done.load(Ordering::SeqCst),
+        "the sync client still waits for the record"
+    );
+    assert_eq!(editor.doc.text(), "ab!c");
+
+    let _ = release.send(());
+    editor.note.hold(false);
+    let (updates, position, text) = asking.join().unwrap();
+    assert_eq!(updates.unwrap().len(), 1);
+    assert!(!position.unwrap().is_empty());
+    assert!(text.unwrap().starts_with("aRb!"));
+    editor.settle();
+    assert_eq!(editor.doc.text(), "aRb!c");
+    assert_eq!(editor.merged(), "aRb!c");
+}
+
+#[test]
+fn closing_the_note_waits_for_no_record() {
+    let editor = open(vec![insert(0, 0, "ab")]);
+    let note = editor.note.clone();
+    note.hold(true);
+    let release = watchdog(&note, Duration::from_secs(10));
+    let theirs = insert_after(support::client(2, 1), 0, (0, 1), "R");
+    note.receive(update_record(1, 2, 3, 1, &theirs)).unwrap();
+
+    let started = Instant::now();
+    drop(editor);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "closing waited {:?} for the sandbox",
+        started.elapsed()
+    );
+
+    // Once the record is done, the thread ends.
+    let _ = release.send(());
+    note.hold(false);
+    assert_eq!(note.settle(), Err(HandleError::Closed));
+    assert_eq!(note.take_updates(), Err(HandleError::Closed));
 }

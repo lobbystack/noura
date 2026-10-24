@@ -694,6 +694,13 @@ impl Note {
         self.trap_next = true;
     }
 
+    /// Judges the records after this call with `sandbox`'s module, as the
+    /// fixtures' verdict trap cases ask.
+    #[cfg(test)]
+    pub(crate) fn judge_with(&mut self, sandbox: Sandbox) {
+        self.verdicts = sandbox;
+    }
+
     /// The memory the note's instance holds, in bytes.
     pub fn memory_bytes(&self) -> usize {
         self.guest.memory_bytes()

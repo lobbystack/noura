@@ -2,8 +2,8 @@
 //! WebAssembly module that judges every remote `text_snapshot` and
 //! `text_update`, and that holds each open text-mode note's yrs document.
 //!
-//! It builds from `yrs` 0.26.0 without `small-client`, patched to split a
-//! surrogate pair as Yjs does (`docs/provenance/yrs.md`), for
+//! It builds from `yrs` 0.26.0 without `small-client`, patched for split
+//! surrogate pairs as `docs/provenance/yrs.md` records, for
 //! `wasm32-unknown-unknown` with `build.sh`. The host,
 //! `crates/collab-sandbox`, runs it in Wasmtime with fuel and memory limits
 //! and no imports, and `sync-v2-collaboration.json` pins the BLAKE3 hash of

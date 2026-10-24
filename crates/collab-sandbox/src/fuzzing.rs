@@ -15,6 +15,7 @@ use sync_protocol::records::{BlobRef, Content, Meta, Payload, PayloadKind};
 use sync_protocol::types::{Digest, Id, SecretKey};
 
 use crate::note::{LineageStatus, Note, RemoteRecord};
+use crate::op::Op;
 use crate::verdict::{Record, verdict_budget};
 use crate::{Event, Sandbox};
 
@@ -117,9 +118,7 @@ pub fn verdict(sandbox: &Sandbox, data: &[u8]) {
 /// two records merged, so a generator can show it reaches integration.
 pub fn record(sandbox: &Sandbox, data: &[u8]) -> usize {
     let in_blob = data.first().is_some_and(|byte| byte & 1 == 1);
-    let first = sandbox
-        .first_document("fuzz 😀 base\n")
-        .expect("a first document");
+    let first = sandbox.first_document(BASE).expect("a first document");
     let mut merged = 0;
     for (id, payload) in [
         (1, update_payload(data, in_blob)),
@@ -146,7 +145,7 @@ pub fn record(sandbox: &Sandbox, data: &[u8]) -> usize {
             },
             Instant::now(),
         );
-        check(sandbox, &mut note, &effects.events);
+        check(sandbox, &mut note, &effects.events, &effects.changes);
         merged += effects
             .events
             .iter()
@@ -156,27 +155,35 @@ pub fn record(sandbox: &Sandbox, data: &[u8]) -> usize {
     merged
 }
 
+/// The text of the first document every record merges into: an emoji, so
+/// records can split its surrogate pair.
+const BASE: &str = "fuzz 😀 base\n";
+
 /// A note's invariants after a record: the text matches the length the
-/// note keeps, a stopped note kept its last good state, and a device boots
-/// from the note's state.
+/// note keeps, the changes the record sent the editor take its text from
+/// [`BASE`] to the note's on code points alone (see `apply_on_code_points`),
+/// a stopped note kept its last good state, and a device boots from the
+/// note's state.
 ///
 /// The booted device may hold another text: a hostile item whose right
 /// origin lies left of its origin, or that names its own later clocks,
 /// integrates in one place as it arrives and in another from a snapshot.
 /// The verdict can't see that without the document, and ticket 55's
 /// integration rules decide what a device does about it.
-fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event]) {
+fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event], changes: &[Op]) {
     let text = note.text().expect("the note's text reads");
     assert_eq!(
         text.encode_utf16().count(),
         note.len() as usize,
         "the note's length matches its text: {events:?}"
     );
+    assert_eq!(
+        apply_on_code_points(BASE, changes),
+        text,
+        "the editor reaches the note's text: {changes:?}"
+    );
     if let LineageStatus::Stopped(_) = note.status() {
-        assert_eq!(
-            text, "fuzz 😀 base\n",
-            "a stopped note keeps its last good state"
-        );
+        assert_eq!(text, BASE, "a stopped note keeps its last good state");
         return;
     }
     let state = note.state().expect("the note's state encodes");
@@ -186,6 +193,29 @@ fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event]) {
     };
     let booted_text = booted.text().expect("the booted text reads");
     assert_eq!(booted_text.encode_utf16().count(), booted.len() as usize);
+}
+
+/// `changes` applied to `text` as the editor applies them, splice by
+/// splice, after checking that each splice starts and ends on a code point
+/// of the text it applies to: the editor works on code points, so a splice
+/// inside a surrogate pair would leave it with another text than the note.
+fn apply_on_code_points(text: &str, changes: &[Op]) -> String {
+    let on_code_point =
+        |units: &[u16], at: usize| at >= units.len() || !(0xDC00..0xE000).contains(&units[at]);
+    let mut units: Vec<u16> = text.encode_utf16().collect();
+    for op in changes {
+        for splice in op.splices() {
+            let start = splice.start as usize;
+            let end = start + splice.removed as usize;
+            assert!(
+                end <= units.len() && on_code_point(&units, start) && on_code_point(&units, end),
+                "the splice {splice:?} of {op:?} splits a code point of {:?}",
+                String::from_utf16_lossy(&units)
+            );
+            units.splice(start..end, splice.inserted.encode_utf16());
+        }
+    }
+    String::from_utf16(&units).expect("the editor's text is valid UTF-16")
 }
 
 /// The same as [`record`] on [`writer_yrs`] of `data`.

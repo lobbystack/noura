@@ -345,3 +345,99 @@ fn component(delta: &Delta) -> Component {
         Delta::Inserted(other, _) => panic!("content holds a non-string value: {other:?}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unhex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// `op` applied to `text`, after checking that every change it makes
+    /// starts and ends on a code point of `text`: a run of deletes and
+    /// inserts between two retains is one change, as the host's splices
+    /// are.
+    fn apply_on_code_points(text: &str, op: &Op) -> String {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let boundary =
+            |at: usize| at == 0 || at == units.len() || !(0xDC00..0xE000).contains(&units[at]);
+        let mut out: Vec<u16> = Vec::new();
+        let mut at = 0usize;
+        let mut change: Option<usize> = None;
+        for component in op.components() {
+            match component {
+                Component::Retain(n) => {
+                    if let Some(start) = change.take() {
+                        assert!(boundary(start) && boundary(at), "{op:?} on {text:?}");
+                    }
+                    out.extend_from_slice(&units[at..at + *n as usize]);
+                    at += *n as usize;
+                }
+                Component::Insert(inserted) => {
+                    change.get_or_insert(at);
+                    out.extend(inserted.encode_utf16());
+                }
+                Component::Delete(n) => {
+                    change.get_or_insert(at);
+                    at += *n as usize;
+                }
+            }
+        }
+        if let Some(start) = change {
+            assert!(boundary(start) && boundary(at), "{op:?} on {text:?}");
+        }
+        out.extend_from_slice(&units[at..]);
+        String::from_utf16(&out).unwrap()
+    }
+
+    /// The surrogate cases of `sync-v2-collaboration.json`: card 1's first
+    /// load edits "a😀b" inside the emoji's pair.
+    const SURROGATES: [(&str, &str, &str); 5] = [
+        (
+            "insert_after_the_high_half",
+            "0101818080800200840001015800",
+            "a\u{FFFD}\u{FFFD}bX",
+        ),
+        (
+            "insert_before_the_low_half",
+            "0101818080800200440002015800",
+            "a\u{FFFD}X\u{FFFD}b",
+        ),
+        (
+            "insert_between_the_halves",
+            "0101818080800200c400010002015800",
+            "a\u{FFFD}X\u{FFFD}b",
+        ),
+        ("delete_from_the_low_half", "000100010202", "a\u{FFFD}"),
+        ("delete_to_the_high_half", "000100010101", "a\u{FFFD}b"),
+    ];
+
+    #[test]
+    fn a_split_surrogate_pair_reaches_the_change_as_u_fffd() {
+        let base = unhex("01010000040107636f6e74656e740661f09f98806200");
+        for (name, update, expected) in SURROGATES {
+            let mut note = Note::new(3 << 29 | 1).unwrap();
+            let (op, _) = note.integrate(&base).unwrap();
+            assert_eq!(apply_on_code_points("", &op), "a😀b");
+            let (op, _) = note.integrate(&unhex(update)).unwrap();
+            assert_eq!(note.text(), expected, "{name}");
+            assert_eq!(apply_on_code_points("a😀b", &op), expected, "{name}");
+
+            // The next change names no unit the split replaced.
+            let mut typed = Op::default();
+            typed.push(Component::Retain(note.len()));
+            typed.push(Component::Insert("Z".into()));
+            note.local(&typed, true, 0).unwrap();
+            let theirs = format!("{expected}Z");
+            assert_eq!(note.text(), theirs, "{name}");
+            let mut undo = note.undo(1_000);
+            assert_eq!(apply_on_code_points(&theirs, &undo), expected, "{name}");
+            undo = note.redo(2_000);
+            assert_eq!(apply_on_code_points(expected, &undo), theirs, "{name}");
+        }
+    }
+}

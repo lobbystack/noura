@@ -315,6 +315,25 @@ fn raw_checks(f: &mut Fixture) {
         deletes(1 << 53, &[(0, 1)]),
         "varint_range",
     ));
+    // yrs 0.26.0 masks a client ID to its low 53 bits, so 2^53 plus the
+    // signer's own client ID reads as the signer's after yrs: only the raw
+    // parse sees it.
+    let masked_to_own = (1 << 53) + ME;
+    f.case(unreadable(
+        "client_id_2_pow_53_plus_own",
+        insert(masked_to_own, 0, "hi"),
+        "varint_range",
+    ));
+    f.case(unreadable(
+        "origin_client_2_pow_53_plus_own",
+        insert_between(ME, 1, Some((masked_to_own, 0)), None, "hi"),
+        "varint_range",
+    ));
+    f.case(unreadable(
+        "delete_set_client_2_pow_53_plus_own",
+        deletes(masked_to_own, &[(0, 1)]),
+        "varint_range",
+    ));
     let clients_2_pow_32 = Lib0::default().var(1 << 32).done();
     f.case(unreadable(
         "count_2_pow_32",
@@ -548,6 +567,28 @@ fn raw_checks(f: &mut Fixture) {
 
 /// Which client IDs an update and a snapshot may hold structs under.
 fn client_checks(f: &mut Fixture) {
+    // A load outside 1 to 2^29 − 1: the payload's decoding (§13) refuses it
+    // before the guest reads the load, so the verdict reports `payload`.
+    for (name, load) in [("update_load_0", 0), ("update_load_2_pow_29", 1 << 29)] {
+        let mut case = verdict_case(
+            name,
+            "text_update",
+            update_payload(
+                "",
+                load,
+                vec![meta("path", 0, Some("Notes/Plan.md"))],
+                inline(insert(ME, 0, "hi")),
+            ),
+            None,
+            (1, 2),
+            Some(&insert(ME, 0, "hi")),
+            Some("payload"),
+        );
+        case["note"] = json!(
+            "sync-protocol's payload decoder refuses the load, so the verdict's structured error is `payload`"
+        );
+        f.case(case);
+    }
     f.case(update_case(
         "update_under_another_load",
         insert((1 << 29) + 2, 0, "hi"),
@@ -1155,8 +1196,9 @@ fn verdict_traps(f: &mut Fixture) {
 /// and the linear memory its instance ended with, which count the same on
 /// every machine, and the seconds the verdict took on the reference
 /// machine. The largest fuel per byte, 149.8, sits far below the budget's
-/// 1,000.
-const MEASURED: [(&str, u64, u64, u64, f64); 10] = [
+/// 1,000. Memory leaves less room: a snapshot just under the 32 MiB stop
+/// takes 414 MiB of the verdict's 512 MiB.
+const MEASURED: [(&str, u64, u64, u64, f64); 11] = [
     ("typing one character", 85, 73_962, 1_179_648, 0.0001),
     (
         "pasting 200,000 ASCII characters",
@@ -1220,6 +1262,13 @@ const MEASURED: [(&str, u64, u64, u64, f64); 10] = [
         2_822_065_529,
         248_774_656,
         0.1631,
+    ),
+    (
+        "a 32 MiB snapshot of scattered typing",
+        33_494_308,
+        4_961_043_936,
+        434_176_000,
+        0.2754,
     ),
 ];
 
@@ -1433,6 +1482,7 @@ pub fn fixture() -> Fixture {
                 "measured": {
                     "reference_machine": REFERENCE_MACHINE,
                     "largest_fuel_per_byte": "149.8, a 16 MiB snapshot of scattered typing",
+                    "largest_memory": "434,176,000 bytes of the 536,870,912, a snapshot just under the 32 MiB stop",
                     "records": MEASURED
                         .iter()
                         .map(|(record, bytes, fuel, memory, seconds)| json!({

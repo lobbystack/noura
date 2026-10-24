@@ -5,8 +5,8 @@
 //!
 //! Each record here is one an honest device writes: typing, pastes in
 //! several scripts, snapshots of heavily edited and many-writer notes,
-//! scattered deletions, a managed note's large frontmatter, and a snapshot
-//! at the 16 MiB rebase threshold. Fuel and memory count the same on every
+//! scattered deletions, a managed note's large frontmatter, and snapshots
+//! at the 16 MiB rebase threshold and just under the 32 MiB stop. Fuel and memory count the same on every
 //! machine, so `sync-v2-collaboration.json` records them exactly, beside
 //! the time each took on the reference machine, and this test fails when
 //! the module, the operator costs or the records change until the fixture
@@ -279,13 +279,31 @@ fn legitimate() -> Vec<Sample> {
         body,
     ));
 
-    // A snapshot at the 16 MiB rebase threshold, of the shape scattered
-    // typing leaves: one-character items that each name both neighbours,
-    // here each typed between the one before it and a final "x".
+    // A snapshot at the 16 MiB rebase threshold, and one just under the
+    // 32 MiB stop, which a note can reach between its rebase threshold and
+    // the rebase.
+    samples.push(snapshot(
+        "a 16 MiB snapshot of scattered typing",
+        "",
+        vec![meta("path", "Notes/Plan.md")],
+        scattered_snapshot(1_300_000),
+    ));
+    samples.push(snapshot(
+        "a 32 MiB snapshot of scattered typing",
+        "",
+        vec![meta("path", "Notes/Plan.md")],
+        scattered_snapshot(2_270_000),
+    ));
+    samples
+}
+
+/// The yrs bytes of a snapshot of `count` items of the shape scattered
+/// typing leaves: one-character items that each name both neighbours, here
+/// each typed between the one before it and a final "x".
+fn scattered_snapshot(count: u64) -> Vec<u8> {
     let me = client(1, 1);
     let mut w = Lib0::default().var(2).var(1).var(0).var(0).raw(&[4]).var(1);
     w = w.string("content").string("x");
-    let count = 1_300_000u64;
     w = w.var(count).var(me).var(0);
     let mut clock = 0;
     for i in 0..count {
@@ -298,14 +316,7 @@ fn legitimate() -> Vec<Sample> {
         w = w.string(text);
         clock += text.encode_utf16().count() as u64;
     }
-    let rebase = w.var(0).0;
-    samples.push(snapshot(
-        "a 16 MiB snapshot of scattered typing",
-        "",
-        vec![meta("path", "Notes/Plan.md")],
-        rebase,
-    ));
-    samples
+    w.var(0).0
 }
 
 #[test]
@@ -328,16 +339,18 @@ fn the_budget_sits_far_above_every_legitimate_record() {
         assert_eq!(verdict.outcome, Ok(()), "{} is readable", sample.name);
         let budget = verdict_budget(bytes as u64);
         // Far above: each record needs at most a fifth of its budget. yrs
-        // holds a decoded struct in about 15 times its encoded size, so the
-        // 16 MiB snapshot needs close to half the verdict's memory.
+        // holds a decoded struct in about 13 times its encoded size, so the
+        // 16 MiB snapshot needs close to half the verdict's memory, and the
+        // 32 MiB one most of it.
         assert!(
             verdict.fuel * 5 <= budget,
             "{}: {} fuel of a budget of {budget}",
             sample.name,
             verdict.fuel
         );
+        let share = if sample.name.contains("32 MiB") { 1 } else { 2 };
         assert!(
-            verdict.memory * 2 <= VERDICT_MEMORY_BYTES as u64,
+            verdict.memory * share <= VERDICT_MEMORY_BYTES as u64,
             "{}: {} bytes of memory",
             sample.name,
             verdict.memory

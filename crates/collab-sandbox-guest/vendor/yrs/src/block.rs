@@ -522,7 +522,14 @@ impl ItemPtr {
             let client = item.id.client;
             let clock = item.id.clock;
             let len = item.len;
+            SPLIT_PAIR.with(|split| split.set(false));
             let content = item.content.splice(offset as usize, encoding).unwrap();
+            if SPLIT_PAIR.with(|split| split.replace(false)) {
+                record_surrogate_split(
+                    ID::new(client, clock + offset - 1),
+                    ID::new(client, clock + offset),
+                );
+            }
             item.len = offset;
             let mut new = Box::new(Item {
                 id: ID::new(client, clock + offset),
@@ -1563,6 +1570,49 @@ impl Deref for SplittableString {
     }
 }
 
+thread_local! {
+    /// Noura patch (docs/provenance/yrs.md): set when the last
+    /// [ItemContent::splice] split a surrogate pair.
+    static SPLIT_PAIR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Noura patch (docs/provenance/yrs.md): the elements whose unit a split
+    /// inside a surrogate pair turned into U+FFFD since the current
+    /// transaction began, so its text delta reports them as changed.
+    static SURROGATE_SPLITS: std::cell::RefCell<std::collections::BTreeSet<ID>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
+
+fn record_surrogate_split(left: ID, right: ID) {
+    SURROGATE_SPLITS.with(|splits| {
+        let mut splits = splits.borrow_mut();
+        splits.insert(left);
+        splits.insert(right);
+    });
+}
+
+/// Noura patch (docs/provenance/yrs.md): forgets the splits recorded so
+/// far, as a transaction begins.
+pub(crate) fn clear_surrogate_splits() {
+    SURROGATE_SPLITS.with(|splits| {
+        let mut splits = splits.borrow_mut();
+        if !splits.is_empty() {
+            splits.clear();
+        }
+    });
+}
+
+/// Noura patch (docs/provenance/yrs.md): whether a split inside a surrogate
+/// pair turned the unit of element `id` into U+FFFD during the current
+/// transaction. A split outside the document, such as one of an update
+/// being merged, may name an element of the document too; the caller checks
+/// that the unit holds U+FFFD, and reporting U+FFFD as replaced by U+FFFD
+/// changes nothing.
+pub(crate) fn split_surrogate(id: &ID) -> bool {
+    SURROGATE_SPLITS.with(|splits| {
+        let splits = splits.borrow();
+        !splits.is_empty() && splits.contains(id)
+    })
+}
+
 /// Noura patch (docs/provenance/yrs.md): when the UTF-16 `offset` falls
 /// between the two units of a surrogate pair in `str`, the parts a split
 /// there leaves, each holding U+FFFD in place of its half of the pair.
@@ -1959,6 +2009,7 @@ impl ItemContent {
                 // item's clocks give them.
                 if let OffsetKind::Utf16 = encoding {
                     if let Some((left, right)) = split_surrogate_pair(string, offset) {
+                        SPLIT_PAIR.with(|split| split.set(true));
                         *self = ItemContent::String(left.as_str().into());
                         return Some(ItemContent::String(right.as_str().into()));
                     }
