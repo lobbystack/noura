@@ -1,7 +1,7 @@
 // Runs the kit's command-line tools from this workspace's builds, as an
 // author's project runs them from its node_modules.
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,25 @@ export async function succeed(tool: keyof typeof TOOLS, args: string[], cwd: str
 		throw new Error(`${tool} ${args.join(' ')} stopped with ${ran.code}:\n${ran.output}`);
 	}
 	return ran.output;
+}
+
+/**
+ * Copy the test plugin `name` from `tests/plugins` into `folder` and build
+ * it with the CLI. `capabilities`, when given, replaces the ones its
+ * manifest declares, each written as its `[[capabilities]]` table's body,
+ * such as `name = "views"`.
+ */
+export async function buildTestPlugin(name: string, folder: string, capabilities?: string[]): Promise<string> {
+	const project = join(folder, name);
+	await cp(join(KIT, 'tests/plugins', name), project, { recursive: true });
+	if (capabilities) {
+		const manifest = await readFile(join(project, 'plugin.toml'), 'utf8');
+		const head = manifest.split('[[capabilities]]')[0]?.trimEnd() ?? '';
+		const tables = capabilities.map((capability) => `[[capabilities]]\n${capability}\n`).join('\n');
+		await writeFile(join(project, 'plugin.toml'), `${head}\n\n${tables}`);
+	}
+	await succeed('noura-plugin', ['build'], project);
+	return project;
 }
 
 /** A folder that `use` gets and that is removed afterwards. */
