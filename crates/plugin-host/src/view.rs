@@ -7,9 +7,10 @@
 //! node ID, an unlabeled control, a table row whose cells don't match the
 //! columns or hold no text, an empty menu, an input value of the wrong
 //! form, a virtual list too long to draw, a board without columns, a
-//! calendar date or an entry's start or end of the wrong form, or a view
-//! too large or deep to draw. [`check_rows`] does the same for the
-//! rows of a virtual list.
+//! calendar date or an entry's start or end of the wrong form, a list that
+//! selects an item it doesn't hold, a card with a checkbox or a warning,
+//! or a view too large or deep to draw. [`check_rows`] does the same for
+//! the rows of a virtual list.
 
 use std::collections::HashSet;
 
@@ -61,15 +62,20 @@ pub enum ViewKind {
         label: String,
     },
     /// A list whose children are its items. With `reorder`, you can drag
-    /// them to new positions.
+    /// them to new positions. `selected` names the item the plugin shows
+    /// selected, one of its children.
     List {
         label: String,
         reorder: bool,
+        selected: Option<String>,
     },
-    /// An item of a list, which may hold a menu.
+    /// An item of a list, which may hold a menu, with a checkbox when
+    /// `checked` is set and a warning after its label when `warning` is.
     Item {
         label: String,
         detail: Option<String>,
+        checked: Option<bool>,
+        warning: Option<String>,
     },
     /// A list of `rows` rows that come from the plugin as they scroll into
     /// view.
@@ -97,6 +103,11 @@ pub enum ViewKind {
         label: String,
         value: Value,
         choices: Vec<Choice>,
+    },
+    /// A field that names something, starting from `value`.
+    NameField {
+        label: String,
+        value: String,
     },
     /// A menu of an item, a row or a button, holding at least one item.
     Menu {
@@ -279,6 +290,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Row(_) => "row",
         NodeKind::Form(_) => "form",
         NodeKind::Input(_) => "input",
+        NodeKind::NameField(_) => "name field",
         NodeKind::Menu(_) => "menu",
         NodeKind::MenuItem(_) => "menu item",
         NodeKind::Separator => "separator",
@@ -321,6 +333,11 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         }
         NodeKind::List(list) if blank(&list.label) => Err(unlabeled()),
         NodeKind::Item(item) | NodeKind::Card(item) if blank(&item.label) => Err(unlabeled()),
+        NodeKind::Card(card) if card.checked.is_some() || card.warning.is_some() => invalid(
+            format!("The card {id} holds a checkbox or a warning, which only list items show."),
+        ),
+        NodeKind::NameField(field) if blank(&field.label) => Err(unlabeled()),
+        NodeKind::NameField(_) => Ok(()),
         NodeKind::VirtualList(list) if blank(&list.label) => Err(unlabeled()),
         NodeKind::VirtualList(list) if list.rows > MAX_ROWS => Err(ViewError::TooLong {
             node: id.clone(),
@@ -509,7 +526,8 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
-        NodeKind::List(_) => {
+        NodeKind::List(list) => {
+            let mut selected = list.selected.is_none();
             for child in children {
                 if !matches!(child.kind, NodeKind::Item(_)) {
                     return misplaced(format!(
@@ -517,6 +535,13 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
                         child.id
                     ));
                 }
+                selected |= list.selected.as_deref() == Some(child.id.as_str());
+            }
+            if !selected {
+                return Err(ViewError::Invalid(format!(
+                    "The list {id} selects {}, which isn't one of its items.",
+                    list.selected.as_deref().unwrap_or_default()
+                )));
             }
             Ok(())
         }
@@ -611,6 +636,7 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
         | NodeKind::Markdown(_)
         | NodeKind::VirtualList(_)
         | NodeKind::Input(_)
+        | NodeKind::NameField(_)
         | NodeKind::MenuItem(_)
         | NodeKind::Separator
         | NodeKind::Entry(_) => {
@@ -664,10 +690,13 @@ fn build(
         NodeKind::List(list) => ViewKind::List {
             label: list.label.clone(),
             reorder: list.reorder,
+            selected: list.selected.clone(),
         },
         NodeKind::Item(item) => ViewKind::Item {
             label: item.label.clone(),
             detail: item.detail.clone().filter(|detail| !blank(detail)),
+            checked: item.checked,
+            warning: item.warning.clone().filter(|warning| !blank(warning)),
         },
         NodeKind::VirtualList(list) => ViewKind::VirtualList {
             label: list.label.clone(),
@@ -688,6 +717,10 @@ fn build(
             label: input.label.clone(),
             value: input.value.clone(),
             choices: input.choices.clone(),
+        },
+        NodeKind::NameField(field) => ViewKind::NameField {
+            label: field.label.clone(),
+            value: field.value.clone(),
         },
         NodeKind::Menu(label) => ViewKind::Menu {
             label: label.clone(),

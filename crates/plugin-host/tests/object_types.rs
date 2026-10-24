@@ -58,6 +58,8 @@ fn recipe() -> ObjectRecord {
         body: "Simmer.\n".into(),
         properties: r#"{"course":"brunch"}"#.into(),
         revision: "rev-1".into(),
+        created: Some("2026-10-20T10:00:00Z".into()),
+        updated: Some("2026-10-20T10:00:00Z".into()),
         problem: Some(PropertyProblem {
             property: "course".into(),
             code: "not_allowed".into(),
@@ -240,8 +242,8 @@ fn a_schema_the_workspace_format_refuses_fails_with_a_structured_error() {
             "invalid_default",
         ),
         ("chat", r#"{"properties":[]}"#, "kernel_type"),
-        ("task", r#"{"properties":[]}"#, "kernel_type"),
         ("project", r#"{"properties":[]}"#, "kernel_type"),
+        ("workspace", r#"{"properties":[]}"#, "kernel_type"),
     ];
     for (object_type, schema, code) in refused {
         let error = types

@@ -17,6 +17,7 @@
 //! window: its views, commands, Inbox sections, Settings page and tools
 //! update when its answers arrive, through [`Plugins::poll`].
 
+mod navigation;
 mod reader;
 mod reload;
 mod worker;
@@ -34,13 +35,17 @@ use std::{
 
 use local_core::HostRequests;
 use plugin_host::{
-    Candidate, Capability, Event, Grant, InstallError, Node, NodeKind, ObjectTypes, PluginHost,
-    PluginManifest, Router, RunningPlugin, Services, Surface, Value, View, ViewError, ViewKind,
-    ViewNode, VirtualRow, WorkspaceObjects, WorkspaceReads, check_rows,
+    Candidate, Capability, DeviceClock, Event, Grant, InstallError, Navigation, Node, NodeKind,
+    ObjectTypes, PluginHost, PluginManifest, Router, RunningPlugin, Services, Surface, Value, View,
+    ViewError, ViewKind, ViewNode, VirtualRow, WorkspaceObjects, WorkspaceReads, check_rows,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AppError, Workspace, plugin_objects::ObjectStore, store::JsonStore};
+use crate::{
+    AppError, Workspace, plugin_objects::ObjectStore, session::WindowKey, store::JsonStore,
+};
+use navigation::{Navigator, Openings};
+pub(crate) use navigation::{Opening, SystemClock};
 use reload::{Reload, Watcher};
 use worker::{Doing, Job, Outcome, Registrations, RowsFetched, ToolEntry, Worker};
 
@@ -398,6 +403,10 @@ pub(crate) struct Plugins {
     shipped_pending: Vec<(PluginManifest, PathBuf)>,
     /// The listing whose file changes the running plugins drew last.
     listing_drawn: u64,
+    /// The clock running plugins read.
+    clock: Option<Arc<dyn DeviceClock>>,
+    /// What running plugins asked each window to show.
+    openings: Openings,
     /// Wakes every window, as a reload watcher does once it read a build.
     wake: Option<Wake>,
     /// Counts the changes the windows show: plugins, pages and views.
@@ -439,6 +448,8 @@ impl Plugins {
             shipped: None,
             shipped_pending: Vec::new(),
             listing_drawn: 0,
+            clock: None,
+            openings: Openings::default(),
             wake: None,
             version: 0,
         }
@@ -446,6 +457,36 @@ impl Plugins {
 
     pub(crate) fn set_wake(&mut self, wake: Wake) {
         self.wake = Some(wake);
+    }
+
+    /// Give the plugins this clock and time zone, from the next start on.
+    pub(crate) fn set_clock(&mut self, clock: Arc<dyn DeviceClock>) {
+        self.clock = Some(clock);
+    }
+
+    /// Take what running plugins asked the window `window` to show,
+    /// oldest first.
+    pub(crate) fn take_openings(&mut self, window: WindowKey) -> Vec<Opening> {
+        let mut openings = self
+            .openings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut taken = Vec::new();
+        openings.retain(|(asked, opening)| {
+            if *asked == window {
+                taken.push(opening.clone());
+                false
+            } else {
+                true
+            }
+        });
+        taken
+    }
+
+    /// Forget what running plugins asked the window `window` to show, as
+    /// when it closes.
+    pub(crate) fn forget_openings(&mut self, window: WindowKey) {
+        self.take_openings(window);
     }
 
     pub(crate) fn version(&self) -> u64 {
@@ -650,12 +691,16 @@ impl Plugins {
         let reader: Arc<dyn WorkspaceReads> = Arc::new(reader::WorkspaceReader(workspace.clone()));
         let objects: Arc<dyn WorkspaceObjects> =
             Arc::new(ObjectStore::new(workspace, self.types.clone()));
+        let navigator = Arc::new(Navigator::new(id, self.openings.clone()));
+        let navigation: Arc<dyn Navigation> = navigator.clone();
         let services = Services {
             workspace: Some(reader),
             objects: Some(objects),
             types: self.types.clone(),
             network: Some(self.network.clone()),
             router: Arc::downgrade(&self.router),
+            clock: self.clock.clone(),
+            navigation: Some(navigation),
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests
@@ -668,6 +713,7 @@ impl Plugins {
             id: id.to_owned(),
             generation: self.generations,
             plugin: plugin.clone(),
+            navigator,
             jobs: received,
             outcomes: self.outcomes.0.clone(),
             wake: self.wake.clone(),
@@ -1200,24 +1246,40 @@ impl Plugins {
     }
 
     /// Tell the plugin `plugin` about `event` in the view at `surface`,
-    /// and draw its views again once it has heard. An input value of the
-    /// wrong form, such as a date that isn't `YYYY-MM-DD`, never reaches
-    /// the plugin.
-    fn event_at(&mut self, plugin: &str, surface: Surface, event: &Event) {
+    /// which you did in the window `origin`, and draw its views again once
+    /// it has heard. An input value of the wrong form, such as a date that
+    /// isn't `YYYY-MM-DD`, never reaches the plugin.
+    fn event_at(&mut self, plugin: &str, surface: Surface, event: &Event, origin: WindowKey) {
         let shown = self
             .running
             .get(plugin)
             .is_some_and(|running| running.views.contains_key(&surface));
         if shown && well_formed_event(event) {
-            self.send(plugin, Job::Event(surface, event.clone()));
+            self.send(plugin, Job::Event(surface, event.clone(), Some(origin)));
         }
     }
 
     /// Tell the plugin behind the rail page `page_id` about `event` there.
-    pub(crate) fn send_event(&mut self, page_id: &str, event: &Event) {
+    pub(crate) fn send_event(&mut self, page_id: &str, event: &Event, origin: WindowKey) {
         if let Some((plugin, page)) = split_page_id(page_id) {
             let (plugin, page) = (plugin.to_owned(), page.to_owned());
-            self.event_at(&plugin, Surface::Page(page), event);
+            self.event_at(&plugin, Surface::Page(page), event, origin);
+        }
+    }
+
+    /// The section the rail page `page_id` adds to the sidebar, when its
+    /// plugin runs and drew one.
+    pub(crate) fn sidebar_view(&self, page_id: &str) -> Option<PluginView> {
+        let (plugin, page) = split_page_id(page_id)?;
+        self.view_at(plugin, &Surface::Sidebar(page.to_owned()))
+    }
+
+    /// Tell the plugin behind the rail page `page_id` about `event` in the
+    /// page's sidebar section.
+    pub(crate) fn send_sidebar_event(&mut self, page_id: &str, event: &Event, origin: WindowKey) {
+        if let Some((plugin, page)) = split_page_id(page_id) {
+            let (plugin, page) = (plugin.to_owned(), page.to_owned());
+            self.event_at(&plugin, Surface::Sidebar(page), event, origin);
         }
     }
 
@@ -1290,9 +1352,9 @@ impl Plugins {
             .collect()
     }
 
-    /// Run the palette command `command_id`. Returns whether a running
-    /// plugin offers it.
-    pub(crate) fn run_command(&mut self, command_id: &str) -> bool {
+    /// Run the palette command `command_id`, which you ran in the window
+    /// `origin`. Returns whether a running plugin offers it.
+    pub(crate) fn run_command(&mut self, command_id: &str, origin: WindowKey) -> bool {
         let Some((plugin, command)) = command_id
             .strip_prefix(COMMAND_PREFIX)
             .and_then(|rest| rest.split_once(':'))
@@ -1309,7 +1371,7 @@ impl Plugins {
         });
         if offered {
             let (plugin, command) = (plugin.to_owned(), command.to_owned());
-            self.send(&plugin, Job::Command(command));
+            self.send(&plugin, Job::Command(command, Some(origin)));
         }
         offered
     }
@@ -1346,8 +1408,15 @@ impl Plugins {
 
     /// Tell the plugin `plugin` about `event` in its Inbox section
     /// `section`.
-    pub(crate) fn send_inbox(&mut self, plugin: &str, section: &str, event: &Event) {
-        self.event_at(plugin, Surface::InboxSection(section.to_owned()), event);
+    pub(crate) fn send_inbox(
+        &mut self,
+        plugin: &str,
+        section: &str,
+        event: &Event,
+        origin: WindowKey,
+    ) {
+        let surface = Surface::InboxSection(section.to_owned());
+        self.event_at(plugin, surface, event, origin);
     }
 
     /// The files changed, as the listing `listing` shows: each running
@@ -1384,10 +1453,10 @@ impl Plugins {
 
     /// Tell the plugin behind its page `section_id` in Settings about
     /// `event` there.
-    pub(crate) fn send_settings(&mut self, section_id: &str, event: &Event) {
+    pub(crate) fn send_settings(&mut self, section_id: &str, event: &Event, origin: WindowKey) {
         if let Some(plugin) = section_id.strip_prefix(SETTINGS_PREFIX) {
             let plugin = plugin.to_owned();
-            self.event_at(&plugin, Surface::Settings, event);
+            self.event_at(&plugin, Surface::Settings, event, origin);
         }
     }
 
@@ -1515,12 +1584,19 @@ impl Plugins {
     /// properties panel of the object `object_id`. It draws the panel and
     /// its views again once it has heard. An input value of the wrong form
     /// never reaches the plugin.
-    pub(crate) fn send_panel(&mut self, object_type: &str, object_id: &str, event: &Event) {
+    pub(crate) fn send_panel(
+        &mut self,
+        object_type: &str,
+        object_id: &str,
+        event: &Event,
+        origin: WindowKey,
+    ) {
         let Some(owner) = self.types.owner(object_type) else {
             return;
         };
         if self.running.contains_key(&owner) && well_formed_event(event) {
-            self.send(&owner, Job::PanelEvent(object_id.to_owned(), event.clone()));
+            let job = Job::PanelEvent(object_id.to_owned(), event.clone(), Some(origin));
+            self.send(&owner, job);
         }
     }
 

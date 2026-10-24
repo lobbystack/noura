@@ -130,7 +130,7 @@ impl App {
         if id.starts_with(COMMAND_PREFIX) {
             // The plugin runs it on its own thread and draws its views
             // again; the window shows them once they arrive.
-            let ran = self.session.plugins().run_command(id);
+            let ran = self.session.plugins().run_command(id, self.key);
             if ran {
                 self.session.wake_all();
             }

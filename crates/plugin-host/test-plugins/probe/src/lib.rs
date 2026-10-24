@@ -10,6 +10,7 @@
 //! - `create-object:<type>:<title>`: create an object with an empty body.
 //! - `fetch:<url>`: send a GET request to `url`.
 //! - `call:<plugin>/<command>:<input>`: run another plugin's command.
+//! - `clock`: the clock's reading, as `now <instant> <time zone>`.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
 //! - `markdown:deep`: Markdown nodes with emphasis, quotes and lists
@@ -19,7 +20,12 @@
 //!   oldest first: a press as `<page> pressed <node>`, any other event in
 //!   its debug form. A press on a node whose ID is
 //!   `call:<plugin>/<command>:<input>` runs that command instead, and
-//!   shows as `<page> call` and what came back.
+//!   shows as `<page> call` and what came back. A press on
+//!   `open-object:<id>:<preview or new-tab>` or `open-page:<page>` asks
+//!   Noura to open it, and shows as `<page> open` and what came back.
+//!
+//! The page `hello` adds a sidebar section with a line of text and a
+//! button; the other pages add none.
 //! - anything else: a panel with a line of text and a button.
 //!
 //! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
@@ -38,8 +44,8 @@ use std::sync::Mutex;
 
 use plugin_sdk::{
     Calendar, CalendarEntry, CalendarMode, Choice, Column, Command, Error, Event, InboxSection,
-    Input, Item, ItemList, MenuItem, Node, NodeKind, Page, Plugin, Table, Tool, Value, View,
-    VirtualList, VirtualRow, command_calls, network, objects, workspace,
+    Input, Item, ItemList, MenuItem, NameField, Node, NodeKind, Page, Plugin, Table, Tool, Value,
+    View, VirtualList, VirtualRow, clock, command_calls, navigation, network, objects, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -118,6 +124,9 @@ impl Plugin for Probe {
             vec![fetch(url)]
         } else if let Some(call) = page.strip_prefix("call:") {
             vec![relay(call)]
+        } else if page == "clock" {
+            let now = clock::now();
+            vec![format!("now {} {}", now.instant, now.time_zone)]
         } else if page == "events" {
             EVENTS.lock().unwrap().clone()
         } else {
@@ -129,6 +138,16 @@ impl Plugin for Probe {
         lines_view(&lines)
     }
 
+    fn sidebar(page: String) -> Vec<Node> {
+        if page != "hello" {
+            return Vec::new();
+        }
+        let mut view = View::panel("side", Some("Probe sidebar"));
+        view.text(View::ROOT, "side-line", "Sidebar of hello.");
+        view.button(View::ROOT, "side-press", "Press in the sidebar");
+        view.into_nodes()
+    }
+
     fn rows(_page: String, _node: String, _start: u32, _count: u32) -> Vec<VirtualRow> {
         Vec::new()
     }
@@ -138,6 +157,12 @@ impl Plugin for Probe {
             && let Some(call) = node.strip_prefix("call:")
         {
             record(format!("{page} call {}", relay(call)));
+            return;
+        }
+        if let Event::Pressed(node) = &event
+            && let Some(answer) = open(node)
+        {
+            record(format!("{page} open {answer}"));
             return;
         }
         record(format!("{page} {}", event_text(&event)));
@@ -239,6 +264,26 @@ impl Plugin for Probe {
 
 fn record(event: String) {
     EVENTS.lock().unwrap().push(event);
+}
+
+/// Ask Noura to open what `node` names, `open-object:<id>:<placement>` or
+/// `open-page:<page>`, and say what came back. `None` for any other node.
+fn open(node: &str) -> Option<String> {
+    let answer = if let Some(rest) = node.strip_prefix("open-object:") {
+        let (id, placement) = rest.rsplit_once(':').unwrap_or((rest, "preview"));
+        let placement = if placement == "new-tab" {
+            navigation::Placement::NewTab
+        } else {
+            navigation::Placement::Preview
+        };
+        navigation::open_object(id, placement)
+    } else {
+        navigation::open_page(node.strip_prefix("open-page:")?)
+    };
+    Some(match answer {
+        Ok(()) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    })
 }
 
 /// A panel with one text node per line.
@@ -600,6 +645,60 @@ fn broken(case: &str) -> Vec<Node> {
             node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
             node("standup", entry("Standup", "2026-10-21 09:00", None), &[]),
         ],
+        "checklist" => vec![
+            root(&[1, 5]),
+            node(
+                "chores",
+                NodeKind::List(ItemList {
+                    label: "Chores".into(),
+                    reorder: false,
+                    selected: Some("mulch".into()),
+                }),
+                &[2, 3, 4],
+            ),
+            node(
+                "weed",
+                check_item("Weed the beds", Some(false), Some("Overdue")),
+                &[],
+            ),
+            node("mulch", check_item("Mulch", Some(true), None), &[]),
+            node("plain", check_item("Look around", None, Some("  ")), &[]),
+            node("new-chore", name_field("New chore name", ""), &[]),
+        ],
+        "unknown-selection" => vec![
+            root(&[1]),
+            node(
+                "chores",
+                NodeKind::List(ItemList {
+                    label: "Chores".into(),
+                    reorder: false,
+                    selected: Some("missing".into()),
+                }),
+                &[2],
+            ),
+            node("weed", check_item("Weed the beds", Some(false), None), &[]),
+        ],
+        "card-with-checkbox" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column("To do"), &[3]),
+            node(
+                "plan",
+                NodeKind::Card(Item {
+                    label: "Plan".into(),
+                    detail: None,
+                    checked: Some(false),
+                    warning: None,
+                }),
+                &[],
+            ),
+        ],
+        "unlabeled-name-field" => vec![root(&[1]), node("new-chore", name_field(" ", ""), &[])],
+        "name-field-with-children" => vec![
+            root(&[1]),
+            node("new-chore", name_field("New chore name", ""), &[2]),
+            text("inside"),
+        ],
         "mixed-entry-end" => vec![
             root(&[1]),
             node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
@@ -637,6 +736,7 @@ fn item_list(label: &str) -> NodeKind {
     NodeKind::List(ItemList {
         label: label.into(),
         reorder: false,
+        selected: None,
     })
 }
 
@@ -652,6 +752,8 @@ fn card(label: &str) -> NodeKind {
     NodeKind::Card(Item {
         label: label.into(),
         detail: None,
+        checked: None,
+        warning: None,
     })
 }
 
@@ -681,10 +783,28 @@ fn input(label: &str, value: Value) -> NodeKind {
     })
 }
 
+fn check_item(label: &str, checked: Option<bool>, warning: Option<&str>) -> NodeKind {
+    NodeKind::Item(Item {
+        label: label.into(),
+        detail: None,
+        checked,
+        warning: warning.map(Into::into),
+    })
+}
+
+fn name_field(label: &str, value: &str) -> NodeKind {
+    NodeKind::NameField(NameField {
+        label: label.into(),
+        value: value.into(),
+    })
+}
+
 fn item(label: &str) -> NodeKind {
     NodeKind::Item(Item {
         label: label.into(),
         detail: None,
+        checked: None,
+        warning: None,
     })
 }
 

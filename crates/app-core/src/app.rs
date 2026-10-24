@@ -56,6 +56,7 @@ pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
 pub use notes::UnsavedPrompt;
 pub use palette::{CommandPalette, Palette, PaletteMode};
+pub use plugins::{NameDraft, PluginPlace};
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +304,8 @@ pub struct App {
     recent: Vec<String>,
     /// The Inbox sections enabled plugins add.
     inbox_sections: Sections,
+    /// What you typed in plugins' name fields that hasn't reached them.
+    name_drafts: Vec<NameDraft>,
 }
 
 impl App {
@@ -399,6 +402,7 @@ impl App {
             problems: Vec::new(),
             recent: Vec::new(),
             inbox_sections: Sections::default(),
+            name_drafts: Vec::new(),
         }
     }
 
@@ -484,6 +488,7 @@ impl App {
             return;
         }
         self.closed = true;
+        self.session.plugins().forget_openings(self.key);
         self.session.close(self.key);
         self.release();
         self.listeners.emit(Change::Window);

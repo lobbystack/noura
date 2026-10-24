@@ -37,6 +37,9 @@ pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 pub enum Surface {
     /// A page in the rail, by the plugin's page ID.
     Page(String),
+    /// The section a page adds to the sidebar while it shows, by the
+    /// plugin's page ID.
+    Sidebar(String),
     /// A section in the Inbox, by the plugin's section ID.
     InboxSection(String),
     /// The plugin's page in Settings.
@@ -47,7 +50,7 @@ impl Surface {
     /// The capability a plugin needs to draw here.
     pub fn capability(&self) -> &'static str {
         match self {
-            Self::Page(_) => "views",
+            Self::Page(_) | Self::Sidebar(_) => "views",
             Self::InboxSection(_) => "inbox-sections",
             Self::Settings => "settings",
         }
@@ -191,6 +194,12 @@ impl RunningPlugin {
         self.call(|instance| instance.handle_event(page, event))
     }
 
+    /// The nodes of the section the page `page` adds to the sidebar: none
+    /// for no section.
+    pub fn render_sidebar(&self, page: &str) -> Result<Vec<Node>, PluginError> {
+        self.call(|instance| instance.render_sidebar(page))
+    }
+
     pub fn commands(&self) -> Result<Vec<Command>, PluginError> {
         self.call(PluginInstance::commands)
     }
@@ -269,6 +278,7 @@ impl RunningPlugin {
     pub fn render_surface(&self, surface: &Surface) -> Result<Vec<Node>, PluginError> {
         self.call(|instance| match surface {
             Surface::Page(page) => instance.render(page),
+            Surface::Sidebar(page) => instance.render_sidebar(page),
             Surface::InboxSection(section) => instance.render_inbox_section(section),
             Surface::Settings => instance.render_settings(),
         })
@@ -281,7 +291,7 @@ impl RunningPlugin {
         event: &Event,
     ) -> Result<(), PluginError> {
         self.call(|instance| match surface {
-            Surface::Page(page) => instance.handle_event(page, event),
+            Surface::Page(page) | Surface::Sidebar(page) => instance.handle_event(page, event),
             Surface::InboxSection(section) => instance.handle_inbox_event(section, event),
             Surface::Settings => instance.handle_settings_event(event),
         })

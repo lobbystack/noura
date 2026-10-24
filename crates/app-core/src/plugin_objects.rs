@@ -42,6 +42,8 @@ impl ObjectStore {
             path,
             body: object.body,
             revision: object.revision,
+            created: object.created,
+            updated: object.updated,
             problem,
         })
     }
