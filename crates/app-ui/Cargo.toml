@@ -36,6 +36,8 @@ icu_time.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
+# The tests hold the PDF threads to watch the window draw meanwhile.
+app-core = { version = "0.2.0", path = "../app-core", features = ["test-hooks"] }
 egui_kittest.workspace = true
 # A test breaks the index to see search say it isn't available.
 rusqlite.workspace = true
