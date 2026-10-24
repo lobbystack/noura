@@ -1,9 +1,9 @@
 //! Seam 1: what running plugins add through the plugins service, against
-//! a real workspace folder and app data: commands in the command palette,
-//! Inbox sections, pages in Settings and tools; the capabilities, hosts
-//! and targets you revoke; the plugins that ship with Noura; and plugins
-//! that loop, outgrow their memory or keep failing, which stop without
-//! holding up a window.
+//! a real workspace folder and app data: what they open, and in which
+//! window, commands in the command palette, Inbox sections, pages in
+//! Settings and tools; the capabilities, hosts and targets you revoke; the
+//! plugins that ship with Noura; and plugins that loop, outgrow their
+//! memory or keep failing, which stop without holding up a window.
 
 mod support;
 
@@ -78,6 +78,38 @@ fn poll_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
         assert!(Instant::now() < deadline, "timed out waiting until {what}");
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn a_plugin_opens_its_page_only_in_the_window_you_acted_in_and_never_while_it_draws() {
+    let Some(folder) = probe(&["name = \"views\""]) else {
+        return;
+    };
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    plugins::install_and_enable(&mut app, folder.path(), "probe");
+    let mut other = app.new_window().expect("a second window opens");
+    settle(&mut other);
+    let events_page = "plugin:probe:events";
+
+    // Drawing a view answers nothing you did.
+    assert_eq!(
+        plugins::texts(&app, "plugin:probe:opens"),
+        Ok(vec![
+            "draw open error failed Noura opens things only in answer to something you did."
+                .to_owned()
+        ])
+    );
+    assert_ne!(app.current_page(), events_page);
+    assert_ne!(other.current_page(), events_page);
+
+    app.press_plugin_button("plugin:probe:hello", "open-page:events");
+    settle(&mut app);
+    settle(&mut other);
+
+    assert_eq!(events(&app), ["hello open ok"]);
+    assert_eq!(app.current_page(), events_page);
+    assert_ne!(other.current_page(), events_page);
 }
 
 #[test]

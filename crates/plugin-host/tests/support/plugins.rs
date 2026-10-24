@@ -238,6 +238,8 @@ impl WorkspaceObjects for FakeObjects {
             body: object.body,
             properties: serde_json::Value::Object(object.properties).to_string(),
             revision: "rev-1".into(),
+            created: Some("2026-10-20T10:00:00Z".into()),
+            updated: Some("2026-10-20T10:00:00Z".into()),
             problem: None,
         };
         self.objects.lock().unwrap().push(record.clone());

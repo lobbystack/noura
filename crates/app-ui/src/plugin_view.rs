@@ -21,7 +21,7 @@ mod rows;
 
 use std::ops::Range;
 
-use app_core::{App, PluginEvent, PluginView, TabId, ViewKind, ViewNode, VirtualRow};
+use app_core::{App, PluginEvent, PluginPlace, PluginView, TabId, ViewKind, ViewNode, VirtualRow};
 use egui::{Frame, Id, Margin, RichText, Stroke, Ui, UiBuilder, accesskit::Role};
 
 use crate::{
@@ -35,6 +35,8 @@ use crate::{
 enum Place<'a> {
     /// The rail page with this ID.
     Page(&'a str),
+    /// The sidebar section of the rail page with this ID.
+    Sidebar(&'a str),
     /// The properties panel of the object open in this tab.
     Panel(TabId),
     /// The Inbox section of a plugin: (plugin ID, section ID).
@@ -68,12 +70,46 @@ impl Kit<'_> {
         let elsewhere = match self.place {
             Place::Page(page) => return self.app.plugin_rows(page, list, range),
             // App-core refuses these views when they hold a virtual list.
+            Place::Sidebar(_) => "in the sidebar",
             Place::Panel(_) => "in a properties panel",
             Place::Section(..) => "in an Inbox section",
             Place::Settings(_) => "on a page in Settings",
         };
         Err(format!("The virtual list {list} can't show {elsewhere}."))
     }
+}
+
+impl Place<'_> {
+    /// Where `app-core` knows this view to be.
+    fn plugin_place(self) -> PluginPlace {
+        match self {
+            Self::Page(page) => PluginPlace::Page(page.to_owned()),
+            Self::Sidebar(page) => PluginPlace::Sidebar(page.to_owned()),
+            Self::Panel(tab) => PluginPlace::Panel(tab),
+            Self::Section(plugin, section) => PluginPlace::Inbox {
+                plugin: plugin.to_owned(),
+                section: section.to_owned(),
+            },
+            Self::Settings(section) => PluginPlace::Settings(section.to_owned()),
+        }
+    }
+}
+
+/// The section the plugin page `page_id` adds to the sidebar, when it
+/// adds one, in the window whose ID salt is `window`. Returns whether it
+/// drew one.
+pub(crate) fn show_sidebar(ui: &mut Ui, app: &mut App, window: Id, page_id: &str) -> bool {
+    let Some(view) = app.plugin_sidebar(page_id) else {
+        return false;
+    };
+    let (events, link) = draw(ui, app, window, Place::Sidebar(page_id), &view);
+    for event in &events {
+        app.send_plugin_sidebar_event(page_id, event);
+    }
+    if let Some(url) = link {
+        app.open_link(&url);
+    }
+    true
 }
 
 /// The plugin page `page_id` in the window whose ID salt is `window`.
@@ -227,7 +263,11 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             }
         }
         ViewKind::Button { label } => menu::button(ui, node, label, kit),
-        ViewKind::List { label, reorder } => rows::list(ui, node, label, *reorder, kit),
+        ViewKind::List {
+            label,
+            reorder,
+            selected,
+        } => rows::list(ui, node, (label, *reorder, selected.as_deref()), kit),
         ViewKind::Board { label } => board::board(ui, node, label, kit),
         ViewKind::Calendar { label, mode, date } => {
             calendar::calendar(ui, node, label, *mode, date, kit);
@@ -238,6 +278,7 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         ViewKind::Table { label, columns } => rows::table(ui, node, label, columns, kit),
         ViewKind::Form { label, submit } => form::form(ui, node, label, submit, kit),
         ViewKind::Input { .. } => form::input(ui, node, kit),
+        ViewKind::NameField { label, value } => form::name_field(ui, node, label, value, kit),
         // Their list, table, board or menu draws them.
         ViewKind::Item { .. }
         | ViewKind::Row { .. }

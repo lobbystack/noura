@@ -13,6 +13,9 @@ pulley = ["wasmtime/pulley"]
 [dependencies]
 # Names each component's bytes in the compiled code cache.
 blake3.workspace = true
+# Reads this computer's clock and time zone for plugins when the app
+# passes no clock of its own.
+jiff.workspace = true
 # Plugins' network requests go through its web access boundary.
 local-core = { version = "0.2.0", path = "../local-core" }
 # Waits a bounded time for a plugin that another plugin's command call

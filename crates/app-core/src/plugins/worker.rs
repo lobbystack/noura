@@ -18,25 +18,29 @@ use plugin_host::{
     VirtualRow,
 };
 
-use super::{PluginView, Wake};
+use super::{PluginView, Wake, navigation::Navigator};
+use crate::session::WindowKey;
 
 /// Something for a running plugin to do.
 pub(super) enum Job {
     /// Ask what the plugin registers under each capability, then draw
     /// its views.
     Refresh,
-    /// Tell the plugin about `event` at `surface`, then draw its views.
-    Event(Surface, Event),
-    /// Run the command palette's command `id`, then draw its views.
-    Command(String),
+    /// Tell the plugin about `event` at `surface`, which you did in the
+    /// window given, then draw its views.
+    Event(Surface, Event, Option<WindowKey>),
+    /// Run the command palette's command `id`, which you ran in the window
+    /// given, then draw its views.
+    Command(String, Option<WindowKey>),
     /// Draw the plugin's views again.
     Redraw,
     /// Draw the properties panel of the object with this ID, whose file
     /// has this revision.
     Panel(String, String),
     /// Tell the plugin about `event` in the properties panel of the object
-    /// with this ID, then draw that panel and its views again.
-    PanelEvent(String, Event),
+    /// with this ID, which you did in the window given, then draw that
+    /// panel and its views again.
+    PanelEvent(String, Event, Option<WindowKey>),
     /// Fetch `count` rows from `start` of the virtual list `node` on the
     /// page `page`, for the views drawn `drawn` times.
     Rows {
@@ -91,7 +95,12 @@ pub(super) struct Registrations {
 impl Registrations {
     /// Every place the plugin draws a view.
     pub(super) fn surfaces(&self) -> Vec<Surface> {
-        let pages = self.pages.iter().map(|page| Surface::Page(page.id.clone()));
+        let pages = self.pages.iter().flat_map(|page| {
+            [
+                Surface::Page(page.id.clone()),
+                Surface::Sidebar(page.id.clone()),
+            ]
+        });
         let sections = self
             .sections
             .iter()
@@ -162,6 +171,9 @@ pub(super) struct Worker {
     pub(super) id: String,
     pub(super) generation: u64,
     pub(super) plugin: Arc<RunningPlugin>,
+    /// What the plugin asks windows to show, which only calls that answer
+    /// what you did may use.
+    pub(super) navigator: Arc<Navigator>,
     pub(super) jobs: Receiver<Job>,
     pub(super) outcomes: Sender<Outcome>,
     pub(super) wake: Option<Wake>,
@@ -222,8 +234,11 @@ impl Worker {
                         rows: fetched,
                     });
                 }
-                Job::PanelEvent(object, event) => {
-                    let view = match self.plugin.handle_panel_event(&object, &event) {
+                Job::PanelEvent(object, event, origin) => {
+                    self.navigator.set_origin(origin);
+                    let handled = self.plugin.handle_panel_event(&object, &event);
+                    self.navigator.set_origin(None);
+                    let view = match handled {
                         Ok(()) => draw_panel(&self.plugin, &object),
                         Err(error) => {
                             tracing::warn!(%error, "a plugin failed to handle a press in a panel");
@@ -236,23 +251,31 @@ impl Worker {
                         view,
                     });
                 }
-                Job::Event(surface, event) => {
-                    if let Err(error) = self.plugin.handle_surface_event(&surface, &event) {
+                Job::Event(surface, event, origin) => {
+                    self.navigator.set_origin(origin);
+                    let handled = self.plugin.handle_surface_event(&surface, &event);
+                    self.navigator.set_origin(None);
+                    if let Err(error) = handled {
                         tracing::warn!(%error, "a plugin failed to handle an event");
                         failed = Some((Some(surface), failure_message(&error, Doing::Handling)));
                     }
                 }
-                Job::Command(id) => match self.plugin.run_command(&id, "") {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(message)) => {
-                        tracing::warn!(%message, "a plugin's command failed");
-                        failed = Some((None, format!("Its command failed: {message}")));
+                Job::Command(id, origin) => {
+                    self.navigator.set_origin(origin);
+                    let ran = self.plugin.run_command(&id, "");
+                    self.navigator.set_origin(None);
+                    match ran {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(message)) => {
+                            tracing::warn!(%message, "a plugin's command failed");
+                            failed = Some((None, format!("Its command failed: {message}")));
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "a plugin failed to run a command");
+                            failed = Some((None, failure_message(&error, Doing::Running)));
+                        }
                     }
-                    Err(error) => {
-                        tracing::warn!(%error, "a plugin failed to run a command");
-                        failed = Some((None, failure_message(&error, Doing::Running)));
-                    }
-                },
+                }
                 Job::Redraw => {
                     acted = false;
                     self.redraw_queued.store(false, Ordering::Relaxed);
@@ -403,15 +426,18 @@ fn dedup_by<T>(items: &mut Vec<T>, key: impl Fn(&T) -> String) {
     items.retain(|item| seen.insert(key(item)));
 }
 
-/// Draw every view the plugin registered.
+/// Draw every view the plugin registered. A page whose sidebar section
+/// holds no nodes adds no section.
 fn draw(plugin: &RunningPlugin, registrations: &Registrations) -> BTreeMap<Surface, PluginView> {
     registrations
         .surfaces()
         .into_iter()
-        .map(|surface| {
+        .filter_map(|surface| {
             let view = match plugin.render_surface(&surface) {
                 Ok(nodes) => match &surface {
                     Surface::Page(_) => View::from_nodes(nodes).map_err(|error| error.to_string()),
+                    Surface::Sidebar(_) if nodes.is_empty() => return None,
+                    Surface::Sidebar(_) => checked(nodes, "in the sidebar"),
                     Surface::InboxSection(_) => checked(nodes, "in an Inbox section"),
                     Surface::Settings => checked(nodes, "on a page in Settings"),
                 },
@@ -420,7 +446,7 @@ fn draw(plugin: &RunningPlugin, registrations: &Registrations) -> BTreeMap<Surfa
                     Err(failure_message(&error, Doing::Drawing))
                 }
             };
-            (surface, view)
+            Some((surface, view))
         })
         .collect()
 }

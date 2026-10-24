@@ -198,6 +198,11 @@ impl ObjectTypeRegistry {
         self.types.contains_key(object_type)
     }
 
+    /// The schema registered for `object_type`.
+    pub fn schema(&self, object_type: &str) -> Option<&PropertySchema> {
+        self.types.get(object_type)
+    }
+
     /// The names a registered type declares, in declared order.
     fn declared(&self, object_type: &str) -> Option<Vec<&str>> {
         self.types.get(object_type).map(|schema| {
