@@ -136,6 +136,11 @@ struct Run {
     text: String,
     /// The assistant message the answer goes to.
     message: Option<String>,
+    /// That message's revision as Noura began it.
+    message_revision: String,
+    /// The messages of yours this run wrote, which its requests carry even
+    /// when the index doesn't list them yet.
+    written: Vec<ChatMessage>,
     tool_calls: Vec<AiToolCall>,
     /// The tool-call message of each of `tool_calls`, by call ID.
     tool_messages: HashMap<String, String>,
@@ -578,6 +583,8 @@ impl Ai {
                 status: AiRunStatus::WaitingForConsent,
                 text: String::new(),
                 message: None,
+                message_revision: String::new(),
+                written: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_messages: HashMap::new(),
                 failure: None,
@@ -628,6 +635,9 @@ impl Ai {
                 content: message.clone(),
                 expected_chat_revision: read.chat.revision,
             })?;
+            if let Some(run) = lock(&self.state).runs.get_mut(id) {
+                run.written.push(appended.value.clone());
+            }
             if names {
                 let revision = appended.chat_revision.clone().unwrap_or_default();
                 // The title waits for the next message when the chat
@@ -672,16 +682,26 @@ impl Ai {
                 expected_chat_revision: read.chat.revision,
             })?;
             let message = begun.value.id;
-            {
+            let written = {
                 let mut state = lock(&self.state);
-                if let Some(run) = state.runs.get_mut(id) {
-                    run.message = Some(message.clone());
-                    run.text.clear();
-                    run.tool_calls.clear();
-                    run.tool_messages.clear();
+                match state.runs.get_mut(id) {
+                    Some(run) => {
+                        run.message = Some(message.clone());
+                        run.message_revision = begun.revision.clone();
+                        run.text.clear();
+                        run.tool_calls.clear();
+                        run.tool_messages.clear();
+                        run.written.clone()
+                    }
+                    None => Vec::new(),
+                }
+            };
+            let mut read = engine.read_chat(&chat)?;
+            for mine in written {
+                if !read.messages.iter().any(|known| known.id == mine.id) {
+                    read.messages.push(mine);
                 }
             }
-            let read = engine.read_chat(&chat)?;
             let workspace = self.workspace().ok_or_else(no_workspace_core)?;
             let operation = uuid_v4();
             let input = AiStreamInput {
@@ -707,7 +727,7 @@ impl Ai {
                     finish_answer(
                         engine,
                         &chat,
-                        &message,
+                        (&message, &begun.revision),
                         "",
                         ChatMessageStatus::Failed,
                         Some(&code),
@@ -776,14 +796,17 @@ impl Ai {
     /// Write the run's answer with how it ended, and the tool calls it
     /// asked for, then show the run as ended.
     fn end(self: &Arc<Self>, id: &str, engine: &Arc<WorkspaceEngine>, ended: Ended) {
-        let Some((chat, message, text, calls)) = lock(&self.state).runs.get(id).and_then(|run| {
-            Some((
-                run.chat.clone(),
-                run.message.clone()?,
-                run.text.clone(),
-                run.tool_calls.clone(),
-            ))
-        }) else {
+        let Some((chat, message, begun, text, calls)) =
+            lock(&self.state).runs.get(id).and_then(|run| {
+                Some((
+                    run.chat.clone(),
+                    run.message.clone()?,
+                    run.message_revision.clone(),
+                    run.text.clone(),
+                    run.tool_calls.clone(),
+                ))
+            })
+        else {
             return;
         };
         let (status, error) = match &ended {
@@ -791,26 +814,33 @@ impl Ai {
             Ended::Cancelled => (ChatMessageStatus::Cancelled, None),
             Ended::Failed(error) => (ChatMessageStatus::Failed, Some(error_code(error))),
         };
-        let written = finish_answer(engine, &chat, &message, &text, status, error.as_deref())
-            .and_then(|()| {
-                if !matches!(ended, Ended::Completed) {
-                    return Ok(HashMap::new());
-                }
-                let mut messages = HashMap::new();
-                for call in &calls {
-                    let read = engine.read_chat(&chat)?;
-                    let begun = engine.begin_chat_tool_call(BeginChatToolCallInput {
-                        chat_id: chat.clone(),
-                        run_id: id.to_owned(),
-                        tool_call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        content: call.arguments.clone(),
-                        expected_chat_revision: read.chat.revision,
-                    })?;
-                    messages.insert(call.id.clone(), begun.value.id);
-                }
-                Ok(messages)
-            });
+        let written = finish_answer(
+            engine,
+            &chat,
+            (&message, &begun),
+            &text,
+            status,
+            error.as_deref(),
+        )
+        .and_then(|()| {
+            if !matches!(ended, Ended::Completed) {
+                return Ok(HashMap::new());
+            }
+            let mut messages = HashMap::new();
+            for call in &calls {
+                let read = engine.read_chat(&chat)?;
+                let begun = engine.begin_chat_tool_call(BeginChatToolCallInput {
+                    chat_id: chat.clone(),
+                    run_id: id.to_owned(),
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    content: call.arguments.clone(),
+                    expected_chat_revision: read.chat.revision,
+                })?;
+                messages.insert(call.id.clone(), begun.value.id);
+            }
+            Ok(messages)
+        });
         {
             let mut state = lock(&self.state);
             if let Some(run) = state.runs.get_mut(id) {
@@ -1110,7 +1140,7 @@ fn consented(store: &AiFoundation, workspace: &str, provider: &str) -> bool {
 fn finish_answer(
     engine: &WorkspaceEngine,
     chat: &str,
-    message: &str,
+    (message, begun): (&str, &str),
     content: &str,
     status: ChatMessageStatus,
     error_code: Option<&str>,
@@ -1119,12 +1149,13 @@ fn finish_answer(
     loop {
         attempts += 1;
         let read = engine.read_chat(chat)?;
-        let Some(current) = read.messages.iter().find(|known| known.id == message) else {
-            return Ok(());
+        // The index may not list the message yet, as after it failed to
+        // record it: the file then still holds what Noura wrote.
+        let revision = match read.messages.iter().find(|known| known.id == message) {
+            Some(current) if current.status != ChatMessageStatus::InProgress => return Ok(()),
+            Some(current) => current.revision.clone(),
+            None => begun.to_owned(),
         };
-        if current.status != ChatMessageStatus::InProgress {
-            return Ok(());
-        }
         let finished = engine.finish_chat_assistant(FinishChatAssistantInput {
             chat_id: chat.to_owned(),
             message_id: message.to_owned(),
@@ -1132,7 +1163,7 @@ fn finish_answer(
             status: status.clone(),
             error_code: error_code.map(str::to_owned),
             expected_chat_revision: read.chat.revision.clone(),
-            expected_message_revision: current.revision.clone(),
+            expected_message_revision: revision,
         });
         match finished {
             Ok(_) => return Ok(()),
