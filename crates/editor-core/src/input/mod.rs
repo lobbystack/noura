@@ -143,10 +143,22 @@ pub enum Event {
     ToggleSpoiler {
         node: (Grapheme, Grapheme),
     }, // reveal or hide the spoiler whose range this is
+    /// Report the link to `url` as opened, in a new tab when `new_tab`;
+    /// see [`crate::resolvers::OpenedLink`].
     OpenLink {
         url: String,
         wikilink: bool,
-    }, // navigate, on the platform
+        new_tab: bool,
+    },
+    /// Open the link at the caret, or the first one the selection touches,
+    /// as a click on it does.
+    OpenSelectedLink,
+    /// Put `link` in place of what the `[[` link at the caret has typed so
+    /// far, and close the link unless it's already closed; see
+    /// [`crate::MdDoc::link_query`].
+    CompleteLink {
+        link: String,
+    },
     Paste {
         text: String,
     }, // replace the selection with pasted text, or link the selection to a pasted URL
