@@ -313,6 +313,9 @@ fn a_trap_during_integration_stops_the_lineage_and_rebuilds_the_last_good_state(
         for step in case["steps"].as_array().unwrap() {
             let receive = &step["receive"];
             let id = receive["id"].as_u64().unwrap();
+            if step["trap"] == true {
+                note.trap_next_integration();
+            }
             let effects = note.receive(
                 RemoteRecord {
                     id,

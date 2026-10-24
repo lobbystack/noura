@@ -586,6 +586,51 @@ fn client_checks(f: &mut Fixture) {
         None,
     ));
 
+    // An item can only name elements that existed when its writer made it:
+    // under its own client ID, clocks below its own. One that names its own
+    // clock or a later one integrates in one place as it arrives and in
+    // another from a snapshot of the result, and a device booted from that
+    // snapshot traps.
+    let two_items = |origin: (u64, u64), right: Option<(u64, u64)>| {
+        let mut info = STRING | HAS_ORIGIN;
+        if right.is_some() {
+            info |= HAS_RIGHT_ORIGIN;
+        }
+        let mut out = Lib0::default()
+            .var(1)
+            .run(2, ME, 0)
+            .root_item(STRING)
+            .string("ab")
+            .raw(&[info])
+            .var(origin.0)
+            .var(origin.1);
+        if let Some((client, clock)) = right {
+            out = out.var(client).var(clock);
+        }
+        out.string("c").var(0).done()
+    };
+    f.case(update_case(
+        "item_between_its_writers_earlier_elements",
+        two_items((ME, 0), Some((ME, 1))),
+        None,
+    ));
+    f.case(update_case(
+        "item_after_its_own_clock",
+        two_items((ME, 2), None),
+        Some("forward_origin"),
+    ));
+    f.case(update_case(
+        "item_before_a_later_clock_of_its_writer",
+        two_items((ME, 0), Some((ME, 3))),
+        Some("forward_origin"),
+    ));
+    let self_right = insert_between(ME, 0, Some((0, 0)), Some((ME, 1)), "ab");
+    f.case(update_case(
+        "item_whose_right_origin_lies_inside_itself",
+        self_right,
+        Some("forward_origin"),
+    ));
+
     let snapshot = |name: &str, client: u64, card_count: u32, expect: Option<&str>| {
         let yrs = insert(client, 0, "hi");
         verdict_case(
@@ -1001,10 +1046,11 @@ fn allowances(f: &mut Fixture) {
     }));
 }
 
-/// A record that passes the verdict but makes yrs trap during integration:
-/// it claims clocks its writer already used, with a right origin inside
-/// itself. The trap stops the lineage on the device, which rebuilds the
-/// document from the journal and merges nothing more of the lineage.
+/// A trap while the sandbox integrates a record that passed the verdict:
+/// the pinned module traps on no known record, so the runner makes the
+/// instance trap on the record a step marks, as a bug in the guest would.
+/// The trap stops the lineage on the device, which rebuilds the document
+/// from the journal and merges nothing more of the lineage.
 fn traps(f: &mut Fixture) {
     let base = insert(0, 0, "x");
     let record = |id: u64, card: u32, yrs: Vec<u8>| {
@@ -1015,20 +1061,18 @@ fn traps(f: &mut Fixture) {
             "payload": to_hex(&update_payload("", 1, vec![], inline(yrs))),
         })
     };
-    let first = insert(OTHER, 0, "a");
-    let overlap = insert_between(OTHER, 0, None, Some((OTHER, 1)), "\u{1F600}");
+    let first = insert_between(OTHER, 0, Some((0, 0)), None, "a");
+    let second = insert_between(OTHER, 1, Some((OTHER, 0)), None, "b");
     let later = insert_between(ME, 0, Some((0, 0)), None, "B");
     f.case(json!({
         "kind": "trap",
-        "name": "integration_traps_on_a_second_copy_of_an_element",
+        "name": "a_trap_during_integration_stops_the_lineage",
         "base": to_hex(&base),
         "steps": [
-            {"receive": record(1, 2, first), "expect": "merged"},
-            {"receive": record(2, 2, overlap), "expect": "stopped"},
-            {"receive": record(3, 1, later), "expect": "skipped"},
+            {"receive": record(1, 2, first), "trap": false, "expect": "merged"},
+            {"receive": record(2, 2, second), "trap": true, "expect": "stopped"},
+            {"receive": record(3, 1, later), "trap": false, "expect": "skipped"},
         ],
-        // Root inserts without origins sort by client ID: client 0's "x"
-        // comes first.
         "text": "xa",
     }));
 }
@@ -1067,6 +1111,42 @@ fn pending(f: &mut Fixture) {
             // The rewrite supplies them, and the held update merges.
             {"receive": record(3, "Notes/Plan.md", abc), "text": "xabcd", "status": "merging"},
         ],
+    }));
+}
+
+/// A trap in the verdict: whatever makes the guest trap, a panic in its yrs
+/// included, the record is unreadable and the next valid record still
+/// applies. The pinned module traps on no known record, so the case stands
+/// in a module whose `verdict` export traps for the records it judges.
+fn verdict_traps(f: &mut Fixture) {
+    let base = insert(0, 0, "x");
+    let record = |id: u64, yrs: Vec<u8>| {
+        json!({
+            "id": id,
+            "card_index": 1,
+            "card_count": 1,
+            "payload": to_hex(&update_payload("", 1, vec![], inline(yrs))),
+        })
+    };
+    let a = insert_between(ME, 0, Some((0, 0)), None, "A");
+    let b = insert_between(ME, 1, Some((ME, 0)), None, "B");
+    f.case(json!({
+        "kind": "verdict_trap",
+        "name": "a_trapping_verdict_makes_one_record_unreadable",
+        "module_wat": concat!(
+            "(module",
+            " (memory (export \"memory\") 1)",
+            " (func (export \"alloc\") (param i32) (result i32) i32.const 0)",
+            " (func (export \"verdict\")",
+            " (param i32 i32 i32 i32 i32 i32 i32) (result i32) unreachable))",
+        ),
+        "base": to_hex(&base),
+        "steps": [
+            {"judge": "stand_in", "receive": record(1, a.clone()), "expect": "trap"},
+            {"judge": "pinned", "receive": record(2, a), "expect": "merged"},
+            {"judge": "pinned", "receive": record(3, b), "expect": "merged"},
+        ],
+        "text": "xAB",
     }));
 }
 
@@ -1144,7 +1224,7 @@ pub fn fixture() -> Fixture {
             "verdict": {
                 "base_fuel": 1_000_000,
                 "fuel_per_byte": 1_000,
-                "counted_bytes": "the decrypted payload and the blob's file",
+                "counted_bytes": "the decrypted payload without its padding, and the blob's file",
                 "memory_bytes": 512u64 << 20,
                 "epoch_interruption": false,
             },
@@ -1171,5 +1251,6 @@ pub fn fixture() -> Fixture {
     allowances(&mut f);
     traps(&mut f);
     pending(&mut f);
+    verdict_traps(&mut f);
     f
 }

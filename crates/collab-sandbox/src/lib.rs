@@ -21,6 +21,8 @@
 
 mod allowance;
 mod editor;
+#[doc(hidden)]
+pub mod fuzzing;
 mod guest;
 mod note;
 pub mod op;
@@ -54,7 +56,7 @@ pub static GUEST_MODULE: &[u8] = include_bytes!("../guest/collab_sandbox_guest.w
 /// The BLAKE3 hash of [`GUEST_MODULE`], as `sync-v2-collaboration.json`
 /// records it. The sandbox refuses to run any other module.
 pub const GUEST_MODULE_HASH: &str =
-    "3e3b21481105aefed54186fec86e57d9b61046fad237c0826cb5347386c4b12e";
+    "9b13d65cbb478bc7d2201db08a2573ca3588e0f3bbf07ffabec1d2cb6d17dd33";
 
 /// The operators that cost no fuel. Every other operator costs one unit,
 /// as `sync-v2-collaboration.json` records.
@@ -130,7 +132,9 @@ impl Sandbox {
         Self::with_module(backend, GUEST_MODULE)
     }
 
-    fn with_module(backend: Backend, bytes: &[u8]) -> Result<Self, SandboxError> {
+    /// The sandbox on any module, for tests that stand in a module that
+    /// misbehaves. The app runs only [`Self::new`]'s pinned module.
+    pub(crate) fn with_module(backend: Backend, bytes: &[u8]) -> Result<Self, SandboxError> {
         let engine = engine(backend).map_err(|error| SandboxError::Engine(error.to_string()))?;
         let module =
             Module::new(&engine, bytes).map_err(|error| SandboxError::Engine(error.to_string()))?;

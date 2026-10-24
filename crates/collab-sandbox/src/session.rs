@@ -71,6 +71,8 @@ enum Request {
         writer: u32,
         balance: i64,
     },
+    /// Makes the next integration trap, as the fixtures' trap cases ask.
+    TrapNext,
 }
 
 enum Reply {
@@ -370,6 +372,13 @@ impl NoteHandle {
         self.send(Request::SetBalance { writer, balance })
     }
 
+    /// Makes the instance trap while it integrates the next record that
+    /// passes the verdict, as the fixtures' trap cases ask.
+    #[doc(hidden)]
+    pub fn trap_next_integration(&mut self) -> Result<(), HandleError> {
+        self.send(Request::TrapNext)
+    }
+
     /// Waits up to `timeout` for a change or an event.
     pub fn wait(&mut self, timeout: Duration) -> Result<Vec<Op>, HandleError> {
         if self.stash.is_empty() {
@@ -576,6 +585,7 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, hold
             Some(Request::Flush) => reply = Some(Reply::Flushed),
             Some(Request::Advance(_)) => effects = note.wake(now),
             Some(Request::SetBalance { writer, balance }) => note.set_balance(writer, balance, now),
+            Some(Request::TrapNext) => note.trap_next_integration(),
         }
         for op in effects.changes {
             if !op.is_identity() && outbox.send(Reply::Change(server.send_out(op))).is_err() {

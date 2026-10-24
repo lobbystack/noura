@@ -86,6 +86,9 @@ pub enum Unreadable {
     Payload = 23,
     /// The content form and the blob passed with it disagree.
     Blob = 24,
+    /// An item names as its origin or right origin an element of its own
+    /// client at or after its own clock.
+    ForwardOrigin = 25,
 }
 
 thread_local! {

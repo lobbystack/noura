@@ -229,6 +229,9 @@ pub enum LineageStatus {
 /// A text-mode note's document in the sandbox.
 pub struct Note {
     sandbox: Sandbox,
+    /// The sandbox that judges records: the same one, except in a test that
+    /// stands in a module whose verdict traps.
+    verdicts: Sandbox,
     guest: Guest,
     /// The text's length in UTF-16 units.
     len: u32,
@@ -246,6 +249,8 @@ pub struct Note {
     /// The client ID the document inserts under.
     client: u64,
     client_ids: ClientIds,
+    /// Whether the next integration traps, as tests ask.
+    trap_next: bool,
 }
 
 impl Note {
@@ -262,6 +267,7 @@ impl Note {
         let (guest, len, pending) = load(sandbox, client, &journal)?;
         Ok(Self {
             sandbox: sandbox.clone(),
+            verdicts: sandbox.clone(),
             guest,
             len,
             allowances: HashMap::new(),
@@ -272,6 +278,7 @@ impl Note {
             pending,
             client,
             client_ids,
+            trap_next: false,
         })
     }
 
@@ -394,7 +401,7 @@ impl Note {
 
     fn process(&mut self, record: &RemoteRecord, now: Instant) -> Effects {
         let mut effects = Effects::default();
-        let verdict = self.sandbox.verdict(&record.as_record());
+        let verdict = self.verdicts.verdict(&record.as_record());
         self.allowance(record.writer, now).charge(verdict.fuel);
         effects.events.push(Event::Verdict {
             id: record.id,
@@ -407,7 +414,8 @@ impl Note {
             effects.events.push(Event::Skipped { id: record.id });
             return effects;
         };
-        let stop = match integrate(&mut self.guest, &bytes, self.len) {
+        let trap = std::mem::take(&mut self.trap_next);
+        let stop = match integrate(&mut self.guest, &bytes, self.len, trap) {
             Ok((op, status, fuel)) => {
                 self.allowance(record.writer, now).charge(fuel);
                 if status & TEXT_TOO_LARGE != 0 {
@@ -681,6 +689,14 @@ impl Note {
         }
     }
 
+    /// Makes the instance trap while it integrates the next record that
+    /// passes the verdict, as the fixtures' trap cases ask: a bug in the
+    /// guest, such as a panic in its yrs, would trap the same way.
+    #[doc(hidden)]
+    pub fn trap_next_integration(&mut self) {
+        self.trap_next = true;
+    }
+
     /// The memory the note's instance holds, in bytes.
     pub fn memory_bytes(&self) -> usize {
         self.guest.memory_bytes()
@@ -707,7 +723,7 @@ fn load(
     let mut pending = false;
     for bytes in journal {
         let (op, status, _) =
-            integrate(&mut guest, bytes, len).map_err(|(failure, _)| sandbox_error(failure))?;
+            integrate(&mut guest, bytes, len, false).map_err(|(failure, _)| sandbox_error(failure))?;
         len = op.target_len();
         pending = status & PENDING != 0;
     }
@@ -716,10 +732,20 @@ fn load(
 
 /// Merges yrs bytes into the guest's document, returning the text change,
 /// the status bits and the fuel used, or the failure and the fuel used.
-fn integrate(guest: &mut Guest, bytes: &[u8], len: u32) -> Result<(Op, u32, u64), (Failure, u64)> {
+/// With `trap` set, the call hands the guest a pointer past its memory, so
+/// the guest traps reading it, as a bug in the guest would make it.
+fn integrate(
+    guest: &mut Guest,
+    bytes: &[u8],
+    len: u32,
+    trap: bool,
+) -> Result<(Op, u32, u64), (Failure, u64)> {
     guest.begin(INTEGRATION_FUEL_LIMIT);
     let result = (|| {
-        let ptr = guest.write(bytes)?;
+        let mut ptr = guest.write(bytes)?;
+        if trap {
+            ptr = u32::MAX - bytes.len() as u32;
+        }
         let code: u32 = guest.call("doc_integrate", (ptr, bytes.len() as u32))?;
         if code != 0 {
             return Err(Failure::Trap(format!("doc_integrate returned {code}")));
@@ -763,5 +789,98 @@ impl Unreadable {
     /// Whether the record's bytes, not the limits, made it unreadable.
     pub fn is_structural(self) -> bool {
         !matches!(self, Self::Fuel | Self::Memory | Self::Trap)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Backend;
+    use serde_json::Value;
+    use sync_protocol::types::from_hex;
+
+    fn hex(value: &Value) -> Vec<u8> {
+        from_hex(value.as_str().expect("a hex string")).expect("hexadecimal")
+    }
+
+    /// The fixture's verdict trap cases: a stand-in module, whose `verdict`
+    /// export traps, judges some records, as a guest that panics would.
+    /// Each such record is unreadable, and the next valid record that the
+    /// pinned module judges still merges.
+    #[test]
+    fn a_trap_in_the_verdict_makes_one_record_unreadable_and_the_next_applies() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/workspace-format/fixtures/sync-v2-collaboration.json");
+        let fixture: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases: Vec<&Value> = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|case| case["kind"] == "verdict_trap")
+            .collect();
+        assert_eq!(cases.len(), 1);
+        for backend in [
+            Backend::Cranelift,
+            #[cfg(feature = "pulley")]
+            Backend::Pulley,
+        ] {
+            let pinned = Sandbox::new(backend).unwrap();
+            for case in &cases {
+                let name = &case["name"];
+                let stand_in =
+                    Sandbox::with_module(backend, case["module_wat"].as_str().unwrap().as_bytes())
+                        .unwrap();
+                let mut load = 0;
+                let mut note = Note::open(
+                    &pinned,
+                    vec![hex(&case["base"])],
+                    Box::new(move || {
+                        load += 1;
+                        Some((3 << 29) + load)
+                    }),
+                )
+                .unwrap();
+                for step in case["steps"].as_array().unwrap() {
+                    note.verdicts = if step["judge"] == "stand_in" {
+                        stand_in.clone()
+                    } else {
+                        pinned.clone()
+                    };
+                    let receive = &step["receive"];
+                    let id = receive["id"].as_u64().unwrap();
+                    let effects = note.receive(
+                        RemoteRecord {
+                            id,
+                            writer: receive["card_index"].as_u64().unwrap() as u32,
+                            card_count: receive["card_count"].as_u64().unwrap() as u32,
+                            payload: hex(&receive["payload"]),
+                            blob: None,
+                        },
+                        Instant::now(),
+                    );
+                    let outcome = effects
+                        .events
+                        .iter()
+                        .find_map(|event| match event {
+                            Event::Verdict { verdict, .. } => Some(verdict.outcome),
+                            _ => None,
+                        })
+                        .expect("a verdict");
+                    let merged = effects
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, Event::Merged { .. }));
+                    let got = match outcome {
+                        Err(reason) => reason.code(),
+                        Ok(()) if merged => "merged",
+                        Ok(()) => "other",
+                    };
+                    assert_eq!(got, step["expect"], "{name} record {id}");
+                }
+                assert!(!note.is_stopped(), "{name}");
+                assert_eq!(note.text().unwrap(), case["text"], "{name}");
+            }
+        }
     }
 }

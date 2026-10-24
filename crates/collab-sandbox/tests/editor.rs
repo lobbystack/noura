@@ -563,6 +563,9 @@ fn a_trap_during_integration_stops_the_lineage_at_its_last_good_state() {
         let _ = editor.updates();
         for step in case["steps"].as_array().unwrap() {
             let receive = &step["receive"];
+            if step["trap"] == true {
+                editor.note.lock().trap_next_integration().unwrap();
+            }
             editor.receive(RemoteRecord {
                 id: receive["id"].as_u64().unwrap(),
                 writer: receive["card_index"].as_u64().unwrap() as u32,
@@ -572,15 +575,20 @@ fn a_trap_during_integration_stops_the_lineage_at_its_last_good_state() {
             });
             editor.settle();
         }
+        assert!(
+            editor.events().contains(&SandboxEvent::Rebuilt),
+            "the device rebuilt the instance from the journal"
+        );
         assert_eq!(
             editor.status(),
             LineageStatus::Stopped(StopReason::Trap),
             "{}",
             case["name"]
         );
-        // The fixture's text with your "!" after the base's "x": the last
-        // good state, which the file keeps.
-        let expected = case["text"].as_str().unwrap().replacen('x', "x!", 1);
+        // The fixture's text with your "!", which follows the base's "x"
+        // like the collaborator's "a" and sorts after it by client ID: the
+        // last good state, which the file keeps.
+        let expected = format!("{}!", case["text"].as_str().unwrap());
         assert_eq!(editor.merged(), expected);
         assert_eq!(editor.doc.text(), expected);
         // The device writes nothing more for the lineage.

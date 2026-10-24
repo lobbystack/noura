@@ -85,6 +85,10 @@ pub enum Unreadable {
     Payload,
     /// The content form and the blob passed with it disagree.
     Blob,
+    /// An item names as its origin or right origin an element of its own
+    /// client at or after its own clock, which its writer couldn't have
+    /// seen.
+    ForwardOrigin,
     /// The verdict ran out of fuel.
     Fuel,
     /// The verdict hit its memory limit.
@@ -95,7 +99,7 @@ pub enum Unreadable {
 
 impl Unreadable {
     /// Every reason, in the order of the guest's codes.
-    pub const ALL: [Unreadable; 27] = [
+    pub const ALL: [Unreadable; 28] = [
         Self::VarintNotShortest,
         Self::VarintRange,
         Self::ClockOverflow,
@@ -120,6 +124,7 @@ impl Unreadable {
         Self::MetaType,
         Self::Payload,
         Self::Blob,
+        Self::ForwardOrigin,
         Self::Fuel,
         Self::Memory,
         Self::Trap,
@@ -152,6 +157,7 @@ impl Unreadable {
             Self::MetaType => "meta_type",
             Self::Payload => "payload",
             Self::Blob => "blob",
+            Self::ForwardOrigin => "forward_origin",
             Self::Fuel => "fuel",
             Self::Memory => "memory",
             Self::Trap => "trap",

@@ -100,10 +100,10 @@ impl<'a> Reader<'a> {
         std::str::from_utf8(bytes).map_err(|_| Unreadable::Utf8)
     }
 
-    fn id(&mut self) -> Result<(), Unreadable> {
-        self.var(CLIENT_LIMIT)?;
-        self.var(U32_LIMIT)?;
-        Ok(())
+    fn id(&mut self) -> Result<(u64, u64), Unreadable> {
+        let client = self.var(CLIENT_LIMIT)?;
+        let clock = self.var(U32_LIMIT)?;
+        Ok((client, clock))
     }
 }
 
@@ -123,7 +123,7 @@ pub fn read_update(bytes: &[u8]) -> Result<Shape, Unreadable> {
             return Err(Unreadable::DuplicateClient);
         }
         for _ in 0..structs {
-            let len = read_struct(&mut r)?;
+            let len = read_struct(&mut r, client, clock)?;
             clock += len;
             if clock > MAX_CLOCK {
                 return Err(Unreadable::ClockOverflow);
@@ -158,8 +158,18 @@ pub fn read_update(bytes: &[u8]) -> Result<Shape, Unreadable> {
     Ok(shape)
 }
 
-/// Reads one struct and returns the clocks it takes.
-fn read_struct(r: &mut Reader<'_>) -> Result<u64, Unreadable> {
+/// Reads one struct of `client`'s run, starting at `clock`, and returns the
+/// clocks it takes.
+fn read_struct(r: &mut Reader<'_>, client: u64, clock: u64) -> Result<u64, Unreadable> {
+    // An item follows or precedes elements that existed when its writer
+    // made it, so never one of its own client's at or after its clock.
+    let earlier = |(origin_client, origin_clock): (u64, u64)| {
+        if origin_client == client && origin_clock >= clock {
+            Err(Unreadable::ForwardOrigin)
+        } else {
+            Ok(())
+        }
+    };
     let info = r.u8()?;
     let len = match info & REF_MASK {
         GC => return Err(Unreadable::GcStruct),
@@ -169,10 +179,10 @@ fn read_struct(r: &mut Reader<'_>) -> Result<u64, Unreadable> {
                 return Err(Unreadable::MapKey);
             }
             if info & HAS_ORIGIN != 0 {
-                r.id()?;
+                earlier(r.id()?)?;
             }
             if info & HAS_RIGHT_ORIGIN != 0 {
-                r.id()?;
+                earlier(r.id()?)?;
             }
             if info & (HAS_ORIGIN | HAS_RIGHT_ORIGIN) == 0 {
                 let marker = r.var(U32_LIMIT)?;
