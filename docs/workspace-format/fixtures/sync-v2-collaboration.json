@@ -1212,7 +1212,7 @@
 			"text_bytes": 8388608
 		},
 		"module": {
-			"blake3": "61b395fcce68056e54252aadd83acfa0d3c4d26e2fbc19f669ce03bc772abb4d",
+			"blake3": "061e1dcc30274dbd2a078c0c0515fa1d24fb1bace3f631db0aa601135fc1118b",
 			"path": "crates/collab-sandbox/guest/collab_sandbox_guest.wasm"
 		},
 		"operator_costs": {

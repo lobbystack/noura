@@ -16,8 +16,15 @@ set -euo pipefail
 guest="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$guest/../.." && pwd)"
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-target_dir="${CARGO_TARGET_DIR:-$repo/target}/collab-sandbox-guest"
-out="${1:-$repo/crates/collab-sandbox/guest/collab_sandbox_guest.wasm}"
+# The build runs from the guest's folder, so relative paths resolve here.
+absolute() {
+  case "$1" in
+    /*) echo "$1" ;;
+    *) echo "$PWD/$1" ;;
+  esac
+}
+target_dir="$(absolute "${CARGO_TARGET_DIR:-$repo/target}")/collab-sandbox-guest"
+out="$(absolute "${1:-$repo/crates/collab-sandbox/guest/collab_sandbox_guest.wasm}")"
 
 flags=(
   --cfg 'getrandom_backend="unsupported"'
