@@ -14,6 +14,11 @@
 //!   egui_extras' image loader then decodes AVIF off the UI thread like the
 //!   other formats. An AVIF image whose frames could decode past the
 //!   `image` crate's default size limit draws nothing.
+//!
+//! egui uploads an image at the size it decodes to, and wgpu panics on a
+//! texture wider or taller than the GPU's largest side, 8192 pixels in the
+//! desktop app. `FittingTextureLoader` uploads such an image scaled down
+//! to fit instead, for notes and the image tab alike.
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
@@ -22,8 +27,11 @@ use std::panic::AssertUnwindSafe;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, Once, OnceLock};
 
-use egui::load::{Bytes, BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint};
-use egui::{ColorImage, Context, Vec2};
+use egui::load::{
+    Bytes, BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint, SizedTexture,
+    TextureLoadResult, TextureLoader, TexturePoll,
+};
+use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions, Vec2};
 use image::error::{DecodingError, ImageFormatHint};
 use image::{ColorType, ImageDecoder, ImageError, ImageFormat, ImageResult};
 use rav1d::include::dav1d::headers::{
@@ -57,6 +65,10 @@ pub(crate) fn install(ctx: &Context) {
     // if something installs egui_extras' SVG loader later.
     if !ctx.is_loader_installed(SvgLoader::ID) {
         ctx.add_image_loader(Arc::new(SvgLoader::default()));
+    }
+    // egui asks this loader before its own.
+    if !ctx.is_loader_installed(FittingTextureLoader::ID) {
+        ctx.add_texture_loader(Arc::new(FittingTextureLoader::default()));
     }
 }
 
@@ -416,6 +428,218 @@ impl ImageLoader for SvgLoader {
             .values()
             .any(|svg| svg.drawing.is_some())
     }
+}
+
+/// Uploads each image wider or taller than the GPU's largest texture
+/// scaled down to fit, on a thread of its own, and keeps the size the
+/// image lays out at, so it draws where it would at full size, a little
+/// softer. egui's own texture loader uploads every image that fits, and
+/// every SVG, which `SvgLoader` draws at most [`MAX_SVG_SIDE`] on a side.
+/// An image with no pixels on a side never uploads, since no texture can
+/// be 0 pixels on a side.
+#[derive(Default)]
+struct FittingTextureLoader {
+    textures: Mutex<HashMap<(String, TextureOptions), Fitted>>,
+}
+
+impl FittingTextureLoader {
+    const ID: &'static str = egui::generate_loader_id!(FittingTextureLoader);
+}
+
+/// What `FittingTextureLoader` knows of an image.
+enum Fitted {
+    /// The image fits, so egui's own loader uploads it.
+    Fits,
+    /// The image is being scaled down on another thread, which fills
+    /// `shrunk` once it's done: `None` if it failed.
+    Shrinking {
+        source_size: Vec2,
+        shrunk: Arc<Mutex<Option<Option<ColorImage>>>>,
+    },
+    /// The texture of the scaled-down image.
+    Shrunk {
+        texture: TextureHandle,
+        source_size: Vec2,
+    },
+    /// The image couldn't be scaled down.
+    Failed,
+}
+
+impl TextureLoader for FittingTextureLoader {
+    fn id(&self) -> &str {
+        Self::ID
+    }
+
+    fn load(
+        &self,
+        ctx: &Context,
+        uri: &str,
+        texture_options: TextureOptions,
+        size_hint: SizeHint,
+    ) -> TextureLoadResult {
+        if egui::load::has_extension(uri, "svg") {
+            return Err(LoadError::NotSupported);
+        }
+        let key = (uri.to_owned(), texture_options);
+        let mut textures = self.textures.lock().unwrap();
+        match textures.get(&key) {
+            Some(Fitted::Fits) => return Err(LoadError::NotSupported),
+            Some(Fitted::Failed) => return Err(LoadError::Loading(SHRINK_FAILED.to_owned())),
+            Some(Fitted::Shrunk {
+                texture,
+                source_size,
+            }) => {
+                let texture = SizedTexture::new(texture.id(), *source_size);
+                return Ok(TexturePoll::Ready { texture });
+            }
+            Some(Fitted::Shrinking {
+                source_size,
+                shrunk,
+            }) => {
+                let source_size = *source_size;
+                let Some(image) = shrunk.lock().unwrap().take() else {
+                    return Ok(TexturePoll::Pending {
+                        size: Some(source_size),
+                    });
+                };
+                let Some(image) = image else {
+                    textures.insert(key, Fitted::Failed);
+                    return Err(LoadError::Loading(SHRINK_FAILED.to_owned()));
+                };
+                let texture = ctx.load_texture(uri, image, texture_options);
+                let sized = SizedTexture::new(texture.id(), source_size);
+                textures.insert(
+                    key,
+                    Fitted::Shrunk {
+                        texture,
+                        source_size,
+                    },
+                );
+                drop(textures);
+                // The texture holds all it draws now, so the image at full
+                // size, which can take hundreds of megabytes, goes.
+                for loader in ctx.loaders().image.lock().iter() {
+                    loader.forget(uri);
+                }
+                return Ok(TexturePoll::Ready { texture: sized });
+            }
+            None => {}
+        }
+        drop(textures);
+        // egui's loader waits for an image that's still decoding, and says
+        // why one can't load.
+        let Ok(ImagePoll::Ready { image }) = ctx.try_load_image(uri, size_hint) else {
+            return Err(LoadError::NotSupported);
+        };
+        let [width, height] = image.size;
+        if width == 0 || height == 0 {
+            return Err(LoadError::Loading("The image has no pixels.".to_owned()));
+        }
+        let max_side = ctx.input(|input| input.max_texture_side).max(1);
+        let mut textures = self.textures.lock().unwrap();
+        if width <= max_side && height <= max_side {
+            textures.insert(key, Fitted::Fits);
+            return Err(LoadError::NotSupported);
+        }
+        let source_size = image.source_size;
+        let shrunk = Arc::new(Mutex::new(None));
+        let done = Arc::clone(&shrunk);
+        let waker = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("noura-image-fit".to_owned())
+            .spawn(move || {
+                let image =
+                    std::panic::catch_unwind(AssertUnwindSafe(|| shrink(&image, max_side))).ok();
+                *done.lock().unwrap() = Some(image);
+                waker.request_repaint();
+            });
+        if spawned.is_err() {
+            textures.insert(key, Fitted::Failed);
+            return Err(LoadError::Loading(SHRINK_FAILED.to_owned()));
+        }
+        textures.insert(
+            key,
+            Fitted::Shrinking {
+                source_size,
+                shrunk,
+            },
+        );
+        Ok(TexturePoll::Pending {
+            size: Some(source_size),
+        })
+    }
+
+    fn forget(&self, uri: &str) {
+        self.textures
+            .lock()
+            .unwrap()
+            .retain(|(address, _), _| address != uri);
+    }
+
+    fn forget_all(&self) {
+        self.textures.lock().unwrap().clear();
+    }
+
+    fn byte_size(&self) -> usize {
+        self.textures
+            .lock()
+            .unwrap()
+            .values()
+            .map(|fitted| match fitted {
+                Fitted::Shrunk { texture, .. } => texture.byte_size(),
+                _ => 0,
+            })
+            .sum()
+    }
+}
+
+/// Why an image too large for a texture doesn't draw.
+const SHRINK_FAILED: &str = "Noura couldn't scale the image down to fit a texture.";
+
+/// `image` scaled down to fit within `max_side` pixels on each side,
+/// keeping its shape and at least a pixel on each side. Each pixel is the
+/// mean of the pixels it covers, which egui's premultiplied alpha averages
+/// without dark fringes. The image keeps the size it lays out at.
+fn shrink(image: &ColorImage, max_side: usize) -> ColorImage {
+    let [width, height] = image.size;
+    let longest = width.max(height);
+    let side = |length: usize| {
+        let scaled = (length as f64 * max_side as f64 / longest as f64).round() as usize;
+        scaled.clamp(1, length.min(max_side))
+    };
+    let size = [side(width), side(height)];
+    let mut pixels = Vec::with_capacity(size[0] * size[1]);
+    for y in 0..size[1] {
+        let rows = covered(y, height, size[1]);
+        for x in 0..size[0] {
+            let columns = covered(x, width, size[0]);
+            let mut sum = [0u64; 4];
+            for row in rows.clone() {
+                let start = row * width;
+                for pixel in &image.pixels[start + columns.start..start + columns.end] {
+                    for (total, channel) in sum.iter_mut().zip(pixel.to_array()) {
+                        *total += u64::from(channel);
+                    }
+                }
+            }
+            let count = (rows.len() * columns.len()) as u64;
+            let [r, g, b, a] = sum.map(|total| ((total + count / 2) / count) as u8);
+            pixels.push(Color32::from_rgba_premultiplied(r, g, b, a));
+        }
+    }
+    ColorImage {
+        size,
+        source_size: image.source_size,
+        pixels,
+    }
+}
+
+/// The rows or columns of a side `from` long that row or column `index`
+/// of the side scaled down to `to` covers: at least one.
+fn covered(index: usize, from: usize, to: usize) -> std::ops::Range<usize> {
+    let start = index * from / to;
+    let end = ((index + 1) * from / to).clamp(start + 1, from);
+    start..end
 }
 
 /// Teach the `image` crate to recognize and decode AVIF through
@@ -838,7 +1062,6 @@ impl ImageDecoder for AvifImage {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use egui::TextureOptions;
     use rav1d::include::dav1d::headers::DAV1D_FRAME_TYPE_INTER;
 
     use super::*;
@@ -1213,6 +1436,84 @@ mod tests {
         assert_eq!(image.size, [16, 16]);
         // Once it's drawn, egui's texture holds the new drawing.
         assert_eq!(texture_size(&ctx), Some([16, 16]));
+    }
+
+    /// The texture egui gives for `address` once it's ready, and the size
+    /// of the pixels it uploaded.
+    fn texture_for(ctx: &Context, address: &str) -> (SizedTexture, [usize; 2]) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            match ctx.try_load_texture(address, TextureOptions::LINEAR, SizeHint::default()) {
+                Ok(TexturePoll::Ready { texture }) => {
+                    let uploaded = ctx.tex_manager().read().meta(texture.id).unwrap().size;
+                    return (texture, uploaded);
+                }
+                Ok(TexturePoll::Pending { .. }) => {}
+                Err(err) => panic!("{address} didn't load: {err}"),
+            }
+            assert!(Instant::now() < deadline, "{address} never loaded");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn an_image_too_large_for_a_texture_uploads_scaled_down_at_its_own_size() {
+        let ctx = Context::default();
+        install(&ctx);
+        let max_side = ctx.input(|input| input.max_texture_side);
+        for (name, width, height, uploaded) in [
+            ("wide", 3000, 10, [max_side, 7]),
+            ("tall", 10, 3000, [7, max_side]),
+            ("sliver", 5000, 1, [max_side, 1]),
+        ] {
+            let address = format!("bytes://noura-image/Garden/{name}.png");
+            ctx.include_bytes(address.clone(), png_bytes(ImageFormat::Png, width, height));
+
+            let (texture, size) = texture_for(&ctx, &address);
+
+            assert_eq!(size, uploaded, "{name}");
+            assert_eq!(
+                texture.size,
+                Vec2::new(width as f32, height as f32),
+                "{name}"
+            );
+        }
+        let textures = ctx.tex_manager();
+        for (_, meta) in textures.read().allocated() {
+            assert!(meta.size.iter().all(|side| *side <= max_side), "{meta:?}");
+        }
+    }
+
+    #[test]
+    fn an_image_that_fits_a_texture_uploads_at_its_own_size() {
+        let ctx = Context::default();
+        install(&ctx);
+        let address = "bytes://noura-image/Garden/small.png";
+        ctx.include_bytes(address, png_bytes(ImageFormat::Png, 40, 30));
+
+        let (texture, size) = texture_for(&ctx, address);
+
+        assert_eq!(size, [40, 30]);
+        assert_eq!(texture.size, Vec2::new(40.0, 30.0));
+    }
+
+    #[test]
+    fn a_scaled_down_pixel_is_the_mean_of_the_pixels_it_covers() {
+        let [red, blue, clear] = [
+            Color32::from_rgb(255, 0, 0),
+            Color32::from_rgb(0, 0, 255),
+            Color32::TRANSPARENT,
+        ];
+        let image = ColorImage::new([4, 2], vec![red, red, blue, clear, red, red, blue, clear]);
+
+        let shrunk = shrink(&image, 2);
+
+        assert_eq!(shrunk.size, [2, 1]);
+        assert_eq!(shrunk.source_size, Vec2::new(4.0, 2.0));
+        assert_eq!(
+            shrunk.pixels,
+            [red, Color32::from_rgba_premultiplied(0, 0, 128, 128)]
+        );
     }
 
     #[test]

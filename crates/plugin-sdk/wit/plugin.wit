@@ -198,11 +198,11 @@ interface clock {
   now: func() -> reading;
 }
 
-// Shows things in the window you acted in. Needs the `views` capability.
-// Noura acts once the call returns, and only for a call that answers
-// something you did: an event in one of the plugin's views or panels, or
-// a command you ran from the command palette. Any other call gets
-// `failed`.
+// Shows things in the window you acted in, and moves objects to the trash
+// there. Needs the `views` capability. Noura acts once the call returns,
+// and only for a call that answers something you did: an event in one of
+// the plugin's views or panels, or a command you ran from the command
+// palette. Any other call gets `failed`.
 interface navigation {
   use types.{error};
 
@@ -222,6 +222,14 @@ interface navigation {
 
   // Show the plugin's own page with this ID.
   open-page: func(page: string) -> result<_, error>;
+
+  // Move the object with this stable ID, one of the plugin's own types,
+  // to the trash, as Move to Trash in the file tree does: Noura first
+  // saves what you typed in it, then sends its file to the system trash,
+  // or to the workspace's trash folder when the system has none, closes
+  // its tabs and tells you where the file went. Needs the `object-types`
+  // capability too.
+  trash-object: func(id: string) -> result<_, error>;
 }
 
 // UI as data. WIT has no recursive types, so a view is a flat list of nodes
@@ -258,6 +266,11 @@ interface ui {
     // or none, the list's selection moves there; otherwise the item you
     // selected last stays selected.
     selected: option<string>,
+    // Whether one click opens an item, as a link does: a click sends
+    // `selected` when the item wasn't selected, then `activated`. The
+    // arrow keys still only select. Enter and a double-click open an item
+    // in every list.
+    opens-on-click: bool,
   }
 
   // A one-line field that names something: a new task, or a rename. It
@@ -318,6 +331,10 @@ interface ui {
     label: string,
     // The label of the button that submits the form.
     submit: string,
+    // The node IDs of text inputs inside the form that must hold more
+    // than spaces before you can submit it. The submit button shows
+    // disabled until they do.
+    required: list<string>,
   }
 
   // What an input holds. The case sets the kind of input Noura draws.
@@ -404,7 +421,8 @@ interface ui {
     // are its items.
     %list(item-list),
     // An item of a list. Its only child may be a menu, which opens by
-    // right-click or from the keyboard.
+    // right-click or from the keyboard, or a name field, which shows in
+    // the item's place, as for a rename.
     item(item),
     // A list whose rows come from the view's `rows`. It holds no children.
     virtual-list(virtual-list),
@@ -415,12 +433,13 @@ interface ui {
     // child may be a menu.
     row(list<string>),
     // Lays out its children like a panel, with a submit button after them.
-    // Submitting sends the value of every input inside it.
+    // Submitting, by the button or Enter in a single-line text input
+    // inside it, sends the value of every input inside it.
     form(form),
     // A labeled input. Changes come back by the node's ID.
     input(input),
-    // A field that names something, which goes where an input goes.
-    // What you name comes back by the node's ID.
+    // A field that names something, which goes where an input goes or
+    // in a list item's place. What you name comes back by the node's ID.
     name-field(name-field),
     // A menu with this label, the child of an item, a row, a card or a
     // button. Its children are menu items and separators, at least one
@@ -463,7 +482,8 @@ interface ui {
     // Indices into the view's node list. Panels and forms hold the nodes
     // they lay out, lists their items, tables their rows, boards their
     // columns, columns their cards, calendars their entries, and menus
-    // their items; an item, a row, a card or a button may hold one menu.
+    // their items; a row, a card or a button may hold one menu, and an
+    // item one menu or one name field.
     children: list<u32>,
   }
 

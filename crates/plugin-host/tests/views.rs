@@ -106,7 +106,14 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
             "panel-in-list",
             "The list beds holds inner, which isn't an item.",
         ),
-        ("two-menus", "The item north holds more than one menu."),
+        (
+            "two-menus",
+            "The item north holds more than one menu or name field.",
+        ),
+        (
+            "text-in-item",
+            "The item north holds note, which isn't a menu or a name field.",
+        ),
         (
             "menu-in-panel",
             "The menu loose isn't on an item, a row, a card or a button.",
@@ -129,6 +136,14 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
             "Only a choice input has options, and the input name isn't one.",
         ),
         ("form-in-form", "The form inner sits inside another form."),
+        (
+            "required-checkbox",
+            "The form new-bed requires shaded, which isn't a text input inside it.",
+        ),
+        (
+            "required-elsewhere",
+            "The form new-bed requires name, which isn't a text input inside it.",
+        ),
         ("no-columns", "The table plants has no columns."),
         ("blank-row", "The row gap has no cell with text."),
         (
@@ -218,6 +233,7 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
             label: "Beds".into(),
             reorder: false,
             selected: None,
+            opens_on_click: false,
         }
     );
     let item = |label: &str, detail: Option<&str>| ViewKind::Item {
@@ -467,6 +483,7 @@ fn a_board_holds_labeled_columns_of_labeled_cards_with_menus() {
             label: "Queue".into(),
             reorder: true,
             selected: None,
+            opens_on_click: false,
         }
     );
 }
@@ -488,6 +505,7 @@ fn a_list_shows_its_selected_item_and_items_carry_checkboxes_and_warnings() {
             label: "Chores".into(),
             reorder: false,
             selected: Some("mulch".into()),
+            opens_on_click: false,
         }
     );
     let item = |label: &str, checked: Option<bool>, warning: Option<&str>| ViewKind::Item {
@@ -952,7 +970,8 @@ const UNKNOWN_KIND: &str = r#"
       (field "warning" (option string))))
     (export $item "item" (type $item'))
     (type $item-list' (record
-      (field "label" string) (field "reorder" bool) (field "selected" (option string))))
+      (field "label" string) (field "reorder" bool) (field "selected" (option string))
+      (field "opens-on-click" bool)))
     (export $item-list "item-list" (type $item-list'))
     (type $name-field' (record (field "label" string) (field "value" string)))
     (export $name-field "name-field" (type $name-field'))
@@ -967,7 +986,8 @@ const UNKNOWN_KIND: &str = r#"
     (export $column "column" (type $column'))
     (type $table' (record (field "label" string) (field "columns" (list $column))))
     (export $table "table" (type $table'))
-    (type $form' (record (field "label" string) (field "submit" string)))
+    (type $form' (record
+      (field "label" string) (field "submit" string) (field "required" (list string))))
     (export $form "form" (type $form'))
     (type $value' (variant
       (case "text" string) (case "multiline" string) (case "checkbox" bool)

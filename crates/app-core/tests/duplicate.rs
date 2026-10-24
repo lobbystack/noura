@@ -50,7 +50,8 @@ fn any_other_file_copies_byte_for_byte() {
         ("archive.tar.gz", b"\x1f\x8b\x00"),
         ("Makefile", b"all:\n"),
     ]);
-    let mut app = fixture.app();
+    let system = support::FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
 
     for path in [
         "data.csv",
@@ -68,7 +69,11 @@ fn any_other_file_copies_byte_for_byte() {
     assert_eq!(fixture.read("broken 1.md"), broken);
     assert_eq!(fixture.read("archive.tar 1.gz"), b"\x1f\x8b\x00");
     assert_eq!(fixture.read("Makefile 1"), b"all:\n");
-    assert_eq!(document(&app).as_deref(), Some("Makefile 1"));
+    // A copy that opens in no tab stays in the tree, and no other app
+    // opens it.
+    assert_eq!(document(&app).as_deref(), Some("broken 1.md"));
+    assert_eq!(support::current(&app).as_deref(), Some("Makefile 1"));
+    assert_eq!(system.calls(), []);
 }
 
 #[test]

@@ -7,19 +7,37 @@
 //! each save of the note, reads again only the images whose file changed,
 //! and each keeps drawing until its new read ends. Every note open in a
 //! window shares the bytes egui holds for a workspace image, which egui
-//! forgets once no open note draws from them.
+//! forgets once no open note draws from them. An embed of a PDF draws the
+//! page its link names, which `app-core` draws on another thread, with an
+//! Open in tab button over its corner. An embed of a locked PDF says so
+//! beside the button, since only its tab asks for the password.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use app_core::{ImageVersion, NoteLinks, RemoteImageState, is_remote_image};
+use app_core::{
+    EMBED_WIDTH, EmbedProblem, ImageVersion, NoteLinks, PdfEmbedState, RemoteImageState,
+    is_remote_image,
+};
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
-use egui::load::{SizeHint, TexturePoll};
-use egui::{CornerRadius, Rect, TextureOptions, Ui, Vec2};
+use egui::load::{SizeHint, SizedTexture, TexturePoll};
+use egui::{
+    Button, CornerRadius, Label, Rect, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, vec2,
+};
+
+/// The PDFs whose embed's Open in tab button was pressed, with the page
+/// each one's link names, for the note's view to open after it draws.
+pub(crate) type PdfOpens = Arc<Mutex<Vec<(String, Option<u32>)>>>;
 
 /// The box an image takes while it loads, in pixels.
 const LOADING_SIZE: Vec2 = Vec2::new(96.0, 96.0);
+
+/// The box an embed of a locked PDF takes, in points.
+const LOCKED_SIZE: Vec2 = Vec2::new(360.0, 96.0);
+
+/// What an embed of a locked PDF says beside its Open in tab button.
+pub(crate) const LOCKED_PDF: &str = "This PDF is locked. Open it in a tab to enter its password.";
 
 /// Where a workspace image stands.
 #[derive(Clone, PartialEq, Eq)]
@@ -119,6 +137,13 @@ pub(crate) struct WorkspaceImages {
     decoded: Mutex<HashMap<String, Option<u64>>>,
     /// Remote images whose bytes egui holds.
     included: Mutex<Vec<String>>,
+    /// The pages the note's PDF embeds drew, as uploaded, by the address
+    /// the note names each embed with.
+    pdf_pages: Mutex<HashMap<String, (u64, TextureHandle)>>,
+    /// The addresses of the note's embeds of locked PDFs.
+    locked_pdfs: Mutex<HashSet<String>>,
+    /// Where an Open in tab button puts its PDF.
+    opens: PdfOpens,
 }
 
 /// The extension egui's decoders recognize for a content type.
@@ -135,7 +160,7 @@ fn extension(content_type: &str) -> &'static str {
 }
 
 impl WorkspaceImages {
-    pub(crate) fn new(links: NoteLinks, ctx: egui::Context) -> Self {
+    pub(crate) fn new(links: NoteLinks, ctx: egui::Context, opens: PdfOpens) -> Self {
         crate::image_decoders::install(&ctx);
         Self {
             links,
@@ -145,6 +170,104 @@ impl WorkspaceImages {
             seq: Arc::default(),
             decoded: Mutex::default(),
             included: Mutex::default(),
+            pdf_pages: Mutex::default(),
+            locked_pdfs: Mutex::default(),
+            opens,
+        }
+    }
+
+    /// What the PDF embed of `url` shows, with its page uploaded once it
+    /// drew.
+    fn pdf_state(&self, url: &str) -> EmbedState {
+        let ctx = self.ctx.clone();
+        let state = self.links.pdf_embed(url, move || ctx.request_repaint());
+        let locked = state == Some(PdfEmbedState::Problem(EmbedProblem::Locked));
+        if locked {
+            self.locked_pdfs.lock().unwrap().insert(url.to_owned());
+        } else {
+            self.locked_pdfs.lock().unwrap().remove(url);
+        }
+        match state {
+            // A box that keeps the Open in tab button, whose tab asks for
+            // the password. A page drawn before the PDF locked goes.
+            Some(PdfEmbedState::Problem(EmbedProblem::Locked)) => {
+                if self.pdf_pages.lock().unwrap().remove(url).is_some() {
+                    self.seq.fetch_add(1, Ordering::SeqCst);
+                }
+                EmbedState::Loaded(LOCKED_SIZE * self.ctx.pixels_per_point())
+            }
+            None | Some(PdfEmbedState::Problem(_)) => EmbedState::NotFound,
+            // A Letter page's shape, until the page draws.
+            Some(PdfEmbedState::Drawing) => {
+                EmbedState::Loading(vec2(EMBED_WIDTH, EMBED_WIDTH * 11.0 / 8.5))
+            }
+            Some(PdfEmbedState::Drawn(picture)) => {
+                let mut pages = self.pdf_pages.lock().unwrap();
+                let fresh = pages
+                    .get(url)
+                    .is_none_or(|(generation, _)| *generation != picture.generation);
+                if fresh {
+                    // No texture can hold a picture with no pixels on a side.
+                    let Some(image) = crate::pdf_view::picture_image(&picture) else {
+                        pages.remove(url);
+                        return EmbedState::NotFound;
+                    };
+                    let texture = self.ctx.load_texture(
+                        format!("pdf-embed-{url}"),
+                        image,
+                        TextureOptions::LINEAR,
+                    );
+                    pages.insert(url.to_owned(), (picture.generation, texture));
+                    self.seq.fetch_add(1, Ordering::SeqCst);
+                }
+                EmbedState::Loaded(vec2(picture.width as f32, picture.height as f32))
+            }
+        }
+    }
+
+    /// Paint the PDF embed of `url` in `rect`, with its Open in tab button.
+    fn show_pdf(&self, ui: &mut Ui, url: &str, rect: Rect, rounding: CornerRadius) {
+        let Some((path, page)) = self.links.pdf_link(url) else {
+            return;
+        };
+        if let Some((_, texture)) = self.pdf_pages.lock().unwrap().get(url) {
+            egui::Image::from_texture(SizedTexture::new(texture.id(), rect.size()))
+                .corner_radius(rounding)
+                .paint_at(ui, rect);
+        }
+        let size = vec2(96.0, 24.0);
+        if self.locked_pdfs.lock().unwrap().contains(url) {
+            let visuals = ui.visuals();
+            ui.painter().rect(
+                rect,
+                rounding,
+                visuals.faint_bg_color,
+                visuals.widgets.noninteractive.bg_stroke,
+                StrokeKind::Inside,
+            );
+            let text = Rect::from_min_max(
+                rect.left_top() + vec2(12.0, 8.0),
+                rect.right_bottom() - vec2(size.x + 20.0, 8.0),
+            );
+            if text.is_positive() {
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt(("locked", url))
+                        .max_rect(text)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                    |ui| ui.add(Label::new(LOCKED_PDF).wrap()),
+                );
+            }
+        }
+        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let button = Rect::from_min_size(rect.right_top() + vec2(-size.x - 8.0, 8.0), size);
+        let response = ui
+            .push_id(url, |ui| ui.put(button, Button::new("Open in tab")))
+            .inner
+            .accessible_name(format!("Open {name} in a tab"));
+        if response.clicked() {
+            self.opens.lock().unwrap().push((path, page));
+            self.ctx.request_repaint();
         }
     }
 
@@ -312,6 +435,9 @@ fn hash(text: &str) -> u64 {
 
 impl EmbedResolver for WorkspaceImages {
     fn state(&self, url: &str) -> EmbedState {
+        if self.links.pdf_link(url).is_some() {
+            return self.pdf_state(url);
+        }
         let address = match self.address(url) {
             Ok(address) => address,
             Err(state) => return state,
@@ -342,6 +468,10 @@ impl EmbedResolver for WorkspaceImages {
     }
 
     fn show(&self, ui: &mut Ui, url: &str, rect: Rect, rounding: CornerRadius) {
+        if self.links.pdf_link(url).is_some() {
+            self.show_pdf(ui, url, rect, rounding);
+            return;
+        }
         if let Ok(address) = self.address(url) {
             egui::Image::new(address)
                 .corner_radius(rounding)
@@ -350,7 +480,9 @@ impl EmbedResolver for WorkspaceImages {
     }
 
     fn prefetch(&self, url: &str) {
-        if !is_remote_image(url) {
+        if self.links.pdf_link(url).is_some() {
+            let _ = self.pdf_state(url);
+        } else if !is_remote_image(url) {
             let _ = self.address(url);
         }
     }
@@ -365,6 +497,7 @@ impl EmbedResolver for WorkspaceImages {
     fn seq(&self) -> u64 {
         self.seq.load(Ordering::SeqCst)
             ^ self.links.remote_seq().rotate_left(16)
+            ^ self.links.pdf_embeds_seq().rotate_left(28)
             ^ self.links.seq().rotate_left(40)
     }
 }

@@ -216,6 +216,71 @@ pub fn name_new_task(app: &mut App, name: &str) {
     );
 }
 
+/// The Inbox section the Tasks plugin adds.
+pub const SECTION: &str = "due-today";
+
+/// The Tasks plugin's Inbox section, while the plugin runs.
+pub fn inbox_section(app: &App) -> Option<app_core::InboxSection> {
+    app.inbox()
+        .sections
+        .into_iter()
+        .find(|section| section.plugin_id == "tasks" && section.section_id == SECTION)
+}
+
+/// The Due today section's view, which must draw.
+pub fn due_view(app: &App) -> app_core::View {
+    inbox_section(app)
+        .expect("the Inbox shows Due today")
+        .content
+        .expect("Due today draws")
+}
+
+/// The tasks Due today shows, top to bottom.
+pub fn due_rows(app: &App) -> Vec<Row> {
+    let view = due_view(app);
+    let Some(list) = find(view.root(), "due") else {
+        return Vec::new();
+    };
+    list.children
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ViewKind::Item {
+                label,
+                detail,
+                checked,
+                warning,
+            } => Some(Row {
+                id: item.id.clone(),
+                label: label.clone(),
+                detail: detail.clone(),
+                checked: *checked,
+                warning: warning.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The labels of the tasks Due today shows, top to bottom.
+pub fn due_labels(app: &App) -> Vec<String> {
+    due_rows(app).into_iter().map(|row| row.label).collect()
+}
+
+/// The text of the Due today section's text node `id`.
+pub fn due_text(app: &App, id: &str) -> Option<String> {
+    let view = due_view(app);
+    match &find(view.root(), id)?.kind {
+        ViewKind::Text(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// Send `event` to the Due today section and wait for the plugin to draw.
+pub fn send_due(app: &mut App, event: PluginEvent) {
+    app.send_inbox_event("tasks", SECTION, &event);
+    super::settle(app);
+}
+
 /// The frontmatter value of `key` in a task file's bytes.
 pub fn property(bytes: &[u8], key: &str) -> Option<serde_json::Value> {
     match local_core::parse_markdown("x.md", bytes) {

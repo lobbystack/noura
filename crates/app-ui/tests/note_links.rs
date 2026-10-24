@@ -14,7 +14,7 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT as _, Queryable},
 };
-use support::{create_workspace, harness_for, settle};
+use support::{create_workspace, harness_for, point_at, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -64,44 +64,6 @@ fn note_text(harness: &Ui) -> String {
         .expect("the tab shows a note")
         .text()
         .to_owned()
-}
-
-/// Where the `nth` character of the first `needle` in the note drew, from
-/// the text runs the editor reports to assistive technology.
-fn point_at(harness: &Ui, needle: &str, nth: usize) -> Pos2 {
-    let note = harness.get_by_role_and_label(Role::MultilineTextInput, "Note text");
-    let text = note.value().expect("the note reports its text");
-    let target = text.find(needle).expect("the note holds the needle")
-        + needle
-            .char_indices()
-            .nth(nth)
-            .expect("the needle is long enough")
-            .0;
-    let mut run_start = 0;
-    for run in note.children() {
-        let run = run.accesskit_node();
-        let data = run.data();
-        if data.role() != Role::TextRun {
-            continue;
-        }
-        let value = data.value().unwrap_or_default();
-        let mut at = run_start;
-        for (index, length) in data.character_lengths().iter().enumerate() {
-            if target < at + usize::from(*length) {
-                let bounds = data.bounds().expect("the run drew");
-                let left = data.character_positions().expect("the run drew")[index];
-                let width = data.character_widths().expect("the run drew")[index];
-                assert!(width > 0.0, "{needle:?} drew nothing at {nth}");
-                return Pos2::new(
-                    bounds.x0 as f32 + left + width / 2.0,
-                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
-                );
-            }
-            at += usize::from(*length);
-        }
-        run_start += value.len();
-    }
-    panic!("no text run holds {needle:?}");
 }
 
 /// Click `button` at `pos` with `modifiers` held, as a person does: the

@@ -59,6 +59,8 @@ struct OpenNote {
     links_source: Option<String>,
     /// Whether the editor checks spelling.
     checks_spelling: bool,
+    /// The PDFs the note's embeds asked to open in a tab.
+    pdf_opens: crate::note_images::PdfOpens,
 }
 
 impl NoteView {
@@ -251,6 +253,7 @@ pub(crate) fn show(
             },
             links_source: None,
             checks_spelling: false,
+            pdf_opens: Arc::default(),
         }
     });
     // The file shows another way now, as when a save left a note's
@@ -281,6 +284,7 @@ pub(crate) fn show(
             .set_embed_resolver(Box::new(crate::note_images::WorkspaceImages::new(
                 links.clone(),
                 ui.ctx().clone(),
+                note.pdf_opens.clone(),
             )));
         note.editor
             .set_link_resolver(Box::new(crate::note_links::WorkspaceLinks {
@@ -335,6 +339,12 @@ pub(crate) fn show(
         panel.show(ui, |ui| properties_panel(ui, app, note, tab, &properties));
     }
     body(ui, app, note, tab);
+    // An embed's Open in tab button opens its PDF at the page its link
+    // names.
+    let opens = std::mem::take(&mut *note.pdf_opens.lock().unwrap());
+    for (path, page) in opens {
+        app.open_pdf_page(&path, page, app_core::OpenAs::Kept);
+    }
     // The prompt before leaving the note asks first.
     if app.unsaved_prompt().is_none() {
         conflict_review(ui, app, tab);

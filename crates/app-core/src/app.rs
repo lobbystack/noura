@@ -49,6 +49,7 @@ mod plugins;
 mod preferences;
 mod settings;
 mod view;
+mod viewers;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
@@ -133,6 +134,9 @@ pub enum Change {
     /// An open note changed: its text, a save, its properties or its name,
     /// or the prompt about a note that couldn't save.
     Note,
+    /// A PDF or image tab changed: its file opened or changed, a page
+    /// drew, a search ended, or you moved to another page or zoom.
+    Viewer,
     /// Background work finished, or another window changed what this one
     /// shows, such as the files; call [`App::poll`] to apply it.
     WorkFinished,
@@ -283,6 +287,8 @@ pub struct App {
     /// tree moves it instead of copying it.
     dragged_out: Option<String>,
     registry: Registry,
+    /// The PDF and image tabs' viewers.
+    viewers: crate::viewers::Viewers,
     /// Commands, quick open or search, while this window's palette is
     /// open.
     palette: Option<Palette>,
@@ -393,6 +399,7 @@ impl App {
             drag_out: None,
             dragged_out: None,
             registry: Registry::default(),
+            viewers: crate::viewers::Viewers::default(),
             palette: None,
             searcher: Searcher::new(move || answered.emit(Change::WorkFinished)),
             quit: false,
@@ -511,6 +518,7 @@ impl App {
         self.settings = None;
         self.notes.sessions.clear();
         self.notes.unreadable.clear();
+        self.viewers.clear();
         self.leaving = None;
         self.plugin_install = None;
         self.listeners.emit(Change::Screen);
@@ -556,7 +564,7 @@ impl App {
 
     /// The file tree, to move its focus or type ahead in it. Opening and
     /// closing folders goes through `App`'s own methods, such as
-    /// [`App::activate_tree_row`] and [`App::collapse_all`], so the
+    /// [`App::click_tree_row`] and [`App::collapse_all`], so the
     /// workspace remembers which folders are open.
     pub fn tree_mut(&mut self) -> Option<&mut FileTree> {
         self.tree.as_mut()
@@ -750,6 +758,7 @@ impl App {
         let preferences = self.poll_preferences();
         let departing = self.poll_departure();
         let plugins = self.poll_plugins();
+        let viewed = self.poll_viewers();
         saved
             | updated
             | searched
@@ -760,6 +769,7 @@ impl App {
             | preferences
             | departing
             | plugins
+            | viewed
     }
 
     /// Take the workspace a background job opened, or why it couldn't.

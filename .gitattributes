@@ -1,3 +1,6 @@
 # The editor's tests compare these fixtures byte for byte, so Git must not
 # convert their line endings on checkout.
 crates/editor-egui/tests/fixtures/** -text
+
+# The PDF fixtures keep their byte offsets, so Git must treat them as binary.
+crates/app-core/tests/fixtures/pdf/*.pdf binary
