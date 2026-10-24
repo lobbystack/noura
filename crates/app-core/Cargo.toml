@@ -41,6 +41,8 @@ zeroize.workspace = true
 app-core = { path = ".", features = ["test-hooks"] }
 # The tests record which folders each change syncs.
 local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
+# The tests download plugin releases from a stand-in for GitHub.
+plugin-host = { version = "0.2.0", path = "../plugin-host", features = ["test-hooks"] }
 # Search treats arbitrary typed text as plain words.
 proptest.workspace = true
 # The tests stop the index from accepting writes.
