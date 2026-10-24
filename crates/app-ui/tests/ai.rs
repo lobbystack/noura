@@ -59,9 +59,11 @@ impl AiStreamer for Waiting {
             let text = futures::stream::iter([Ok(AiProviderStreamEvent::TextDelta(
                 "Seeds **sprout** in spring".to_owned(),
             ))]);
-            let waiting = futures::stream::pending().map(move |event| {
-                let _ = &dropped;
-                event
+            // Holds the guard until Noura drops the stream.
+            let waiting = futures::stream::unfold(dropped, |dropped| async move {
+                futures::future::pending::<()>().await;
+                drop(dropped);
+                None
             });
             let stream: AiProviderEventStream = Box::pin(text.chain(waiting));
             Ok(stream)

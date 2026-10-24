@@ -21,6 +21,27 @@ use crate::{
 pub(crate) struct AiSettingsView {
     /// The provider form, while you add or edit one.
     form: Option<ProviderForm>,
+    /// Why the last change to a provider didn't go in.
+    problem: Option<String>,
+}
+
+/// A change to one provider, by its ID.
+enum Change {
+    Allow(String),
+    Revoke(String),
+    RemoveKey(String),
+    Remove(String),
+}
+
+impl Change {
+    fn apply(self, app: &mut App) -> Result<(), app_core::AppError> {
+        match self {
+            Self::Allow(id) => app.grant_ai_consent(&id),
+            Self::Revoke(id) => app.revoke_ai_consent(&id),
+            Self::RemoveKey(id) => app.remove_ai_provider_key(&id),
+            Self::Remove(id) => app.remove_ai_provider(&id),
+        }
+    }
 }
 
 /// A provider being added or edited.
@@ -94,7 +115,10 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     let rows = app.ai_providers();
     let workspace = app.workspace().map(|workspace| workspace.name());
     let mut edit = None;
-    let mut action: Option<Box<dyn FnOnce(&mut App) -> Result<(), app_core::AppError>>> = None;
+    let mut change = None;
+    if let Some(problem) = &view.problem {
+        alert(ui, problem);
+    }
     if rows.is_empty() {
         muted(ui, "No providers yet.");
     }
@@ -131,25 +155,22 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
                     }
                     ui.horizontal(|ui| {
                         if workspace.is_some() && row.enabled {
-                            let id = row.id.clone();
                             if row.consented {
                                 if ui.button("Revoke for this workspace").clicked() {
-                                    action = Some(Box::new(move |app| app.revoke_ai_consent(&id)));
+                                    change = Some(Change::Revoke(row.id.clone()));
                                 }
                             } else if ui.button("Allow for this workspace").clicked() {
-                                action = Some(Box::new(move |app| app.grant_ai_consent(&id)));
+                                change = Some(Change::Allow(row.id.clone()));
                             }
                         }
                         if ui.button("Edit").clicked() {
                             edit = Some(ProviderForm::of(row));
                         }
                         if row.has_key && ui.button("Remove key").clicked() {
-                            let id = row.id.clone();
-                            action = Some(Box::new(move |app| app.remove_ai_provider_key(&id)));
+                            change = Some(Change::RemoveKey(row.id.clone()));
                         }
                         if ui.button("Remove").clicked() {
-                            let id = row.id.clone();
-                            action = Some(Box::new(move |app| app.remove_ai_provider(&id)));
+                            change = Some(Change::Remove(row.id.clone()));
                         }
                     });
                 });
@@ -157,10 +178,8 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
         });
         ui.add_space(4.0);
     }
-    if let Some(action) = action
-        && let Err(error) = action(app)
-    {
-        alert(ui, &error.message);
+    if let Some(change) = change {
+        view.problem = change.apply(app).err().map(|error| error.message);
     }
     if let Some(form) = edit {
         view.form = Some(form);

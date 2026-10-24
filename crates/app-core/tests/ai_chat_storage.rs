@@ -53,7 +53,7 @@ fn message(suffix: &str, chat: &str, kind: &str, minute: u32, content: &str) -> 
 fn garden() -> Vec<(String, Vec<u8>)> {
     vec![
         (
-            format!("chats/garden--wxyz0a/chat.md"),
+            "chats/garden--wxyz0a/chat.md".to_owned(),
             chat(A, "Garden plans"),
         ),
         (

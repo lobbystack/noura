@@ -18,6 +18,11 @@
 //!
 //! [`App`]: crate::App
 
+#![allow(
+    clippy::result_large_err,
+    reason = "the run steps pass local-core's structured CoreError along, as local-core does"
+)]
+
 mod history;
 
 use std::{
