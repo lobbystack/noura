@@ -32,6 +32,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 pub struct Cluster {
     /// `postgres://user@host:port`, without a database.
     base: String,
+    /// Connection options every URL carries, such as `sslmode=require`.
+    options: String,
     local: Option<Local>,
 }
 
@@ -178,6 +180,7 @@ impl Cluster {
         let cluster = Arc::new(match std::env::var(URL_VARIABLE) {
             Ok(base) if !base.trim().is_empty() => Cluster {
                 base: base.trim().trim_end_matches('/').to_owned(),
+                options: String::new(),
                 local: None,
             },
             _ => Cluster::start(tmp, &[]),
@@ -268,6 +271,7 @@ impl Cluster {
             if started.status.success() {
                 return Cluster {
                     base: format!("postgres://postgres@127.0.0.1:{port}"),
+                    options: String::new(),
                     local: Some(Local { bin, root, data }),
                 };
             }
@@ -279,7 +283,18 @@ impl Cluster {
 
     /// The URL of `database` in this cluster.
     pub fn url(&self, database: &str) -> String {
-        format!("{}/{database}", self.base)
+        if self.options.is_empty() {
+            format!("{}/{database}", self.base)
+        } else {
+            format!("{}/{database}?{}", self.base, self.options)
+        }
+    }
+
+    /// The cluster with `options`, such as `sslmode=require`, on every URL
+    /// it gives, its own connections included.
+    pub fn with_url_options(mut self, options: &str) -> Self {
+        self.options = options.to_owned();
+        self
     }
 
     /// A throwaway cluster's data directory; `None` on a shared server.

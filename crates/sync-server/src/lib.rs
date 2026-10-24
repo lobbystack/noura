@@ -1,13 +1,17 @@
 //! The Noura sync service (docs/workspace-format/sync-v2.md): one binary
-//! with `serve`, `migrate` and `healthcheck`, which keeps everything in one
-//! data directory: the SQLite database, the server secret beside it, and
-//! the daily log files.
+//! with `serve`, `migrate` and `healthcheck`. By default it keeps
+//! everything in one data directory: the SQLite database, the server secret
+//! beside it, and the daily log files. With a database URL it stores
+//! everything in PostgreSQL instead, which several instances can serve at
+//! once, each given the same server secret, and keeps only its log files in
+//! the data directory.
 
 #![forbid(unsafe_code)]
 
 pub mod data;
 pub mod http;
 pub mod logs;
+pub mod postgres;
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -20,17 +24,21 @@ use sync_store_sqlite::SqliteBackend;
 use tokio::net::TcpListener;
 
 pub use data::{CommandError, Migrated, check_ready, migrate};
+pub use postgres::Postgres;
 
 /// What `serve` runs with.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// The data directory.
+    /// The data directory, which holds the log files, and in SQLite mode
+    /// the database and the server secret.
     pub data_dir: PathBuf,
     /// The address to listen on.
     pub listen: SocketAddr,
+    /// The PostgreSQL database to use instead of SQLite.
+    pub postgres: Option<Postgres>,
 }
 
-/// Opens the store in a ready data directory.
+/// Opens the SQLite store in a ready data directory.
 pub async fn open_store(config: &Config) -> Result<Store<SqliteBackend>, CommandError> {
     check_ready(&config.data_dir).await?;
     let backend = SqliteBackend::open(&data::database_path(&config.data_dir))
@@ -79,11 +87,17 @@ async fn shutdown_signal() {
     }
 }
 
-/// `sync-server serve`: refuses a data directory that isn't ready, then
-/// serves until it gets an interrupt or a terminate signal, and closes the
+/// `sync-server serve`: refuses a database that isn't ready, then serves
+/// until it gets an interrupt or a terminate signal, and closes the
 /// database.
 pub async fn serve(config: Config) -> Result<(), CommandError> {
-    let store = Arc::new(open_store(&config).await?);
+    match &config.postgres {
+        None => run(Arc::new(open_store(&config).await?), &config).await,
+        Some(database) => run(Arc::new(postgres::open_store(database).await?), &config).await,
+    }
+}
+
+async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), CommandError> {
     let log_dir = config.data_dir.join(data::LOG_DIR);
     logs::init(&log_dir).map_err(|e| CommandError(format!("can't open the log: {e}")))?;
     let pruning = logs::spawn_pruning(log_dir, logs::PRUNE_PERIOD);

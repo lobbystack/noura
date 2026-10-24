@@ -175,6 +175,7 @@ pub async fn seed(data: &Path, devices: usize) -> Account {
     let store = sync_server::open_store(&sync_server::Config {
         data_dir: data.to_owned(),
         listen: "127.0.0.1:0".parse().expect("an address"),
+        postgres: None,
     })
     .await
     .expect("the data directory is ready");
