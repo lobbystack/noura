@@ -617,7 +617,13 @@ fn move_card(project: &str, task: &str, status: &str, position: usize) {
             let lower = position
                 .checked_sub(1)
                 .map(|before| others[before].order.clone());
-            let upper = others.get(position).map(|after| after.order.clone());
+            // Cards that share the lower neighbor's key sort by stable ID,
+            // and no key fits between them, so the card goes after them,
+            // before the next key up.
+            let upper = others[position..]
+                .iter()
+                .find(|after| lower.as_ref().is_none_or(|lower| after.order > *lower))
+                .map(|after| after.order.clone());
             Some((from, card.revision, lower, upper))
         })
     };
