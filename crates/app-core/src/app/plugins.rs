@@ -544,7 +544,7 @@ impl App {
     /// once the pages they added are in the rail. An object Noura can't
     /// find says so; a page the plugin doesn't add is passed over.
     fn open_for_plugins(&mut self, openings: Vec<Opening>) {
-        if self.closed || self.leaving.is_some() {
+        if self.closed || self.is_leaving_window() {
             return;
         }
         for opening in openings {

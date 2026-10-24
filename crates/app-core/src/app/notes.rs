@@ -632,6 +632,14 @@ impl App {
         self.advance_leaving();
     }
 
+    /// Whether the window waits to close, or to quit or switch workspace
+    /// with the others.
+    pub(super) fn is_leaving_window(&self) -> bool {
+        self.leaving.as_ref().is_some_and(|leaving| {
+            matches!(leaving.action, Leave::CloseWindow | Leave::Depart { .. })
+        })
+    }
+
     /// The plugins answered the names a leave sent them: the leave goes on.
     pub(super) fn names_sent_while_leaving(&mut self) {
         if let Some(leaving) = &mut self.leaving
