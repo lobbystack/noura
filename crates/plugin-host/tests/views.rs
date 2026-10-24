@@ -7,8 +7,8 @@
 mod support;
 
 use plugin_host::{
-    CalendarMode, ColumnPress, Event, Field, Item, Move, PluginError, PluginHost, PluginInstance,
-    Services, Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
+    CalendarMode, ColumnPress, Event, Field, Item, Move, PluginError, RunningPlugin, Services,
+    Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -27,7 +27,7 @@ fn a_flat_node_list_becomes_a_tree_of_panels_text_and_buttons() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     let view = View::from_nodes(instance.render("probe").unwrap()).expect("the view is valid");
 
@@ -56,7 +56,7 @@ fn presses_reach_the_plugin_by_node_id() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     instance
         .handle_event("probe", &Event::Pressed("press".into()))
@@ -71,7 +71,7 @@ fn a_node_list_that_breaks_the_rules_is_refused_with_a_reason() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     for (case, reason) in [
         ("out-of-range", "child 5"),
@@ -92,7 +92,7 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     for (case, reason) in [
         (
@@ -147,7 +147,7 @@ fn malformed_boards_are_refused_with_a_reason() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     for (case, reason) in [
         (
@@ -207,7 +207,7 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
 
     let view = View::from_nodes(instance.render("lists").unwrap()).expect("the view is valid");
 
@@ -264,7 +264,7 @@ fn a_table_holds_its_columns_and_one_cell_per_column_in_each_row() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
 
     let view = View::from_nodes(instance.render("table").unwrap()).expect("the view is valid");
 
@@ -298,7 +298,7 @@ fn malformed_calendar_grids_are_refused_with_a_reason() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&probe, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
 
     for (case, reason) in [
         (
@@ -337,7 +337,7 @@ fn a_calendar_grid_holds_its_mode_its_date_and_its_entries() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
 
     let view = View::from_nodes(instance.render("calendar").unwrap()).expect("the view is valid");
 
@@ -389,7 +389,7 @@ fn a_calendar_grid_holds_its_mode_its_date_and_its_entries() {
 
 /// The node IDs of each column of the board `work` on the kit's board
 /// page, as `column: card card`.
-fn board_columns(instance: &mut PluginInstance) -> Vec<String> {
+fn board_columns(instance: &RunningPlugin) -> Vec<String> {
     let view = View::from_nodes(instance.render("board").unwrap()).unwrap();
     let board = find(view.root(), "work").unwrap();
     board
@@ -411,7 +411,7 @@ fn a_board_holds_labeled_columns_of_labeled_cards_with_menus() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
 
     let view = View::from_nodes(instance.render("board").unwrap()).expect("the view is valid");
 
@@ -472,7 +472,7 @@ fn a_move_reaches_the_plugin_by_node_id_and_the_board_shows_where_the_plugin_put
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
     let moved = |node: &str, item: &str, to: &str, position: u32| {
         Event::Moved(Move {
             node: node.into(),
@@ -482,7 +482,7 @@ fn a_move_reaches_the_plugin_by_node_id_and_the_board_shows_where_the_plugin_put
         })
     };
     assert_eq!(
-        board_columns(&mut instance),
+        board_columns(&instance),
         [
             "todo: write-report fix-bug",
             "doing: review-notes",
@@ -494,11 +494,11 @@ fn a_move_reaches_the_plugin_by_node_id_and_the_board_shows_where_the_plugin_put
         .handle_event("board", &moved("work", "write-report", "doing", 1))
         .unwrap();
     assert_eq!(
-        last_event(&mut instance, "board"),
+        last_event(&instance, "board"),
         "Last event: moved write-report in work to doing at 1"
     );
     assert_eq!(
-        board_columns(&mut instance),
+        board_columns(&instance),
         [
             "todo: fix-bug",
             "doing: review-notes write-report",
@@ -511,11 +511,11 @@ fn a_move_reaches_the_plugin_by_node_id_and_the_board_shows_where_the_plugin_put
         .handle_event("board", &moved("work", "fix-bug", "done", 0))
         .unwrap();
     assert_eq!(
-        last_event(&mut instance, "board"),
+        last_event(&instance, "board"),
         "Last event: moved fix-bug in work to done at 0"
     );
     assert_eq!(
-        board_columns(&mut instance),
+        board_columns(&instance),
         [
             "todo: fix-bug",
             "doing: review-notes write-report",
@@ -537,7 +537,7 @@ fn a_move_reaches_the_plugin_by_node_id_and_the_board_shows_where_the_plugin_put
 }
 
 /// The text of the page's `last` node, which names the last event.
-fn last_event(instance: &mut PluginInstance, page: &str) -> String {
+fn last_event(instance: &RunningPlugin, page: &str) -> String {
     let view = View::from_nodes(instance.render(page).unwrap()).unwrap();
     match &find(view.root(), "last").unwrap().kind {
         ViewKind::Text(text) => text.clone(),
@@ -545,7 +545,7 @@ fn last_event(instance: &mut PluginInstance, page: &str) -> String {
     }
 }
 
-fn input_value(instance: &mut PluginInstance, id: &str) -> Value {
+fn input_value(instance: &RunningPlugin, id: &str) -> Value {
     let view = View::from_nodes(instance.render("form").unwrap()).unwrap();
     match &find(view.root(), id).unwrap().kind {
         ViewKind::Input { value, .. } => value.clone(),
@@ -565,7 +565,7 @@ fn selections_header_presses_and_menu_choices_reach_the_plugin_by_node_id() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
     let target = |item: &str| Target {
         node: "beds".into(),
         item: item.into(),
@@ -593,7 +593,7 @@ fn selections_header_presses_and_menu_choices_reach_the_plugin_by_node_id() {
         ),
     ] {
         instance.handle_event("lists", &event).unwrap();
-        assert_eq!(last_event(&mut instance, "lists"), said);
+        assert_eq!(last_event(&instance, "lists"), said);
     }
 }
 
@@ -602,7 +602,7 @@ fn changes_and_submits_reach_the_plugin_by_node_id_with_typed_values() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
 
     instance
         .handle_event(
@@ -612,11 +612,11 @@ fn changes_and_submits_reach_the_plugin_by_node_id_with_typed_values() {
         .unwrap();
 
     assert_eq!(
-        last_event(&mut instance, "form"),
+        last_event(&instance, "form"),
         "Last event: changed sown date 2026-10-21"
     );
     assert_eq!(
-        input_value(&mut instance, "sown"),
+        input_value(&instance, "sown"),
         Value::Date(Some("2026-10-21".into()))
     );
 
@@ -639,12 +639,12 @@ fn changes_and_submits_reach_the_plugin_by_node_id_with_typed_values() {
         .unwrap();
 
     assert_eq!(
-        last_event(&mut instance, "form"),
+        last_event(&instance, "form"),
         "Last event: submitted new-plant: name text \"Chard\", \
          notes multiline \"Water well.\\nMulch.\", indoors checkbox true, \
          sun choice partial, sown date none, transplant date-time 2026-11-02T08:00:00+01:00"
     );
-    assert_eq!(input_value(&mut instance, "indoors"), Value::Checkbox(true));
+    assert_eq!(input_value(&instance, "indoors"), Value::Checkbox(true));
     let view = View::from_nodes(instance.render("table").unwrap()).unwrap();
     let chard = find(view.root(), "plant-4").expect("the plant joined the table");
     assert_eq!(
@@ -660,7 +660,7 @@ fn a_virtual_list_fetches_only_the_rows_asked_for() {
     let Some(kit) = plugins::built("kit_plugin") else {
         return;
     };
-    let (mut instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
     let view = View::from_nodes(instance.render("seeds").unwrap()).unwrap();
     assert_eq!(
         find(view.root(), "seeds").unwrap().kind,
@@ -721,7 +721,7 @@ fn rows_that_break_the_rules_are_refused_with_a_reason() {
 #[test]
 fn a_node_of_a_kind_the_host_doesnt_know_fails_the_render_and_the_plugin_keeps_running() {
     let component = wat::parse_str(UNKNOWN_KIND).unwrap();
-    let (mut instance, _folders) = plugins::running(&component, &VIEWS, None);
+    let (instance, _folders) = plugins::running(&component, &VIEWS, None);
 
     let error = instance.render("any").expect_err("the render fails");
 
@@ -730,7 +730,36 @@ fn a_node_of_a_kind_the_host_doesnt_know_fails_the_render_and_the_plugin_keeps_r
 }
 
 #[test]
-fn a_component_that_exports_the_view_interface_without_its_functions_or_types_doesnt_start() {
+fn a_component_that_exports_only_its_view_registers_nothing_else() {
+    let component = wat::parse_str(UNKNOWN_KIND).unwrap();
+    let (plugin, _folders) = plugins::running(
+        &component,
+        &[
+            "name = \"views\"",
+            "name = \"commands\"",
+            "name = \"tools\"",
+        ],
+        None,
+    );
+
+    assert_eq!(plugin.pages(), Ok(Vec::new()));
+    assert_eq!(
+        plugin.commands(),
+        Err(PluginError::NotExported {
+            interface: "noura:plugin/commands"
+        })
+    );
+    assert_eq!(
+        plugin.tools(),
+        Err(PluginError::NotExported {
+            interface: "noura:plugin/tools"
+        })
+    );
+    assert_eq!(plugin.health().recent_failures, 0);
+}
+
+#[test]
+fn a_component_that_exports_the_view_interface_without_its_functions_or_types_fails_to_start() {
     for (case, component) in [
         ("missing functions", MISSING_FUNCTIONS),
         ("wrong types", WRONG_TYPES),
@@ -743,17 +772,16 @@ fn a_component_that_exports_the_view_interface_without_its_functions_or_types_do
             "plugin.wasm",
             &wat::parse_str(component).unwrap(),
         );
-        let host = PluginHost::new(library.path()).unwrap();
+        let host = plugins::host(library.path());
         host.install(&host.inspect(folder.path()).unwrap()).unwrap();
         let loaded = host.load("probe").unwrap();
-
-        let started = host.start_with(
+        let plugin = host.start(
             &loaded,
             &loaded.manifest().capabilities,
             Services::default(),
         );
 
-        let Err(error) = started else {
+        let Err(error) = plugin.pages() else {
             panic!("{case}: the plugin started");
         };
         assert!(

@@ -15,11 +15,12 @@ interface types {
   }
 
   variant error {
-    // The plugin's manifest doesn't declare the capability this call needs.
-    // Holds the capability's name, such as `workspace-read`. The host ran
-    // nothing for the call. A write to an object whose type the plugin
-    // didn't register, a note for one, returns this too, naming
-    // `object-types`: the capability covers the plugin's own types only.
+    // The plugin doesn't hold the capability this call needs: its manifest
+    // doesn't declare it, or you revoked it. Holds the capability's name,
+    // such as `workspace-read`. The host ran nothing for the call. A write
+    // to an object whose type the plugin didn't register, a note for one,
+    // returns this too, naming `object-types`: the capability covers the
+    // plugin's own types only.
     capability-not-declared(string),
     // A file or folder name that a WIT string can't hold, such as one that
     // isn't valid UTF-8. Noura never passes a changed copy of a name.
@@ -33,6 +34,22 @@ interface types {
     // The host couldn't finish the call. Holds a message for the plugin's
     // author.
     failed(string),
+    // Noura refused a network request before connecting: the URL isn't
+    // HTTPS, its host or a redirect's host isn't one the plugin may reach,
+    // or the host is a local or private address. Holds the reason.
+    network-refused(string),
+    // The manifest's `commands` capability doesn't name this command, or
+    // its plugin, among its targets. Holds the target, as
+    // `plugin/command`.
+    target-not-declared(string),
+    // The target plugin isn't running in this workspace, or doesn't offer
+    // that command to other plugins. Holds the target, as
+    // `plugin/command`.
+    target-unavailable(string),
+    // The target plugin is busy: the call would come back into a plugin
+    // that is waiting for this one, or the target stayed busy with another
+    // call. Holds the target plugin's ID.
+    busy(string),
     // The object's file changed since the plugin read it: it no longer
     // holds the content revision the write carried. Nothing was written.
     // Holds the object's ID.
@@ -102,6 +119,61 @@ interface workspace {
 
   // The object with this stable ID, wherever its file is now.
   read-object: func(id: string) -> result<object, error>;
+}
+
+// Requests to the HTTPS hosts the manifest's `network` capability lists.
+interface network {
+  use types.{error};
+
+  enum method {
+    get,
+    head,
+    post,
+    put,
+    patch,
+    delete,
+  }
+
+  record header {
+    name: string,
+    value: string,
+  }
+
+  record request {
+    method: method,
+    // An `https` URL on a host the manifest lists.
+    url: string,
+    headers: list<header>,
+    body: list<u8>,
+  }
+
+  record response {
+    status: u16,
+    // The URL that answered, after any redirects.
+    url: string,
+    headers: list<header>,
+    body: list<u8>,
+  }
+
+  // Send `request` and wait for the answer. Noura follows up to three
+  // redirects, each to a host the manifest lists. It refuses a URL that
+  // isn't HTTPS, any other host, and a local or private address with
+  // `network-refused`, before it connects. The time spent waiting doesn't
+  // count toward the call's deadline.
+  fetch: func(request: request) -> result<response, error>;
+}
+
+// Runs commands that other plugins offer. Needs the `commands` capability
+// with the command, or its plugin, among its `targets`.
+interface command-calls {
+  use types.{error};
+
+  // Run the command `command` of the plugin `plugin`. It runs in that
+  // plugin, with that plugin's capabilities, so it can change that
+  // plugin's objects for you. `input` and the answer are text, often
+  // JSON, in the form the command documents. The command's own failure
+  // comes back as `failed`.
+  call: func(plugin: string, command: string, input: string) -> result<string, error>;
 }
 
 // UI as data. WIT has no recursive types, so a view is a flat list of nodes
@@ -407,9 +479,101 @@ interface view {
   // the list ends sooner.
   rows: func(page: string, node: string, start: u32, count: u32) -> list<virtual-row>;
 
-  // Something happened in a page's view. Noura renders the page again
-  // afterwards.
+  // Something happened in a page's view. Noura draws the plugin's views
+  // again afterwards.
   handle-event: func(page: string, event: event);
+}
+
+// Commands the plugin offers to the command palette and to other plugins.
+// Noura calls these only when the manifest declares the `commands`
+// capability.
+interface commands {
+  record command {
+    // Lowercase letters, digits and hyphens, starting with a letter, and
+    // unique within the plugin. Other plugins name it as
+    // `plugin/command` in their targets.
+    id: string,
+    // The name the command palette shows.
+    title: string,
+    // Whether the command palette lists it.
+    palette: bool,
+    // Whether other plugins that name it as a target may call it.
+    plugins: bool,
+  }
+
+  // The commands the plugin offers.
+  commands: func() -> list<command>;
+
+  // Run the command `id`. From the command palette `input` is empty; from
+  // another plugin it is what that plugin sent. The answer, or a message
+  // that says why the command failed, goes back to the plugin that called.
+  // Noura draws the plugin's views again afterwards.
+  run: func(id: string, input: string) -> result<string, string>;
+}
+
+// Sections in the Inbox, drawn from the plugin's nodes. Noura calls these
+// only when the manifest declares the `inbox-sections` capability.
+interface inbox {
+  use ui.{node, event};
+
+  record section {
+    // Unique within the plugin.
+    id: string,
+    // The heading the Inbox shows above the section.
+    title: string,
+  }
+
+  // The sections the plugin adds to the Inbox.
+  sections: func() -> list<section>;
+
+  // The nodes of a section. Noura draws the sections again when the
+  // workspace's files change.
+  render-section: func(section: string) -> list<node>;
+
+  // Something happened in a section. Noura draws the plugin's views again
+  // afterwards.
+  handle-section-event: func(section: string, event: event);
+}
+
+// The plugin's page in Settings, drawn from its nodes. Noura calls these
+// only when the manifest declares the `settings` capability. Noura keeps
+// no setting values for a plugin: the plugin keeps them in workspace files.
+interface settings {
+  use ui.{node, event};
+
+  // The title of the plugin's page in Settings, or none for no page.
+  page: func() -> option<string>;
+
+  // The nodes of the page.
+  render-settings: func() -> list<node>;
+
+  // Something happened on the page. Noura draws the plugin's views again
+  // afterwards.
+  handle-settings-event: func(event: event);
+}
+
+// Tools that AI assistants call through MCP. Noura calls these only when the
+// manifest declares the `tools` capability.
+interface tools {
+  record tool {
+    // Lowercase letters, digits, hyphens and underscores, starting with a
+    // letter, and unique within the plugin.
+    name: string,
+    // What the tool does, for the assistant.
+    description: string,
+    // A JSON Schema, as JSON text, that the tool's arguments must match.
+    // Noura checks each call's arguments against it before the plugin
+    // sees them.
+    input-schema: string,
+  }
+
+  // The tools the plugin offers.
+  tools: func() -> list<tool>;
+
+  // Run the tool `name` with arguments, as JSON text, that matched its
+  // schema. The answer, or a message that says why the tool failed, goes
+  // back to the assistant.
+  call-tool: func(name: string, arguments: string) -> result<string, string>;
 }
 
 // Objects of the types the plugin registered: Markdown files in the
@@ -528,6 +692,12 @@ interface object-types {
 world plugin {
   import workspace;
   import objects;
+  import network;
+  import command-calls;
   export view;
   export object-types;
+  export commands;
+  export inbox;
+  export settings;
+  export tools;
 }

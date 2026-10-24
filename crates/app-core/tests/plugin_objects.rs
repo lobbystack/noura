@@ -103,6 +103,7 @@ fn a_plugin_cant_write_notes_or_another_plugins_objects_and_their_files_keep_the
     };
     plugins::install(&mut app, second.path());
     assert!(app.set_plugin_enabled("recipes-two", true));
+    support::settle(&mut app);
     let row = app
         .plugins()
         .into_iter()
@@ -133,6 +134,7 @@ fn a_plugin_cant_write_notes_or_another_plugins_objects_and_their_files_keep_the
         "create|recipe|Stew|-|{}|Body".to_owned(),
     ] {
         app.press_plugin_button(second_page, &attempt);
+        support::settle(&mut app);
         assert_eq!(
             plugins::texts(&app, second_page).unwrap(),
             refused,
@@ -252,7 +254,7 @@ fn a_write_whose_bytes_cant_become_durable_fails_and_nothing_reports_it() {
     };
     let soup = object(&mut app, &format!("get|recipe_{A}"));
     let tab = open_from_tree(&mut app, "recipes/Soup.md");
-    let shown = panel(&app, tab);
+    let shown = panel(&mut app, tab);
     let changes = Arc::new(Mutex::new(Vec::new()));
     let heard = Arc::clone(&changes);
     app.subscribe(move |change| heard.lock().unwrap().push(change));
@@ -327,7 +329,7 @@ fn a_write_whose_bytes_cant_become_durable_fails_and_nothing_reports_it() {
     assert_eq!(session.revision(), soup.revision);
     assert_eq!(session.text(), "Simmer.\n");
     assert!(!session.is_unsaved());
-    assert_eq!(panel(&app, tab), shown);
+    assert_eq!(panel(&mut app, tab), shown);
     assert!(
         !support::rows(&app).iter().any(|row| row.contains("Stew")),
         "{:?}",
@@ -373,9 +375,11 @@ fn view_texts(node: &ViewNode, texts: &mut Vec<String>) {
     }
 }
 
-/// What the plugin's properties panel of the note in `tab` shows, or
-/// `None` when the kernel's panel shows.
-fn panel(app: &App, tab: TabId) -> Option<Vec<String>> {
+/// What the plugin's properties panel of the note in `tab` shows once the
+/// plugin drew it on its thread, or `None` when the kernel's panel shows.
+fn panel(app: &mut App, tab: TabId) -> Option<Vec<String>> {
+    let _asked = app.plugin_panel(tab)?;
+    support::settle(app);
     let view = app.plugin_panel(tab)?.expect("the panel draws");
     let mut texts = Vec::new();
     view_texts(view.root(), &mut texts);
@@ -401,7 +405,7 @@ fn a_recipe_opens_in_the_note_editor_with_the_plugins_panel_and_keeps_its_bytes(
     assert_eq!(session.text(), "Layer and chill.\n");
     assert_eq!(session.object_id(), Some(format!("recipe_{A}").as_str()));
     assert_eq!(
-        panel(&app, tab),
+        panel(&mut app, tab),
         Some(vec![
             "Course: dessert".to_owned(),
             "Servings: 6".to_owned(),
@@ -435,9 +439,10 @@ fn a_property_changed_from_the_panel_and_unsaved_typing_both_reach_the_file() {
     assert!(app.note(tab).unwrap().is_unsaved());
 
     app.press_panel_button(tab, "vegetarian");
+    support::settle(&mut app);
 
     assert_eq!(
-        panel(&app, tab).unwrap()[2..],
+        panel(&mut app, tab).unwrap()[2..],
         [
             "Vegetarian: yes".to_owned(),
             "[Mark not vegetarian]".to_owned()
@@ -465,7 +470,7 @@ fn with_the_plugin_off_recipes_stay_and_open_with_the_kernels_panel() {
     assert!(support::rows(&app).contains(&"recipes".to_owned()));
     let tab = open_from_tree(&mut app, "recipes/Tiramisu.md");
 
-    assert_eq!(panel(&app, tab), None, "the kernel's panel shows");
+    assert_eq!(panel(&mut app, tab), None, "the kernel's panel shows");
     let properties = app.note(tab).unwrap().properties().unwrap();
     assert!(
         properties
@@ -479,7 +484,37 @@ fn with_the_plugin_off_recipes_stay_and_open_with_the_kernels_panel() {
     assert_eq!(fixture.read("recipes/Tiramisu.md"), bytes);
     // The index still holds the recipe.
     assert!(app.set_plugin_enabled("recipes", true));
+    support::settle(&mut app);
     let listed = call(&mut app, "list|recipe");
     assert_eq!(listed.len(), 1);
     assert_eq!(parse(&listed[0]).unwrap().id, format!("recipe_{A}"));
+}
+
+#[test]
+fn revoking_object_types_shows_the_kernels_panel_until_you_allow_it_again() {
+    let bytes = recipe_file(A, "course: dessert\nservings: 6\n", "Layer and chill.\n");
+    let fixture = Fixture::new(&[("recipes/Tiramisu.md", &bytes)]);
+    let mut app = fixture.app();
+    let Some(_folder) = with_recipes(&mut app) else {
+        return;
+    };
+    let tab = open_from_tree(&mut app, "recipes/Tiramisu.md");
+    assert!(panel(&mut app, tab).is_some());
+
+    let types = app_core::Grant::Capability("object-types".to_owned());
+    assert!(app.revoke_plugin_grant("recipes", &types));
+    support::settle(&mut app);
+
+    assert_eq!(panel(&mut app, tab), None, "the kernel's panel shows");
+    assert_eq!(call(&mut app, "list|recipe"), [REFUSED]);
+
+    assert!(app.allow_plugin_grant("recipes", &types));
+    support::settle(&mut app);
+    assert_eq!(
+        panel(&mut app, tab).unwrap()[..1],
+        ["Course: dessert".to_owned()]
+    );
+    app.close_tab(tab);
+    settle_saves(&mut app);
+    assert_eq!(fixture.read("recipes/Tiramisu.md"), bytes);
 }

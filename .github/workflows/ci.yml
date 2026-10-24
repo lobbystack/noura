@@ -95,6 +95,13 @@ jobs:
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
           NOURA_REQUIRE_PLUGINS: '1'
+      # The plugin host's seam 3 suite again on Wasmtime's Pulley
+      # interpreter, which a future mobile host runs instead of native code.
+      - name: Run the plugin host's tests on the Pulley interpreter
+        run: cargo test -p plugin-host --features pulley --locked
+        env:
+          NOURA_S7_REQUIRE_PLUGINS: '1'
+          NOURA_REQUIRE_PLUGINS: '1'
       # A report, not a gate: each checkpoint enforces the budget on the
       # owner's Mac.
       - name: Report the file tree's frame times

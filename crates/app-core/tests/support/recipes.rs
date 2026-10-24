@@ -37,12 +37,14 @@ pub struct Answer {
     pub body: String,
 }
 
-/// The recipes plugin installed and turned on in `app`'s workspace, or
-/// `None` when it isn't built. The folder lasts as long as the guard.
+/// The recipes plugin installed and turned on in `app`'s workspace, with
+/// its types registered, or `None` when it isn't built. The folder lasts
+/// as long as the guard.
 pub fn with_recipes(app: &mut App) -> Option<PluginFolder> {
     let folder = PluginFolder::recipes("recipes")?;
     plugins::install(app, folder.path());
     assert!(app.set_plugin_enabled("recipes", true));
+    super::settle(app);
     assert!(
         app.plugins()
             .iter()
@@ -53,9 +55,11 @@ pub fn with_recipes(app: &mut App) -> Option<PluginFolder> {
     Some(folder)
 }
 
-/// Run `call` on the recipes page and return the answer's lines.
+/// Run `call` on the recipes page, wait for the plugin to answer on its
+/// thread, and return the answer's lines.
 pub fn call(app: &mut App, call: &str) -> Vec<String> {
     app.press_plugin_button(PAGE, call);
+    super::settle(app);
     plugins::texts(app, PAGE).expect("the page draws")
 }
 

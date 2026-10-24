@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use app_core::{App, FileLink, Inbox, InboxSection, OpenAs};
 use egui::{
-    Align, Frame, Label, Layout, Margin, Rect, Response, RichText, Stroke, Ui, UiBuilder,
+    Align, Frame, Id, Label, Layout, Margin, Rect, Response, RichText, Stroke, Ui, UiBuilder,
     accesskit::Role, pos2, vec2,
 };
 
 use crate::{
     common::muted,
+    plugin_view,
     theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, radius},
 };
 
@@ -26,7 +27,8 @@ enum Follow {
     Note(String, OpenAs),
 }
 
-pub(crate) fn show(ui: &mut Ui, app: &mut App) {
+/// The Inbox in the window whose ID salt is `window`.
+pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id) {
     let inbox = app.inbox();
     // The greeting changes with the hour.
     ui.ctx().request_repaint_after(Duration::from_secs(60));
@@ -39,7 +41,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
     let builder = UiBuilder::new()
         .max_rect(column)
         .layout(Layout::top_down(Align::Min));
-    let follow = ui.scope_builder(builder, |ui| page(ui, &inbox)).inner;
+    let follow = ui
+        .scope_builder(builder, |ui| page(ui, app, window, &inbox))
+        .inner;
     match follow {
         Some(Follow::Link(link, how)) => app.follow_link(&link, how),
         Some(Follow::Note(path, how)) => app.open_file(&path, how),
@@ -47,7 +51,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
     }
 }
 
-fn page(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
+fn page(ui: &mut Ui, app: &mut App, window: Id, inbox: &Inbox) -> Option<Follow> {
     let mut follow = None;
     heading(ui, inbox.greeting, 0, TITLE_SIZE);
     if !inbox.needs_attention.is_empty() {
@@ -56,7 +60,7 @@ fn page(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
     }
     for section in &inbox.sections {
         ui.add_space(GAP);
-        plugin_section(ui, section);
+        plugin_section(ui, app, window, section);
     }
     ui.add_space(GAP);
     follow.or(recent(ui, inbox))
@@ -144,36 +148,20 @@ fn needs_attention(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
     follow
 }
 
-/// A plugin's section: its lines, or why they couldn't load.
-fn plugin_section(ui: &mut Ui, section: &InboxSection) {
+/// A plugin's section: the view it drew, or why it couldn't load or draw,
+/// in its own place. What you do there goes back to the plugin.
+fn plugin_section(ui: &mut Ui, app: &mut App, window: Id, section: &InboxSection) {
     heading(ui, &section.title, 1, BODY_SIZE);
     ui.add_space(8.0);
-    match &section.content {
-        Ok(lines) if lines.is_empty() => {}
-        Ok(lines) => rows(ui, |ui| {
-            for line in lines {
-                ui.add(Label::new(RichText::new(line).size(BODY_SIZE)).wrap());
-            }
-        }),
-        Err(message) => {
-            let palette = Palette::of(ui.ctx());
-            let alert = UiBuilder::new()
-                .accessibility_role(Role::Alert)
-                .accessibility_label(message.clone());
-            ui.scope_builder(alert, |ui| {
-                rows(ui, |ui| {
-                    ui.add(
-                        Label::new(
-                            RichText::new(message)
-                                .size(BODY_SIZE)
-                                .color(palette.destructive),
-                        )
-                        .wrap(),
-                    );
-                });
-            });
-        }
+    let empty = section
+        .content
+        .as_ref()
+        .is_ok_and(|view| view.root().children.is_empty());
+    if empty {
+        return;
     }
+    let place = (section.plugin_id.as_str(), section.section_id.as_str());
+    plugin_view::show_section(ui, app, window, place, &section.content);
 }
 
 fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
