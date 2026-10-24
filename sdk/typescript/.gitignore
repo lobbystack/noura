@@ -1,3 +1,6 @@
 # Generated from crates/plugin-sdk/wit by each package's build.
 packages/plugin-types/0.*/
 packages/plugin-cli/wit/
+
+# The author pages' examples, written out by tests/examples.test.ts.
+.examples/
