@@ -38,7 +38,9 @@ passkey-crypto.workspace = true
 passkey-types.workspace = true
 public-suffix.workspace = true
 # The tests read and change the database the way an operator's tools would.
-sqlx = { workspace = true, features = ["sqlite-bundled"] }
+sqlx = { workspace = true, features = ["postgres", "sqlite-bundled"] }
 sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
 sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
+# Throwaway PostgreSQL clusters for the PostgreSQL mode tests.
+sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", features = ["testing"] }
 tempfile.workspace = true

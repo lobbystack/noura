@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT key_seq FROM key_sequences WHERE workspace = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "key_sequences",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e6f5d944ce3db5c56e1b915bdf7fb8ca1740ab43587f56a41460043ec472ea98"
+}

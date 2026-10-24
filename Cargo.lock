@@ -333,6 +333,7 @@ dependencies = [
  "sync-protocol",
  "sync-server",
  "sync-store",
+ "sync-store-postgres",
  "sync-store-sqlite",
  "sys-locale",
  "tempfile",
@@ -9562,6 +9563,7 @@ dependencies = [
  "log",
  "memchr",
  "percent-encoding",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -9571,6 +9573,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -9945,6 +9948,7 @@ dependencies = [
 name = "sync-store"
 version = "0.2.0"
 dependencies = [
+ "hashlink 0.11.1",
  "serde",
  "serde_json",
  "sync-key-envelope",
@@ -9958,6 +9962,10 @@ name = "sync-store-postgres"
 version = "0.2.0"
 dependencies = [
  "sqlx",
+ "sync-protocol",
+ "sync-store",
+ "sync-store-postgres",
+ "tokio",
 ]
 
 [[package]]

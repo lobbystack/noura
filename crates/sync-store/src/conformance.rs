@@ -25,7 +25,7 @@ use sync_protocol::records::{
 };
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
-use crate::{Backend, Error, Refusal, Session, Store, WriteTxn};
+use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
 /// Declares one `#[tokio::test]` per conformance case. `$open` is an async
 /// function returning a fresh store and a guard that keeps its database
@@ -57,6 +57,8 @@ macro_rules! conformance_tests {
             pull_wakes_when_another_device_pushes,
             chain_positions_and_heads,
             keys_and_epochs_serve_records_without_recipients,
+            pruning_lock_meets_no_policy_lock,
+            creations_at_once_keep_the_workspace_limit,
             account_chain_appends_check_who_sends_them,
             enrolled_cards_bind_again_but_never_a_removed_id,
             sign_in_rows_work_once_and_expire,
@@ -70,6 +72,30 @@ macro_rules! conformance_tests {
             async fn $case() {
                 let (store, _guard) = $open().await;
                 $crate::conformance::$case(store).await;
+            }
+        )*
+    };
+}
+
+/// Declares one `#[tokio::test]` per case that races two instances of a
+/// store on one database. `$open` is an async function returning two
+/// instances and a guard that keeps their database alive; a store that one
+/// instance serves returns that instance twice.
+#[macro_export]
+macro_rules! instance_tests {
+    ($open:path) => {
+        $crate::instance_tests!(@cases $open;
+            removal_races_pushes,
+            pushes_into_several_domains_race_policy_changes,
+            limits_hold_across_instances,
+        );
+    };
+    (@cases $open:path; $($case:ident,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                let (first, second, _guard) = $open().await;
+                $crate::conformance::$case(first, second).await;
             }
         )*
     };
@@ -120,7 +146,8 @@ pub struct World<B: Backend> {
     pub epoch_key: SecretKey,
 }
 
-fn head_of(links: &[Signed<AccountLink>]) -> AccountHead {
+/// The head of an account chain's links.
+pub fn head_of(links: &[Signed<AccountLink>]) -> AccountHead {
     let last = links.last().expect("a chain has links");
     AccountHead {
         account: last.body.account,
@@ -255,7 +282,11 @@ impl<B: Backend> World<B> {
     /// An account of `devices` devices, each with a session, and a
     /// workspace the first one created.
     pub async fn new(store: Store<B>, devices: usize) -> Self {
-        let store = Arc::new(store);
+        Self::on(Arc::new(store), devices).await
+    }
+
+    /// [`World::new`] on a store that others share.
+    pub async fn on(store: Arc<Store<B>>, devices: usize) -> Self {
         let (account, keys, links) = account(devices);
         store
             .append_account_links(links.clone())
@@ -372,55 +403,11 @@ impl<B: Backend> World<B> {
         domains: Vec<Id>,
         new_domain: Option<(Id, Signed<sync_protocol::records::Epoch>)>,
     ) {
-        let workspace = self.workspace;
-        let revision = change.body.revision;
-        let digest = change.digest();
-        let recorded: Vec<Id> = change.body.heads.iter().map(|h| h.account).collect();
-        self.store
-            .backend()
-            .write(Box::new(move |txn: &mut B::Write| {
-                Box::pin(async move {
-                    txn.insert_policy_change(workspace, revision, digest, &change.to_bytes())
-                        .await?;
-                    txn.record_accounts(workspace, &recorded).await?;
-                    txn.set_policy_head(workspace, revision, digest).await?;
-                    let mut domains = domains;
-                    if let Some((domain, _)) = &new_domain {
-                        txn.insert_domain(workspace, *domain).await?;
-                        domains.push(*domain);
-                    }
-                    domains.sort();
-                    let entry = sync_protocol::messages::PolicyEntry {
-                        revision,
-                        head: digest,
-                    };
-                    for domain in domains {
-                        txn.append_entry(workspace, domain, 9, &entry.to_bytes())
-                            .await?;
-                    }
-                    if let Some((domain, epoch)) = new_domain {
-                        let bytes = epoch.to_bytes();
-                        txn.append_entry(workspace, domain, 8, &bytes).await?;
-                        txn.insert_epoch(
-                            workspace,
-                            domain,
-                            &crate::EpochRow {
-                                epoch: 1,
-                                digest: epoch.digest(),
-                                previous: Digest::ZERO,
-                                record: bytes.clone(),
-                            },
-                            revision,
-                            &bytes,
-                        )
-                        .await?;
-                    }
-                    Ok(())
-                })
-            }))
+        let head = (change.body.revision, change.digest());
+        inject_change(&self.store, change, domains, new_domain)
             .await
             .expect("policy change injected");
-        self.head = (revision, digest);
+        self.head = head;
     }
 
     /// Commits a rotation's epoch straight into the store: its log entry,
@@ -438,6 +425,16 @@ impl<B: Backend> World<B> {
             .backend()
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
+                    // An epoch bundle's push: the policy lock shared, the
+                    // key-sequence row and the domain's head row (§15).
+                    txn.lock(&LockPlan {
+                        workspace: Some(workspace),
+                        policy_exclusive: false,
+                        key_sequence: true,
+                        domains: vec![domain],
+                        blobs: Vec::new(),
+                    })
+                    .await?;
                     let record = epoch.to_bytes();
                     let bundle = EpochBundle {
                         epoch: Nested(epoch.clone()),
@@ -496,6 +493,77 @@ impl<B: Backend> World<B> {
             self.devices[signer].keys.signing(),
         )
     }
+}
+
+/// Commits a policy change straight into `store`, as a push of that change
+/// will once tickets 47 and 50 add them: under the workspace's exclusive
+/// policy lock and the head rows of the domains it writes, it stores the
+/// change, a policy entry in each listed domain and, for `new_domain`, the
+/// new domain with its epoch 1.
+pub async fn inject_change<B: Backend>(
+    store: &Store<B>,
+    change: Signed<PolicyChange>,
+    domains: Vec<Id>,
+    new_domain: Option<(Id, Signed<sync_protocol::records::Epoch>)>,
+) -> crate::Result<()> {
+    let workspace = change.body.workspace;
+    let revision = change.body.revision;
+    let digest = change.digest();
+    let recorded: Vec<Id> = change.body.heads.iter().map(|h| h.account).collect();
+    store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                let mut domains = domains;
+                if let Some((domain, _)) = &new_domain {
+                    domains.push(*domain);
+                }
+                domains.sort();
+                domains.dedup();
+                txn.lock(&LockPlan {
+                    workspace: Some(workspace),
+                    policy_exclusive: true,
+                    key_sequence: false,
+                    domains: domains.clone(),
+                    blobs: Vec::new(),
+                })
+                .await?;
+                txn.insert_policy_change(workspace, revision, digest, &change.to_bytes())
+                    .await?;
+                txn.record_accounts(workspace, &recorded).await?;
+                txn.set_policy_head(workspace, revision, digest).await?;
+                if let Some((domain, _)) = &new_domain {
+                    txn.insert_domain(workspace, *domain).await?;
+                }
+                let entry = sync_protocol::messages::PolicyEntry {
+                    revision,
+                    head: digest,
+                };
+                for domain in domains {
+                    txn.append_entry(workspace, domain, 9, &entry.to_bytes())
+                        .await?;
+                }
+                if let Some((domain, epoch)) = new_domain {
+                    let bytes = epoch.to_bytes();
+                    txn.append_entry(workspace, domain, 8, &bytes).await?;
+                    txn.insert_epoch(
+                        workspace,
+                        domain,
+                        &crate::EpochRow {
+                            epoch: 1,
+                            digest: epoch.digest(),
+                            previous: Digest::ZERO,
+                            record: bytes.clone(),
+                        },
+                        revision,
+                        &bytes,
+                    )
+                    .await?;
+                }
+                Ok(())
+            })
+        }))
+        .await
 }
 
 fn random_token() -> [u8; 32] {
@@ -1913,6 +1981,604 @@ pub async fn keys_and_epochs_serve_records_without_recipients<B: Backend>(store:
             assert_eq!(walked.0, chain[walked.0.body.epoch as usize - 1]);
         }
     }
+}
+
+/// A write transaction on `store` that takes `domain`'s pruning lock, says
+/// so, and keeps the lock until `release` fires or ten seconds pass. It
+/// returns whether `release` fired.
+fn hold_pruning<B: Backend>(
+    store: Arc<Store<B>>,
+    workspace: Id,
+    domain: Id,
+) -> (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<bool>,
+) {
+    let (locked, on_locked) = tokio::sync::oneshot::channel();
+    let (release, on_release) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        store
+            .backend()
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    txn.lock_pruning(workspace, domain).await?;
+                    let _ = locked.send(());
+                    Ok(tokio::time::timeout(Duration::from_secs(10), on_release)
+                        .await
+                        .is_ok())
+                })
+            }))
+            .await
+            .expect("the pruning transaction commits")
+    });
+    (on_locked, release, task)
+}
+
+/// A write transaction on `store` that takes `domain`'s pruning lock and
+/// commits.
+async fn prune_lock_once<B: Backend>(store: &Store<B>, workspace: Id, domain: Id) {
+    store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move { txn.lock_pruning(workspace, domain).await })
+        }))
+        .await
+        .expect("the pruning lock is taken");
+}
+
+/// A write transaction on `store` that takes the workspace's policy lock
+/// exclusively, as a policy change does, and commits.
+async fn policy_lock_once<B: Backend>(store: &Store<B>, workspace: Id) {
+    store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                txn.lock(&LockPlan {
+                    workspace: Some(workspace),
+                    policy_exclusive: true,
+                    ..LockPlan::default()
+                })
+                .await
+            })
+        }))
+        .await
+        .expect("the policy lock is taken");
+}
+
+/// The pruning lock and the policy lock use separate lock forms, so a push
+/// or a policy change never waits on a domain's pruning; two domains whose
+/// 4-byte prefixes collide only delay each other's pruning, and other
+/// domains prune meanwhile (§15). A store with one writer runs them one
+/// after another instead.
+pub async fn pruning_lock_meets_no_policy_lock<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let parallel = world.store.backend().parallel_writes();
+    let (workspace, domain) = (world.workspace, world.domain);
+    let mut collides = Id::random().expect("random");
+    collides.0[..4].copy_from_slice(&domain.0[..4]);
+    let mut apart = Id::random().expect("random");
+    apart.0[0] = domain.0[0] ^ 0xff;
+    let soon = Duration::from_secs(3);
+
+    // A push and a policy change while the domain prunes.
+    let (locked, release, holder) = hold_pruning(world.store.clone(), workspace, domain);
+    locked.await.expect("the pruning lock is held");
+    if !parallel {
+        let _ = release.send(());
+        assert!(holder.await.expect("the holder ends"));
+        world.push(0, &[world.op(0, |_| {})]).await.expect("pushed");
+        policy_lock_once(&world.store, workspace).await;
+    } else {
+        let op = world.op(0, |_| {});
+        tokio::time::timeout(soon, world.push(0, std::slice::from_ref(&op)))
+            .await
+            .expect("a push doesn't wait on the pruning lock")
+            .expect("pushed");
+        tokio::time::timeout(soon, policy_lock_once(&world.store, workspace))
+            .await
+            .expect("a policy change doesn't wait on the pruning lock");
+        let _ = release.send(());
+        assert!(
+            holder.await.expect("the holder ends"),
+            "the pruning lock stayed held throughout"
+        );
+    }
+
+    // Two domains whose prefixes collide, and one whose prefix differs.
+    let (locked, release, holder) = hold_pruning(world.store.clone(), workspace, domain);
+    locked.await.expect("the pruning lock is held");
+    let colliding = {
+        let store = world.store.clone();
+        tokio::spawn(async move { prune_lock_once(&store, workspace, collides).await })
+    };
+    if parallel {
+        tokio::time::timeout(soon, prune_lock_once(&world.store, workspace, apart))
+            .await
+            .expect("another prefix prunes meanwhile");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !colliding.is_finished(),
+            "a colliding prefix waits for the pruning lock"
+        );
+    }
+    let _ = release.send(());
+    assert!(holder.await.expect("the holder ends"));
+    tokio::time::timeout(soon, colliding)
+        .await
+        .expect("the colliding domain prunes once the lock goes")
+        .expect("the task ends");
+    if !parallel {
+        prune_lock_once(&world.store, workspace, apart).await;
+    }
+}
+
+/// Every entry of the workspace domain, read through `store`.
+async fn domain_log<B: Backend>(
+    store: &Store<B>,
+    session: Session,
+    workspace: Id,
+    domain: Id,
+) -> Vec<sync_protocol::messages::Entry> {
+    let mut entries = Vec::new();
+    let mut after = 0;
+    loop {
+        let response = store
+            .pull(
+                session,
+                workspace,
+                PullRequest {
+                    cursors: List(vec![PullCursor { domain, after }]),
+                    wait_seconds: 0,
+                },
+            )
+            .await
+            .expect("pull");
+        let page = response.pages.0.into_iter().next().expect("one page");
+        entries.extend(page.entries.into_vec());
+        after = page.complete_through;
+        if after >= page.head {
+            return entries;
+        }
+    }
+}
+
+/// Creations that one account sends at once never take it past the 100
+/// workspaces an account owns (§27): each counts the account's workspaces
+/// under its chain row, so exactly the ones that fit commit and the others
+/// get `workspace_limit`.
+pub async fn creations_at_once_keep_the_workspace_limit<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let creator = &world.devices[0];
+    let cards = vec![creator.keys.card(world.account)];
+    let body = || creation(&creator.keys, &world.links, &cards).0;
+    for _ in 1..96 {
+        world
+            .store
+            .create_workspace(creator.session, body())
+            .await
+            .expect("created");
+    }
+    let bodies: Vec<Vec<u8>> = (0..10).map(|_| body()).collect();
+    let creations: Vec<_> = bodies
+        .into_iter()
+        .map(|body| {
+            let store = world.store.clone();
+            let session = creator.session;
+            tokio::spawn(async move { store.create_workspace(session, body).await })
+        })
+        .collect();
+    let mut created = 0;
+    let mut refused = Vec::new();
+    for creation in creations {
+        match creation.await.expect("the creation ends") {
+            Ok(_) => created += 1,
+            Err(error) => refused.push(refusal(Err::<(), _>(error)).code),
+        }
+    }
+    assert_eq!(created, 4, "the four creations that fit commit");
+    assert!(
+        refused.iter().all(|code| *code == "workspace_limit"),
+        "{refused:?}"
+    );
+    let listed = world
+        .store
+        .workspaces(creator.session)
+        .await
+        .expect("listed");
+    assert_eq!(listed.workspaces.len(), 100);
+}
+
+/// A change that takes a device out of the workspace races that device's
+/// pushes, one every 500 ms through the second instance: no record of the
+/// device commits after the change's entry, and every push the change
+/// overtakes is refused (§15).
+pub async fn removal_races_pushes<B: Backend>(first: Arc<Store<B>>, second: Arc<Store<B>>) {
+    let world = Arc::new(World::on(first, 2).await);
+    let removed = world.devices[1].id();
+    let (started, mut on_started) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    let pushing = {
+        let world = world.clone();
+        tokio::spawn(async move {
+            let mut previous = Digest::ZERO;
+            let mut committed = Vec::new();
+            let mut refused = Vec::new();
+            for counter in 1..=8u64 {
+                let tick = tokio::time::Instant::now() + Duration::from_millis(500);
+                let op = world.op(1, |op| {
+                    op.counter = counter;
+                    op.previous = previous;
+                });
+                let body = PushRequest {
+                    records: List(vec![RecordRef::Operation(op.clone())]),
+                }
+                .to_bytes();
+                let _ = started.send(counter);
+                match second
+                    .push(world.devices[1].session, world.workspace, body)
+                    .await
+                {
+                    Ok(response) => {
+                        committed.push(response.receipts[0].seq);
+                        previous = op.digest();
+                    }
+                    Err(error) => refused.push(refusal(Err::<(), _>(error)).code),
+                }
+                tokio::time::sleep_until(tick).await;
+            }
+            (committed, refused)
+        })
+    };
+    // The removal starts while the device's third push is in flight.
+    while on_started.recv().await.is_some_and(|counter| counter < 3) {}
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let link = next_link(
+        &world.devices[0].keys,
+        &head_of(&world.links),
+        LinkKind::Remove {
+            device: removed,
+            keep: Sorted::default(),
+        },
+    );
+    world
+        .store
+        .append_account_links(vec![link.clone()])
+        .await
+        .expect("the link is appended");
+    let mut links = world.links.clone();
+    links.push(link);
+    let change = world.change(0, vec![head_of(&links)], PolicyKind::AccountHeads);
+    inject_change(&world.store, change, vec![world.domain], None)
+        .await
+        .expect("the removal commits");
+    let (committed, refused) = pushing.await.expect("the pushes end");
+
+    let log = domain_log(
+        &world.store,
+        world.devices[0].session,
+        world.workspace,
+        world.domain,
+    )
+    .await;
+    let entry = log
+        .iter()
+        .find(|e| matches!(&e.record, EntryRecord::Policy(p) if p.revision == 2))
+        .expect("the removal's entry")
+        .seq;
+    let late: Vec<u64> = log
+        .iter()
+        .filter(|e| matches!(&e.record, EntryRecord::Operation(op) if op.body.device == removed))
+        .map(|e| e.seq)
+        .filter(|seq| *seq > entry)
+        .collect();
+    assert!(
+        late.is_empty(),
+        "records after the removal's entry: {late:?}"
+    );
+    assert!(committed.iter().all(|seq| *seq < entry));
+    assert!(committed.len() >= 2, "pushes before the removal commit");
+    assert!(!refused.is_empty(), "pushes after the removal fail");
+    assert!(
+        refused.iter().all(|code| *code == "forbidden"),
+        "{refused:?}"
+    );
+}
+
+/// Devices push records into several domains at once, listing the domains
+/// in different orders, through both instances while policy changes keep
+/// creating domains: every push and every change commits, none deadlocks.
+pub async fn pushes_into_several_domains_race_policy_changes<B: Backend>(
+    first: Arc<Store<B>>,
+    second: Arc<Store<B>>,
+) {
+    let mut world = World::on(first, 3).await;
+    let mut domains = vec![world.domain];
+    let epoch_for = |world: &World<B>, domain: Id, change: &Signed<PolicyChange>| {
+        let creator = &world.devices[0];
+        Signed::sign(
+            build_epoch(
+                &EpochParams {
+                    workspace: world.workspace,
+                    domain,
+                    epoch: 1,
+                    previous: Digest::ZERO,
+                    policy_revision: change.body.revision,
+                    policy_head: change.digest(),
+                    rotating_device: creator.id(),
+                    recipients: BTreeSet::from([creator.id()]),
+                },
+                &SecretKey::random().expect("random"),
+                None,
+                Nonce::ZERO,
+            ),
+            creator.keys.signing(),
+        )
+    };
+    let create = |world: &World<B>, domain: Id| {
+        world.change(
+            0,
+            vec![head_of(&world.links)],
+            PolicyKind::CreateDomain {
+                domain,
+                marker_rid: Id::random().expect("random"),
+                access: manager(world.account),
+            },
+        )
+    };
+    for _ in 0..2 {
+        let domain = Id::random().expect("random");
+        let change = create(&world, domain);
+        let epoch = epoch_for(&world, domain, &change);
+        world
+            .inject_policy(change, domains.clone(), Some((domain, epoch)))
+            .await;
+        domains.push(domain);
+    }
+    let written = domains.clone();
+    let world = Arc::new(world);
+    let head = Arc::new(std::sync::Mutex::new(world.head));
+    let stores = [world.store.clone(), second];
+
+    let mut pushers = Vec::new();
+    for device in 0..3 {
+        let world = world.clone();
+        let head = head.clone();
+        let store = stores[device % 2].clone();
+        let mut order = written.clone();
+        order.rotate_left(device);
+        if device == 1 {
+            order.reverse();
+        }
+        pushers.push(tokio::spawn(async move {
+            let mut chains: BTreeMap<Id, (u64, Digest)> = BTreeMap::new();
+            let mut digests = Vec::new();
+            for _ in 0..12 {
+                let (revision, policy_head) = *head.lock().expect("the head");
+                let ops: Vec<Signed<Operation>> = order
+                    .iter()
+                    .map(|domain| {
+                        let (counter, previous) =
+                            chains.get(domain).copied().unwrap_or((0, Digest::ZERO));
+                        let op = world.op(device, |op| {
+                            op.domain = *domain;
+                            op.counter = counter + 1;
+                            op.previous = previous;
+                            op.policy_revision = revision;
+                            op.policy_head = policy_head;
+                        });
+                        chains.insert(*domain, (counter + 1, op.digest()));
+                        op
+                    })
+                    .collect();
+                let body = PushRequest {
+                    records: List(ops.iter().cloned().map(RecordRef::Operation).collect()),
+                }
+                .to_bytes();
+                store
+                    .push(world.devices[device].session, world.workspace, body)
+                    .await
+                    .expect("no push fails or deadlocks");
+                digests.extend(ops.iter().map(Signed::digest));
+            }
+            digests
+        }));
+    }
+    let changer = {
+        let world = world.clone();
+        let head = head.clone();
+        let stores = stores.clone();
+        tokio::spawn(async move {
+            let mut domains = domains;
+            for round in 0..6 {
+                let (revision, digest) = *head.lock().expect("the head");
+                let domain = Id::random().expect("random");
+                let change = Signed::sign(
+                    PolicyChange {
+                        revision: revision + 1,
+                        previous: digest,
+                        ..create(&world, domain).body
+                    },
+                    world.devices[0].keys.signing(),
+                );
+                let epoch = epoch_for(&world, domain, &change);
+                let next = (change.body.revision, change.digest());
+                inject_change(
+                    &stores[round % 2],
+                    change,
+                    domains.clone(),
+                    Some((domain, epoch)),
+                )
+                .await
+                .expect("no policy change fails or deadlocks");
+                domains.push(domain);
+                *head.lock().expect("the head") = next;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    };
+    let pushed = tokio::time::timeout(Duration::from_secs(120), async {
+        let mut pushed = BTreeSet::new();
+        for pusher in pushers {
+            pushed.extend(pusher.await.expect("the pushes end"));
+        }
+        changer.await.expect("the changes end");
+        pushed
+    })
+    .await
+    .expect("nothing deadlocks");
+    let mut found = BTreeSet::new();
+    for domain in &written {
+        for entry in domain_log(
+            &world.store,
+            world.devices[0].session,
+            world.workspace,
+            *domain,
+        )
+        .await
+        {
+            if let EntryRecord::Operation(op) = entry.record {
+                found.insert(op.digest());
+            }
+        }
+    }
+    assert_eq!(found, pushed, "every pushed record is in its domain's log");
+    assert_eq!(pushed.len(), 3 * 12 * written.len());
+}
+
+/// The limiter of each mode: an allowance per key and window that both
+/// instances count against together, a cost above the allowance that never
+/// fits, a refusal that says when the window ends, and a new window that
+/// starts afresh.
+pub async fn limits_hold_across_instances<B: Backend>(first: Arc<Store<B>>, second: Arc<Store<B>>) {
+    use crate::limiter::{Limit, Taken, now_ms};
+    let (one, two) = (first.backend().limiter(), second.backend().limiter());
+    let key = Id::random().expect("random").0;
+    let hour = Limit {
+        allowance: 10,
+        window: Duration::from_secs(3_600),
+    };
+    assert_eq!(
+        one.take(&key, 4, hour).await.expect("taken"),
+        Taken::Allowed
+    );
+    assert_eq!(
+        two.take(&key, 6, hour).await.expect("taken"),
+        Taken::Allowed
+    );
+    for limiter in [&one, &two] {
+        match limiter.take(&key, 1, hour).await.expect("taken") {
+            Taken::Refused { retry_after } => {
+                assert!(retry_after > Duration::ZERO && retry_after <= hour.window);
+            }
+            Taken::Allowed => panic!("the allowance is used up on both instances"),
+        }
+    }
+    let other = Id::random().expect("random").0;
+    assert_eq!(
+        one.take(&other, 10, hour).await.expect("taken"),
+        Taken::Allowed
+    );
+    assert!(matches!(
+        two.take(&Id::random().expect("random").0, 11, hour)
+            .await
+            .expect("taken"),
+        Taken::Refused { .. }
+    ));
+
+    // Takes from both instances at once never pass the allowance together.
+    let shared = Id::random().expect("random").0;
+    let mut tasks = Vec::new();
+    for i in 0..40 {
+        let limiter = if i % 2 == 0 { one.clone() } else { two.clone() };
+        tasks.push(tokio::spawn(async move {
+            limiter
+                .take(
+                    &shared,
+                    1,
+                    Limit {
+                        allowance: 25,
+                        ..hour
+                    },
+                )
+                .await
+        }));
+    }
+    let mut allowed = 0;
+    for task in tasks {
+        if task.await.expect("the take ends").expect("taken") == Taken::Allowed {
+            allowed += 1;
+        }
+    }
+    assert_eq!(allowed, 25);
+
+    // Limits with different windows on one key count apart, even when both
+    // windows end at once, as a second's and two seconds' do every other
+    // second.
+    let short = Limit {
+        allowance: 2,
+        window: Duration::from_secs(1),
+    };
+    let long = Limit {
+        allowance: 3,
+        window: Duration::from_secs(2),
+    };
+    while !(1_000..1_400).contains(&(now_ms() % 2_000)) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(short.window_ends(now_ms()), long.window_ends(now_ms()));
+    let key = Id::random().expect("random").0;
+    assert_eq!(
+        one.take(&key, 2, short).await.expect("taken"),
+        Taken::Allowed
+    );
+    assert_eq!(
+        two.take(&key, 3, long).await.expect("taken"),
+        Taken::Allowed,
+        "the longer limit doesn't count the shorter one's takes"
+    );
+    assert!(matches!(
+        one.take(&key, 1, long).await.expect("taken"),
+        Taken::Refused { .. }
+    ));
+    assert!(matches!(
+        two.take(&key, 1, short).await.expect("taken"),
+        Taken::Refused { .. }
+    ));
+
+    // A new window starts afresh. Start early in a window, so the filling
+    // takes all land in one.
+    let second_window = Limit {
+        allowance: 2,
+        window: Duration::from_secs(1),
+    };
+    while now_ms() % 1_000 > 300 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let key = Id::random().expect("random").0;
+    assert_eq!(
+        one.take(&key, 2, second_window).await.expect("taken"),
+        Taken::Allowed
+    );
+    let Taken::Refused { retry_after } = two.take(&key, 1, second_window).await.expect("taken")
+    else {
+        panic!("the window's allowance is used up");
+    };
+    assert!(retry_after <= second_window.window);
+    tokio::time::sleep(retry_after + Duration::from_millis(50)).await;
+    assert_eq!(
+        two.take(&key, 2, second_window).await.expect("taken"),
+        Taken::Allowed
+    );
+
+    // Pruning deletes the counts of ended windows, whichever instance
+    // prunes.
+    tokio::time::sleep(second_window.window + Duration::from_millis(50)).await;
+    assert!(one.prune().await.expect("pruned") >= 1);
+    assert_eq!(
+        two.prune().await.expect("pruned"),
+        0,
+        "nothing ended is left"
+    );
 }
 
 fn head_link(links: &[Signed<AccountLink>]) -> AccountHead {

@@ -1,8 +1,8 @@
-//! The sync service against the real server on SQLite (seam 4): one client
-//! creates a workspace and pushes an encrypted v2 operation, and a fresh
-//! client with the same device credentials takes its account chain from the
-//! server, fetches the policy and keys, pulls the operation, checks its
-//! signature and chain, and decrypts it.
+//! The sync service against the real server on SQLite and on PostgreSQL
+//! (seam 4): one client creates a workspace and pushes an encrypted v2
+//! operation, and a fresh client with the same device credentials takes its
+//! account chain from the server, fetches the policy and keys, pulls the
+//! operation, checks its signature and chain, and decrypts it.
 
 mod sync_support;
 
@@ -15,14 +15,22 @@ use sync_protocol::codec::Encode;
 use sync_protocol::messages::LimitsResponse;
 use sync_protocol::records::AccountHead;
 use sync_protocol::types::{Id, to_base64url};
+use sync_store::Backend;
 use sync_support::{Account, MemorySecrets, Server};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
-    let server = Server::start().await;
+    push_and_pull(Server::start().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fresh_client_pulls_and_decrypts_what_another_pushed_on_postgres() {
+    push_and_pull(Server::start_postgres().await).await;
+}
+
+async fn push_and_pull<B: Backend>(server: Server<B>) {
     let account = Account::new(&server).await;
-    let device = &account.devices[0];
-    let note = b"# Field notes\n\nThe first synced note.\n";
+    let device = &account.devices[0];    let note = b"# Field notes\n\nThe first synced note.\n";
 
     let mut writer = device.connect(&server.base, account.reference()).await;
     let mut created = writer
@@ -77,22 +85,20 @@ async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
 
     // The server stored ciphertext: neither the note, its path nor the
     // workspace name appears in its database.
-    let data = server.dir.path().join("data");
-    let database = std::fs::read(data.join(DATABASE)).expect("the database");
-    let wal = std::fs::read(data.join(format!("{}-wal", DATABASE))).unwrap_or_default();
-    for plaintext in [
-        &b"The first synced note"[..],
-        b"Notes/First.md",
-        b"Field notes",
-    ] {
-        for bytes in [&database, &wal] {
-            assert!(!bytes.windows(plaintext.len()).any(|w| w == plaintext));
-        }
+    for file in server.stored_files().await {
+        let bytes = std::fs::read(&file).unwrap_or_default();
+        for plaintext in [
+            &b"The first synced note"[..],
+            b"Notes/First.md",
+            b"Field notes",
+        ] {
+            assert!(
+                !bytes.windows(plaintext.len()).any(|w| w == plaintext),
+                "{} holds plaintext",
+                file.display()
+            );        }
     }
 }
-
-/// The database file in the server's data directory.
-const DATABASE: &str = "sync.sqlite3";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_client_refuses_a_server_without_protocol_2() {

@@ -123,6 +123,10 @@ futures = "0.3"
 genai = "=0.6.5"
 hkdf = "=0.12.4"
 hmac = "=0.12.1"
+# Bounds the sync server's caches of verified policy and account chains,
+# dropping the least recently used first. sqlx already uses this release.
+# MIT OR Apache-2.0.
+hashlink = "0.11.1"
 # ICU4X names months and weekdays and writes times in the computer's
 # locale on calendar grids, from data compiled into the app. Unicode-3.0.
 icu_calendar = { version = "2.3.0", default-features = false }

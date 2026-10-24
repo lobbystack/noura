@@ -1,4 +1,5 @@
-//! Helpers for the sync tests at seam 4: the real server on SQLite, devices
+//! Helpers for the sync tests at seam 4: the real server on SQLite or on a
+//! throwaway PostgreSQL cluster, devices
 //! whose cards and sessions go into its store as ticket 47's sign-in will
 //! put them there, an in-memory credential store, and a proxy that can
 //! tamper with what the server answers.
@@ -6,7 +7,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use app_core::sync::{DeviceCredentials, KeptHeads, Secrets, SyncError, SyncService};
@@ -15,7 +16,9 @@ use sync_key_envelope::v2::{DeviceKeys, genesis_link, next_link};
 use sync_protocol::codec::{Encode, Nested};
 use sync_protocol::records::{AccountHead, AccountLink, LinkKind, Signed};
 use sync_protocol::types::{Digest, Id, to_base64url};
-use sync_store::{Session, Store};
+use sync_store::{Backend, Session, Store};
+use sync_store_postgres::PgBackend;
+use sync_store_postgres::testing::{Cluster, TestDatabase};
 use sync_store_sqlite::SqliteBackend;
 use zeroize::Zeroizing;
 
@@ -54,26 +57,59 @@ impl SyncCredentials for MemorySecrets {
     }
 }
 
-/// The real server on SQLite, in a temporary data directory.
-pub struct Server {
+/// The real server, on SQLite in a temporary data directory or on a
+/// PostgreSQL database.
+pub struct Server<B: Backend = SqliteBackend> {
     pub base: String,
-    pub store: Arc<Store<SqliteBackend>>,
+    pub store: Arc<Store<B>>,
     pub dir: tempfile::TempDir,
+    /// The PostgreSQL database, kept alive for the test.
+    pub postgres: Option<TestDatabase>,
 }
 
-impl Server {
+/// The database file in a SQLite server's data directory.
+pub const DATABASE: &str = "sync.sqlite3";
+
+impl Server<SqliteBackend> {
     pub async fn start() -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let data = dir.path().join("data");
         sync_server::migrate(&data).await.expect("migrated");
-        let store = Arc::new(
-            sync_server::open_store(&sync_server::Config::new(
-                data,
-                "127.0.0.1:0".parse().expect("an address"),
-            ))
+        let store = sync_server::open_store(&sync_server::Config::new(
+            data,
+            "127.0.0.1:0".parse().expect("an address"),
+        ))
+        .await
+        .expect("the store opens");
+        Self::serve(store, dir, None).await
+    }
+}
+
+impl Server<PgBackend> {
+    /// The server on a fresh database in the test binary's throwaway
+    /// cluster under the target directory.
+    pub async fn start_postgres() -> Self {
+        let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
+            .database()
+            .await;
+        let postgres = sync_server::Postgres {
+            url: database.url.clone(),
+            secret: Some(sync_protocol::types::SecretKey::random().expect("random")),
+        };
+        sync_server::postgres::migrate(&postgres)
             .await
-            .expect("the store opens"),
-        );
+            .expect("migrated");
+        let store = sync_server::postgres::open_store(&postgres)
+            .await
+            .expect("the store opens");
+        let dir = tempfile::tempdir().expect("temporary directory");
+        Self::serve(store, dir, Some(database)).await
+    }
+}
+
+impl<B: Backend> Server<B> {
+    async fn serve(store: Store<B>, dir: tempfile::TempDir, postgres: Option<TestDatabase>) -> Self {
+        let store = Arc::new(store);
         let address = sync_server::spawn(store.clone(), "127.0.0.1:0")
             .await
             .expect("serving");
@@ -81,6 +117,22 @@ impl Server {
             base: format!("http://localhost:{}", address.port()),
             store,
             dir,
+            postgres,
+        }
+    }
+
+    /// The files that hold what the server stored.
+    pub async fn stored_files(&self) -> Vec<PathBuf> {
+        match &self.postgres {
+            None => {
+                let data = self.dir.path().join("data");
+                vec![data.join(DATABASE), data.join(format!("{DATABASE}-wal"))]
+            }
+            Some(database) => {
+                // A checkpoint writes every page to the data files.
+                database.cluster.execute("CHECKPOINT").await;
+                database.cluster.data_dir().map_or_else(Vec::new, files)
+            }
         }
     }
 
@@ -156,6 +208,23 @@ impl Device {
     }
 }
 
+/// Every file under `dir`.
+fn files(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
 pub fn head_of(links: &[Signed<AccountLink>]) -> AccountHead {
     let last = links.last().expect("links");
     AccountHead {
@@ -175,7 +244,7 @@ pub struct Account {
 }
 
 impl Account {
-    pub async fn new(server: &Server) -> Self {
+    pub async fn new<B: Backend>(server: &Server<B>) -> Self {
         let id = Id::random().expect("random");
         let first = server.device(id).await;
         let genesis = genesis_link(&first.keys, id);
@@ -208,7 +277,7 @@ impl Account {
     }
 
     /// Enrolls a new device and adds it through the first device's session.
-    pub async fn add_device(&mut self, server: &Server) -> usize {
+    pub async fn add_device<B: Backend>(&mut self, server: &Server<B>) -> usize {
         let device = server.device(self.id).await;
         let link = self.link(
             0,
@@ -223,7 +292,12 @@ impl Account {
     }
 
     /// Sends a link from the session of the device at `sender`.
-    pub async fn send(&mut self, server: &Server, sender: usize, link: Signed<AccountLink>) {
+    pub async fn send<B: Backend>(
+        &mut self,
+        server: &Server<B>,
+        sender: usize,
+        link: Signed<AccountLink>,
+    ) {
         let mut client =
             app_core::sync::SyncClient::connect(&server.base, &self.devices[sender].token)
                 .await

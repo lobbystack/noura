@@ -26,7 +26,7 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 use sqlx::{ConnectOptions, Connection, SqliteConnection};
-use sync_store::{Backend, BoxFut, Error, ReadJob, Result, WriteJob};
+use sync_store::{Backend, BoxFut, Error, Limiter, MemoryLimiter, ReadJob, Result, WriteJob};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -142,6 +142,8 @@ pub struct SqliteBackend {
     writer: StdMutex<Option<mpsc::Sender<Box<dyn Queued>>>>,
     task: Mutex<Option<JoinHandle<()>>>,
     stats: Arc<WriterStats>,
+    // One instance serves the database, so its counters live in memory.
+    limiter: Arc<MemoryLimiter>,
 }
 
 impl SqliteBackend {
@@ -173,6 +175,7 @@ impl SqliteBackend {
             writer: StdMutex::new(Some(sender)),
             task: Mutex::new(Some(task)),
             stats,
+            limiter: Arc::new(MemoryLimiter::default()),
         })
     }
 
@@ -262,6 +265,14 @@ impl Backend for SqliteBackend {
                 .await
                 .map_err(|_| Error::internal("the writer dropped a write"))?
         })
+    }
+
+    fn limiter(&self) -> Arc<dyn Limiter> {
+        self.limiter.clone()
+    }
+
+    fn close(&self) -> BoxFut<'_, ()> {
+        Box::pin(SqliteBackend::close(self))
     }
 }
 
