@@ -8,7 +8,9 @@ mod support;
 use egui::{Key, Modifiers, Pos2, accesskit::Role, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use support::{
-    kit::{Ui, focused, is_selected, labels, last_event, open_page, opened, press, press_with},
+    kit::{
+        Ui, focused, is_selected, labels, last_event, open_page, opened, press, press_with, run,
+    },
     plugins,
 };
 
@@ -63,7 +65,7 @@ fn a_board_draws_labeled_columns_of_labeled_cards_that_the_keyboard_reaches() {
     // A screen reader moves the keyboard to the first card, and the arrow
     // keys go from there to every card in every column.
     card(harness, "Write report").focus();
-    harness.run();
+    run(harness);
     let mut visited = vec![(focused_column(harness), focused(harness))];
     for key in [
         Key::ArrowDown,
@@ -114,7 +116,7 @@ fn a_cards_menu_opens_from_the_keyboard_and_moves_the_card_to_another_column() {
     let harness = &mut opened.harness;
     open_page(harness, "Board");
     card(harness, "Write report").focus();
-    harness.run();
+    run(harness);
 
     press_with(harness, Modifiers::SHIFT, Key::F10);
 
@@ -144,16 +146,16 @@ fn a_cards_menu_opens_from_the_keyboard_and_moves_the_card_to_another_column() {
 /// there unless `drop` is false. Returns once the pointer is at `to`.
 fn drag(harness: &mut Ui, from: Pos2, to: Pos2, drop: bool) {
     harness.hover_at(from);
-    harness.run();
+    run(harness);
     harness.drag_at(from);
-    harness.run();
+    run(harness);
     for step in 1..=4 {
         harness.hover_at(from + (to - from) * (step as f32 / 4.0));
-        harness.run();
+        run(harness);
     }
     if drop {
         harness.drop_at(to);
-        harness.run();
+        run(harness);
     }
 }
 
@@ -187,7 +189,7 @@ fn dragging_a_card_shows_where_it_lands_and_sends_one_move() {
             .is_some()
     );
     harness.drop_at(to);
-    harness.run();
+    run(harness);
     assert_eq!(
         last_event(harness),
         "moved write-report in work to doing at 1"
@@ -272,7 +274,7 @@ fn dragging_a_list_item_to_a_new_position_shows_where_it_lands_and_sends_one_mov
             .is_some()
     );
     harness.drop_at(to);
-    harness.run();
+    run(harness);
 
     assert_eq!(last_event(harness), "moved first in queue to queue at 2");
     assert_eq!(

@@ -18,9 +18,18 @@ use egui_kittest::{
 };
 use support::{
     FakePicker, create_workspace,
-    kit::{Ui, focused, is_selected, labels, last_event, open_page, opened, press, press_with},
+    kit::{
+        Busy, Ui, focused, is_selected, labels, last_event, open_page, opened, press, press_with,
+        run,
+    },
     plugins::{self, install_and_enable},
 };
+
+impl Busy for Windows {
+    fn busy(&self) -> bool {
+        self.windows[self.shown].is_busy()
+    }
+}
 
 fn option<'a, S>(harness: &'a Harness<'static, S>, label: &'a str) -> egui_kittest::Node<'a> {
     harness.get_by_role_and_label(Role::ListBoxOption, label)
@@ -47,7 +56,7 @@ fn list_items_are_selected_by_click_and_arrow_keys_and_opened_with_enter() {
     assert!(harness.unnamed_widgets().is_empty());
 
     option(harness, "North bed").click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "selected north in beds");
     assert!(option(harness, "North bed").is_focused());
     assert!(is_selected(&option(harness, "North bed")));
@@ -94,7 +103,7 @@ fn double_click_at(harness: &mut Ui, pos: egui::Pos2) {
         button(false),
     ]);
     harness.step();
-    harness.run();
+    run(harness);
 }
 
 #[test]
@@ -106,7 +115,7 @@ fn an_items_menu_opens_from_the_keyboard_and_sends_the_chosen_item() {
     let harness = &mut opened.harness;
     open_page(harness, "Lists");
     option(harness, "South bed").click();
-    harness.run();
+    run(harness);
 
     press_with(harness, Modifiers::SHIFT, Key::F10);
 
@@ -141,12 +150,12 @@ fn an_items_menu_opens_from_the_keyboard_and_sends_the_chosen_item() {
     assert!(option(harness, "South bed").is_focused());
 
     option(harness, "North bed").click_secondary();
-    harness.run();
+    run(harness);
     harness
         .get_by_label("Actions for North bed")
         .get_by_role_and_label(Role::Button, "Water")
         .click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "chose north-water");
 }
 
@@ -160,7 +169,7 @@ fn a_menu_button_opens_its_menu_from_the_keyboard() {
     open_page(harness, "Lists");
 
     harness.get_by_role_and_label(Role::Button, "More").focus();
-    harness.run();
+    run(harness);
     press(harness, Key::Enter);
 
     let menu = harness.get_by_label("More actions");
@@ -234,7 +243,7 @@ fn a_table_exposes_its_header_rows_and_cells_and_a_header_press_sorts() {
     assert!(harness.unnamed_widgets().is_empty());
 
     header(harness, "Sown").click();
-    harness.run();
+    run(harness);
 
     assert_eq!(last_event(harness), "sorted plants by sown");
     assert_eq!(cells(harness)[0], "Tomato");
@@ -249,7 +258,7 @@ fn a_table_exposes_its_header_rows_and_cells_and_a_header_press_sorts() {
 
     // A header takes the keyboard too.
     header(harness, "Sown").focus();
-    harness.run();
+    run(harness);
     press(harness, Key::Enter);
     assert_eq!(cells(harness)[0], "Bean");
     assert_eq!(
@@ -272,7 +281,7 @@ fn table_rows_select_from_the_keyboard_and_open_their_menu_by_right_click_or_key
     open_page(harness, "Table");
 
     row(harness, "Basil").click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "selected basil in plants");
     press(harness, Key::ArrowDown);
     assert_eq!(last_event(harness), "selected bean in plants");
@@ -290,12 +299,12 @@ fn table_rows_select_from_the_keyboard_and_open_their_menu_by_right_click_or_key
     assert_eq!(last_event(harness), "chose bean-open");
 
     row(harness, "Tomato").click_secondary();
-    harness.run();
+    run(harness);
     harness
         .get_by_label("Actions for Tomato")
         .get_by_role_and_label(Role::Button, "Remove")
         .click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "chose tomato-remove");
 }
 
@@ -310,14 +319,14 @@ fn form_field<'a, S>(
 }
 
 /// Select everything in the focused text field and type `text` over it.
-fn retype<S>(harness: &mut Harness<'static, S>, text: &str) {
+fn retype<S: Busy>(harness: &mut Harness<'static, S>, text: &str) {
     press_with(harness, Modifiers::COMMAND, Key::A);
     harness
         .query_all(By::new())
         .find(|node| node.is_focused())
         .expect("a field has focus")
         .type_text(text);
-    harness.run();
+    run(harness);
 }
 
 #[test]
@@ -347,7 +356,7 @@ fn form_inputs_are_labeled_and_reached_by_tab_in_order() {
     assert!(harness.unnamed_widgets().is_empty());
 
     form_field(harness, Role::TextInput, "Name").focus();
-    harness.run();
+    run(harness);
     let mut order = vec![focused(harness).unwrap()];
     for _ in 0..9 {
         press(harness, Key::Tab);
@@ -380,12 +389,12 @@ fn form_changes_and_submits_reach_the_plugin_with_typed_values() {
     open_page(harness, "Form");
 
     form_field(harness, Role::TextInput, "Name").focus();
-    harness.run();
+    run(harness);
     retype(harness, "Chard");
     assert_eq!(last_event(harness), "changed name text \"Chard\"");
 
     form_field(harness, Role::TextInput, "Sown on").focus();
-    harness.run();
+    run(harness);
     retype(harness, "2026-10-2");
     // Half a date isn't a date, so the plugin hears nothing yet.
     assert_eq!(last_event(harness), "changed name text \"Chard\"");
@@ -393,7 +402,7 @@ fn form_changes_and_submits_reach_the_plugin_with_typed_values() {
     assert_eq!(last_event(harness), "changed sown date 2026-10-21");
 
     form_field(harness, Role::TextInput, "Transplant at, time").focus();
-    harness.run();
+    run(harness);
     retype(harness, "10:15");
     assert_eq!(
         last_event(harness),
@@ -401,7 +410,7 @@ fn form_changes_and_submits_reach_the_plugin_with_typed_values() {
     );
 
     form_field(harness, Role::CheckBox, "Start indoors").focus();
-    harness.run();
+    run(harness);
     press(harness, Key::Space);
     assert_eq!(last_event(harness), "changed indoors checkbox true");
     assert_eq!(
@@ -412,11 +421,11 @@ fn form_changes_and_submits_reach_the_plugin_with_typed_values() {
     );
 
     form_field(harness, Role::RadioButton, "Partial shade").click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "changed sun choice partial");
 
     form_field(harness, Role::Button, "Add plant").focus();
-    harness.run();
+    run(harness);
     press(harness, Key::Enter);
     assert_eq!(
         last_event(harness),
@@ -443,7 +452,7 @@ fn a_virtual_list_of_ten_thousand_rows_fetches_rows_as_they_scroll_into_view() {
     assert_eq!(first.accesskit_node().size_of_set(), Some(10_000));
 
     first.click();
-    harness.run();
+    run(harness);
     press(harness, Key::End);
 
     let last = option(harness, "Seed 10000");
@@ -479,7 +488,7 @@ fn a_virtual_list_whose_rows_break_the_rules_shows_why_and_noura_keeps_running()
 
     open_page(harness, "Lists");
     option(harness, "North bed").click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "selected north in beds");
 }
 
@@ -495,13 +504,13 @@ fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
             .state_mut()
             .app_mut()
             .send_plugin_event(page, &PluginEvent::Pressed("redraw".into()));
-        harness.run();
+        run(harness);
         assert_eq!(last_event(harness), "pressed redraw");
     };
 
     open_page(harness, "Lists");
     option(harness, "South bed").click();
-    harness.run();
+    run(harness);
     redraw(harness, "plugin:kit:lists");
     assert!(option(harness, "South bed").is_focused());
     assert!(is_selected(&option(harness, "South bed")));
@@ -509,7 +518,7 @@ fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
     // A table finds its selected row by ID wherever the redraw put it.
     open_page(harness, "Table");
     row(harness, "Bean").click();
-    harness.run();
+    run(harness);
     harness.state_mut().app_mut().send_plugin_event(
         "plugin:kit:table",
         &PluginEvent::Sorted(ColumnPress {
@@ -517,7 +526,7 @@ fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
             column: "sown".into(),
         }),
     );
-    harness.run();
+    run(harness);
     assert_eq!(cells(harness)[6], "Bean");
     let bean = row(harness, "Bean");
     assert!(bean.is_focused());
@@ -526,11 +535,11 @@ fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
 
     open_page(harness, "Seeds");
     option(harness, "Seed 1").click();
-    harness.run();
+    run(harness);
     for _ in 0..40 {
         harness.key_press(Key::ArrowDown);
     }
-    harness.run();
+    run(harness);
     assert!(option(harness, "Seed 41").is_focused());
     let top = option(harness, "Seed 41").rect().top();
     redraw(harness, "plugin:kit:seeds");
@@ -542,7 +551,7 @@ fn a_redraw_with_the_same_node_ids_keeps_selection_focus_and_scroll() {
 
     open_page(harness, "Form");
     form_field(harness, Role::TextInput, "Name").focus();
-    harness.run();
+    run(harness);
     retype(harness, "Ch");
     redraw(harness, "plugin:kit:form");
     let name = form_field(harness, Role::TextInput, "Name");
@@ -566,7 +575,7 @@ fn virtual_list_scroll_frame_times() {
     open_page(harness, "Seeds");
     let row = option(harness, "Seed 1").rect().center();
     harness.hover_at(row);
-    harness.run();
+    run(harness);
 
     let mut frames = Vec::new();
     for _ in 0..600 {
@@ -624,7 +633,7 @@ fn show(harness: &mut Pair, index: usize) {
         harness.step();
         let state = harness.state();
         if !state.windows[state.shown].is_busy() {
-            harness.run();
+            run(harness);
             return;
         }
         assert!(Instant::now() < deadline, "background work never finished");
@@ -680,7 +689,7 @@ fn each_window_keeps_its_own_selection_menu_and_typing_on_a_page() {
     let harness = &mut two.harness;
     open_page(harness, "Lists");
     option(harness, "North bed").click_secondary();
-    harness.run();
+    run(harness);
     assert!(is_selected(&option(harness, "North bed")));
     assert!(harness.query_by_label("Actions for North bed").is_some());
 
@@ -695,7 +704,7 @@ fn each_window_keeps_its_own_selection_menu_and_typing_on_a_page() {
     press(harness, Key::Escape);
     open_page(harness, "Form");
     form_field(harness, Role::TextInput, "Sown on").focus();
-    harness.run();
+    run(harness);
     // Half a date stays in this window's field and never reaches the
     // plugin.
     retype(harness, "2026-10");
@@ -731,7 +740,7 @@ fn a_menu_whose_row_a_redraw_takes_away_closes_and_gives_the_keyboard_back() {
     let harness = &mut two.harness;
     open_page(harness, "Lists");
     option(harness, "North bed").click();
-    harness.run();
+    run(harness);
     press_with(harness, Modifiers::SHIFT, Key::F10);
     assert!(harness.query_by_label("Actions for North bed").is_some());
 
@@ -741,7 +750,7 @@ fn a_menu_whose_row_a_redraw_takes_away_closes_and_gives_the_keyboard_back() {
     harness
         .get_by_role_and_label(Role::Button, "Remove first bed")
         .click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "pressed trim");
 
     show(harness, 0);
@@ -767,14 +776,14 @@ fn a_virtual_lists_selection_follows_its_row_when_rows_come_in_above_it() {
     let harness = &mut opened.harness;
     open_page(harness, "Seeds");
     option(harness, "Seed 2").click();
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "selected seed-2 in seeds");
 
     harness
         .state_mut()
         .app_mut()
         .send_plugin_event("plugin:kit:seeds", &PluginEvent::Pressed("insert".into()));
-    harness.run();
+    run(harness);
     assert_eq!(last_event(harness), "pressed insert");
     // Seed 2 moved from the second row to the fifth.
     assert_eq!(
@@ -803,7 +812,7 @@ fn a_table_row_whose_first_cell_is_blank_is_named_by_its_next_cell() {
     // A plant added without a name has a blank first cell.
     open_page(harness, "Form");
     form_field(harness, Role::Button, "Add plant").click();
-    harness.run();
+    run(harness);
     assert!(last_event(harness).starts_with("submitted new-plant: name text \"\""));
 
     open_page(harness, "Table");

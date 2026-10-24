@@ -19,13 +19,16 @@
 //! as a JSON string. A deleted one comes back as `deleted` and its ID, and
 //! an error as `error`, its kind and what it holds.
 //!
+//! It also offers other plugins the command `run`, which runs the call
+//! its input names and answers with the answer's lines.
+//!
 //! A recipe's properties panel shows its course, servings and whether it
 //! is vegetarian, with a button that switches the last.
 
 use std::sync::Mutex;
 
 use plugin_sdk::{
-    Error, Event, Node, ObjectType, Page, Plugin, View,
+    Command, Error, Event, Node, ObjectType, Page, Plugin, View,
     objects::{self, Changes, NewObject, Object},
 };
 
@@ -68,6 +71,23 @@ impl Plugin for Recipes {
             return;
         };
         *ANSWER.lock().unwrap() = Some(run(&call));
+    }
+
+    fn commands() -> Vec<Command> {
+        vec![Command {
+            id: "run".into(),
+            title: "Run an object call".into(),
+            palette: false,
+            plugins: true,
+        }]
+    }
+
+    fn run_command(id: String, input: String) -> Result<String, String> {
+        if id == "run" {
+            Ok(run(&input).join("\n"))
+        } else {
+            Err(format!("unknown command {id}"))
+        }
     }
 
     fn object_types() -> Vec<ObjectType> {
@@ -239,6 +259,7 @@ fn describe(error: &Error) -> String {
             problem.property, problem.code
         ),
         Error::AlreadyExists(path) => format!("error\talready-exists\t{path}"),
+        other => format!("error\tother\t{other:?}"),
     }
 }
 

@@ -12,6 +12,7 @@ members = [
     "crates/plugin-host",
     "crates/plugin-host/trial/rust-hello",
     "crates/plugin-host/test-plugins/kit",
+    "crates/plugin-host/test-plugins/misbehave",
     "crates/plugin-host/test-plugins/probe",
     "crates/plugin-host/test-plugins/recipes",
     "crates/plugin-host/test-plugins/uses-files",
@@ -126,6 +127,10 @@ ignore = "0.4"
 # and Linux, named pipes on Windows.
 interprocess = "2.4.6"
 jiff = { version = "0.2", features = ["serde"] }
+# Checks the arguments of plugin tools against each tool's JSON Schema.
+# Without default features it resolves no `$ref` over the network or from
+# files.
+jsonschema = { version = "0.59.0", default-features = false }
 keyring = "4"
 # Rotates the local diagnostic log at 1 MB and keeps three old files.
 logroller = "0.1.12"

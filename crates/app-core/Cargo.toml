@@ -21,6 +21,7 @@ hayro.workspace = true
 # Tells a calendar date property from text shaped like one, and reads this
 # computer's clock in its time zone for the Inbox's greeting.
 jiff.workspace = true
+jsonschema.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
 nucleo-matcher.workspace = true
 plugin-host = { version = "0.2.0", path = "../plugin-host" }

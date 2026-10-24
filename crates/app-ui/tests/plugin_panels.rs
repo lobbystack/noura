@@ -73,6 +73,16 @@ fn a_recipe_opens_with_the_plugins_panel_whose_button_changes_the_file() {
         .get_by_role_and_label(Role::TreeItem, "Tiramisu")
         .click();
     harness.run_steps(4);
+    // The plugin draws its panel on its own thread.
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Group, "Properties")
+            .is_some_and(|panel| {
+                panel
+                    .query_by_role_and_label(Role::Group, "Recipe")
+                    .is_some()
+            })
+    });
 
     harness.get_by_role_and_label(Role::Document, "Note text");
     let panel = harness.get_by_role_and_label(Role::Group, "Properties");

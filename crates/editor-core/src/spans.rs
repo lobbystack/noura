@@ -380,29 +380,35 @@ impl<'ast> MdDoc {
     /// spans, math, images, wikilinks, bare URLs, link destinations,
     /// escapes and HTML other than `<u>` and `</u>`.
     fn literal_ranges(&self, container: &'ast AstNode<'ast>) -> Vec<(Grapheme, Grapheme)> {
-        let mut ranges = Vec::new();
-        for node in container.descendants().skip(1) {
-            let range = self.node_range(node);
-            match &node.data.borrow().value {
-                NodeValue::Code(_)
-                | NodeValue::Math(_)
-                | NodeValue::Image(_)
-                | NodeValue::WikiLink(_)
-                | NodeValue::Escaped => ranges.push(range),
-                NodeValue::HtmlInline(html) if html != "<u>" && html != "</u>" => {
-                    ranges.push(range)
+        container
+            .descendants()
+            .skip(1)
+            .filter_map(|node| self.literal_range(node))
+            .collect()
+    }
+
+    /// The part of an inline `node` whose text is literal: all of a code
+    /// span, math, an image, a wikilink, a bare URL, a link without a
+    /// label, an escape or HTML other than `<u>` and `</u>`, and a labeled
+    /// link's destination. `None` for other nodes.
+    pub(crate) fn literal_range(&self, node: &'ast AstNode<'ast>) -> Option<(Grapheme, Grapheme)> {
+        let range = self.node_range(node);
+        match &node.data.borrow().value {
+            NodeValue::Code(_)
+            | NodeValue::Math(_)
+            | NodeValue::Image(_)
+            | NodeValue::WikiLink(_)
+            | NodeValue::Escaped => Some(range),
+            NodeValue::HtmlInline(html) if html != "<u>" && html != "</u>" => Some(range),
+            NodeValue::Link(link) => {
+                if self.link_is_auto(node, &link.url) || node.children().next().is_none() {
+                    Some(range)
+                } else {
+                    self.postfix_range(node)
                 }
-                NodeValue::Link(link) => {
-                    if self.link_is_auto(node, &link.url) || node.children().next().is_none() {
-                        ranges.push(range);
-                    } else if let Some(postfix) = self.postfix_range(node) {
-                        ranges.push(postfix);
-                    }
-                }
-                _ => {}
             }
+            _ => None,
         }
-        ranges
     }
 
     /// The spans whose range touches `range`, in source order.

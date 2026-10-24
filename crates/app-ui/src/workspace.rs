@@ -275,7 +275,7 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
                 ui.label(RichText::new(&file.name).size(TITLE_SIZE).strong());
                 muted(ui, &file.relative_path);
             }
-            TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app),
+            TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app, state.window),
             TabContent::Page { title, page_id } => {
                 ui.label(RichText::new(title).size(TITLE_SIZE).strong());
                 if state.app.is_plugin_page(page_id) {

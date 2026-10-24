@@ -103,6 +103,18 @@ struct Table {
     schemas: ObjectTypeRegistry,
 }
 
+impl Table {
+    /// Build `schemas` again from `held`, after types left it.
+    fn rebuild_schemas(&mut self) {
+        let mut schemas = ObjectTypeRegistry::new();
+        for (object_type, held) in &self.held {
+            // Each schema registered once already, so it registers again.
+            let _ = schemas.register(object_type, held.schema.clone());
+        }
+        self.schemas = schemas;
+    }
+}
+
 struct Held {
     plugin: String,
     instance: u64,
@@ -116,7 +128,9 @@ impl ObjectTypes {
 
     /// Register `object_type` for the plugin `plugin`, with `schema` in the
     /// workspace format's declaration, as JSON. `instance` names the running
-    /// instance, whose stop releases it.
+    /// instance, whose stop releases it. A plugin that registers one of its
+    /// own types again, as a new build or a new start of it does, replaces
+    /// the type's schema and holds it under `instance`.
     pub fn register(
         &self,
         plugin: &str,
@@ -140,10 +154,14 @@ impl ObjectTypes {
             serde_json::from_str(schema).map_err(|error| invalid(error.to_string()))?;
         let mut table = self.write();
         if let Some(held) = table.held.get(object_type) {
-            return Err(TypeError::HeldByPlugin {
-                object_type: object_type.to_owned(),
-                plugin: held.plugin.clone(),
-            });
+            if held.plugin != plugin {
+                return Err(TypeError::HeldByPlugin {
+                    object_type: object_type.to_owned(),
+                    plugin: held.plugin.clone(),
+                });
+            }
+            table.held.remove(object_type);
+            table.rebuild_schemas();
         }
         if table
             .held
@@ -177,12 +195,7 @@ impl ObjectTypes {
             return;
         }
         table.held.retain(|_, held| held.instance != instance);
-        let mut schemas = ObjectTypeRegistry::new();
-        for (object_type, held) in &table.held {
-            // Each schema registered once already, so it registers again.
-            let _ = schemas.register(object_type, held.schema.clone());
-        }
-        table.schemas = schemas;
+        table.rebuild_schemas();
     }
 
     /// The plugin that holds `object_type`.

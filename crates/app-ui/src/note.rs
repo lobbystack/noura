@@ -7,7 +7,7 @@
 
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
-use app_core::{App, ConflictChoice, PluginView, Property, PropertyValue, TabId};
+use app_core::{App, ConflictChoice, OpenAs, PluginView, Property, PropertyValue, TabId};
 use editor_egui::{Editor, MdConfig, SpellChecker};
 use egui::{
     Button, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
@@ -737,6 +737,16 @@ fn body(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
             note.editor.text(),
             Instant::now(),
         );
+    }
+    // A link opens what it leads to as a single click in the tree does.
+    // Cmd-click, Ctrl-click and a middle-click open it in a new tab.
+    for link in response.opened_links {
+        let how = if link.new_tab {
+            OpenAs::Kept
+        } else {
+            OpenAs::Preview
+        };
+        app.follow_note_link(tab, &link.target, how);
     }
 }
 
