@@ -162,3 +162,29 @@ fn urls_and_email_addresses_are_not_marked() {
         ]
     );
 }
+
+/// Tags and block IDs are names, and a comment hides its text away from
+/// the caret, so none of them is marked. A word inside `<u>` tags or a
+/// highlight is prose.
+#[test]
+fn tags_block_ids_and_hidden_comments_are_not_marked() {
+    const SYNTAX: &str = "Teh #teh tag, <u>teh</u> and ==teh== and %%teh%% end ^teh\n\nlast\n";
+    let mut harness = harness_on(SYNTAX, Some(Arc::new(Fake)));
+    place_caret(&mut harness, SYNTAX.len() - 1);
+
+    // The text drawn marked; a highlight's padding shares its scope.
+    let marked_at: Vec<usize> = editor(&harness)
+        .painted_spans()
+        .into_iter()
+        .filter(|span| span.misspelled && span.glyphs)
+        .map(|span| span.source_range.0.0)
+        .collect();
+    assert_eq!(
+        marked_at,
+        [
+            0,
+            SYNTAX.find("<u>teh").unwrap() + 3,
+            SYNTAX.find("==teh").unwrap() + 2
+        ]
+    );
+}
