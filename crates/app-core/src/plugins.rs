@@ -1420,7 +1420,9 @@ impl Plugins {
     }
 
     /// The files changed, as the listing `listing` shows: each running
-    /// plugin draws its views again, once per listing.
+    /// plugin draws its views again, once per listing, and its properties
+    /// panels the next time they show, since a panel may show other files
+    /// than its object's, as a project's shows its tasks.
     pub(crate) fn files_changed(&mut self, listing: u64) {
         if listing <= self.listing_drawn {
             return;
@@ -1428,6 +1430,11 @@ impl Plugins {
         self.listing_drawn = listing;
         let ids: Vec<String> = self.running.keys().cloned().collect();
         for id in ids {
+            if let Some(running) = self.running.get_mut(&id) {
+                for panel in running.panels.values_mut() {
+                    panel.drawn = Drawn::Nothing;
+                }
+            }
             self.send(&id, Job::Redraw);
         }
     }
