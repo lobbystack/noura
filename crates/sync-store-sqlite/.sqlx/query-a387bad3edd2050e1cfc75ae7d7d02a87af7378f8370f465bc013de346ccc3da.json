@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO workspaces\n               (workspace, owner, creation_digest, creation_response, policy_revision, policy_head)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "a387bad3edd2050e1cfc75ae7d7d02a87af7378f8370f465bc013de346ccc3da"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO policy_changes (workspace, revision, digest, record) VALUES (?1, ?2, ?3, ?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "19e3a4b31387c1345182ab0d2f8e3efbf6c87445c96e8e9dbad64afc27bf0556"
+}

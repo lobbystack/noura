@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO profiles (workspace, profile_revision, record) VALUES (?1, ?2, ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2230aad6216eeb123c502709c6431cb3685c85668962952c55656fcaa1f20158"
+}

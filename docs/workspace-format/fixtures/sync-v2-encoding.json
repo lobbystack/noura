@@ -4248,6 +4248,10 @@
 		{
 			"code": "share_limit",
 			"status": 409
+		},
+		{
+			"code": "internal",
+			"status": 500
 		}
 	],
 	"tags": [

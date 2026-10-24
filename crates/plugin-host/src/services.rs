@@ -55,6 +55,15 @@ pub enum ServiceError {
     /// The call failed. The message is for the plugin's author and holds no
     /// raw system details.
     Failed(String),
+    /// The file no longer holds the revision the write carried. Holds the
+    /// object's ID.
+    RevisionConflict(String),
+    /// More than one file holds this stable ID.
+    IdentityConflict(String),
+    /// A property doesn't fit the object type's schema.
+    InvalidProperty(PropertyProblem),
+    /// Something already has the path the write asked for.
+    AlreadyExists(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,4 +122,81 @@ pub trait WorkspaceReads: Send + Sync {
 
     /// The object with the stable ID `id`.
     fn read_object(&self, id: &str) -> Result<ObjectRead, ServiceError>;
+}
+
+/// A property whose value doesn't fit its object type's schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyProblem {
+    pub property: String,
+    /// The workspace format's validation code, such as `not_allowed`.
+    pub code: String,
+}
+
+/// An object of a plugin's own type, as its file holds it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectRecord {
+    pub id: String,
+    pub object_type: String,
+    pub title: String,
+    pub path: WorkspacePath,
+    pub body: String,
+    /// The frontmatter's other properties, as a JSON object.
+    pub properties: String,
+    pub revision: String,
+    /// The first property, in the schema's order, that doesn't fit the
+    /// type's schema. The file stays as it is.
+    pub problem: Option<PropertyProblem>,
+}
+
+/// A new object of a plugin's own type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewObject {
+    pub object_type: String,
+    /// Names the file when `path` is `None`. With a path, the path's file
+    /// name is the title and this one may be empty.
+    pub title: String,
+    pub path: Option<WorkspacePath>,
+    pub body: String,
+    pub properties: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What an update changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectChanges {
+    pub body: Option<String>,
+    /// Properties to set.
+    pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Properties to remove.
+    pub remove: Vec<String>,
+}
+
+/// Creates, reads, changes, moves and deletes objects for plugins that
+/// hold the `object-types` capability. The host calls it only about types
+/// the calling plugin registered. Writes pass the type's schema and return
+/// once the file is durably on disk.
+pub trait WorkspaceObjects: Send + Sync {
+    fn create(&self, object: NewObject) -> Result<ObjectRecord, ServiceError>;
+
+    /// The object with the stable ID `id`, read from its file.
+    fn get(&self, id: &str) -> Result<ObjectRecord, ServiceError>;
+
+    /// Every object of `object_type`, read from their files.
+    fn list(&self, object_type: &str) -> Result<Vec<ObjectRecord>, ServiceError>;
+
+    fn update(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        changes: ObjectChanges,
+    ) -> Result<ObjectRecord, ServiceError>;
+
+    fn move_to(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        path: &WorkspacePath,
+    ) -> Result<ObjectRecord, ServiceError>;
+
+    /// Move the object's file to the trash.
+    fn delete(&self, id: &str, expected_revision: &str) -> Result<(), ServiceError>;
 }

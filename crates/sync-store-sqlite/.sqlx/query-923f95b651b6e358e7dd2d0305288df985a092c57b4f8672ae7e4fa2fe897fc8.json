@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO operations\n               (workspace, domain, seq, device, counter, rid, digest, is_delete, class, weight)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "923f95b651b6e358e7dd2d0305288df985a092c57b4f8672ae7e4fa2fe897fc8"
+}

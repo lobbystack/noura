@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT rid, device, counter, seq, digest FROM operations\n             WHERE workspace = ?1 AND domain = ?2 AND is_delete = 1 AND dropped = 0\n               AND seq > ?3 AND seq <= ?4\n             ORDER BY seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "rid",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "rid"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "counter",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "counter"
+          }
+        }
+      },
+      {
+        "name": "seq",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "name": "digest",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "digest"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dee187d6d7101dd41d4f749854a30197b3947ca1ae63299c908e0e28548510ec"
+}

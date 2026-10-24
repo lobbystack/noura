@@ -13,6 +13,12 @@ egui = { workspace = true, features = ["default_fonts"] }
 egui_extras.workspace = true
 # Draws and edits the open note.
 editor-egui = { version = "0.2.0", path = "../editor-egui" }
+# Month, weekday and time names on calendar grids, in the computer's
+# locale.
+icu_calendar.workspace = true
+icu_datetime.workspace = true
+icu_locale_core.workspace = true
+icu_time.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]

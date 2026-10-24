@@ -1,0 +1,15 @@
+[package]
+name = "recipes-plugin"
+description = "A test plugin that registers the recipe object type, writes recipes on request and draws their properties panel."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+plugin-sdk = { version = "0.2.0", path = "../../../plugin-sdk" }
+serde_json.workspace = true

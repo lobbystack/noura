@@ -12,7 +12,8 @@
 //! - `markdown:deep`: Markdown nodes with emphasis, quotes and lists
 //!   nested a hundred thousand deep.
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
-//! - `events`: the events the plugin received, oldest first.
+//! - `events`: the events the plugin received, oldest first: a press as
+//!   `<page> pressed <node>`, any other event in its debug form.
 //! - anything else: a panel with a line of text and a button.
 //!
 //! Its pages are `hello`, titled Probe, `workspace`, `markdown`,
@@ -21,7 +22,10 @@
 
 use std::sync::Mutex;
 
-use plugin_sdk::{Error, Event, Node, NodeKind, Page, Plugin, View, workspace};
+use plugin_sdk::{
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, Error, Event, Input, Item, ItemList,
+    MenuItem, Node, NodeKind, Page, Plugin, Table, Value, View, VirtualList, VirtualRow, workspace,
+};
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -90,12 +94,16 @@ impl Plugin for Probe {
         view.into_nodes()
     }
 
+    fn rows(_page: String, _node: String, _start: u32, _count: u32) -> Vec<VirtualRow> {
+        Vec::new()
+    }
+
     fn handle_event(page: String, event: Event) {
-        let Event::Pressed(node) = event;
-        EVENTS
-            .lock()
-            .unwrap()
-            .push(format!("{page} pressed {node}"));
+        let what = match event {
+            Event::Pressed(node) => format!("pressed {node}"),
+            other => format!("{other:?}"),
+        };
+        EVENTS.lock().unwrap().push(format!("{page} {what}"));
     }
 }
 
@@ -202,6 +210,7 @@ fn describe(error: &Error) -> String {
         Error::InvalidPath(path) => format!("error invalid-path {path}"),
         Error::NotFound(what) => format!("error not-found {what}"),
         Error::Failed(message) => format!("error failed {message}"),
+        other => format!("error {other:?}"),
     }
 }
 
@@ -231,8 +240,275 @@ fn broken(case: &str) -> Vec<Node> {
         "duplicate-id" => vec![root(&[1, 2]), text("same"), text("same")],
         "children-of-text" => vec![root(&[1]), node("a", NodeKind::Text("a".into()), &[0])],
         "empty" => Vec::new(),
+        "row-cells" => vec![
+            root(&[1]),
+            node("plants", table(&["Plant", "Bed"]), &[2]),
+            node(
+                "basil",
+                NodeKind::Row(cells(&["Basil", "Herbs", "April"])),
+                &[],
+            ),
+        ],
+        "unlabeled-input" => vec![
+            root(&[1]),
+            node("name", input(" ", Value::Text(String::new())), &[]),
+        ],
+        "empty-menu" => vec![
+            root(&[1]),
+            node("more", NodeKind::Button("More".into()), &[2]),
+            node("more-menu", NodeKind::Menu("More actions".into()), &[3]),
+            node("gap", NodeKind::Separator, &[]),
+        ],
+        "item-outside-list" => vec![root(&[1]), node("north", item("North bed"), &[])],
+        "panel-in-list" => vec![
+            root(&[1]),
+            node("beds", item_list("Beds"), &[2]),
+            node("inner", NodeKind::Panel(None), &[]),
+        ],
+        "two-menus" => vec![
+            root(&[1]),
+            node("beds", item_list("Beds"), &[2]),
+            node("north", item("North bed"), &[3, 5]),
+            node("menu-a", NodeKind::Menu("A".into()), &[4]),
+            node("water", menu_item("Water"), &[]),
+            node("menu-b", NodeKind::Menu("B".into()), &[6]),
+            node("weed", menu_item("Weed"), &[]),
+        ],
+        "menu-in-panel" => vec![
+            root(&[1]),
+            node("loose", NodeKind::Menu("Loose".into()), &[2]),
+            node("water", menu_item("Water"), &[]),
+        ],
+        "bad-date" => vec![
+            root(&[1]),
+            node(
+                "sown",
+                input("Sown on", Value::Date(Some("2026-02-30".into()))),
+                &[],
+            ),
+        ],
+        "bad-date-time" => vec![
+            root(&[1]),
+            node(
+                "at",
+                input(
+                    "Transplant at",
+                    Value::DateTime(Some("2026-10-21 09:30".into())),
+                ),
+                &[],
+            ),
+        ],
+        "unknown-choice" => vec![
+            root(&[1]),
+            node(
+                "sun",
+                NodeKind::Input(Input {
+                    label: "Sun".into(),
+                    value: Value::Choice(Some("moon".into())),
+                    choices: vec![Choice {
+                        id: "full".into(),
+                        label: "Full sun".into(),
+                    }],
+                }),
+                &[],
+            ),
+        ],
+        "choices-on-text" => vec![
+            root(&[1]),
+            node(
+                "name",
+                NodeKind::Input(Input {
+                    label: "Name".into(),
+                    value: Value::Text(String::new()),
+                    choices: vec![Choice {
+                        id: "full".into(),
+                        label: "Full sun".into(),
+                    }],
+                }),
+                &[],
+            ),
+        ],
+        "form-in-form" => vec![
+            root(&[1]),
+            node("outer", form("Outer"), &[2]),
+            node("inner", form("Inner"), &[]),
+        ],
+        "no-columns" => vec![root(&[1]), node("plants", table(&[]), &[])],
+        "blank-row" => vec![
+            root(&[1]),
+            node("plants", table(&["Plant", "Bed"]), &[2]),
+            node("gap", NodeKind::Row(cells(&["", "  "])), &[]),
+        ],
+        "long-virtual-list" => vec![
+            root(&[1]),
+            node(
+                "seeds",
+                NodeKind::VirtualList(VirtualList {
+                    label: "Seeds".into(),
+                    rows: 1_000_001,
+                }),
+                &[],
+            ),
+        ],
+        "card-outside-column" => vec![root(&[1]), node("plan", card("Plan"), &[])],
+        "column-outside-board" => vec![root(&[1]), node("todo", column("To do"), &[])],
+        "item-in-board" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("north", item("North bed"), &[]),
+        ],
+        "panel-in-column" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column("To do"), &[3]),
+            node("inner", NodeKind::Panel(None), &[]),
+        ],
+        "unlabeled-column" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column(" "), &[]),
+        ],
+        "unlabeled-card" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column("To do"), &[3]),
+            node("plan", card(""), &[]),
+        ],
+        "board-without-columns" => vec![root(&[1]), node("work", board(), &[])],
+        "card-with-two-menus" => vec![
+            root(&[1]),
+            node("work", board(), &[2]),
+            node("todo", column("To do"), &[3]),
+            node("plan", card("Plan"), &[4, 6]),
+            node("menu-a", NodeKind::Menu("A".into()), &[5]),
+            node("start", menu_item("Start"), &[]),
+            node("menu-b", NodeKind::Menu("B".into()), &[7]),
+            node("finish", menu_item("Finish"), &[]),
+        ],
+        "entry-outside-calendar" => vec![root(&[1]), node("standup", standup(), &[])],
+        "item-in-calendar" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("north", item("North bed"), &[]),
+        ],
+        "unlabeled-calendar" => vec![
+            root(&[1]),
+            node("schedule", calendar("", "2026-10-21"), &[]),
+        ],
+        "untitled-entry" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("standup", entry(" ", "2026-10-21", None), &[]),
+        ],
+        "bad-calendar-date" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-32"), &[]),
+        ],
+        "bad-entry-start" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node("standup", entry("Standup", "2026-10-21 09:00", None), &[]),
+        ],
+        "mixed-entry-end" => vec![
+            root(&[1]),
+            node("schedule", calendar("Schedule", "2026-10-21"), &[2]),
+            node(
+                "standup",
+                entry("Standup", "2026-10-21T09:00:00-04:00", Some("2026-10-22")),
+                &[],
+            ),
+        ],
         _ => vec![root(&[])],
     }
+}
+
+fn calendar(label: &str, date: &str) -> NodeKind {
+    NodeKind::Calendar(Calendar {
+        label: label.into(),
+        mode: CalendarMode::Week,
+        date: date.into(),
+    })
+}
+
+fn entry(title: &str, start: &str, end: Option<&str>) -> NodeKind {
+    NodeKind::Entry(CalendarEntry {
+        title: title.into(),
+        start: start.into(),
+        end: end.map(Into::into),
+    })
+}
+
+fn standup() -> NodeKind {
+    entry("Standup", "2026-10-21T09:00:00-04:00", None)
+}
+
+fn item_list(label: &str) -> NodeKind {
+    NodeKind::List(ItemList {
+        label: label.into(),
+        reorder: false,
+    })
+}
+
+fn board() -> NodeKind {
+    NodeKind::Board("Work".into())
+}
+
+fn column(label: &str) -> NodeKind {
+    NodeKind::BoardColumn(label.into())
+}
+
+fn card(label: &str) -> NodeKind {
+    NodeKind::Card(Item {
+        label: label.into(),
+        detail: None,
+    })
+}
+
+fn cells(cells: &[&str]) -> Vec<String> {
+    cells.iter().map(|cell| (*cell).to_owned()).collect()
+}
+
+fn table(titles: &[&str]) -> NodeKind {
+    NodeKind::Table(Table {
+        label: "Plants".into(),
+        columns: titles
+            .iter()
+            .map(|title| Column {
+                id: title.to_lowercase(),
+                title: (*title).to_owned(),
+                sorted: None,
+            })
+            .collect(),
+    })
+}
+
+fn input(label: &str, value: Value) -> NodeKind {
+    NodeKind::Input(Input {
+        label: label.into(),
+        value,
+        choices: Vec::new(),
+    })
+}
+
+fn item(label: &str) -> NodeKind {
+    NodeKind::Item(Item {
+        label: label.into(),
+        detail: None,
+    })
+}
+
+fn menu_item(label: &str) -> NodeKind {
+    NodeKind::MenuItem(MenuItem {
+        label: label.into(),
+        enabled: true,
+    })
+}
+
+fn form(label: &str) -> NodeKind {
+    NodeKind::Form(plugin_sdk::Form {
+        label: label.into(),
+        submit: "Save".into(),
+    })
 }
 
 plugin_sdk::export!(Probe);

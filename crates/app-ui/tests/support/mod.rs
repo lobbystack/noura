@@ -2,6 +2,7 @@
 
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
+pub mod kit;
 pub mod plugins;
 
 use std::{
@@ -119,7 +120,8 @@ pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
 
 /// A system that records what Noura asks of it. Its trash refuses, so
 /// trashed items land in the workspace's trash folder, where tests can
-/// find them. Its clock says 9 am until a test sets another hour.
+/// find them. Its clock says 9 am until a test sets another hour, in
+/// Toronto's time zone, and it formats dates and times in US English.
 pub struct FakeSystem {
     platform: Platform,
     pub calls: Mutex<Vec<String>>,
@@ -194,6 +196,15 @@ impl System for FakeSystem {
 
     fn local_hour(&self) -> u8 {
         self.hour.load(Ordering::SeqCst)
+    }
+
+    /// Toronto's rules, whatever zone the machine running the tests is in.
+    fn time_zone(&self) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").expect("a valid POSIX time zone")
+    }
+
+    fn locale(&self) -> Option<String> {
+        Some("en-US".to_owned())
     }
 }
 
