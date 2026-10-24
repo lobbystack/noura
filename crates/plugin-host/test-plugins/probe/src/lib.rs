@@ -590,6 +590,17 @@ fn broken(case: &str) -> Vec<Node> {
             node("outer", form("Outer"), &[2]),
             node("inner", form("Inner"), &[]),
         ],
+        "required-checkbox" => vec![
+            root(&[1]),
+            node("new-bed", requiring("New bed", "shaded"), &[2]),
+            node("shaded", input("Shaded", Value::Checkbox(false)), &[]),
+        ],
+        "required-elsewhere" => vec![
+            root(&[1, 3]),
+            node("new-bed", requiring("New bed", "name"), &[2]),
+            node("size", input("Size", Value::Text(String::new())), &[]),
+            node("name", input("Name", Value::Text(String::new())), &[]),
+        ],
         "no-columns" => vec![root(&[1]), node("plants", table(&[]), &[])],
         "blank-row" => vec![
             root(&[1]),
@@ -843,6 +854,16 @@ fn form(label: &str) -> NodeKind {
     NodeKind::Form(plugin_sdk::Form {
         label: label.into(),
         submit: "Save".into(),
+        required: Vec::new(),
+    })
+}
+
+/// A form that waits for its input `input` to hold text.
+fn requiring(label: &str, input: &str) -> NodeKind {
+    NodeKind::Form(plugin_sdk::Form {
+        label: label.into(),
+        submit: "Save".into(),
+        required: vec![input.into()],
     })
 }
 

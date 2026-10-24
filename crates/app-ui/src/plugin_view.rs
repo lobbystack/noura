@@ -285,7 +285,11 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             rows::virtual_list(ui, node, label, *rows, kit);
         }
         ViewKind::Table { label, columns } => rows::table(ui, node, label, columns, kit),
-        ViewKind::Form { label, submit } => form::form(ui, node, label, submit, kit),
+        ViewKind::Form {
+            label,
+            submit,
+            required,
+        } => form::form(ui, node, (label, submit, required), kit),
         ViewKind::Input { .. } => form::input(ui, node, kit),
         ViewKind::NameField { label, value } => form::name_field(ui, node, label, value, kit),
         // Their list, table, board or menu draws them.

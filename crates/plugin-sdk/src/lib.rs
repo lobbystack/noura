@@ -626,8 +626,23 @@ impl View {
         let form = Form {
             label: label.to_owned(),
             submit: submit.to_owned(),
+            required: Vec::new(),
         };
         self.add(parent, id, NodeKind::Form(form))
+    }
+
+    /// Keep the form at `form` from being submitted until its text input
+    /// with the node ID `input` holds more than spaces. Its submit button
+    /// shows disabled meanwhile.
+    ///
+    /// # Panics
+    ///
+    /// When `form` isn't the index of a form already added.
+    pub fn require(&mut self, form: u32, input: &str) {
+        match &mut self.nodes[form as usize].kind {
+            NodeKind::Form(form) => form.required.push(input.to_owned()),
+            _ => panic!("only a form requires an input"),
+        }
     }
 
     /// Add a labeled input holding `value`, whose case sets the kind of

@@ -129,6 +129,14 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
             "Only a choice input has options, and the input name isn't one.",
         ),
         ("form-in-form", "The form inner sits inside another form."),
+        (
+            "required-checkbox",
+            "The form new-bed requires shaded, which isn't a text input inside it.",
+        ),
+        (
+            "required-elsewhere",
+            "The form new-bed requires name, which isn't a text input inside it.",
+        ),
         ("no-columns", "The table plants has no columns."),
         ("blank-row", "The row gap has no cell with text."),
         (
@@ -955,7 +963,8 @@ const UNKNOWN_KIND: &str = r#"
       (field "warning" (option string))))
     (export $item "item" (type $item'))
     (type $item-list' (record
-      (field "label" string) (field "reorder" bool) (field "selected" (option string))))
+      (field "label" string) (field "reorder" bool) (field "selected" (option string))
+      (field "opens-on-click" bool)))
     (export $item-list "item-list" (type $item-list'))
     (type $name-field' (record (field "label" string) (field "value" string)))
     (export $name-field "name-field" (type $name-field'))
@@ -970,7 +979,8 @@ const UNKNOWN_KIND: &str = r#"
     (export $column "column" (type $column'))
     (type $table' (record (field "label" string) (field "columns" (list $column))))
     (export $table "table" (type $table'))
-    (type $form' (record (field "label" string) (field "submit" string)))
+    (type $form' (record
+      (field "label" string) (field "submit" string) (field "required" (list string))))
     (export $form "form" (type $form'))
     (type $value' (variant
       (case "text" string) (case "multiline" string) (case "checkbox" bool)

@@ -64,6 +64,10 @@ struct State {
     due_listed: BTreeMap<String, String>,
     /// What Due today says about the last change from it.
     due_notice: Option<String>,
+    /// How many tasks Due today's field added, which names its next field.
+    added: u32,
+    /// Why the last task the field added couldn't be created.
+    add_problem: Option<String>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -78,6 +82,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     panel_notices: BTreeMap::new(),
     due_listed: BTreeMap::new(),
     due_notice: None,
+    added: 0,
+    add_problem: None,
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {

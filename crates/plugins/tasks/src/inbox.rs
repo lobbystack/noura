@@ -1,16 +1,21 @@
 //! The Due today section Tasks adds to the Inbox: how many tasks not
 //! marked done are due by the end of today, overdue included, and the
 //! first six of them in the Tasks list order. One click opens a task, its
-//! checkbox completes it against the revision the section drew, and All
-//! tasks opens the Tasks page.
+//! checkbox completes it against the revision the section drew, All tasks
+//! opens the Tasks page, and a field adds a task due on this device's
+//! date.
 
 use plugin_sdk::{
-    Event, InboxSection, Node, View,
+    Event, InboxSection, Node, Value, View,
     navigation::{self, Placement},
+    objects::{self, NewObject},
 };
+use serde_json::json;
 
 use crate::{
-    PAGE, reason, set_done, state, tasks,
+    PAGE, reason, set_done, state,
+    task::TASK,
+    tasks,
     views::{self, Choice, Now},
 };
 
@@ -25,6 +30,9 @@ const LIST: &str = "due";
 
 /// The button that opens the Tasks page.
 const ALL_TASKS: &str = "all-tasks";
+
+/// The form that adds a task due today.
+const ADD: &str = "add-today";
 
 pub(crate) fn sections() -> Vec<InboxSection> {
     vec![InboxSection {
@@ -79,6 +87,16 @@ pub(crate) fn render() -> Vec<Node> {
         }
     }
     view.button(View::ROOT, ALL_TASKS, "All tasks");
+    let state = self::state();
+    let form = view.form(View::ROOT, ADD, "Add a task for today", "Add");
+    // Each task added starts a new field, so the field you typed in
+    // clears; one that failed keeps what you typed.
+    let input = format!("today-name-{}", state.added);
+    view.input(form, &input, "Task", Value::Text(String::new()));
+    view.require(form, &input);
+    if let Some(problem) = &state.add_problem {
+        view.text(View::ROOT, "add-problem", problem);
+    }
     view.into_nodes()
 }
 
@@ -95,6 +113,18 @@ pub(crate) fn handle(event: Event) {
                 state().due_notice = Some(format!("Couldn't open Tasks: {}", reason(&error)));
             }
         }
+        Event::Submitted(submission) if submission.node == ADD => {
+            let name = submission
+                .fields
+                .iter()
+                .find_map(|field| match &field.value {
+                    Value::Text(text) => Some(text.trim().to_owned()),
+                    _ => None,
+                });
+            if let Some(name) = name.filter(|name| !name.is_empty()) {
+                add(&name);
+            }
+        }
         Event::Checked(check) if check.node == LIST => {
             let Some(revision) = state().due_listed.get(&check.item).cloned() else {
                 return;
@@ -102,6 +132,32 @@ pub(crate) fn handle(event: Event) {
             state().due_notice = set_done(&check.item, &revision, check.checked);
         }
         _ => {}
+    }
+}
+
+/// Create a task named `name` due on this device's date today. A create
+/// that failed says why and keeps the field as you left it.
+fn add(name: &str) {
+    let today = Now::read().today;
+    let created = objects::create(&NewObject {
+        object_type: TASK.to_owned(),
+        title: name.to_owned(),
+        path: None,
+        body: String::new(),
+        properties: json!({ "due": today.to_string() }).to_string(),
+    });
+    let mut state = state();
+    match created {
+        Ok(_) => {
+            state.added += 1;
+            state.add_problem = None;
+        }
+        Err(error) => {
+            state.add_problem = Some(format!(
+                "Couldn't add \u{201c}{name}\u{201d}. {}",
+                reason(&error)
+            ));
+        }
     }
 }
 

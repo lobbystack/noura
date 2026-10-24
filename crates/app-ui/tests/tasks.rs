@@ -504,3 +504,55 @@ fn due_today_says_when_nothing_is_due_and_all_tasks_opens_the_tasks_page() {
             .is_some_and(|tab| tab.title() == "Tasks")
     });
 }
+
+fn add_button(harness: &Ui) -> egui_kittest::Node<'_> {
+    harness
+        .get_by_role_and_label(Role::Form, "Add a task for today")
+        .get_by_role_and_label(Role::Button, "Add")
+}
+
+#[test]
+fn add_stays_disabled_until_you_type_a_name_and_the_field_clears_after_adding() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    open_page(&mut harness, "Inbox");
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Form, "Add a task for today")
+            .is_some()
+    });
+    assert!(add_button(&harness).accesskit_node().is_disabled());
+
+    harness
+        .get_by_role_and_label(Role::Form, "Add a task for today")
+        .get_by_role_and_label(Role::TextInput, "Task")
+        .focus();
+    run(&mut harness);
+    type_text(&mut harness, "   ");
+    assert!(add_button(&harness).accesskit_node().is_disabled());
+    type_text(&mut harness, "Buy seeds");
+    assert!(!add_button(&harness).accesskit_node().is_disabled());
+
+    add_button(&harness).click();
+
+    wait_until(&mut harness, |harness| {
+        due_today(harness).contains(&"Buy seeds".to_owned())
+    });
+    let today = jiff::Timestamp::now()
+        .to_zoned(harness.state().app().time_zone())
+        .date()
+        .to_string();
+    let text = std::fs::read_to_string(folder.join("tasks/Buy seeds.md")).unwrap();
+    assert!(text.contains(&format!("due: {today}")), "{text}");
+    let field = harness
+        .get_by_role_and_label(Role::Form, "Add a task for today")
+        .get_by_role_and_label(Role::TextInput, "Task");
+    assert_eq!(field.value().unwrap_or_default(), "");
+    assert!(add_button(&harness).accesskit_node().is_disabled());
+}

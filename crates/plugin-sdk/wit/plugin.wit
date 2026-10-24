@@ -317,6 +317,10 @@ interface ui {
     label: string,
     // The label of the button that submits the form.
     submit: string,
+    // The node IDs of text inputs inside the form that must hold more
+    // than spaces before you can submit it. The submit button shows
+    // disabled until they do.
+    required: list<string>,
   }
 
   // What an input holds. The case sets the kind of input Noura draws.

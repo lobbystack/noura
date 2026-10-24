@@ -8,7 +8,7 @@
 
 mod support;
 
-use app_core::{OpenAs, PluginCheck, PluginEvent, Target, ViewKind};
+use app_core::{Field, InputValue, OpenAs, PluginCheck, PluginEvent, Submission, Target, ViewKind};
 use support::{
     FakeSystem, Fixture,
     tasks::{
@@ -242,4 +242,121 @@ fn a_check_against_a_stale_revision_leaves_the_file_and_reloads_the_section() {
     assert_eq!(pay.detail.as_deref(), Some("Yesterday"));
     assert_eq!(pay.warning.as_deref(), Some("Overdue"));
     assert_eq!(pay.checked, Some(false));
+}
+
+/// The add field's form as Due today draws it.
+struct AddForm {
+    label: String,
+    submit: String,
+    /// The inputs that need a name before Add works.
+    required: Vec<String>,
+    /// The input's node ID and the text it holds.
+    input: String,
+    text: String,
+}
+
+fn add_form(app: &app_core::App) -> AddForm {
+    let view = due_view(app);
+    let form = find(view.root(), "add-today").expect("Due today has the add field");
+    let ViewKind::Form {
+        label,
+        submit,
+        required,
+    } = &form.kind
+    else {
+        panic!("the add field isn't a form: {:?}", form.kind);
+    };
+    let [input] = form.children.as_slice() else {
+        panic!("the add form holds {} nodes", form.children.len());
+    };
+    let ViewKind::Input {
+        label: input_label,
+        value: InputValue::Text(text),
+        ..
+    } = &input.kind
+    else {
+        panic!("the add form's input isn't text: {:?}", input.kind);
+    };
+    assert_eq!(input_label, "Task");
+    AddForm {
+        label: label.clone(),
+        submit: submit.clone(),
+        required: required.clone(),
+        input: input.id.clone(),
+        text: text.clone(),
+    }
+}
+
+fn add(app: &mut app_core::App, input: &str, name: &str) {
+    send_due(
+        app,
+        PluginEvent::Submitted(Submission {
+            node: "add-today".to_owned(),
+            fields: vec![Field {
+                node: input.to_owned(),
+                value: InputValue::Text(name.to_owned()),
+            }],
+        }),
+    );
+}
+
+#[test]
+fn the_add_field_creates_a_task_due_on_the_devices_date_then_clears() {
+    let fixture = Fixture::new(&[(
+        "tasks/Read the manual.md",
+        &task(F, "status: todo\npriority: medium\n"),
+    )]);
+    // 23:30 on 21 October in Toronto is already the 22nd in UTC.
+    let system = FakeSystem::new();
+    system.set_clock("2026-10-22T03:30:00Z", "America/Toronto");
+    let mut app = fixture.app_with(system);
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    assert_eq!(
+        due_text(&app, "nothing-due").as_deref(),
+        Some("Nothing due today.")
+    );
+
+    let form = add_form(&app);
+    assert_eq!(form.label, "Add a task for today");
+    assert_eq!(form.submit, "Add");
+    // Add waits for a name.
+    assert_eq!(form.required, [form.input.clone()]);
+    assert_eq!(form.text, "");
+
+    add(&mut app, &form.input, "Buy seeds");
+
+    let bytes = fixture.read("tasks/Buy seeds.md");
+    assert_eq!(property(&bytes, "due"), Some("2026-10-21".into()));
+    assert_eq!(property(&bytes, "status"), Some("todo".into()));
+    assert_eq!(due_labels(&app), ["Buy seeds"]);
+    assert_eq!(due_text(&app, "due-count").as_deref(), Some("1 task"));
+    // The field starts again, empty.
+    let next = add_form(&app);
+    assert_ne!(next.input, form.input);
+    assert_eq!(next.required, [next.input.clone()]);
+    assert_eq!(next.text, "");
+}
+
+#[test]
+fn an_add_that_fails_keeps_the_field_and_says_why() {
+    // A file named `tasks` stands where the tasks folder goes.
+    let fixture = Fixture::new(&[("tasks", b"in the way")]);
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    let before = fixture.snapshot();
+    let form = add_form(&app);
+
+    add(&mut app, &form.input, "Buy seeds");
+
+    assert_eq!(fixture.snapshot(), before);
+    assert_eq!(add_form(&app).input, form.input);
+    let problem = due_text(&app, "add-problem").expect("Due today says why");
+    assert!(
+        problem.starts_with("Couldn't add \u{201c}Buy seeds\u{201d}."),
+        "{problem}"
+    );
 }
