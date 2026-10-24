@@ -553,7 +553,7 @@ impl App {
 
     /// The file tree, to move its focus or type ahead in it. Opening and
     /// closing folders goes through `App`'s own methods, such as
-    /// [`App::activate_tree_row`] and [`App::collapse_all`], so the
+    /// [`App::click_tree_row`] and [`App::collapse_all`], so the
     /// workspace remembers which folders are open.
     pub fn tree_mut(&mut self) -> Option<&mut FileTree> {
         self.tree.as_mut()

@@ -884,6 +884,60 @@ impl Worker {
         Some(self.pending.remove(first))
     }
 
+    /// Take the requests waiting in the channel. `false` once the session
+    /// dropped its end, as when the tab closes.
+    fn take_waiting(&mut self) -> bool {
+        loop {
+            match self.requests.try_recv() {
+                Ok(request) => self.pending.push(request),
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => return false,
+            }
+        }
+    }
+
+    /// Take the newest drawing of the page waiting, and drop the older
+    /// ones.
+    fn take_newest_page(&mut self) -> Option<Request> {
+        let is_page = |request: &Request| {
+            matches!(
+                request,
+                Request::Render {
+                    kind: Kind::Page,
+                    ..
+                }
+            )
+        };
+        let newest = self.pending.iter().rposition(is_page)?;
+        let request = self.pending.remove(newest);
+        self.pending.retain(|request| !is_page(request));
+        Some(request)
+    }
+
+    /// Draw page `page` of `pdf` at `density` pixels per point, and answer
+    /// with the picture or that it couldn't be drawn.
+    fn render<'a>(
+        &self,
+        pdf: &'a Pdf,
+        cache: &RenderCache<'a>,
+        kind: Kind,
+        page: usize,
+        density: f32,
+    ) {
+        let shown = page.checked_sub(1).and_then(|index| pdf.pages().get(index));
+        self.gate.wait();
+        let drawn = shown
+            .filter(|_| !self.gate.failing())
+            .and_then(|shown| draw(shown, cache, page, density));
+        match drawn {
+            Some(picture) => self.answer(Answer::Rendered { kind, picture }),
+            None => {
+                tracing::warn!("a PDF page couldn't be drawn");
+                self.answer(Answer::NotDrawn { kind, page });
+            }
+        }
+    }
+
     /// Whether the file changed since `stamp`.
     fn changed(&self, stamp: &Stamp) -> bool {
         self.stamp() != *stamp
@@ -916,32 +970,32 @@ impl Worker {
                     kind,
                     page,
                     density,
-                }) => {
-                    let shown = page.checked_sub(1).and_then(|index| pdf.pages().get(index));
-                    self.gate.wait();
-                    let drawn = shown
-                        .filter(|_| !self.gate.failing())
-                        .and_then(|shown| draw(shown, &cache, page, density));
-                    match drawn {
-                        Some(picture) => self.answer(Answer::Rendered { kind, picture }),
-                        None => {
-                            tracing::warn!("a PDF page couldn't be drawn");
-                            self.answer(Answer::NotDrawn { kind, page });
-                        }
-                    }
-                }
+                }) => self.render(pdf, &cache, kind, page, density),
                 Some(Request::Search { generation, query }) => {
                     let mut matches = Vec::new();
                     let needle = fold(&query);
                     for (index, page) in pdf.pages().iter().enumerate() {
+                        // The tab closed, so nobody waits for the search.
+                        if !self.take_waiting() {
+                            return Next::Stop;
+                        }
                         // A newer search replaces this one.
-                        self.pending.extend(self.requests.try_iter());
                         if self
                             .pending
                             .iter()
                             .any(|request| matches!(request, Request::Search { .. }))
                         {
                             break;
+                        }
+                        // The page you're looking at draws before the
+                        // search goes on.
+                        if let Some(Request::Render {
+                            kind,
+                            page: shown,
+                            density,
+                        }) = self.take_newest_page()
+                        {
+                            self.render(pdf, &cache, kind, shown, density);
                         }
                         let lines = texts[index].get_or_insert_with(|| page_text(page));
                         matches.extend(find(lines, &needle, index + 1));
@@ -1347,6 +1401,49 @@ mod tests {
                 return;
             }
             assert!(Instant::now() < deadline, "timed out waiting until {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The 400 dense pages of the large fixture, which take the search a
+    /// while.
+    const LARGE: &[u8] = include_bytes!("../tests/fixtures/pdf/large.pdf");
+
+    #[test]
+    fn the_page_draws_while_a_long_search_runs() {
+        let (mut session, _folders) = session("large.pdf", LARGE);
+        wait_until(&mut session, "the PDF opens", |view| {
+            view.state() == &PdfState::Ready
+        });
+        session.search("no such words");
+        // The search is under way when the page is asked for.
+        std::thread::sleep(Duration::from_millis(200));
+
+        session.go_to(5);
+        session.size(612.0, 1.0);
+
+        wait_until(&mut session, "page 5 draws", |view| {
+            view.picture().is_some_and(|picture| picture.page == 5)
+        });
+        assert!(session.view().search().searching, "the search ended first");
+    }
+
+    #[test]
+    fn a_search_stops_when_its_tab_closes() {
+        let (mut session, _folders) = session("large.pdf", LARGE);
+        let engine = Arc::clone(&session.engine);
+        wait_until(&mut session, "the PDF opens", |view| {
+            view.state() == &PdfState::Ready
+        });
+        session.search("no such words");
+        std::thread::sleep(Duration::from_millis(200));
+
+        drop(session);
+
+        // The thread lets go of the workspace when it stops.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Arc::strong_count(&engine) > 1 {
+            assert!(Instant::now() < deadline, "the thread kept searching");
             std::thread::sleep(Duration::from_millis(5));
         }
     }

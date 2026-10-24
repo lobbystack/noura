@@ -32,9 +32,13 @@ pub(crate) struct PdfViews {
     tabs: HashMap<TabId, PdfTab>,
 }
 
+/// The most characters the password field takes: a PDF password counts
+/// at most 127 bytes, and the PDF ignores any past them.
+const PASSWORD_CHARS: usize = 127;
+
 /// The room the password field's text has before it moves, which would
-/// leave a copy behind.
-const PASSWORD_ROOM: usize = 256;
+/// leave a copy behind: four bytes for each character it takes.
+const PASSWORD_ROOM: usize = PASSWORD_CHARS * 4;
 
 #[derive(Default)]
 struct PdfTab {
@@ -206,6 +210,7 @@ fn password_form(
                 TextEdit::singleline(&mut view.password)
                     .id(password_id(window, tab))
                     .password(true)
+                    .char_limit(PASSWORD_CHARS)
                     .hint_text("Password")
                     .desired_width(220.0),
             )

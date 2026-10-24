@@ -7,7 +7,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use app_core::{App, IMAGE_EXTENSIONS, ImageState, OpenAs, TabId};
+use app_core::{App, IMAGE_EXTENSIONS, ImageState, OpenAs, TabId, TreeKey};
 use support::{Call, FakeSystem, Fixture, open_from_tree};
 
 /// Poll until `done` holds.
@@ -94,8 +94,7 @@ fn any_other_file_goes_to_the_default_app_and_opens_no_tab() {
     let note = open_from_tree(&mut app, "Plan.md");
 
     support::select(&mut app, "archive.zip");
-    let row = app.tree().unwrap().focused().unwrap();
-    app.activate_tree_row(row, OpenAs::Preview);
+    app.press_tree_key(TreeKey::Enter);
     app.open_file("Talks/Slides.key", OpenAs::Kept);
     app.open_file("song.mp3", OpenAs::Preview);
 
@@ -111,6 +110,37 @@ fn any_other_file_goes_to_the_default_app_and_opens_no_tab() {
         ]
     );
     assert_eq!(app.notice(), None);
+}
+
+#[test]
+fn a_click_only_selects_a_file_that_opens_in_no_tab_and_enter_or_space_opens_it_once() {
+    let fixture = Fixture::new(&[("Plan.md", b"# Plan\n"), ("archive.zip", b"PK")]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    let note = open_from_tree(&mut app, "Plan.md");
+    let archive = app
+        .tree()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|row| row.relative_path == "archive.zip")
+        .unwrap();
+
+    // A click, a Cmd-click and the clicks of a double-click.
+    app.click_tree_row(archive, OpenAs::Preview);
+    app.click_tree_row(archive, OpenAs::Kept);
+
+    assert_eq!(app.tree().unwrap().focused(), Some(archive));
+    assert_eq!(app.active_tab().unwrap().id(), note);
+    assert_eq!(system.calls(), []);
+
+    app.press_tree_key(TreeKey::Enter);
+    app.press_tree_key(TreeKey::Activate);
+
+    let opened = Call::OpenFile(fixture.root.join("archive.zip"));
+    assert_eq!(system.calls(), [opened.clone(), opened]);
+    let tabs: Vec<TabId> = app.tabs().iter().map(app_core::Tab::id).collect();
+    assert_eq!(tabs, [note]);
 }
 
 #[test]

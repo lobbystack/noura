@@ -6,13 +6,14 @@ mod support;
 
 use std::{
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use app_core::{PdfState, PdfZoom, TabId};
-use egui::{Key, accesskit::Role};
+use app_core::{PdfState, PdfZoom, Platform, TabId};
+use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable};
-use support::{FakePicker, create_workspace, harness, settle};
+use support::{FakePicker, FakeSystem, create_workspace, harness_with, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -37,15 +38,48 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 
 /// A workspace holding `files`, open in a window.
 fn workspace(app_data: &Path, folder: &Path, files: &[(&str, &[u8])]) -> Ui {
+    workspace_on(
+        app_data,
+        folder,
+        files,
+        FakeSystem::new(Platform::current()),
+    )
+}
+
+/// A workspace holding `files`, open in a window whose app asks `system`.
+fn workspace_on(
+    app_data: &Path,
+    folder: &Path,
+    files: &[(&str, &[u8])],
+    system: Arc<FakeSystem>,
+) -> Ui {
     create_workspace(app_data, "Garden", folder);
     for (name, bytes) in files {
         let path = folder.join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
-    let mut harness = harness(app_data, FakePicker::default());
+    let mut harness = harness_with(app_data, FakePicker::default(), system);
     settle(&mut harness);
     harness
+}
+
+/// Click at `pos`, in a frame of its own. The harness steps a quarter
+/// second a frame, so two clicks in a row make a double-click, as a
+/// person's do: the second click's frame reports a click and a
+/// double-click.
+fn click_at(harness: &mut Ui, pos: egui::Pos2) {
+    let button = |pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness
+        .input_mut()
+        .events
+        .extend([Event::PointerMoved(pos), button(true), button(false)]);
+    harness.step();
 }
 
 /// Open the tree row labelled `row`.
@@ -358,6 +392,33 @@ fn a_locked_pdf_asks_for_its_password_and_says_when_its_wrong() {
 }
 
 #[test]
+fn the_password_field_takes_the_127_characters_a_pdf_password_can_hold() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = workspace(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("locked.pdf", &pdf("locked.pdf"))],
+    );
+    open(&mut harness, "locked.pdf");
+    wait_until(&mut harness, "the PDF asks for its password", |harness| {
+        harness
+            .query_by_role_and_label(Role::PasswordInput, "PDF password")
+            .is_some()
+    });
+    harness.run_steps(2);
+
+    harness
+        .get_by_role_and_label(Role::PasswordInput, "PDF password")
+        .type_text(&"\u{e9}".repeat(300));
+    harness.run_steps(2);
+
+    let field = harness.get_by_role_and_label(Role::PasswordInput, "PDF password");
+    let typed = field.value().unwrap_or_default();
+    assert_eq!(typed.chars().count(), 127);
+}
+
+#[test]
 fn a_pdf_embedded_in_a_note_shows_its_page_and_opens_in_a_tab_at_that_page() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
@@ -418,4 +479,84 @@ fn an_image_opens_in_a_viewer_labelled_with_its_file_name() {
     });
     let tab = active(&harness);
     assert!(harness.state().app().image(tab).is_some());
+}
+
+#[test]
+fn an_image_too_large_for_a_texture_draws_scaled_down_to_fit() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = workspace(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("wide.png", &png(9000, 10)), ("tall.png", &png(10, 9000))],
+    );
+    // kittest's limit, which the desktop app's GPU sets at 8192.
+    harness.input_mut().max_texture_side = Some(2048);
+
+    for name in ["wide.png", "tall.png"] {
+        open(&mut harness, name);
+        wait_until(&mut harness, "the image draws", |harness| {
+            harness.query_by_role_and_label(Role::Image, name).is_some()
+        });
+        let shown = harness.get_by_role_and_label(Role::Image, name).rect();
+        // It keeps its shape: 900 to 1, fit to the tab.
+        let (long, short) = (
+            shown.width().max(shown.height()),
+            shown.width().min(shown.height()),
+        );
+        assert!(long > 400.0 && short < 1.0, "{name} drew at {shown:?}");
+    }
+    let max_side = harness.ctx.input(|input| input.max_texture_side);
+    let textures = harness.ctx.tex_manager();
+    for (_, meta) in textures.read().allocated() {
+        assert!(
+            meta.size.iter().all(|side| (1..=max_side).contains(side)),
+            "{} is {:?}, past the {max_side}-pixel limit",
+            meta.name,
+            meta.size
+        );
+    }
+}
+
+#[test]
+fn a_click_selects_a_file_that_opens_in_no_tab_and_a_double_click_opens_it_once() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = workspace_on(
+        app_data.path(),
+        &folder,
+        &[("archive.zip", b"PK")],
+        system.clone(),
+    );
+    let row = harness
+        .get_by_role_and_label(Role::TreeItem, "archive.zip")
+        .rect()
+        .center();
+
+    click_at(&mut harness, row);
+    harness.run();
+
+    assert!(
+        harness
+            .get_by_role_and_label(Role::TreeItem, "archive.zip")
+            .is_focused()
+    );
+    assert!(harness.state().app().tabs().is_empty());
+    assert_eq!(system.calls(), Vec::<String>::new());
+
+    click_at(&mut harness, row);
+    click_at(&mut harness, row);
+    harness.run();
+
+    let canonical = folder.canonicalize().unwrap();
+    assert_eq!(
+        system.calls(),
+        [format!(
+            "open file {}",
+            canonical.join("archive.zip").display()
+        )]
+    );
+    assert!(harness.state().app().tabs().is_empty());
 }

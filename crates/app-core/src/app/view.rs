@@ -265,8 +265,20 @@ impl App {
     }
 
     /// A click on the tree's `row`: open a file as `how` says, or open or
-    /// close a folder.
-    pub fn activate_tree_row(&mut self, row: usize, how: OpenAs) {
+    /// close a folder. A file that opens in no tab only becomes the
+    /// current row, as in the legacy tree, so a click never starts another
+    /// app: a double-click, Enter or Space hands it to the default app.
+    pub fn click_tree_row(&mut self, row: usize, how: OpenAs) {
+        let Some(tree) = &mut self.tree else {
+            return;
+        };
+        if let Some(entry) = tree.rows().get(row)
+            && entry.kind == crate::EntryKind::File
+            && !opens_in_tab(&entry.relative_path)
+        {
+            tree.set_focus(row);
+            return;
+        }
         if let Some(TreeAction::OpenFile { relative_path }) =
             self.change_tree(|tree| tree.activate(row))
         {
