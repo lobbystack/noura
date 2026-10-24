@@ -256,29 +256,41 @@ impl DeviceSignIn {
     pub async fn finish(mut self, pause: &dyn Pause) -> Result<SignedIn, SyncError> {
         loop {
             pause.pause(self.interval).await;
-            match self.client.device_token(&self.device_code).await {
-                Ok(token) => {
-                    return Ok(SignedIn {
-                        server: self.client.base().to_owned(),
-                        account: token.account,
-                        session_token: token.session_token.0,
-                    });
-                }
-                Err(SyncError::Refused { code, .. }) => match code.as_str() {
-                    "authorization_pending" => {}
-                    "slow_down" => self.interval += POLL_SECONDS,
-                    "access_denied" => return Err(SyncError::SignIn(SignInEnd::Refused)),
-                    "expired_token" => return Err(SyncError::SignIn(SignInEnd::Expired)),
-                    _ => {
-                        return Err(SyncError::Refused {
-                            code,
-                            status: 400,
-                            detail: None,
-                        });
-                    }
-                },
-                Err(error) => return Err(error),
+            if let Some(signed_in) = self.poll_once().await? {
+                return Ok(signed_in);
             }
+        }
+    }
+
+    /// The seconds to wait before the next poll.
+    pub fn interval(&self) -> u64 {
+        self.interval
+    }
+
+    /// Polls once: the session once you approved the code, or `None` while
+    /// it waits, after which the caller waits [`DeviceSignIn::interval`].
+    pub async fn poll_once(&mut self) -> Result<Option<SignedIn>, SyncError> {
+        match self.client.device_token(&self.device_code).await {
+            Ok(token) => Ok(Some(SignedIn {
+                server: self.client.base().to_owned(),
+                account: token.account,
+                session_token: token.session_token.0,
+            })),
+            Err(SyncError::Refused { code, .. }) => match code.as_str() {
+                "authorization_pending" => Ok(None),
+                "slow_down" => {
+                    self.interval += POLL_SECONDS;
+                    Ok(None)
+                }
+                "access_denied" => Err(SyncError::SignIn(SignInEnd::Refused)),
+                "expired_token" => Err(SyncError::SignIn(SignInEnd::Expired)),
+                _ => Err(SyncError::Refused {
+                    code,
+                    status: 400,
+                    detail: None,
+                }),
+            },
+            Err(error) => Err(error),
         }
     }
 }

@@ -3,6 +3,7 @@
 //! This crate calls only `app-core`: it draws [`App`]'s view state and sends
 //! it what people do.
 
+mod account;
 mod chooser;
 mod common;
 mod dates;

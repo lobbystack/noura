@@ -43,6 +43,8 @@ use sync_protocol::messages::{
 };
 
 pub use account_heads::{Anchor, KeptHeads};
+/// The credential store of v2 device secrets on this computer.
+pub use local_core::sync::DeviceKeychain;
 use sync_protocol::policy::{AccountChains, PolicyChain};
 use sync_protocol::records::{
     AccountHead, AccountLink, Card, Content, Epoch, EpochBundle, Operation, Payload, PayloadKind,

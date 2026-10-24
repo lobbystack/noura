@@ -36,6 +36,7 @@ use crate::{
     workspace::identity_changed,
 };
 
+mod account;
 mod commands;
 mod drops;
 mod file_actions;
@@ -116,6 +117,8 @@ pub enum Change {
     Notice,
     /// The update status changed.
     Update,
+    /// The sync account screens changed.
+    Account,
     /// Settings or the Ignored files page changed.
     Settings,
     /// The appearance, text size or zoom changed.

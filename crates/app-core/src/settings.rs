@@ -42,6 +42,9 @@ pub mod settings_section {
     pub const WORKSPACE: &str = "workspace";
     /// The plugins installed on this device and enabled in the workspace.
     pub const PLUGINS: &str = "plugins";
+    /// The sync account: the server, this computer's sign-in, your devices
+    /// and the recovery kit.
+    pub const SYNC_ACCOUNT: &str = "sync-account";
     /// The version, license, links and Copy diagnostics.
     pub const ABOUT: &str = "about";
     /// Check for updates, and where updating stands.
@@ -72,6 +75,11 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         (
             settings_section::SHORTCUTS,
             "Keyboard shortcuts",
+            SettingsGroup::ThisComputer,
+        ),
+        (
+            settings_section::SYNC_ACCOUNT,
+            "Sync account",
             SettingsGroup::ThisComputer,
         ),
         (

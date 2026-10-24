@@ -179,10 +179,19 @@ fn main() -> eframe::Result {
                 app_ui::theme::install(&creation.egui_ctx);
                 register_editor(creation)?;
                 // The last workspace starts reopening now, off the UI thread.
-                let system = system::DesktopSystem::new(creation.egui_ctx.clone());
-                let mut app = App::launch_with(&app_data, Arc::new(system));
+                let system = Arc::new(system::DesktopSystem::new(creation.egui_ctx.clone()));
+                let mut app = App::launch_with(&app_data, system.clone());
                 let _ = writes.set(app.pending_writes().clone());
                 app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
+                // The sync account keeps this computer's keys and session in
+                // credential store items that never leave it, and signs in
+                // through the system browser.
+                let browser = system.clone();
+                app.set_account_backend(Arc::new(app_core::account::live::LiveAccount::start(
+                    app_data.clone(),
+                    Arc::new(app_core::sync::DeviceKeychain),
+                    Arc::new(move |url: &str| app_core::System::open_url(&*browser, url)),
+                )));
                 if let Some(list) = licenses::bundled_licenses() {
                     app.set_third_party_licenses(list);
                 }

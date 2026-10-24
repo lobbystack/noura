@@ -17,6 +17,7 @@
 //! and off per workspace and runs them through `plugin-host`, each on a
 //! thread of its own.
 
+pub mod account;
 mod app;
 mod calendar_grid;
 mod commands;

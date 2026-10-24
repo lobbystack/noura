@@ -63,6 +63,8 @@ pub(crate) struct Session {
     /// Held apart from `state`, so a plugin call never blocks a window
     /// that only reads the session.
     plugins: Mutex<Plugins>,
+    /// The sync account every window's account screens show.
+    account: Mutex<Arc<dyn crate::account::AccountBackend>>,
 }
 
 struct State {
@@ -228,7 +230,31 @@ impl Session {
                 departures: 0,
             }),
             plugins: Mutex::new(plugins),
+            account: Mutex::new(Arc::new(crate::account::NoAccount::default())),
         }
+    }
+
+    /// The sync account backend every window shares.
+    pub(crate) fn account(&self) -> Arc<dyn crate::account::AccountBackend> {
+        self.account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Runs the account screens with `backend`, which wakes every window
+    /// when the screens change.
+    pub(crate) fn set_account(self: &Arc<Self>, backend: Arc<dyn crate::account::AccountBackend>) {
+        let session = Arc::downgrade(self);
+        backend.set_wake(Arc::new(move || {
+            if let Some(session) = session.upgrade() {
+                session.emit_all(Change::Account);
+            }
+        }));
+        *self
+            .account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
     }
 
     /// The plugins service every window shares.

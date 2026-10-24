@@ -30,6 +30,8 @@ pub(crate) struct SettingsView {
     return_focus: Option<Id>,
     /// The name being typed in Name and location, once you start typing.
     name: Option<String>,
+    /// What the Sync account section remembers.
+    account: crate::account::AccountView,
 }
 
 /// Draw Settings while it is open in the window whose ID salt is
@@ -155,6 +157,9 @@ fn content(
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
         settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
+        settings_section::SYNC_ACCOUNT => {
+            crate::account::section(ui, app, &mut view.account, picker)
+        }
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
         id if app.is_plugin_settings(id) => crate::plugin_view::show_settings(ui, app, window, id),
