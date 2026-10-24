@@ -25,12 +25,15 @@ mod workspace;
 
 use std::{
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Palette, Screen, TabId};
-use egui::{Event, ThemePreference, ViewportId};
+use egui::{Event, Id, ThemePreference, ViewportId};
 
 /// Finds misspelled words for the notes, such as the system's spell
 /// checker.
@@ -39,6 +42,9 @@ pub use editor_egui::SpellChecker;
 /// How often a window checks on a running note save while it draws no
 /// frame.
 const SAVE_CHECK: Duration = Duration::from_millis(100);
+
+/// How many windows this process has made, which numbers the next.
+static WINDOWS: AtomicU64 = AtomicU64::new(0);
 
 /// Asks the person for a folder. The desktop app shows the system dialog;
 /// tests answer with a folder of their own.
@@ -69,6 +75,9 @@ pub struct NouraUi {
     /// The tab the document area showed last frame.
     shown_tab: Option<TabId>,
     started: bool,
+    /// This window's own salt for IDs in egui's memory. Every window draws
+    /// with one egui context, so they share that memory.
+    window: Id,
 }
 
 impl NouraUi {
@@ -88,6 +97,7 @@ impl NouraUi {
             type_ahead: Vec::new(),
             shown_tab: None,
             started: false,
+            window: Id::unique(("noura-window", WINDOWS.fetch_add(1, Ordering::Relaxed))),
         }
     }
 
