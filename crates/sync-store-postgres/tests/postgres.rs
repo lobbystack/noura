@@ -2,8 +2,10 @@
 //! into one domain commit together with a savepoint each; pushes into
 //! different workspaces, and into different domains of one workspace,
 //! commit in parallel while a policy change waits; the policy lock writes
-//! no row; no push holds the notification lock through its commit; and a
-//! pull waiting on one instance wakes when another commits, and only then.
+//! no row; no push holds or waits for the notification lock, or for a
+//! connection that does; a push reads the state a policy change it waited
+//! for left, whatever the database's default isolation; and a pull waiting
+//! on one instance wakes when another commits, and only then.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,12 +15,12 @@ use sqlx::{Connection, PgConnection};
 use sync_protocol::codec::List;
 use sync_protocol::keys::{EpochParams, build_epoch};
 use sync_protocol::messages::{EntryRecord, PullCursor, PullRequest};
-use sync_protocol::records::{PolicyKind, Signed};
+use sync_protocol::records::{PolicyChange, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use sync_store::conformance::{World, head_of, manager};
 use sync_store::{Backend, INITIAL_RESTORE_GENERATION, LockPlan, Store, WriteTxn};
-use sync_store_postgres::PgBackend;
 use sync_store_postgres::testing::{Cluster, TestDatabase};
+use sync_store_postgres::{CONNECTIONS, PgBackend};
 
 fn tmp() -> &'static Path {
     Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -58,8 +60,15 @@ async fn open() -> (Store<PgBackend>, TestDatabase) {
     (instance(&database.url).await, database)
 }
 
-/// A restricted domain with its epoch 1, which the world's account manages.
-async fn add_domain(world: &mut World<PgBackend>) -> Id {
+/// A change that creates a restricted domain, which the world's account
+/// manages, and the domain's epoch 1.
+fn create_domain(
+    world: &World<PgBackend>,
+) -> (
+    Id,
+    Signed<PolicyChange>,
+    Signed<sync_protocol::records::Epoch>,
+) {
     let domain = Id::random().expect("random");
     let change = world.change(
         0,
@@ -89,6 +98,13 @@ async fn add_domain(world: &mut World<PgBackend>) -> Id {
         ),
         creator.keys.signing(),
     );
+    (domain, change, epoch)
+}
+
+/// Adds a restricted domain with its epoch 1, which the world's account
+/// manages.
+async fn add_domain(world: &mut World<PgBackend>) -> Id {
+    let (domain, change, epoch) = create_domain(world);
     let existing = vec![world.domain];
     world
         .inject_policy(change, existing, Some((domain, epoch)))
@@ -342,12 +358,51 @@ async fn no_push_holds_the_notification_lock() {
         "a notification inside a transaction waits for the notification lock"
     );
 
-    // A push commits and answers all the same.
-    let op = world.op(0, |_| {});
-    tokio::time::timeout(Duration::from_secs(5), world.push(0, &[op]))
+    // Pushes commit and answer all the same, more of them than the
+    // instance has connections, while its announcer waits for the lock.
+    let mut previous = Digest::ZERO;
+    let pushes = CONNECTIONS as u64 + 8;
+    for counter in 1..=pushes {
+        let op = world.op(0, |op| {
+            op.counter = counter;
+            op.previous = previous;
+        });
+        previous = op.digest();
+        tokio::time::timeout(Duration::from_secs(5), world.push(0, &[op]))
+            .await
+            .expect("the push waits neither for the notification lock nor for a connection")
+            .expect("pushed");
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (waiting,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (
+               SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+               WHERE a.application_name = 'noura-sync-server'
+                 AND l.locktype = 'object' AND l.database = 0
+                 AND l.classid = 'pg_database'::regclass AND l.objid = 0
+                 AND NOT l.granted
+             )",
+        )
+        .fetch_one(&mut observer)
         .await
-        .expect("the push doesn't wait for the notification lock")
-        .expect("pushed");
+        .expect("locks");
+        if waiting {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the announcer never waited for the notification lock"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let page = tokio::time::timeout(Duration::from_secs(5), world.pull(0, 0))
+        .await
+        .expect("a pull gets a connection");
+    assert_eq!(page.head, 2 + pushes);
+    tokio::time::timeout(Duration::from_secs(5), world.store.backend().close())
+        .await
+        .expect("the backend closes while the lock is held");
 
     sqlx::query("SELECT pg_cancel_backend($1)")
         .bind(pid)
@@ -356,7 +411,108 @@ async fn no_push_holds_the_notification_lock() {
         .expect("the blocker is cancelled");
     let _ = blocked.await;
     observer.close().await.expect("closed");
-    world.store.backend().close().await;
+}
+
+/// How many advisory lock requests wait in the connection's database.
+async fn waiting_advisory_locks(connection: &mut PgConnection) -> i64 {
+    let (waiting,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM pg_locks
+         WHERE locktype = 'advisory' AND NOT granted
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+    )
+    .fetch_one(connection)
+    .await
+    .expect("locks");
+    waiting
+}
+
+async fn until_waiting(connection: &mut PgConnection, count: i64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while waiting_advisory_locks(connection).await < count {
+        assert!(
+            Instant::now() < deadline,
+            "{count} requests never waited for the policy lock"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_push_reads_the_state_a_policy_change_it_waited_for_left() {
+    // With a default of REPEATABLE READ, a push that names no isolation
+    // takes its snapshot before it waits for the policy lock, and then
+    // meets the head row the change rewrote. The store names READ
+    // COMMITTED, so the push reads after the lock.
+    let database = Cluster::shared(tmp()).database().await;
+    let mut observer = PgConnection::connect(&database.url)
+        .await
+        .expect("connects");
+    sqlx::raw_sql(
+        "DO $$ BEGIN EXECUTE format(
+           'ALTER DATABASE %I SET default_transaction_isolation = %L',
+           current_database(), 'repeatable read'); END $$",
+    )
+    .execute(&mut observer)
+    .await
+    .expect("the default changes");
+    sync_store_postgres::migrate(&database.url)
+        .await
+        .expect("migrated");
+    sync_store_postgres::store_secret_check(&database.url, [1; 32], INITIAL_RESTORE_GENERATION)
+        .await
+        .expect("secret check");
+    let world = Arc::new(World::new(instance(&database.url).await, 1).await);
+
+    // Another session holds the workspace's policy lock, so a change
+    // queues for it, then a push behind the change.
+    let mut holder = PgConnection::connect(&database.url)
+        .await
+        .expect("connects");
+    let mut key = [0; 8];
+    key.copy_from_slice(&world.workspace.0[..8]);
+    sqlx::raw_sql("BEGIN")
+        .execute(&mut holder)
+        .await
+        .expect("begun");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(i64::from_be_bytes(key))
+        .execute(&mut holder)
+        .await
+        .expect("the policy lock");
+    let (domain, change, epoch) = create_domain(&world);
+    let changing = {
+        let store = world.store.clone();
+        let existing = vec![world.domain];
+        tokio::spawn(async move {
+            sync_store::conformance::inject_change(&store, change, existing, Some((domain, epoch)))
+                .await
+        })
+    };
+    until_waiting(&mut observer, 1).await;
+    let pushing = {
+        let world = world.clone();
+        tokio::spawn(async move { world.push(0, &[world.op(0, |_| {})]).await })
+    };
+    until_waiting(&mut observer, 2).await;
+    sqlx::raw_sql("COMMIT")
+        .execute(&mut holder)
+        .await
+        .expect("committed");
+
+    changing
+        .await
+        .expect("the change ends")
+        .expect("the change commits");
+    let pushed = pushing
+        .await
+        .expect("the push ends")
+        .expect("the push commits after the change");
+    // The genesis and epoch entries, the change's policy entry, then the
+    // push's record.
+    assert_eq!(pushed.receipts[0].seq, 4);
+    assert_eq!(pushed.policy_revision, 2);
+    holder.close().await.expect("closed");
+    observer.close().await.expect("closed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

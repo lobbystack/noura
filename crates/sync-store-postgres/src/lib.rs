@@ -13,11 +13,13 @@
 //! only that push, and one WAL flush covers the group. Pulls and the other
 //! reads each take one read-only REPEATABLE READ snapshot.
 //!
-//! After a push commits, the instance sends `NOTIFY` with the workspace,
-//! domain and new head from its own statement outside the push's
-//! transaction, so a push that rolls back wakes nobody and no push holds
-//! PostgreSQL's notification lock through its commit. Each instance
-//! `LISTEN`s and wakes its waiting pulls on the others' notifications.
+//! After a push commits, the instance hands the workspace, domain and new
+//! head to its announcer, which sends `NOTIFY` from a connection of its own
+//! outside the request pool, one transaction at a time, with every head
+//! that waits. A push that rolls back wakes nobody, and no push holds or
+//! waits for PostgreSQL's notification lock, or for a connection that
+//! does. Each instance `LISTEN`s on another connection of its own and wakes
+//! its waiting pulls on the others' notifications.
 //!
 //! Every query is checked at compile time against `migrations/`, through the
 //! offline data in `.sqlx`.
@@ -30,7 +32,8 @@ mod limiter;
 pub mod testing;
 mod txn;
 
-use std::collections::HashMap;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
@@ -56,12 +59,18 @@ pub const CHANNEL: &str = "noura_sync_v2";
 
 /// The most pushes one write transaction commits.
 const MAX_GROUP: usize = 64;
-/// Connections per instance.
-const CONNECTIONS: u32 = 32;
+/// Connections per instance for requests. The listener and the announcer
+/// each hold one more of their own.
+pub const CONNECTIONS: u32 = 32;
 /// How long a request waits for a free connection.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long the listener waits before it tries again after a failure.
-const LISTEN_RETRY: Duration = Duration::from_secs(1);
+/// How long the listener and the announcer wait before they try again
+/// after a failure.
+const RETRY: Duration = Duration::from_secs(1);
+/// The most domains whose heads wait for the announcer; a commit into
+/// another domain meanwhile goes unannounced, which costs a waiting pull at
+/// most its wait.
+const MAX_PENDING: usize = 4_096;
 
 /// The options every connection of the store uses: the URL's, with no
 /// statement in the server's log (§29).
@@ -134,8 +143,104 @@ impl<R: Send + 'static> Queued for Request<R> {
     }
 }
 
+/// Heads that wait for the announcer, the highest per domain.
+type Heads = BTreeMap<(Id, Id), u64>;
+
+/// Adds `heads` to `pending`, keeping the highest head of each domain and
+/// at most [`MAX_PENDING`] domains.
+fn merge(pending: &mut Heads, heads: impl IntoIterator<Item = ((Id, Id), u64)>) {
+    for (domain, head) in heads {
+        let full = pending.len() >= MAX_PENDING;
+        match pending.entry(domain) {
+            Entry::Occupied(mut entry) => {
+                let highest = entry.get_mut();
+                *highest = (*highest).max(head);
+            }
+            Entry::Vacant(entry) if !full => {
+                entry.insert(head);
+            }
+            Entry::Vacant(_) => {}
+        }
+    }
+}
+
+/// The instance's announcer: heads wait in `pending` until its task sends
+/// them.
+struct Announcer {
+    pending: Arc<StdMutex<Heads>>,
+    wake: mpsc::Sender<()>,
+    task: StdMutex<Option<JoinHandle<()>>>,
+}
+
+/// Sends what waits in `pending` from one connection of its own, one
+/// transaction at a time. That session commits without waiting for a
+/// flush or a standby: a notification lost in a crash costs a waiting pull
+/// at most its wait, and the notification lock never waits on a disk or a
+/// round trip for it. While another session holds that lock, heads keep
+/// merging into `pending`, so nothing piles up.
+async fn announce_loop(
+    options: PgConnectOptions,
+    pending: Arc<StdMutex<Heads>>,
+    mut wake: mpsc::Receiver<()>,
+    instance: String,
+) {
+    let mut connection: Option<PgConnection> = None;
+    while wake.recv().await.is_some() {
+        loop {
+            let heads =
+                std::mem::take(&mut *pending.lock().unwrap_or_else(PoisonError::into_inner));
+            if heads.is_empty() {
+                break;
+            }
+            let payloads: Vec<String> = heads
+                .iter()
+                .map(|((workspace, domain), head)| {
+                    format!(
+                        "{instance}.{}.{}.{head}",
+                        workspace.to_hex(),
+                        domain.to_hex()
+                    )
+                })
+                .collect();
+            let mut session = match connection.take() {
+                Some(session) => Some(session),
+                None => options.connect().await.ok(),
+            };
+            let sent = match session.as_mut() {
+                Some(session) => sqlx::query!(
+                    r#"SELECT COUNT(*) AS "sent!" FROM unnest($2::text[]) AS payload,
+                   LATERAL pg_notify($1, payload)"#,
+                    CHANNEL,
+                    &payloads[..]
+                )
+                .fetch_one(session)
+                .await
+                .is_ok(),
+                None => false,
+            };
+            if sent {
+                connection = session;
+                continue;
+            }
+            // The heads wait for the next try, unless the backend is gone.
+            merge(
+                &mut pending.lock().unwrap_or_else(PoisonError::into_inner),
+                heads,
+            );
+            if Arc::strong_count(&pending) == 1 {
+                return;
+            }
+            tokio::time::sleep(RETRY).await;
+        }
+    }
+}
+
 struct Inner {
+    /// The connections requests use.
     pool: PgPool,
+    /// The listener's own connection.
+    listen_pool: PgPool,
+    announcer: Announcer,
     /// Each domain's queue of pushes, while its worker runs.
     groups: StdMutex<HashMap<WriteGroup, mpsc::UnboundedSender<Box<dyn Queued>>>>,
     /// Identifies this instance's notifications, which it skips.
@@ -161,7 +266,13 @@ impl Inner {
             .jobs
             .fetch_add(jobs.len() as u64, Ordering::Relaxed);
         self.stats.transactions.fetch_add(1, Ordering::Relaxed);
-        let transaction = self.pool.begin().await.map_err(|e| e.to_string())?;
+        // Named, not the database's default: a write reads the policy only
+        // after its locks, in a snapshot taken after it waited for them.
+        let transaction = self
+            .pool
+            .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await
+            .map_err(|e| e.to_string())?;
         let mut txn = PgTxn::writer(transaction, self.policy_read_delay());
         let outcome = self.run_in(&mut txn, jobs).await;
         if outcome.is_err() {
@@ -234,17 +345,37 @@ pub struct PgBackend {
 impl PgBackend {
     /// Connects to a migrated database at `url`.
     pub async fn open(url: &str) -> Result<Self> {
+        let options = connect_options(url).map_err(Error::internal)?;
         let pool = PgPoolOptions::new()
             .max_connections(CONNECTIONS)
             .acquire_timeout(ACQUIRE_TIMEOUT)
-            .connect_with(connect_options(url).map_err(Error::internal)?)
+            .connect_with(options.clone())
             .await
             .map_err(Error::internal)?;
+        let listen_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .max_lifetime(None)
+            .idle_timeout(None)
+            .connect_lazy_with(options.clone());
         let instance = Id::random().map_err(Error::internal)?.to_hex();
+        let pending = Arc::new(StdMutex::new(Heads::new()));
+        let (wake, woken) = mpsc::channel(1);
+        let task = tokio::spawn(announce_loop(
+            options.options([("synchronous_commit", "off")]),
+            pending.clone(),
+            woken,
+            instance.clone(),
+        ));
         Ok(Self {
             inner: Arc::new(Inner {
                 limiter: Arc::new(PgLimiter::new(pool.clone())),
                 pool,
+                listen_pool,
+                announcer: Announcer {
+                    pending,
+                    wake,
+                    task: StdMutex::new(Some(task)),
+                },
                 groups: StdMutex::new(HashMap::new()),
                 instance,
                 policy_read_delay: StdMutex::new(None),
@@ -271,6 +402,7 @@ impl PgBackend {
     /// reads a workspace's policy head, so it holds its locks through a
     /// wide window between the policy read and the commit, and races meet
     /// those locks.
+    #[cfg(feature = "testing")]
     pub fn inject_policy_read_delay(&self, delay: Option<Duration>) {
         *self
             .inner
@@ -325,7 +457,7 @@ async fn listen_loop(mut listener: PgListener, hub: EventHub, own: String) {
                 }
             }
             Err(sqlx::Error::PoolClosed) => return,
-            Err(_) => tokio::time::sleep(LISTEN_RETRY).await,
+            Err(_) => tokio::time::sleep(RETRY).await,
         }
     }
 }
@@ -389,7 +521,7 @@ impl Backend for PgBackend {
 
     fn attach(&self, hub: EventHub) -> BoxFut<'_, Result<()>> {
         Box::pin(async move {
-            let mut listener = PgListener::connect_with(&self.inner.pool)
+            let mut listener = PgListener::connect_with(&self.inner.listen_pool)
                 .await
                 .map_err(Error::internal)?;
             listener.listen(CHANNEL).await.map_err(Error::internal)?;
@@ -408,32 +540,21 @@ impl Backend for PgBackend {
     }
 
     fn announce(&self, workspace: Id, heads: Vec<(Id, u64)>) {
-        let payloads: Vec<String> = heads
-            .iter()
-            .map(|(domain, head)| {
-                format!(
-                    "{}.{}.{}.{head}",
-                    self.inner.instance,
-                    workspace.to_hex(),
-                    domain.to_hex()
-                )
-            })
-            .collect();
-        let pool = self.inner.pool.clone();
-        // Its own statement, after the push committed: PostgreSQL's
-        // notification lock never spans a push's commit, and the push's
-        // response doesn't wait for it. A lost notification costs a waiting
-        // pull at most its wait.
-        tokio::spawn(async move {
-            let _ = sqlx::query!(
-                r#"SELECT COUNT(*) AS "sent!" FROM unnest($2::text[]) AS payload,
-                   LATERAL pg_notify($1, payload)"#,
-                CHANNEL,
-                &payloads[..]
-            )
-            .fetch_one(&pool)
-            .await;
-        });
+        // The push's response doesn't wait: the announcer sends the heads
+        // after this push committed, from its own transaction.
+        let announcer = &self.inner.announcer;
+        merge(
+            &mut announcer
+                .pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            heads
+                .into_iter()
+                .map(|(domain, head)| ((workspace, domain), head)),
+        );
+        // A full channel already holds a wake that the announcer hasn't
+        // taken, and it reads `pending` after taking it.
+        let _ = announcer.wake.try_send(());
     }
 
     fn parallel_writes(&self) -> bool {
@@ -460,7 +581,21 @@ impl Backend for PgBackend {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            // The announcer may be waiting for the notification lock. Its
+            // heads go unannounced, and its connection closes with it.
+            let announcer = self
+                .inner
+                .announcer
+                .task
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(announcer) = announcer {
+                announcer.abort();
+                let _ = announcer.await;
+            }
             self.inner.pool.close().await;
+            self.inner.listen_pool.close().await;
             let listener = self
                 .inner
                 .listener
