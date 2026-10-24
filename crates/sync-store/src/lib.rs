@@ -967,8 +967,8 @@ impl<B: Backend> Store<B> {
     }
 
     /// Stores a session for `token`, the 32 random bytes a sign-in returns,
-    /// as their BLAKE3 hash. Until ticket 46 adds sign-in, tests and tools
-    /// create sessions this way.
+    /// as their BLAKE3 hash. Until ticket 47 adds the device grant that signs
+    /// a device in, tests and tools create device sessions this way.
     pub async fn create_session(&self, token: [u8; 32], session: Session) -> Result<()> {
         let hash = sync_protocol::crypto::hash(&token);
         self.backend
@@ -979,8 +979,9 @@ impl<B: Backend> Store<B> {
     }
 
     /// Appends verified links to an account's chain, starting a chain with
-    /// a genesis when the account has none. Until ticket 46 adds the chain
-    /// routes, tests write account chains this way.
+    /// a genesis when the account has none, checking the links but not who
+    /// sends them: tests set up stores this way. `POST /v2/accounts/chain`
+    /// runs [`Store::append_chain`], which checks the sender too.
     pub async fn append_account_links(&self, links: Vec<Signed<AccountLink>>) -> Result<u64> {
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {

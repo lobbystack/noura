@@ -281,7 +281,7 @@ impl<B: Backend> Store<B> {
 
     /// Deletes every magic link, held passkey, ceremony and enrollment
     /// challenge 10 minutes after the store issued it. The server runs this
-    /// twice a minute.
+    /// every 10 seconds.
     pub async fn delete_expired(&self) -> Result<u64> {
         let now = self.clock().now();
         self.backend()

@@ -1006,11 +1006,11 @@ async fn asset<B: Backend>(State(state): State<AppState<B>>, Path(file): Path<St
     }
 }
 
-/// Deletes sign-in rows 10 minutes after the store issued them, twice a
-/// minute, until the server stops.
+/// Deletes sign-in rows 10 minutes after the store issued them, checking
+/// every 10 seconds, until the server stops.
 pub fn spawn_expiry<B: Backend>(store: Arc<Store<B>>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
         loop {
             tick.tick().await;
             if let Err(error) = store.delete_expired().await {

@@ -182,11 +182,18 @@ pub(crate) async fn read(
     session: Session,
     cursors: &[ChainCursor],
 ) -> Result<ChainsResponse> {
-    let mut budget = MAX_BODY.saturating_sub(4);
-    let mut pages = Vec::with_capacity(cursors.len());
-    // Each page's fixed fields take 16 + 32 + 1 + 8 + 4 bytes.
+    // Each page's fixed fields take 16 + 32 + 1 + 8 + 4 bytes, and every
+    // cursor gets a page, so the pages' fixed fields must fit 1 MiB.
     const PAGE_FIELDS: usize = 61;
-    budget = budget.saturating_sub(PAGE_FIELDS * cursors.len());
+    let fixed = 4 + PAGE_FIELDS * cursors.len();
+    if fixed > MAX_BODY {
+        return Err(refuse(
+            "too_large",
+            "the cursors' pages can't fit one response",
+        ));
+    }
+    let mut budget = MAX_BODY - fixed;
+    let mut pages = Vec::with_capacity(cursors.len());
     for cursor in cursors {
         let current = txn.current_genesis(cursor.account).await?;
         let genesis = cursor

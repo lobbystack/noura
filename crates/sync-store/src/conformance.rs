@@ -57,6 +57,11 @@ macro_rules! conformance_tests {
             pull_wakes_when_another_device_pushes,
             chain_positions_and_heads,
             keys_and_epochs_serve_records_without_recipients,
+            account_chain_appends_check_who_sends_them,
+            enrolled_cards_bind_again_but_never_a_removed_id,
+            sign_in_rows_work_once_and_expire,
+            chain_reads_follow_the_policy,
+            recovery_proofs_consume_their_challenge,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -1908,6 +1913,434 @@ pub async fn keys_and_epochs_serve_records_without_recipients<B: Backend>(store:
             assert_eq!(walked.0, chain[walked.0.body.epoch as usize - 1]);
         }
     }
+}
+
+fn head_link(links: &[Signed<AccountLink>]) -> AccountHead {
+    head_of(links)
+}
+
+fn add_device(
+    signer: &DeviceKeys,
+    links: &[Signed<AccountLink>],
+    new: &Card,
+) -> Signed<AccountLink> {
+    next_link(
+        signer,
+        &head_link(links),
+        LinkKind::AddDevice {
+            card: Nested(new.clone()),
+            offer: Digest([9; 32]),
+        },
+    )
+}
+
+/// `POST /v2/accounts/chain` (§7): a link comes from a session of its
+/// signer and adds only a card a session of the account enrolled; a link
+/// after a stale head gets `account_conflict`; and links commit all or
+/// none.
+pub async fn account_chain_appends_check_who_sends_them<B: Backend>(store: Store<B>) {
+    let account = Id::random().expect("random");
+    let laptop = DeviceKeys::generate().expect("random");
+    let phone = DeviceKeys::generate().expect("random");
+    let laptop_session = Session::new(account, laptop.device());
+    let phone_session = Session::new(account, phone.device());
+    let genesis = genesis_link(&laptop, account);
+    assert_eq!(
+        refusal(
+            store
+                .append_chain(laptop_session, vec![genesis.clone()])
+                .await
+        )
+        .code,
+        "forbidden",
+        "the genesis card isn't enrolled"
+    );
+    store
+        .enroll_card(laptop.card(account))
+        .await
+        .expect("enrolled");
+    assert_eq!(
+        refusal(
+            store
+                .append_chain(phone_session, vec![genesis.clone()])
+                .await
+        )
+        .code,
+        "forbidden",
+        "another device's session"
+    );
+    let head = store
+        .append_chain(laptop_session, vec![genesis.clone()])
+        .await
+        .expect("the genesis");
+    assert_eq!(head.seqno, 1);
+    let mut links = vec![genesis];
+    let add = add_device(&laptop, &links, &phone.card(account));
+    assert_eq!(
+        refusal(store.append_chain(laptop_session, vec![add.clone()]).await).code,
+        "forbidden",
+        "the phone's card isn't enrolled"
+    );
+    store
+        .enroll_card(phone.card(account))
+        .await
+        .expect("enrolled");
+    // All or none: the add and a stale link after it store neither.
+    let stale = add_device(&laptop, &links, &phone.card(account));
+    assert_eq!(
+        refusal(
+            store
+                .append_chain(laptop_session, vec![add.clone(), stale])
+                .await
+        )
+        .code,
+        "account_conflict"
+    );
+    assert_eq!(
+        store
+            .append_chain(laptop_session, vec![add.clone()])
+            .await
+            .expect("the add")
+            .seqno,
+        2
+    );
+    links.push(add);
+    let again = genesis_link(&phone, account);
+    assert_eq!(
+        refusal(store.append_chain(phone_session, vec![again]).await).code,
+        "forbidden",
+        "the account already has a chain"
+    );
+    let chains = store
+        .read_chains(
+            phone_session,
+            sync_protocol::messages::ChainsRequest {
+                cursors: List(vec![sync_protocol::messages::ChainCursor {
+                    account,
+                    genesis: None,
+                    after: 0,
+                }]),
+            },
+        )
+        .await
+        .expect("its own chain");
+    let served: Vec<_> = chains.pages.0[0]
+        .links
+        .0
+        .iter()
+        .map(|l| l.0.clone())
+        .collect();
+    assert_eq!(served, links);
+}
+
+/// Enrolled cards (§7): the same card binds again byte for byte, and a
+/// device ID that a link of its account removed never enrolls again, with
+/// any bytes.
+pub async fn enrolled_cards_bind_again_but_never_a_removed_id<B: Backend>(store: Store<B>) {
+    let (account, keys, links) = account(2);
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
+    store
+        .enroll_card(keys[1].card(account))
+        .await
+        .expect("enrolled");
+    store
+        .enroll_card(keys[1].card(account))
+        .await
+        .expect("the same bytes again");
+    let other = Id::random().expect("random");
+    assert_eq!(
+        refusal(store.enroll_card(keys[1].card(other)).await).code,
+        "id_conflict"
+    );
+    let remove = next_link(
+        &keys[0],
+        &head_of(&links),
+        LinkKind::Remove {
+            device: keys[1].device(),
+            keep: Sorted::default(),
+        },
+    );
+    store
+        .append_account_links(vec![remove])
+        .await
+        .expect("removed");
+    assert_eq!(
+        refusal(store.enroll_card(keys[1].card(account)).await).code,
+        "id_conflict"
+    );
+}
+
+/// Sign-in rows (§7, §29): a magic link, a passkey that waits for its
+/// email, a ceremony and an enrollment challenge each work once, expire 10
+/// minutes after the store issued them, and go when the store deletes
+/// expired rows; a web session lasts until its end, with no expiry.
+pub async fn sign_in_rows_work_once_and_expire<B: Backend>(store: Store<B>) {
+    let store = store.with_secret(SecretKey([0x5e; 32]));
+    let email = "ada@example.com";
+    let link = store.issue_magic_link(email).await.expect("a link");
+    let (account, session) = store
+        .sign_in_with_magic_link(&link)
+        .await
+        .expect("used")
+        .expect("a current link");
+    assert_eq!(account, store.account_id(email).expect("an ID"));
+    assert_eq!(
+        store.account_email(account).await.expect("read"),
+        Some(email.into())
+    );
+    assert_eq!(
+        store.sign_in_with_magic_link(&link).await.expect("used"),
+        None
+    );
+    assert_eq!(
+        store.web_session(&session).await.expect("read"),
+        Some(account)
+    );
+    store.clock().advance(Duration::from_secs(365 * 24 * 3600));
+    assert_eq!(
+        store.web_session(&session).await.expect("read"),
+        Some(account)
+    );
+    store.end_web_session(&session).await.expect("ended");
+    assert_eq!(store.web_session(&session).await.expect("read"), None);
+
+    let late = store.issue_magic_link(email).await.expect("a link");
+    store.clock().advance(Duration::from_secs(600));
+    assert_eq!(
+        store.sign_in_with_magic_link(&late).await.expect("used"),
+        None
+    );
+
+    let held = store
+        .hold_passkey(email, vec![1, 2, 3], b"{}".to_vec())
+        .await
+        .expect("held");
+    let (confirmed, _) = store
+        .confirm_passkey(&held)
+        .await
+        .expect("confirmed")
+        .expect("a current confirmation");
+    assert_eq!(confirmed, account);
+    assert_eq!(store.passkeys(account).await.expect("read").len(), 1);
+    assert_eq!(store.confirm_passkey(&held).await.expect("used"), None);
+    // A credential ID that another passkey holds doesn't confirm.
+    let taken = store
+        .hold_passkey("bob@example.com", vec![1, 2, 3], b"{}".to_vec())
+        .await
+        .expect("held");
+    assert_eq!(store.confirm_passkey(&taken).await.expect("refused"), None);
+
+    let ceremony = store
+        .begin_ceremony(
+            crate::CeremonyKind::SignIn,
+            Some(account),
+            None,
+            b"state".to_vec(),
+        )
+        .await
+        .expect("begun");
+    assert!(
+        store
+            .finish_ceremony(ceremony, crate::CeremonyKind::SignUp)
+            .await
+            .expect("read")
+            .is_none(),
+        "another kind takes the row and finds nothing"
+    );
+    let ceremony = store
+        .begin_ceremony(
+            crate::CeremonyKind::SignIn,
+            Some(account),
+            None,
+            b"state".to_vec(),
+        )
+        .await
+        .expect("begun");
+    let row = store
+        .finish_ceremony(ceremony, crate::CeremonyKind::SignIn)
+        .await
+        .expect("read")
+        .expect("a current ceremony");
+    assert_eq!(row.state, b"state");
+    assert!(
+        store
+            .finish_ceremony(ceremony, crate::CeremonyKind::SignIn)
+            .await
+            .expect("read")
+            .is_none()
+    );
+
+    // Every kind of row goes 10 minutes after its issue.
+    store.issue_magic_link(email).await.expect("a link");
+    store
+        .hold_passkey(email, vec![4], b"{}".to_vec())
+        .await
+        .expect("held");
+    store
+        .begin_ceremony(
+            crate::CeremonyKind::SignUp,
+            None,
+            Some(email.into()),
+            Vec::new(),
+        )
+        .await
+        .expect("begun");
+    store
+        .challenge(Session::new(account, Id::random().expect("random")))
+        .await
+        .expect("a challenge");
+    store.clock().advance(Duration::from_secs(599));
+    assert_eq!(store.delete_expired().await.expect("swept"), 0);
+    store.clock().advance(Duration::from_secs(1));
+    assert_eq!(store.delete_expired().await.expect("swept"), 4);
+}
+
+/// `POST /v2/accounts/chains` (§7): a member's current chain in full to
+/// the workspace's devices, a removed member's chain up to its last
+/// recorded head, the remover's chain to the removed member up to its
+/// removal, and nothing to an account that shares no workspace.
+pub async fn chain_reads_follow_the_policy<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let (member, member_keys, member_links) = account(2);
+    world
+        .store
+        .append_account_links(member_links.clone())
+        .await
+        .expect("chain");
+    let member_session = Session::new(member, member_keys[0].device());
+    let shared = world.store.clone();
+    let read = |session: Session, account: Id| {
+        let store = shared.clone();
+        async move {
+            store
+                .read_chains(
+                    session,
+                    sync_protocol::messages::ChainsRequest {
+                        cursors: List(vec![sync_protocol::messages::ChainCursor {
+                            account,
+                            genesis: None,
+                            after: 0,
+                        }]),
+                    },
+                )
+                .await
+                .map(|r| r.pages.0[0].head_seqno)
+        }
+    };
+    let owner = world.devices[0].session;
+    assert_eq!(refusal(read(owner, member).await).code, "not_found");
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), head_of(&member_links[..1])],
+        PolicyKind::AddMember {
+            account: member,
+            role: sync_protocol::records::Role::Editor,
+            invitation: Id::random().expect("random"),
+        },
+    );
+    world.inject_policy(add, vec![world.domain], None).await;
+    assert_eq!(read(owner, member).await.expect("in full"), 2);
+    assert_eq!(
+        read(member_session, world.account).await.expect("recorded"),
+        1
+    );
+    let remove = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::RemoveMember { account: member },
+    );
+    world.inject_policy(remove, vec![world.domain], None).await;
+    assert_eq!(read(owner, member).await.expect("as recorded"), 1);
+    let stranger = DeviceKeys::generate().expect("random");
+    let link = next_link(
+        &world.devices[0].keys,
+        &head_of(&world.links),
+        LinkKind::AddDevice {
+            card: Nested(stranger.card(world.account)),
+            offer: Digest([9; 32]),
+        },
+    );
+    world
+        .store
+        .append_account_links(vec![link.clone()])
+        .await
+        .expect("grown");
+    world.links.push(link);
+    let heads = world.change(0, vec![head_of(&world.links)], PolicyKind::AccountHeads);
+    world.inject_policy(heads, vec![world.domain], None).await;
+    assert_eq!(
+        read(member_session, world.account)
+            .await
+            .expect("to its removal"),
+        1
+    );
+    assert_eq!(read(owner, world.account).await.expect("its own"), 2);
+}
+
+/// `POST /v2/recovery` (§12): a proof from the active recovery identity for
+/// the session's enrolled card, at the server's origin, consumes a current
+/// challenge once and lets the session read the identity's envelopes.
+pub async fn recovery_proofs_consume_their_challenge<B: Backend>(store: Store<B>) {
+    let (account, keys, mut links) = account(1);
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
+    let kit = DeviceKeys::generate().expect("random");
+    let add = next_link(
+        &keys[0],
+        &head_of(&links),
+        LinkKind::AddRecovery {
+            card: Nested(kit.card(account)),
+        },
+    );
+    store
+        .append_account_links(vec![add.clone()])
+        .await
+        .expect("kit");
+    links.push(add);
+    let phone = DeviceKeys::generate().expect("random");
+    store
+        .enroll_card(phone.card(account))
+        .await
+        .expect("enrolled");
+    let token = random_token();
+    let session = Session::new(account, phone.device());
+    store.create_session(token, session).await.expect("session");
+    let hash = sync_protocol::crypto::hash(&token);
+    let origin = "https://sync.example.com";
+    let challenge = store
+        .challenge(session)
+        .await
+        .expect("a challenge")
+        .challenge;
+    let proof =
+        sync_key_envelope::v2::recovery_proof(&kit, origin, &phone.card(account), challenge);
+    assert_eq!(
+        refusal(
+            store
+                .prove_recovery(session, hash, "https://elsewhere.example", proof.clone())
+                .await
+        )
+        .code,
+        "origin_mismatch"
+    );
+    store
+        .prove_recovery(session, hash, origin, proof.clone())
+        .await
+        .expect("proven");
+    assert_eq!(
+        refusal(store.prove_recovery(session, hash, origin, proof).await).code,
+        "challenge_invalid"
+    );
+    let proven = store
+        .session(&sync_protocol::types::to_base64url(&token))
+        .await
+        .expect("the session");
+    assert_eq!(proven.recovery, Some(kit.device()));
 }
 
 /// The access list naming `account` as a manager.

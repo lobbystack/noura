@@ -747,6 +747,66 @@ async fn the_server_serves_the_chain_reads_of_the_policy_fixture() {
     }
 }
 
+/// A chain longer than one response: each page stays within 1 MiB, and
+/// the reader asks again from the last seqno it got until it reaches
+/// `head_seqno`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_long_chain_reads_in_pages_of_at_most_one_mebibyte() {
+    let (store, _dir) = store().await;
+    let store = Arc::new(store);
+    let base = serve(store.clone()).await;
+    let account = Id::random().unwrap();
+    let laptop = DeviceKeys::generate().unwrap();
+    let mut links = vec![genesis_link(&laptop, account)];
+    for _ in 0..700 {
+        let card = DeviceKeys::generate().unwrap().card(account);
+        let device = card.device;
+        let add = next_link(
+            &laptop,
+            &head_of(&links),
+            LinkKind::AddDevice {
+                card: Nested(card),
+                offer: Digest([9; 32]),
+            },
+        );
+        links.push(add);
+        let remove = next_link(
+            &laptop,
+            &head_of(&links),
+            LinkKind::Remove {
+                device,
+                keep: Sorted::default(),
+            },
+        );
+        links.push(remove);
+    }
+    let total: usize = links.iter().map(|l| l.to_bytes().len()).sum();
+    assert!(total > 1 << 20, "{total} bytes");
+    store.append_account_links(links.clone()).await.unwrap();
+    let client = session(&store, &base, Session::new(account, laptop.device())).await;
+    let mut served: Vec<Signed<AccountLink>> = Vec::new();
+    let mut pages = 0;
+    loop {
+        let body = ChainsRequest {
+            cursors: List(vec![current(account, served.len() as u64)]),
+        }
+        .to_bytes();
+        let reply = client.post("/v2/accounts/chains", body).await;
+        assert!(reply.body.len() <= 1 << 20, "{} bytes", reply.body.len());
+        let response: ChainsResponse = reply.decode();
+        let page = &response.pages.0[0];
+        assert_eq!(page.head_seqno, links.len() as u64);
+        assert!(!page.links.0.is_empty());
+        served.extend(page.links.0.iter().map(|l| l.0.clone()));
+        pages += 1;
+        if served.len() as u64 == page.head_seqno {
+            break;
+        }
+    }
+    assert!(pages >= 2);
+    assert_eq!(served, links);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chain_bodies_decode_as_the_encoding_fixture_pins() {
     let path = concat!(

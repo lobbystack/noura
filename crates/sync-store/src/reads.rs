@@ -24,7 +24,7 @@ const CHUNK: u32 = 256;
 
 /// The session device's account chain: its account's current chain, in
 /// which the device's card must be active at the head. A card that a link
-/// removed gets `forbidden` until tickets 46 and 47 answer it with
+/// removed gets `forbidden` until ticket 47 answers it with
 /// `device_removed`.
 pub(crate) async fn session_chain(
     txn: &mut impl ReadTxn,
