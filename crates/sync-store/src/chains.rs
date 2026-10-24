@@ -64,6 +64,9 @@ pub(crate) async fn append(
                 "the account already has a chain; a reset starts another",
             ));
         }
+        if body.account != account {
+            return Err(refuse("forbidden", "the link names another account"));
+        }
         let (seqno, previous) = chain
             .as_ref()
             .map_or((1, Digest::ZERO), |c| (c.head_seqno() + 1, c.head_digest()));
@@ -72,9 +75,6 @@ pub(crate) async fn append(
                 "account_conflict",
                 "the link's previous isn't the chain's head",
             ));
-        }
-        if body.account != account {
-            return Err(refuse("forbidden", "the link names another account"));
         }
         let signer_session = body.signer == session.device
             || (matches!(body.kind, LinkKind::RecoverDevice { .. })
@@ -90,7 +90,7 @@ pub(crate) async fn append(
         | LinkKind::RecoverDevice { card } = &body.kind
         {
             let enrolled = txn.enrolled_card(card.device).await?;
-            if enrolled != Some((account, card.to_bytes())) {
+            if enrolled != Some((account, card.0.to_bytes())) {
                 return Err(refuse(
                     "forbidden",
                     "the card isn't one a session of the account enrolled",
@@ -262,12 +262,25 @@ pub(crate) async fn read(
     Ok(ChainsResponse { pages: List(pages) })
 }
 
-/// Stores a card that a session of its account enrolled. A device ID the
-/// store holds with other bytes, or that a link of any chain of the account
-/// removed, gets `id_conflict` (§7). Ticket 47's enrollment route calls
+/// Stores a card that a session of its account enrolled, or takes the same
+/// card again byte for byte. A device ID that a link of the account removed
+/// or that a chain a reset retired lists, or that the store holds with
+/// other bytes, gets `id_conflict` (§7). Ticket 47's enrollment route calls
 /// this after it verifies the proof.
 pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
     let bytes = card.to_bytes();
+    let current = txn.current_genesis(card.account).await?;
+    for (genesis, chain) in policy::chains_of(txn, card.account).await? {
+        let Some(state) = chain.card(&card.device) else {
+            continue;
+        };
+        if state.removed_at.is_some() || Some(genesis) != current {
+            return Err(refuse(
+                "id_conflict",
+                "a link removed this device ID, or a reset retired it",
+            ));
+        }
+    }
     if let Some((account, held)) = txn.enrolled_card(card.device).await? {
         if account == card.account && held == bytes {
             return Ok(());
@@ -276,14 +289,6 @@ pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
             "id_conflict",
             "the device ID is enrolled with other bytes",
         ));
-    }
-    for chain in policy::chains_of(txn, card.account).await?.values() {
-        if chain
-            .card(&card.device)
-            .is_some_and(|state| state.removed_at.is_some())
-        {
-            return Err(refuse("id_conflict", "a link removed this device ID"));
-        }
     }
     txn.insert_enrolled_card(card.device, card.account, &bytes)
         .await
