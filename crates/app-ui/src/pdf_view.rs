@@ -200,6 +200,28 @@ fn icon_button(ui: &mut Ui, icon: &str, label: &str, enabled: bool) -> egui::Res
         .on_hover_text(label)
 }
 
+/// A button with a chevron pointing up or down, which reads as `label`.
+/// egui's own fonts have no arrows, so it paints one.
+fn chevron_button(ui: &mut Ui, up: bool, label: &str, enabled: bool) -> egui::Response {
+    let response = icon_button(ui, " ", label, enabled);
+    let color = if enabled {
+        ui.style().interact(&response).fg_stroke.color
+    } else {
+        ui.visuals().widgets.noninteractive.fg_stroke.color
+    };
+    let center = response.rect.center();
+    let rise = if up { -2.5 } else { 2.5 };
+    ui.painter().line(
+        vec![
+            center + vec2(-4.0, -rise),
+            center + vec2(0.0, rise),
+            center + vec2(4.0, -rise),
+        ],
+        Stroke::new(1.5, color),
+    );
+    response
+}
+
 /// Page through, zoom and search the PDF.
 fn toolbar(
     ui: &mut Ui,
@@ -214,6 +236,7 @@ fn toolbar(
     let builder = UiBuilder::new()
         .accessibility_role(Role::Toolbar)
         .accessibility_label("PDF navigation");
+    // Each group wraps to the next row whole when the tab is narrow.
     ui.scope_builder(builder, |ui| {
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -222,28 +245,29 @@ fn toolbar(
             {
                 actions.push(Action::ToggleThumbnails);
             }
-            ui.separator();
-            if icon_button(ui, "\u{2039}", "Previous page", page > 1).clicked() {
-                actions.push(Action::PreviousPage);
-            }
-            page_field(ui, view, window.with(("pdf-page", tab)), page, actions);
-            ui.label(format!("of {count}"));
-            if icon_button(ui, "\u{203a}", "Next page", page < count).clicked() {
-                actions.push(Action::NextPage);
-            }
-            ui.separator();
-            if icon_button(ui, "\u{2212}", "Zoom out", true).clicked() {
-                actions.push(Action::ZoomOut);
-            }
-            ui.label(format!("{:.0}%", pdf.scale() * 100.0));
-            if icon_button(ui, "+", "Zoom in", true).clicked() {
-                actions.push(Action::ZoomIn);
-            }
-            if ui.button("Fit width").clicked() {
-                actions.push(Action::FitWidth);
-            }
-            ui.separator();
-            search(ui, pdf, view, actions);
+            ui.horizontal(|ui| {
+                if icon_button(ui, "\u{2039}", "Previous page", page > 1).clicked() {
+                    actions.push(Action::PreviousPage);
+                }
+                page_field(ui, view, window.with(("pdf-page", tab)), page, actions);
+                ui.label(format!("of {count}"));
+                if icon_button(ui, "\u{203a}", "Next page", page < count).clicked() {
+                    actions.push(Action::NextPage);
+                }
+            });
+            ui.horizontal(|ui| {
+                if icon_button(ui, "\u{2212}", "Zoom out", true).clicked() {
+                    actions.push(Action::ZoomOut);
+                }
+                ui.label(format!("{:.0}%", pdf.scale() * 100.0));
+                if icon_button(ui, "+", "Zoom in", true).clicked() {
+                    actions.push(Action::ZoomIn);
+                }
+                if ui.button("Fit width").clicked() {
+                    actions.push(Action::FitWidth);
+                }
+            });
+            ui.horizontal(|ui| search(ui, pdf, view, actions));
         });
     });
 }
@@ -279,7 +303,7 @@ fn search(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Actio
         .add(
             TextEdit::singleline(&mut view.search)
                 .hint_text("Find in PDF")
-                .desired_width(140.0),
+                .desired_width(110.0),
         )
         .accessible_name("Search PDF");
     let query = view.search.trim();
@@ -298,10 +322,10 @@ fn search(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Actio
         response.request_focus();
     }
     let any = !search.matches.is_empty();
-    if icon_button(ui, "\u{2191}", "Previous match", any).clicked() {
+    if chevron_button(ui, true, "Previous match", any).clicked() {
         actions.push(Action::PreviousMatch);
     }
-    if icon_button(ui, "\u{2193}", "Next match", any).clicked() {
+    if chevron_button(ui, false, "Next match", any).clicked() {
         actions.push(Action::NextMatch);
     }
     let status = if search.searching {
