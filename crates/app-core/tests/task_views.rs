@@ -20,6 +20,7 @@ use support::{
 };
 
 const J: &str = "01jbcdefghjkmnpqrstvwxyz0j";
+const K: &str = "01jbcdefghjkmnpqrstvwxyz0k";
 
 /// A workspace whose clock reads 11:00 on 21 October 2026 in Toronto, with
 /// tasks due before, on and after that day, one marked done, two without a
@@ -226,6 +227,32 @@ fn lists_order_by_done_then_due_date_then_priority_then_last_update() {
                 "2026-10-01T10:00:00Z",
             ),
         ),
+        // Another app may write the last update with its own offset or
+        // with fractions of a second: these sort by the instant they name.
+        (
+            "tasks/Offset.md",
+            &task(
+                H,
+                "priority: medium\ndue: 2026-10-25\n",
+                "2026-10-03T08:00:00-04:00",
+            ),
+        ),
+        (
+            "tasks/Zulu.md",
+            &task(
+                J,
+                "priority: medium\ndue: 2026-10-25\n",
+                "2026-10-03T10:00:00Z",
+            ),
+        ),
+        (
+            "tasks/Fraction.md",
+            &task(
+                K,
+                "priority: medium\ndue: 2026-10-25\n",
+                "2026-10-03T10:00:00.5Z",
+            ),
+        ),
     ]);
     let system = FakeSystem::new();
     system.set_clock("2026-10-21T15:00:00Z", "America/Toronto");
@@ -237,7 +264,8 @@ fn lists_order_by_done_then_due_date_then_priority_then_last_update() {
     assert_eq!(
         view(&mut app, "view:all"),
         [
-            "Earlier", "Urgent", "Older", "Newer", "Low", "Undated", "Done"
+            "Earlier", "Urgent", "Older", "Zulu", "Fraction", "Offset", "Newer", "Low", "Undated",
+            "Done"
         ]
     );
 }

@@ -8,16 +8,18 @@
 //! wipe your typing. A date field sends nothing until it holds a whole
 //! `YYYY-MM-DD` date, and says so meanwhile.
 //!
-//! A name field takes the keyboard when it appears. Enter or leaving it
-//! sends the name it holds, and Escape, or leaving it empty or unchanged,
-//! cancels. `app-core` keeps what you type in it meanwhile, so a name
-//! still in the field when the window closes reaches the plugin first.
+//! A name field takes the keyboard each time it appears, holding the name
+//! the plugin drew it with. Enter or leaving it sends the name it holds,
+//! and Escape, or leaving it empty or unchanged, cancels. `app-core` keeps
+//! what you type in it meanwhile, and after a name it sent while the field
+//! stays, so a name still in the field when the window closes reaches the
+//! plugin first.
 
 use app_core::{
     Field, InputValue, PluginEvent, PluginNaming, Submission, ViewKind, ViewNode, date_time_fields,
     date_time_value, date_value,
 };
-use egui::{Id, Key, RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
+use egui::{Id, Key, RichText, TextEdit, Ui, UiBuilder, accesskit::Role, text_edit::TextEditState};
 
 use super::{Kit, boxed};
 use crate::{
@@ -248,23 +250,34 @@ struct NameDraft {
     /// The field sent its name or its cancel since you last typed in it
     /// or gave it the keyboard, so leaving it again sends nothing.
     sent: bool,
+    /// The pass that drew the field last. A field that a pass left out
+    /// went away, and starts afresh when it shows again.
+    pass: u64,
 }
 
-/// A name field: it takes the keyboard when it first appears, and leaving
+/// A name field: it takes the keyboard each time it appears, and leaving
 /// it sends the name it holds, or cancels on Escape or with no new name.
 pub(super) fn name_field(ui: &mut Ui, node: &ViewNode, label: &str, value: &str, kit: &mut Kit) {
     let id = kit.id(&node.id);
+    let pass = ui.ctx().cumulative_pass_nr();
     let held = ui
         .data(|data| data.get_temp::<NameDraft>(id))
-        .filter(|draft| draft.drawn == value);
+        .filter(|draft| draft.drawn == value && draft.pass.saturating_add(1) >= pass);
     let appeared = held.is_none();
     let mut draft = held.unwrap_or_else(|| NameDraft {
         drawn: value.to_owned(),
         text: value.to_owned(),
         sent: false,
+        pass,
     });
+    draft.pass = pass;
     ui.add_space(4.0);
     let field_id = id.with("name");
+    if appeared {
+        // The cursor and the undo history of a field that went away, such
+        // as one holding a name you cancelled, don't carry over.
+        ui.data_mut(|data| data.remove::<TextEditState>(field_id));
+    }
     let response = ui
         .add(
             TextEdit::singleline(&mut draft.text)
@@ -290,14 +303,16 @@ pub(super) fn name_field(ui: &mut Ui, node: &ViewNode, label: &str, value: &str,
         let escaped = ui.input(|input| input.key_pressed(Key::Escape));
         let name = draft.text.trim();
         let event = if escaped || name.is_empty() || name == value.trim() {
+            draft.text = value.to_owned();
             PluginEvent::Cancelled(node.id.clone())
         } else {
+            // `app-core` keeps the name until the plugin answers, and
+            // again while the field stays, as after a create that failed.
             PluginEvent::Named(PluginNaming {
                 node: node.id.clone(),
                 name: name.to_owned(),
             })
         };
-        kit.app.clear_plugin_name_draft(&place, &node.id);
         kit.events.push(event);
     }
     ui.data_mut(|data| data.insert_temp(id, draft));

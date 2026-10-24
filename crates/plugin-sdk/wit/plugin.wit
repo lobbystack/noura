@@ -261,10 +261,12 @@ interface ui {
   }
 
   // A one-line field that names something: a new task, or a rename. It
-  // takes the keyboard when it appears. Enter, or leaving the field,
-  // sends `named` with what it holds, and Escape sends `cancelled`, as
-  // does leaving it empty or holding the name it started from. A name
-  // still in the field when its window closes is sent first.
+  // takes the keyboard each time it appears, holding `value`. Enter, or
+  // leaving the field, sends `named` with what it holds, and Escape sends
+  // `cancelled`, as does leaving it empty or holding the name it started
+  // from. A name still in the field when its window closes is sent first,
+  // even one sent before that the plugin kept in the field, as after a
+  // create that failed.
   record name-field {
     // Names the field for screen readers, and shows in it while it's
     // empty.
@@ -784,8 +786,9 @@ interface object-types {
 
   record object-type {
     // A lowercase letter followed by lowercase letters or hyphens. Noura
-    // keeps its own types, such as `note`, and a type another running
-    // plugin registered stays that plugin's.
+    // keeps its own types, such as `note`, holds `task` for the Tasks
+    // plugin, and a type another running plugin registered stays that
+    // plugin's.
     name: string,
     // The type's properties in the workspace format's schema
     // declaration, as JSON.

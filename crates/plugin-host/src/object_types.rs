@@ -1,8 +1,8 @@
 //! The object types running plugins registered. One registry serves every
-//! plugin of a workspace: it keeps the kernel's own types, gives each other
-//! type to the first running plugin that registers it, and holds each
-//! type's schema in `workspace-format`'s declaration, which checks every
-//! write.
+//! plugin of a workspace: it keeps the kernel's own types, keeps each type
+//! held for one plugin for that plugin, gives each other type to the first
+//! running plugin that registers it, and holds each type's schema in
+//! `workspace-format`'s declaration, which checks every write.
 
 use std::{
     collections::BTreeMap,
@@ -22,6 +22,13 @@ use crate::PropertyProblem;
 /// belong to the Tasks plugin. Projects move to the Projects plugin with
 /// ticket 31, and chats and chat messages to the AI plugin with ticket 36.
 pub const KERNEL_TYPES: [&str; 5] = ["note", "workspace", "project", "chat", "chat-message"];
+
+/// Types held for one plugin, by the plugin's ID, which no other plugin
+/// may register even while that one is off. Files of these types already
+/// fill workspaces, so a plugin that took one could rewrite every one of
+/// them. The Tasks plugin, which ships with Noura, holds tasks; other
+/// plugins change tasks through its commands.
+pub const PLUGIN_TYPES: [(&str, &str); 1] = [("task", "tasks")];
 
 /// The most types one plugin may register.
 const MAX_TYPES: usize = 64;
@@ -44,6 +51,9 @@ pub enum TypeError {
     /// The kernel keeps this type.
     #[error("{object_type} is one of Noura's own types.")]
     KernelType { object_type: String },
+    /// The type is held for another plugin.
+    #[error("{object_type} belongs to the plugin {plugin}.")]
+    HeldFor { object_type: String, plugin: String },
     /// Another running plugin registered the type first.
     #[error("The plugin {plugin} already holds the type {object_type}.")]
     HeldByPlugin { object_type: String, plugin: String },
@@ -66,6 +76,7 @@ impl TypeError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::KernelType { .. } => "kernel_type",
+            Self::HeldFor { .. } => "type_reserved",
             Self::HeldByPlugin { .. } => "type_held",
             Self::InvalidSchema { .. } => "invalid_schema",
             Self::TooMany => "too_many_types",
@@ -133,6 +144,15 @@ impl ObjectTypes {
         if KERNEL_TYPES.contains(&object_type) {
             return Err(TypeError::KernelType {
                 object_type: object_type.to_owned(),
+            });
+        }
+        if let Some((_, owner)) = PLUGIN_TYPES
+            .iter()
+            .find(|(held, owner)| *held == object_type && *owner != plugin)
+        {
+            return Err(TypeError::HeldFor {
+                object_type: object_type.to_owned(),
+                plugin: (*owner).to_owned(),
             });
         }
         let invalid = |message: String| TypeError::InvalidSchema {

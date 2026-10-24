@@ -35,7 +35,7 @@ pub use manifest::{
     Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
     valid_command_id, valid_plugin_id,
 };
-pub use object_types::{KERNEL_TYPES, ObjectTypes, TypeError};
+pub use object_types::{KERNEL_TYPES, ObjectTypes, PLUGIN_TYPES, TypeError};
 pub use running::{
     CalledListener, FAILURE_WINDOW, Health, MAX_FAILURES, Router, RunningPlugin, Surface,
 };

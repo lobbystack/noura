@@ -61,6 +61,7 @@ fn a_plugin_registers_commands_inbox_sections_a_settings_page_and_tools() {
                 true
             ),
             ("relay".into(), "Relay a command".into(), false, true),
+            ("open".into(), "Open something".into(), false, true),
         ]
     );
     let sections = plugin.inbox_sections().unwrap();

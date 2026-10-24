@@ -1,7 +1,7 @@
 //! The Tasks plugin through AccessKit: New task from the keyboard alone,
-//! from the button and from the command palette, the sidebar's views, the
-//! task rows with their checkboxes and overdue warning, and the labels of
-//! a task's properties panel.
+//! again and again, from the button and from the command palette, the
+//! sidebar's views, the task rows with their checkboxes and overdue
+//! warning, and the labels of a task's properties panel.
 
 mod support;
 
@@ -188,6 +188,87 @@ fn escape_closes_the_name_field_and_creates_nothing() {
             .is_none()
     });
     assert!(!folder.join("tasks/Rake the leaves.md").exists());
+}
+
+/// The files in the workspace's `tasks` folder, by name.
+fn task_files(folder: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(folder.join("tasks"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Whether the name field shows, empty and with the keyboard.
+fn empty_and_focused(harness: &Ui) -> bool {
+    harness
+        .query_by_role_and_label(Role::TextInput, "New task name")
+        .is_some_and(|field| field.is_focused() && field.value().unwrap_or_default().is_empty())
+}
+
+#[test]
+fn each_new_task_opens_an_empty_field_that_takes_the_keyboard() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    let before = task_files(&folder);
+
+    // A name you cancelled never comes back, and leaving the field again
+    // sends nothing.
+    for name in ["Rake the leaves", "Prune the roses"] {
+        harness
+            .get_by_role_and_label(Role::Button, "New task")
+            .focus();
+        run(&mut harness);
+        press(&mut harness, Key::Space);
+        wait_until(&mut harness, empty_and_focused);
+        type_text(&mut harness, name);
+        press(&mut harness, Key::Escape);
+        wait_until(&mut harness, |harness| {
+            harness
+                .query_by_role_and_label(Role::TextInput, "New task name")
+                .is_none()
+        });
+    }
+    // After a task is created, the next field starts empty too.
+    harness
+        .get_by_role_and_label(Role::Button, "New task")
+        .focus();
+    run(&mut harness);
+    press(&mut harness, Key::Space);
+    wait_until(&mut harness, empty_and_focused);
+    type_text(&mut harness, "Buy seeds");
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |_| folder.join("tasks/Buy seeds.md").exists());
+    open_page(&mut harness, "Tasks");
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Button, "New task")
+            .is_some()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "New task")
+        .focus();
+    run(&mut harness);
+    press(&mut harness, Key::Space);
+    wait_until(&mut harness, empty_and_focused);
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::TextInput, "New task name")
+            .is_none()
+    });
+
+    let mut expected = before;
+    expected.push("Buy seeds.md".to_owned());
+    expected.sort();
+    assert_eq!(task_files(&folder), expected);
 }
 
 #[test]
