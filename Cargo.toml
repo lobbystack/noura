@@ -86,6 +86,12 @@ futures = "0.3"
 genai = "=0.6.5"
 hkdf = "=0.12.4"
 hmac = "=0.12.1"
+# ICU4X names months and weekdays and writes times in the computer's
+# locale on calendar grids, from data compiled into the app. Unicode-3.0.
+icu_calendar = { version = "2.3.0", default-features = false }
+icu_datetime = "2.3.0"
+icu_locale_core = "2.3.0"
+icu_time = { version = "2.3.0", default-features = false }
 ignore = "0.4"
 # Local sockets for single-instance handling: Unix domain sockets on macOS
 # and Linux, named pipes on Windows.
@@ -131,6 +137,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 slug = "0.1"
+# The language and region the computer formats dates and times for.
+sys-locale = "0.3.2"
 # 0.9 accepts the libsqlite3-sys release that rusqlite 0.37 links.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
 tempfile = "3"

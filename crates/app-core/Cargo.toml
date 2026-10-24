@@ -27,6 +27,8 @@ serde.workspace = true
 serde_json.workspace = true
 sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
 sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+# The locale calendar grids name months, weekdays and times in.
+sys-locale.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
