@@ -3,9 +3,9 @@
 //! editor, and adds the Tasks page: the views Today, Upcoming, All and
 //! Completed and one per project and per folder in the sidebar, filters,
 //! and a list of tasks you check off. New task names a task before its
-//! file exists. Other plugins change tasks through its `create`,
-//! `update`, `complete` and `reopen` commands, which [`commands`]
-//! documents.
+//! file exists. Other plugins list and change tasks through its
+//! `create`, `update`, `complete`, `reopen` and `list` commands, which
+//! [`commands`] documents.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `tasks_plugin.wasm`.
@@ -132,6 +132,7 @@ impl Plugin for Tasks {
             offered("update", "Update a task"),
             offered("complete", "Complete a task"),
             offered("reopen", "Reopen a task"),
+            offered("list", "List tasks"),
         ]
     }
 

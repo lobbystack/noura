@@ -150,7 +150,7 @@ fn the_manifest_declares_the_task_type_with_todays_v1_fields() {
 }
 
 #[test]
-fn tasks_declares_new_task_for_the_palette_and_four_commands_for_other_plugins() {
+fn tasks_declares_new_task_for_the_palette_and_five_commands_for_other_plugins() {
     let Some(workspace) = Workspace::new("[\"hello\"]") else {
         return;
     };
@@ -171,7 +171,41 @@ fn tasks_declares_new_task_for_the_palette_and_four_commands_for_other_plugins()
             ("update".to_owned(), false, true),
             ("complete".to_owned(), false, true),
             ("reopen".to_owned(), false, true),
+            ("list".to_owned(), false, true),
         ]
+    );
+}
+
+#[test]
+fn list_answers_every_task_or_one_projects_tasks_without_their_bodies() {
+    let Some(workspace) = Workspace::new("[\"tasks\"]") else {
+        return;
+    };
+    workspace.tasks.register_object_types().unwrap();
+    let garden = "project_01jbcdefghjkmnpqrstvwxyz0b";
+    workspace.answer(
+        "create",
+        &format!(r#"{{"title":"Weed the beds","properties":{{"project":"{garden}"}},"body":"All of them."}}"#),
+    );
+
+    let all = workspace.answer("list", "{}");
+    let tasks = all["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["id"], TASK_ID);
+    assert_eq!(tasks[0]["title"], "Weed the beds");
+    assert_eq!(tasks[0]["revision"], "rev-1");
+    assert_eq!(tasks[0]["properties"]["project"], garden);
+    assert_eq!(tasks[0].get("body"), None);
+    let garden_tasks = workspace.answer("list", &format!(r#"{{"project":"{garden}"}}"#));
+    assert_eq!(garden_tasks["tasks"], all["tasks"]);
+    let other = workspace.answer(
+        "list",
+        r#"{"project":"project_01jbcdefghjkmnpqrstvwxyz0c"}"#,
+    );
+    assert_eq!(other["tasks"], serde_json::json!([]));
+    assert_eq!(
+        workspace.refusal("list", r#"{"project":7}"#)["code"],
+        "invalid_input"
     );
 }
 
@@ -226,7 +260,7 @@ fn a_plugin_that_doesnt_name_tasks_as_a_target_is_denied() {
     };
     workspace.tasks.register_object_types().unwrap();
 
-    for command in ["create", "update", "complete", "reopen"] {
+    for command in ["create", "update", "complete", "reopen", "list"] {
         assert_eq!(
             workspace.call(command, r#"{"title":"Water the plants"}"#),
             format!("error target-not-declared tasks/{command}")
