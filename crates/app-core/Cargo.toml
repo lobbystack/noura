@@ -24,6 +24,8 @@ nucleo-matcher.workspace = true
 plugin-host = { version = "0.2.0", path = "../plugin-host" }
 serde.workspace = true
 serde_json.workspace = true
+# The locale calendar grids name months, weekdays and times in.
+sys-locale.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
 # The workspace format's date and date-time rules, which plugin input

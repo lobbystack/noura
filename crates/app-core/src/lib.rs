@@ -18,6 +18,7 @@
 //! thread of its own.
 
 mod app;
+mod calendar_grid;
 mod commands;
 mod diagnostics;
 mod error;
@@ -26,6 +27,7 @@ mod ignored;
 mod inbox;
 mod keys;
 mod layout;
+mod links;
 mod login;
 mod menus;
 mod notes;
@@ -39,6 +41,7 @@ mod problems;
 mod quick_open;
 mod rail;
 mod recents;
+mod remote_images;
 mod saves;
 mod search;
 mod session;
@@ -56,6 +59,7 @@ pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, Notice, NoticeKind, Origin, Palette,
     PaletteMode, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
 };
+pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
 };
@@ -71,6 +75,11 @@ pub use inbox::{
 };
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+pub use links::{
+    EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, ImageVersion, MAX_IMAGE_BYTES, NoteEmbed,
+    NoteEmbedState, NoteImage, NoteLinks, is_external_link, is_image, is_remote_image,
+};
+pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
@@ -82,8 +91,9 @@ pub use notes::{
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use plugin_host::{
-    Choice, Column, ColumnPress, Event as PluginEvent, Field, Grant, SortOrder, Submission, Target,
-    Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
+    CalendarMode, Choice, Column, ColumnPress, Event as PluginEvent, Field, Grant,
+    Move as PluginMove, SortOrder, Submission, Target, Value as InputValue, View, ViewKind,
+    ViewNode, VirtualRow,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{
@@ -94,6 +104,7 @@ pub use problems::Problem;
 pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
+pub use remote_images::RemoteImageState;
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
 pub use settings::{

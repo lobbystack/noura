@@ -252,6 +252,24 @@ fn clicking_a_task_checkbox_checks_the_task() {
     assert_eq!(editor(&harness).text(), "intro\n\n- [x] write the plan\n");
 }
 
+#[test]
+fn command_u_toggles_u_tags_and_keys_for_unread_styles_write_nothing() {
+    let mut harness = harness("word\n");
+    press(&mut harness, Modifiers::SHIFT, Key::End);
+
+    press(&mut harness, Modifiers::COMMAND, Key::U);
+    assert_eq!(editor(&harness).text(), "<u>word</u>\n");
+    press(&mut harness, Modifiers::COMMAND, Key::U);
+    assert_eq!(editor(&harness).text(), "word\n");
+
+    // Lockbook wrapped the selection in spoiler, subscript and superscript
+    // markers, which the editor no longer reads.
+    for key in [Key::P, Key::S, Key::E] {
+        press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, key);
+    }
+    assert_eq!(editor(&harness).text(), "word\n");
+}
+
 /// Where the last frame drew the first grapheme of the first `needle`,
 /// if it drew it.
 fn drawn_at(editor: &Editor, needle: &str) -> Option<egui::Rect> {

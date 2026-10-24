@@ -5,12 +5,16 @@
 
 mod chooser;
 mod common;
+mod dates;
 mod finder;
 mod ignored_files;
+mod image_decoders;
 mod inbox;
 mod keys;
 mod markdown;
 mod note;
+mod note_images;
+mod note_links;
 mod palette;
 mod plugin_view;
 mod plugins;

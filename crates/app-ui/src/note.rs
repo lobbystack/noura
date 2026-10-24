@@ -54,6 +54,9 @@ struct OpenNote {
     /// tree, leaves the keyboard where it was. A click puts the caret in
     /// the text.
     give_focus_back: Option<Id>,
+    /// The note path the editor's links resolve from, which a rename
+    /// changes.
+    links_source: Option<String>,
     /// Whether the editor checks spelling.
     checks_spelling: bool,
 }
@@ -246,6 +249,7 @@ pub(crate) fn show(
             } else {
                 ui.memory(|memory| memory.focused())
             },
+            links_source: None,
             checks_spelling: false,
         }
     });
@@ -259,12 +263,30 @@ pub(crate) fn show(
         let focused = note.editor.focused(ui.ctx());
         note.editor = editor_for(ui.ctx(), session);
         note.checks_spelling = false;
+        note.links_source = None;
         note.whole_file = whole_file;
         if focused {
             note.editor.focus(ui.ctx());
         }
         app.take_note_sync(tab);
         app.take_note_reset(tab);
+    }
+    // Links resolve from the note's path, so a renamed or moved note
+    // resolves them from where it is now.
+    if let Some(links) = app.note_links(tab)
+        && note.links_source.as_deref() != Some(links.source())
+    {
+        note.links_source = Some(links.source().to_owned());
+        note.editor
+            .set_embed_resolver(Box::new(crate::note_images::WorkspaceImages::new(
+                links.clone(),
+                ui.ctx().clone(),
+            )));
+        note.editor
+            .set_link_resolver(Box::new(crate::note_links::WorkspaceLinks {
+                links,
+                ctx: ui.ctx().clone(),
+            }));
     }
     // The Check spelling setting reaches every open note.
     let spelling = app

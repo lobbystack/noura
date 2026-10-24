@@ -7,8 +7,8 @@
 mod support;
 
 use plugin_host::{
-    ColumnPress, Event, Field, Item, PluginError, RunningPlugin, Services, Submission, Target,
-    Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
+    CalendarMode, ColumnPress, Event, Field, Item, Move, PluginError, RunningPlugin, Services,
+    Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -109,7 +109,7 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
         ("two-menus", "The item north holds more than one menu."),
         (
             "menu-in-panel",
-            "The menu loose isn't on an item, a row or a button.",
+            "The menu loose isn't on an item, a row, a card or a button.",
         ),
         (
             "bad-date",
@@ -134,6 +134,44 @@ fn malformed_lists_tables_forms_and_menus_are_refused_with_a_reason() {
         (
             "long-virtual-list",
             "The virtual list seeds holds 1000001 rows; a virtual list holds at most 1000000.",
+        ),
+    ] {
+        let nodes = instance.render(&format!("nodes:{case}")).unwrap();
+        let error = View::from_nodes(nodes).expect_err(case);
+        assert_eq!(error.to_string(), reason, "{case}");
+    }
+}
+
+#[test]
+fn malformed_boards_are_refused_with_a_reason() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
+
+    for (case, reason) in [
+        (
+            "card-outside-column",
+            "The card plan isn't in a board column.",
+        ),
+        (
+            "column-outside-board",
+            "The board column todo isn't in a board.",
+        ),
+        (
+            "item-in-board",
+            "The board work holds north, which isn't a board column.",
+        ),
+        (
+            "panel-in-column",
+            "The board column todo holds inner, which isn't a card.",
+        ),
+        ("unlabeled-column", "The board column todo has no label."),
+        ("unlabeled-card", "The card plan has no label."),
+        ("board-without-columns", "The board work has no columns."),
+        (
+            "card-with-two-menus",
+            "The card plan holds more than one menu.",
         ),
     ] {
         let nodes = instance.render(&format!("nodes:{case}")).unwrap();
@@ -177,7 +215,8 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
     assert_eq!(
         beds.kind,
         ViewKind::List {
-            label: "Beds".into()
+            label: "Beds".into(),
+            reorder: false
         }
     );
     let item = |label: &str, detail: Option<&str>| ViewKind::Item {
@@ -252,6 +291,249 @@ fn a_table_holds_its_columns_and_one_cell_per_column_in_each_row() {
             "Tomato | North bed | 2026-03-15",
         ]
     );
+}
+
+#[test]
+fn malformed_calendar_grids_are_refused_with_a_reason() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&probe, &VIEWS, None);
+
+    for (case, reason) in [
+        (
+            "entry-outside-calendar",
+            "The entry standup isn't in a calendar.",
+        ),
+        (
+            "item-in-calendar",
+            "The calendar schedule holds north, which isn't an entry.",
+        ),
+        ("unlabeled-calendar", "The calendar schedule has no label."),
+        ("untitled-entry", "The entry standup has no title."),
+        (
+            "bad-calendar-date",
+            "The calendar schedule shows 2026-10-32, which isn't a date in the form \
+             YYYY-MM-DD.",
+        ),
+        (
+            "bad-entry-start",
+            "The entry standup starts at 2026-10-21 09:00, which is neither a date in the \
+             form YYYY-MM-DD nor an RFC 3339 date and time with an offset.",
+        ),
+        (
+            "mixed-entry-end",
+            "The entry standup ends at 2026-10-22, which doesn't have the form of its start.",
+        ),
+    ] {
+        let nodes = instance.render(&format!("nodes:{case}")).unwrap();
+        let error = View::from_nodes(nodes).expect_err(case);
+        assert_eq!(error.to_string(), reason, "{case}");
+    }
+}
+
+#[test]
+fn a_calendar_grid_holds_its_mode_its_date_and_its_entries() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
+
+    let view = View::from_nodes(instance.render("calendar").unwrap()).expect("the view is valid");
+
+    let calendar = find(view.root(), "schedule").unwrap();
+    assert_eq!(
+        calendar.kind,
+        ViewKind::Calendar {
+            label: "Schedule".into(),
+            mode: CalendarMode::Week,
+            date: "2026-10-21".into(),
+        }
+    );
+    let entry = |title: &str, start: &str, end: Option<&str>| ViewKind::Entry {
+        title: title.into(),
+        start: start.into(),
+        end: end.map(Into::into),
+    };
+    assert_eq!(
+        kinds(&calendar.children)[..2],
+        [
+            (
+                "retreat",
+                &entry("Retreat", "2026-10-19", Some("2026-10-22"))
+            ),
+            (
+                "standup",
+                &entry(
+                    "Standup",
+                    "2026-10-21T09:00:00-04:00",
+                    Some("2026-10-21T09:30:00-04:00")
+                )
+            ),
+        ]
+    );
+
+    // The plugin's own buttons switch the mode and the period.
+    instance
+        .handle_event("calendar", &Event::Pressed("month".into()))
+        .unwrap();
+    instance
+        .handle_event("calendar", &Event::Pressed("next".into()))
+        .unwrap();
+    let view = View::from_nodes(instance.render("calendar").unwrap()).unwrap();
+    let ViewKind::Calendar { mode, date, .. } = &find(view.root(), "schedule").unwrap().kind else {
+        panic!("not a calendar");
+    };
+    assert_eq!((*mode, date.as_str()), (CalendarMode::Month, "2026-11-21"));
+}
+
+/// The node IDs of each column of the board `work` on the kit's board
+/// page, as `column: card card`.
+fn board_columns(instance: &RunningPlugin) -> Vec<String> {
+    let view = View::from_nodes(instance.render("board").unwrap()).unwrap();
+    let board = find(view.root(), "work").unwrap();
+    board
+        .children
+        .iter()
+        .map(|column| {
+            let cards: Vec<&str> = column
+                .children
+                .iter()
+                .map(|card| card.id.as_str())
+                .collect();
+            format!("{}: {}", column.id, cards.join(" "))
+        })
+        .collect()
+}
+
+#[test]
+fn a_board_holds_labeled_columns_of_labeled_cards_with_menus() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
+
+    let view = View::from_nodes(instance.render("board").unwrap()).expect("the view is valid");
+
+    let board = find(view.root(), "work").unwrap();
+    assert_eq!(
+        board.kind,
+        ViewKind::Board {
+            label: "Work".into()
+        }
+    );
+    let column = |label: &str| ViewKind::BoardColumn {
+        label: label.into(),
+    };
+    assert_eq!(
+        kinds(&board.children),
+        [
+            ("todo", &column("To do")),
+            ("doing", &column("Doing")),
+            ("done", &column("Done")),
+        ]
+    );
+    let card = &board.children[0].children[0];
+    assert_eq!(card.id, "write-report");
+    assert_eq!(
+        card.kind,
+        ViewKind::Card {
+            label: "Write report".into(),
+            detail: Some("Due Friday".into())
+        }
+    );
+    let menu = &card.children[0];
+    assert_eq!(
+        menu.kind,
+        ViewKind::Menu {
+            label: "Move Write report".into()
+        }
+    );
+    assert_eq!(
+        kinds(&menu.children),
+        [
+            ("write-report-to-todo", &menu_item("To do", false)),
+            ("write-report-to-doing", &menu_item("Doing", true)),
+            ("write-report-to-done", &menu_item("Done", true)),
+        ]
+    );
+    let queue = find(view.root(), "queue").unwrap();
+    assert_eq!(
+        queue.kind,
+        ViewKind::List {
+            label: "Queue".into(),
+            reorder: true
+        }
+    );
+}
+
+#[test]
+fn a_move_reaches_the_plugin_by_node_id_and_the_board_shows_where_the_plugin_put_the_card() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let (instance, _folders) = plugins::running(&kit, &VIEWS, None);
+    let moved = |node: &str, item: &str, to: &str, position: u32| {
+        Event::Moved(Move {
+            node: node.into(),
+            item: item.into(),
+            to: to.into(),
+            position,
+        })
+    };
+    assert_eq!(
+        board_columns(&instance),
+        [
+            "todo: write-report fix-bug",
+            "doing: review-notes",
+            "done: plan-sprint"
+        ]
+    );
+
+    instance
+        .handle_event("board", &moved("work", "write-report", "doing", 1))
+        .unwrap();
+    assert_eq!(
+        last_event(&instance, "board"),
+        "Last event: moved write-report in work to doing at 1"
+    );
+    assert_eq!(
+        board_columns(&instance),
+        [
+            "todo: fix-bug",
+            "doing: review-notes write-report",
+            "done: plan-sprint"
+        ]
+    );
+
+    // The plugin refuses moves into Done, so the card stays where it was.
+    instance
+        .handle_event("board", &moved("work", "fix-bug", "done", 0))
+        .unwrap();
+    assert_eq!(
+        last_event(&instance, "board"),
+        "Last event: moved fix-bug in work to done at 0"
+    );
+    assert_eq!(
+        board_columns(&instance),
+        [
+            "todo: fix-bug",
+            "doing: review-notes write-report",
+            "done: plan-sprint"
+        ]
+    );
+
+    instance
+        .handle_event("board", &moved("queue", "first", "queue", 2))
+        .unwrap();
+    let view = View::from_nodes(instance.render("board").unwrap()).unwrap();
+    let queue: Vec<&str> = find(view.root(), "queue")
+        .unwrap()
+        .children
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    assert_eq!(queue, ["second", "third", "first"]);
 }
 
 /// The text of the page's `last` node, which names the last event.
@@ -534,23 +816,25 @@ const WRONG_TYPES: &str = r#"
 "#;
 
 /// A component exporting `noura:plugin/view@0.1.0` whose `render` returns
-/// one node with kind number 14, which `node-kind` doesn't have.
+/// one node with kind number 48, which `node-kind` doesn't have.
 const UNKNOWN_KIND: &str = r#"
 (component
   (component $view
     (core module $m
       (memory (export "memory") 1)
       (data (i32.const 8) "\10\00\00\00\01\00\00\00")
-      (data (i32.const 16) "\64\00\00\00\04\00\00\00\0e")
+      (data (i32.const 16) "\64\00\00\00\04\00\00\00\30")
       (data (i32.const 100) "root")
       (func (export "pages") (result i32) i32.const 200)
       (func (export "render") (param i32 i32) (result i32) i32.const 8)
       (func (export "rows") (param i32 i32 i32 i32 i32 i32) (result i32) i32.const 200)
-      (func (export "handle-event") (param i32 i32 i32 i32 i32 i32 i32 i32 i32))
+      (func (export "handle-event") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32))
       (func (export "realloc") (param i32 i32 i32 i32) (result i32) i32.const 1024))
     (core instance $i (instantiate $m))
     (type $item' (record (field "label" string) (field "detail" (option string))))
     (export $item "item" (type $item'))
+    (type $item-list' (record (field "label" string) (field "reorder" bool)))
+    (export $item-list "item-list" (type $item-list'))
     (type $virtual-list' (record (field "label" string) (field "rows" u32)))
     (export $virtual-list "virtual-list" (type $virtual-list'))
     (type $virtual-row' (record (field "id" string) (field "item" $item)))
@@ -576,13 +860,22 @@ const UNKNOWN_KIND: &str = r#"
     (export $input "input" (type $input'))
     (type $menu-item' (record (field "label" string) (field "enabled" bool)))
     (export $menu-item "menu-item" (type $menu-item'))
+    (type $calendar-mode' (enum "month" "week" "day"))
+    (export $calendar-mode "calendar-mode" (type $calendar-mode'))
+    (type $calendar' (record
+      (field "label" string) (field "mode" $calendar-mode) (field "date" string)))
+    (export $calendar "calendar" (type $calendar'))
+    (type $calendar-entry' (record
+      (field "title" string) (field "start" string) (field "end" (option string))))
+    (export $calendar-entry "calendar-entry" (type $calendar-entry'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
-      (case "list" string) (case "item" $item) (case "virtual-list" $virtual-list)
+      (case "list" $item-list) (case "item" $item) (case "virtual-list" $virtual-list)
       (case "table" $table) (case "row" (list string)) (case "form" $form)
       (case "input" $input) (case "menu" string) (case "menu-item" $menu-item)
-      (case "separator")))
+      (case "separator") (case "board" string) (case "board-column" string)
+      (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))
@@ -591,6 +884,9 @@ const UNKNOWN_KIND: &str = r#"
     (export $page "page" (type $page'))
     (type $target' (record (field "node" string) (field "item" string)))
     (export $target "target" (type $target'))
+    (type $move' (record
+      (field "node" string) (field "item" string) (field "to" string) (field "position" u32)))
+    (export $move "move" (type $move'))
     (type $column-press' (record (field "node" string) (field "column" string)))
     (export $column-press "column-press" (type $column-press'))
     (type $field' (record (field "node" string) (field "value" $value)))
@@ -600,7 +896,7 @@ const UNKNOWN_KIND: &str = r#"
     (type $event' (variant
       (case "pressed" string) (case "selected" $target) (case "activated" $target)
       (case "sorted" $column-press) (case "changed" $field)
-      (case "submitted" $submission) (case "chosen" string)))
+      (case "submitted" $submission) (case "chosen" string) (case "moved" $move)))
     (export $event "event" (type $event'))
     (func $pages (result (list $page))
       (canon lift (core func $i "pages") (memory (core memory $i "memory"))

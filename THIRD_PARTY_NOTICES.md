@@ -20,6 +20,8 @@ The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3 devi
 
 Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, MIT `trash`, MIT `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`, MIT `Tauri`, MIT `Svelte`, MIT `Tiptap`, and CC0-1.0 `fractional-indexing`. Desktop release packaging includes the generated license file described above.
 
+Plugin calendar grids name weekdays and months and write times in your locale with ICU4X's `icu_datetime`, `icu_calendar`, `icu_time` and `icu_locale_core` (Unicode-3.0), which compile in CLDR data under the same license. `sys-locale` (MIT/Apache-2.0) reads the locale from the operating system. These are dependencies, not copied donor implementations, and the generated license file carries their license texts.
+
 ## atomicwrites 0.4.4 (Windows device settings)
 
 Windows settings persistence uses the MIT-licensed `atomicwrites` dependency from https://github.com/untitaker/rust-atomicwrites, pinned in Cargo.lock. No implementation source was copied. The distributed crate's license follows.
@@ -105,6 +107,48 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+## arborium 2.18.2 and its grammars (code highlighting)
+
+The editor highlights fenced code in notes with `arborium` 2.18.2, used unmodified and pinned in Cargo.lock, under the MIT option of its `MIT OR Apache-2.0` license: Copyright (c) 2024 Amos Wenger. Noura copies none of its source. arborium links the tree-sitter runtime (`arborium-tree-sitter`, Copyright (c) 2018-2024 Max Brunsfeld) and parsers generated from these grammars, each under the MIT License:
+
+- Bash (tree-sitter/tree-sitter-bash): Copyright (c) 2017 Max Brunsfeld
+- C, C++, Go, HTML, JavaScript and JSON (tree-sitter/tree-sitter-c, -cpp, -go, -html, -javascript, -json): Copyright (c) 2014 Max Brunsfeld
+- C# (tree-sitter/tree-sitter-c-sharp): Copyright (c) 2014-2023 Max Brunsfeld, Damien Guard, Amaan Qureshi, and contributors
+- CSS and JSDoc (tree-sitter/tree-sitter-css, -jsdoc): Copyright (c) 2018 Max Brunsfeld
+- Diff (the-mikedavis/tree-sitter-diff): Copyright (c) 2021 Michael Davis
+- Java (tree-sitter/tree-sitter-java): Copyright (c) 2017 Ayman Nadeem
+- Kotlin (fwcd/tree-sitter-kotlin): Copyright (c) 2019 fwcd
+- Lua (tree-sitter-grammars/tree-sitter-lua): Copyright (c) 2021 Munif Tanjim
+- Markdown (tree-sitter-grammars/tree-sitter-markdown): Copyright (c) 2021 Matthias Deiml
+- PHP (tree-sitter/tree-sitter-php): Copyright (c) 2017 Josh Vera, GitHub, and Copyright (c) 2019 Max Brunsfeld, Amaan Qureshi, Christian Frøystad, Caleb White
+- Python (tree-sitter/tree-sitter-python): Copyright (c) 2016 Max Brunsfeld
+- Ruby (tree-sitter/tree-sitter-ruby): Copyright (c) 2016 Rob Rix
+- Rust (grammar-orchard/tree-sitter-rust-orchard on Codeberg): Copyright (c) 2017 Maxim Sokolov
+- SQL (DerekStride/tree-sitter-sql): Copyright (c) 2021 Derek Stride
+- Swift (alex-pinkus/tree-sitter-swift): Copyright (c) 2021 alex-pinkus
+- TOML (tree-sitter-grammars/tree-sitter-toml): Copyright (c) Ika
+- TypeScript and TSX (tree-sitter/tree-sitter-typescript): Copyright (c) 2017 Max Brunsfeld
+- XML (tree-sitter-grammars/tree-sitter-xml): Copyright (c) 2023 ObserverOfTime
+- YAML (tree-sitter-grammars/tree-sitter-yaml): Copyright (c) 2024 tree-sitter-grammars contributors, and Copyright (c) 2019-2021 Ika
+
+Each grammar's crate README records the upstream commit it was generated from. The MIT License for arborium, the runtime and each grammar:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## AVIF decoding
+
+The desktop app decodes AVIF images in notes with these crates. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.txt` file in each desktop package carries their full license texts.
+
+- `avif-decode` 3.0.0, under the BSD 3-Clause License: Copyright 2021 Kornel Lesiński
+- `rav1d` 1.1.0, a Rust port of the dav1d AV1 decoder, under the BSD 2-Clause License: Copyright © 2018-2019, VideoLAN and dav1d authors, and Copyright © 2023-2024, VideoLAN, dav1d authors, and Internet Security Research Group
+- `yuv` 0.8.19, under the BSD 3-Clause option of its `BSD-3-Clause OR Apache-2.0` license: Copyright (c) Radzivon Bartoshyk
+
+`avif-parse`, which reads the AVIF file around the AV1 data, uses the Mozilla Public License 2.0 and appears in the MPL-2.0 list below.
+
 ## Lockbook Markdown editor
 
 The editor in `crates/editor-core` and `crates/editor-egui` adapts Lockbook's Markdown editor, which its authors dedicated to the public domain under the Unlicense. The Unlicense asks for no notice. [The Lockbook editor provenance record](docs/provenance/lockbook-editor.md) lists the files taken and the changes made.
@@ -146,6 +190,7 @@ These Rust dependencies use the Mozilla Public License 2.0. Noura uses them unmo
 - `webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5, which give `sync-server` its passkey support
 - `option-ext` 0.2.0, which `local-core` gets through `directories` and `dirs-sys`
 - `nucleo-matcher` 0.3.1, which ranks the desktop app's command palette and quick open in `app-core`
+- `avif-parse` 2.1.0, which reads AVIF images in notes for `app-ui`
 
 ## Marketing website source record
 

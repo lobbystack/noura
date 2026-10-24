@@ -142,3 +142,31 @@ fn a_fence_opened_in_a_large_note_draws_before_and_after_the_full_parse() {
     renderer.put_ast(ast);
     assert_eq!(code_blocks, 1, "the fence runs to the end of the note");
 }
+
+/// Nothing folds, so a Lockbook fold marker a file holds is text: moving
+/// the caret, which changes the reveal state, keeps every height estimate.
+#[test]
+fn the_caret_keeps_height_estimates_in_a_note_with_a_fold_marker() {
+    let mut note = String::from("# Plans <!-- {\"fold\":true} -->\n\n");
+    for n in 0..40 {
+        note.push_str(&format!("Paragraph {n} with *some* words.\n\n"));
+    }
+    let mut ws = TestEditor::new(&note);
+    ws.enter_frame();
+
+    let renderer = &mut ws.editor.edit.renderer;
+    let ast = renderer.take_ast();
+    ast.with_root(|root| {
+        let blocks: Vec<_> = root.children().collect();
+        for block in &blocks {
+            renderer.height_approx(block);
+        }
+        renderer.doc.bump_reveal_seq();
+        let kept = blocks
+            .iter()
+            .filter(|block| renderer.get_cached_node_height_approx(block).is_some())
+            .count();
+        assert_eq!(kept, blocks.len());
+    });
+    renderer.put_ast(ast);
+}

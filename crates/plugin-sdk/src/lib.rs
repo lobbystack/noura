@@ -60,8 +60,9 @@ pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Choice, Column, ColumnPress, Event, Field, Form, Input, Item, MenuItem, Node, NodeKind,
-    SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Choice, Column, ColumnPress, Event, Field, Form, Input,
+    Item, ItemList, MenuItem, Move, Node, NodeKind, SortOrder, Submission, Table, Target, Value,
+    VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -308,6 +309,48 @@ macro_rules! export {
 /// view.virtual_list(View::ROOT, "seeds", "Seeds", 10_000);
 /// assert_eq!(view.into_nodes().len(), 14);
 /// ```
+///
+/// A board holds columns of cards you drag between columns, and a list
+/// can let you drag its items into a new order. A drop sends
+/// [`Event::Moved`]:
+///
+/// ```
+/// use plugin_sdk::View;
+///
+/// let mut view = View::panel("root", Some("Chores"));
+/// let board = view.board(View::ROOT, "chores", "Chores");
+/// let todo = view.board_column(board, "todo", "To do");
+/// let doing = view.board_column(board, "doing", "Doing");
+/// let weed = view.card(todo, "weed", "Weed the beds", Some("Saturday"));
+/// let menu = view.menu(weed, "weed-menu", "Move Weed the beds");
+/// view.menu_item(menu, "weed-to-doing", "Doing", true);
+/// view.card(doing, "mulch", "Mulch", None);
+///
+/// let order = view.reorderable_list(View::ROOT, "order", "Sowing order");
+/// view.item(order, "beans", "Beans", None);
+/// view.item(order, "peas", "Peas", None);
+/// assert_eq!(view.into_nodes().len(), 11);
+/// ```
+///
+/// A calendar grid shows the entries it holds in a month, a week or a
+/// day. Your own buttons change its mode and period:
+///
+/// ```
+/// use plugin_sdk::{CalendarMode, View};
+///
+/// let mut view = View::panel("root", Some("Garden diary"));
+/// view.button(View::ROOT, "next-week", "Next week");
+/// let diary = view.calendar(View::ROOT, "diary", "Diary", CalendarMode::Week, "2026-10-21");
+/// view.entry(diary, "frost", "First frost", "2026-10-22", None);
+/// view.entry(
+///     diary,
+///     "market",
+///     "Seed market",
+///     "2026-10-24T09:00:00-04:00",
+///     Some("2026-10-24T12:00:00-04:00"),
+/// );
+/// assert_eq!(view.into_nodes().len(), 5);
+/// ```
 #[derive(Debug, Clone)]
 pub struct View {
     nodes: Vec<Node>,
@@ -370,7 +413,47 @@ impl View {
     /// [`item`](Self::item); selecting one sends [`Event::Selected`], and
     /// opening one sends [`Event::Activated`].
     pub fn list(&mut self, parent: u32, id: &str, label: &str) -> u32 {
-        self.add(parent, id, NodeKind::List(label.to_owned()))
+        let list = ItemList {
+            label: label.to_owned(),
+            reorder: false,
+        };
+        self.add(parent, id, NodeKind::List(list))
+    }
+
+    /// Add a list like [`list`](Self::list) whose items you can also drag
+    /// to new positions. A drop sends [`Event::Moved`], naming the list as
+    /// both `node` and `to`; the list shows the order you draw next.
+    pub fn reorderable_list(&mut self, parent: u32, id: &str, label: &str) -> u32 {
+        let list = ItemList {
+            label: label.to_owned(),
+            reorder: true,
+        };
+        self.add(parent, id, NodeKind::List(list))
+    }
+
+    /// Add a board. Add its columns with
+    /// [`board_column`](Self::board_column), at least one. Dropping a card
+    /// sends [`Event::Moved`]; the board shows the cards where you draw
+    /// them next, so a move you refuse puts the card back.
+    pub fn board(&mut self, parent: u32, id: &str, label: &str) -> u32 {
+        self.add(parent, id, NodeKind::Board(label.to_owned()))
+    }
+
+    /// Add a column headed `label` to the board at `board`.
+    pub fn board_column(&mut self, board: u32, id: &str, label: &str) -> u32 {
+        self.add(board, id, NodeKind::BoardColumn(label.to_owned()))
+    }
+
+    /// Add a card to the board column at `column`, with an optional
+    /// quieter detail under its label. Selecting it sends
+    /// [`Event::Selected`] and opening it [`Event::Activated`], naming the
+    /// board.
+    pub fn card(&mut self, column: u32, id: &str, label: &str, detail: Option<&str>) -> u32 {
+        let card = Item {
+            label: label.to_owned(),
+            detail: detail.map(str::to_owned),
+        };
+        self.add(column, id, NodeKind::Card(card))
     }
 
     /// Add an item to the list at `list`, with an optional quieter detail
@@ -456,7 +539,46 @@ impl View {
         self.add(parent, id, NodeKind::Input(input))
     }
 
-    /// Add a menu to the item, row or button at `owner`.
+    /// Add a calendar grid in `mode` that shows the period around `date`,
+    /// a `YYYY-MM-DD` date. Add its entries with [`entry`](Self::entry).
+    pub fn calendar(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        mode: CalendarMode,
+        date: &str,
+    ) -> u32 {
+        let calendar = Calendar {
+            label: label.to_owned(),
+            mode,
+            date: date.to_owned(),
+        };
+        self.add(parent, id, NodeKind::Calendar(calendar))
+    }
+
+    /// Add an entry to the calendar grid at `calendar`. An all-day entry
+    /// starts on a `YYYY-MM-DD` date and ends before its `end` date; a
+    /// timed one starts and ends at RFC 3339 dates and times with an
+    /// offset. Selecting it sends [`Event::Selected`] and opening it
+    /// [`Event::Activated`], naming the calendar.
+    pub fn entry(
+        &mut self,
+        calendar: u32,
+        id: &str,
+        title: &str,
+        start: &str,
+        end: Option<&str>,
+    ) -> u32 {
+        let entry = CalendarEntry {
+            title: title.to_owned(),
+            start: start.to_owned(),
+            end: end.map(str::to_owned),
+        };
+        self.add(calendar, id, NodeKind::Entry(entry))
+    }
+
+    /// Add a menu to the item, row, card or button at `owner`.
     pub fn menu(&mut self, owner: u32, id: &str, label: &str) -> u32 {
         self.add(owner, id, NodeKind::Menu(label.to_owned()))
     }

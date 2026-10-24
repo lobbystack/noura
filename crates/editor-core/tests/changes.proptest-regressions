@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1fcbddb2b1de9ac13016df361bcff577947149dabf025feedd95b18e4f3fcceb # shrinks to opening = "a# a", steps = [DeleteWord, Caret(0.17714135093600955), Type("e\u{301}"), Caret(0.0)]
