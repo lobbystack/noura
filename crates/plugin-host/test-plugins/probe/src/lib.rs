@@ -7,6 +7,7 @@
 //!   may read.
 //! - `read-file:<path>`: read a file.
 //! - `read-object:<id>`: read an object by its stable ID.
+//! - `create-object:<type>:<title>`: create an object with an empty body.
 //! - `fetch:<url>`: send a GET request to `url`.
 //! - `call:<plugin>/<command>:<input>`: run another plugin's command.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
@@ -36,7 +37,7 @@ use std::sync::Mutex;
 use plugin_sdk::{
     Choice, Column, Command, Error, Event, InboxSection, Input, Item, MenuItem, Node, NodeKind,
     Page, Plugin, Table, Tool, Value, View, VirtualList, VirtualRow, command_calls, network,
-    workspace,
+    objects, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -109,6 +110,8 @@ impl Plugin for Probe {
             vec![read_file(path)]
         } else if let Some(id) = page.strip_prefix("read-object:") {
             vec![read_object(id)]
+        } else if let Some(object) = page.strip_prefix("create-object:") {
+            vec![create_object(object)]
         } else if let Some(url) = page.strip_prefix("fetch:") {
             vec![fetch(url)]
         } else if let Some(call) = page.strip_prefix("call:") {
@@ -272,6 +275,20 @@ fn read_file(path: &str) -> String {
             file.revision,
             String::from_utf8_lossy(&file.bytes).trim()
         ),
+        Err(error) => describe(&error),
+    }
+}
+
+fn create_object(object: &str) -> String {
+    let (object_type, title) = object.split_once(':').unwrap_or((object, ""));
+    match objects::create(&objects::NewObject {
+        object_type: object_type.to_owned(),
+        title: title.to_owned(),
+        path: None,
+        body: String::new(),
+        properties: "{}".to_owned(),
+    }) {
+        Ok(object) => format!("object {}", object.id),
         Err(error) => describe(&error),
     }
 }

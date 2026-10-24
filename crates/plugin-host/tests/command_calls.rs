@@ -1,7 +1,8 @@
 //! Seam 3: a plugin calls another plugin's command only when its manifest
 //! names the command, or its plugin, as a target, and the target plugin
 //! runs and offers it. The command runs in the target with the target's
-//! capabilities: here the target reads a workspace the caller can't. An
+//! capabilities: here the target reads a workspace the caller can't, and
+//! creates an object of its own type, which the caller can't. An
 //! undeclared target, a target that is off, and a call cycle back into a
 //! busy plugin each return a structured error instead of hanging.
 
@@ -13,10 +14,10 @@ use std::{
 };
 
 use plugin_host::{
-    Entry, EntryKind, Limits, Listed, Router, RunningPlugin, Services, WorkspacePath,
+    Entry, EntryKind, Limits, Listed, ObjectTypes, Router, RunningPlugin, Services, WorkspacePath,
     WorkspaceReads,
 };
-use support::plugins::{self, FakeWorkspace};
+use support::plugins::{self, FakeObjects, FakeWorkspace};
 
 /// Two plugins built from the probe: `target`, which reads a workspace of
 /// two files, and `caller`, which reads nothing itself.
@@ -118,6 +119,75 @@ fn a_declared_target_runs_in_its_plugin_with_that_plugins_capabilities() {
     assert_eq!(pair.workspace.calls(), ["list"]);
     // The target heard the call, with its input.
     assert_eq!(plugins::texts(&pair.target_events()), ["command describe"]);
+}
+
+#[test]
+fn a_caller_creates_the_targets_objects_through_its_command_without_writing_them_itself() {
+    let (Some(probe), Some(recipes)) = (
+        plugins::built("probe_plugin"),
+        plugins::built("recipes_plugin"),
+    ) else {
+        return;
+    };
+    let router = Arc::new(Router::default());
+    let types = ObjectTypes::new();
+    let objects = Arc::new(FakeObjects::default());
+    let (target, _target_folders) = plugins::start(
+        "recipes",
+        &recipes,
+        &[
+            "name = \"object-types\"",
+            "name = \"views\"",
+            "name = \"commands\"",
+        ],
+        Services {
+            objects: Some(objects.clone()),
+            types: types.clone(),
+            router: Arc::downgrade(&router),
+            ..Services::default()
+        },
+        Limits::default(),
+    );
+    target.register_object_types().unwrap();
+    let (caller, _caller_folders) = plugins::start(
+        "caller",
+        &probe,
+        &[
+            "name = \"views\"",
+            "name = \"commands\"\ntargets = [\"recipes/run\"]",
+        ],
+        Services {
+            types: types.clone(),
+            router: Arc::downgrade(&router),
+            ..Services::default()
+        },
+        Limits::default(),
+    );
+    router.insert(target.clone());
+    router.insert(caller.clone());
+
+    // The caller can't create a recipe itself.
+    assert_eq!(
+        plugins::texts(&caller.render("create-object:recipe:Soup").unwrap()),
+        ["error capability-not-declared object-types"]
+    );
+    assert!(objects.calls().is_empty(), "{:?}", objects.calls());
+
+    let answer = call(&caller, "recipes/run:create|recipe|Soup|-|{}|Simmer.");
+
+    assert!(
+        answer.starts_with(
+            "answer object\trecipe_01jbcdefghjkmnpqrstvwxyz0a\trev-1\trecipes/Soup.md"
+        ),
+        "{answer}"
+    );
+    assert_eq!(objects.calls(), ["create recipe Soup"]);
+    // The command offers only the target's own types.
+    assert_eq!(
+        call(&caller, "recipes/run:create|note|Plan|-|{}|"),
+        "answer error\tcapability-not-declared\tobject-types"
+    );
+    assert_eq!(objects.calls(), ["create recipe Soup"]);
 }
 
 #[test]
