@@ -40,6 +40,8 @@ Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, t
 - `crates/app-ui` holds the egui screens and the widget kit that draws plugin UI. It calls only `app-core`.
 - `crates/editor-core` holds the Markdown editor's buffer, parsing and reveal rules, with no UI dependency. It sends a text-mode note's local edits into the collaboration sandbox, which owns that note's only yrs document, its client IDs and its undo, and it applies the text changes the sandbox returns (`docs/workspace-format/sync-v2.md` §22). `crates/editor-egui` draws and drives it.
 - `crates/plugin-host` runs plugins in Wasmtime and enforces their capabilities. `crates/plugin-sdk` holds the WIT interfaces and the Rust author library.
+- `crates/collab-sandbox` runs the collaboration sandbox (`docs/workspace-format/sync-v2.md` §22) in Wasmtime: the verdict on each remote yrs record, each text-mode note's document on its own thread, writer allowances and load numbers. It hands `editor-core` the note's document and the sync client its side of the note.
+- `crates/collab-sandbox-guest` is the sandbox's guest module, with its patched copy of yrs. The workspace excludes it; `build.sh` builds the `.wasm` that `crates/collab-sandbox` embeds and `sync-v2-collaboration.json` pins by hash, so any change to it is a protocol change.
 - `crates/plugins/*` holds first-party plugins. They build to WebAssembly against `plugin-sdk`, exactly like third-party plugins.
 - `crates/mcp-server` adapts MCP tools to shared services and duplicates no business logic.
 - `crates/sync-protocol` holds the wire types, signing, and verification shared by clients and the server. `crates/sync-key-envelope` owns the key envelope and device formats.

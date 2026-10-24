@@ -476,6 +476,28 @@ impl Buffer {
         self.queue_replacements(ops, base, Instant::now(), false);
     }
 
+    /// Replaces the text's `bytes`, which fall on character boundaries, with
+    /// `text`, as an edit the editor didn't make: a collaborator's, or undo's
+    /// from the collaboration sandbox. It applies to the text as it stands,
+    /// widened to whole grapheme clusters, and its change event isn't local.
+    pub fn apply_external(&mut self, bytes: std::ops::Range<usize>, text: &str) -> Response {
+        let segs = &self.current.segs;
+        let start = segs.byte_to_char_floor(Byte(bytes.start));
+        let end = segs.byte_to_char_ceil(Byte(bytes.end)).max(start);
+        let (start_byte, end_byte) = segs.range_to_byte((start, end));
+        let current = self.current.text();
+        let mut replacement = String::with_capacity(text.len() + end_byte.0 - start_byte.0);
+        replacement.push_str(&current[start_byte.0..bytes.start]);
+        replacement.push_str(text);
+        replacement.push_str(&current[bytes.end..end_byte.0]);
+        let replace = Replace {
+            range: (start, end),
+            text: replacement,
+        };
+        self.queue_replacements(vec![replace], self.current.seq, Instant::now(), false);
+        self.apply_queued().unwrap_or_default()
+    }
+
     /// Queues replacements made against version `base`.
     fn queue_replacements(&mut self, ops: Vec<Replace>, base: usize, at: Instant, local: bool) {
         self.history

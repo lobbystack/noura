@@ -1,0 +1,26 @@
+[package]
+name = "collab-sandbox-guest"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+yrs = { version = "=0.26.0", default-features = false }
+
+[patch.crates-io]
+yrs = { path = "vendor/yrs" }
+
+[workspace]
+
+[profile.release]
+codegen-units = 1
+debug = false
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

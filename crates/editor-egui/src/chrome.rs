@@ -44,6 +44,8 @@ pub(crate) struct Chrome {
     selection_toolbar: Option<Rect>,
     /// Where the text drew, below the toolbar and the find bar.
     pub text_rect: Option<Rect>,
+    /// The files typing `[[` offers.
+    pub(crate) completion: crate::completion::LinkCompletion,
 }
 
 impl Chrome {
@@ -528,8 +530,8 @@ impl Editor {
                     }
                 }
                 ui.separator();
-                let buffer = &self.edit.renderer.buffer;
-                let (can_undo, can_redo) = (buffer.can_undo(), buffer.can_redo());
+                let doc = &self.edit.renderer;
+                let (can_undo, can_redo) = (doc.can_undo(), doc.can_redo());
                 for (tool, enabled) in [
                     (tool(Command::Undo, Icon::Undo, "Undo"), can_undo),
                     (tool(Command::Redo, Icon::Redo, "Redo"), can_redo),

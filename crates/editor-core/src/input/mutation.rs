@@ -17,6 +17,7 @@ use crate::offset_types::{
     ToRangeExt as _,
 };
 use crate::operation_types::{Operation, Replace};
+use crate::resolvers::OpenedLink;
 
 /// tracks editor state necessary to support translating input events to buffer operations
 #[derive(Default)]
@@ -311,6 +312,12 @@ impl<'ast> MdDoc {
                 response |= self.flush_operations(operations);
                 response |= self.run_indent(deindent);
             }
+            // In text mode undo belongs to the note's document, after the
+            // edits made before it.
+            Event::Undo | Event::Redo if self.in_text_mode() => {
+                response |= self.flush_operations(operations);
+                self.text_mode_undo(matches!(event, Event::Redo));
+            }
             Event::Undo => {
                 response |= self.buffer.undo();
             }
@@ -371,11 +378,32 @@ impl<'ast> MdDoc {
                     self.revealed_spoilers.remove(&range);
                 }
             }
-            Event::OpenLink { url, wikilink } => {
-                // The embedding app opens what the link resolves to; a link
-                // that leads nowhere is reported and creates nothing.
-                let opened = crate::resolvers::open_link(&*self.link_resolver, &url, wikilink);
-                self.opened_links.push(opened);
+            Event::OpenLink {
+                url,
+                wikilink,
+                new_tab,
+            } => {
+                // The embedding app follows the link; the editor creates
+                // nothing, even for a link that leads nowhere.
+                self.opened_links.push(OpenedLink {
+                    target: url,
+                    wikilink,
+                    new_tab,
+                });
+            }
+            Event::OpenSelectedLink => {
+                if let Some((target, wikilink)) = self.selected_link(root) {
+                    self.opened_links.push(OpenedLink {
+                        target,
+                        wikilink,
+                        new_tab: false,
+                    });
+                }
+            }
+            Event::CompleteLink { link } => {
+                if let Some(event) = self.complete_link_event(root, &link) {
+                    response |= self.calc_operations(root, event, operations, layout);
+                }
             }
             Event::EnterAtom => {
                 if !self.enter_at_image(root, operations) {

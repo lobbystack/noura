@@ -4,6 +4,7 @@
 
 pub mod plugins;
 pub mod recipes;
+pub mod tasks;
 
 use std::{
     io,
@@ -41,6 +42,11 @@ pub struct FakeSystem {
     /// The hour of the day on the system's clock, 9 am until a test sets
     /// another.
     hour: AtomicU8,
+    /// The instant the system's clock reads, this computer's until a test
+    /// sets one.
+    now: Mutex<Option<jiff::Timestamp>>,
+    /// The system's time zone, this computer's until a test sets one.
+    time_zone: Mutex<Option<jiff::tz::TimeZone>>,
 }
 
 impl FakeSystem {
@@ -70,7 +76,16 @@ impl FakeSystem {
             bin: tempfile::tempdir().unwrap(),
             calls: Mutex::new(Vec::new()),
             hour: AtomicU8::new(9),
+            now: Mutex::new(None),
+            time_zone: Mutex::new(None),
         })
+    }
+
+    /// Stop the system's clock at `instant`, an RFC 3339 instant, in the
+    /// IANA time zone `zone`.
+    pub fn set_clock(&self, instant: &str, zone: &str) {
+        *self.now.lock().unwrap() = Some(instant.parse().unwrap());
+        *self.time_zone.lock().unwrap() = Some(jiff::tz::TimeZone::get(zone).unwrap());
     }
 
     pub fn calls(&self) -> Vec<Call> {
@@ -146,6 +161,21 @@ impl System for FakeSystem {
 
     fn local_hour(&self) -> u8 {
         self.hour.load(Ordering::SeqCst)
+    }
+
+    fn now(&self) -> jiff::Timestamp {
+        self.now
+            .lock()
+            .unwrap()
+            .unwrap_or_else(jiff::Timestamp::now)
+    }
+
+    fn time_zone(&self) -> jiff::tz::TimeZone {
+        self.time_zone
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(jiff::tz::TimeZone::system)
     }
 }
 

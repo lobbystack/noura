@@ -176,6 +176,48 @@ interface command-calls {
   call: func(plugin: string, command: string, input: string) -> result<string, error>;
 }
 
+// The time on this device. Needs no capability. Plugins have no other
+// clock: Noura doesn't link WASI's.
+interface clock {
+  record reading {
+    // The instant now in RFC 3339, in UTC, such as `2026-10-21T13:30:00Z`.
+    instant: string,
+    // This device's time zone, where each of your days starts and ends:
+    // an IANA name such as `America/Toronto`, or, when the device's zone
+    // has none, its offset from UTC now, such as `-04:00`.
+    time-zone: string,
+  }
+
+  // The instant now and this device's time zone.
+  now: func() -> reading;
+}
+
+// Shows things in the window you acted in. Needs the `views` capability.
+// Noura acts once the call returns, and only for a call that answers
+// something you did: an event in one of the plugin's views or panels, or
+// a command you ran from the command palette. Any other call gets
+// `failed`.
+interface navigation {
+  use types.{error};
+
+  // Where an object opens.
+  enum placement {
+    // In its own tab if it has one, otherwise in the preview tab, as a
+    // click in the file tree opens a file.
+    preview,
+    // In its own tab if it has one, otherwise in a new tab after the
+    // others, which stays open.
+    new-tab,
+  }
+
+  // Open the object with this stable ID in the note editor, with its
+  // properties panel beside its body.
+  open-object: func(id: string, placement: placement) -> result<_, error>;
+
+  // Show the plugin's own page with this ID.
+  open-page: func(page: string) -> result<_, error>;
+}
+
 // UI as data. WIT has no recursive types, so a view is a flat list of nodes
 // whose `children` hold indices into the list. The first node is the root.
 //
@@ -186,6 +228,15 @@ interface ui {
   record item {
     label: string,
     detail: option<string>,
+    // A checkbox before the label, checked or not, which you check or
+    // uncheck by click or the space bar. Each change sends `checked`, and
+    // the box then shows what the plugin draws. Only list and virtual
+    // list items show one: a card holding one breaks the rules.
+    checked: option<bool>,
+    // A short warning after the label, such as `Overdue`, in the color
+    // Noura shows problems in. Screen readers read it with the label.
+    // Only list and virtual list items show one.
+    warning: option<string>,
   }
 
   // A list you select items in.
@@ -196,6 +247,27 @@ interface ui {
     // `moved`, and the list then shows the items in the order the plugin
     // draws them.
     reorder: bool,
+    // The node ID of the item the list shows selected, such as the view
+    // you're in. When the plugin draws another one than it drew before,
+    // or none, the list's selection moves there; otherwise the item you
+    // selected last stays selected.
+    selected: option<string>,
+  }
+
+  // A one-line field that names something: a new task, or a rename. It
+  // takes the keyboard each time it appears, holding `value`. Enter, or
+  // leaving the field, sends `named` with what it holds, and Escape sends
+  // `cancelled`, as does leaving it empty or holding the name it started
+  // from. A name still in the field when its window closes is sent first,
+  // even one sent before that the plugin kept in the field, as after a
+  // create that failed.
+  record name-field {
+    // Names the field for screen readers, and shows in it while it's
+    // empty.
+    label: string,
+    // The name the field starts from: empty for something new, the
+    // current name for a rename.
+    value: string,
   }
 
   // A list of items fetched as they scroll into view, so it can hold more
@@ -341,6 +413,9 @@ interface ui {
     form(form),
     // A labeled input. Changes come back by the node's ID.
     input(input),
+    // A field that names something, which goes where an input goes.
+    // What you name comes back by the node's ID.
+    name-field(name-field),
     // A menu with this label, the child of an item, a row, a card or a
     // button. Its children are menu items and separators, at least one
     // item among them.
@@ -433,6 +508,25 @@ interface ui {
     fields: list<field>,
   }
 
+  // An item's checkbox, checked or unchecked.
+  record check {
+    // The node ID of the list or the virtual list.
+    node: string,
+    // The item's node ID, or a virtual list row's ID.
+    item: string,
+    // Whether the box is checked now.
+    checked: bool,
+  }
+
+  // A name typed in a name field.
+  record naming {
+    // The name field's node ID.
+    node: string,
+    // The name, without spaces at either end. It holds more than spaces
+    // and differs from the name the field started from.
+    name: string,
+  }
+
   // Something you did in a view.
   variant event {
     // The button with this node ID was pressed.
@@ -453,6 +547,15 @@ interface ui {
     chosen(string),
     // A card or a list item was dropped in a new place.
     moved(move),
+    // An item's checkbox was checked or unchecked.
+    checked(check),
+    // A name field holds a new name: you pressed Enter in it or left it,
+    // or its window closed.
+    named(naming),
+    // A name field was left without a new name: you pressed Escape, or
+    // left it empty or holding the name it started from. Holds the
+    // field's node ID.
+    cancelled(string),
   }
 }
 
@@ -474,13 +577,18 @@ interface view {
   // The nodes of a page's view.
   render: func(page: string) -> list<node>;
 
+  // The nodes of the section a page adds to the sidebar, above the file
+  // tree, while the page shows: none for no section. The section can't
+  // hold a virtual list, and its node IDs don't repeat the page view's.
+  sidebar: func(page: string) -> list<node>;
+
   // Rows `start` up to `start + count` of the virtual list with node ID
   // `node` in a page's view, as they scroll into view. Return fewer when
   // the list ends sooner.
   rows: func(page: string, node: string, start: u32, count: u32) -> list<virtual-row>;
 
-  // Something happened in a page's view. Noura draws the plugin's views
-  // again afterwards.
+  // Something happened in a page's view or its sidebar section. Noura
+  // draws the plugin's views again afterwards.
   handle-event: func(page: string, event: event);
 }
 
@@ -601,6 +709,10 @@ interface objects {
     properties: string,
     // The revision of the file's content. Writes carry it.
     revision: string,
+    // When the object was created and last changed, in RFC 3339, as its
+    // frontmatter says.
+    created: option<string>,
+    updated: option<string>,
     // The first property, in the schema's order, that doesn't fit the
     // type's schema. Noura leaves such a file as it is.
     problem: option<property-error>,
@@ -668,8 +780,9 @@ interface object-types {
 
   record object-type {
     // A lowercase letter followed by lowercase letters or hyphens. Noura
-    // keeps its own types, such as `note`, and a type another running
-    // plugin registered stays that plugin's.
+    // keeps its own types, such as `note`, holds `task` for the Tasks
+    // plugin, and a type another running plugin registered stays that
+    // plugin's.
     name: string,
     // The type's properties in the workspace format's schema
     // declaration, as JSON.
@@ -694,6 +807,8 @@ world plugin {
   import objects;
   import network;
   import command-calls;
+  import clock;
+  import navigation;
   export view;
   export object-types;
   export commands;

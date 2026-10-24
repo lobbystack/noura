@@ -1,15 +1,16 @@
-//! Seam 2: link lookups go through the embedding app's resolver, and a link
-//! that leads nowhere changes nothing.
+//! Seam 2: opening a link reports its target for the embedding app to
+//! follow, and changes nothing. A click says whether it asks for a new
+//! tab, and Alt-Enter opens the link at the caret.
 
 use std::fs;
 
 use editor_core::MdDoc;
 use editor_core::input::{Event, Location, NoLayout, Region};
+use editor_core::keymap::{self, Command, Key, Shortcut};
 use editor_core::offset_types::Grapheme;
-use editor_core::resolvers::{LinkResolver, LinkState, OpenedLink, ResolvedLink};
+use editor_core::resolvers::OpenedLink;
 
-/// Selects `range` and asks the document which link the selection is on.
-fn link_target_at(doc: &mut MdDoc, range: (usize, usize)) -> String {
+fn select(doc: &mut MdDoc, range: (usize, usize)) {
     doc.apply(
         [Event::Select {
             region: Region::BetweenLocations {
@@ -19,12 +20,25 @@ fn link_target_at(doc: &mut MdDoc, range: (usize, usize)) -> String {
         }],
         &NoLayout,
     );
+}
+
+/// Selects `range` and asks the document which link the selection is on.
+fn link_target_at(doc: &mut MdDoc, range: (usize, usize)) -> String {
+    select(doc, range);
     doc.selection_open_target()
         .expect("the selection is on a link")
 }
 
+fn opened(target: &str, wikilink: bool, new_tab: bool) -> OpenedLink {
+    OpenedLink {
+        target: target.into(),
+        wikilink,
+        new_tab,
+    }
+}
+
 #[test]
-fn a_link_to_another_note_resolves_to_not_found_and_writes_no_file() {
+fn opening_a_link_reports_its_target_and_writes_no_file() {
     let workspace = tempfile::tempdir().unwrap();
     let note = workspace.path().join("Plan.md");
     let original = "See [[Other note]] and [the draft](Draft.md).\n";
@@ -43,10 +57,12 @@ fn a_link_to_another_note_resolves_to_not_found_and_writes_no_file() {
             Event::OpenLink {
                 url: wikilink,
                 wikilink: true,
+                new_tab: false,
             },
             Event::OpenLink {
                 url: link,
                 wikilink: false,
+                new_tab: true,
             },
         ],
         &NoLayout,
@@ -55,12 +71,8 @@ fn a_link_to_another_note_resolves_to_not_found_and_writes_no_file() {
     assert_eq!(
         doc.opened_links,
         vec![
-            OpenedLink::NotFound {
-                target: "Other note".into()
-            },
-            OpenedLink::NotFound {
-                target: "Draft.md".into()
-            },
+            opened("Other note", true, false),
+            opened("Draft.md", false, true),
         ]
     );
     assert_eq!(doc.text(), original);
@@ -72,52 +84,45 @@ fn a_link_to_another_note_resolves_to_not_found_and_writes_no_file() {
     assert_eq!(fs::read_to_string(&note).unwrap(), original);
 }
 
-/// Resolves wikilinks to a fixed workspace file and web links to themselves.
-struct OneNote;
-
-impl LinkResolver for OneNote {
-    fn resolve_link(&self, url: &str) -> Option<ResolvedLink> {
-        url.starts_with("https://")
-            .then(|| ResolvedLink::External(url.into()))
-    }
-
-    fn resolve_wikilink(&self, title: &str) -> Option<String> {
-        (title == "Other note").then(|| "Other note.md".into())
-    }
-
-    fn link_state(&self, _url: &str) -> LinkState {
-        LinkState::Normal
-    }
-
-    fn wikilink_state(&self, _title: &str) -> LinkState {
-        LinkState::Normal
-    }
-}
-
 #[test]
-fn links_the_resolver_finds_report_what_to_open() {
-    let mut doc = MdDoc::new("[[Other note]] <https://example.com>\n");
-    doc.link_resolver = Box::new(OneNote);
+fn alt_enter_opens_the_link_at_the_caret() {
+    for apple in [true, false] {
+        assert_eq!(
+            keymap::command_for(Shortcut::new(Key::Enter).with_alt(), apple),
+            Some(Command::OpenLink)
+        );
+    }
+    let open = Command::OpenLink.event().expect("it's an editor event");
+    let text = "See [[Other note]], [the draft](Draft.md) and <https://example.com>.\n";
 
-    doc.apply(
-        [
-            Event::OpenLink {
-                url: "Other note".into(),
-                wikilink: true,
-            },
-            Event::OpenLink {
-                url: "https://example.com".into(),
-                wikilink: false,
-            },
-        ],
-        &NoLayout,
-    );
+    for (caret, target, wikilink) in [
+        (8, "Other note", true),
+        (6, "Other note", true),
+        (22, "Draft.md", false),
+        (34, "Draft.md", false),
+        (50, "https://example.com", false),
+    ] {
+        let mut doc = MdDoc::new(text);
+        select(&mut doc, (caret, caret));
+        doc.apply([open.clone()], &NoLayout);
+        assert_eq!(
+            doc.opened_links,
+            [opened(target, wikilink, false)],
+            "caret at {caret}"
+        );
+        assert_eq!(doc.text(), text);
+    }
 
-    assert_eq!(
-        doc.opened_links,
-        vec![
-            OpenedLink::File("Other note.md".into()),
-            OpenedLink::External("https://example.com".into()),
-        ]
-    );
+    // Away from links, and in a read-only note, as anywhere.
+    let mut doc = MdDoc::new(text);
+    select(&mut doc, (1, 1));
+    doc.apply([open.clone()], &NoLayout);
+    assert_eq!(doc.opened_links, []);
+    assert_eq!(doc.text(), text);
+
+    let mut doc = MdDoc::new(text);
+    doc.readonly = true;
+    select(&mut doc, (8, 8));
+    doc.apply([open], &NoLayout);
+    assert_eq!(doc.opened_links, [opened("Other note", true, false)]);
 }
